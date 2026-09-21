@@ -1540,6 +1540,19 @@ test("completed object children resume history and pinned routing after owner sh
     assert.ok(storage.subagentCheckpoints.size > 0, "shutdown persists child runtime checkpoints");
     const validChunks = new Map(storage.subagentCheckpoints);
     const savedCheckpoint = [...validChunks.values()].join("");
+    await assert.rejects(create(module, durableOwner(storage, {
+      async fetch() { return { status: 403, headers: new Headers() }; },
+    }), {
+      tools: options.tools,
+      [Symbol.for("nanocodex.cloudflare.internalRuntime")]: {
+        subagentsEnabled: true,
+        subagentLifecycle: options[Symbol.for("nanocodex.cloudflare.internalRuntime")].subagentLifecycle,
+      },
+    }), /EGRESS broker rejected.*HTTP 403/);
+    assert.deepEqual(storage.subagentCheckpoints, validChunks,
+      "startup failure after successful child restoration preserves the reusable boundary");
+    assert.equal(childRequests.length, 2, "failed owner creation never replays child inference");
+    lifecycleEvents.length = 0;
     for (const corruptIdentity of [
       (checkpoint) => { checkpoint.root_session_id = "different-root-session"; },
       (checkpoint) => { checkpoint.children[0].descriptor.id = child.agent_id + 100; },

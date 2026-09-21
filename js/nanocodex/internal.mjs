@@ -899,13 +899,16 @@ export function activateCloudflareAgentSession(reservation) {
 }
 
 /** Internal Cloudflare seam: publishes a reconstructed owner after adapter setup succeeds. */
-export function commitCloudflareAgentSession(reservation) {
+export function commitCloudflareAgentSession(reservation, beforeCommit) {
   if (!cloudflareAgentSessions.has(reservation)
     || reservation.released
     || !reservation.adopted
     || activeAgentSessions.get(reservation.sessionId) !== reservation) {
     throw new Error("Cloudflare Agent session reservation is not ready to commit");
   }
+  // A synchronous durable transition must succeed before rollback authority is
+  // relinquished. No other generation can interleave validation and publication.
+  beforeCommit?.();
   reservation.committed = true;
   reservation.predecessor = undefined;
   reservation.predecessorHost = undefined;

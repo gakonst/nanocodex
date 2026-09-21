@@ -205,9 +205,6 @@ export async function create(options = {}) {
               reusableCheckpoint ?? JSON.stringify(restoredSubagents),
               JSON.stringify(restoredHostContextRefs),
             );
-            // Once this owner can mutate children, the old snapshot is no longer
-            // a safe recovery boundary. Only a clean unload writes a new one.
-            if (checkpoint !== undefined) subagentSessions.consumeCheckpoint();
           }
         }
         return raw;

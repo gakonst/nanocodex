@@ -479,7 +479,9 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
     observeAgentRelease(exposed, () => {
       if (lifecycle.active === active) lifecycle.active = undefined;
     });
-    commitCloudflareAgentSession(sessionReservation);
+    // Consume only after all startup checks succeed. Once exposed, this owner
+    // may mutate children; only its next clean unload can save a safe snapshot.
+    commitCloudflareAgentSession(sessionReservation, () => subagentSessions.consumeCheckpoint());
     return exposed;
   } catch (error) {
     const cleanupErrors = [];
