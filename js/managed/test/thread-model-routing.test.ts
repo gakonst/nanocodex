@@ -334,7 +334,7 @@ describe("trusted regional provider telemetry", () => {
   const runtime = (provider_performance: unknown[]) => ({openrouter:true,vercel:false,workerColo:"LHR",clientIngressColo:"SJC",provider_performance});
   it("projects trusted aggregates into Jev and the audit while distinguishing execution from ingress", async () => {
     const router = ai();
-    const route = await resolveThreadRoute(router,"task",routingPolicySchema.parse({}),runtime([metric({apiKey:"secret",prompt:"private",errorBody:"sensitive"}),metric({source:"probe"})]));
+    const route = await resolveThreadRoute(router,"task",routingPolicySchema.parse({}),runtime([metric({apiKey:"secret",prompt:"private",errorBody:"sensitive"}),metric({source:"probe",scope:"deployment_global",workerColo:null})]));
     const snapshot = route.audit?.provider_telemetry;
     expect(snapshot).toMatchObject({provenance:"trusted_runtime_aggregate",workerColo:"LHR",clientIngressColo:"SJC",windowMs:7200000});
     expect(snapshot?.provider_performance).toHaveLength(2);
@@ -368,7 +368,7 @@ describe("trusted regional provider telemetry", () => {
     expect(route.selection).toBe("prior");
   });
   it("bounds and deduplicates aggregates without merging probe/live cohorts", async () => {
-    const samples = ROUTING_CANDIDATES.filter(c=>c.backend==="openrouter").flatMap(c=>[metric({model:c.model,effort:c.thinking}),metric({model:c.model,effort:c.thinking,source:"probe"})]);
+    const samples = ROUTING_CANDIDATES.filter(c=>c.backend==="openrouter").flatMap(c=>[metric({model:c.model,effort:c.thinking}),metric({model:c.model,effort:c.thinking,source:"probe",scope:"deployment_global",workerColo:null})]);
     const route = await resolveThreadRoute(ai(),"task",routingPolicySchema.parse({}),runtime([samples[0],...samples]));
     expect(route.audit?.provider_telemetry?.provider_performance).toHaveLength(30);
     expect(new Set(route.audit?.provider_telemetry?.provider_performance.map(m => `${m.source}/${m.candidateId}`)).size).toBe(30);

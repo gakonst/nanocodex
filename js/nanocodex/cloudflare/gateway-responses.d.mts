@@ -4,6 +4,8 @@ export type GatewayRequestOutcome = "success" | "http_error" | "network_error" |
 export type GatewayRequestObserver = Readonly<{
   /** HTTP only; binding attempts leave the status unset. */
   headers(status: number): void;
+  /** First emitted nonempty text or validated tool output; excludes reasoning and HTTP headers. */
+  firstToken?(): void;
   /** Success follows body consumption and protocol validation; HTTP headers are not TTFT. */
   finish(outcome: GatewayRequestOutcome): void | boolean | Promise<void | boolean>;
 }>;
@@ -39,5 +41,8 @@ export type GatewayResponsesOptions = GatewayResponsesCommonOptions & (Readonly<
   fetch?: typeof globalThis.fetch;
   ai?: never;
 }>);
-/** Buffered Responses SSE with complete replay, text/tool history, fixed origin and pinned model/effort. */
+/** Incremental (stream:true) or buffered Responses SSE with complete replay and pinned model/effort.
+ * Text/reasoning stream incrementally; tools are emitted only after terminal validation.
+ * x-nanocodex-inference-buffering reports streaming or buffered binding fallback.
+ */
 export function createGatewayResponses(options: GatewayResponsesOptions): WorkersAiResponsesTransport & Readonly<{ stateless: true }>;

@@ -11,7 +11,7 @@ createGatewayResponses({ provider: "other", model: "gpt-6-astra", reasoningEffor
 // @ts-expect-error noncanonical model
 createGatewayResponses({ provider: "vercel", model: "openai/gpt-6-astra", reasoningEffort: "high", apiKey: "synthetic" });
 createGatewayResponses({ provider: "vercel", model: "gpt-6-astra", reasoningEffort: "high", apiKey: "synthetic",
-  onRequest: () => ({ headers(status) { const code: number = status; void code; }, async finish(outcome) {
+  onRequest: () => ({ firstToken() {}, headers(status) { const code: number = status; void code; }, async finish(outcome) {
     const result: "success" | "http_error" | "network_error" | "protocol_error" | "timeout" | "cancelled" = outcome;
     void result; return true;
   } }),

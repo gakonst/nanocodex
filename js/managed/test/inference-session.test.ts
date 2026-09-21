@@ -362,7 +362,7 @@ describe("trusted deployment probe context", () => {
     first.ai.mockImplementation(chooser);
     expect((await first.call("POST", "/responses", { input: "first task" })).status).toBe(200);
     expect(first.commits.at(-1)?.route?.thinking).toBe("medium");
-    expect(getByName).toHaveBeenCalledExactlyOnceWith(PROBE_OWNER);
+    expect(getByName).toHaveBeenCalledWith(PROBE_OWNER);
     const pinned = first.commits.at(-1)!.route;
     fastEffort = "high";
     first.restart();
@@ -417,16 +417,16 @@ describe("trusted deployment probe context", () => {
       return classification();
     });
     expect((await f.call("POST", "/responses", { input: "hello" })).status).toBe(200);
-    expect(snapshot).toHaveBeenCalledTimes(mode === "disabled" ? 0 : 1);
+    expect(snapshot).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(f.commits)).not.toContain("private");
   });
 
-  it("excludes stale, insufficient, regional, live, noncandidate and subscription measurements", async () => {
+  it("excludes stale, insufficient, unmatched regional, noncandidate and subscription measurements", async () => {
     const snapshot = vi.fn(async () => [
       probe("medium", 1, { lastObservedAt: Date.now() - 400_000, lastTtftObservedAt: Date.now() - 400_000 }),
       probe("medium", 2, { generationTtftSampleCount: 2 }),
       probe("medium", 3, { workerColo: "LHR", scope: "worker_colo" }),
-      probe("medium", 4, { source: "live" }),
+      probe("medium", 4, { source: "live", scope: "client_ingress", clientIngressColo: "NRT" }),
       probe("medium", 5, { model: "uncataloged-model" }),
       probe("medium", 6, { backend: "chatgpt", model: "gpt-6-astra" }),
     ]);
@@ -685,7 +685,7 @@ describe("Cloudflare frontier public Responses compatibility", () => {
   const native = (output: unknown[] = [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "native fixture answer" }] }]) => ({
     object: "response", status: "completed", output, usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15 },
   });
-  function cloudflareFixture() {
+  function cloudflareFixture(stream = false) {
     const forbidden = new Proxy({}, { get() { throw Error("account capability accessed"); } });
     const f = fixture({ NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true", ACCOUNT: forbidden,
       CONNECTORS: forbidden, HANDS: forbidden, MEMORY: forbidden, CHATGPT: forbidden } as Partial<InferenceSessionEnv>);
@@ -699,7 +699,7 @@ describe("Cloudflare frontier public Responses compatibility", () => {
       }
       expect(model).toBe("openai/gpt-6-astra");
       expect(input).toMatchObject({ input: [{ role: "user", content: "private fixture prompt" }],
-        reasoning: { effort: "low" }, max_output_tokens: 32, stream: false, store: false });
+        reasoning: { effort: "low" }, max_output_tokens: 32, stream, store: false });
       expect(input).not.toHaveProperty("messages");
       expect(input).not.toHaveProperty("api_key");
       return native();
@@ -707,7 +707,7 @@ describe("Cloudflare frontier public Responses compatibility", () => {
     return { ...f, network };
   }
   it.each([false, true])("stateless native binding returns canonical JSON/SSE stream=%s without account access", async stream => {
-    const f = cloudflareFixture();
+    const f = cloudflareFixture(stream);
     const response = await executeStatelessInferenceResponse(f.bindings,
       { model: exact, input: "private fixture prompt", stream }, 32, new AbortController().signal);
     expect(response.status).toBe(200);
@@ -736,7 +736,7 @@ describe("Cloudflare frontier public Responses compatibility", () => {
       const input = raw as any;
       expect(model).toBe("openai/gpt-6-astra");
       expect(f.commits.at(-1)?.route).toMatchObject({ backend: "cloudflare", model: "gpt-6-astra", thinking: "low" });
-      expect(input).toMatchObject({ reasoning: { effort: "low" }, stream: false, store: false });
+      expect(input).toMatchObject({ reasoning: { effort: "low" }, stream: generations > 1, store: false });
       if (generations === 1) {
         expect(input.tools).toHaveLength(1);
         expect(input.tools[0]).toMatchObject({ type: "function", strict: false });
@@ -835,4 +835,60 @@ describe("Cloudflare REST inference transport", () => {
     expect(send).toHaveBeenCalledTimes(2); expect(f.ai).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(f.commits)).not.toContain(token); expect(JSON.stringify(f.commits)).not.toContain(accountId);
   });
+});
+
+describe("incremental inference lifecycle", () => {
+  const exact = "cloudflare:openai/gpt-5.6-sol:low";
+  function streamingFixture() {
+    const f = fixture({ NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true", CLOUDFLARE_AI_API_TOKEN: "synthetic-token",
+      NANOCODEX_CLOUDFLARE_ACCOUNT_ID: "a".repeat(32) });
+    f.ai.mockImplementation(async () => classification(exact));
+    let upstream!: ReadableStreamDefaultController<Uint8Array>;
+    const cancel = vi.fn();
+    const frame = (event: unknown) => upstream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+    vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
+      expect(JSON.parse(init.body).stream).toBe(true);
+      return new Response(new ReadableStream<Uint8Array>({ start(c) { upstream = c; }, cancel }), {
+        headers: { "content-type": "text/event-stream" },
+      });
+    }));
+    return { ...f, frame, cancel, end: () => upstream.close() };
+  }
+  it("delivers a token before completion, keeps session busy, then accounts once", async () => {
+    const f = streamingFixture(); await f.create({ candidates: [exact] });
+    const response = await f.call("POST", "/responses", { model: exact, input: "fixture", stream: true });
+    expect(response.headers.get("x-nanocodex-inference-buffering")).toBe("streaming");
+    const reader = response.body!.getReader();
+    f.frame({ type: "response.created", response: { id: "resp_fixture", status: "in_progress", output: [] } });
+    f.frame({ type: "response.output_item.added", output_index: 0, item: { id: "msg_fixture", type: "message", role: "assistant", status: "in_progress", content: [] } });
+    f.frame({ type: "response.output_text.delta", item_id: "msg_fixture", output_index: 0, content_index: 0, delta: "hello" });
+    let text = "";
+    while (!text.includes("hello")) text += new TextDecoder().decode((await reader.read()).value);
+    expect((await f.call("POST", "/responses", { input: "another" })).status).toBe(409);
+    expect((await f.call("DELETE")).status).toBe(409);
+    expect(f.commits.at(-1)?.counters).toEqual({ requests: 1, completed: 0, failed: 0 });
+    f.frame({ type: "response.completed", response: { id: "resp_fixture", object: "response", status: "completed", output: [
+      { id: "msg_fixture", type: "message", role: "assistant", content: [{ type: "output_text", text: "hello" }] },
+    ] } }); f.end();
+    while (!(await reader.read()).done) { /* consume */ }
+    expect(f.commits.at(-1)?.counters).toEqual({ requests: 1, completed: 1, failed: 0 });
+    expect((await f.call("GET")).status).toBe(200);
+  });
+  it("client cancellation releases ownership and marks failure, preserving the pin", async () => {
+    const f = streamingFixture(); await f.create({ candidates: [exact] });
+    const response = await f.call("POST", "/responses", { model: exact, input: "fixture", stream: true });
+    const pin = f.commits.at(-1)?.route;
+    await response.body!.cancel();
+    expect(f.cancel).toHaveBeenCalled();
+    expect(f.commits.at(-1)?.counters).toEqual({ requests: 1, completed: 0, failed: 1 });
+    expect(f.commits.at(-1)?.route).toEqual(pin);
+    expect((await f.call("GET")).status).toBe(200);
+  });
+});
+
+it("a failed telemetry namespace lookup cannot fail a completed inference", async () => {
+  const f = fixture({ NANOCODEX_PROVIDER_PROBE_COORDINATOR: { getByName() { throw Error("private telemetry failure"); } } });
+  const response = await executeStatelessInferenceResponse(f.bindings, { input: "fixture" }, 32, new AbortController().signal);
+  expect(response.status).toBe(200);
+  expect(await response.text()).not.toContain("private telemetry");
 });

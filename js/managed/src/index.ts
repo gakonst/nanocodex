@@ -6,7 +6,7 @@ import { PROBE_OWNER, type ProviderProbeEnvironment } from "./provider-probe-sch
 export { ProviderProbeCoordinator };
 import { gatewayAvailability, gatewayRuntime } from "./gateway-runtime";
 import { createSubagentRouteController, type RetainedChildRoute } from "./subagent-model-routing";
-import { SqliteProviderTelemetryStore, summarizeProviderObservationGroups } from "./provider-telemetry";
+import { SqliteProviderTelemetryStore, summarizeProviderObservationGroups, normalizeProviderColo, type ProviderObservation } from "./provider-telemetry";
 import { resolveThreadRoute, ThreadRoutePin, type ThreadRoute, type RoutingAi } from "./thread-model-routing";
 import { AgentPresentationWriter, generatePresentationText, presentationPending } from "./agent-presentation";
 import { retireSessionProjects, isRetiredProjectCompletion } from "./retired-projects";
@@ -1489,15 +1489,26 @@ async function hasRequestBody(request: Request): Promise<boolean> {
   }
 }
 
+// Set only at this Worker's trusted request boundary. A client header never
+// establishes geography, and ingress does not establish DO execution location.
+const MANAGED_INGRESS_COLO = "x-nanocodex-client-ingress-colo";
+function forwardManagedIngress(headers: Headers, clientIngressColo: string | null): Headers {
+  headers.delete(MANAGED_INGRESS_COLO);
+  headers.delete("x-nanocodex-worker-colo");
+  if (clientIngressColo) headers.set(MANAGED_INGRESS_COLO, clientIngressColo);
+  return headers;
+}
+
 async function managedFetch(
   request: Request,
   env: Env,
   ctx: Pick<ExecutionContext, "waitUntil">,
   trustedAgentPrincipal?: Principal,
+  clientIngressColo = normalizeProviderColo(request.cf?.colo),
 ): Promise<Response> {
   const began = performance.now();
   beginHandTiming(request);
-  const response = await managedAccessResponse(request, await managedFetchRoute(request, env, ctx, trustedAgentPrincipal), env);
+  const response = await managedAccessResponse(request, await managedFetchRoute(request, env, ctx, trustedAgentPrincipal, clientIngressColo), env);
   const path = new URL(request.url).pathname;
   if (path.startsWith("/v1/agents")) console.info({ type: "managed.request",
     request_id: response.headers.get("x-nanocodex-request-id"), method: request.method,
@@ -1510,6 +1521,7 @@ async function managedFetchRoute(
   env: Env,
   ctx: Pick<ExecutionContext, "waitUntil">,
   trustedAgentPrincipal?: Principal,
+  clientIngressColo: string | null = null,
 ): Promise<Response> {
     const url = new URL(request.url);
     const inference = await routeInferenceApi(request, env, url, trustedAgentPrincipal);
@@ -1763,7 +1775,7 @@ async function managedFetchRoute(
         return json({ error: "forbidden_origin" }, { status: 403 });
       }
       const agentId = uuidV7();
-      const headers = new Headers(request.headers);
+      const headers = forwardManagedIngress(new Headers(request.headers), clientIngressColo);
       forwardPrincipalAssertions(headers, principal);
       headers.set(SESSION_CREATE_ID_ASSERTION, agentId);
       const stub = env.NANOCODEX_SESSIONS.getByName(agentId);
@@ -1900,7 +1912,7 @@ async function managedFetchRoute(
         method: "POST",
         headers: innerHeaders,
         body: run.creationBody,
-      }), env, ctx, principal);
+      }), env, ctx, principal, clientIngressColo);
       if (!created.ok) return created;
       let creationReceipt: { agent_id?: unknown };
       try {
@@ -1928,7 +1940,7 @@ async function managedFetchRoute(
           headers: innerHeaders,
           body: JSON.stringify({ id: turnId, input: run.input }),
         },
-      ), env, ctx, principal);
+      ), env, ctx, principal, clientIngressColo);
       if (!admitted.ok) return admitted;
       let turnReceipt: Record<string, unknown>;
       try {
@@ -2053,7 +2065,7 @@ async function managedFetchRoute(
         const sessionCreationStartedAt = performance.now();
         try {
           created = await fetchCreateStage(stub, "https://session.internal/create", {
-            method: "POST", headers: { "content-type": "application/json" },
+            method: "POST", headers: forwardManagedIngress(new Headers({ "content-type": "application/json" }), clientIngressColo),
             body: JSON.stringify({
               session_id: agentId, owner_id: principal.userId,
               organization_id: principal.organizationId, team_id: principal.teamId,
@@ -2155,7 +2167,7 @@ async function managedFetchRoute(
         ),
         fetchCreateStage(stub, "https://session.internal/initialize", {
           method: "PUT",
-          headers: { "content-type": "application/json" },
+          headers: forwardManagedIngress(new Headers({ "content-type": "application/json" }), clientIngressColo),
           body: JSON.stringify({
             session_id: agentId,
             owner_id: principal.userId,
@@ -2298,7 +2310,7 @@ async function managedFetchRoute(
         headers: existenceHeaders,
       });
     }
-    const sessionHeaders = new Headers(request.headers);
+    const sessionHeaders = forwardManagedIngress(new Headers(request.headers), clientIngressColo);
     sessionHeaders.delete("x-nanocodex-vm-machine-id");
     sessionHeaders.delete("x-nanocodex-vm-lease-expires-at");
     sessionHeaders.delete("x-nanocodex-vm-route-id");
@@ -3269,6 +3281,10 @@ export class DurableAgentSession extends DurableComputerSession {
         created_at INTEGER NOT NULL,
         PRIMARY KEY (tool_session_id, tool_call_id)
       );
+      CREATE TABLE IF NOT EXISTS managed_routing_origin (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        client_ingress_colo TEXT
+      );
       CREATE TABLE IF NOT EXISTS managed_thread_route (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1), route_json TEXT NOT NULL
       );
@@ -3821,7 +3837,7 @@ export class DurableAgentSession extends DurableComputerSession {
       } catch {
         return new Response(null, { status: 400 });
       }
-      return this.#initializeSession(initialization);
+      return this.#initializeSession(initialization, normalizeProviderColo(request.headers.get(MANAGED_INGRESS_COLO)));
     }
     if (this.#durabilityImportState === "pending"
       && !(request.method === "DELETE" && url.pathname === "/session")) {
@@ -4530,7 +4546,7 @@ export class DurableAgentSession extends DurableComputerSession {
       ? "agent_creation_expired" : "agent cleanup initialization failed" }, { status: prepared.status });
     const preparedAt = performance.now();
     const [binding, initialized] = await Promise.allSettled([
-      this.#bindPreparedCredential(), Promise.resolve().then(() => this.#initializeSession(initialization)),
+      this.#bindPreparedCredential(), Promise.resolve().then(() => this.#initializeSession(initialization, normalizeProviderColo(request.headers.get(MANAGED_INGRESS_COLO)))),
     ]);
     if (initialized.status === "fulfilled" && initialized.value.status === 409) return json({ error: "agent_initialization_conflict",
       message: "The retained agent has different settings or configuration." }, { status: 409 });
@@ -4596,7 +4612,7 @@ export class DurableAgentSession extends DurableComputerSession {
       authorization_epoch: asserted.authorizationEpoch,
       public_origin: publicOrigin,
       settings,
-    });
+    }, normalizeProviderColo(request.headers.get(MANAGED_INGRESS_COLO)));
     if (!initialized.ok) return initialized;
 
     const registration = this.#track(attachAgent(
@@ -4615,7 +4631,7 @@ export class DurableAgentSession extends DurableComputerSession {
     return this.#upgrade(asserted.authorization, null, callerContext(request.headers));
   }
 
-  #initializeSession(initialization: SessionInitialization): Response {
+  #initializeSession(initialization: SessionInitialization, clientIngressColo: string | null = null): Response {
     const sessionId = initialization.session_id;
     const ownerId = initialization.owner_id;
     const organizationId = initialization.organization_id;
@@ -4737,6 +4753,9 @@ export class DurableAgentSession extends DurableComputerSession {
           runtimeProfile,
           Date.now(),
         );
+        // Creation owns the coarse origin for the thread and all retained children.
+        // Replays, reconnects and route pins cannot change its cohort.
+        this.ctx.storage.sql.exec("INSERT OR IGNORE INTO managed_routing_origin VALUES (1, ?)", clientIngressColo);
         initializeEmptyVmHostScope(this.ctx.storage);
         this.#storeSettings(settings);
         this.ctx.storage.sql.exec("INSERT INTO managed_configuration VALUES (1, ?)", JSON.stringify(configuration));
@@ -7300,6 +7319,7 @@ export class DurableAgentSession extends DurableComputerSession {
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_deliveries");
       this.ctx.storage.sql.exec("DELETE FROM managed_turns");
       this.ctx.storage.sql.exec("DELETE FROM managed_thread_route");
+      this.ctx.storage.sql.exec("DELETE FROM managed_routing_origin");
       this.ctx.storage.sql.exec("DELETE FROM managed_routing_observations");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_cancel_intents");
       this.ctx.storage.sql.exec("DELETE FROM history_projection_outbox");
@@ -7878,9 +7898,15 @@ export class DurableAgentSession extends DurableComputerSession {
       this.#hostedTools.provider(),
       ...(this.#accountHostedTools === undefined ? [] : [this.#accountHostedTools]),
     ];
+    const localTelemetry = new SqliteProviderTelemetryStore(this.ctx.storage.sql);
     const gatewayTelemetry = {
-      store: new SqliteProviderTelemetryStore(this.ctx.storage.sql),
-      workerColo: null, clientIngressColo: null,
+      ...this.#routingOrigin(),
+      store: { append: (observation: ProviderObservation) => {
+        localTelemetry.append(observation);
+        const coordinator = this.env.NANOCODEX_PROVIDER_PROBE_COORDINATOR;
+        if (coordinator) this.ctx.waitUntil(Promise.resolve().then(() =>
+          coordinator.getByName(PROBE_OWNER).observe(observation)).catch(() => {}));
+      } },
     };
     const rootRoutingSessionId = () => this.ctx.storage.sql.exec<{ session_id: string }>(
       "SELECT session_id FROM nanocodex_cloudflare_agent WHERE singleton = 1",
@@ -10286,22 +10312,38 @@ export class DurableAgentSession extends DurableComputerSession {
     return row ? JSON.parse(row.route_json) as ThreadRoute : undefined;
   }
 
+  #routingOrigin() {
+    const row = this.ctx.storage.sql.exec<{ client_ingress_colo: string | null }>(
+      "SELECT client_ingress_colo FROM managed_routing_origin WHERE singleton = 1",
+    ).toArray()[0];
+    // DO placement is deliberately unknown; request.cf.colo describes ingress.
+    return { clientIngressColo: normalizeProviderColo(row?.client_ingress_colo), workerColo: null };
+  }
+
   async #routingAvailability() {
-    const live = summarizeProviderObservationGroups(new SqliteProviderTelemetryStore(this.ctx.storage.sql).read(), Date.now());
-    let probes: unknown[] = [];
+    const origin = this.#routingOrigin();
+    const live = summarizeProviderObservationGroups(new SqliteProviderTelemetryStore(this.ctx.storage.sql).read(), Date.now(), origin);
+    let shared: typeof live = [];
     const coordinator = this.env.NANOCODEX_PROVIDER_PROBE_COORDINATOR;
-    if (coordinator && this.env.NANOCODEX_PROVIDER_PROBES === "true") {
+    // Shared live observations do not require enabling paid scheduled probes.
+    if (coordinator) {
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        probes = await Promise.race([
-          coordinator.getByName(PROBE_OWNER).snapshot(),
-          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("probe telemetry timeout")), 250); }),
+        shared = await Promise.race([
+          coordinator.getByName(PROBE_OWNER).snapshot(origin),
+          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("provider telemetry timeout")), 250); }),
         ]);
       } catch { /* Missing telemetry stays unknown; it never blocks inference. */ }
       finally { if (timer) clearTimeout(timer); }
     }
-    return { ...gatewayAvailability(this.env), workerColo: null, clientIngressColo: null,
-      provider_performance: [...live, ...probes] };
+    // Shared writes are asynchronous. Keep local cohorts absent from the shared
+    // snapshot, but never add overlapping local/shared counts together.
+    const liveCohorts = new Map([...live, ...shared.filter(sample => sample.source === "live")].map(sample => [
+      JSON.stringify([sample.source, sample.scope, sample.workerColo, sample.clientIngressColo, sample.backend, sample.model, sample.effort]), sample,
+    ]));
+    const probes = this.env.NANOCODEX_PROVIDER_PROBES === "true" ? shared.filter(sample => sample.source === "probe") : [];
+    return { ...gatewayAvailability(this.env), ...origin,
+      provider_performance: [...liveCohorts.values(), ...probes] };
   }
 
   async #ensureThreadRoute(row: ManagedTurnRow, assertActive: () => void): Promise<void> {

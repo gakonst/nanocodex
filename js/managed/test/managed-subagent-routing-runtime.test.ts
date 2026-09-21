@@ -29,11 +29,20 @@ function toolCall(input: any, name: string, args: unknown, id: string) {
 // Normalize only the synthetic provider fixture; production transports still
 // receive native Responses versus Chat Completions and run the real WASM loop.
 function fromNative(input: any) {
-  expect(input).toMatchObject({ stream: false, store: false });
+  expect(input).toMatchObject({ stream: true, store: false });
   expect(input).not.toHaveProperty("messages");
   return { tools: input.tools.map((tool: any) => ({ type: "function", function: tool })),
     messages: input.input.map((item: any) => item.type === "function_call_output"
       ? { role: "tool", content: item.output } : item) };
+}
+function providerSse(value: any, native: boolean) {
+  const events = native
+    ? [{ type: "response.completed", response: value }]
+    : [{ choices: value.choices.map((choice: any) => ({ index: 0, finish_reason: choice.finish_reason,
+      delta: { ...choice.message, ...(choice.message.tool_calls ? { tool_calls: choice.message.tool_calls.map((call: any, index: number) => ({ ...call, index })) } : {}) },
+    })) }];
+  return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("")
+    + (native ? "" : "data: [DONE]\n\n"), { headers: { "content-type": "text/event-stream" } });
 }
 function toNative(chat: any) {
   const message = chat.choices[0].message;
@@ -185,11 +194,14 @@ it.each([
         expect(req.headers.get("authorization")).toBe("Bearer synthetic-cloudflare-token");
         expect(req.redirect).toBe("manual");
         const body = await req.json() as any;
-        return Response.json(await modelResponse(body.model, body));
+        expect(body.stream).toBe(true);
+        return providerSse(await modelResponse(body.model, body), true);
       }
       expect(provider).not.toBe("cloudflare");
       expect(req.url).toBe(provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://ai-gateway.vercel.sh/v1/chat/completions");
-      return rootResponse(await req.json());
+      const body = await req.json() as any;
+      expect(body.stream).toBe(true);
+      return providerSse(await (await rootResponse(body)).json(), false);
     });
     try {
       expect((await request("/create", "POST", {

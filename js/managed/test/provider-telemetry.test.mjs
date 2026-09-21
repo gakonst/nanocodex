@@ -535,3 +535,45 @@ test('Cloudflare REST deadline cancels partial and late streams without retry or
     assert.equal(cancelled, true); assert.equal(result.observations.length, 1);
   }
 });
+
+test('live first generation timing is one-shot, monotonic and censored after partial failures', async () => {
+  const { beginLiveProviderObservation } = await import('../src/provider-telemetry.ts');
+  for (const outcome of ['success','network_error','timeout','protocol_error','cancelled']) {
+    let mono=100; const rows=[];
+    const observer=beginLiveProviderObservation({...sample(1,2),workerColo:null,clientIngressColo:'ATH'},
+      {append:x=>rows.push(x)}, {wallNow:()=>1000,monotonicNow:()=>mono});
+    mono=105;observer.headers(200);mono=120;observer.firstToken();mono=150;observer.firstToken();
+    mono=200;assert.equal(await observer.finish(outcome),true);mono=300;observer.firstToken();
+    assert.equal(await observer.finish('success'),false);
+    assert.equal(rows[0].generationTtftMs,outcome==='success'?20:null);
+    assert.equal(rows[0].fullResponseMs,outcome==='success'?100:null);
+    assert.equal(rows[0].workerColo,null);assert.equal(rows[0].clientIngressColo,'ATH');
+    assert.equal(rows[0].clientDeliveryMs,null);
+  }
+});
+
+test('private live observation projection bounds metadata and rejects impossible or stale samples', async () => {
+  const { projectLiveProviderObservation } = await import('../src/provider-telemetry.ts');
+  const valid={...sample(100,30),generationTtftMs:10,effort:'high',prompt:'private',key:'secret'};
+  const projected=projectLiveProviderObservation(valid,101);
+  assert.equal(projected.generationTtftMs,10);assert.doesNotMatch(JSON.stringify(projected),/private|secret/);
+  for (const patch of [{source:'probe'},{timestamp:102},{timestamp:-1},{timestamp:NaN},{backend:'other'},
+    {model:'prompt with spaces'},{model:'x'.repeat(257)},{effort:'ultra'},{workerColo:'London'},
+    {clientIngressColo:'ath'},{clientIngressColo:undefined},{status:503},{status:200.5},{headersMs:-1},
+    {headersMs:11},{elapsedMs:29},{generationTtftMs:31},{fullResponseMs:null},{elapsedMs:Infinity},
+    {fullResponseMs:NaN},{clientDeliveryMs:10},{outcome:'failure'},{outcome:'cancelled'},
+    {status:null},{timestamp:0}]) {
+    const clock=patch.timestamp===0?8_000_000:101;
+    assert.equal(projectLiveProviderObservation({...valid,...patch},clock),null,JSON.stringify(patch));
+  }
+  for (const value of [null,[],{},'bad']) assert.equal(projectLiveProviderObservation(value,101),null);
+  assert.equal(projectLiveProviderObservation({...valid,outcome:'timeout',fullResponseMs:null,generationTtftMs:null},101).outcome,'timeout');
+});
+
+test('p95 uses nearest rank on valid successful fresh timings', () => {
+  const rows=Array.from({length:20},(_,i)=>({...sample(100,2*(i+1)),generationTtftMs:i+1}));
+  const stats=summarizeProviderObservations([...rows,{...sample(100,999),outcome:'timeout',generationTtftMs:999}],100);
+  assert.equal(stats.generationTtftP50Ms,10.5);assert.equal(stats.generationTtftP95Ms,19);
+  assert.equal(stats.fullResponseP95Ms,38);assert.equal(stats.generationTtftSampleCount,20);
+  assert.equal(summarizeProviderObservations([],100).generationTtftP95Ms,null);
+});

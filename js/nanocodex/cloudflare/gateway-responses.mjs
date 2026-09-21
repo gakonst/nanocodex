@@ -1,3 +1,4 @@
+import { providerStream } from "./provider-stream.mjs";
 import { createWorkersAiResponses } from "./workers-ai-responses.mjs";
 import { toBindingResponsesInput, fromBindingResponsesResult } from "./gateway-binding-responses.mjs";
 
@@ -8,7 +9,7 @@ const ENDPOINTS = Object.freeze({
 const MODELS = ["@cf/zai-org/glm-5.3", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 const fail = message => { throw new Error(`Gateway Responses: ${message}`); };
 
-/** Server-side, buffered/full-history transport; no WebSocket or opaque compaction. */
+/** Server-side, full-history transport; no WebSocket or opaque compaction. */
 export function createGatewayResponses(options) {
   const { provider, model, reasoningEffort, apiKey, fetch: fetchImpl = globalThis.fetch } = options;
   if (provider !== "cloudflare" && !Object.hasOwn(ENDPOINTS, provider)) fail("unsupported provider");
@@ -46,10 +47,17 @@ export function createGatewayResponses(options) {
           signal?.throwIfAborted();
           fail("provider request failed");
         }
-        signal?.throwIfAborted();
+        if (signal?.aborted) {
+          if (value instanceof ReadableStream) void value.cancel().catch(() => {});
+          signal.throwIfAborted();
+        }
         // A binding has no observable HTTP headers/status. Protocol validation
         // and the existing portable adapter must both succeed before finish().
         attempt.outcome = "protocol_error";
+        if (input.stream && value instanceof ReadableStream) {
+          attempt.streaming = true;
+          return providerStream(value, "responses", attempt.hooks);
+        }
         return fromBindingResponsesResult(value, input.parallel_tool_calls);
       }
       // Vercel documents reasoning_effort as the Chat Completions alias:
@@ -89,6 +97,14 @@ export function createGatewayResponses(options) {
         fail("provider rejected request");
       }
       attempt.outcome = "protocol_error";
+      if (input.stream) {
+        if (!response.headers.get("content-type")?.toLowerCase().startsWith("text/event-stream")) {
+          try { await response.body?.cancel(); } catch { /* best effort */ }
+          fail("invalid provider stream");
+        }
+        attempt.streaming = true;
+        return providerStream(response.body, cloudflareHttp ? "responses" : "chat", attempt.hooks);
+      }
       let value;
       try { value = await response.json(); }
       catch (error) {
@@ -106,9 +122,21 @@ export function createGatewayResponses(options) {
   return Object.freeze({ apiBaseUrl, stateless: true,
     async createResponse(endpoint, sessionId, request) {
       const attempt = {};
+      let deferred = false, finished = false;
+      const finish = async outcome => {
+        if (finished) return;
+        finished = true;
+        if (request.signal?.aborted) outcome = request.signal.reason?.name === "TimeoutError" ? "timeout" : "cancelled";
+        try { await attempt.observer?.finish(outcome); } catch { /* best effort */ }
+      };
+      attempt.hooks = {
+        firstToken() { try { attempt.observer?.firstToken?.(); } catch { /* best effort */ } },
+        finish,
+      };
       try {
         const response = await adapter(request.signal, attempt).createResponse(endpoint, sessionId, request);
         attempt.outcome = "success";
+        deferred = attempt.streaming === true;
         return response;
       }
       catch {
@@ -119,7 +147,7 @@ export function createGatewayResponses(options) {
         if (request.signal?.aborted) {
           attempt.outcome = request.signal.reason?.name === "TimeoutError" ? "timeout" : "cancelled";
         }
-        try { await attempt.observer?.finish(attempt.outcome); } catch { /* never fail generation for telemetry */ }
+        if (!deferred) await finish(attempt.outcome);
       }
     },
   });

@@ -8,6 +8,14 @@ import {
 } from "./thread-model-routing";
 import { gatewayAvailability, gatewayRuntime } from "./gateway-runtime";
 import { PROBE_OWNER } from "./provider-probe-schedule";
+import { finalizeInferenceResponse, projectInferenceStream } from "./inference-stream";
+import type { ProviderObservation } from "./provider-telemetry";
+export type InferenceOrigin = { clientIngressColo: string | null };
+export const INFERENCE_INGRESS_HEADER = "x-inference-ingress-colo";
+const unknownOrigin: InferenceOrigin = { clientIngressColo: null };
+export function inferenceOrigin(value: unknown): InferenceOrigin {
+  return { clientIngressColo: typeof value === "string" && /^[A-Z]{3}$/.test(value) ? value : null };
+}
 
 /** Deployment bindings only. No account credentials or agent runtime belong here. */
 export type InferenceSessionEnv = {
@@ -20,7 +28,7 @@ export type InferenceSessionEnv = {
   NANOCODEX_PROVIDER_PROBES?: string;
   /** Deployment-global, content-free probe aggregates; never an account service. */
   NANOCODEX_PROVIDER_PROBE_COORDINATOR?: {
-    getByName(name: string): { snapshot(): Promise<unknown> };
+    getByName(name: string): { snapshot(origin?: InferenceOrigin): Promise<unknown>; observe?(observation: ProviderObservation): Promise<unknown> };
   };
 };
 export const INFERENCE_KEY_ID_HEADER = "x-inference-key-id";
@@ -144,28 +152,31 @@ export function normalizeInferencePolicy(value: unknown = {}): ThreadRoutingPoli
   return { ...policy, strategy: "direct", candidates, estimates: policy.estimates.filter(e => e.backend !== "chatgpt") };
 }
 
-/** Read trusted deployment probes only before the first pin. Missing, slow or invalid
+/** Read trusted live cohorts and enabled deployment probes only before the first pin. Missing, slow or invalid
  * telemetry remains unknown; it never blocks routing or becomes retained session data.
  * The shared resolver validates freshness, sample counts and candidate/effort matching.
  */
-export async function inferenceRoutingAvailability(env: InferenceSessionEnv, signal: AbortSignal): Promise<RoutingAvailability> {
+export async function inferenceRoutingAvailability(env: InferenceSessionEnv, signal: AbortSignal, origin: InferenceOrigin = unknownOrigin): Promise<RoutingAvailability> {
   const availability: RoutingAvailability = {
     ...gatewayAvailability(env),
-    workerColo: null, clientIngressColo: null, provider_performance: [],
+    workerColo: null, clientIngressColo: origin.clientIngressColo, provider_performance: [],
   };
   const coordinator = env.NANOCODEX_PROVIDER_PROBE_COORDINATOR;
-  if (env.NANOCODEX_PROVIDER_PROBES !== "true" || !coordinator || signal.aborted) return availability;
+  if (!coordinator || signal.aborted) return availability;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abort: (() => void) | undefined;
   try {
     const snapshot = await Promise.race([
-      coordinator.getByName(PROBE_OWNER).snapshot(),
+      coordinator.getByName(PROBE_OWNER).snapshot(origin),
       new Promise<unknown>(resolve => { timer = setTimeout(() => resolve([]), INFERENCE_PROBE_TIMEOUT_MS); }),
       new Promise<unknown>(resolve => { abort = () => resolve([]); signal.addEventListener("abort", abort, { once: true }); }),
     ]);
     if (Array.isArray(snapshot)) availability.provider_performance = snapshot.slice(0, 512).filter(metric =>
-      metric && typeof metric === "object" && metric.source === "probe" && metric.scope === "deployment_global"
-      && metric.workerColo === null && ["workers_ai", "openrouter", "vercel", "cloudflare"].includes(metric.backend));
+      metric && typeof metric === "object"
+      && (((metric.source === "live" || (metric.source === "probe" && env.NANOCODEX_PROVIDER_PROBES === "true")) && metric.scope === "deployment_global" && metric.workerColo === null)
+        || (metric.source === "live" && metric.scope === "client_ingress" && origin.clientIngressColo !== null
+          && metric.clientIngressColo === origin.clientIngressColo))
+      && ["workers_ai", "openrouter", "vercel", "cloudflare"].includes(metric.backend));
   } catch { /* No retry or provider fallback: unavailable telemetry is unknown. */ }
   finally {
     clearTimeout(timer);
@@ -221,9 +232,9 @@ async function abortable<T>(pending: Promise<T>, signal: AbortSignal): Promise<T
   } finally { if (abort) signal.removeEventListener("abort", abort); }
 }
 async function resolveInferenceRoute(env: InferenceSessionEnv, input: InferenceRequest,
-  policy: ThreadRoutingPolicy, signal: AbortSignal): Promise<InferenceRoute> {
+  policy: ThreadRoutingPolicy, signal: AbortSignal, origin: InferenceOrigin = unknownOrigin): Promise<InferenceRoute> {
   const constrained = requestPolicy(policy, input);
-  const availability = await inferenceRoutingAvailability(env, signal);
+  const availability = await inferenceRoutingAvailability(env, signal, origin);
   signal.throwIfAborted();
   if (!ROUTING_CANDIDATES.some(c => constrained.candidates!.includes(c.id)
     && (c.backend === "workers_ai" || c.backend !== "chatgpt" && availability[c.backend])))
@@ -236,7 +247,7 @@ async function resolveInferenceRoute(env: InferenceSessionEnv, input: InferenceR
 
 /** Executes one generation using a resolved route; returned tools remain caller-owned. */
 async function executeRoutedResponse(env: InferenceSessionEnv, route: InferenceRoute,
-  input: InferenceRequest, signal: AbortSignal, fetchImpl: typeof fetch, sessionId?: string): Promise<Response> {
+  input: InferenceRequest, signal: AbortSignal, fetchImpl: typeof fetch, sessionId?: string, origin: InferenceOrigin = unknownOrigin): Promise<Response> {
   if (!admittedRoute(route)) throw new InferenceRequestError("invalid_pinned_route", 503);
   assertPinnedRequest(route, input);
   signal.throwIfAborted();
@@ -254,39 +265,61 @@ async function executeRoutedResponse(env: InferenceSessionEnv, route: InferenceR
       reasoningEffort: route.thinking, apiKey: (route.backend === "openrouter" ? env.OPENROUTER_API_KEY : env.AI_GATEWAY_API_KEY) ?? "",
       fetch: fetchImpl });
   }
-  const response = await transport.createResponse(`${transport.apiBaseUrl}/responses`, sessionId ?? "", {
-    // Pure adapters ignore the legacy session argument; stateless requests invent no session.
-    authorization: "host_managed", signal,
-    body: JSON.stringify({ ...input, model: route.model, reasoning: { effort: route.thinking }, store: false }),
-  });
-  const events: Record<string, unknown>[] = [];
-  let completed: Record<string, unknown> | undefined;
-  for (const frame of (await response.text()).split(/\r?\n\r?\n/)) {
-    const data = frame.split(/\r?\n/).filter(line => line.startsWith("data: ")).map(line => line.slice(6)).join("\n");
-    if (!data) continue;
-    const event = JSON.parse(data) as Record<string, unknown>;
-    if (event.response && typeof event.response === "object") {
-      event.response = { ...event.response, model: route.model, ...(sessionId ? { session_id: sessionId } : {}), route, buffering: "buffered" };
-      if (event.type === "response.completed" || event.type === "response.incomplete") completed = event.response as Record<string, unknown>;
-    }
-    events.push(event);
-  }
-  if (!completed) throw new Error("invalid_provider_protocol");
-  signal.throwIfAborted();
-  const headers = { "cache-control": "no-store", "x-nanocodex-inference-buffering": "buffered",
-    ...(sessionId ? { "x-nanocodex-inference-session-id": sessionId, "x-nanocodex-session-id": sessionId } : {}),
-    "x-nanocodex-provider": route.backend, "x-nanocodex-model": route.model, "x-nanocodex-thinking": route.thinking };
-  return input.stream
-    ? new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), {
+  const began = performance.now(), timestamp = Date.now();
+  let ttft: number | null = null, observed = false;
+  const observe = async (success: boolean) => {
+    if (observed) return;
+    observed = true;
+    const elapsedMs = performance.now() - began;
+    let timeout: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const coordinator = env.NANOCODEX_PROVIDER_PROBE_COORDINATOR?.getByName(PROBE_OWNER);
+      if (!coordinator?.observe) return;
+      await Promise.race([coordinator.observe({ timestamp, source: "live", workerColo: null,
+        clientIngressColo: origin.clientIngressColo, backend: route.backend, model: route.model, effort: route.thinking,
+        outcome: success ? "success" : signal.aborted ? (signal.reason?.name === "TimeoutError" ? "timeout" : "cancelled") : "protocol_error",
+        status: success ? 200 : null, headersMs: null, fullResponseMs: success ? elapsedMs : null,
+        generationTtftMs: success ? ttft : null, clientDeliveryMs: null, elapsedMs }),
+        new Promise(resolve => { timeout = setTimeout(resolve, INFERENCE_PROBE_TIMEOUT_MS); })]);
+    } catch { /* telemetry must never fail generation */ }
+    finally { clearTimeout(timeout); }
+  };
+  try {
+    const response = await transport.createResponse(`${transport.apiBaseUrl}/responses`, sessionId ?? "", {
+      authorization: "host_managed", signal,
+      body: JSON.stringify({ ...input, model: route.model, reasoning: { effort: route.thinking }, store: false }),
+    });
+    if (!response.ok || !response.body) throw new Error("invalid_provider_protocol");
+    const buffering = input.stream && response.headers.get("x-nanocodex-inference-buffering") === "streaming" ? "streaming" : "buffered";
+    const headers = { "cache-control": "no-store", "x-nanocodex-inference-buffering": buffering,
+      ...(sessionId ? { "x-nanocodex-inference-session-id": sessionId, "x-nanocodex-session-id": sessionId } : {}),
+      ...(origin.clientIngressColo ? { "x-nanocodex-ingress-colo": origin.clientIngressColo } : {}),
+      "server-timing": `router;dur=${route.router_duration_ms ?? 0}`,
+      "x-nanocodex-provider": route.backend, "x-nanocodex-model": route.model, "x-nanocodex-thinking": route.thinking };
+    let completed: Record<string, unknown> | undefined;
+    const stream = projectInferenceStream(response.body, event => {
+      if (event.response && typeof event.response === "object") {
+        event.response = { ...event.response, model: route.model, ...(sessionId ? { session_id: sessionId } : {}), route, buffering };
+        if (event.type === "response.completed" || event.type === "response.incomplete") completed = event.response;
+      }
+      return event;
+    }, () => { if (buffering === "streaming" && ttft === null) ttft = performance.now() - began; });
+    if (input.stream) return finalizeInferenceResponse(new Response(stream, {
       headers: { ...headers, "content-type": "text/event-stream; charset=utf-8" },
-    }) : Response.json(completed, { headers });
+    }), signal, observe);
+    await new Response(stream).arrayBuffer();
+    if (!completed) throw new Error("invalid_provider_protocol");
+    signal.throwIfAborted();
+    await observe(true);
+    return Response.json(completed, { headers });
+  } catch (error) { await observe(false); throw error; }
 }
 
 /** Session wrapper preserves the committed provider/model/effort pin. */
 export async function executeInferenceResponse(env: InferenceSessionEnv, session: Pick<InferenceSessionMetadata, "id" | "route">,
-  input: InferenceRequest, signal: AbortSignal, fetchImpl: typeof fetch = fetch): Promise<Response> {
+  input: InferenceRequest, signal: AbortSignal, fetchImpl: typeof fetch = fetch, origin: InferenceOrigin = unknownOrigin): Promise<Response> {
   if (!session.route) throw new InferenceRequestError("invalid_pinned_route", 503);
-  return executeRoutedResponse(env, session.route, input, signal, fetchImpl, session.id);
+  return executeRoutedResponse(env, session.route, input, signal, fetchImpl, session.id, origin);
 }
 
 function inferenceErrorResponse(error: unknown, signal: AbortSignal): Response {
@@ -297,19 +330,26 @@ function inferenceErrorResponse(error: unknown, signal: AbortSignal): Response {
 
 /** Standard Responses request: no storage, retained transcript, or account context. */
 export async function executeStatelessInferenceResponse(env: InferenceSessionEnv, rawBody: unknown,
-  maxOutputTokens: number, signal: AbortSignal): Promise<Response> {
+  maxOutputTokens: number, signal: AbortSignal, origin: InferenceOrigin = unknownOrigin): Promise<Response> {
   const controller = new AbortController();
   const abort = () => controller.abort(signal.reason);
   signal.addEventListener("abort", abort, { once: true });
   if (signal.aborted) abort();
   const timer = setTimeout(() => controller.abort(new DOMException("Inference timeout", "TimeoutError")), INFERENCE_TIMEOUT_MS);
+  let streaming = false;
+  const cleanup = () => { clearTimeout(timer); signal.removeEventListener("abort", abort); };
   try {
     const input = validateInferenceRequest(rawBody, maxOutputTokens);
     controller.signal.throwIfAborted();
-    const route = await resolveInferenceRoute(env, input, normalizeInferencePolicy(), controller.signal);
-    return await abortable(executeRoutedResponse(env, route, input, controller.signal, fetch), controller.signal);
+    const route = await resolveInferenceRoute(env, input, normalizeInferencePolicy(), controller.signal, origin);
+    const response = await abortable(executeRoutedResponse(env, route, input, controller.signal, fetch, undefined, origin), controller.signal);
+    if (input.stream) {
+      streaming = true;
+      return finalizeInferenceResponse(response, controller.signal, cleanup);
+    }
+    return response;
   } catch (error) { return inferenceErrorResponse(error, controller.signal); }
-  finally { clearTimeout(timer); signal.removeEventListener("abort", abort); }
+  finally { if (!streaming) cleanup(); }
 }
 
 async function boundedJson(request: Request, signal: AbortSignal): Promise<unknown> {
@@ -358,12 +398,17 @@ export class InferenceSessionRuntime {
     request.signal.addEventListener("abort", abort, { once: true });
     if (request.signal.aborted) abort();
     const timer = setTimeout(() => controller.abort(new DOMException("Inference timeout", "TimeoutError")), INFERENCE_TIMEOUT_MS);
-    try { return await this.#handle(request, controller.signal); }
-    catch (error) {
-      return inferenceErrorResponse(error, controller.signal);
-    } finally {
-      clearTimeout(timer); request.signal.removeEventListener("abort", abort); this.#busy = false;
-    }
+    let streaming = false;
+    const cleanup = () => { clearTimeout(timer); request.signal.removeEventListener("abort", abort); this.#busy = false; };
+    try {
+      const response = await this.#handle(request, controller.signal);
+      if (response.headers.get("content-type")?.startsWith("text/event-stream")) {
+        streaming = true;
+        return finalizeInferenceResponse(response, controller.signal, cleanup);
+      }
+      return response;
+    } catch (error) { return inferenceErrorResponse(error, controller.signal); }
+    finally { if (!streaming) cleanup(); }
   }
   async #handle(request: Request, signal: AbortSignal): Promise<Response> {
     const path = new URL(request.url).pathname;
@@ -395,15 +440,20 @@ export class InferenceSessionRuntime {
     const input = validateInferenceRequest(await boundedJson(request, signal), limit);
     if (retained.route) assertPinnedRequest(retained.route, input);
     signal.throwIfAborted();
+    const origin = inferenceOrigin(request.headers.get(INFERENCE_INGRESS_HEADER));
     if (!retained.route) {
-      retained.route = await resolveInferenceRoute(this.env, input, retained.routing, signal);
+      retained.route = await resolveInferenceRoute(this.env, input, retained.routing, signal, origin);
       // Await durable commit before issuing the generation request. Failed generation keeps this exact pin.
       await this.ctx.storage.put(STORAGE_KEY, retained);
     }
     retained.counters.requests++;
     await this.ctx.storage.put(STORAGE_KEY, retained);
     try {
-      const response = await executeInferenceResponse(this.env, retained, input, signal);
+      const response = await executeInferenceResponse(this.env, retained, input, signal, fetch, origin);
+      if (input.stream) return finalizeInferenceResponse(response, signal, async success => {
+        retained.counters[success ? "completed" : "failed"]++;
+        await this.ctx.storage.put(STORAGE_KEY, retained);
+      });
       retained.counters.completed++;
       await this.ctx.storage.put(STORAGE_KEY, retained);
       return response;

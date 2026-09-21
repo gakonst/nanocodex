@@ -41,6 +41,8 @@ export function summarizeProviderObservations(samples: ProviderObservation[], no
     const sorted = [...values].sort((a, b) => a - b), middle = Math.floor(sorted.length / 2);
     return {
       p50: sorted.length ? (sorted.length % 2 ? sorted[middle] : (sorted[middle - 1] + sorted[middle]) / 2) : null,
+      // Nearest-rank p95; absent data remains unknown.
+      p95: sorted.length ? sorted[Math.ceil(sorted.length * .95) - 1] : null,
       ewma: values.length ? values.slice(1).reduce((a, x) => options.alpha * x + (1 - options.alpha) * a, values[0]) : null,
     };
   };
@@ -63,33 +65,85 @@ export function summarizeProviderObservations(samples: ProviderObservation[], no
     lastTtftObservedAt, ttftAgeMs: lastTtftObservedAt === null ? null : now - lastTtftObservedAt,
     usable: ttft.length >= options.minimumSamples || full.length >= options.minimumSamples,
     generationTtftSampleCount: ttft.length,
-    generationTtftP50Ms: ttftStats.p50, generationTtftEwmaMs: ttftStats.ewma,
+    generationTtftP50Ms: ttftStats.p50, generationTtftP95Ms: ttftStats.p95, generationTtftEwmaMs: ttftStats.ewma,
     fullResponseSampleCount: full.length,
-    fullResponseP50Ms: fullStats.p50, fullResponseEwmaMs: fullStats.ewma,
+    fullResponseP50Ms: fullStats.p50, fullResponseP95Ms: fullStats.p95, fullResponseEwmaMs: fullStats.ewma,
   };
 }
-/** Probes describe the deployment, even if the scheduler's actual colo is known.
- * Live attempts stay grouped by Worker execution colo. Never use client ingress as execution location. */
-export function providerObservationKey(x: ProviderObservation): string {
-  return JSON.stringify([x.source, x.source === "probe" ? null : x.workerColo, x.backend, x.model, x.effort]);
+/** Trusted ingress context is captured at the public Worker boundary, never from
+ * request JSON/headers. An ingress colo is not evidence of Worker execution. */
+export type ProviderOriginContext = {
+  clientIngressColo?: string | null;
+  workerColo?: string | null;
+};
+export type ProviderTelemetryScope = "client_ingress" | "worker_colo" | "deployment_global";
+export const normalizeProviderColo = (value: unknown): string | null =>
+  typeof value === "string" && /^[A-Z]{3}$/.test(value) ? value : null;
+/** The default key preserves execution geography for legacy callers. Aggregates
+ * explicitly select a scope; probes can only describe the deployment. */
+export function providerObservationKey(x: ProviderObservation, scope: ProviderTelemetryScope = x.source === "probe" ? "deployment_global" : "worker_colo"): string {
+  return JSON.stringify([x.source, scope, scope === "client_ingress" ? x.clientIngressColo
+    : scope === "worker_colo" ? x.workerColo : null, x.backend, x.model, x.effort]);
 }
-export function summarizeProviderObservationGroups(samples: ProviderObservation[], now: number) {
-  const groups = new Map<string, ProviderObservation[]>();
+export function summarizeProviderObservationGroups(samples: ProviderObservation[], now: number, origin?: ProviderOriginContext) {
+  const groups = new Map<string, { scope: ProviderTelemetryScope; samples: ProviderObservation[] }>();
   for (const sample of samples) {
-    const key = providerObservationKey(sample);
-    const group = groups.get(key) ?? [];
-    group.push(sample);
-    groups.set(key, group);
+    const scopes: ProviderTelemetryScope[] = ["deployment_global"];
+    if (sample.source === "live") {
+      if (normalizeProviderColo(sample.clientIngressColo) && (origin === undefined
+        || sample.clientIngressColo === normalizeProviderColo(origin.clientIngressColo))) scopes.push("client_ingress");
+      if (normalizeProviderColo(sample.workerColo) && (origin === undefined
+        || sample.workerColo === normalizeProviderColo(origin.workerColo))) scopes.push("worker_colo");
+    }
+    for (const scope of scopes) {
+      const key = providerObservationKey(sample, scope);
+      const group = groups.get(key) ?? { scope, samples: [] };
+      group.samples.push(sample);
+      groups.set(key, group);
+    }
   }
-  return [...groups.values()].map(group => {
+  return [...groups.values()].map(({ scope, samples: group }) => {
     const { source, backend, model, effort } = group[0];
     return {
-      source, backend, model, effort,
-      scope: source === "probe" ? "deployment_global" as const : "worker_colo" as const,
-      workerColo: source === "probe" ? null : group[0].workerColo,
+      source, backend, model, effort, scope,
+      workerColo: scope === "worker_colo" ? group[0].workerColo : null,
+      clientIngressColo: scope === "client_ingress" ? group[0].clientIngressColo : null,
       ...summarizeProviderObservations(group, now),
     };
   });
+}
+/** Private RPC validation is still required: accept bounded measurements only,
+ * never bodies, prompts, identities, arbitrary labels or caller-supplied aggregates.
+ * Success timing must be internally consistent; failures remain censored. */
+export function projectLiveProviderObservation(value: unknown, now: number): ProviderObservation | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const x = value as Record<string, unknown>;
+  if (x.source !== "live" || !["workers_ai", "chatgpt", "openrouter", "vercel", "cloudflare"].includes(x.backend as string)
+    || typeof x.model !== "string" || x.model.length > 256 || !/^[@a-zA-Z0-9][a-zA-Z0-9_./:@-]*$/.test(x.model)
+    || !(x.effort === null || ["none", "minimal", "low", "medium", "high", "xhigh", "max"].includes(x.effort as string))
+    || !["success", "http_error", "network_error", "protocol_error", "timeout", "cancelled"].includes(x.outcome as string)
+    || !Number.isSafeInteger(x.timestamp) || (x.timestamp as number) < 0 || (x.timestamp as number) > now
+    || now - (x.timestamp as number) > PROVIDER_TELEMETRY_WINDOW_MS
+    || !(x.workerColo === null || normalizeProviderColo(x.workerColo))
+    || !(x.clientIngressColo === null || normalizeProviderColo(x.clientIngressColo))
+    || !(x.status === null || (Number.isInteger(x.status) && (x.status as number) >= 100 && (x.status as number) <= 599))
+    || !validDuration(x.elapsedMs) || x.clientDeliveryMs !== null) return null;
+  for (const key of ["headersMs", "fullResponseMs", "generationTtftMs"] as const) {
+    if (x[key] !== null && (!validDuration(x[key]) || (x[key] as number) > x.elapsedMs)) return null;
+  }
+  const success = x.outcome === "success";
+  if (success && !(typeof x.status === "number" && x.status >= 200 && x.status < 300
+    || x.status === null && (x.backend === "workers_ai" || x.backend === "cloudflare"))) return null;
+  if (success && (!validDuration(x.fullResponseMs)
+    || typeof x.headersMs === "number" && x.headersMs > x.fullResponseMs)) return null;
+  if (!success && (x.fullResponseMs !== null || x.generationTtftMs !== null)) return null;
+  if (x.headersMs !== null && x.status === null) return null;
+  if (typeof x.generationTtftMs === "number" && (typeof x.fullResponseMs !== "number"
+    || x.generationTtftMs > x.fullResponseMs || typeof x.headersMs === "number" && x.generationTtftMs < x.headersMs)) return null;
+  const { timestamp, source, workerColo, clientIngressColo, backend, model, effort, outcome, status,
+    headersMs, fullResponseMs, generationTtftMs, clientDeliveryMs, elapsedMs } = x;
+  return { timestamp, source, workerColo, clientIngressColo, backend, model, effort, outcome, status,
+    headersMs, fullResponseMs, generationTtftMs, clientDeliveryMs, elapsedMs } as ProviderObservation;
 }
 /** Attach to an existing sharded DO SQLite storage (tenant/thread or regional probe shard). */
 export class SqliteProviderTelemetryStore implements ProviderTelemetryStore {
@@ -137,12 +191,18 @@ export function beginLiveProviderObservation(
   let headersMs: number | null = null;
   let status: number | null = null;
   let finished = false;
+  let generationTtftMs: number | null = null;
   const elapsed = () => Math.max(0, clock.monotonicNow() - started);
   return {
     headers(httpStatus: number) {
       if (finished || headersMs !== null) return;
       status = httpStatus;
       headersMs = elapsed();
+    },
+    /** Call only when the transport emits its first nonempty public text delta or
+     * validated tool event. Headers, roles, reasoning and hidden fragments do not count. */
+    firstToken() {
+      if (!finished && generationTtftMs === null) generationTtftMs = elapsed();
     },
     async finish(outcome: ProviderObservation["outcome"]): Promise<boolean> {
       if (finished) return false;
@@ -157,7 +217,7 @@ export function beginLiveProviderObservation(
         await store.append({ timestamp, source: "live", workerColo, clientIngressColo, backend, model, effort,
           outcome: resolvedOutcome, status, headersMs, elapsedMs,
           fullResponseMs: resolvedOutcome === "success" ? elapsedMs : null,
-          generationTtftMs: null, clientDeliveryMs: null });
+          generationTtftMs: resolvedOutcome === "success" ? generationTtftMs : null, clientDeliveryMs: null });
         return true;
       } catch { return false; }
     },

@@ -17,7 +17,7 @@ export function toBindingResponsesInput(chat, effort) {
     for (const call of message.tool_calls ?? []) input.push({ type: "function_call", call_id: call.id,
       name: call.function.name, arguments: call.function.arguments });
   }
-  const payload = { input, stream: false, store: false, reasoning: { effort } };
+  const payload = { input, stream: chat.stream === true, store: false, reasoning: { effort } };
   if (chat.tools) payload.tools = chat.tools.map(tool => ({ type: "function", ...tool.function,
     // Preserve optional/loose managed schemas; Responses otherwise normalizes
     // omitted strict to true, unlike the existing Chat transport.

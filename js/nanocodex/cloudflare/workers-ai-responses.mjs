@@ -1,3 +1,4 @@
+import { providerStream, streamResponse } from "./provider-stream.mjs";
 const MODEL = "@cf/zai-org/glm-5.3";
 const MODELS = [MODEL, "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 const BASE = "https://workers-ai.invalid/v1";
@@ -5,7 +6,7 @@ const fail = (message) => { throw new Error(`Workers AI Responses: ${message}`);
 const json = (value) => typeof value === "string" ? value : JSON.stringify(value);
 const key = (namespace, name) => JSON.stringify([namespace ?? null, name]);
 
-/** Stateless, buffered Responses transport for the Workers AI binding. */
+/** Stateless Responses transport for the Workers AI binding. */
 export function createWorkersAiResponses(ai, options = {}) {
   if (typeof ai?.run !== "function") throw new TypeError("Workers AI binding must provide run()");
   const apiBaseUrl = options.apiBaseUrl ?? BASE;
@@ -19,8 +20,34 @@ export function createWorkersAiResponses(ai, options = {}) {
       request.signal?.throwIfAborted();
       const body = JSON.parse(request.body);
       const { input, registry } = translate(body, model);
-      const result = await abortable(Promise.resolve().then(() => ai.run(model, input)), request.signal);
+      const pending = Promise.resolve().then(() => ai.run(model, input)).catch(() => {
+        request.signal?.throwIfAborted();
+        // Binding failures may contain credentials or raw request/provider data.
+        fail("provider request failed");
+      }).then(result => {
+        // A binding may ignore cancellation while creating its stream. Release a
+        // late result even after abortable() has stopped waiting for inference.
+        if (request.signal?.aborted) {
+          const stream = result instanceof ReadableStream ? result : result?.providerStream ? result.body : null;
+          if (stream) void stream.cancel().catch(() => {});
+          request.signal.throwIfAborted();
+        }
+        return result;
+      });
+      const result = await abortable(pending, request.signal);
       request.signal?.throwIfAborted();
+      if (body.stream === true) {
+        const source = result instanceof ReadableStream ? providerStream(result) : result;
+        if (source?.providerStream) {
+          return streamResponse(source, value => normalizeResponse(value, registry, model), responseEvents,
+            request.signal, input.parallel_tool_calls);
+        }
+        // Some bindings return a completed object despite stream:true. Validate
+        // normally and label this honestly; HTTP gateways never take this path.
+      }
+      if (input.parallel_tool_calls === false && result?.choices?.[0]?.message?.tool_calls?.length > 1) {
+        fail("provider returned parallel tool calls despite a single-call contract");
+      }
       return toResponse(result, registry, model);
     },
   });
@@ -155,7 +182,7 @@ function translate(body, model) {
     }
   }
   if (pending.size) fail("full history contains tool calls without outputs");
-  const input = { messages, stream: false };
+  const input = { messages, stream: body.stream === true };
   if (registry.size) input.tools = [...registry.values()].map(entry => entry.definition);
   for (const field of ["temperature", "top_p", "parallel_tool_calls"]) {
     if (body[field] !== undefined) input[field] = body[field];
@@ -187,7 +214,7 @@ function textContent(content) {
   }).join("\n");
 }
 
-function toResponse(result, registry, model) {
+function normalizeResponse(result, registry, model) {
   const choice = result?.choices?.[0];
   if (result?.error || !choice?.message || typeof choice.message !== "object" || Array.isArray(choice.message)
     || !["stop", "tool_calls", "length", "content_filter"].includes(choice.finish_reason)) {
@@ -255,6 +282,12 @@ function toResponse(result, registry, model) {
   const response = { id, object: "response", model, status: incomplete ? "incomplete" : "completed", output,
     usage, end_turn: !incomplete && !callIds.size,
     ...(incomplete ? { incomplete_details: { reason: choice.finish_reason === "length" ? "max_output_tokens" : "content_filter" } } : {}) };
+  return response;
+}
+
+function responseEvents(response) {
+  const { output } = response;
+  const incomplete = response.status === "incomplete";
   const events = [];
   const emit = (type, fields) => events.push({ type, sequence_number: events.length, ...fields });
   emit("response.created", { response: { ...response, status: "in_progress", output: [], usage: null } });
@@ -285,7 +318,12 @@ function toResponse(result, registry, model) {
     emit("response.output_item.done", { output_index, item });
   }
   emit(incomplete ? "response.incomplete" : "response.completed", { response });
+  return events;
+}
+
+function toResponse(result, registry, model) {
+  const events = responseEvents(normalizeResponse(result, registry, model));
   return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), {
-    headers: { "content-type": "text/event-stream", "cache-control": "no-cache" },
+    headers: { "content-type": "text/event-stream", "cache-control": "no-cache", "x-nanocodex-inference-buffering": "buffered" },
   });
 }

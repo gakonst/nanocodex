@@ -43,3 +43,18 @@ export function claimProbeSlot(sql: { exec(query: string, ...bindings: any[]): a
   sql.exec("DELETE FROM provider_probe_ticks WHERE slot < ?", slot - 96);
   return claimed;
 }
+
+/** Spread the daily cap over all cron slots and rotate the bounded target slice.
+ * A 45-target catalog needs 1620 requests/day to guarantee three samples in every
+ * two-hour/four-slot window. At the default 1600 cap a few cohorts stay sparse;
+ * routing must retain its minimum-three gate rather than invent evidence. */
+export function probeSlotAllocation(scheduledTime: number, dailyLimit: number, targetCount: number) {
+  if (!Number.isSafeInteger(scheduledTime) || scheduledTime < 0
+    || !Number.isInteger(dailyLimit) || dailyLimit < 1 || dailyLimit > 4096
+    || !Number.isInteger(targetCount) || targetCount < 1) return { startIndex: 0, maxTargetsPerRun: 0 };
+  const slotsPerDay = 86_400_000 / PROBE_INTERVAL_MS;
+  const slot = Math.floor(scheduledTime / PROBE_INTERVAL_MS);
+  const before = Math.floor(slot * dailyLimit / slotsPerDay);
+  const after = Math.floor((slot + 1) * dailyLimit / slotsPerDay);
+  return { startIndex: before % targetCount, maxTargetsPerRun: Math.min(targetCount, 45, after - before) };
+}

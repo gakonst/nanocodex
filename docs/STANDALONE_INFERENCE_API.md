@@ -32,7 +32,7 @@ bash inference-demo.sh --output ./inference-results
 
 Use `--help` for all options. The default run makes six generation requests, which count toward the key's quota and use provider credits. A failed or ambiguous request is never automatically retried. Saved output contains your prompts and generated answers; credentials are excluded.
 
-Jev choice confidence describes routing/classification confidence, **not task-success probability**. Missing distributions stay unavailable; the demo never creates a probability distribution from a winning choice's confidence. HTTP time to first byte measures this buffered API's delivery, **not model generation TTFT**. Check response status: a successful HTTP request may still contain an incomplete generation.
+Jev choice confidence describes routing/classification confidence, **not task-success probability**. Missing distributions stay unavailable; the demo never creates a probability distribution from a winning choice's confidence. HTTP time to first byte measures headers or an initial event, **not first generated output**. For TTFT, time the first nonempty output-text or tool-argument delta. Check response status: a successful HTTP request may still contain an incomplete generation.
 
 ### Python (OpenAI SDK)
 
@@ -87,7 +87,7 @@ curl --fail-with-body 'https://nanocodex.gakonst.workers.dev/v1/responses' \
 
 These requests are **stateless**: omit `session_id`, send all history needed for each call, and expect a fresh routing decision on each `model: "auto"` request. Calls do not pin a route across requests. For provider/model/effort pinning and routing preferences, use the optional session extension below. `previous_response_id` is unsupported; the server does not restore conversation history.
 
-The service implements a **bounded, text-only Responses-format subset with custom routing/session extensions**, not full OpenAI API parity. `stream: true` returns **buffered SSE after upstream generation finishes**, not live token delivery. The SDK examples disable automatic retries because generation has no replay guarantee. The SDK's `output_text` convenience accessor reads message output; raw JSON clients should read `output` items.
+The service implements a **bounded, text-only Responses-format subset with custom routing/session extensions**, not full OpenAI API parity. `stream: true` delivers incremental SSE on streaming-capable transports; inspect the `x-nanocodex-inference-buffering` header for the actual mode. The SDK examples disable automatic retries because generation has no replay guarantee. The SDK's `output_text` convenience accessor reads message output; raw JSON clients should read `output` items.
 
 Inference uses deployment-funded Workers AI, OpenRouter, or Vercel AI Gateway. Inference credentials do not authorize account data, memories, connectors, Hands, shell execution, browsers, ChatGPT subscriptions, or server tool execution. Function and custom tools describe calls for your application to handle; the service only returns the calls as data. Inference keys are owner-attributed and retain only inference authority.
 
@@ -243,9 +243,9 @@ curl --fail-with-body "$NANOCODEX_BASE_URL/responses" \
   }')"
 ```
 
-A session response follows a bounded Responses-format contract. Expect `id`, `object: "response"`, `status`, `model`, `output`, `usage`, `session_id`, `route`, and `buffering: "buffered"`. Text is in message output items' `content` entries with `type: "output_text"`; there is no promised top-level `output_text` convenience field. Stateless responses have the same output format and route metadata, with no `session_id`. Output can also contain reasoning or tool-call items. Handle `status: "incomplete"` and `incomplete_details`, including output-token exhaustion.
+A session response follows a bounded Responses-format contract. Expect `id`, `object: "response"`, `status`, `model`, `output`, `usage`, `session_id`, `route`, and `buffering` (`"buffered"` or `"streaming"`). Text is in message output items' `content` entries with `type: "output_text"`; there is no promised top-level `output_text` convenience field. Stateless responses have the same output format and route metadata, with no `session_id`. Output can also contain reasoning or tool-call items. Handle `status: "incomplete"` and `incomplete_details`, including output-token exhaustion.
 
-Both JSON and buffered SSE responses expose the selected route in headers. Session ID headers apply only to the session extension; stateless responses do not create a reusable session:
+Both JSON and SSE responses expose the selected route in headers. Session ID headers apply only to the session extension; stateless responses do not create a reusable session:
 
 | Header | Value |
 | --- | --- |
@@ -254,7 +254,9 @@ Both JSON and buffered SSE responses expose the selected route in headers. Sessi
 | `x-nanocodex-model` | Canonical selected model. |
 | `x-nanocodex-thinking` | Selected `low`, `medium`, or `high` effort. |
 | `x-nanocodex-inference-session-id` | Same public session UUID. |
-| `x-nanocodex-inference-buffering` | `buffered`. |
+| `x-nanocodex-inference-buffering` | `streaming` for incremental output; `buffered` for JSON or a binding returning a complete result. |
+| `x-nanocodex-ingress-colo` | Trusted Cloudflare ingress datacenter, when known; does not identify inference execution location. |
+| `server-timing` | `router` duration in milliseconds for the retained route selection. |
 | `cache-control` | `no-store`. |
 
 ### Accepted request fields
@@ -265,7 +267,7 @@ Both JSON and buffered SSE responses expose the selected route in headers. Sessi
 | `model` | `"auto"` (default), an eligible canonical `model`, or exact candidate `id` from `/models`. With a session pin, an explicit model/candidate must match that pin. |
 | `input` | Required nonempty string, or 1–1,024 history items. |
 | `instructions` | Optional string; resend on every request when needed. |
-| `stream` | Boolean; default `false`. See buffered SSE below. |
+| `stream` | Boolean; default `false`. See streaming below. |
 | `max_output_tokens` | Positive integer up to the key's limit and service ceiling of 4,096; omission uses the key limit. |
 | `reasoning` | Optional `{ "effort": "low" \| "medium" \| "high" }`; filters selection; for a session, must match any retained route. |
 | `tools` | Up to 128 function/custom definitions with unique names. |
@@ -404,13 +406,23 @@ Resend the entire preceding history, including the returned call and matching ou
 
 Function `strict: true` is unsupported; omit it or use `false`/`null`. Your application must validate schema conformance. Custom tools accept text or a `lark`/`regex` grammar description, but that grammar is supplied as instructions and is not enforced by the provider.
 
-## Streaming is buffered SSE
+## Streaming
 
-With `stream: true`, the response is `text/event-stream`. **Generation finishes upstream before SSE is returned.** Delta events are a buffered rendering of the completed result, not live token delivery. Both JSON and SSE responses carry `x-nanocodex-inference-buffering: buffered`; response objects carry `buffering: "buffered"`.
+With `stream: true`, the response is `text/event-stream`. Cloudflare REST, OpenRouter and Vercel transports forward generated text incrementally. Workers AI bindings can stream when they return a readable event stream; a complete binding result remains honestly labeled `buffered`. JSON requests remain buffered. Check `x-nanocodex-inference-buffering` and each response object's `buffering` field.
 
-The event sequence uses Responses-style `response.created`, output-item/content-part events, text/tool-argument deltas and done events, and `response.completed` or `response.incomplete`. Parse the terminal event's `response` for output and usage. Do not depend on a `[DONE]` sentinel. Errors before successful generation use ordinary HTTP error responses rather than successful SSE.
+The event sequence uses Responses-style `response.created`, output-item/content-part events, text/tool-argument deltas and done events, and `response.completed` or `response.incomplete`. Parse the terminal event's `response` for output and usage. Do not depend on a `[DONE]` sentinel. Tool calls are validated before the adapter exposes them; argument events may arrive together at completion. A created event or reasoning event does not establish first output TTFT.
 
-The inference timeout is 120 seconds. Client cancellation stops waiting; Workers AI's binding does not expose cancellation of already-running provider inference. Do not interpret an interrupted connection as proof that generation did not run.
+Failures before headers use ordinary HTTP errors. A failure after headers interrupts the stream; a missing terminal event means the attempt did not complete successfully. Partial text is not a completed response. The 120-second deadline and session concurrency lock remain active until the stream completes, fails, or is cancelled. An upstream failure never changes a pinned route.
+
+Client cancellation releases the upstream stream where supported. Workers AI's binding does not guarantee cancellation of already-running provider inference. Do not interpret an interrupted connection as proof that generation did not run.
+
+## Origin-aware latency routing
+
+The Worker captures the request's Cloudflare ingress datacenter from trusted runtime metadata, ignoring caller-supplied geography headers. A backend caller's ingress describes that backend's path, not necessarily its human user's location. Ingress does not establish the Worker or GPU execution location.
+
+Before an automatic route is pinned, Jev can use fresh provider/model/effort latency aggregates for that ingress cohort. It falls back to global measurements when regional samples are insufficient or expired. Median, p95, sample counts, freshness and availability failures are distinct from model-quality probabilities. Measurements contain no prompts, generated content, IP addresses, API keys or account IDs. Public clients cannot submit routing telemetry.
+
+Existing sessions keep their exact provider/model/effort pin. New stateless requests and independently routed subagents can use updated measurements. Autorouting remains opt-in for managed Nanocodex threads. Paid periodic probes retain their deployment budget; real traffic supplies additional origin-specific observations.
 
 ## Limits and retries
 
@@ -523,6 +535,6 @@ Implementation references:
 - `js/managed/src/inference-keys.ts`: key digest validation, atomic quotas, metadata registry, expiry, issuance claims, revocation.
 - `js/managed/src/inference-session.ts`: strict request subset, full-history validation, route pin, generation, response formats, session ownership.
 - `js/managed/src/account-auth.ts` and `js/managed/src/index.ts`: account-auth and early route integration boundaries.
-- `js/nanocodex/cloudflare/gateway-responses.mjs` and `workers-ai-responses.mjs`: stateless provider adapters and buffered SSE.
+- `js/nanocodex/cloudflare/gateway-responses.mjs` and `workers-ai-responses.mjs`: stateless provider adapters and incremental/buffered SSE.
 
 Publish copies of this guide with placeholders only. Deployment receipts, real key values, account identifiers, and private operational output do not belong in a shared guide or Gist.
