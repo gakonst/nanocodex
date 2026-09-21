@@ -5,6 +5,11 @@ provision OpenAI's CUA provider automatically on macOS and Windows. They expose
 its actual MCP catalog, including descriptions, schemas, metadata, and visibility.
 Production Code Mode remains QuickJS; the provider uses its own bundled Node.
 
+Browser-enabled launchers set upstream `BROWSER_USE_TINYSKY_ENABLED=1`, matching
+the official desktop host. This exposes `Tab.ax`, which upstream `cua.getTab()`
+and `cua.createBrowserTab()` use to return accessibility state. Existing managed
+copies need `computer setup --refresh` after upgrading to regenerate the launcher.
+
 ```sh
 nanocodex2 computer setup           # provision once or verify/reuse the cache
 nanocodex2 computer setup --refresh # check/download the current upstream release
