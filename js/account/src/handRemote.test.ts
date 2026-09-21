@@ -74,7 +74,7 @@ function fixture(t: TestContext, hand: RemoteHand = screen) {
     getTransceivers() { return this.transceivers; }
     config: RTCConfiguration;
     onconnectionstatechange?: (() => void) | null; ondatachannel?: ((event: { channel: Channel }) => void) | null;
-    ontrack?: ((event: { track: unknown }) => void) | null;
+    ontrack?: ((event: { track: unknown; receiver?: unknown }) => void) | null;
     reliable = new Channel(); motion = new Channel(true);
     constructor(config: RTCConfiguration) { this.config = config; peers.push(this); }
     getConfiguration() { return this.config; }
@@ -1132,4 +1132,29 @@ test("frames-v1 never advertises or captures a microphone even with a microphone
 test("malformed microphone capability is rejected before capture", async t => {
   const f = await microphoneFixture(t, "sendrecv", "yes");
   assert.equal(f.session.state.connected, false); assert.equal(f.captures.length, 0);
+});
+
+test("interactive receiver hints preserve playback across supported, legacy and rejecting browsers", async t => {
+  const f = fixture(t);
+  await f.session.connect();
+  const peer = f.peers[0]!;
+  for (const kind of ["video", "audio"]) {
+    for (const receiver of [{ jitterBufferTarget: null }, { playoutDelayHint: 0.4 }, {}]) {
+      peer.ontrack!({ track: { kind, stop() {} }, receiver });
+      if ("jitterBufferTarget" in receiver) assert.equal(receiver.jitterBufferTarget, 0);
+      if ("playoutDelayHint" in receiver) assert.equal(receiver.playoutDelayHint, 0);
+    }
+    for (const receiver of [
+      { set jitterBufferTarget(_value: number) { throw new Error("unsupported"); } },
+      { set playoutDelayHint(_value: number) { throw new Error("unsupported"); } },
+    ]) {
+      const track = { kind, stop() {} };
+      peer.ontrack!({ track, receiver });
+      assert.ok((f.video.srcObject as MediaStream).getTracks().includes(track as MediaStreamTrack));
+    }
+    const receiver = { jitterBufferTarget: null, playoutDelayHint: 0.4 };
+    peer.ontrack!({ track: { kind, stop() {} }, receiver });
+    assert.equal(receiver.jitterBufferTarget, 0);
+    assert.equal(receiver.playoutDelayHint, 0.4);
+  }
 });

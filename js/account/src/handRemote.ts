@@ -198,9 +198,16 @@ export class RemoteBrowserSession {
         peer.onicecandidate = ({ candidate }) => {
           if (this.current(epoch) && candidate) this.signal({ type: "candidate", candidate: candidate.candidate, sdpMid: candidate.sdpMid, sdpMLineIndex: candidate.sdpMLineIndex });
         };
-        peer.ontrack = ({ track }) => {
+        peer.ontrack = ({ track, receiver }) => {
           if (!this.current(epoch)) return;
           if (track.kind !== "video" && track.kind !== "audio") return;
+          // Request interactive playout for both synchronized tracks. This is
+          // a preference; the receiver still adapts to actual network jitter.
+          const lowDelay = receiver as RTCRtpReceiver & { jitterBufferTarget?: number | null; playoutDelayHint?: number };
+          try {
+            if ("jitterBufferTarget" in lowDelay) lowDelay.jitterBufferTarget = 0;
+            else if ("playoutDelayHint" in lowDelay) lowDelay.playoutDelayHint = 0;
+          } catch { /* Unsupported setters must not prevent media playback. */ }
           const stream = this.video.srcObject instanceof MediaStream ? this.video.srcObject : new MediaStream();
           for (const previous of stream.getTracks()) {
             if (previous.kind === track.kind) { stream.removeTrack(previous); previous.stop(); }

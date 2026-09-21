@@ -78,9 +78,9 @@ public final class RemotePeer: NSObject {
         await withCheckedContinuation { continuation in
             connection.statistics { report in
                 continuation.resume(returning: report.statistics.values.compactMap { statistic in
-                    guard ["outbound-rtp", "candidate-pair"].contains(statistic.type) else { return nil }
+                    guard ["outbound-rtp", "inbound-rtp", "candidate-pair"].contains(statistic.type) else { return nil }
                     var values = ["type": statistic.type]
-                    for key in ["framesEncoded", "framesSent", "keyFramesEncoded", "totalEncodeTime", "packetsSent", "bytesSent", "totalPacketSendDelay", "availableOutgoingBitrate", "currentRoundTripTime", "nominated"] {
+                    for key in ["framesEncoded", "framesSent", "keyFramesEncoded", "totalEncodeTime", "packetsSent", "bytesSent", "totalPacketSendDelay", "availableOutgoingBitrate", "currentRoundTripTime", "nominated", "kind", "framesDecoded", "framesDropped", "framesPerSecond", "totalDecodeTime", "totalProcessingDelay", "packetsLost", "jitter", "jitterBufferDelay", "jitterBufferEmittedCount", "jitterBufferTargetDelay", "jitterBufferMinimumDelay"] {
                         values[key] = statistic.values[key]?.description
                     }
                     return values

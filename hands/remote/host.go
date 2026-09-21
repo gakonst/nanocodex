@@ -400,7 +400,11 @@ func serveWayland(parent context.Context, config hostConfig) error {
 				return err
 			}
 		}
-		connection, err := webrtc.NewAPI(webrtc.WithSettingEngine(settings)).NewPeerConnection(webrtc.Configuration{ICEServers: ice})
+		api, err := screenPeerAPI(settings)
+		if err != nil {
+			return err
+		}
+		connection, err := api.NewPeerConnection(webrtc.Configuration{ICEServers: ice})
 		if err != nil {
 			return err
 		}
