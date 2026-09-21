@@ -48,11 +48,14 @@ where
         let mut default_thinking = self.spawner.config.thinking;
         let mut default_fast_mode = self.spawner.config.fast_mode;
         let inherited_checkpoint = self.initial_model.as_ref().map(|initial| {
-            Arc::new(CommittedSession::new(
-                Arc::clone(&self.spawner.lineage_id),
-                thread_model,
-                initial.checkpoint.clone(),
-            ))
+            Arc::new(
+                CommittedSession::new(
+                    Arc::clone(&self.spawner.lineage_id),
+                    thread_model,
+                    initial.checkpoint.clone(),
+                )
+                .with_retained_snapshot(self.spawner.restored_snapshot.take()),
+            )
         });
         let prompt_cache_key = self
             .spawner
@@ -729,7 +732,7 @@ where
                                     Some(Command::SteerWithId { result, .. } | Command::Steer { result, .. }) => {
                                         drop(result.send(Err(NanocodexError::TurnNotSteerable)));
                                     }
-                                    Some(command @ (Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. })) => {
+                                    Some(command @ (Command::Snapshot { .. } | Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. })) => {
                                         handle_idle_command(
                                             command,
                                             latest_fork_checkpoint.as_ref(),
@@ -1387,7 +1390,7 @@ where
                                 cancel_result = Some(cancellation);
                                 break execution.as_mut().await;
                             }
-                            Some(command @ (Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. })) => {
+                            Some(command @ (Command::Snapshot { .. } | Command::Fork { .. } | Command::Spawn { .. } | Command::SpawnBatch { .. })) => {
                                 if let Some(snapshot) =
                                     fork_snapshot_rx.borrow_and_update().clone()
                                 {

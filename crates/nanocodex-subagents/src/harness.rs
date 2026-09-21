@@ -9,7 +9,9 @@ use super::{
     platform::{self, Task, TaskError},
     runtime::{DelegationChange, Registry, completion_instructions},
 };
-use nanocodex_agent::{Nanocodex, NanocodexError, Result as AgentResult, TurnControl, TurnResult};
+use nanocodex_agent::{
+    ChildRuntimeSnapshot, Nanocodex, NanocodexError, Result as AgentResult, TurnControl, TurnResult,
+};
 use std::{collections::VecDeque, sync::Weak};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::Instrument;
@@ -57,6 +59,9 @@ impl EnqueuedDelivery {
 }
 
 enum HarnessCommand {
+    Snapshot {
+        response: oneshot::Sender<std::io::Result<ChildRuntimeSnapshot>>,
+    },
     Start {
         prompt: String,
         capacity: TurnCapacity,
@@ -101,6 +106,17 @@ enum HarnessEvent {
 }
 
 impl HarnessHandle {
+    pub(super) async fn snapshot(&self) -> std::io::Result<ChildRuntimeSnapshot> {
+        let (response, result) = oneshot::channel();
+        self.commands
+            .send(HarnessCommand::Snapshot { response })
+            .await
+            .map_err(|_| std::io::Error::other("subagent harness is closed"))?;
+        result
+            .await
+            .map_err(|_| std::io::Error::other("subagent snapshot interrupted"))?
+    }
+
     pub(super) async fn start(
         &self,
         prompt: String,
@@ -265,6 +281,14 @@ impl Harness {
 
     async fn handle(&mut self, command: HarnessCommand) -> bool {
         match command {
+            HarnessCommand::Snapshot { response } => {
+                let result = match &self.agent {
+                    Some(agent) => agent.child_snapshot().await.map_err(std::io::Error::other),
+                    None => Err(std::io::Error::other("subagent runtime is unloaded")),
+                };
+                let _ = response.send(result);
+                false
+            }
             HarnessCommand::Start {
                 prompt,
                 capacity,

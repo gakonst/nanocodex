@@ -30,6 +30,7 @@ test("attachment publishes one exact catalog and exchanges ready, call, result, 
   await waitFor(() => socket.frames().length === 1);
   assert.deepEqual(socket.frames()[0], {
     type: "catalog",
+    capabilities: ["turn_metadata"],
     tools: [{
       provider: "javascript",
       remote_name: "echo",
@@ -107,6 +108,7 @@ test("Tools publishes its non-secret user-machine snapshot with each attachment"
   await waitFor(() => socket.frames().length === 1);
   assert.deepEqual(socket.frames()[0], {
     type: "catalog",
+    capabilities: ["turn_metadata"],
     tools: [],
     attachment_id: "laptop",
     machines: [{
@@ -362,7 +364,7 @@ test("admitted deadlines, invalid, and oversized post-dispatch outcomes preserve
   await oversized.tools.close();
 
   let signal;
-  const long = await readyAttachment({ timeoutMs: 900_000, handler: (_input, context) => {
+  const long = await readyAttachment({ handler: (_input, context) => {
     signal = context.signal;
     return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
   } });

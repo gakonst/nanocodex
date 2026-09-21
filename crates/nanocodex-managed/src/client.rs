@@ -16,10 +16,10 @@ use nanocodex_oai_api::{Model, ReasoningMode, Thinking};
 
 use crate::{
     AgentList, AgentReceipt, AgentSettings, AgentSettingsPatch, AgentSettingsResponse, AgentState,
-    EventCursor, EventHistoryPage, FindSessionsRequest, FindSessionsResponse, ManagedApiKey,
-    ManagedError, ManagedEventStream, MemoryKey, MemoryListResponse, MemoryRecord, PromptInput,
-    ReadSessionBody, ReadSessionRequest, ReadSessionResponse, SteerWithdrawal, TurnAction,
-    TurnSteer, TurnSubmission, TurnView,
+    AutoRoutingStatus, EventCursor, EventHistoryPage, FindSessionsRequest, FindSessionsResponse,
+    ManagedApiKey, ManagedError, ManagedEventStream, MemoryKey, MemoryListResponse, MemoryRecord,
+    PromptInput, ReadSessionBody, ReadSessionRequest, ReadSessionResponse, RoutingStatus,
+    SteerWithdrawal, TurnAction, TurnSteer, TurnSubmission, TurnView,
 };
 
 const MAX_HISTORY_PAGE: u16 = 256;
@@ -292,6 +292,54 @@ impl ManagedClient {
             ManagedError::InvalidResponse("agent state latest event cursor is invalid")
         })?;
         Ok(state)
+    }
+
+    /// Enables automatic routing on an empty managed session before its first message.
+    /// Repeating a successful opt-in leaves the retained route unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, transport, HTTP, or response-schema failures, including
+    /// rejection when routing is unavailable or the session already has history.
+    pub async fn enable_auto_routing(
+        &self,
+        agent_id: &str,
+    ) -> Result<AutoRoutingStatus, ManagedError> {
+        validate_id("agent", agent_id)?;
+        let status: AutoRoutingStatus = self
+            .json(
+                Method::POST,
+                &format!("{}/routing", agent_path(agent_id)),
+                None,
+                None,
+            )
+            .await?;
+        if !status.enabled || !status.settings.is_valid() {
+            return Err(ManagedError::InvalidResponse(
+                "invalid automatic routing receipt",
+            ));
+        }
+        Ok(status)
+    }
+
+    /// Reads the actual retained provider/model without altering the thread.
+    ///
+    /// # Errors
+    /// Returns validation, transport, HTTP, or malformed route failures.
+    pub async fn routing_status(&self, agent_id: &str) -> Result<RoutingStatus, ManagedError> {
+        validate_id("agent", agent_id)?;
+        let mut status: RoutingStatus = self
+            .json(Method::GET, &agent_path(agent_id), None, None)
+            .await?;
+        if let Some(route) = &status.route {
+            if !route.model.supports_thinking(route.thinking) {
+                return Err(ManagedError::InvalidResponse(
+                    "invalid routed thinking effort",
+                ));
+            }
+            status.enabled = true;
+        }
+        Ok(status)
     }
 
     /// Replaces the complete managed settings policy.

@@ -468,6 +468,7 @@ where
     if let Err(error) = send(
         &mut socket,
         &ExecutorFrame::Catalog {
+            capabilities: ["turn_metadata"],
             tools: &config.tools,
             machines: config
                 .metadata

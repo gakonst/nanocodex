@@ -18,10 +18,62 @@ nanocodex2 computer setup --refresh # check/download the current upstream releas
 
 Direct binary/source installs provision the runtime on first CUA use. Installation
 does not sign in to an account. On macOS, CUA starts an isolated official app server
-and desktop GUI, waits for the supported GUI readiness event, and delegates
-application access and approvals to that host. Build 9922 is currently supported;
+without the desktop GUI and delegates application access and confirmation
+handling to the existing upstream permission policy. Nanocodex adds no prompts. Build 9922 is currently supported;
 setup rejects other builds before publication. Official sign-in and OS permissions
 still apply. See [managed macOS host](official-app-server-bridge.md).
+
+A running Hand retains its provider launch configuration. Updating the installed
+launcher or reloading a TUI does not replace that configuration in the shared
+Hand daemon. Restart the Hand after upgrading from the older direct provider
+launcher to the managed macOS bridge, then rediscover its CUA contract. Existing
+CUA JavaScript bindings and browser debugger attachments do not survive this
+restart. Calls already admitted to the old connection are never retargeted.
+
+If native app access reports `nodeRepl.createElicitation is unavailable because
+the MCP client does not support form elicitation`, check the **active process
+chain**, not just `provider.json`. The managed path is Hand → native host →
+official Codex app server → CUA provider. The server handles confirmations under
+its effective permission policy without starting the desktop GUI. A provider launched directly by an older Hand bypasses that path. The
+outer Nanocodex adapter intentionally advertises no elicitation capability;
+adding it there does not establish a working permission UI.
+
+## Browser selection
+
+OpenAI's browser selector accepts exact discovered browser IDs and lowercase
+family aliases such as `brave`. The display name `Brave Browser` is not an
+accepted alias in the pinned provider, despite its browser instructions saying
+to pass a browser name. Codex-rs forwards JavaScript unchanged and does not
+normalize this string. Nanocodex includes a separate selection note alongside
+workdir-only discovery; the provider's tool definitions and call arguments
+remain unchanged.
+
+Use a known browser ID from current provider state. For an unambiguous request
+for Brave, `cua.createBrowserTab('brave', url, options)` works directly. If
+multiple browser instances or profiles could match, use the provider's browser
+inventory to select the requested instance before creating a tab. Never guess a
+numeric ID or retry a failed creation against another browser automatically.
+
+## Native app recovery
+
+On macOS, the pinned provider's `cua.getApp` launches an app in the background
+and includes an initial accessibility observation. It accepts an app name, path,
+or bundle ID, not a native window ID. A running process alone does not guarantee
+a responsive or usable app window.
+
+If that initial observation stalls, reset the CUA session when the timeout asks
+for it. Use supported CUA to open the intended app normally from an observed
+launcher, such as its item in Finder, then select it again. In live Slack testing,
+opening the installed app through Finder recovered a stalled initial snapshot;
+subsequent background observations, search, channel navigation, and a fresh CUA
+session succeeded without opening ChatGPT. This is a verified recovery, not proof
+of the upstream stall's root cause or a reason to replay input automatically.
+
+After a transient menu or window closes, `cgWindowNotFound` can refer to that
+vanished window. Select the same app again and inspect its fresh state before
+acting. This recovered Finder's desktop target in live testing. For window-based
+input, use an actual app window. These recovery notes accompany workdir-only
+discovery separately from the unchanged provider tool definitions.
 
 ## Distribution
 
@@ -90,9 +142,9 @@ to the official OpenAI runtime. Nanocodex does not display consent forms, rememb
 application permissions, or expose an embedding callback that makes approval
 decisions. Installing a provider does not grant consent.
 
-The adapters advertise no MCP elicitation capability. On macOS, the managed bridge
-leaves app-server requests for the official GUI to handle; it never races the GUI
-with a reply. Direct provider-to-adapter requests use the following MCP behavior. Unsupported provider
+The adapters advertise no MCP elicitation capability. On macOS, the official app server handles provider confirmations using its
+existing permission policy. The managed bridge declines unresolved interactive
+requests for its own thread without showing a prompt or launching the GUI. Direct provider-to-adapter requests use the following MCP behavior. Unsupported provider
 requests, including `elicitation/create` and `openai/elicitation/create`, receive
 a JSON-RPC method-not-found error (`-32601`), never an approval response. Operations
 that require this host capability can therefore fail; discovery or a successful

@@ -20,7 +20,7 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-const ACTIONS: [Action; 16] = [
+const ACTIONS: [Action; 17] = [
     Action::Effort,
     Action::FastMode,
     Action::Goal,
@@ -32,6 +32,7 @@ const ACTIONS: [Action; 16] = [
     Action::Bug,
     Action::Reflection,
     Action::Model,
+    Action::AutoRoute,
     Action::AgentId,
     Action::Voice,
     Action::Screen,
@@ -51,6 +52,7 @@ pub(super) struct ActionAvailability {
     pub(super) fork: bool,
     pub(super) fast_mode: bool,
     pub(super) model: bool,
+    pub(super) auto_route: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -65,6 +67,7 @@ pub(super) enum Action {
     Review,
     Effort,
     Model,
+    AutoRoute,
     FastMode,
     Theme,
     NewSession,
@@ -290,6 +293,7 @@ impl ActionsMenu {
             Action::Handoff | Action::Review | Action::Reflection => self.availability.new_session,
             Action::Effort | Action::FastMode => true,
             Action::Model => self.availability.model,
+            Action::AutoRoute => self.availability.auto_route,
             Action::Theme => true,
             Action::NewSession => self.availability.new_session,
             Action::ResumeSession => self.availability.new_session,
@@ -321,6 +325,9 @@ impl ActionsMenu {
             Action::Reflection if !self.availability.new_session => {
                 "Reflect on session · finish active work first"
             }
+            Action::AutoRoute if !self.availability.auto_route => {
+                "Enable auto routing · before first prompt only"
+            }
             Action::FastMode if self.availability.fast_mode => "Disable fast mode",
             Action::Model if !self.availability.model => "Select model · start a new session first",
             _ => action.label(),
@@ -341,6 +348,7 @@ impl Action {
             Self::Review => "Review changes",
             Self::Effort => "Change effort",
             Self::Model => "Select model",
+            Self::AutoRoute => "Enable auto routing",
             Self::FastMode => "Enable fast mode",
             Self::Theme => "Select theme",
             Self::NewSession => "New session",
@@ -367,6 +375,7 @@ impl Action {
             Self::Review => Some("review"),
             Self::Effort => Some("thinking"),
             Self::Model => Some("intelligence"),
+            Self::AutoRoute => Some("autoroute"),
             Self::FastMode => Some("priority"),
             Self::Theme => Some("appearance"),
             Self::NewSession => Some("clear"),
@@ -462,6 +471,7 @@ mod tests {
             fork: true,
             fast_mode,
             model,
+            auto_route: model,
         }
     }
 
@@ -598,15 +608,62 @@ mod tests {
     }
 
     #[test]
-    fn only_model_action_is_disabled_after_session_starts() {
+    fn model_and_auto_route_actions_are_disabled_after_session_starts() {
         let menu = ActionsMenu::new(availability(false, false));
         assert_eq!(
             menu.display_label(Action::Model),
             "Select model · start a new session first"
         );
         assert!(!menu.is_enabled(Action::Model));
+        assert!(!menu.is_enabled(Action::AutoRoute));
         assert!(menu.is_enabled(Action::Effort));
         assert!(menu.is_enabled(Action::FastMode));
+    }
+
+    #[test]
+    fn autoroute_action_is_discoverable_and_requires_an_empty_idle_thread() {
+        assert!(super::ACTIONS.contains(&Action::AutoRoute));
+        assert_eq!(Action::AutoRoute.alias(), Some("autoroute"));
+        for enabled in [false, true] {
+            let mut menu = ActionsMenu::new(availability(false, enabled));
+            menu.insert_paste("Enable auto routing");
+            assert_eq!(menu.is_enabled(Action::AutoRoute), enabled);
+            if enabled {
+                assert_eq!(
+                    menu.trigger_selected().effects,
+                    [ActionsEffect::Trigger(Action::AutoRoute)]
+                );
+            } else {
+                assert!(menu.trigger_selected().effects.is_empty());
+                assert!(
+                    menu.display_label(Action::AutoRoute)
+                        .contains("before first prompt")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn autoroute_menu_commands_always_use_the_guarded_settings_path() {
+        for enabled in [false, true] {
+            for code in [KeyCode::Enter, KeyCode::Tab] {
+                for (query, expected) in [
+                    ("autoroute", SettingsCommand::AutoRoute),
+                    (
+                        "autoroute extra",
+                        SettingsCommand::Invalid("Usage: /autoroute".to_owned()),
+                    ),
+                ] {
+                    let mut menu = ActionsMenu::new(availability(false, enabled));
+                    menu.insert_paste(query);
+                    let update = menu.update(ActionsEvent::Terminal(Event::Key(KeyEvent::new(
+                        code,
+                        KeyModifiers::NONE,
+                    ))));
+                    assert_eq!(update.effects, [ActionsEffect::Settings(expected)]);
+                }
+            }
+        }
     }
 
     #[test]

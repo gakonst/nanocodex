@@ -71,6 +71,7 @@ export type HostedToolCallOutcome =
 export type HostedToolsHostFrame =
   | {
       type: "catalog";
+      capabilities: ["turn_metadata"];
       tools: HostedToolCatalogEntry[];
       machines?: HostedMachine[];
       attachment_id?: string;
@@ -181,7 +182,11 @@ export function parseHostedToolsFrame(encoded: string): HostedToolsFrame {
 function parseCatalog(
   frame: Record<string, unknown>,
 ): Extract<HostedToolsHostFrame, { type: "catalog" }> {
-  exactKeys(frame, ["type", "tools", "machines", "attachment_id"]);
+  exactKeys(frame, ["type", "tools", "machines", "attachment_id", "capabilities"]);
+  if (!Array.isArray(frame.capabilities) || frame.capabilities.length !== 1
+    || frame.capabilities[0] !== "turn_metadata") {
+    throw new HostedToolsProtocolError("invalid_catalog", 'capabilities must be ["turn_metadata"]');
+  }
   if (!Array.isArray(frame.tools)) {
     throw new HostedToolsProtocolError(
       "invalid_catalog",
@@ -218,6 +223,7 @@ function parseCatalog(
   }
   return {
     type: "catalog",
+    capabilities: ["turn_metadata"],
     tools,
     ...(machines === undefined ? {} : { machines }),
     ...(attachmentId === undefined ? {} : { attachment_id: attachmentId }),

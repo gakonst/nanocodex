@@ -27,7 +27,7 @@ it("lists only the owner's live Hands without private routing metadata", async (
       socket.addEventListener("close", event => reject(new Error(`Hand closed: ${event.code} ${event.reason}`)), { once: true });
       socket.addEventListener("error", () => reject(new Error("Hand socket failed")), { once: true });
     });
-    socket.send(JSON.stringify({ type: "catalog", attachment_id: "ios-phone", machines: [{
+    socket.send(JSON.stringify({ type: "catalog", capabilities: ["turn_metadata"], attachment_id: "ios-phone", machines: [{
       id: "ios-phone", name: "iPhone", workspace: "/private/device/workspace", capabilities: ["native", "background_limited"],
     }], tools: [{ provider: "native", remote_name: "device_info", parallel_safe: true, timeout_ms: 15000,
       definition: { type: "function", name: "device_info", description: "Device info", strict: false,

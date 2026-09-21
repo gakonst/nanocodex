@@ -1,0 +1,215 @@
+import { env, runInDurableObject } from "cloudflare:test";
+import { expect, it, vi } from "vitest";
+import type { DurableAgentSession } from "../src/index";
+import { DEFAULT_AGENT_SETTINGS } from "../src/agent-settings";
+import { forwardPrincipalAssertions, type Principal } from "../src/account-auth";
+import { ROUTING_CANDIDATES, OSS_MODEL } from "../src/thread-model-routing";
+
+// Keyless integration: only identity/ancillary services and model responses are
+// synthetic. Admission, Jev policy, provider adapters, Rust/WASM subagent tools,
+// Just Bash, SQLite route bindings and graceful reconstruction are production.
+const principal: Principal = {
+  kind: "api_key", userId: "11111111-1111-4111-8111-111111111111",
+  organizationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", teamId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+  role: "owner", subjectId: "user:child-routing-fixture", credentialId: "child-routing-fixture",
+  authorizationEpoch: 1, capabilities: ["agents:read", "agents:write", "tools:use"],
+};
+const marker = "synthetic-child-tool-proof";
+const schema = { type: "object", properties: { value: { type: "string" }, turn: { type: "integer" } },
+  required: ["value", "turn"], additionalProperties: false };
+const childCandidate = ROUTING_CANDIDATES.find(c => c.backend === "workers_ai" && c.thinking === "high")!;
+const completion = (message: unknown, tool = false) => ({ choices: [{ finish_reason: tool ? "tool_calls" : "stop", message }] });
+function toolCall(input: any, name: string, args: unknown, id: string) {
+  const declaration = input.tools.find((tool: any) => tool.function.description.startsWith(`${name}\n`));
+  expect(declaration, `${name} must come from the actual Rust/WASM tool catalog`).toBeDefined();
+  return completion({ content: null, tool_calls: [{ id, type: "function", function: {
+    name: declaration.function.name, arguments: JSON.stringify(args),
+  } }] }, true);
+}
+
+it.each(["openrouter", "vercel"] as const)("opt-in %s root and child pin independent transports across real tools, reconnect and two reconstructions", async provider => {
+  const rootCandidate = ROUTING_CANDIDATES.find(c => c.backend === provider && c.model === "gpt-5.6-sol" && c.thinking === "low")!;
+  const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
+  await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
+    let choices = 0, rootCalls = 0, childCalls = 0, childToolResults = 0, submissions = 0;
+    let phase = 1, step = 0, childId: number | undefined;
+    const observedTools: string[] = [];
+    const sql = state.storage.sql;
+    const table = (name: string) => sql.exec(`SELECT * FROM ${name}`).toArray();
+    const request = (path: string, method: string, body?: unknown) => {
+      const headers = new Headers({ "content-type": "application/json" });
+      if (path !== "/create") forwardPrincipalAssertions(headers, principal);
+      return session.fetch(new Request(`https://session.internal${path}`, { method, headers,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }) }));
+    };
+    const call = (input: any, name: string, args: unknown) => {
+      observedTools.push(name);
+      return toolCall(input, name, args, `root-${rootCalls}`);
+    };
+    const original = (session as unknown as { env: Record<string, unknown> }).env;
+    Object.defineProperty(session, "env", { configurable: true, value: { ...original,
+      NANOCODEX_THREAD_ROUTING: "true", OPENROUTER_API_KEY: "synthetic-availability-only", AI_GATEWAY_API_KEY: "synthetic-availability-only", AGENT_IDLE_TIMEOUT_MS: "1000",
+      NANOCODEX_MEMORY: { getByName: () => ({ fetch: async () => new Response(null, { status: 204 }) }) },
+      NANOCODEX_USERS: { getByName: () => ({ fetch: async () => new Response(null, { status: 204 }) }) },
+      NANOCODEX_ACCOUNT_TOOLS: { getByName: () => ({ fetch: async () => Response.json({ tools: [], machines: [], connections: [] }) }) },
+      NANOCODEX: { fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        const req = new Request(input, init), url = new URL(req.url);
+        if (url.hostname === "broker.internal" && ["PUT", "DELETE"].includes(req.method)) return new Response(null, { status: 204 });
+        return Response.json({ tools: [], machines: [], connections: [], accounts: {} });
+      } },
+      AI: { run: async (model: string, input: any) => {
+        if (model === "typesafe/jev") {
+          choices++;
+          expect(choices).toBeLessThanOrEqual(2);
+          const chooserState = JSON.parse(input.state);
+          const candidate = choices === 1 ? rootCandidate : childCandidate;
+          expect(chooserState.candidates.some((c: any) => c.id === candidate.id)).toBe(true);
+          if (choices === 2) expect(chooserState.opening_prompt).toContain("child-fixture-task");
+          return { answers: { candidate: { choice: candidate.id, confidence: .99 }, family: { choice: "terminal", confidence: .99 } } };
+        }
+        childCalls++;
+        expect(childCalls).toBeLessThanOrEqual(6);
+        expect(model).toBe(OSS_MODEL);
+        expect(input.reasoning_effort).toBe("high");
+        expect(table("managed_subagent_routes")).toHaveLength(1);
+        const binding = JSON.parse(String(table("managed_subagent_routes")[0].binding_json));
+        expect(binding.route).toMatchObject({ backend: "workers_ai", model: OSS_MODEL, thinking: "high" });
+        expect(table("managed_subagent_authorizations")).toHaveLength(1);
+        const tokens = [...JSON.stringify(input.messages).matchAll(/turn_token: (\d+)/g)];
+        const token = Number(tokens.at(-1)?.[1]);
+        expect(token).toBe(phase);
+        const last = input.messages.at(-1);
+        if (last?.role === "tool" && last.content.includes('"accepted":true')) {
+          expect(JSON.parse(last.content)).toMatchObject({ accepted: true, decoded_json_text: true });
+          submissions++;
+          return completion({ content: `CHILD_DONE_${token}` });
+        }
+        if (token === 1 && childCalls === 1) {
+          observedTools.push("child:exec_command");
+          return toolCall(input, "exec_command", { cmd: "cat /brain/child-input.txt", workdir: "/brain" }, "child-read");
+        }
+        if (token === 1) {
+          expect(last.role).toBe("tool");
+          expect(last.content).toContain(marker);
+          childToolResults++;
+        } else {
+          expect(JSON.stringify(input.messages)).toContain(marker);
+          expect(JSON.stringify(input.messages)).toContain("CHILD_DONE_1");
+        }
+        observedTools.push("child:submit_result");
+        return toolCall(input, "submit_result", { turn_token: token, output: JSON.stringify({ value: marker, turn: token }) }, `submit-${token}`);
+      } },
+    } });
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const req = new Request(input, init);
+      expect(req.url).toBe(provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://ai-gateway.vercel.sh/v1/chat/completions");
+      const body: any = await req.json();
+      rootCalls++;
+      expect(rootCalls).toBeLessThanOrEqual(20);
+      expect(body.model).toBe("openai/gpt-5.6-sol");
+      expect(provider === "openrouter" ? body.reasoning.effort : body.reasoning_effort).toBe("low");
+      expect(JSON.parse(String(table("managed_thread_route")[0].route_json))).toMatchObject({ backend: provider, model: "gpt-5.6-sol", thinking: "low" });
+      const last = body.messages.at(-1);
+      if (phase === 1 && step++ === 0) return Response.json(call(body, "spawn_agent", {
+        role: "fixture specialist", task: "child-fixture-task: read /brain/child-input.txt and submit the value.", output_schema: schema,
+      }));
+      if (phase === 1 && childId === undefined) {
+        childId = JSON.parse(last.content).agent_id;
+        expect(childId).toBeTypeOf("number");
+      }
+      if (phase === 2 && step++ === 0) return Response.json(call(body, "send_agent_message", {
+        agent_id: childId, message: "Recall the prior value from history and submit it for turn 2.", purpose: "delegate",
+      }));
+      if (phase < 3) {
+        const receipt = last?.role === "tool" ? JSON.parse(last.content) : undefined;
+        const child = receipt?.agents?.find((agent: any) => agent.agent_id === childId);
+        if (child?.status.state === "completed") {
+          expect(child.status.output).toEqual({ value: marker, turn: phase });
+          return Response.json(completion({ content: `ROOT_DONE_${phase}` }));
+        }
+        return Response.json(call(body, "wait_agent", { agent_ids: [childId], timeout_ms: 5_000 }));
+      }
+      if (step++ === 0) return Response.json(call(body, "list_agents", { include_completed: true }));
+      if (step === 2) {
+        expect(JSON.stringify(last.content)).toContain(marker);
+        return Response.json(call(body, "close_agent", { agent_id: childId }));
+      }
+      return Response.json(completion({ content: "ROOT_DONE_3" }));
+    });
+    try {
+      expect((await request("/create", "POST", {
+        session_id: crypto.randomUUID(), owner_id: principal.userId, organization_id: principal.organizationId,
+        team_id: principal.teamId, authorization_epoch: 1, public_origin: "https://nanocodex.example", settings: DEFAULT_AGENT_SETTINGS,
+        configuration: { multi_agent: { enabled: true },
+          tools: ["exec_command"], environment: { network: { access: "disabled" }, files: [{ path: "/brain/child-input.txt", content: marker + "\n" }] } },
+      })).status).toBe(200);
+      expect(await (await request("/state", "GET")).json()).toMatchObject({ model_routing_enabled: false, model_route: null });
+      const beforeEnable: any = await (await request("/configuration", "GET")).json();
+      // This is the production /autoroute admission sequence: create normally,
+      // explicitly enable the empty thread, then send its first prompt.
+      const enabled = await request("/routing", "POST");
+      expect(enabled.status).toBe(200);
+      expect(await enabled.json()).toMatchObject({ enabled: true });
+      expect(await (await request("/configuration", "GET")).json()).toMatchObject({
+        ...beforeEnable, model_routing: { strategy: "direct" },
+      });
+      expect(await (await request("/state", "GET")).json()).toMatchObject({ model_routing_enabled: true, model_route: null });
+      expect(choices).toBe(0);
+      expect(table("managed_thread_route")).toHaveLength(0);
+      let rootPin: unknown, childPin: unknown, retainedDescriptor: unknown;
+      for (phase = 1; phase <= 3; phase++) {
+        step = 0;
+        const id = `fixture-turn-${phase}`;
+        expect((await request("/turns", "POST", { id, input: `Run fixture phase ${phase}.` })).status).toBe(202);
+        await expect.poll(() => sql.exec("SELECT state,error FROM managed_turns WHERE id=?", id).one(), { timeout: 15_000 })
+          .toEqual({ state: "completed", error: null });
+        const receipt: any = await (await request(`/turns/${id}`, "GET")).json();
+        expect(receipt.terminal.final_message).toBe(`ROOT_DONE_${phase}`);
+        if (phase === 1) { rootPin = table("managed_thread_route"); childPin = table("managed_subagent_routes"); retainedDescriptor = table("nanocodex_cloudflare_subagents"); }
+        expect(table("managed_thread_route")).toEqual(rootPin);
+        // Footer/status must report the retained root route even while a child
+        // has used another provider/model and after the child is closed.
+        const status: any = await (await request("/state", "GET")).json();
+        expect(status.model_routing_enabled).toBe(true);
+        expect(status.model_route).toEqual(JSON.parse(String(table("managed_thread_route")[0].route_json)));
+        expect(status.model_route).toMatchObject({ backend: provider, model: "gpt-5.6-sol", thinking: "low" });
+        expect(choices).toBe(2);
+        if (phase < 3) {
+          expect(table("managed_subagent_routes")).toEqual(childPin);
+          expect(table("nanocodex_cloudflare_subagents")).toEqual(retainedDescriptor);
+          // Drive the production idle alarm after aging only its activity clock.
+          sql.exec("UPDATE session_state SET last_active=0");
+          await session.alarm();
+          await expect.poll(() => table("nanocodex_cloudflare_subagent_checkpoints").length).toBeGreaterThan(0);
+          expect(table("managed_subagent_routes")).toEqual(childPin);
+          // A fresh client connection reads the retained root settings without
+          // selecting a route or reconstructing a child on the read itself.
+          const headers = new Headers({ upgrade: "websocket" });
+          forwardPrincipalAssertions(headers, principal);
+          const connection = await session.fetch(new Request("https://session.internal/socket", { headers }));
+          expect(connection.status).toBe(101);
+          const socket = connection.webSocket!;
+          const ready = new Promise<any>(resolve => socket.addEventListener("message", event => resolve(JSON.parse(String(event.data))), { once: true }));
+          socket.accept();
+          expect(await ready).toMatchObject({ type: "ready", restored: true, active_turns: [], settings: {
+            model: "gpt-5.6-sol", thinking: "low", reasoning_mode: "standard", fast_mode: false,
+          } });
+          socket.close(1000, "fixture reconnect complete");
+          expect(choices).toBe(2);
+          expect(table("managed_thread_route")).toEqual(rootPin);
+          expect(table("managed_subagent_routes")).toEqual(childPin);
+        }
+      }
+      expect(table("managed_subagent_routes")).toHaveLength(0);
+      expect(table("managed_subagent_authorizations")).toHaveLength(0);
+      expect(table("nanocodex_cloudflare_subagents")).toHaveLength(0);
+      expect(childToolResults).toBe(1);
+      expect(submissions).toBe(2);
+      expect(childCalls).toBe(5);
+      expect(observedTools).toEqual(expect.arrayContaining(["spawn_agent", "wait_agent", "send_agent_message", "list_agents", "close_agent", "child:exec_command", "child:submit_result"]));
+    } finally {
+      fetchSpy.mockRestore();
+      await state.storage.deleteAlarm();
+    }
+  });
+}, 60_000);

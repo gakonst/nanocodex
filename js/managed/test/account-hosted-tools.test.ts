@@ -143,7 +143,7 @@ describe("account Hosted Tools provider", () => {
       socket.accept();
       const ready = nextFrame(socket);
       socket.send(JSON.stringify({
-        type: "catalog", attachment_id: "desktop-vm", tools: [machineEntry()],
+        type: "catalog", capabilities: ["turn_metadata"], attachment_id: "desktop-vm", tools: [machineEntry()],
         machines: [{ id: "desktop-vm", name: "Desktop VM", workspace: "/app", capabilities: ["shell"] }],
       }));
       await expect(ready).resolves.toEqual({ type: "ready" });
@@ -341,7 +341,7 @@ describe("account Hosted Tools provider", () => {
       socket.accept();
       const ready = nextFrame(socket);
       socket.send(JSON.stringify({
-        type: "catalog", attachment_id: "fixture-phone",
+        type: "catalog", capabilities: ["turn_metadata"], attachment_id: "fixture-phone",
         machines: [{ id: "fixture-phone", name: "Fixture iPhone", workspace: "/app", capabilities: ["contacts"] }],
         tools: [{
           provider: "machine", remote_name: "search_contacts", parallel_safe: true, timeout_ms: 10_000,
@@ -465,7 +465,7 @@ describe("account Hosted Tools provider", () => {
       socket.accept();
       const ready = nextFrame(socket);
       socket.send(JSON.stringify({
-        type: "catalog",
+        type: "catalog", capabilities: ["turn_metadata"],
         attachment_id: id,
         tools: [machineEntry()],
         machines: [{
@@ -532,7 +532,7 @@ describe("account Hosted Tools provider", () => {
     socket.accept();
     const ready = nextFrame(socket);
     socket.send(JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: snapshot.tools.map(({ definition, route_token: _routeToken, ...entry }) => ({
         ...entry,
         definition: { ...definition, defer_loading: undefined },
@@ -603,7 +603,7 @@ describe("account Hosted Tools provider", () => {
     successor.accept();
     const successorReady = nextFrame(successor);
     successor.send(JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: snapshot.tools.map(({ definition, route_token: _routeToken, ...entry }) => ({
         ...entry,
         definition: { ...definition, defer_loading: undefined },

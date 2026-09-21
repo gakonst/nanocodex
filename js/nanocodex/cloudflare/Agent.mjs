@@ -1,3 +1,5 @@
+import { createGatewayResponses } from "./gateway-responses.mjs";
+import { createWorkersAiResponses } from "./workers-ai-responses.mjs";
 import { responseControlsBody, responseControlsSocket } from "../runtime/response-controls.mjs";
 import * as HostAgent from "../host/Agent.mjs";
 import {
@@ -118,6 +120,7 @@ export function destroy(owner) {
       );
     }
     storage.sql.exec("DELETE FROM nanocodex_cloudflare_subagents");
+    storage.sql.exec("DELETE FROM nanocodex_cloudflare_subagent_checkpoints");
     clearCloudflareEventSocket(context);
   });
 }
@@ -302,6 +305,13 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
     && typeof internalRuntime.waitForPreconnect !== "boolean") {
     throw new TypeError("Cloudflare Agent internal waitForPreconnect must be a boolean");
   }
+  if (internalRuntime?.inferenceForSession !== undefined
+    && typeof internalRuntime.inferenceForSession !== "function") {
+    throw new TypeError("Cloudflare Agent inference routing must be a function");
+  }
+  if (internalRuntime?.subagentRouting !== undefined && internalRuntime?.inferenceForSession === undefined) {
+    throw new TypeError("Subagent routing requires session-specific inference routing");
+  }
   validateInternalConfiguration(internalConfiguration);
   const eventSocket = eventPersistence === "durable"
     ? createCloudflareEventSocket(context)
@@ -309,20 +319,81 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
   if (eventPersistence === "caller") clearCloudflareEventSocket(context);
   const durability = createCloudflareDurabilityStore(context.storage);
   const { sessionId, stateId } = durableIdentity(context.storage, durabilityId);
-  const endpoint = cloudflareEgress({
+  const workersAi = internalRuntime?.workersAi;
+  const gateway = internalRuntime?.gateway;
+  if (gateway !== undefined && (workersAi !== undefined
+    || gateway.model !== internalConfiguration?.model
+    || gateway.reasoningEffort !== internalConfiguration?.thinking)) {
+    throw new TypeError("Gateway profile must match the pinned model and thinking, with one transport only");
+  }
+  const routedInference = internalRuntime?.inferenceForSession !== undefined;
+  const directInference = workersAi !== undefined || gateway !== undefined || routedInference;
+  if (workersAi !== undefined && (internalConfiguration?.model !== "@cf/zai-org/glm-5.3"
+    || workersAi.model !== internalConfiguration.model || workersAi.thinking !== internalConfiguration.thinking)) {
+    throw new TypeError("Workers AI profile must match the pinned model and thinking");
+  }
+  if (internalConfiguration?.model === "@cf/zai-org/glm-5.3" && !directInference) {
+    throw new TypeError("GLM-5.3 requires a Workers AI or gateway transport binding");
+  }
+  const endpoint = gateway !== undefined ? createGatewayResponses(gateway) : workersAi === undefined ? cloudflareEgress({
     binding: scopeCloudflareEgress(egress, subject),
-  });
+  }) : createWorkersAiResponses(workersAi.ai);
+  const frontierEndpoint = routedInference ? cloudflareEgress({ binding: scopeCloudflareEgress(egress, subject) }) : undefined;
   const startup = deferred();
   const transport = Transport.hostManaged({
     ...endpoint,
-    websocketPreconnect: true,
-    createResponse(url, id, request) {
-      return endpoint.createResponse(url, id, {
-        ...request,
-        body: responseControlsBody(request.body, internalRuntime?.responseControls),
-      });
+    stateless: directInference,
+    websocketPreconnect: !directInference,
+    async createResponse(url, id, request) {
+      let selected = endpoint;
+      const body = responseControlsBody(request.body, internalRuntime?.responseControls);
+      if (routedInference) {
+        // This callback rechecks retained authority on EVERY request, including
+        // the root. Never inherit the root provider when a child pin is missing.
+        // The transport session is the shared lineage; threadId identifies the
+        // actual root/child branch registered by the Rust host bridge.
+        const routedSessionId = request.threadId ?? id;
+        const profile = await internalRuntime.inferenceForSession(routedSessionId);
+        if (!profile || typeof profile.model !== "string" || !["low", "medium", "high"].includes(profile.thinking)) {
+          throw new Error("Session inference route is missing or invalid");
+        }
+        if (routedSessionId === sessionId && (profile.model !== internalConfiguration?.model
+          || profile.thinking !== internalConfiguration?.thinking)) {
+          throw new Error("Root inference route conflicts with its pinned configuration");
+        }
+        const parsed = JSON.parse(body);
+        if (parsed.model !== profile.model || parsed.reasoning?.effort !== profile.thinking) {
+          throw new Error("Inference request conflicts with the session model or thinking pin");
+        }
+        if (profile.workersAi !== undefined && profile.gateway !== undefined) {
+          throw new Error("Session inference route has multiple transports");
+        }
+        if (profile.gateway !== undefined) {
+          if (profile.gateway.model !== profile.model || profile.gateway.reasoningEffort !== profile.thinking) {
+            throw new Error("Gateway profile conflicts with the session pin");
+          }
+          selected = createGatewayResponses(profile.gateway);
+        } else if (profile.workersAi !== undefined) {
+          if (profile.model !== "@cf/zai-org/glm-5.3" || profile.workersAi.model !== profile.model
+            || profile.workersAi.thinking !== profile.thinking) {
+            throw new Error("Workers AI profile conflicts with the session pin");
+          }
+          selected = createWorkersAiResponses(profile.workersAi.ai);
+        } else {
+          if (!["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].includes(profile.model)) {
+            throw new Error("Session model requires an explicit inference binding");
+          }
+          selected = frontierEndpoint;
+        }
+        if (url !== `${endpoint.apiBaseUrl}/responses`) {
+          throw new Error("Routed inference supports only full-history Responses requests");
+        }
+        url = `${selected.apiBaseUrl}/responses`;
+      }
+      return selected.createResponse(url, id, { ...request, body });
     },
     async createWebSocket(url, id, request) {
+      if (directInference) throw new Error("Direct inference threads require HTTP Responses transport");
       try {
         const opened = await endpoint.createWebSocket(url, id, request);
         if (request.authorization === "preconnect") startup.resolve();
@@ -360,6 +431,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
         subagentsEnabled: internalRuntime?.subagentsEnabled,
         subagentMaxConcurrency: internalRuntime?.subagentMaxConcurrency,
         subagentSessions,
+        subagentRouting: internalRuntime?.subagentRouting,
         [CLOUDFLARE_SESSION_RESERVATION]: sessionReservation,
       },
       transport,
@@ -370,7 +442,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
     // Managed voice needs the durable session before the separate Responses
     // relay is ready. Its preconnection remains owned by the host and a later
     // text turn consumes it through the same credential-checked transport.
-    if (internalRuntime?.waitForPreconnect !== false) {
+    if (!directInference && internalRuntime?.waitForPreconnect !== false) {
       await withTimeout(
         startup.promise,
         STARTUP_TIMEOUT_MS,
@@ -407,7 +479,9 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
     observeAgentRelease(exposed, () => {
       if (lifecycle.active === active) lifecycle.active = undefined;
     });
-    commitCloudflareAgentSession(sessionReservation);
+    // Consume only after all startup checks succeed. Once exposed, this owner
+    // may mutate children; only its next clean unload can save a safe snapshot.
+    commitCloudflareAgentSession(sessionReservation, () => subagentSessions.consumeCheckpoint());
     return exposed;
   } catch (error) {
     const cleanupErrors = [];
@@ -554,11 +628,13 @@ function validateInternalConfiguration(configuration) {
       "reasoning_mode",
       "fast_mode",
     ].includes(key))
-    || !["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"]
+    || !["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "@cf/zai-org/glm-5.3"]
       .includes(configuration.model)
     || !["none", "low", "medium", "high", "xhigh", "max"].includes(configuration.thinking)
     || !["standard", "pro"].includes(configuration.reasoning_mode)
     || typeof configuration.fast_mode !== "boolean"
+    || (configuration.model === "@cf/zai-org/glm-5.3"
+      && (!["low", "medium", "high"].includes(configuration.thinking) || configuration.reasoning_mode !== "standard"))
     || (configuration.model === "gpt-6-astra" && configuration.thinking === "none")) {
     throw new TypeError("Cloudflare Agent internal configuration is invalid");
   }
@@ -637,6 +713,12 @@ function initializeAgentStorage(storage) {
       host_context_ref TEXT
     )
   `);
+  storage.sql.exec(`
+    CREATE TABLE IF NOT EXISTS nanocodex_cloudflare_subagent_checkpoints (
+      chunk_index INTEGER PRIMARY KEY,
+      payload TEXT NOT NULL
+    )
+  `);
   const subagentColumns = storage.sql.exec(
     "PRAGMA table_info('nanocodex_cloudflare_subagents')",
   ).toArray();
@@ -649,12 +731,14 @@ function initializeAgentStorage(storage) {
 
 function cloudflareSubagentSessions(storage, reservation, lifecycle) {
   const restoredHostContextRefs = new Map();
+  const retainedBindings = new Map();
   return Object.freeze({
     restore() {
       const restored = storage.sql.exec(
         "SELECT descriptor_json, host_context_ref FROM nanocodex_cloudflare_subagents",
       ).toArray().map(({ descriptor_json, host_context_ref }) => {
         const descriptor = Object.freeze(JSON.parse(descriptor_json));
+        retainedBindings.set(descriptor.sessionId, { descriptor, hostContextRef: host_context_ref ?? undefined });
         restoredHostContextRefs.set(
           descriptor.sessionId,
           host_context_ref === null ? undefined : host_context_ref,
@@ -663,8 +747,63 @@ function cloudflareSubagentSessions(storage, reservation, lifecycle) {
       });
       return Object.freeze(restored);
     },
+    restoreCheckpoint() {
+      const chunks = storage.sql.exec(
+        "SELECT chunk_index, payload FROM nanocodex_cloudflare_subagent_checkpoints ORDER BY chunk_index",
+      ).toArray();
+      if (chunks.length === 0) return undefined;
+      if (chunks.length > 256 || chunks.some((chunk, index) => chunk.chunk_index !== index
+        || typeof chunk.payload !== "string" || chunk.payload.length > 65_536)) {
+        throw new Error("Invalid durable subagent checkpoint chunks");
+      }
+      const checkpoint = chunks.map(({ payload }) => payload).join("");
+      validateSubagentCheckpointSize(checkpoint);
+      return checkpoint;
+    },
+    consumeCheckpoint() {
+      if (!mayBindCloudflareSubagentSession(reservation)) {
+        throw new Error("Subagent checkpoint reader no longer owns the session");
+      }
+      storage.sql.exec("DELETE FROM nanocodex_cloudflare_subagent_checkpoints");
+    },
+    checkpoint(checkpoint) {
+      if (!mayReleaseCloudflareSubagentSession(reservation)) {
+        throw new Error("Subagent checkpoint writer no longer owns the session");
+      }
+      validateSubagentCheckpointSize(checkpoint);
+      // Check syntax before replacing the last complete checkpoint. Rust owns
+      // the versioned tree schema and checks identities during reconstruction.
+      JSON.parse(checkpoint);
+      storage.transactionSync(() => {
+        storage.sql.exec("DELETE FROM nanocodex_cloudflare_subagent_checkpoints");
+        for (let offset = 0, index = 0; offset < checkpoint.length; index += 1) {
+          let end = Math.min(offset + 65_536, checkpoint.length);
+          if (end < checkpoint.length && /[\uD800-\uDBFF]/.test(checkpoint[end - 1])) end -= 1;
+          storage.sql.exec(
+            "INSERT INTO nanocodex_cloudflare_subagent_checkpoints (chunk_index, payload) VALUES (?, ?)",
+            index, checkpoint.slice(offset, end),
+          );
+          offset = end;
+        }
+      });
+    },
     hostContextRef(sessionId) {
       return restoredHostContextRefs.get(sessionId);
+    },
+    bindingDescriptor(sessionId, descriptor, hostContextRef) {
+      const retained = retainedBindings.get(sessionId);
+      if (retained === undefined) return descriptor;
+      const original = retained.descriptor;
+      const attachesInitialProvenance = retained.hostContextRef === undefined
+        && typeof hostContextRef === "string" && descriptor.task === original.task;
+      if (original.sessionId !== descriptor.sessionId || original.agentId !== descriptor.agentId
+        || original.parentAgentId !== descriptor.parentAgentId || original.role !== descriptor.role
+        || (retained.hostContextRef !== hostContextRef && !attachesInitialProvenance)) {
+        throw new Error("Subagent binding identity or host context changed");
+      }
+      // Delegation replaces the Rust task, not its spawning-turn authority.
+      // Tools retain the original descriptor used to mint that authority.
+      return original;
     },
     bind(sessionId, descriptor, hostContextRef) {
       if (!mayBindCloudflareSubagentSession(reservation)) return;
@@ -694,6 +833,7 @@ function cloudflareSubagentSessions(storage, reservation, lifecycle) {
           hostContextRef,
         });
       });
+      retainedBindings.set(sessionId, { descriptor, hostContextRef });
       restoredHostContextRefs.delete(sessionId);
     },
     release(sessionId, hostContextRef) {
@@ -706,6 +846,7 @@ function cloudflareSubagentSessions(storage, reservation, lifecycle) {
           hostContextRef ?? null,
         ).toArray();
         if (retained.length === 0) return;
+        storage.sql.exec("DELETE FROM nanocodex_cloudflare_subagent_checkpoints");
         notifySubagentLifecycle(lifecycle, {
           type: "release",
           rootSessionId: reservation.sessionId,
@@ -718,9 +859,17 @@ function cloudflareSubagentSessions(storage, reservation, lifecycle) {
           sessionId,
           hostContextRef ?? null,
         );
+        retainedBindings.delete(sessionId);
       });
     },
   });
+}
+
+function validateSubagentCheckpointSize(checkpoint) {
+  if (typeof checkpoint !== "string" || checkpoint.length === 0
+    || new TextEncoder().encode(checkpoint).byteLength > 16 * 1024 * 1024) {
+    throw new Error("Subagent checkpoint must be non-empty JSON bounded to 16 MiB");
+  }
 }
 
 function notifySubagentLifecycle(lifecycle, event) {

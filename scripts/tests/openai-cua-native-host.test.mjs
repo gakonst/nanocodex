@@ -352,3 +352,16 @@ for (const phase of ['metadata', 'endpoint', 'readyz']) for (const signalName of
     assert.deepEqual(await readdir(root), ['profile']);
   });
 }
+
+test('managed bridge uses the headless official server and never attaches a GUI', async () => {
+  let configuration, dependencies;
+  const lease = { endpoint: 'ws://127.0.0.1:12345', timeoutMs: 500,
+    attach() { throw new Error('GUI attachment must not run'); }, close() {} };
+  class FakeAppServer {
+    constructor(config, deps) { configuration = config; dependencies = deps; }
+    close() {}
+  }
+  bindBridge(lease, { AppServerImpl: FakeAppServer });
+  assert.deepEqual(configuration, { url: lease.endpoint, openGui: false, headless: true, timeoutMs: 500 });
+  assert.equal(dependencies.openGui, undefined);
+});

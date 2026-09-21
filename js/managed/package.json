@@ -13,10 +13,12 @@
     "deploy": "wrangler deploy --env=\"\" --config wrangler.jsonc",
     "prebuild": "npm run prepare:code-evaluator",
     "prepare:code-evaluator": "node scripts/prepare-code-evaluator.mjs && node scripts/prepare-hand-image.mjs",
-    "test": "vitest run",
+    "test": "vitest run && npm run test:routing",
     "typecheck": "tsc --noEmit",
     "phone:bridge": "node scripts/phone-bridge.mjs",
     "test:phone": "vitest run test/phone-tool.test.ts test/twilio-voice.test.ts test/phone-container.test.ts && node --test scripts/phone-bridge.test.mjs scripts/phone-delegation.test.mjs",
+    "test:routing": "vitest run --config vitest.routing.config.ts && node --test test/provider-telemetry.test.mjs && npm run test:routing:wasm",
+    "test:routing:wasm": "node --test test/thread-routing-wasm.test.mjs",
     "test:media": "node --test scripts/media/runtime.test.mjs"
   },
   "dependencies": {

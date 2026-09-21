@@ -6,6 +6,8 @@ extend-exclude = [
     "examples/wow/web/assets/wow/**/*.TTF",
     "crates/nanocodex-browser/assets/axe.js",
     "crates/nanocodex-browser/assets/react_diagnostics.js",
+    # Preserve vendored upstream source identifiers, comments, and patch filenames.
+    "third_party/codex-voice/vendor/",
     # Preserve upstream sources and captured protocol/encoding fixture bytes.
     "js/account/public/data/",
     "js/account/src/data/harness-repository.json",
@@ -28,6 +30,10 @@ extend-ignore-re = ['\bpackets(?:Received|Sent)WithEct1\b', '\bOT[0-9]+A[0-9]+\b
 # Match both 'truncated' and 'truncation' in retained measurement helpers.
 [type.py]
 extend-ignore-re = ["'truncat'"]
+
+# FFmpeg's audio passthrough filter has this exact identifier.
+[type.sh.extend-words]
+anull = "anull"
 
 # Symphonia exposes this exact time-base numerator field.
 [type.rust]

@@ -9,6 +9,8 @@
     "node-rsa": "../nanocodex/tools/browser/unsupportedNodeRsa.mjs"
   },
   "workers_dev": false,
+  "triggers": { "crons": ["*/30 * * * *"] },
+  "ai": { "binding": "AI" },
   "minify": true,
   "upload_source_maps": true,
   "observability": {
@@ -87,6 +89,10 @@
   ],
   "durable_objects": {
     "bindings": [
+      { "name": "NANOCODEX_INFERENCE_KEYS", "class_name": "InferenceKey" },
+      { "name": "NANOCODEX_INFERENCE_ACCOUNTS", "class_name": "InferenceAccount" },
+      { "name": "NANOCODEX_INFERENCE_SESSIONS", "class_name": "InferenceSession" },
+      { "name": "NANOCODEX_PROVIDER_PROBE_COORDINATOR", "class_name": "ProviderProbeCoordinator" },
       { "name": "NANOCODEX_PHONES", "class_name": "PhoneContainer" },
       {
         "name": "NANOCODEX_SESSIONS",
@@ -169,9 +175,15 @@
       "new_sqlite_classes": ["VmHostPool"]
     },
     // Already applied in production. Retain this class and its SQLite state.
-    { "tag": "v9", "new_sqlite_classes": ["PhoneContainer"] }
+    { "tag": "v9", "new_sqlite_classes": ["PhoneContainer"] },
+    { "tag": "v10", "new_sqlite_classes": ["ProviderProbeCoordinator"] },
+    { "tag": "v11", "new_sqlite_classes": ["InferenceKey", "InferenceAccount", "InferenceSession"] }
   ],
   "vars": {
+    "NANOCODEX_THREAD_ROUTING": "true",
+    "NANOCODEX_INFERENCE_ENABLED": "true",
+    "NANOCODEX_PROVIDER_PROBES": "false",
+    "NANOCODEX_PROVIDER_PROBE_DAILY_LIMIT": "1600",
     "NANOCODEX_PHONE_ADMIN_ID": "631f6a83-9e3f-474a-977a-68897d3ee436",
     "NANOCODEX_ADMIN_USER_ID": "631f6a83-9e3f-474a-977a-68897d3ee436",
     "NANOCODEX_EMAIL_ADMIN_ID": "631f6a83-9e3f-474a-977a-68897d3ee436",

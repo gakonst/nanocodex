@@ -145,6 +145,13 @@ export default {
     context?: ExecutionContext,
   ): Promise<Response> {
     const url = new URL(request.url);
+    // An inference bearer never inherits ambient account/subscription cookies.
+    // Guard before every router, including routes outside the managed proxy.
+    if (/\bnci_/i.test(request.headers.get("authorization") ?? "")
+      && url.pathname !== "/v1/responses" && url.pathname !== "/v1/models"
+      && url.pathname !== "/v1/inference" && !url.pathname.startsWith("/v1/inference/")) {
+      return json({ error: "inference_key_scope" }, { status: 403 });
+    }
     const insecure = enforceHttps(request, env, url);
     if (insecure) return insecure;
     const elevenLabs = await routeElevenLabs(request, env, url);

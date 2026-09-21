@@ -209,6 +209,12 @@ pub(crate) enum RootEvent {
         model: Model,
         skills: Arc<[Skill]>,
     },
+    RoutingHydrated {
+        enabled: bool,
+        provider: Option<String>,
+        model: Option<Model>,
+        effort: Option<ReasoningEffort>,
+    },
     SettingsHydrated {
         effort: ReasoningEffort,
         fast_mode: bool,
@@ -290,6 +296,7 @@ pub(crate) enum SessionListKind {
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum RootEffect {
+    AutoRoute,
     Reload,
     Bug(String),
     Screen,
@@ -1947,7 +1954,10 @@ impl RootNode {
                 && self.queue.component().is_empty(),
             fork: self.can_fork(),
             fast_mode: self.composer.component().fast_mode(),
-            model: self.thread == ThreadState::New,
+            model: self.thread == ThreadState::New && !self.composer.component().auto_routing(),
+            auto_route: self.thread == ThreadState::New
+                && !self.has_active_turns()
+                && !self.composer.component().auto_routing(),
         }
     }
 
@@ -1985,6 +1995,10 @@ impl RootNode {
             Some(ActionsEffect::Trigger(Action::Bug)) => {
                 self.overlay = None;
                 return self.apply_settings_command(SettingsCommand::Bug(String::new()));
+            }
+            Some(ActionsEffect::Trigger(Action::AutoRoute)) => {
+                self.overlay = None;
+                return self.apply_settings_command(SettingsCommand::AutoRoute);
             }
             Some(ActionsEffect::Trigger(Action::Reload)) => {
                 self.overlay = None;
@@ -2151,7 +2165,18 @@ impl RootNode {
         }
     }
 
+    fn routing_settings_locked(&mut self) -> ComponentUpdate<RootEffect> {
+        self.notification = Some(Notification::plain(
+            "Automatic routing controls the model and effort for this thread".into(),
+            Color::Red,
+        ));
+        ComponentUpdate::render(RenderRequest::Immediate)
+    }
+
     fn open_effort(&mut self) -> ComponentUpdate<RootEffect> {
+        if self.composer.component().auto_routing() {
+            return self.routing_settings_locked();
+        }
         self.overlay = Some(Overlay::Effort(Node::new(EffortSelector::new(
             self.composer.component().effort(),
             self.preferred_reasoning_mode == ReasoningMode::Pro,
@@ -2160,6 +2185,9 @@ impl RootNode {
     }
 
     fn open_model(&mut self) -> ComponentUpdate<RootEffect> {
+        if self.composer.component().auto_routing() {
+            return self.routing_settings_locked();
+        }
         if self.thread != ThreadState::New {
             self.notification = Some(Notification::plain(
                 "The model can only be changed before the first prompt".to_owned(),
@@ -2608,6 +2636,9 @@ impl RootNode {
     }
 
     fn apply_effort(&mut self, effort: ReasoningEffort, pro: bool) -> ComponentUpdate<RootEffect> {
+        if self.composer.component().auto_routing() {
+            return self.routing_settings_locked();
+        }
         let reasoning_mode = if pro {
             ReasoningMode::Pro
         } else {
@@ -2663,6 +2694,9 @@ impl RootNode {
     }
 
     fn apply_model(&mut self, model: Model) -> ComponentUpdate<RootEffect> {
+        if self.composer.component().auto_routing() {
+            return self.routing_settings_locked();
+        }
         if self.thread != ThreadState::New {
             self.notification = Some(Notification::plain(
                 "The model can only be changed before the first prompt".to_owned(),
@@ -2921,6 +2955,31 @@ impl RootNode {
                 effects: vec![RootEffect::Bug(description)],
                 render: RenderRequest::Immediate,
             },
+            SettingsCommand::AutoRoute => {
+                if self.thread != ThreadState::New || self.has_active_turns() {
+                    self.notification = Some(Notification::plain(
+                        "Auto routing can only be enabled before the first prompt".into(),
+                        Color::Red,
+                    ));
+                    return ComponentUpdate::render(RenderRequest::Immediate);
+                }
+                if self.composer.component().auto_routing() {
+                    return self.routing_settings_locked();
+                }
+                self.interactive = false;
+                let _ = self
+                    .composer
+                    .component_mut()
+                    .update(ComposerEvent::Activity {
+                        active: true,
+                        status: Some("Enabling automatic routing…".into()),
+                        now: Instant::now(),
+                    });
+                ComponentUpdate {
+                    effects: vec![RootEffect::AutoRoute],
+                    render: RenderRequest::Immediate,
+                }
+            }
             SettingsCommand::Attach => {
                 if !self.action_availability().new_session {
                     self.notification = Some(Notification::plain(
@@ -3913,16 +3972,40 @@ impl Component for RootNode {
                 self.set_skills(skills);
                 ComponentUpdate::render(RenderRequest::Immediate)
             }
+            RootEvent::RoutingHydrated {
+                enabled,
+                provider,
+                model,
+                effort,
+            } => {
+                self.composer
+                    .component_mut()
+                    .update(ComposerEvent::RoutingHydrated {
+                        enabled,
+                        provider,
+                        model,
+                        effort,
+                    });
+                let effort = self.composer.component().effort();
+                self.transcript.component_mut().set_effort(effort);
+                self.subagents.set_effort(effort);
+                if enabled && matches!(self.overlay, Some(Overlay::Model(_) | Overlay::Effort(_))) {
+                    self.overlay = None;
+                }
+                self.refresh_actions();
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
             RootEvent::SettingsHydrated {
                 effort,
                 fast_mode,
                 model,
             } => {
-                self.transcript.component_mut().set_effort(effort);
-                self.subagents.set_effort(effort);
                 self.composer
                     .component_mut()
                     .update(ComposerEvent::SetEffort(effort));
+                let effective_effort = self.composer.component().effort();
+                self.transcript.component_mut().set_effort(effective_effort);
+                self.subagents.set_effort(effective_effort);
                 self.set_fast_mode(fast_mode);
                 self.set_model(model);
                 self.restore_session_activity()
@@ -5385,6 +5468,203 @@ mod live_control_tests {
         root.in_flight_turns = 1;
         assert!(root.update(key(KeyCode::Enter)).effects.is_empty());
         assert!(root.pending_session_list.is_none());
+    }
+
+    #[test]
+    fn slash_autoroute_from_draft_and_actions_never_dispatches_a_prompt() {
+        for typed in [false, true] {
+            for command in ["/autoroute", "/autoroute extra"] {
+                for state in 0..4 {
+                    let mut root = root_with_draft("");
+                    if state == 1 {
+                        root.composer
+                            .component_mut()
+                            .replace_draft("first prompt".into());
+                        assert!(matches!(
+                            root.update(key(KeyCode::Enter)).effects.as_slice(),
+                            [RootEffect::Submit(_)]
+                        ));
+                        root.update(RootEvent::WorkerTurnFinished {
+                            terminal_expected: false,
+                        });
+                    }
+                    root.in_flight_turns = usize::from(state == 2);
+                    root.managed_active_turns = usize::from(state == 3);
+                    let _ = root.sync_live_controls();
+                    assert_eq!(root.action_availability().auto_route, state == 0);
+                    if typed {
+                        for character in command.chars() {
+                            root.update(key(KeyCode::Char(character)));
+                        }
+                        assert!(matches!(root.overlay, Some(super::Overlay::Actions(_))));
+                    } else {
+                        root.composer
+                            .component_mut()
+                            .replace_draft(command.to_owned());
+                    }
+                    let update = root.update(key(KeyCode::Enter));
+                    if state == 0 && command == "/autoroute" {
+                        assert_eq!(update.effects, [RootEffect::AutoRoute]);
+                        assert!(root.notification.is_none());
+                    } else {
+                        assert!(update.effects.is_empty());
+                        let notification = root.notification.as_ref().expect("command error");
+                        assert_eq!(notification.color, ratatui::style::Color::Red);
+                        if state != 0 && command == "/autoroute" {
+                            assert!(
+                                notification
+                                    .message
+                                    .to_string()
+                                    .contains("before the first prompt")
+                            );
+                        }
+                    }
+                    assert!(root.composer.component().draft().is_empty());
+                    assert!(root.overlay.is_none());
+                    assert!(root.queue.component().is_empty());
+                    assert_eq!(root.in_flight_turns, usize::from(state == 2));
+                    assert_eq!(root.managed_active_turns, usize::from(state == 3));
+                    assert_eq!(root.thread == super::ThreadState::New, state != 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn autoroute_pauses_prompt_submission_until_settings_are_hydrated() {
+        let mut root = root_with_draft("/autoroute");
+        assert_eq!(
+            root.update(key(KeyCode::Enter)).effects,
+            [RootEffect::AutoRoute]
+        );
+        assert!(!root.interactive);
+        root.composer
+            .component_mut()
+            .replace_draft("first prompt".into());
+        assert!(root.update(key(KeyCode::Enter)).effects.is_empty());
+        assert_eq!(root.composer.component().draft(), "first prompt");
+        assert!(matches!(root.thread, super::ThreadState::New));
+        assert_eq!(root.in_flight_turns, 0);
+
+        root.update(RootEvent::SettingsHydrated {
+            effort: ReasoningEffort::Medium,
+            fast_mode: false,
+            model: Model::Sol,
+        });
+        assert!(root.interactive);
+        assert!(matches!(
+            root.update(key(KeyCode::Enter)).effects.as_slice(),
+            [RootEffect::Submit(prompt)] if prompt.display_text() == "first prompt"
+        ));
+    }
+
+    #[test]
+    fn autoroute_locks_model_and_effort_commands_while_pending_and_resolved() {
+        for model in [None, Some(Model::Glm53)] {
+            for command in [
+                "/model",
+                "/model sol",
+                "/effort",
+                "/effort high",
+                "/thinking high",
+                "/autoroute",
+            ] {
+                let mut root = root_with_draft(command);
+                root.update(RootEvent::RoutingHydrated {
+                    enabled: true,
+                    provider: Some("Vercel".into()),
+                    model,
+                    effort: model.map(|_| ReasoningEffort::Low),
+                });
+                assert!(!root.action_availability().model);
+                assert!(!root.action_availability().auto_route);
+                let update = root.update(key(KeyCode::Enter));
+                assert!(update.effects.is_empty(), "{command}");
+                assert!(root.overlay.is_none(), "{command}");
+                assert!(
+                    root.notification
+                        .as_ref()
+                        .unwrap()
+                        .message
+                        .to_string()
+                        .contains("Automatic routing")
+                );
+                assert!(root.queue.component().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_autoroute_after_first_prompt_preserves_the_before_first_diagnostic() {
+        for active in [false, true] {
+            let mut root = root_with_draft("/autoroute");
+            root.update(RootEvent::RoutingHydrated {
+                enabled: true,
+                provider: Some("Vercel".into()),
+                model: Some(Model::Glm53),
+                effort: Some(ReasoningEffort::Low),
+            });
+            if active {
+                root.managed_active_turns = 1;
+            } else {
+                root.thread = super::ThreadState::Started;
+            }
+            let update = root.apply_settings_command(super::SettingsCommand::AutoRoute);
+            assert!(update.effects.is_empty());
+            assert!(
+                root.notification
+                    .as_ref()
+                    .unwrap()
+                    .message
+                    .to_string()
+                    .contains("before the first prompt")
+            );
+        }
+    }
+
+    #[test]
+    fn routing_hydration_closes_selectors_and_session_reset_clears_the_route() {
+        for open_model in [false, true] {
+            let mut root = root_with_draft("");
+            if open_model {
+                root.open_model();
+            } else {
+                root.open_effort();
+            }
+            assert!(root.overlay.is_some());
+            root.update(RootEvent::RoutingHydrated {
+                enabled: true,
+                provider: Some("Vercel".into()),
+                model: Some(Model::Glm53),
+                effort: Some(ReasoningEffort::Low),
+            });
+            assert!(root.overlay.is_none());
+            assert_eq!(root.composer.component().model(), Model::Glm53);
+            root.reset_session(
+                Path::new("/workspace"),
+                ReasoningEffort::Medium,
+                ReasoningMode::Standard,
+                ReasoningMode::Standard,
+                super::DraftReset::Clear,
+            );
+            assert!(!root.composer.component().auto_routing());
+            assert_eq!(root.composer.component().model(), Model::default());
+            assert!(root.action_availability().model);
+            // Restore/reconnect can hydrate a different route on the new pane state.
+            root.update(RootEvent::RoutingHydrated {
+                enabled: true,
+                provider: Some("OpenRouter".into()),
+                model: Some(Model::Sol),
+                effort: Some(ReasoningEffort::High),
+            });
+            root.update(RootEvent::SettingsHydrated {
+                effort: ReasoningEffort::Medium,
+                model: Model::Astra,
+                fast_mode: false,
+            });
+            assert_eq!(root.composer.component().model(), Model::Sol);
+            assert_eq!(root.composer.component().effort(), ReasoningEffort::High);
+        }
     }
 
     #[test]

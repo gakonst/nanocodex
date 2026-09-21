@@ -19,7 +19,7 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 const FOOTER: [(&str, &str); 2] = [("↑↓", "scroll"), ("esc", "close")];
-const BINDINGS: [(&str, &str); 32] = [
+const BINDINGS: [(&str, &str); 33] = [
     ("ctrl+x", "mute · unmute microphone while voice is active"),
     ("ctrl+s", "change reasoning effort"),
     ("ctrl+d", "select model · before first prompt"),
@@ -53,6 +53,7 @@ const BINDINGS: [(&str, &str); 32] = [
         "/reload",
         "restart local terminals in their current threads",
     ),
+    ("/autoroute", "enable auto routing · before first prompt"),
     ("/screen", "select a Hand and watch its live screen"),
     ("/zoom", "expand focused pane · restore split layout"),
     ("/", "open actions · empty prompt only"),
@@ -209,6 +210,8 @@ mod tests {
             .map(|cells| cells.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>();
         for expected in [
+            "/autoroute",
+            "enable auto routing · before first prompt",
             "ctrl+x",
             "mute · unmute microphone while voice is active",
             "ctrl+s",
