@@ -102,6 +102,12 @@ jobs:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+      - name: Check CUA bridge and native host lifecycle
+        if: runner.os == 'macOS'
+        run: >-
+          node --test scripts/tests/openai-cua-app-server.test.mjs
+          scripts/tests/openai-cua-native-host.test.mjs
+          scripts/tests/openai-cua-gui-readiness.test.mjs
       - name: Check shared native capture policy and platform adapters
         run: cargo test --locked -p nanocodex-hand
       - name: Check native identity, IPC leases, reconnect, and factory discovery

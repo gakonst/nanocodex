@@ -1,0 +1,78 @@
+[
+  {
+    "group": [
+      "predeploy-buffered",
+      "gak-9-location-unverified",
+      "production-buffered",
+      "auto",
+      "short",
+      false
+    ],
+    "attempts": 1,
+    "completed": 1,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 2857.00875,
+    "meaningful_p95_ms": 2857.00875,
+    "total_p50_ms": 2857.072875,
+    "total_p95_ms": 2857.072875,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "predeploy-buffered",
+      "gak-9-location-unverified",
+      "production-buffered",
+      "cloudflare:openai/gpt-5.6-luna:low",
+      "short",
+      false
+    ],
+    "attempts": 1,
+    "completed": 1,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 2233.9122499999994,
+    "meaningful_p95_ms": 2233.9122499999994,
+    "total_p50_ms": 2233.9288749999996,
+    "total_p95_ms": 2233.9288749999996,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "predeploy-buffered",
+      "gak-9-location-unverified",
+      "production-buffered",
+      "auto",
+      "long-prefix",
+      false
+    ],
+    "attempts": 1,
+    "completed": 1,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 4449.0013340000005,
+    "meaningful_p95_ms": 4449.0013340000005,
+    "total_p50_ms": 4449.022499999999,
+    "total_p95_ms": 4449.022499999999,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "predeploy-buffered",
+      "gak-9-location-unverified",
+      "production-buffered",
+      "cloudflare:openai/gpt-5.6-luna:low",
+      "long-prefix",
+      false
+    ],
+    "attempts": 1,
+    "completed": 1,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 2544.8889579999995,
+    "meaningful_p95_ms": 2544.8889579999995,
+    "total_p50_ms": 2545.013415999998,
+    "total_p95_ms": 2545.013415999998,
+    "p95_caution": "fewer_than_20_samples"
+  }
+]

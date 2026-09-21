@@ -42,7 +42,74 @@ env:
   MANAGED_IMAGE_CACHE_EPOCH: ${{ vars.MANAGED_IMAGE_CACHE_EPOCH || '1' }}
 
 jobs:
+  # Compile independently of image publication; deployment still requires both.
+  worker-build:
+    name: build Cloudflare Worker artifacts
+    if: >-
+      vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
+      ((github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+       github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: cloudflare-worker-build-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          cache-on-failure: true
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
+        with:
+          tool: wasm-bindgen-cli@0.2.126
+      - name: Test Wrangler image cache boundary
+        run: node --test scripts/cloudflare/*.test.mjs
+      - name: Install deployment packages
+        run: pnpm install --frozen-lockfile
+      - name: Install Astra trial package
+        run: npm ci --prefix examples/astra-mpp-trial
+      - name: Prepare managed evaluator asset
+        working-directory: js/managed
+        run: npm run prepare:code-evaluator
+      - name: Build deployable applications
+        run: |
+          pnpm exec turbo run build \
+            --filter nanocodex-terminal \
+            --filter @nanocodex/connect-api \
+            --filter @nanocodex/connect-dialog \
+            --filter @nanocodex/connect-playground \
+            --filter nanocodex-web
+      - name: Build Astra trial application
+        run: npm run build:client --prefix examples/astra-mpp-trial
+      - name: Package same-revision Worker outputs
+        run: node scripts/cloudflare/worker-build.mjs pack
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cloudflare-worker-build
+          path: .ci-worker-build/
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
   preview:
+    needs: worker-build
     if: >-
       vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
       ((github.event_name == 'pull_request' &&
@@ -86,22 +153,12 @@ jobs:
             fi
           fi
           echo "rollout=$rollout" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
-        with:
-          toolchain: stable
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
-        with:
-          cache-on-failure: true
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
-        with:
-          tool: wasm-bindgen-cli@0.2.126
       - name: Test Wrangler image cache boundary
         run: node --test scripts/cloudflare/*.test.mjs
       - name: Install deployment packages
@@ -111,16 +168,12 @@ jobs:
       - name: Prepare managed evaluator asset
         working-directory: js/managed
         run: npm run prepare:code-evaluator
-      - name: Build deployable applications
-        run: |
-          pnpm exec turbo run build \
-            --filter nanocodex-terminal \
-            --filter @nanocodex/connect-api \
-            --filter @nanocodex/connect-dialog \
-            --filter @nanocodex/connect-playground \
-            --filter nanocodex-web
-      - name: Build Astra trial application
-        run: npm run build:client --prefix examples/astra-mpp-trial
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: cloudflare-worker-build
+          path: .ci-worker-build
+      - name: Restore same-revision Worker outputs
+        run: node scripts/cloudflare/worker-build.mjs restore
       # Cloudflare does not issue preview URLs for Durable Object or container
       # Workers. Dry-run those and publish previews only for asset Workers.
       - name: Validate egress Worker
@@ -234,7 +287,7 @@ jobs:
           retention-days: 3
 
   production:
-    needs: managed-images
+    needs: [managed-images, worker-build]
     if: >-
       vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
@@ -270,15 +323,6 @@ jobs:
       - name: Select immutable managed images
         if: steps.current-release.outputs.active == 'true'
         run: node scripts/cloudflare/managed-images.mjs config
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
-        if: steps.current-release.outputs.active == 'true'
-        with:
-          toolchain: stable
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
-        if: steps.current-release.outputs.active == 'true'
-        with:
-          cache-on-failure: true
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
         if: steps.current-release.outputs.active == 'true'
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -287,10 +331,6 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
-        if: steps.current-release.outputs.active == 'true'
-        with:
-          tool: wasm-bindgen-cli@0.2.126
       - name: Test Wrangler image cache boundary
         if: steps.current-release.outputs.active == 'true'
         run: node --test scripts/cloudflare/*.test.mjs
@@ -304,18 +344,14 @@ jobs:
         if: steps.current-release.outputs.active == 'true'
         working-directory: js/managed
         run: npm run prepare:code-evaluator
-      - name: Build deployable applications
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: steps.current-release.outputs.active == 'true'
-        run: |
-          pnpm exec turbo run build \
-            --filter nanocodex-terminal \
-            --filter @nanocodex/connect-api \
-            --filter @nanocodex/connect-dialog \
-            --filter @nanocodex/connect-playground \
-            --filter nanocodex-web
-      - name: Build Astra trial application
+        with:
+          name: cloudflare-worker-build
+          path: .ci-worker-build
+      - name: Restore same-revision Worker outputs
         if: steps.current-release.outputs.active == 'true'
-        run: npm run build:client --prefix examples/astra-mpp-trial
+        run: node scripts/cloudflare/worker-build.mjs restore
       - name: Build agent email service
         if: steps.current-release.outputs.active == 'true'
         run: pnpm --filter nanocodex-email-service run build
