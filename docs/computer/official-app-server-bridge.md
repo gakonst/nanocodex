@@ -56,7 +56,8 @@ metadata, permission caches or decisions. `threadId` selects the bridge's own
 transport thread. `_meta.thread_id` and `_meta.threadId` mirror that official
 thread ID, matching the official GUI's tool-call routing contract. All other
 incoming metadata, including the authentic nested `x-codex-turn-metadata`,
-is forwarded unchanged; no turn ID or authorization is invented. All official tool definitions (including hidden tools,
+is forwarded unchanged; no turn ID or authorization is invented. Catalog entries are sorted by tool name so app-server map iteration order does not
+change attachment identity. All official tool definitions (including hidden tools,
 schemas and metadata) and call results (including `_meta`, image content and
 structured content) are passed through unchanged. App-server errors retain their
 original code, message and data.
@@ -88,3 +89,17 @@ exact catalog/results, metadata fidelity, thread separation, request ordering,
 unsupported upstream requests, error propagation, cancellation, timeout and
 connection loss. They do not establish that every official GUI version supports
 this experimental app-server protocol or every CUA approval flow.
+
+## Verification on macOS
+
+The bridge was exercised against the unmodified official build 9922 through
+Nanocodex's real `connectComputerTools` adapter. Catalog discovery and the first
+`cua.getApp("com.apple.TextEdit")` call succeeded, returning the native accessibility
+tree. Independent official threads were also verified to have separate REPL
+variables. Earlier direct calls through the same official host created a temporary
+TextEdit document, typed synthetic text, undid it, and closed that document.
+
+These checks do not establish a fresh approval prompt/decline cycle: the tested
+applications succeeded under the official host's existing state. Automatic host
+startup and a GUI-ready handshake remain unimplemented; this bridge is not selected
+by the default installer.

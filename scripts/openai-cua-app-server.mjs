@@ -109,7 +109,10 @@ export class AppServer {
       for (const server of result.data) {
         if (server.name !== 'cua_repl') continue;
         if (server.toolsError) throw failure('Official cua_repl catalog discovery failed.');
-        tools = Object.values(server.tools);
+        // App-server tools are a map with no stable iteration order. The
+        // adapter compares catalog arrays across independent connections.
+        // Sort only the outer array; preserve every definition verbatim.
+        tools = Object.values(server.tools).sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
       }
       cursor = result.nextCursor;
       if (cursor && cursors.has(cursor)) throw failure('App server repeated a catalog cursor.');
