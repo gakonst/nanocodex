@@ -811,3 +811,55 @@ test("null provider identity fields reconcile with omitted final fields", async 
   ]);
   assert.deepEqual(state.entries.map(({ text, streaming }) => ({ text, streaming })), [{ text: "Hello!", streaming: false }]);
 });
+
+
+test("child tool provenance isolates colliding call IDs and nested results", async () => {
+  const { applyAgentEvents, initialState } = await import("../agent/transcript.mjs");
+  const call = { turn_id: "turn", call_id: "same", tool: "exec", arguments: {} };
+  const events = [
+    event(1, "tool.call", call),
+    event(2, "tool.call", { ...call, managed_agent_id: 7 }),
+    event(3, "tool.call", { ...call, call_id: "same/code-1", managed_agent_id: 7 }),
+    event(4, "tool.result", { ...call, managed_agent_id: 7, result: "child result", status: "completed" }),
+    event(5, "tool.result", { ...call, result: "root result", status: "completed" }),
+  ];
+  const replay = applyAgentEvents(initialState(), events);
+  const live = events.reduce((state, entry) => applyAgentEvents(state, [entry]), initialState());
+  assert.deepEqual(live.entries, replay.entries);
+  assert.equal(replay.entries.length, 2);
+  const [root, child] = replay.entries;
+  assert.equal(root.responseIdentity.agentId, undefined);
+  assert.equal(child.responseIdentity.agentId, 7);
+  assert.notEqual(root.id, child.id);
+  assert.equal(root.tool.children.length, 0);
+  assert.equal(child.tool.children.length, 1);
+  assert.match(root.tool.output, /root result/);
+  assert.match(child.tool.output, /child result/);
+});
+
+
+test("historical child answers cannot replace a live root answer", async () => {
+  const { mergeHistoryEntries } = await import("../agent/transcript.mjs");
+  const root = { id: "root", turnId: "turn", kind: "assistant", text: '{"answer":"root"}' };
+  const child = { id: "child", turnId: "turn", kind: "assistant", text: '{"report":"child"}', responseIdentity: { agentId: 7 } };
+  const merged = mergeHistoryEntries([root], [child], new Set());
+  assert.ok(merged.includes(root));
+  assert.ok(merged.includes(child));
+});
+
+
+test("root terminal polling cannot attach to a child session with the same ID", async () => {
+  const { applyAgentEvents, initialState } = await import("../agent/transcript.mjs");
+  const events = [
+    event(1, "tool.call", { turn_id: "turn", call_id: "root", tool: "exec_command", arguments: {} }),
+    event(2, "tool.result", { turn_id: "turn", call_id: "root", result: { session_id: 42, output: "root" }, status: "completed" }),
+    event(3, "tool.call", { turn_id: "turn", call_id: "child", tool: "exec_command", arguments: {}, managed_agent_id: 7 }),
+    event(4, "tool.result", { turn_id: "turn", call_id: "child", result: { session_id: 42, output: "child" }, status: "completed", managed_agent_id: 7 }),
+    event(5, "tool.call", { turn_id: "turn", call_id: "poll", tool: "write_stdin", arguments: { session_id: 42 } }),
+    event(6, "tool.result", { turn_id: "turn", call_id: "poll", result: { exit_code: 0, output: " done" }, status: "completed" }),
+  ];
+  const state = applyAgentEvents(initialState(), events);
+  assert.equal(state.entries.length, 2);
+  assert.equal(JSON.parse(state.entries[0].tool.output).output, "root done");
+  assert.equal(JSON.parse(state.entries[1].tool.output).output, "child");
+});

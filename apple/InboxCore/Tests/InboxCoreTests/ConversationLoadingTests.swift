@@ -2,6 +2,61 @@ import XCTest
 @testable import InboxCore
 
 final class ConversationLoadingTests: XCTestCase {
+    func testOpeningConversationCandidatesMatchProjectionIncludingHiddenVoiceInputs() throws {
+        let values: [JSON] = [
+            .object(["type": .string("turn_accepted"), "input": .string("Hello")]),
+            .object(["type": .string("turn_accepted"), "input": .string("<startup_context>internal</startup_context>")]),
+            .object(["type": .string("turn_accepted"), "input": .string("<realtime_delegation><source>tail_flush</source></realtime_delegation>")]),
+            .object(["type": .string("turn_accepted"), "input": .string("<realtime_delegation><transcript_delta>user: Hello\nassistant: Welcome</transcript_delta></realtime_delegation>")]),
+            .object(["type": .string("turn_accepted"), "input": .string("<realtime_delegation><source>voice_bootstrap</source><input>Hello</input></realtime_delegation>")]),
+            .object(["type": .string("turn_completed"), "final_message": .string("")]),
+            .object(["type": .string("turn_completed"), "final_message": .string("Answer")])
+        ] + ["assistant.delta", "assistant.message", "reasoning.summary.delta", "tool.call", "tool.result", "run.error"].map { type in
+            .object(["type": .string("event"), "event": .object(["type": .string(type), "payload": .object(["text": .string("text")])])])
+        }
+        for (index, value) in values.enumerated() {
+            let event = try AgentEvent(value, cursor: String(index))
+            XCTAssertEqual(event.producesConversationRow, transcript([event]).contains { $0.role == "You" || $0.role == "Agent" })
+        }
+    }
+
+    func testToolOnlyTailAtCursor8600FindsOpeningAndHandsOffCompleteProjection() async throws {
+        var requests = 0
+        let fixture = try HTTPFixture { request in
+            requests += 1
+            let before = request.query?.components(separatedBy: "before=").last.flatMap(Int.init) ?? 8601
+            let lower = max(1, before - 128)
+            let events: [JSON] = (lower..<before).map { cursor in
+                if cursor == 1 {
+                    return .object(["cursor": .string("1"), "type": .string("turn_accepted"), "turn_id": .string("t"), "input": .string("Investigate synthetic tools")])
+                }
+                return .object(["cursor": .string(String(cursor)), "type": .string("event"), "turn_id": .string("t"),
+                    "event": .object(["type": .string("tool.result"), "payload": .object([
+                        "tool": .string("web.run"), "call_id": .string("call-\(cursor)"),
+                        "result": .object(["output": .string("Synthetic result")])])])])
+            }
+            let body = try! JSONEncoder().encode(JSON.object(["data": .array(events), "has_more": .bool(lower > 1), "latest_cursor": .string("8600")]))
+            return .init(body: String(decoding: body, as: UTF8.self))
+        }
+        defer { fixture.close() }
+        let client = ManagedClient(credential: try .init(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
+        defer { client.close() }
+        let start = ContinuousClock.now
+        let history = try await client.conversationHistory("synthetic-agent")
+        let opening = start.duration(to: .now)
+        XCTAssertEqual(requests, 68)
+        XCTAssertEqual(history.events.count, 8600)
+        XCTAssertEqual(history.rows.count, 8600)
+        XCTAssertEqual(history.rows.first?.text, "Investigate synthetic tools")
+        XCTAssertEqual(history.latest.rawValue, "8600")
+        XCTAssertFalse(history.hasMore)
+        XCTAssertFalse(history.hasNewer)
+        XCTAssertEqual(history.byteCounts.count, history.events.count)
+        let replay = try await history.projector.rows(history.events)
+        XCTAssertEqual(replay, history.rows)
+        print("TOOL_TAIL_OPENING_PERF events=8600 pages=68 opening=\(opening)")
+    }
+
     func testOpeningProjectionHandoffPerformanceAndStreamCorrectness() async throws {
         // A full 128-event page with tool results and readable text, no private data.
         let events: [JSON] = (1...128).map { index in

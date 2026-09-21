@@ -1,0 +1,465 @@
+{
+  "label": "rust-audio-norewinds-experiment",
+  "publisher_sha256": "8235b40722f382403f16886136d07abbe94b0fb3032596be71f6d72f3212e8ab",
+  "harness_sha256": "ff0987a71ed4f84e16e3b1870687783cbd717b1522a81a5d0acc83e0f2d0b08d",
+  "source_sha256": "d6feb243e1d42b8581687fc37d84ef6a91abe97377878e569b90cb8b445d592d",
+  "requested": {
+    "width": 1280,
+    "height": 720,
+    "fps": 60,
+    "bitrate_kbps": 6000,
+    "cpus": 2,
+    "memory_gib": 4
+  },
+  "host_arch": "amd64 emulation on arm64 Docker host",
+  "synthetic_source": true,
+  "samples": [
+    {
+      "latency_ms": 40.39999997615814,
+      "expected_display_ms": 35.79999997615778,
+      "media_time": 2.117
+    },
+    {
+      "latency_ms": 34.099999994039536,
+      "expected_display_ms": 11.399999994039717,
+      "media_time": 2.504
+    },
+    {
+      "latency_ms": 28.900000005960464,
+      "expected_display_ms": 23.699999982118243,
+      "media_time": 2.921
+    },
+    {
+      "latency_ms": 75.80000001192093,
+      "expected_display_ms": 52.299999994039354,
+      "media_time": 3.338
+    },
+    {
+      "latency_ms": 75.10000002384186,
+      "expected_display_ms": 48.69999999999982,
+      "media_time": 3.736
+    },
+    {
+      "latency_ms": 40,
+      "expected_display_ms": 17.099999994039536,
+      "media_time": 4.138
+    },
+    {
+      "latency_ms": 43.400000005960464,
+      "expected_display_ms": 35.89999999403972,
+      "media_time": 4.556
+    },
+    {
+      "latency_ms": 40.19999998807907,
+      "expected_display_ms": 25.59999998211879,
+      "media_time": 4.971
+    },
+    {
+      "latency_ms": 55.79999998211861,
+      "expected_display_ms": 32.29999998211861,
+      "media_time": 5.388
+    },
+    {
+      "latency_ms": 30.19999998807907,
+      "expected_display_ms": 23.599999988078707,
+      "media_time": 5.79
+    },
+    {
+      "latency_ms": 41.80000001192093,
+      "expected_display_ms": 35.100000000000364,
+      "media_time": 6.204
+    },
+    {
+      "latency_ms": 28,
+      "expected_display_ms": 21.499999976158506,
+      "media_time": 6.61
+    },
+    {
+      "latency_ms": 41.69999998807907,
+      "expected_display_ms": 34.499999982119334,
+      "media_time": 7.021
+    },
+    {
+      "latency_ms": 34.30000001192093,
+      "expected_display_ms": 25.8999999880798,
+      "media_time": 7.421
+    },
+    {
+      "latency_ms": 60.10000002384186,
+      "expected_display_ms": 36.899999999999636,
+      "media_time": 7.839
+    },
+    {
+      "latency_ms": 39.900000005960464,
+      "expected_display_ms": 32.59999998211788,
+      "media_time": 8.237
+    },
+    {
+      "latency_ms": 32,
+      "expected_display_ms": 26.199999982118243,
+      "media_time": 8.644
+    },
+    {
+      "latency_ms": 62.80000001192093,
+      "expected_display_ms": 38.19999998807907,
+      "media_time": 9.047
+    },
+    {
+      "latency_ms": 57.69999998807907,
+      "expected_display_ms": 50.999999976158506,
+      "media_time": 9.462
+    },
+    {
+      "latency_ms": 31.69999998807907,
+      "expected_display_ms": 25.199999982118243,
+      "media_time": 9.865
+    },
+    {
+      "latency_ms": 56.19999998807907,
+      "expected_display_ms": 49.8999999880798,
+      "media_time": 10.279
+    },
+    {
+      "latency_ms": 47.30000001192093,
+      "expected_display_ms": 38.8999999880798,
+      "media_time": 10.678
+    },
+    {
+      "latency_ms": 72.80000001192093,
+      "expected_display_ms": 65.19999998807907,
+      "media_time": 11.113
+    },
+    {
+      "latency_ms": 49.29999998211861,
+      "expected_display_ms": 42.69999998211824,
+      "media_time": 11.497
+    },
+    {
+      "latency_ms": 44.30000001192093,
+      "expected_display_ms": 21.200000000000728,
+      "media_time": 11.879
+    },
+    {
+      "latency_ms": 76.40000000596046,
+      "expected_display_ms": 82.79999999999927,
+      "media_time": 12.345
+    },
+    {
+      "latency_ms": 66.69999998807907,
+      "expected_display_ms": 40.89999997615814,
+      "media_time": 12.715
+    },
+    {
+      "latency_ms": 44.80000001192093,
+      "expected_display_ms": 36.49999999403917,
+      "media_time": 13.132
+    },
+    {
+      "latency_ms": 50.099999994039536,
+      "expected_display_ms": 41.19999999403808,
+      "media_time": 13.529
+    },
+    {
+      "latency_ms": 39.79999998211861,
+      "expected_display_ms": 16.799999976159597,
+      "media_time": 13.928
+    }
+  ],
+  "errors": [],
+  "first_video_ms": 2389.699999988079,
+  "width": 1280,
+  "height": 720,
+  "stats": [
+    {
+      "id": "CP1NBcf0AX_EDRJ1Ps3",
+      "timestamp": 1789863161540.852,
+      "type": "candidate-pair",
+      "availableIncomingBitrate": 194459,
+      "availableOutgoingBitrate": 300000,
+      "bytesDiscardedOnSend": 0,
+      "bytesReceived": 475437,
+      "bytesSent": 21344,
+      "consentRequestsSent": 9,
+      "currentRoundTripTime": 0.001,
+      "lastPacketReceivedTimestamp": 1789863161534,
+      "lastPacketSentTimestamp": 1789863161441,
+      "localCandidateId": "I1NBcf0AX",
+      "nominated": true,
+      "packetsDiscardedOnSend": 0,
+      "packetsReceived": 1864,
+      "packetsSent": 137,
+      "priority": 7926380424115257000,
+      "remoteCandidateId": "IEDRJ1Ps3",
+      "requestsReceived": 11,
+      "requestsSent": 10,
+      "responsesReceived": 10,
+      "responsesSent": 11,
+      "state": "succeeded",
+      "totalRoundTripTime": 0.015,
+      "transportId": "T01",
+      "writable": true
+    },
+    {
+      "id": "CPRfJHnC/0_3aNENTD8",
+      "timestamp": 1789863161540.852,
+      "type": "candidate-pair",
+      "bytesDiscardedOnSend": 0,
+      "bytesReceived": 0,
+      "bytesSent": 2926,
+      "consentRequestsSent": 2,
+      "currentRoundTripTime": 0,
+      "lastPacketSentTimestamp": 1789863146706,
+      "localCandidateId": "IRfJHnC/0",
+      "nominated": false,
+      "packetsDiscardedOnSend": 0,
+      "packetsReceived": 0,
+      "packetsSent": 4,
+      "priority": 9079290933605827000,
+      "remoteCandidateId": "I3aNENTD8",
+      "requestsReceived": 12,
+      "requestsSent": 3,
+      "responsesReceived": 3,
+      "responsesSent": 12,
+      "state": "succeeded",
+      "totalRoundTripTime": 0.001,
+      "transportId": "T01",
+      "writable": true
+    },
+    {
+      "id": "CPagnhMlxe_QkQRA5UM",
+      "timestamp": 1789863161540.852,
+      "type": "candidate-pair",
+      "bytesDiscardedOnSend": 0,
+      "bytesReceived": 0,
+      "bytesSent": 0,
+      "consentRequestsSent": 2,
+      "currentRoundTripTime": 0,
+      "localCandidateId": "IagnhMlxe",
+      "nominated": false,
+      "packetsDiscardedOnSend": 0,
+      "packetsReceived": 0,
+      "packetsSent": 0,
+      "priority": 7926369428998980000,
+      "remoteCandidateId": "IQkQRA5UM",
+      "requestsReceived": 11,
+      "requestsSent": 3,
+      "responsesReceived": 3,
+      "responsesSent": 11,
+      "state": "succeeded",
+      "totalRoundTripTime": 0.002,
+      "transportId": "T01",
+      "writable": false
+    },
+    {
+      "id": "IT01A702376531",
+      "timestamp": 1789863161540.852,
+      "type": "inbound-rtp",
+      "codecId": "CIT01_111_minptime=10;useinbandfec=1",
+      "kind": "audio",
+      "mediaType": "audio",
+      "ssrc": 702376531,
+      "transportId": "T01",
+      "jitter": 0.001,
+      "packetsLost": 0,
+      "packetsReceived": 727,
+      "packetsReceivedWithCe": 0,
+      "packetsReceivedWithEct1": 0,
+      "audioLevel": 0.08941923276467177,
+      "bytesReceived": 233367,
+      "concealedSamples": 0,
+      "concealmentEvents": 0,
+      "estimatedPlayoutTimestamp": 3998851961485,
+      "fecPacketsDiscarded": 0,
+      "fecPacketsReceived": 0,
+      "headerBytesReceived": 8724,
+      "insertedSamplesForDeceleration": 1962,
+      "jitterBufferDelay": 21696,
+      "jitterBufferEmittedCount": 696960,
+      "jitterBufferMinimumDelay": 15494.4,
+      "jitterBufferTargetDelay": 15494.4,
+      "lastPacketReceivedTimestamp": 1789863161532.795,
+      "mid": "1",
+      "packetsDiscarded": 0,
+      "playoutId": "AP",
+      "remoteId": "ROA702376531",
+      "removedSamplesForAcceleration": 1090,
+      "silentConcealedSamples": 0,
+      "totalAudioEnergy": 0.11505378550834278,
+      "totalProcessingDelay": 17511.26016,
+      "totalSamplesDuration": 15.70999999999971,
+      "totalSamplesReceived": 697440,
+      "trackIdentifier": "desktop-audio"
+    },
+    {
+      "id": "IT01V2073910242",
+      "timestamp": 1789863161540.852,
+      "type": "inbound-rtp",
+      "codecId": "CIT01_125_level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
+      "kind": "video",
+      "mediaType": "video",
+      "ssrc": 2073910242,
+      "transportId": "T01",
+      "jitter": 0.003,
+      "packetsLost": 0,
+      "packetsReceived": 1040,
+      "packetsReceivedWithCe": 0,
+      "packetsReceivedWithEct1": 0,
+      "bytesReceived": 197120,
+      "estimatedPlayoutTimestamp": 3998851961513,
+      "firCount": 0,
+      "frameHeight": 720,
+      "frameWidth": 1280,
+      "framesAssembledFromMultiplePackets": 56,
+      "framesDecoded": 858,
+      "framesDropped": 0,
+      "framesPerSecond": 60,
+      "framesReceived": 859,
+      "freezeCount": 0,
+      "headerBytesReceived": 12480,
+      "jitterBufferDelay": 9.393201999999999,
+      "jitterBufferEmittedCount": 858,
+      "jitterBufferMinimumDelay": 11.342485,
+      "jitterBufferTargetDelay": 13.97644,
+      "keyFramesDecoded": 29,
+      "lastPacketReceivedTimestamp": 1789863161535.084,
+      "mid": "0",
+      "nackCount": 0,
+      "pauseCount": 0,
+      "pliCount": 2,
+      "qpSum": 29,
+      "remoteId": "ROV2073910242",
+      "totalAssemblyTime": 0.0041459999999999995,
+      "totalDecodeTime": 0.335702,
+      "totalFreezesDuration": 0,
+      "totalInterFrameDelay": 14.278,
+      "totalPausesDuration": 0,
+      "totalProcessingDelay": 9.801877,
+      "totalSquaredInterFrameDelay": 0.2530300000000024,
+      "trackIdentifier": "desktop"
+    }
+  ],
+  "summary": {
+    "n": 30,
+    "p50_ms": 44.30000001192093,
+    "p95_ms": 75.80000001192093
+  },
+  "microphone_checks": {
+    "source": "nanocodex_remote_mic_95a079ec4fdd55cb9b81dd614719683a_source",
+    "defaults_before": {
+      "sink": "perf",
+      "source": "perf.monitor"
+    },
+    "scope": "Synthetic browser 660Hz -> WebRTC Opus -> isolated host virtual PulseAudio source; no physical microphone or native app UI",
+    "source_present_before_enable": true,
+    "generator": {
+      "frequency_hz": 660,
+      "context_state": "running",
+      "direction": "sendrecv",
+      "track_kind": "audio"
+    },
+    "before_enable": {
+      "samples": 48000,
+      "rms": 0.0,
+      "peak": 0.0,
+      "amplitude_660hz": 0.0,
+      "amplitude_440hz": 0.0
+    },
+    "enable_ack": {
+      "enabled": true,
+      "generation": "3fbbc848-4974-48ab-a2e5-ae42ecae6c2c",
+      "requestID": "ea130db4-abbb-4d2a-a74a-74207f1ca4bd",
+      "type": "microphone",
+      "received_ms": 20038.80000001192
+    },
+    "enabled": {
+      "samples": 48000,
+      "rms": 0.1409873187871024,
+      "peak": 0.20184326171875,
+      "amplitude_660hz": 0.1993777677918046,
+      "amplitude_440hz": 1.6840472331711017e-05
+    },
+    "mute_ack": {
+      "enabled": false,
+      "generation": "3fbbc848-4974-48ab-a2e5-ae42ecae6c2c",
+      "requestID": "c80347d0-ce45-45d4-8e62-261903e81c6e",
+      "type": "microphone",
+      "received_ms": 27660.5
+    },
+    "after_mute": {
+      "samples": 48000,
+      "rms": 0.0,
+      "peak": 0.0,
+      "amplitude_660hz": 0.0,
+      "amplitude_440hz": 0.0
+    },
+    "defaults_after": {
+      "sink": "perf",
+      "source": "nanocodex_remote_mic_95a079ec4fdd55cb9b81dd614719683a_source"
+    },
+    "acks": [
+      {
+        "enabled": true,
+        "generation": "3fbbc848-4974-48ab-a2e5-ae42ecae6c2c",
+        "requestID": "ea130db4-abbb-4d2a-a74a-74207f1ca4bd",
+        "type": "microphone",
+        "received_ms": 20038.80000001192
+      },
+      {
+        "enabled": false,
+        "generation": "3fbbc848-4974-48ab-a2e5-ae42ecae6c2c",
+        "requestID": "c80347d0-ce45-45d4-8e62-261903e81c6e",
+        "type": "microphone",
+        "received_ms": 27660.5
+      }
+    ],
+    "audio_sender_stats": [
+      {
+        "id": "OT01A2773033656",
+        "timestamp": 1789863175394.89,
+        "type": "outbound-rtp",
+        "codecId": "COT01_111_minptime=10;useinbandfec=1",
+        "kind": "audio",
+        "mediaType": "audio",
+        "ssrc": 2773033656,
+        "transportId": "T01",
+        "bytesSent": 51313,
+        "packetsSent": 636,
+        "active": true,
+        "headerBytesSent": 12870,
+        "mediaSourceId": "SA1",
+        "mid": "1",
+        "nackCount": 0,
+        "packetsSentWithEct1": 0,
+        "remoteId": "RIA2773033656",
+        "retransmittedBytesSent": 0,
+        "retransmittedPacketsSent": 0,
+        "targetBitrate": 32000,
+        "totalPacketSendDelay": 0.000686
+      }
+    ],
+    "passed": true
+  },
+  "control_checks": {
+    "simultaneous_hold_seconds": 12,
+    "held_after_renewals": {
+      "buttons": [
+        272,
+        273
+      ],
+      "keys": [],
+      "relative_count": 0
+    },
+    "independent_left_release": {
+      "buttons": [
+        273
+      ],
+      "keys": [],
+      "relative_count": 200
+    },
+    "release_clears_buttons_and_keys": {
+      "buttons": [],
+      "keys": [],
+      "relative_count": 200
+    }
+  }
+}

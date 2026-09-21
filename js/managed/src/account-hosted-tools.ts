@@ -341,7 +341,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   #screenMachines: readonly HostedMachine[] = [];
   #validator: HostedToolsCatalogValidator | undefined;
   #refreshing?: Promise<void>;
-  #loaded = false;
+  #optionalRetryAt = 0;
   #loadedAt = 0;
   #generation = 0;
   #refreshGeneration = 0;
@@ -390,12 +390,28 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
   }
 
   settled(): Promise<void> {
-    return this.#loaded ? Promise.resolve() : this.refresh();
+    // Account inventory is optional. Tool-router readiness must not depend on
+    // an account hand being reachable; explicit discovery still uses refresh().
+    return Promise.resolve();
   }
 
-  invalidate(): void {
+  invalidate(options: { clearCatalog?: boolean } = {}): void {
     this.#loadedAt = 0;
+    this.#optionalRetryAt = 0;
     this.#generation += 1;
+    if (options.clearCatalog) this.#publish({ tools: [], machines: [] });
+  }
+
+  /** Demand-driven background refresh; explicit refresh bypasses failure backoff. */
+  async refreshOptional(maxAgeMs: number): Promise<void> {
+    if (Date.now() < this.#optionalRetryAt) return;
+    const generation = this.#generation;
+    try {
+      await this.refresh(maxAgeMs);
+    } catch (error) {
+      if (generation === this.#generation) this.#optionalRetryAt = Date.now() + 10_000;
+      throw error;
+    }
   }
 
   refresh(maxAgeMs = 0): Promise<void> {
@@ -406,7 +422,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     this.#refreshGeneration = generation;
     const startedAt = Date.now();
     const refreshing = this.#load(generation).then(() => {
-      if (generation === this.#generation) { this.#loaded = true; this.#loadedAt = startedAt; }
+      if (generation === this.#generation) { this.#loadedAt = startedAt; this.#optionalRetryAt = 0; }
     }).finally(() => {
       if (this.#refreshing === refreshing) this.#refreshing = undefined;
     });
@@ -571,33 +587,33 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         } satisfies InvocationRequest),
         signal: context.signal,
       });
-    } catch (error) {
-      if (machineId !== undefined) throw Object.assign(new Error("Account hand transport interrupted", { cause: error }), {
-        code: "host_interrupted",
-      });
-      return failedToolResult("Account hand invocation outcome is unknown", "ambiguous");
+    } catch {
+      return failedToolResult("Hand connection failed after possible dispatch; execution outcome is unknown. The command was not resent.", "ambiguous");
     }
     const responseAt = performance.now();
     if (!response.ok) {
       try { await response.body?.cancel(); } catch { /* No call was admitted for 404/409. */ }
       const preAdmission = response.status === 404 || response.status === 409;
-      if (machineId !== undefined && preAdmission && refreshRoute && !context.signal?.aborted) {
+      if (preAdmission && refreshRoute && !context.signal?.aborted) {
         // Only an explicit routing rejection permits local reconciliation. Keep
         // the original effect identity so the broker replays any prior receipt;
         // transport/decoding failures and server errors never trigger a retry.
         this.invalidate();
-        await this.refresh();
-        const route = this.#machineTools.get(machineToolKey(machineId, name as HostedMachineToolName));
+        try { await this.refresh(); }
+        catch {
+          return failedToolResult("Hand route refresh failed; execution outcome is unknown. The command was not resent.", "ambiguous");
+        }
+        // Personal/MCP tools use exposed names; shell tools use machine keys.
+        const route = machineId === undefined
+          ? this.#tools.get(name)
+          : this.#machineTools.get(machineToolKey(machineId, name as HostedMachineToolName));
         if (route?.routeToken && route.routeToken !== routeToken) {
           return this.#invoke(name, route.routeToken, input, context, machineId, false);
         }
       }
-      if (machineId !== undefined && (preAdmission || response.status >= 500)) {
-        // Local routing recovery was unavailable or exhausted. The Rust owner
-        // retains this effect and its identity for subsequent receipt recovery.
-        throw Object.assign(new Error("Account hand is not ready"), { code: "host_interrupted" });
-      }
-      return failedToolResult("Account hand is unavailable", "unavailable", preAdmission);
+      // HTTP status alone cannot exclude an earlier dispatch of this call ID.
+      // Preserve uncertainty locally instead of interrupting the agent runtime.
+      return failedToolResult(`Hand request failed (HTTP ${response.status}); execution outcome is unknown. The command was not resent after possible dispatch.`, "ambiguous");
     }
     let result: InvocationResult;
     try {
@@ -607,11 +623,8 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         || !Object.hasOwn(result, "metadata") || !Object.hasOwn(result, "value")) {
         throw new Error("invalid account hand result");
       }
-    } catch (error) {
-      if (machineId !== undefined) throw Object.assign(new Error("Account hand response could not be decoded; invocation outcome is unknown", { cause: error }), {
-        code: "host_interrupted",
-      });
-      return failedToolResult("Account hand invocation outcome is unknown", "ambiguous");
+    } catch {
+      return failedToolResult("Hand response could not be decoded; execution outcome is unknown. The command was not resent.", "ambiguous");
     }
     if (machineId !== undefined && result.pre_admission_unavailable === true) {
       // The broker checked its call ledger: this invocation was never admitted.

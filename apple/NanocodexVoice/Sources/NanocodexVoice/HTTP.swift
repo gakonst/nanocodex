@@ -69,14 +69,14 @@ final class HTTPTransport: @unchecked Sendable {
         if let idempotencyKey { request.setValue(idempotencyKey, forHTTPHeaderField: "Idempotency-Key") }
         return request
     }
-    func data(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
+    func data(_ request: URLRequest, timeout: Duration = .seconds(20)) async throws -> (Data, HTTPURLResponse) {
         let operation = request.url?.lastPathComponent ?? "unknown"
         let timingOperation = ["start", "stop", "delegate", "calls", "prefetch", "context"].contains(operation) ? operation : "request"
         voiceTiming("http.begin \(timingOperation)")
         do {
             let (data, response) = try await withThrowingTaskGroup(of: (Data, URLResponse).self) { group in
                 group.addTask { try await ManagedAccess.data(for: request, using: self.session) }
-                group.addTask { try await Task.sleep(for: .seconds(20)); throw URLError(.timedOut) }
+                group.addTask { try await Task.sleep(for: timeout); throw URLError(.timedOut) }
                 defer { group.cancelAll() }
                 return try await group.next()!
             }
@@ -94,8 +94,8 @@ final class HTTPTransport: @unchecked Sendable {
             throw ManagedError(code: "network_error", message: "We could not reach Nanocodex. Check your connection and try again.")
         }
     }
-    func json<T: Decodable>(_ request: URLRequest, as type: T.Type = T.self) async throws -> T {
-        let (data, _) = try await data(request)
+    func json<T: Decodable>(_ request: URLRequest, as type: T.Type = T.self, timeout: Duration = .seconds(20)) async throws -> T {
+        let (data, _) = try await data(request, timeout: timeout)
         do { return try JSONDecoder().decode(type, from: data) } catch { throw ManagedError.invalidResponse }
     }
     func close() { session.invalidateAndCancel() }
@@ -108,6 +108,16 @@ func responseError(_ data: Data, response: HTTPURLResponse) -> ManagedError {
     let retry = Double(response.value(forHTTPHeaderField: "Retry-After") ?? "")
         ?? (body["retry_after"] == .null ? nil : body["retry_after"].number)
     var message = body["message"].string
+    if message.isEmpty {
+        let providerMessages = [
+            "elevenlabs_not_configured": "Connect your ElevenLabs API key in voice settings.",
+            "elevenlabs_credentials_or_permissions_invalid": "Check your ElevenLabs API key and its voice and speech permissions.",
+            "elevenlabs_rate_or_quota_limit": "ElevenLabs reached a rate or credit limit. Check your plan before trying again.",
+            "elevenlabs_request_rejected": "ElevenLabs rejected this request. Check the selected voice and complete any required verification in ElevenLabs.",
+            "elevenlabs_unavailable": "ElevenLabs is unavailable. Please try again later."
+        ]
+        message = providerMessages[code] ?? ""
+    }
     if message.isEmpty {
         switch response.statusCode {
         case 401: message = "Your sign-in expired. Sign in again to continue."

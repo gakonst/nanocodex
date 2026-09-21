@@ -21,6 +21,7 @@ use crate::{
 const EXEC_GRAMMAR: &str = r"start: /[\s\S]+/";
 const EXEC_DESCRIPTION: &str = r"Run JavaScript in the embedded host.
 - `tools` contains the application-defined async tools listed below.
+- `ALL_TOOLS` lists the callable nested tools for this execution. Separately exposed host tools may require direct invocation; do not assume they have a `tools` binding.
 - `text(value)` and `image(value)` append output for the model.
 - `generatedImage(result)` appends an image-generation result for the model.
 - `store(key, value)` and `load(key)` retain serializable values across calls.

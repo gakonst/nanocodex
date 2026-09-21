@@ -1,3 +1,4 @@
+import { PrivateBrowserNoActiveTouch } from "../src/browser-vault";
 import { describe, expect, it, vi } from "vitest";
 import { privateVaultTakeover, type BrowserVaultTakeoverAction } from "../src/browser-vault-takeover";
 const identity = { vault_id: "a".repeat(22), target_id: "tab1", expected_origin: "https://login.example" };
@@ -126,13 +127,13 @@ it("observation cancels an active gesture before capturing a recovery frame", as
 });
 
 it("recovers uncertain state when Chrome confirms there is no touch sequence", async () => {
-  const cdp = fixture(method => { if (method === "Input.dispatchTouchEvent") throw new Error("Protocol error (Input.dispatchTouchEvent): Must send a TouchStart first to start a new touch."); });
+  const cdp = fixture(method => { if (method === "Input.dispatchTouchEvent") throw new PrivateBrowserNoActiveTouch(); });
   const state = {active:false,uncertain:true};
   await privateVaultTakeover(cdp,identity,{action:"observe"},state);
   expect(state).toEqual({active:false,uncertain:false});
 });
-it("keeps recovery blocked on other cancellation failures", async () => {
-  const cdp = fixture(method => { if (method === "Input.dispatchTouchEvent") throw new Error("Session closed"); });
+it.each(["Session closed", "Must send a TouchStart first to start a new touch."])("keeps recovery blocked on unclassified cancellation failures (%s)", async message => {
+  const cdp = fixture(method => { if (method === "Input.dispatchTouchEvent") throw new Error(message); });
   const state = {active:false,uncertain:true};
   await expect(privateVaultTakeover(cdp,identity,{action:"observe"},state)).rejects.toThrow(failure);
   expect(state.uncertain).toBe(true);

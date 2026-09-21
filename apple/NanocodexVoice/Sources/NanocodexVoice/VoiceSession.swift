@@ -141,6 +141,11 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     private var agentEventsReady = false
     private var backendReady = false
     private var inputGeneration: UInt64 = 0
+    private let speechPlayer = VoiceSpeechPlayer()
+    private var speechCaptions = VoiceSpeechCaptions()
+    private var elevenLabs: ElevenLabs?
+    private var speechVoiceID: String?
+    private var speechEnabled = true
     private var mediaDeadline: Task<Void, Never>?
     private var startedTurnID: String?
     private var activeTurnID: String?
@@ -255,6 +260,9 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         let voiceTransport = try transportOverride ?? ManagedVoiceTransport(credential: .init(origin: configuration.baseURL.absoluteString, apiKey: configuration.apiKey), agentID: configuration.agentID)
         voiceTiming("transport.prepared")
         transport = voiceTransport
+        elevenLabs = settings.outputProvider == .elevenlabs ? try ElevenLabs(configuration: configuration) : nil
+        speechVoiceID = settings.elevenLabsVoiceId
+        speechCaptions = VoiceSpeechCaptions(); speechEnabled = true
         let id = ManagedVoiceProtocol.sessionID()
         sessionID = id
         var callSettings = settings
@@ -356,7 +364,7 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
                 let stats = await audio.statistics()
                 guard let self, self.generation == token else { return }
                 self.inputLevel = self.isMuted ? 0 : min(1, max(0, stats.inputLevel))
-                self.outputLevel = stats.playbackEnabled ? min(1, max(0, stats.outputLevel)) : 0
+                self.outputLevel = self.elevenLabs != nil ? self.speechPlayer.level : (stats.playbackEnabled ? min(1, max(0, stats.outputLevel)) : 0)
                 self.audioBytesSent = stats.bytesSent; self.audioBytesReceived = stats.bytesReceived
                 if voiceTimingEnabled {
                     let outputActive = stats.playbackEnabled && stats.outputLevel > 0.001
@@ -563,11 +571,26 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         recover(effects.undeliveredAnswers)
         if let next = effects.inputGeneration {
             guard next >= inputGeneration else { return }
+            if next > inputGeneration { speechPlayer.cancel(); speechCaptions.interrupt() }
             inputGeneration = next
         }
         if effects.ready { backendReady = true; becomeActiveIfReady() }
-        if effects.playbackEnabled == false { peer?.setPlaybackEnabled(false); outputLevel = 0 }
-        let visibleTranscripts = effects.transcripts.flatMap { transcript in
+        if effects.playbackEnabled == false {
+            speechEnabled = false; speechPlayer.cancel(); speechCaptions.interrupt()
+            peer?.setPlaybackEnabled(false); outputLevel = 0
+        }
+        if effects.playbackEnabled == true { speechEnabled = true }
+        if speechEnabled, let elevenLabs, let voiceID = speechVoiceID {
+            for transcript in effects.transcripts {
+                if let text = speechCaptions.consume(transcript) {
+                    speechPlayer.enqueue(audio: { try await elevenLabs.speech(text: text, voiceID: voiceID) }, onError: { [weak self] error in
+                        guard let self, self.generation == token else { return }
+                        self.errorMessage = Self.safeError(error)
+                    })
+                }
+            }
+        }
+        let visibleTranscripts = effects.transcripts.filter { elevenLabs == nil || !speechCaptions.isSuppressed($0) }.flatMap { transcript in
             RealtimeTranscript.project(transcript.text, isPartial: !transcript.isFinal)?.map {
                 ManagedVoiceTranscript(speaker: $0.speaker, text: $0.text, isFinal: transcript.isFinal)
             } ?? [transcript]
@@ -604,7 +627,7 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
                     try peer.send(frame)
                     if effects.acknowledgeFrames { protocolState?.framesSent(1) }
                 }
-                if effects.playbackEnabled == true { peer.setPlaybackEnabled(true) }
+                if effects.playbackEnabled == true { peer.setPlaybackEnabled(elevenLabs == nil) }
             } catch { fail(error) }
         }
     }
@@ -624,6 +647,7 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     /// Call at the text input boundary, before admitting or steering coding work.
     public func noteTypedInput(conversationID: String? = nil) {
         guard isEngaged, conversationID == nil || conversationID == self.conversationID else { return }
+        speechPlayer.cancel(); speechCaptions.interrupt(); speechEnabled = false
         peer?.setPlaybackEnabled(false); outputLevel = 0
         if let effects = protocolState?.noteTypedInput() { apply(effects, token: generation) }
     }
@@ -635,8 +659,8 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     }
 
     public func cancelTurn() {
-        guard let transport, let turnID = startedTurnID else { return }
         noteTypedInput()
+        guard let transport, let turnID = startedTurnID else { return }
         let token = generation
         Task {
             do {
@@ -648,6 +672,7 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
 
     public func stop() {
         // End audio ownership before recovery or durable cleanup does any work.
+        speechPlayer.cancel(); elevenLabs = nil
         peer?.close(); peer = nil
         if let effects = protocolState?.closeEffects() { recover(effects.undeliveredAnswers) }
         transcripts = transcripts.map { .init(id: $0.id, speaker: $0.speaker, text: $0.text, recovered: $0.recovered) }

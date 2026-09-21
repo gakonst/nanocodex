@@ -2,17 +2,11 @@ use nanocodex_tools::{ToolInput, contract::ToolOutputWire, standard::StandardToo
 use serde::{Deserialize, Serialize};
 use serde_json::value::RawValue;
 
-#[derive(Clone, Copy, Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 #[serde(untagged)]
 pub(crate) enum GuestTool {
     Standard(StandardTool),
-    Computer(ComputerToolKind),
-}
-#[derive(Clone, Copy, Deserialize, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub(crate) enum ComputerToolKind {
-    Cua,
-    CuaReset,
+    Computer { name: String },
 }
 impl From<StandardTool> for GuestTool {
     fn from(tool: StandardTool) -> Self {
@@ -24,6 +18,7 @@ impl From<StandardTool> for GuestTool {
 #[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
 pub(crate) enum SessionRequest {
     Ready(ReadyRequest),
+    ComputerCatalog(ComputerCatalogRequest),
     Tool(ToolRequest),
     WriteFile(WriteFileRequest),
     CreateDirectory(CreateDirectoryRequest),
@@ -40,6 +35,7 @@ impl SessionRequest {
     pub const fn id(&self) -> u64 {
         match self {
             Self::Ready(request) => request.id,
+            Self::ComputerCatalog(request) => request.id,
             Self::Tool(request) => request.id,
             Self::WriteFile(request) => request.id,
             Self::CreateDirectory(request) => request.id,
@@ -57,6 +53,7 @@ impl SessionRequest {
 #[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
 pub(crate) enum SessionResponse {
     Ready(ControlResponse),
+    ComputerCatalog(ComputerCatalogResponse),
     Tool(ToolResponse),
     WriteFile(ControlResponse),
     CreateDirectory(ControlResponse),
@@ -73,6 +70,7 @@ impl SessionResponse {
     pub const fn id(&self) -> u64 {
         match self {
             Self::Ready(response) => response.id,
+            Self::ComputerCatalog(response) => response.id,
             Self::Tool(response) => response.id,
             Self::WriteFile(response)
             | Self::CreateDirectory(response)
@@ -85,6 +83,20 @@ impl SessionResponse {
             Self::Output(response) => response.id,
         }
     }
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ComputerCatalogRequest {
+    pub id: u64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ComputerCatalogResponse {
+    pub id: u64,
+    pub tools: Option<Vec<nanocodex_computer::ProviderTool>>,
+    pub error: Option<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -288,6 +300,65 @@ mod tests {
         SessionRequest, SessionResponse, ShutdownRequest, TerminateToolProcessesRequest,
         ToolRequest, ToolResponse, WireToolContext, WireToolInput, WriteFileRequest,
     };
+
+    #[test]
+    fn computer_catalog_preserves_upstream_contract_and_metadata() {
+        let catalog = json!([{
+            "name": "provider_extra",
+            "description": "Upstream documentation",
+            "inputSchema": {"type": "object", "properties": {"value": {"type": "number"}}},
+            "outputSchema": {"type": "object"},
+            "annotations": {"readOnlyHint": true},
+            "_meta": {"ui": {"visibility": ["app"]}}
+        }]);
+        let request = SessionRequest::ComputerCatalog(super::ComputerCatalogRequest { id: 15 });
+        assert_eq!(
+            serde_json::to_value(request).unwrap(),
+            json!({"kind":"computer_catalog","payload":{"id":15}})
+        );
+        let response = SessionResponse::ComputerCatalog(super::ComputerCatalogResponse {
+            id: 15,
+            tools: Some(serde_json::from_value(catalog.clone()).unwrap()),
+            error: None,
+        });
+        let encoded = serde_json::to_value(response).unwrap();
+        assert_eq!(encoded["payload"]["tools"], catalog);
+        let decoded: SessionResponse = serde_json::from_value(encoded).unwrap();
+        assert_eq!(decoded.id(), 15);
+    }
+
+    #[test]
+    fn computer_call_carries_arbitrary_provider_name_and_arguments() {
+        let request = ToolRequest {
+            id: 16,
+            tool: super::GuestTool::Computer {
+                name: "provider_extra".to_owned(),
+            },
+            input: WireToolInput::from(ToolInput::Function(
+                to_raw_value(&json!({"nested":{"value":[1,true,null]}})).unwrap(),
+            )),
+            context: WireToolContext {
+                model: "model".into(),
+                session_id: "session".into(),
+                call_id: "call".into(),
+                output_token_budget: 100,
+            },
+        };
+        let encoded = serde_json::to_value(&request).unwrap();
+        assert_eq!(encoded["tool"], json!({"name":"provider_extra"}));
+        let decoded: ToolRequest = serde_json::from_value(encoded).unwrap();
+        let super::GuestTool::Computer { name } = decoded.tool else {
+            panic!("provider call became a standard tool")
+        };
+        assert_eq!(name, "provider_extra");
+        let ToolInput::Function(arguments) = decoded.input.into() else {
+            panic!("lost provider arguments")
+        };
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(arguments.get()).unwrap(),
+            json!({"nested":{"value":[1,true,null]}})
+        );
+    }
 
     #[test]
     fn readiness_request_has_a_stable_typed_shape() {

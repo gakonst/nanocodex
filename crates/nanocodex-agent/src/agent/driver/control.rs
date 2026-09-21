@@ -281,6 +281,9 @@ pub(super) async fn begin_shutdown(
                 drop(route_result.send(Err(NanocodexError::AgentStopped)));
                 drop(turn_result);
             }
+            Command::Snapshot { result } => {
+                drop(result.send(Err(NanocodexError::AgentStopped)));
+            }
             Command::Fork { result, .. } => {
                 drop(result.send(Err(NanocodexError::AgentStopped)));
             }
@@ -334,6 +337,15 @@ pub(super) fn handle_idle_command<S>(
     S::Future: AgentSend,
 {
     match command {
+        Command::Snapshot { result } => {
+            drop(result.send(Ok(ChildRuntimeSnapshot {
+                session_id: session_id.to_owned(),
+                model: defaults.model,
+                thinking: defaults.thinking,
+                fast_mode: defaults.fast_mode,
+                conversation: latest.map(|checkpoint| checkpoint.snapshot()),
+            })));
+        }
         Command::Fork { checkpoint, result } => {
             let checkpoint = checkpoint.or_else(|| latest.cloned());
             let outcome = checkpoint
@@ -351,6 +363,7 @@ pub(super) fn handle_idle_command<S>(
             drop(result.send(outcome));
         }
         Command::Spawn {
+            restore,
             options,
             host_context,
             result,
@@ -358,6 +371,9 @@ pub(super) fn handle_idle_command<S>(
             let model = options.model.unwrap_or(defaults.model);
             let thinking = options.thinking.unwrap_or(defaults.thinking);
             let outcome = validate_model_thinking(model, thinking).and_then(|()| {
+                if let Some(snapshot) = restore {
+                    return spawner.restore_child(snapshot, workspace, session_id, host_context);
+                }
                 spawner.spawn_clean(
                     workspace,
                     session_id,

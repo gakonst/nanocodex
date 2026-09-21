@@ -62,6 +62,20 @@ def stage_libwebrtc(helper, output, target):
         "licenses/libwebrtc.md. Native versions are pinned in Cargo.lock.\n")
 
 
+def stage_recorder(output, target):
+    """Compile the local recorder at package build time, never on the user's machine."""
+    architecture = {"aarch64": "arm64", "x86_64": "x86_64"}[target.split("-", 1)[0]]
+    recorder = output / "bin/nanocodex-voice-recorder"
+    run("xcrun", "swiftc", "-O", "-target", architecture + "-apple-macosx14.0",
+        ROOT / "scripts/voice-recorder.swift",
+        "-Xlinker", "-sectcreate", "-Xlinker", "__TEXT", "-Xlinker", "__info_plist",
+        "-Xlinker", ROOT / "scripts/voice-recorder-Info.plist", "-o", recorder)
+    for dependency in dependencies(recorder):
+        if not dependency.startswith(("/usr/lib/", "/System/Library/")):
+            raise ValueError(f"non-system recorder dependency: {dependency}")
+    run("codesign", "--force", "--sign", "-", recorder)
+
+
 def dependencies(path):
     return [line.strip().split(" (compatibility")[0] for line in run("otool", "-L", path).splitlines()[1:]]
 
@@ -137,6 +151,8 @@ def main():
             packaged_helper = staged / "bin" / helper.name
             shutil.copy2(helper, packaged_helper)
             relocate_prepared_helper(packaged_helper, staged, target)
+        if target.endswith("-apple-darwin"):
+            stage_recorder(staged, target)
         if not libwebrtc:
             shutil.copytree(VENDOR / "runtime/licenses", staged / "licenses")
             shutil.copy2(VENDOR / "runtime/NOTICE.md", staged / "NOTICE.md")

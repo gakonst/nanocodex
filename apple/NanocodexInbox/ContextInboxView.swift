@@ -10,7 +10,6 @@ struct ContextInboxView: View {
     @State private var sourceFilter = ""
     @State private var showAdd = false
     @State private var showSetup = false
-    @State private var removeAll = false
     private var sources: [String] {
         Array(Set(model.contextItems.map { $0.input.sourceKey }).union(model.contextRoutes.keys)).sorted()
     }
@@ -87,7 +86,7 @@ struct ContextInboxView: View {
                 }
                 if !model.contextItems.isEmpty {
                     Section {
-                        Button("Remove all captured context", role: .destructive) { removeAll = true }
+                        Button("Remove all captured context", role: .destructive) { model.removeContext(Set(model.contextItems.map(\.id))) }
                         Text("Removing local context does not remove text already sent in agent conversations.").font(.footnote).foregroundStyle(.secondary)
                     }
                 }
@@ -103,9 +102,6 @@ struct ContextInboxView: View {
             }
             .sheet(isPresented: $showAdd) { AddContextView(model: model) }
             .sheet(isPresented: $showSetup) { ContextSetupView() }
-            .confirmationDialog("Remove all captured context from this device?", isPresented: $removeAll, titleVisibility: .visible) {
-                Button("Remove all", role: .destructive) { model.removeContext(Set(model.contextItems.map(\.id))) }
-            }
             .onAppear { model.refreshContext() }
             .onChange(of: scenePhase) { _, phase in if phase == .active { model.refreshContext() } }
             .refreshable { model.refreshContext() }
@@ -172,7 +168,6 @@ private struct ContextDetailView: View {
     let item: CapturedContext
     @Environment(\.dismiss) private var dismiss
     @State private var agentID = ""
-    @State private var remove = false
     var body: some View {
         List {
             Section("Source") {
@@ -199,13 +194,10 @@ private struct ContextDetailView: View {
                 Text("You can write your request before sending. The captured text will be included as reference material.").font(.footnote).foregroundStyle(.secondary)
             }
             if !item.input.text.isEmpty { Section("Content") { Text(item.input.text).textSelection(.enabled) } }
-            Section { Button("Remove capture", role: .destructive) { remove = true } }
+            Section { Button("Remove capture", role: .destructive) { model.removeContext([item.id]); dismiss() } }
         }
         .navigationTitle(item.input.source)
         .onAppear { agentID = model.focused?.id ?? "" }
-        .confirmationDialog("Remove this captured context?", isPresented: $remove, titleVisibility: .visible) {
-            Button("Remove", role: .destructive) { model.removeContext([item.id]); dismiss() }
-        }
     }
 }
 

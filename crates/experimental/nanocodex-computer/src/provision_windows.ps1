@@ -108,6 +108,8 @@ foreach ($file in @($node, $repl, $provider, $codex, (Join-Path $modules '@oai\s
     executable = $node; args = @($provider); transport = 'mcp'
     environment = @{
         CUA_REPL_NODE_REPL_PATH = $repl; CUA_REPL_ENABLED_SURFACES = 'browser,computer'
+        # Match the official host's Tab.ax capability used by browser tab lookup/creation.
+        BROWSER_USE_TINYSKY_ENABLED = '1'
         NODE_REPL_NODE_PATH = $node; NODE_REPL_NODE_MODULE_DIRS = $modules
         NODE_REPL_TRUSTED_CODE_PATHS = $modules; CODEX_CLI_PATH = $codex
     }

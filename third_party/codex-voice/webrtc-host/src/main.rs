@@ -1,5 +1,7 @@
 //! Rust host for libWebRTC's native audio device, echo canceller and adaptive
 //! NetEq playout. Reuses the application's bounded, credential-free control pipe.
+mod pcm;
+
 use anyhow::{Context, Result, bail, ensure};
 use codex_realtime_webrtc::{AudioControls, AudioState, Message, encode_frame, read_message};
 use libwebrtc::{
@@ -114,6 +116,28 @@ fn main() {
                         media.as_ref().unwrap().controls(controls)?;
                         Message::AudioControlsApplied {}
                     }
+                    Message::BeginPcm {
+                        generation,
+                        sample_rate,
+                    } if phase == 5 => {
+                        let status = media.as_mut().unwrap().pcm.begin(generation, sample_rate);
+                        Message::PcmState { generation, status }
+                    }
+                    Message::WritePcm {
+                        generation,
+                        samples,
+                    } if phase == 5 => {
+                        let status = media.as_mut().unwrap().pcm.write(generation, &samples);
+                        Message::PcmState { generation, status }
+                    }
+                    Message::DrainPcm { generation } if phase == 5 => {
+                        let status = media.as_mut().unwrap().pcm.drain(generation);
+                        Message::PcmState { generation, status }
+                    }
+                    Message::CancelPcm { generation } if phase == 5 => {
+                        let status = media.as_mut().unwrap().pcm.cancel(generation);
+                        Message::PcmState { generation, status }
+                    }
                     Message::InspectAudio {} if phase >= 2 => {
                         let state = match &media {
                             Some(media) => media.levels().await?,
@@ -147,6 +171,7 @@ fn reply(message: Message) -> Result<()> {
 
 struct Media {
     factory: PeerConnectionFactory,
+    pcm: pcm::Pcm,
     peer: PeerConnection,
     microphone: RtcAudioTrack,
     channel: DataChannel,
@@ -155,6 +180,7 @@ struct Media {
 }
 impl Media {
     async fn start() -> Result<(Self, String)> {
+        let pcm = pcm::Pcm::new();
         let factory = PeerConnectionFactory::default();
         factory.set_adm_recording_enabled(false);
         factory.set_adm_playout_enabled(false);
@@ -173,6 +199,7 @@ impl Media {
         channel.on_message(Some(Box::new(|_| {})));
         let media = Self {
             factory,
+            pcm,
             peer,
             microphone,
             channel,
@@ -258,6 +285,7 @@ impl Media {
                 _ => {}
             }
         }
+        state.speaker_peak = state.speaker_peak.max(self.pcm.take_peak());
         Ok(state)
     }
 }

@@ -1,3 +1,4 @@
+import { routeElevenLabs, type ElevenLabsEnv } from "./elevenLabs.ts";
 import { webSearchRequest } from "./webSearchRequest.ts";
 import {
   CHATGPT_LOGIN_TTL_MS,
@@ -100,7 +101,7 @@ const GIT_SHA_PATTERN = /^[0-9a-f]{40}$/;
 const LOCAL_SPONSORED_TRIAL_RESET = typeof __NANOCODEX_LOCAL_SPONSORED_TRIAL_RESET__ !== "undefined"
   && __NANOCODEX_LOCAL_SPONSORED_TRIAL_RESET__;
 
-type WorkerEnv = GitStorageEnv & ThreadGitStorageEnv & EvalStorageEnv & ChatGptEgressEnv
+type WorkerEnv = ElevenLabsEnv & GitStorageEnv & ThreadGitStorageEnv & EvalStorageEnv & ChatGptEgressEnv
   & XProxyEnv
   & AccountFundingProxyEnv
   & ConnectDialogProxyEnv
@@ -144,8 +145,17 @@ export default {
     context?: ExecutionContext,
   ): Promise<Response> {
     const url = new URL(request.url);
+    // An inference bearer never inherits ambient account/subscription cookies.
+    // Guard before every router, including routes outside the managed proxy.
+    if (/\bnci_/i.test(request.headers.get("authorization") ?? "")
+      && url.pathname !== "/v1/responses" && url.pathname !== "/v1/models"
+      && url.pathname !== "/v1/inference" && !url.pathname.startsWith("/v1/inference/")) {
+      return json({ error: "inference_key_scope" }, { status: 403 });
+    }
     const insecure = enforceHttps(request, env, url);
     if (insecure) return insecure;
+    const elevenLabs = await routeElevenLabs(request, env, url);
+    if (elevenLabs != null) return elevenLabs;
     const connectorCallbackReturn = await routeLocalConnectorCallbackReturn(request, env, url);
     if (connectorCallbackReturn != null) return connectorCallbackReturn;
     const accountFunding = await routeAccountFunding(request, env, url);

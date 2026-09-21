@@ -31,7 +31,7 @@ function provider(mode = "ok") {
       } else if (request.method === 'tools/call') result = { content: [{ type: 'text', text: JSON.stringify(request.params) }], _meta: { provider: 'fixture' } };
       process.stdout.write(JSON.stringify({jsonrpc:'2.0', id:request.id, result})+'\\n');
     });`;
-  return { options: { executable: process.execPath, args: ["-e", script], transport: "mcp" }, catalog };
+  return { options: { executable: process.execPath, args: ["-e", script] }, catalog };
 }
 
 test("discovers all paginated provider contracts without rewriting schemas or optional metadata", async t => {
@@ -75,7 +75,7 @@ test("matches Codex visibility semantics before emitting the account hosted cata
     name: `visibility_${index}`, inputSchema: { type: "object" },
     ...(meta === undefined ? {} : { _meta: meta }),
   }));
-  const attachment = createComputerTools({ executable: process.execPath, transport: "mcp", definitions });
+  const attachment = createComputerTools({ executable: process.execPath, definitions });
   t.after(attachment.close);
   const visible = cases.flatMap(([, visible], index) => visible ? [`mcp__cua_repl__visibility_${index}`] : []);
   assert.deepEqual(attachment.definitions, definitions);
@@ -106,4 +106,13 @@ test("provider metadata preserves stable turns across calls and never substitute
       ...(turnId === undefined ? {} : { turn_id: turnId }),
     });
   }
+});
+
+
+test("adapter does not reinterpret timeouts on any provider tool", async t => {
+  const attachment = await connectComputerTools(provider().options);
+  t.after(attachment.close);
+  const input = { timeout_ms: 1, providerOption: "unchanged" };
+  const result = await attachment.tool("future_tool").handler(input, context);
+  assert.deepEqual(JSON.parse(result.output[0].text).arguments, input);
 });

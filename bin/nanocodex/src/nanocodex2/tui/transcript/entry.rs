@@ -44,20 +44,44 @@ pub(crate) struct TranscriptEntry {
 
 #[derive(Clone, Debug)]
 pub(crate) enum EntryKind {
-    User { text: String },
-    Assistant { text: String, complete: bool },
-    Reasoning { text: String },
+    User {
+        text: String,
+    },
+    Assistant {
+        text: String,
+        complete: bool,
+        agent_id: Option<u64>,
+    },
+    Reasoning {
+        text: String,
+    },
     Tool(ToolEntry),
     DirectedMessage(DirectedMessageEntry),
-    ForkedFrom { session_id: String },
-    EffortChanged { to: ReasoningEffort },
-    FastModeChanged { enabled: bool },
+    ForkedFrom {
+        session_id: String,
+    },
+    EffortChanged {
+        to: ReasoningEffort,
+    },
+    FastModeChanged {
+        enabled: bool,
+    },
     ReflectionStarted,
-    Interrupted { count: usize },
-    ContextCompacted { duration_ns: u64 },
-    TurnCompleted { duration_ns: u64 },
-    ContextCompactionFailed { message: String },
-    Error { message: String },
+    Interrupted {
+        count: usize,
+    },
+    ContextCompacted {
+        duration_ns: u64,
+    },
+    TurnCompleted {
+        duration_ns: u64,
+    },
+    ContextCompactionFailed {
+        message: String,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Clone, Debug)]

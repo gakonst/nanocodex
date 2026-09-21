@@ -1,4 +1,0 @@
-#!/bin/sh
-set -eu
-[ "$#" = 2 ] && [ "$1" = --allow-native-control ] && [ "$2" = serve ] || exit 64
-exec /usr/bin/sudo -n -u gakonst -- /opt/nanocodex/background-cua/desktop-companion --allow-native-control serve

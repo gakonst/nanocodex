@@ -40,11 +40,16 @@ export function isBrowserVaultOrigin(value: unknown): value is string {
   } catch { return false; }
 }
 
+// Fixed classification only; provider messages never cross the private transport.
+export class PrivateBrowserNoActiveTouch extends Error {
+  constructor() { super("Private browser has no active touch"); }
+}
+
 /** No SDK/debug ring or model dispatcher ever receives privileged CDP traffic. */
 export class PrivateBrowserCdp {
   #id = 0;
   #closed = false;
-  #pending = new Map<number, { resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
+  #pending = new Map<number, { cancellingTouch: boolean; resolve(value: any): void; reject(error: Error): void; timer: ReturnType<typeof setTimeout> }>();
   #attachment: { targetId: string; sessionId: string } | undefined;
   readonly socket: WebSocket;
   get closed() { return this.#closed; }
@@ -61,7 +66,10 @@ export class PrivateBrowserCdp {
         this.#pending.delete(message.id);
         clearTimeout(pending.timer);
         // Never copy provider error text or exception details to an error.
-        if (message.error) pending.reject(new Error("Private browser operation failed"));
+        if (message.error) pending.reject(pending.cancellingTouch
+          && message.error.code === -32602
+          && message.error.message === "Must send a TouchStart first to start a new touch."
+          ? new PrivateBrowserNoActiveTouch() : new Error("Private browser operation failed"));
         else pending.resolve(message.result);
       } catch { this.close(); }
     });
@@ -102,7 +110,8 @@ export class PrivateBrowserCdp {
         reject(new Error("Private browser operation timed out"));
         this.close();
       }, 10_000);
-      this.#pending.set(id, { resolve, reject, timer });
+      this.#pending.set(id, { resolve, reject, timer,
+        cancellingTouch: method === "Input.dispatchTouchEvent" && (params as { type?: unknown } | null)?.type === "touchCancel" });
       try { this.socket.send(JSON.stringify({ id, method, params, ...(sessionId ? { sessionId } : {}) })); }
       catch { clearTimeout(timer); this.#pending.delete(id); reject(new Error("Private browser operation failed")); }
     });

@@ -126,3 +126,58 @@ describe("account cron discovery on real Durable Objects", () => {
     });
   });
 });
+
+describe("partial schedule updates", () => {
+  it("preserves omitted fields, rejects unknown schedules and denies Connect or insufficient capabilities", async () => {
+    const owner = principal(), id = crypto.randomUUID();
+    await initialize(id, owner, true);
+    const call = (method: string, body?: object, actor = owner, trigger = "morning") => worker.fetch(new Request(
+      `https://nanocodex.example/v1/agents/${id}/triggers/${trigger}`, {
+        method, ...(body ? { body: JSON.stringify(body) } : {}),
+      }), runtime, createExecutionContext(), actor);
+    expect((await call("PUT", { ...config, timezone: "Europe/Athens", session_mode: "continue", enabled: true })).status).toBe(201);
+    const paused = await call("PATCH", { enabled: false });
+    expect(paused.status).toBe(200);
+    expect(await paused.json()).toMatchObject({ ...config, timezone: "Europe/Athens", session_mode: "continue", next_run_at: null });
+    const resumed = await call("PATCH", { enabled: true });
+    expect(resumed.status).toBe(200);
+    expect(await resumed.json()).toMatchObject({ enabled: true, input: config.input, timezone: "Europe/Athens" });
+    expect((await call("PATCH", { enabled: false }, owner, "missing")).status).toBe(404);
+    expect((await call("PATCH", { authorization: {} })).status).toBe(400);
+    expect((await call("PATCH", { enabled: false }, { ...owner, capabilities: ["agents:write"] })).status).toBe(403);
+    expect((await call("PATCH", { enabled: false }, { ...owner, connectGrant: { grantId: `0x${"a".repeat(64)}`, connectors: ["chatgpt"], mcpIds: [] } })).status).toBe(403);
+    expect((await call("DELETE")).status).toBe(204);
+    expect((await call("GET")).status).toBe(404);
+  });
+});
+
+describe("cross-agent schedule authorization", () => {
+  it("limits reads, updates and deletes to the caller account and team", async () => {
+    const owner = principal(), source = crypto.randomUUID(), target = crypto.randomUUID();
+    await initialize(source, owner, true);
+    await initialize(target, owner, true);
+    const call = (method: string, actor = owner, body?: object) => worker.fetch(new Request(
+      `https://nanocodex.example/v1/agents/${target}/triggers${method === "GET" ? "" : "/morning"}`, {
+        method, ...(body ? { body: JSON.stringify(body) } : {}),
+      }), runtime, createExecutionContext(), actor);
+    expect((await call("PUT", owner, config)).status).toBe(201);
+    const otherUser = principal();
+    const otherTeam = { ...owner, teamId: crypto.randomUUID() };
+    const grant: Principal = { ...owner, connectGrant: { grantId: `0x${"a".repeat(64)}`, connectors: ["chatgpt"], mcpIds: [] } };
+    for (const method of ["GET", "PATCH", "DELETE"]) {
+      const body = method === "PATCH" ? { enabled: true } : undefined;
+      expect((await call(method, otherUser, body)).status).toBe(404);
+      expect((await call(method, otherTeam, body)).status).toBe(404);
+      expect((await call(method, grant, body)).status).toBe(403);
+      expect((await call(method, { ...owner, capabilities: ["tools:use"] }, body)).status).toBe(403);
+    }
+    const listed = await call("GET");
+    expect(listed.status).toBe(200);
+    const payload = await listed.json<{ data: object[] }>();
+    expect(payload.data).toHaveLength(1);
+    expect(JSON.stringify(payload)).not.toMatch(/authorization|revision|request_hash/);
+    expect((await call("PATCH", owner, { enabled: true })).status).toBe(200);
+    expect((await call("DELETE")).status).toBe(204);
+    expect(await (await call("GET")).json()).toEqual({ data: [] });
+  });
+});

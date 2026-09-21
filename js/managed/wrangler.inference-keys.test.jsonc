@@ -1,0 +1,11 @@
+{
+  "name": "inference-keys-test",
+  "main": "test/inference-keys-worker.ts",
+  "compatibility_date": "2026-07-29",
+  "compatibility_flags": ["nodejs_compat"],
+  "durable_objects": { "bindings": [
+    { "name": "NANOCODEX_INFERENCE_KEYS", "class_name": "InferenceKey" },
+    { "name": "NANOCODEX_INFERENCE_ACCOUNTS", "class_name": "InferenceAccount" }
+  ] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["InferenceKey", "InferenceAccount"] }]
+}

@@ -9,6 +9,8 @@
     "node-rsa": "../nanocodex/tools/browser/unsupportedNodeRsa.mjs"
   },
   "workers_dev": false,
+  "triggers": { "crons": ["*/30 * * * *"] },
+  "ai": { "binding": "AI" },
   "minify": true,
   "upload_source_maps": true,
   "observability": {
@@ -43,9 +45,7 @@
       "entrypoint": "ChiefOfStaffEgress"
     }
   ],
-  "browser": {
-    "binding": "BROWSER"
-  },
+  "images": { "binding": "NANOCODEX_ATTACHMENT_IMAGES" },
   "worker_loaders": [
     {
       "binding": "LOADER"
@@ -89,6 +89,10 @@
   ],
   "durable_objects": {
     "bindings": [
+      { "name": "NANOCODEX_INFERENCE_KEYS", "class_name": "InferenceKey" },
+      { "name": "NANOCODEX_INFERENCE_ACCOUNTS", "class_name": "InferenceAccount" },
+      { "name": "NANOCODEX_INFERENCE_SESSIONS", "class_name": "InferenceSession" },
+      { "name": "NANOCODEX_PROVIDER_PROBE_COORDINATOR", "class_name": "ProviderProbeCoordinator" },
       { "name": "NANOCODEX_PHONES", "class_name": "PhoneContainer" },
       {
         "name": "NANOCODEX_SESSIONS",
@@ -171,9 +175,16 @@
       "new_sqlite_classes": ["VmHostPool"]
     },
     // Already applied in production. Retain this class and its SQLite state.
-    { "tag": "v9", "new_sqlite_classes": ["PhoneContainer"] }
+    { "tag": "v9", "new_sqlite_classes": ["PhoneContainer"] },
+    { "tag": "v10", "new_sqlite_classes": ["ProviderProbeCoordinator"] },
+    { "tag": "v11", "new_sqlite_classes": ["InferenceKey", "InferenceAccount", "InferenceSession"] }
   ],
   "vars": {
+    "NANOCODEX_THREAD_ROUTING": "true",
+    "NANOCODEX_INFERENCE_ENABLED": "true",
+    "NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED": "true",
+    "NANOCODEX_PROVIDER_PROBES": "true",
+    "NANOCODEX_PROVIDER_PROBE_DAILY_LIMIT": "1600",
     "NANOCODEX_PHONE_ADMIN_ID": "631f6a83-9e3f-474a-977a-68897d3ee436",
     "NANOCODEX_ADMIN_USER_ID": "631f6a83-9e3f-474a-977a-68897d3ee436",
     "NANOCODEX_EMAIL_ADMIN_ID": "631f6a83-9e3f-474a-977a-68897d3ee436",
@@ -181,8 +192,7 @@
     "AGENT_IDLE_TIMEOUT_MS": "30000",
     "MANAGED_AGENT_DIRECT_CREDENTIALS": "true",
     "NANOCODEX_SANDBOX_DESKTOPS": "true",
-    "NANOCODEX_HAND_IMAGE": "ghcr.io/gakonst/nanocodex-hand@sha256:cf44994c9ca68dd69962cb52cf8e9af572550763780d57483bfcaa05e2ab337b",
-    "MANAGED_BROWSER_PROVIDER": "cloudflare"
+    "NANOCODEX_HAND_IMAGE": "ghcr.io/gakonst/nanocodex-hand@sha256:cf44994c9ca68dd69962cb52cf8e9af572550763780d57483bfcaa05e2ab337b"
   },
   "env": {
     "development": {
@@ -197,10 +207,6 @@
           "remote": false
         }
       ],
-      "browser": {
-        "binding": "BROWSER",
-        "remote": true
-      },
       "worker_loaders": [
         { "binding": "LOADER" }
       ],
@@ -245,7 +251,6 @@
         "AGENT_IDLE_TIMEOUT_MS": "1000",
         "MANAGED_AGENT_DIRECT_CREDENTIALS": "true",
         "ENVIRONMENT": "development",
-        "MANAGED_BROWSER_PROVIDER": "cloudflare",
         "NANOCODEX_ADMIN_TOKEN": "nanocodex-local-room-signing-key",
         "NANOCODEX_MOCK_TWILIO_VERIFY_CODE": "123456",
         "NANOCODEX_OTP_HMAC_KEY": "nanocodex-local-sms-otp-hmac-key-v1-only",

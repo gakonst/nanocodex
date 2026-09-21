@@ -1040,7 +1040,98 @@ test("browser host bounds queued receives and buffered sends", async () => {
   await secondConnecting;
   const send = JSON.parse(await secondHost.send(1, "12345"));
   assert.equal(send.ok, false);
-  assert.match(send.error, /buffered WebSocket sends exceeded/);
+  assert.equal(send.reconnectable, false);
+  assert.match(send.error, /frame size 5 bytes exceeds 4 bytes \(buffered 0 bytes\)/);
+  assert.deepEqual(secondSocket.sent, []);
+});
+
+async function pressuredSocket() {
+  const host = createBrowserHost({ WebSocketImpl: FakeWebSocket, maxBufferedSendBytes: 4 });
+  const connecting = host.connect("ws://example.test", "not-forwarded", "session");
+  const socket = FakeWebSocket.instances.at(-1);
+  socket.open();
+  await connecting;
+  socket.bufferedAmount = 4;
+  return { host, socket };
+}
+
+test("browser host waits for aggregate pressure and sends exactly once", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const { host, socket } = await pressuredSocket();
+  const sending = host.send(1, "1234");
+  assert.deepEqual(socket.sent, []);
+  assert.match(JSON.parse(await host.send(1, "x")).error, /concurrent/);
+  t.mock.timers.tick(10);
+  await Promise.resolve();
+  assert.deepEqual(socket.sent, []);
+  socket.bufferedAmount = 0;
+  t.mock.timers.tick(10);
+  assert.deepEqual(JSON.parse(await sending), { ok: true });
+  t.mock.timers.tick(10_000);
+  assert.deepEqual(socket.sent, ["1234"]);
+  await host.dispose();
+});
+
+test("browser host bounds aggregate pressure wait without sending later", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+  const { host, socket } = await pressuredSocket();
+  const sending = host.send(1, "1234");
+  t.mock.timers.tick(5_000);
+  const result = JSON.parse(await sending);
+  assert.equal(result.ok, false);
+  assert.equal(result.reconnectable, true);
+  assert.match(result.error, /frame 4 bytes, buffered 4 bytes, limit 4 bytes/);
+  socket.bufferedAmount = 0;
+  t.mock.timers.tick(10_000);
+  assert.deepEqual(socket.sent, []);
+  assert.deepEqual(JSON.parse(await host.send(1, "retry")), {
+    ok: false, reconnectable: false,
+    error: "WebSocket frame size 5 bytes exceeds 4 bytes (buffered 0 bytes)",
+  });
+  assert.deepEqual(JSON.parse(await host.send(1, "ok")), { ok: true });
+  assert.deepEqual(socket.sent, ["ok"]);
+  await host.dispose();
+});
+
+for (const action of ["close", "dispose", "remote close"]) {
+  test(`browser host cancels pressured sends on ${action}`, async (t) => {
+    t.mock.timers.enable({ apis: ["setTimeout", "Date"] });
+    const { host, socket } = await pressuredSocket();
+    const sending = host.send(1, "1234");
+    if (action === "close") await host.close(1);
+    else if (action === "dispose") await host.dispose();
+    else socket.close(1000);
+    assert.equal(JSON.parse(await sending).ok, false);
+    socket.bufferedAmount = 0;
+    t.mock.timers.tick(10_000);
+    assert.deepEqual(socket.sent, []);
+    await host.dispose();
+  });
+}
+
+test("browser host enforces the default 16 MiB individual frame boundary", async () => {
+  const host = createBrowserHost({ WebSocketImpl: FakeWebSocket });
+  const connecting = host.connect("ws://example.test", "not-forwarded", "session");
+  const socket = FakeWebSocket.instances.at(-1);
+  socket.open();
+  await connecting;
+  const atLimit = "x".repeat(16 * 1024 * 1024);
+  assert.deepEqual(JSON.parse(await host.send(1, atLimit)), { ok: true });
+  const oversized = JSON.parse(await host.send(1, atLimit + "x"));
+  assert.equal(oversized.ok, false);
+  assert.equal(oversized.reconnectable, false);
+  assert.match(oversized.error, /frame size 16777217 bytes exceeds 16777216 bytes/);
+  assert.equal(socket.sent.length, 1);
+  await host.dispose();
+});
+
+test("browser host measures oversized frames as UTF-8 bytes", async () => {
+  const { host, socket } = await pressuredSocket();
+  const result = JSON.parse(await host.send(1, "€€"));
+  assert.equal(result.reconnectable, false);
+  assert.match(result.error, /frame size 6 bytes exceeds 4 bytes/);
+  assert.deepEqual(socket.sent, []);
+  await host.dispose();
 });
 
 test("browser host keeps zero-argument tool calls wire-complete", async () => {

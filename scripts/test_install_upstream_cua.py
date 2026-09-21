@@ -1,5 +1,6 @@
 """Exercise the local-copy launcher without an installed app or native UI."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -32,10 +33,11 @@ class InstalledProviderCopyTests(unittest.TestCase):
             path.chmod(0o755)
         (binary / 'node-link').symlink_to('node')
 
-    def install(self, destination=None):
+    def install(self, destination=None, surfaces='computer'):
         return subprocess.run([
             sys.executable, str(Path(__file__).with_name('install-upstream-cua.py')),
             '--source-app', str(self.app), '--destination', str(destination or self.destination),
+            '--surfaces', surfaces,
         ], text=True, capture_output=True)
 
     def test_exact_copy_receipt_and_quoted_launcher(self):
@@ -49,6 +51,22 @@ class InstalledProviderCopyTests(unittest.TestCase):
         self.assertIn('CUA_REPL_ENABLED_SURFACES=computer', launcher.read_text())
         self.assertEqual(subprocess.run([str(launcher)], capture_output=True).returncode, 0)
         self.assertEqual(self.install().returncode, 0, 'matching copies can be reused')
+
+    def test_launcher_enables_browser_ax_in_trusted_provider_environment(self):
+        node = self.source / 'bin/node'
+        node.write_text('#!/bin/sh\nprintf "%s\\n" "$BROWSER_USE_TINYSKY_ENABLED" '
+                        '"$CUA_REPL_ENABLED_SURFACES" "$NODE_REPL_UNTRUSTED_ENV_ALLOWLIST"\n')
+        for surfaces in ('computer', 'browser', 'browser,computer'):
+            with self.subTest(surfaces=surfaces):
+                destination = self.root / surfaces
+                result = self.install(destination, surfaces)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                environment = {**os.environ, 'BROWSER_USE_TINYSKY_ENABLED': '0',
+                               'NODE_REPL_UNTRUSTED_ENV_ALLOWLIST': ''}
+                launched = subprocess.run([str(destination / 'cua-provider')],
+                                          env=environment, text=True, capture_output=True)
+                self.assertEqual(launched.returncode, 0, launched.stderr)
+                self.assertEqual(launched.stdout.splitlines(), ['1', surfaces, ''])
 
     def test_changed_copy_is_rejected_without_overwrite(self):
         self.assertEqual(self.install().returncode, 0)

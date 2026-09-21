@@ -74,16 +74,13 @@ chmod +x "$mock_bin/uname" "$mock_bin/curl"
 binary_names=(
   "nanocodex-x86_64-unknown-linux-gnu"
   "nanocodex2-x86_64-unknown-linux-gnu"
-  "nanocodex-computer-x86_64-unknown-linux-gnu"
 )
 binary_sources=(
   "$temporary_root/${binary_names[0]}"
   "$temporary_root/${binary_names[1]}"
-  "$temporary_root/${binary_names[2]}"
 )
 printf '%s\n' '#!/bin/sh' 'printf "%s\n" "nanocodex 1.2.3"' > "${binary_sources[0]}"
 printf '%s\n' '#!/bin/sh' 'printf "%s\n" "nanocodex2 1.2.3"' > "${binary_sources[1]}"
-printf '%s\n' '#!/bin/sh' 'printf "%s\n" "nanocodex-computer 0.1.0"' > "${binary_sources[2]}"
 chmod +x "${binary_sources[@]}"
 
 voice_asset="nanocodex-voice-x86_64-unknown-linux-gnu.tar.gz"
@@ -128,7 +125,15 @@ run_case() {
     digest="$(sha256_file "$fixture/$asset")"
     printf '%s  %s\n' "$digest" "$asset" >> "$fixture/SHA256SUMS"
   done
+  printf '%s  %s\n' aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+    nanocodex-computer-x86_64-unknown-linux-gnu >> "$fixture/SHA256SUMS"
   make_voice_fixture "$fixture" "${2:-valid}"
+  mkdir -p "$install_root/bin"
+  if [[ "$format" == gzip ]]; then
+    ln -s "$install_root/current/nanocodex-computer" "$install_root/bin/nanocodex-computer"
+  else
+    ln -s ../current/nanocodex-computer "$install_root/bin/nanocodex-computer"
+  fi
 
   output="$(
     PATH="$mock_bin:$PATH" \
@@ -142,16 +147,21 @@ run_case() {
   grep -Fq 'Installed nanocodex2 1.2.3' <<<"$output"
   [[ "$("$install_root/bin/nanocodex" --version)" == 'nanocodex 1.2.3' ]]
   [[ "$("$install_root/bin/nanocodex2" --version)" == 'nanocodex2 1.2.3' ]]
-  [[ "$("$install_root/bin/nanocodex-computer" --version)" == 'nanocodex-computer 0.1.0' ]]
+  [[ ! -e "$install_root/bin/nanocodex-computer" && ! -L "$install_root/bin/nanocodex-computer" ]]
+  [[ ! -e "$install_root/current/nanocodex-computer" ]]
   [[ -f "$install_root/updater/nanocodex.sha256" ]]
   [[ -f "$install_root/versions/1.2.3/nanocodex.sha256" ]]
   [[ -f "$install_root/versions/1.2.3/nanocodex2.sha256" ]]
   [[ -x "$install_root/current/nanocodex-resources/voice/bin/nanocodex-voice-host" ]]
 
+  ln -s "$case_root/user-provider" "$install_root/bin/nanocodex-computer"
   rm "$install_root/current/nanocodex-resources/voice/bin/nanocodex-voice-host"
   PATH="$mock_bin:$PATH" HOME="$case_root/home" SHELL=/bin/bash NANOCODEX_DIR="$install_root" \
     NANOCODEX_INSTALL_FIXTURE="$fixture" bash "$workspace_root/install" >/dev/null
   [[ -x "$install_root/current/nanocodex-resources/voice/bin/nanocodex-voice-host" ]]
+  [[ "$(readlink "$install_root/bin/nanocodex-computer")" == "$case_root/user-provider" ]]
+  rm "$install_root/bin/nanocodex-computer"
+  printf 'user-owned launcher' > "$install_root/bin/nanocodex-computer"
   [[ -f "$install_root/current/nanocodex-voice.sha256" ]]
   [[ "$(cat "$install_root/current/nanocodex-voice.archive.sha256")" == "$(sha256_file "$fixture/$voice_asset")" ]]
 
@@ -161,6 +171,7 @@ run_case() {
     NANOCODEX_INSTALL_FIXTURE="$fixture" bash "$workspace_root/install" >/dev/null
   [[ -x "$install_root/current/nanocodex-resources/voice/bin/nanocodex-voice-host" ]]
 
+  [[ "$(cat "$install_root/bin/nanocodex-computer")" == 'user-owned launcher' ]]
   PATH=/usr/bin:/bin bash "$case_root/home/.bashrc"
   [[ ! -e "$marker" ]]
 }
@@ -183,8 +194,7 @@ run_rejected_case() {
       continue
     fi
     if [[ "$failure" == invalid-main-checksum && "$index" == 0 ]] || \
-      [[ "$failure" == invalid-companion-checksum && "$index" == 1 ]] || \
-      [[ "$failure" == invalid-computer-checksum && "$index" == 2 ]]; then
+      [[ "$failure" == invalid-companion-checksum && "$index" == 1 ]]; then
       digest=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
     fi
     printf '%s  %s\n' "$digest" "$asset" >> "$fixture/SHA256SUMS"
@@ -231,9 +241,6 @@ run_rejected_case() {
     invalid-companion-checksum)
       grep -Fq 'checksum mismatch for nanocodex2-x86_64-unknown-linux-gnu' <<<"$output"
       ;;
-    invalid-computer-checksum)
-      grep -Fq 'checksum mismatch for nanocodex-computer-x86_64-unknown-linux-gnu' <<<"$output"
-      ;;
     voice-*) ;;
   esac
 }
@@ -245,7 +252,6 @@ run_rejected_case missing-main-checksum
 run_rejected_case missing-companion-checksum
 run_rejected_case invalid-main-checksum
 run_rejected_case invalid-companion-checksum
-run_rejected_case invalid-computer-checksum
 run_rejected_case voice-checksum
 run_rejected_case voice-missing
 run_rejected_case voice-incomplete
@@ -279,7 +285,7 @@ HELPER
     CUA_SETUP_RECORD="$case_root/setup" CUA_SETUP_EXIT="$helper_exit" CUA_HELP_EXIT="$help_exit" \
     bash "$workspace_root/install" 2>&1)" || status=$?
   [[ -x "$install_root/current/nanocodex2" ]]
-  if [[ "$mode" == off || "$mode" == explicit || "$mode" == old ]]; then
+  if [[ "$mode" == off || "$mode" == old ]]; then
     [[ "$status" == 0 && ! -e "$case_root/setup" ]]
   else
     [[ "$(cat "$case_root/setup")" == "$install_root"$'\ncomputer\nsetup\n--refresh' ]]

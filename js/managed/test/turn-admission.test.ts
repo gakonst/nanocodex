@@ -7,13 +7,67 @@ import { DurableEventLog } from "../src/durable-events";
 
 const FIXTURE_UNFINISHED_TURNS = 20;
 
+// Gate a mandatory startup step, not optional account-hand inventory.
+function admissionBinding(bind: () => Response | Promise<Response>) {
+  return { fetch: (input: RequestInfo | URL) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname.startsWith("/subjects/")) return bind();
+    return Promise.resolve(Response.json({ connectors: {}, mcp_connections: [] }));
+  } };
+}
+
 describe("managed durable turn admission", () => {
+  it("continues cold admission while optional hand discovery is stalled or fails", async () => {
+    const sessions = (env as unknown as {
+      NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
+    }).NANOCODEX_SESSIONS;
+    await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
+      const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
+      const discovery = Promise.withResolvers<Response>();
+      const mandatoryStartup = Promise.withResolvers<void>();
+      const binding = Promise.withResolvers<Response>();
+      Object.defineProperty(session, "env", { value: {
+        ...runtimeEnv,
+        NANOCODEX_ACCOUNT_TOOLS: { getByName: () => ({ fetch: () => discovery.promise }) },
+        NANOCODEX: admissionBinding(() => {
+          mandatoryStartup.resolve();
+          return binding.promise;
+        }),
+      } });
+      state.storage.sql.exec(`INSERT INTO session_state (
+        singleton, session_id, owner_id, organization_id, team_id, authorization_epoch,
+        public_origin, runtime_profile, last_active
+      ) VALUES (1, ?, 'fixture-owner', 'fixture-organization', 'fixture-team', 1,
+        'https://nanocodex.example/', 'managed', ?)`, crypto.randomUUID(), Date.now());
+      try {
+        const response = await session.fetch(new Request("https://session.internal/turns", {
+          method: "POST", body: JSON.stringify({ id: "independent", input: "brain-only task" }),
+        }));
+        expect(response.status).toBe(202);
+        // This mandatory construction step was previously unreachable until
+        // account hand discovery completed, even for an unrelated task.
+        await mandatoryStartup.promise;
+        discovery.resolve(new Response(null, { status: 503 }));
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(state.storage.sql.exec<{ state: string; error: string | null }>(
+          "SELECT state, error FROM managed_turns WHERE id = 'independent'",
+        ).one()).toEqual({ state: "accepted", error: null });
+      } finally {
+        discovery.resolve(Response.json({ tools: [], machines: [] }));
+        state.storage.sql.exec("UPDATE managed_turns SET state = 'cancelled', retry_at = NULL WHERE id = 'independent'");
+        // End before model execution: the test owns only the admission boundary.
+        binding.resolve(new Response(null, { status: 403 }));
+        await state.storage.deleteAlarm();
+      }
+    });
+  });
+
   it("retains more than 64 pre-admission cancellations and consumes only the matching turn", async () => {
     const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
     await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
       const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
       Object.defineProperty(session, "env", { value: { ...runtimeEnv,
-        NANOCODEX_ACCOUNT_TOOLS: { getByName: () => { throw Object.assign(new Error("fixture unavailable"), { code: "retryable" }); } },
+        NANOCODEX: admissionBinding(() => { throw Object.assign(new Error("fixture unavailable"), { code: "retryable" }); }),
       } });
       state.storage.sql.exec(`INSERT INTO session_state (
         singleton, session_id, owner_id, organization_id, team_id, authorization_epoch,
@@ -45,9 +99,9 @@ describe("managed durable turn admission", () => {
       const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
       Object.defineProperty(session, "env", { value: {
         ...runtimeEnv,
-        NANOCODEX_ACCOUNT_TOOLS: { getByName: () => {
+        NANOCODEX: admissionBinding(() => {
           throw Object.assign(new Error("fixture runtime temporarily unavailable"), { code: "retryable" });
-        } },
+        }),
       } });
       const now = Date.now();
       state.storage.sql.exec(
@@ -114,10 +168,10 @@ describe("managed durable turn admission", () => {
       let attempts = 0;
       Object.defineProperty(session, "env", { value: {
         ...runtimeEnv,
-        NANOCODEX_ACCOUNT_TOOLS: { getByName: () => {
+        NANOCODEX: admissionBinding(() => {
           attempts++;
           throw Object.assign(new Error(message), { code: "failed" });
-        } },
+        }),
       } });
       const now = Date.now();
       state.storage.sql.exec(`INSERT INTO session_state (
@@ -177,11 +231,11 @@ describe("managed durable turn admission", () => {
         // dispatch. The real Durable Object must reconcile its SQLite inbox.
         Object.defineProperty(session, "env", { value: {
           ...runtimeEnv,
-          NANOCODEX_ACCOUNT_TOOLS: { getByName: () => {
+          NANOCODEX: admissionBinding(() => {
             throw Object.assign(new Error("older durable operation is unfinished"), {
               code: "retryable", blockedBy: "older",
             });
-          } },
+          }),
         } });
         const now = Date.now();
         state.storage.sql.exec(
@@ -247,17 +301,17 @@ describe("managed durable turn admission", () => {
         NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
       }).NANOCODEX_SESSIONS;
       await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
-        let discoveryCalls = 0;
-        const discovery = Promise.withResolvers<Response>();
+        let bindingCalls = 0;
+        const binding = Promise.withResolvers<Response>();
         const entered = Promise.withResolvers<void>();
         const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
         Object.defineProperty(session, "env", { value: {
           ...runtimeEnv,
-          NANOCODEX_ACCOUNT_TOOLS: { getByName: () => ({ fetch: () => {
-            discoveryCalls++;
+          NANOCODEX: admissionBinding(() => {
+            bindingCalls++;
             entered.resolve();
-            return discovery.promise;
-          } }) },
+            return binding.promise;
+          }),
         } });
         const now = Date.now();
         state.storage.sql.exec(
@@ -321,7 +375,7 @@ describe("managed durable turn admission", () => {
               clock.mockReturnValue(now + lease * 60_000);
               await session.alarm();
               await Promise.resolve();
-              expect(discoveryCalls).toBe(1);
+              expect(bindingCalls).toBe(1);
               expect(state.storage.sql.exec<{ state: string; attempt_count: number; retry_at: number | null }>(
                 "SELECT state, attempt_count, retry_at FROM managed_turns WHERE id = 'stalled'",
               ).one()).toEqual({ state: "accepted", attempt_count: 0, retry_at: null });
@@ -330,7 +384,7 @@ describe("managed durable turn admission", () => {
           } finally { clock.mockRestore(); }
 
         } finally {
-          discovery.resolve(Response.json({ tools: [], machines: [] }));
+          binding.resolve(new Response(null, { status: 204 }));
           pair?.[0].close(1000, "test complete");
           pair?.[1].close(1000, "test complete");
         }

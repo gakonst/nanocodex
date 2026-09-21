@@ -31,6 +31,10 @@ enum Command {
         blocking::SyncSender<std::result::Result<(), crate::ConnectionError>>,
     ),
     Controls(AudioControls),
+    Pcm(
+        crate::Message,
+        tokio::sync::oneshot::Sender<Result<crate::PcmStatus>>,
+    ),
 }
 
 #[derive(Default)]
@@ -172,6 +176,95 @@ fn package_has_runtime(package: &std::path::Path) -> bool {
 }
 
 impl RealtimeWebrtcSessionHandle {
+    /// Start mono signed PCM at 16, 24 or 48 kHz. Generations must increase.
+    /// Suppress provider receiver audio separately with set_speaker_suppressed.
+    pub async fn begin_pcm_stream(&self, generation: u64, sample_rate: u32) -> Result<()> {
+        anyhow::ensure!(
+            generation > 0 && matches!(sample_rate, 16_000 | 24_000 | 48_000),
+            "unsupported PCM format"
+        );
+        self.pcm_until_ready(crate::Message::BeginPcm {
+            generation,
+            sample_rate,
+        })
+        .await
+    }
+
+    /// Bounded backpressure; each call accepts at most MAX_PCM_SAMPLES mono samples.
+    /// Serialize writes for one stream. Cancellation can run concurrently.
+    pub async fn write_pcm(&self, generation: u64, samples: Vec<i16>) -> Result<()> {
+        anyhow::ensure!(
+            !samples.is_empty() && samples.len() <= crate::MAX_PCM_SAMPLES,
+            "invalid PCM chunk size"
+        );
+        self.pcm_until_ready(crate::Message::WritePcm {
+            generation,
+            samples,
+        })
+        .await
+    }
+
+    /// Wait for mixer consumption plus a bounded hardware grace period.
+    pub async fn drain_pcm(&self, generation: u64) -> Result<()> {
+        self.pcm_until_ready(crate::Message::DrainPcm { generation })
+            .await
+    }
+
+    /// Retire queued PCM; already submitted hardware samples cannot be retracted.
+    pub async fn cancel_pcm(&self, generation: u64) -> Result<()> {
+        self.pcm_until_ready(crate::Message::CancelPcm { generation })
+            .await
+    }
+
+    async fn pcm_until_ready(&self, message: crate::Message) -> Result<()> {
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let request = match &message {
+                crate::Message::BeginPcm {
+                    generation,
+                    sample_rate,
+                } => crate::Message::BeginPcm {
+                    generation: *generation,
+                    sample_rate: *sample_rate,
+                },
+                crate::Message::WritePcm {
+                    generation,
+                    samples,
+                } => crate::Message::WritePcm {
+                    generation: *generation,
+                    samples: samples.clone(),
+                },
+                crate::Message::DrainPcm { generation } => crate::Message::DrainPcm {
+                    generation: *generation,
+                },
+                crate::Message::CancelPcm { generation } => crate::Message::CancelPcm {
+                    generation: *generation,
+                },
+                _ => anyhow::bail!("invalid PCM request"),
+            };
+            let (done, result) = tokio::sync::oneshot::channel();
+            let status = tokio::time::timeout_at(deadline, async {
+                self.0
+                    .sender
+                    .send(Command::Pcm(request, done))
+                    .await
+                    .map_err(|_| anyhow::anyhow!("voice session closed"))?;
+                result
+                    .await
+                    .map_err(|_| anyhow::anyhow!("voice session closed"))?
+            })
+            .await??;
+            match status {
+                crate::PcmStatus::Ready => return Ok(()),
+                crate::PcmStatus::Busy => tokio::time::sleep(Duration::from_millis(5)).await,
+                crate::PcmStatus::Stale => anyhow::bail!("PCM generation cancelled"),
+                crate::PcmStatus::Unsupported => {
+                    anyhow::bail!("PCM playback unsupported by helper")
+                }
+            }
+        }
+    }
+
     pub fn close(&self) {
         self.0.stop.abort();
     }
@@ -286,6 +379,14 @@ async fn run(
                         host.set_audio_controls(next).await?;
                     }
                 }
+                Some(Command::Pcm(message, complete)) => {
+                    if connected {
+                        let status = host.pcm_request(message).await?;
+                        let _ = complete.send(Ok(status));
+                    } else {
+                        let _ = complete.send(Err(anyhow::anyhow!("voice devices not ready")));
+                    }
+                }
                 Some(Command::Answer(..)) => anyhow::bail!("voice answer already applied"),
                 None => return host.close().await,
             },
@@ -312,7 +413,8 @@ fn startup_controls<T>(
         match commands.try_recv() {
             Ok(Command::Controls(_)) => {}
             Err(mpsc::error::TryRecvError::Empty) => return dispatch(*controls),
-            Ok(Command::Answer(..)) | Err(mpsc::error::TryRecvError::Disconnected) => {
+            Ok(Command::Answer(..) | Command::Pcm(..))
+            | Err(mpsc::error::TryRecvError::Disconnected) => {
                 anyhow::bail!("voice startup control sequence invalid");
             }
         }

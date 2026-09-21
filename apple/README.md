@@ -30,10 +30,29 @@ by the old tab interface. Rows are created lazily and search covers the whole ro
 Roster and state checks continue for background work; transcripts load when opened.
 The composer grows up to six lines, then scrolls; its expand button opens a larger
 editor sharing the same draft and attachments.
+Paste a copied screenshot or photo into either editor to attach it without opening
+the picker. Image providers enter the same account-scoped draft flow as Photos and Files;
+they do not replace your typed message. Plain text continues to use native text
+editing. With the phone Hand enabled, sending images retains their originals and
+previews in its account-scoped workspace and sends small path references. The
+agent uses that phone’s `view_image` tool to inspect them; the phone must be
+connected. Composer and history thumbnails read the retained local previews,
+including after draft cleanup and relaunch. Videos and images sent with the Hand
+disabled continue to use authenticated cloud uploads.
+Image attachments appear in a compact, trailing-aligned grid above the message
+text, with square crops for multiple images and preserved proportions for a single
+image. Tapping opens the full original. The composer uses a horizontally
+scrollable 120-point thumbnail strip without filename captions. Thumbnail decoding starts
+when the view appears, preserves EXIF orientation, and shares a bounded cache
+so scrolling does not repeatedly blank and decode the same images.
+
 
 The current conversation stays mounted while the session drawer opens. The drawer
 uses lightweight roster summaries and search, without tabs, preview grids, or status
-filters. Running agents have a green title and dot, with status available to VoiceOver.
+filters. The drawer uses the shared neutral sidebar palette and system sans-serif typography.
+Titles stay neutral, with a small green dot for running agents and explicit status
+labels available to VoiceOver. Titles, status and current-work text scale with Dynamic
+Type. Search and compose sit at the top; Settings stays at the bottom.
 Selecting a row restores that agent's draft and reading position. Swipe right from
 the left 28 points of the screen to open the drawer; swipe left to close. The
 conversation follows the finger and settles with a short spring over the stationary list. Vertical scrolling
@@ -48,8 +67,18 @@ and cancelled parses cannot replace newer content. The
 `ChatMarkdownParse` Points of Interest signpost measures actual parsing work.
 
 Commentary and reasoning summaries appear inline in chronological order. Each
-tool call has a compact single-line card with expandable input and result details.
+tool call has a compact card with expandable input and result details. Short shell
+commands remain readable in full; oversized commands use a bounded preview. Full
+large source opens in a scrollable, read-only native viewer with a copy control,
+so encoded payloads and long blank runs cannot stretch the conversation. Syntax
+highlighting is skipped for sources larger than 16 KiB.
 Generated attachments appear directly after their originating tool card.
+The thread controls above the composer collapse all tool disclosures, including nested
+Code Mode tools and JavaScript. Individual tools can be reopened, and their choices
+remain independent when switching threads. Up and down arrows move between user
+messages, fetching earlier or later history when necessary. Manual scrolling resets
+the arrow position; the separate latest-message control resumes following responses.
+All controls have 44-point targets and VoiceOver labels.
 Tool text, memory payloads, and command diagnostics stay inside that disclosure. The shared
 `ChatGeneratedOutput` parser combines raw and structured tool results, including
 emitted `input_text`/`input_image` blocks and MCP images, audio, video, and resources.
@@ -153,7 +182,7 @@ Return/Tab/Esc controls below the video.
 | Voice | Start an interactive spoken conversation with this agent; minimize the panel to keep talking |
 | Stop turn | Immediately cancel the selected turn from the send button |
 | Header menu → Account settings | Manage the account and device Hand in a dismissible sheet |
-| Header menu → Scheduled jobs | View active and paused jobs across the account, inspect their schedule, or open the source chat and latest run |
+| Header menu → Scheduled jobs | View, edit, pause, resume, or cancel jobs across the account; open the source chat and latest run |
 
 The compact header shows the selected conversation, its running indicator, a
 Conversations button, and the app menu. Below the composer, the floating dock
@@ -180,6 +209,11 @@ existing per-agent triggers API and shows the prompt, cron expression, time zone
 next run, last dispatch, and last skipped occurrence. Dispatch does not imply
 successful completion; open the linked conversation to read the result. Pull to
 refresh or use Refresh to pick up changes, including jobs created in chat.
+The job detail’s **Edit or cancel job** form changes the prompt, cron expression,
+time zone, active status, and conversation mode. Updates use the update-only PATCH
+endpoint, so an edit cannot recreate a concurrently deleted job. Cancellation
+requires confirmation and stops future scheduling; dispatched or running work
+is not stopped. Existing conversations remain available.
 Schedules prefetch after the opening conversation history using the sign-in agent list. Reads use a rolling
 four-request limit and publish each agent's jobs immediately; one slow agent does
 not block the others. The account summary's `may_have_scheduled_jobs` hint skips
@@ -195,7 +229,7 @@ agent was deleted during discovery. Only confirmed removals become empty results
 advertised but unreadable agents and authorization failures retain their warning.
 
 When no conversation is available, the empty page offers an action to start one.
-The sidebar opens sorted by most recent activity and retains its order while replies
+The sidebar sorts by your last sent message, newest first, and retains its order while replies
 arrive. Searching keeps the current conversation selected.
 Live changes preserve the selected conversation;
 new work does not steal focus while typing. Drafts belong to agent IDs. Multiple
@@ -426,6 +460,20 @@ actual workspace file was checked independently. UI screenshots are attached to
 the Xcode test result as `automatic-hand-connected`,
 `automatic-hand-real-file-roundtrip`, and
 `automatic-hand-restored-file-after-cold-launch`.
+
+## Read photos through the phone Hand
+
+With Photos read access already enabled in device permissions, the connected
+phone Hand can use `search_photos` to find accessible asset IDs and `read_photo`
+to inspect one image directly. Limited access stays limited to the selected
+library. The tool does not prompt for permission or download iCloud-only assets.
+It returns an oriented JPEG inspection image, bounded to 2048 pixels and 512 KiB,
+and saves that rendition under the phone workspace's `photos/` directory. The
+original remains in Photos. Code Mode can display the returned MCP image with
+`image(result.content[1])`; the phone's text-only `read_file` is not an image reader.
+The phone must be connected and have foreground or iOS-granted background time.
+For durable original files available while the phone is offline, attach with
+Photos, Files, or Paste and send the message through the R2-backed upload flow.
 
 ## Context from other apps
 

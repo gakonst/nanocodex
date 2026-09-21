@@ -4,7 +4,8 @@ import { accountQueryKey } from "./queryClient";
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Clock3, X } from "lucide-react";
-import type { ManagedAgent } from "nanocodex/managed";
+import { Agent, type ManagedAgent } from "nanocodex/managed";
+import { readScheduledAgents, scheduledAgentCandidates } from "./scheduledAgents";
 import "./ManagedAgentSchedules.css";
 
 type ScheduleAgent = Pick<ManagedAgent, "id" | "triggers">;
@@ -28,8 +29,26 @@ function ScheduleDialog({ agent, onClose }: { agent: ScheduleAgent; onClose(): v
   const active = useRef(false);
   const accountId = useAccountSession().account?.id;
   const client = useQueryClient();
-  const queryKey = [...accountQueryKey(accountId), "schedules", agent.id] as const;
-  const query = useQuery({ queryKey, queryFn: () => agent.triggers.list(), enabled: Boolean(accountId), staleTime: 15_000, refetchInterval: 30_000 });
+  const [allAgents, setAllAgents] = useState(false);
+  const [editingAgent, setEditingAgent] = useState<ScheduleAgent>(agent);
+  const schedulesKey = [...accountQueryKey(accountId), "schedules"] as const;
+  const queryKey = [...schedulesKey, allAgents ? "all" : agent.id] as const;
+  const query = useQuery({ queryKey, queryFn: async ({ signal }) => {
+    if (!allAgents) return (await agent.triggers.list()).map(row => ({ ...row, owner: agent, ownerTitle: "This conversation" }));
+    const candidates = await scheduledAgentCandidates(fetch, signal);
+    const rows = await readScheduledAgents(candidates, async candidate => {
+      const owner = Agent.open(candidate.id);
+      const reader = Agent.open(candidate.id, { fetch: (input, init) => fetch(input, { ...init, signal }) });
+      try {
+        return (await reader.triggers.list()).map(row => ({ ...row, owner, ownerTitle: candidate.title }));
+      } catch (error) {
+        // An agent may be removed between discovery and reading its schedules.
+        if (!(error instanceof Error && "status" in error && error.status === 404)) throw error;
+        return [];
+      }
+    }, signal);
+    return rows.flat();
+  }, enabled: Boolean(accountId), staleTime: 15_000, refetchInterval: 30_000 });
   const rows = query.data;
   const [operationError, setError] = useState<string>();
   const mutation = useMutation({
@@ -37,7 +56,7 @@ function ScheduleDialog({ agent, onClose }: { agent: ScheduleAgent; onClose(): v
     mutationFn: (operation: () => Promise<void>) => operation(),
     onSuccess: async () => {
       await client.cancelQueries({ queryKey, exact: true });
-      await client.invalidateQueries({ queryKey, exact: true });
+      await client.invalidateQueries({ queryKey: schedulesKey });
     },
   });
   const pending = mutation.isPending || query.isFetching;
@@ -45,7 +64,6 @@ function ScheduleDialog({ agent, onClose }: { agent: ScheduleAgent; onClose(): v
   const [notice, setNotice] = useState("");
   const [draft, setDraft] = useState<Draft>();
   const [editing, setEditing] = useState(false);
-  const [deleting, setDeleting] = useState<string>();
 
   async function run(operation: () => Promise<void>) {
     if (mutation.isPending) return;
@@ -72,10 +90,12 @@ function ScheduleDialog({ agent, onClose }: { agent: ScheduleAgent; onClose(): v
       <button type="button" aria-label="Close schedules" onClick={onClose}><X size={18} /></button>
     </header>
     <div className="agent-schedules-body">
-      <p className="agent-schedules-note">Runs use this agent’s model and account permissions, even when you’re away, and may incur usage charges. Browser or local Hands must be online for tools that need them.</p>
+      <p className="agent-schedules-note">Runs use their owning agent’s model and account permissions, even when you’re away, and may incur usage charges. Browser or local Hands must be online for tools that need them.</p>
+      <label className="agent-schedules-checkbox"><input type="checkbox" checked={allAgents} disabled={pending || Boolean(draft)}
+        onChange={event => setAllAgents(event.target.checked)} />Show schedules from all my agents</label>
       <div className="agent-schedules-toolbar">
         <button type="button" disabled={pending || rows === undefined || Boolean(draft)} onClick={() => {
-          setDraft(freshDraft()); setEditing(false); setDeleting(undefined); setError(undefined); setNotice("");
+          setDraft(freshDraft()); setEditingAgent(agent); setEditing(false); setError(undefined); setNotice("");
         }}>New schedule</button>
         <button type="button" disabled={pending} onClick={() => void refresh()}>Refresh</button>
       </div>
@@ -91,24 +111,26 @@ function ScheduleDialog({ agent, onClose }: { agent: ScheduleAgent; onClose(): v
         const { id, ...config } = draft;
         void run(async () => {
           if (!config.input.trim()) throw new Error("Enter a prompt.");
-          if (!editing && rows?.some((row) => row.id === id)) throw new Error("That schedule ID already exists. Choose another ID or edit the existing schedule.");
-          await agent.triggers.put(id, config);
+          if (!editing && rows?.some((row) => row.id === id && row.owner.id === agent.id)) throw new Error("That schedule ID already exists. Choose another ID or edit the existing schedule.");
+          if (editing) await editingAgent.triggers.update(id, config);
+          else await editingAgent.triggers.put(id, config);
           if (!active.current) return;
           setDraft(undefined); setNotice(editing ? "Schedule updated." : "Schedule created.");
         });
       }}>
         <h3>{editing ? "Edit schedule" : "New schedule"}</h3>
+        <p className="agent-schedules-note">{editing ? "This schedule belongs to " : "New schedules belong to "}<a href={`/agent/${encodeURIComponent(editingAgent.id)}`}>{editingAgent.id === agent.id ? "this conversation" : editingAgent.id}</a>.</p>
         <fieldset disabled={pending}>
           <label>Schedule ID<input required pattern={"[A-Za-z0-9_\\-]{1,64}"} maxLength={64} readOnly={editing}
             value={draft.id} onChange={(event) => setDraft({ ...draft, id: event.target.value })} /></label>
           <label>Run in<select value={draft.session_mode}
             onChange={(event) => setDraft({ ...draft, session_mode: event.target.value as Draft["session_mode"] })}>
             <option value="new">New session each time</option>
-            <option value="continue">Continue this conversation</option>
+            <option value="continue">Continue the schedule’s agent conversation</option>
           </select></label>
           <p className="agent-schedules-note">{draft.session_mode === "new"
-            ? "Each run starts with empty conversation history and this agent’s current model settings. Results appear as separate conversations."
-            : "Each run adds a turn to this conversation, including its existing history. Occurrences are skipped while it is busy."}</p>
+            ? "Each run starts with empty conversation history and the owning agent’s current model settings. Results appear as separate conversations."
+            : "Each run adds a turn to the owning conversation, including its existing history. Occurrences are skipped while it is busy."}</p>
           <label>Frequency<select value={["0 9 * * *", "0 9 * * MON-FRI", "0 * * * *"].includes(draft.cron) ? draft.cron : "custom"}
             onChange={(event) => setDraft({ ...draft, cron: event.target.value === "custom" ? "" : event.target.value })}>
             <option value="0 9 * * *">Every day at 09:00</option>
@@ -134,36 +156,29 @@ function ScheduleDialog({ agent, onClose }: { agent: ScheduleAgent; onClose(): v
         </fieldset>
       </form>}
       <ul className="agent-schedules-list">
-        {rows?.map((row) => <li key={row.id} aria-label={`Schedule ${row.id}`}>
+        {rows?.map((row) => <li key={`${row.owner.id}:${row.id}`} aria-label={`Schedule ${row.id}`}>
           <div className="agent-schedules-row"><strong>{row.id}</strong><span>{row.enabled ? "Enabled" : "Paused"}</span></div>
-          <p>{row.session_mode === "new" ? "New session each time" : "Continues this conversation"}</p>
+          {allAgents && <p>Agent: <a href={`/agent/${encodeURIComponent(row.owner.id)}`}>{row.ownerTitle}</a></p>}
+          <p>{row.session_mode === "new" ? "New session each time" : "Continues its agent conversation"}</p>
           <p><code>{row.cron}</code> · {row.timezone}</p>
           <p className="agent-schedules-prompt">{row.input}</p>
           <p>Next: {row.next_run_at === null ? "Paused" : formatTime(row.next_run_at, row.timezone)}</p>
-          {row.last_run_at !== null && <p title={row.last_turn_id ?? undefined}>Last dispatched: {formatTime(row.last_run_at, row.timezone)} · <a href={`/agent/${encodeURIComponent(row.last_agent_id ?? agent.id)}`}>Open run</a></p>}
+          {row.last_run_at !== null && <p title={row.last_turn_id ?? undefined}>Last dispatched: {formatTime(row.last_run_at, row.timezone)} · <a href={`/agent/${encodeURIComponent(row.last_agent_id ?? row.owner.id)}`}>Open run</a></p>}
           {row.last_skipped_at !== null && <p>Last skipped while busy: {formatTime(row.last_skipped_at, row.timezone)}</p>}
           <div className="agent-schedules-actions">
             <button type="button" disabled={pending || Boolean(draft)} onClick={() => {
               setDraft({ id: row.id, cron: row.cron, timezone: row.timezone, input: row.input, enabled: row.enabled, session_mode: row.session_mode });
-              setEditing(true); setDeleting(undefined); setError(undefined); setNotice("");
+              setEditingAgent(row.owner); setEditing(true); setError(undefined); setNotice("");
             }}>Edit</button>
             <button type="button" disabled={pending || Boolean(draft)} onClick={() => void run(async () => {
-              const saved = await agent.triggers.put(row.id, { cron: row.cron, timezone: row.timezone, input: row.input, enabled: !row.enabled, session_mode: row.session_mode });
+              const saved = await row.owner.triggers.update(row.id, { enabled: !row.enabled });
               if (active.current) setNotice(saved.enabled ? "Schedule resumed." : "Schedule paused. Any running turn continues.");
             })}>{row.enabled ? "Pause" : "Resume"}</button>
-            <button type="button" disabled={pending || Boolean(draft)} onClick={() => setDeleting(row.id)}>Delete</button>
+            <button type="button" disabled={pending || Boolean(draft)} onClick={() => void run(async () => {
+              await row.owner.triggers.delete(row.id);
+              if (active.current) setNotice("Schedule canceled. Any running turn continues.");
+            })}>Cancel schedule</button>
           </div>
-          {deleting === row.id && <div className="agent-schedules-delete">
-            <p>Delete this schedule? Conversation history and any running turn are kept.</p>
-            <div className="agent-schedules-actions">
-              <button type="button" disabled={pending} onClick={() => void run(async () => {
-                await agent.triggers.delete(row.id);
-                if (!active.current) return;
-                setDeleting(undefined); setNotice("Schedule deleted.");
-              })}>Confirm delete</button>
-              <button type="button" disabled={pending} onClick={() => setDeleting(undefined)}>Keep schedule</button>
-            </div>
-          </div>}
         </li>)}
       </ul>
       <p className="agent-schedules-note">Continuing a busy conversation skips that occurrence. New sessions run independently. Missed times are not replayed individually. Pausing or deleting does not cancel a run already dispatched or being delivered.</p>

@@ -20,3 +20,7 @@ pretty_assertions = "1"
 tempfile = "3"
 ctor = "0.6"
 libc = "0.2"
+
+[patch.crates-io]
+# Minimal mixer ingress patch; see vendor/webrtc-sys/NANOCODEX.md.
+webrtc-sys = { path = "vendor/webrtc-sys" }

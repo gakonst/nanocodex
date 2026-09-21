@@ -4,7 +4,15 @@ on:
   pull_request:
     paths:
       - 'hands/remote/image/Dockerfile'
-      - 'crates/nanocodex-vm/image/toolkit/**'
+      - 'hands/remote/image/smoke.sh'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'bin/**'
+      - 'crates/**'
+      - 'examples/**'
+      - 'js/nanocodex/**'
+      - 'py/bindings/**'
+      - 'third_party/**'
       - '.github/workflows/hand-image.yml'
   workflow_dispatch:
     inputs:

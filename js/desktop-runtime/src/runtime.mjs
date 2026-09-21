@@ -794,8 +794,7 @@ export class DesktopRuntime extends EventEmitter {
     const workspace = await Workspace.open({ path: hand.workspace, root: hand.workspace });
     resource.abort.signal.throwIfAborted();
     const vmTools = this.#localVmTools(hand, resource);
-    const computer = computerExecutable ? await connectComputerTools({ executable: computerExecutable,
-      ...(process.platform === "linux" && !hand.agentId ? { desktopRuntime: join(this.#nativeScreenDirectory(hand), "desktop") } : {}) }) : undefined;
+    const computer = computerExecutable ? await connectComputerTools({ executable: computerExecutable }) : undefined;
     if (computer) resource.add(computer.close);
     const tools = await createTools({ tools: [...processes.tools, ...vmTools, ...(computer?.tools ?? [])], workspace, attachmentId: hand.id, machines: [{ id: hand.id, name: hand.name, workspace: hand.workspace, capabilities: ["native", "shell", "filesystem", "process", "pipes", ...(computer ? ["computer"] : []), ...(vmTools.length ? ["vm_host"] : [])] }] });
     resource.add(() => tools.close());

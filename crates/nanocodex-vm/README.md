@@ -35,7 +35,7 @@ use nanocodex_vm::{
     tools::GuestRuntimeDisk,
 };
 
-# async fn prepare() -> Result<(), Box<dyn std::error::Error>> {
+# async fn prepare() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 let runtime = GuestRuntimeDisk::prepare(
     "target/aarch64-unknown-linux-musl/debug/nanocodex-vm-guest",
     ".cache/nanocodex/vm",
@@ -61,7 +61,7 @@ let workspace = image.private_workspace(
 .launch()
 .await?;
 
-let tools = workspace.tools_builder().build()?;
+let tools = workspace.tools_builder().await?.build()?;
 // Pass `tools` to `Nanocodex::builder(...).tools(tools)`.
 
 drop(tools);
@@ -455,12 +455,12 @@ share the Docker host kernel and are an explicitly selected isolation mode.
 ```rust,no_run
 use nanocodex_vm::docker::DockerWorkspace;
 
-# async fn example() -> Result<(), Box<dyn std::error::Error>> {
+# async fn example() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 let workspace = DockerWorkspace::builder("nanocodex-hand:local", "my-hand-workspace")
     .cpus(2)
     .memory_mib(1024)
     .launch().await?;
-let tools = workspace.attachment_tools_builder().build()?;
+let tools = workspace.attachment_tools_builder().await?.build()?;
 // Attach these tools using the ordinary Hosted Tools contract.
 drop(tools);
 workspace.shutdown().await?; // The named volume survives.

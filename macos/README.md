@@ -18,6 +18,11 @@ controls work on complete responses and individual code blocks. Desktop pane
 arrangement, tiling, navigation shortcuts, and per-agent state remain owned by
 the existing workspace.
 
+Open **Workspace and account → Scheduled jobs** to view jobs across the account.
+Select a job to edit its prompt, timing, active status, or conversation mode, or
+cancel future scheduling. Dispatched and running work is not stopped by
+cancellation. New schedules are created by asking an agent in chat.
+
 ## Build and open
 
 Install workspace dependencies with `pnpm install` and prepare the pinned Node

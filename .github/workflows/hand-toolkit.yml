@@ -3,7 +3,6 @@ on:
   pull_request:
     paths:
       - 'crates/nanocodex-vm/image/**'
-      - 'crates/experimental/nanocodex-computer/runtime/**'
       - '.github/workflows/hand-toolkit.yml'
   workflow_dispatch:
 permissions:
@@ -33,7 +32,6 @@ jobs:
         with:
           context: crates/nanocodex-vm/image
           file: crates/nanocodex-vm/image/${{ matrix.dockerfile }}
-          build-contexts: computer-source=crates/experimental/nanocodex-computer/runtime
           load: true
           tags: nanocodex-vm:toolkit
           cache-from: type=gha,scope=vm-toolkit-${{ matrix.runner }}-${{ matrix.dockerfile }}

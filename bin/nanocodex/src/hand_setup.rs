@@ -3,24 +3,8 @@ use clap::{Args, Subcommand};
 use eyre::{Result, WrapErr, bail};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    process::Stdio,
-};
+use std::{fs, path::PathBuf, process::Stdio};
 use tokio::{io::AsyncWriteExt, process::Command};
-
-const COMPUTER_SOURCES: &[(&str, &[u8])] =
-    include!(concat!(env!("OUT_DIR"), "/hand_computer_sources.rs"));
-
-fn write_computer_sources(stage: &Path) -> Result<()> {
-    for (name, bytes) in COMPUTER_SOURCES {
-        let path = stage.join("computer-source").join(name);
-        fs::create_dir_all(path.parent().expect("source has a parent"))?;
-        fs::write(path, bytes)?;
-    }
-    Ok(())
-}
 
 #[derive(Args)]
 pub(crate) struct Hand {
@@ -62,7 +46,7 @@ struct Setup {
     vm_cpus: u8,
     #[arg(long, default_value_t = 4096)]
     vm_memory_mib: u32,
-    /// Use local nanocodex2, nanocodex-vm-guest, and nanocodex-computer binaries.
+    /// Use local nanocodex2 and nanocodex-vm-guest binaries.
     #[arg(long, value_name = "DIRECTORY")]
     artifacts: Option<PathBuf>,
 }
@@ -179,7 +163,7 @@ impl Setup {
         let temporary = tempfile::tempdir()?;
         let mut bundle = if let Some(directory) = &self.artifacts {
             let mut artifacts = Vec::new();
-            for name in ["nanocodex2", "nanocodex-vm-guest", "nanocodex-computer"] {
+            for name in ["nanocodex2", "nanocodex-vm-guest"] {
                 let bytes = fs::read(directory.join(name))
                     .wrap_err_with(|| format!("Missing {name} in {}", directory.display()))?;
                 if !bytes.starts_with(b"\x7fELF") {
@@ -240,9 +224,6 @@ impl Setup {
             ),
         ] {
             fs::write(temporary.path().join(name), content)?;
-        }
-        if !self.native_only {
-            write_computer_sources(temporary.path())?;
         }
         let archive = tempfile::NamedTempFile::new()?;
         let status = Command::new("tar")
@@ -321,18 +302,6 @@ impl Hand {
 mod tests {
     use super::*;
     use clap::Parser;
-    #[test]
-    fn installer_bundles_computer_build_context_without_a_checkout() {
-        let stage = tempfile::tempdir().unwrap();
-        write_computer_sources(stage.path()).unwrap();
-        let root = stage.path().join("computer-source");
-        for name in ["Cargo.toml", "Cargo.lock", "src/main.rs"] {
-            assert!(root.join(name).is_file(), "missing {name}");
-        }
-        assert!(root.join("extensions").is_dir());
-        assert!(!root.join("target").exists());
-        assert!(!root.join(".git").exists());
-    }
     #[derive(Parser)]
     struct TestCli {
         #[command(flatten)]

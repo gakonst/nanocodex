@@ -3,6 +3,7 @@ import Foundation
 /// A durable follow-up is admitted once. Steering captures its active target;
 /// SteeringTransfer fences the queued source before injecting through the API.
 public struct PendingMessage: Identifiable, Codable, Equatable, Sendable {
+    public enum AttachmentTransport: String, Codable, Sendable { case automatic, phone, cloud }
     public enum Phase: String, Codable, Sendable { case submitting, queued, starting, cancelling, failed }
     public let id: String
     public let agentID: String
@@ -12,12 +13,25 @@ public struct PendingMessage: Identifiable, Codable, Equatable, Sendable {
     public var acceptedCursor: Cursor?
     public var error: String?
     public var attachments: [MessageAttachment]?
+    /// Missing in legacy messages, whose attachments used cloud transport.
+    public private(set) var attachmentTransport: AttachmentTransport?
     public var contextIDs: [String]?
     /// A server-owned admission reconstructed for display/control, never resubmission.
     public var remoteAdmission: Bool?
     public init(agentID: String, input: String, predecessor: String, id: String = UUID().uuidString, contextIDs: [String]? = nil, attachments: [MessageAttachment]? = nil) {
         self.id = id; self.agentID = agentID; self.input = input; self.predecessor = predecessor
         self.contextIDs = contextIDs; self.attachments = attachments
+        self.attachmentTransport = .automatic
+    }
+    /// Resolve once and persist before publishing or uploading any attachments.
+    /// Retries must retain the same descriptor under their idempotency key.
+    public mutating func resolveAttachmentTransport(phoneEnabled: Bool) -> Bool {
+        switch attachmentTransport {
+        case .automatic: attachmentTransport = phoneEnabled ? .phone : .cloud
+        case nil: attachmentTransport = .cloud
+        case .phone, .cloud: break
+        }
+        return attachmentTransport == .phone
     }
     public var queueTitle: String {
         switch phase {

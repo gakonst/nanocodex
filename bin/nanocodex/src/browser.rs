@@ -1,12 +1,15 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-};
+use std::path::PathBuf;
+#[cfg(test)]
+use std::{fs, path::Path};
 
 use clap::{Args, ValueEnum};
-use eyre::{Result, WrapErr, eyre};
+#[cfg(test)]
+use eyre::eyre;
+use eyre::{Result, WrapErr};
+use nanocodex_browser::Browser;
+#[cfg(test)]
 use nanocodex_browser::{
-    BraveSession, BraveSessionError, Browser, BrowserCookieAuthorization, BrowserProfileKind,
+    BraveSession, BraveSessionError, BrowserCookieAuthorization, BrowserProfileKind,
     BrowserStorageState, BrowserTool, FirefoxCookieSource, HostPasskeyAuthenticator,
     SafariCookieSource, VirtualAuthenticator,
 };
@@ -43,22 +46,19 @@ enum BrowserProfilePersistence {
     Persistent,
 }
 
+#[cfg(test)]
 enum CookieSource {
     Chromium(BraveSession),
     State(BrowserStorageState),
 }
 
-/// Local browser configuration for normal agent sessions.
+/// Legacy browser configuration retained for explicit browser utilities.
 #[derive(Args)]
 pub(crate) struct BrowserArgs {
-    /// Select the private browser exposed to Code Mode as `tools.browser`.
+    /// Legacy browser selection; ignored by agent sessions, which use CUA.
     ///
-    /// By default, Nanocodex uses a dedicated automation browser on macOS. On
-    /// other platforms it prefers Brave and falls back to another installed
-    /// Chromium-family browser. Pass `brave` to deliberately use the standard
-    /// Brave application with a private profile, `chromium` to use normal
-    /// private browser discovery, or `none` to disable browser tools. Bare
-    /// `--browser` selects private browser discovery.
+    /// These settings remain available to explicit browser utilities. They do
+    /// not enable browser tools or import cookies into an agent session.
     #[arg(
         long,
         env = "NANOCODEX_BROWSER",
@@ -175,6 +175,7 @@ impl BrowserArgs {
         matches!(self.browser_profile, BrowserProfilePersistence::Persistent)
     }
 
+    #[cfg(test)]
     pub(crate) fn configure(&self, workspace: &Path) -> Result<Option<ConfiguredBrowser>> {
         if self.browser == Some(BrowserKind::None) {
             if self.browser_executable.is_some() {
@@ -252,14 +253,17 @@ impl BrowserArgs {
     }
 }
 
+#[cfg(test)]
 fn default_virtual_credential_store() -> Result<PathBuf> {
     Ok(default_browser_state_root()?.join("passkeys.json"))
 }
 
+#[cfg(test)]
 fn default_persistent_browser_profile() -> Result<PathBuf> {
     Ok(default_browser_state_root()?.join("profile"))
 }
 
+#[cfg(test)]
 fn default_browser_state_root() -> Result<PathBuf> {
     let root = if let Some(root) = std::env::var_os("NANOCODEX_DIR") {
         PathBuf::from(root)
@@ -275,6 +279,7 @@ fn default_browser_state_root() -> Result<PathBuf> {
     Ok(root.join("browser"))
 }
 
+#[cfg(test)]
 fn create_private_directory(path: &Path) -> Result<()> {
     if let Ok(metadata) = fs::symlink_metadata(path)
         && metadata.file_type().is_symlink()
@@ -294,6 +299,7 @@ fn create_private_directory(path: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(test)]
 fn standard_host_passkey_authenticator() -> Result<HostPasskeyAuthenticator> {
     #[cfg(not(target_os = "macos"))]
     {
@@ -320,10 +326,12 @@ fn standard_host_passkey_authenticator() -> Result<HostPasskeyAuthenticator> {
     }
 }
 
+#[cfg(test)]
 struct BrowserLaunch {
     executable: Option<PathBuf>,
 }
 
+#[cfg(test)]
 fn resolve_browser_launch(
     requested: Option<BrowserKind>,
     explicit_executable: Option<&Path>,
@@ -388,6 +396,7 @@ const fn default_cookie_authorization() -> CookieAuthorizationKind {
     CookieAuthorizationKind::Background
 }
 
+#[cfg(test)]
 fn cookie_source() -> Option<CookieSource> {
     // Cookie selection is independent from the disposable automation binary.
     // Prefer Chromium-family profiles in the same order as `nanocodex cookies`,
@@ -408,6 +417,7 @@ fn cookie_source() -> Option<CookieSource> {
         })
 }
 
+#[cfg(test)]
 fn chromium_cookie_source(
     mut standard_cookie: impl FnMut(BrowserProfileKind) -> Result<BraveSession, BraveSessionError>,
 ) -> Option<BraveSession> {
@@ -416,6 +426,7 @@ fn chromium_cookie_source(
         .find_map(|source| standard_cookie(source).ok())
 }
 
+#[cfg(test)]
 const fn chromium_cookie_source_preferences() -> [BrowserProfileKind; 4] {
     [
         BrowserProfileKind::Brave,
@@ -426,6 +437,7 @@ const fn chromium_cookie_source_preferences() -> [BrowserProfileKind; 4] {
 }
 
 impl ConfiguredBrowser {
+    #[cfg(test)]
     pub(crate) fn tool(&self) -> BrowserTool {
         BrowserTool::from_browser(self.browser.clone())
     }

@@ -17,13 +17,23 @@ RUN git init && git remote add origin https://github.com/rockorager/waymote.git 
 # example ARM LSE/SVE unavailable on some supported deployment machines).
 RUN /opt/zig/zig build -Dcpu=baseline -Doptimize=ReleaseFast
 
-FROM golang:1.26.5-trixie AS remote
-WORKDIR /src/remote
-COPY hands/remote/go.mod hands/remote/go.sum ./
-RUN go mod download
-COPY hands/remote/*.go ./
-COPY hands/remote/observation_helper.py hands/remote/capture_policy.json ./
-RUN CGO_ENABLED=0 go build -trimpath -o /out/nanocodex-remote .
+# The standalone server image uses the same publisher as desktop and VM Hands.
+FROM rust:1.97-slim-trixie AS remote
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential cmake pkg-config libssl-dev clang libpulse-dev libxkbcommon-dev \
+    libasound2-dev libudev-dev libwayland-dev libpipewire-0.3-dev libspa-0.2-dev uuid-dev \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /source
+COPY Cargo.toml Cargo.lock ./
+COPY bin ./bin
+COPY crates ./crates
+COPY examples ./examples
+COPY js/nanocodex ./js/nanocodex
+COPY py/bindings ./py/bindings
+COPY third_party ./third_party
+RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/usr/local/cargo/git --mount=type=cache,target=/source/target \
+    CARGO_BUILD_JOBS=2 cargo build --release --locked -p nanocodex2-bin --bin nanocodex2 \
+    && mkdir -p /out && cp target/release/nanocodex2 /out/nanocodex-remote
 
 FROM rust:1.97-slim-trixie AS rust-toolchain
 RUN rustup component add clippy rustfmt && rustup target add wasm32-unknown-unknown
@@ -33,7 +43,7 @@ FROM debian:trixie-slim
 COPY --from=rust-toolchain /usr/local/rustup /opt/rustup
 COPY --from=rust-toolchain /usr/local/cargo /opt/cargo
 COPY --from=node-toolchain /usr/local /opt/node
-COPY --from=remote /usr/local/go /usr/local/go
+COPY --from=waymote /usr/local/go /usr/local/go
 COPY --from=ghcr.io/astral-sh/uv:0.8.11 /uv /uvx /usr/local/bin/
 ENV RUSTUP_HOME=/opt/rustup PATH=/opt/hand-python/bin:/opt/node/bin:/opt/cargo/bin:/usr/local/go/bin:$PATH
 COPY crates/nanocodex-vm/image/toolkit /opt/hand-toolkit

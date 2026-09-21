@@ -7,6 +7,19 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createNodeProcessTools } from "../tools/nodeProcess.mjs";
 
+// A yield deadline does not imply process completion, especially while many
+// children compete for the scheduler. Preserve every output chunk while polling.
+async function completedProcess(runtime, result, context) {
+  let output = result.output;
+  const deadline = performance.now() + 30_000;
+  while (result.session_id !== undefined) {
+    assert.ok(performance.now() < deadline, `released process ${result.session_id} must complete; output=${JSON.stringify(output)}`);
+    result = await runtime.tools[1].handler({ session_id: result.session_id, yield_time_ms: 100 }, context);
+    output += result.output;
+  }
+  return { ...result, output };
+}
+
 test("native pipe sessions preserve ownership and never inherit provider credentials", async () => {
   const workspace = await mkdtemp(join(tmpdir(), "nanocodex-process-"));
   const original = process.env.NC_API_KEY;
@@ -165,15 +178,63 @@ test("native Hands retain more than 32 parallel processes until completion", { s
       }
     }
     assert.equal(new Set(sessions).size, 80);
-    const completed = await Promise.all(sessions.map((session_id, index) => stdin.handler(
+    const completed = await Promise.all(sessions.map(async (session_id, index) => completedProcess(runtime, await stdin.handler(
       { session_id, chars: `process-${index}\n`, yield_time_ms: 1000 }, context,
-    )));
+    ), context)));
     for (const [index, result] of completed.entries()) {
       assert.equal(result.exit_code, 0);
       assert.equal(result.output, `process-${index}\n`);
       assert.equal(result.session_id, undefined);
     }
   } finally { await runtime.close(); await rm(workspace, { recursive: true }); }
+});
+
+test("Darwin cleanup retries transient group refusal before the close event", { skip: process.platform !== "darwin" }, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "nanocodex-cleanup-retry-"));
+  const runtime = await createNodeProcessTools({ workspace });
+  const originalKill = process.kill;
+  let refused = false;
+  try {
+    await runtime.tools[0].handler({ cmd: "sleep 30", yield_time_ms: 0 }, { sessionId: "owner" });
+    process.kill = function(pid, signal) {
+      if (!refused && signal === "SIGTERM") {
+        refused = true;
+        throw Object.assign(new Error("transient refusal"), { code: "EPERM" });
+      }
+      return originalKill.call(process, pid, signal);
+    };
+    await runtime.close();
+    assert.equal(refused, true);
+  } finally {
+    process.kill = originalKill;
+    await runtime.close();
+    await rm(workspace, { recursive: true, force: true });
+  }
+});
+
+test("persistent Darwin group refusal stays visible and permits later cleanup", { skip: process.platform !== "darwin" }, async () => {
+  const workspace = await mkdtemp(join(tmpdir(), "nanocodex-cleanup-refused-"));
+  const runtime = await createNodeProcessTools({ workspace });
+  const originalKill = process.kill;
+  let refusals = 0;
+  try {
+    await runtime.tools[0].handler({ cmd: "sleep 30", yield_time_ms: 0 }, { sessionId: "owner" });
+    process.kill = function(pid, signal) {
+      if (signal === "SIGTERM") {
+        refusals++;
+        throw Object.assign(new Error("persistent refusal"), { code: "EPERM" });
+      }
+      return originalKill.call(process, pid, signal);
+    };
+    await assert.rejects(runtime.close(), { code: "EPERM" });
+    assert.equal(refusals, 5, "retry budget must be bounded");
+    process.kill = originalKill;
+    await runtime.close();
+  } finally {
+    process.kill = originalKill;
+    await runtime.close();
+    await rm(workspace, { recursive: true, force: true });
+  }
 });
 
 test("large unread output survives completion and drains without truncation or broken UTF-8", { timeout: 10_000 }, async () => {
@@ -206,14 +267,15 @@ test("Finder PATH discovers installed Node while preserving inherited executable
   try {
     process.env.PATH = "/usr/bin:/bin:/usr/sbin:/sbin";
     const finder = await createNodeProcessTools({ workspace }); runtimes.push(finder);
-    const version = await finder.tools[0].handler({ cmd: "node --version" }, { sessionId: "finder" });
+    const version = await completedProcess(finder, await finder.tools[0].handler({ cmd: "node --version" }, { sessionId: "finder" }), { sessionId: "finder" });
     assert.equal(version.exit_code, 0);
     assert.match(version.output, /^v\d+\.\d+\.\d+/);
     const preferred = join(workspace, "bin"); await mkdir(preferred);
     await writeFile(join(preferred, "node"), "#!/bin/sh\nprintf 'preferred-node\\n'\n", { mode: 0o700 });
     process.env.PATH = `${preferred}:/usr/bin:/bin`;
     const explicit = await createNodeProcessTools({ workspace }); runtimes.push(explicit);
-    const chosen = await explicit.tools[0].handler({ cmd: "node --version" }, { sessionId: "explicit" });
+    const chosen = await completedProcess(explicit, await explicit.tools[0].handler({ cmd: "node --version" }, { sessionId: "explicit" }), { sessionId: "explicit" });
+    assert.equal(chosen.exit_code, 0);
     assert.equal(chosen.output.trim(), "preferred-node");
   } finally {
     if (originalPath === undefined) delete process.env.PATH; else process.env.PATH = originalPath;

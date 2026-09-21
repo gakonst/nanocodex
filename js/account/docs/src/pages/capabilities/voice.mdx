@@ -42,6 +42,38 @@ API-key quick start. See the [voice source guide](https://github.com/gakonst/nan
 [device example](https://github.com/gakonst/nanocodex/blob/master/examples/voice.rs),
 and [pipe example](https://github.com/gakonst/nanocodex/blob/master/examples/realtime_pipe.rs).
 
+## ElevenLabs voices and cloning
+
+Browser and Apple voice settings can use ElevenLabs for spoken output. Live
+microphone input, conversation, and agent handoffs continue through the existing
+ChatGPT Realtime connection, so ChatGPT voice authentication is still required.
+
+Choose **ElevenLabs** in voice settings, connect your ElevenLabs API key, and
+select a voice from your account. The key is stored encrypted on the server;
+it is not included in voice preferences or agent conversation context. Apply
+settings and reconnect to change the voice during a call.
+
+To create an instant voice clone, enter a name and upload audio samples in voice
+settings. Confirm that you own the voice or have permission to clone it before
+submitting. Samples are sent to ElevenLabs. A successful clone appears in your
+voice list; a clone that requires provider verification must finish that step
+before it can be used. Availability depends on your ElevenLabs account.
+
+Applications can select an existing voice through the browser API:
+
+```js
+await voice.start({
+  outputProvider: "elevenlabs",
+  elevenLabsVoiceId: "YOUR_ELEVENLABS_VOICE_ID",
+});
+```
+
+The default output provider remains `openai`. Speaking, typing, cancelling, or
+stopping a call cancels pending ElevenLabs playback.
+
+See ElevenLabs' [instant cloning API](https://elevenlabs.io/docs/api-reference/voices/ivc/create)
+and [speech API](https://elevenlabs.io/docs/api-reference/text-to-speech/stream).
+
 ## Two coordinated lifecycles
 
 Voice and coding work are separate owned sessions joined by explicit delegation.

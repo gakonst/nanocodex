@@ -373,6 +373,17 @@ async fn execute_request(
             id: request.id,
             error: None,
         }),
+        SessionRequest::ComputerCatalog(request) => {
+            let (tools, error) = match memory.computer.catalog().await {
+                Ok(catalog) => (Some(catalog), None),
+                Err(error) => (None, Some(error.to_string())),
+            };
+            SessionResponse::ComputerCatalog(super::protocol::ComputerCatalogResponse {
+                id: request.id,
+                tools,
+                error,
+            })
+        }
         SessionRequest::Tool(request) => {
             let context = ToolContext::new(
                 &request.context.model,
@@ -382,7 +393,7 @@ async fn execute_request(
                 request.context.output_token_budget,
             );
             let execution = match request.tool {
-                super::protocol::GuestTool::Computer(kind) => {
+                super::protocol::GuestTool::Computer { name } => {
                     use nanocodex_tools::Tool as _;
                     let computer = match memory.computer.tools().await {
                         Ok(computer) => computer,
@@ -393,9 +404,11 @@ async fn execute_request(
                             ));
                         }
                     };
-                    let tool = match kind {
-                        super::protocol::ComputerToolKind::Cua => computer.js(),
-                        super::protocol::ComputerToolKind::CuaReset => computer.reset(),
+                    let Some(tool) = computer.tool(&name) else {
+                        return SessionResponse::Tool(ToolResponse::failed(
+                            request.id,
+                            format!("Upstream Sky provider does not publish tool {name}"),
+                        ));
                     };
                     match tool.execute(request.input.into(), context).await {
                         Ok(output) => output,
@@ -1562,6 +1575,15 @@ mod tests {
             "foreground command failed: {:?}",
             execution.output
         );
+        // A yielded exec response confirms a running session, not that its shell
+        // has reached the first command. Wait for the fixture's readiness signal.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !pid_file.is_file() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("foreground command must publish its PID before termination");
         let pid = fs::read_to_string(&pid_file)
             .unwrap()
             .parse::<i32>()

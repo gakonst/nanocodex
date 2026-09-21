@@ -15,10 +15,15 @@ import {
 } from "nanocodex-react/agent";
 import {
   useVoice,
+  createElevenLabsManager,
+  type ElevenLabsManager,
   Voice,
   type UseVoiceParameters,
   type UseVoiceReturnType,
 } from "nanocodex-react";
+import { ElevenLabsSettings } from "./ElevenLabsSettings.js";
+const defaultElevenLabsManager = createElevenLabsManager();
+
 import { SlidersHorizontal, X } from "lucide-react";
 import { TerminalComposer } from "./TerminalComposer.js";
 import { TerminalTranscriptSurface } from "./TerminalTranscriptSurface.js";
@@ -54,6 +59,7 @@ export function AgentTerminalView({
   showToolCalls = true,
   voice = false,
   voiceOptions,
+  elevenLabsManager,
   welcome,
 }: {
   accessory?(controls: AgentTerminalAccessory): ReactNode;
@@ -78,6 +84,7 @@ export function AgentTerminalView({
   showToolCalls?: boolean;
   /** Enables the package-owned microphone control. */
   voice?: boolean;
+  elevenLabsManager?: ElevenLabsManager;
   voiceOptions?: Omit<UseVoiceParameters, "enabled">;
   welcome?: string;
 }) {
@@ -223,7 +230,7 @@ export function AgentTerminalView({
       composer={composer === undefined ? (
         <TerminalComposer
           controls={(voice || controls) ? <>
-            {voice ? <VoiceControl agentReady={agentStatus === "ready"} voice={voiceState} initialSettings={voiceOptions} /> : null}
+            {voice ? <VoiceControl agentReady={agentStatus === "ready"} voice={voiceState} initialSettings={voiceOptions} elevenLabsManager={elevenLabsManager} /> : null}
             {controls?.({ agentReady: agentStatus === "ready" })}
           </> : undefined}
           draft={touchDraft}
@@ -269,11 +276,13 @@ export function VoiceControl({
   voice,
   initialVoice,
   initialSettings,
+  elevenLabsManager = defaultElevenLabsManager,
 }: {
   agentReady: boolean;
   voice: UseVoiceReturnType;
   initialVoice?: NonNullable<UseVoiceReturnType["voice"]> | undefined;
   initialSettings?: Voice.Settings | undefined;
+  elevenLabsManager?: ElevenLabsManager | undefined;
 }) {
   const engaged = voice.isActive || voice.isConnecting;
   const [settings, setSettings] = useState<Voice.Settings>(() => ({ ...savedVoiceSettings(), ...initialSettings }));
@@ -284,6 +293,9 @@ export function VoiceControl({
   const statusText = voice.statusText ?? (voice.isActive ? voice.voice : undefined);
   const saveSettings = async () => {
     const next = { ...settings, voice: selectedVoice };
+    if (next.outputProvider === "elevenlabs" && !next.elevenLabsVoiceId) {
+      setSettingsError("Select an ElevenLabs voice first."); return;
+    }
     if (next.instructions?.includes("\0")) {
       setSettingsError("Speaking preferences cannot contain NUL characters.");
       return;
@@ -318,7 +330,7 @@ export function VoiceControl({
       <meter className="agent-voice-level" aria-label="Microphone level" min={0} max={1} value={voice.microphoneLevel} />
       <meter className="agent-voice-level" aria-label="Speaker level" min={0} max={1} value={voice.speakerLevel} />
     </> : null}
-    <select
+    {(settings.outputProvider ?? "openai") === "openai" ? <select
       aria-label="Voice"
       className="agent-voice-select"
       value={selectedVoice}
@@ -328,18 +340,23 @@ export function VoiceControl({
       {Voice.voices.map((name) => <option key={name} value={name}>
         {name[0]!.toUpperCase() + name.slice(1)}
       </option>)}
-    </select>
+    </select> : null}
     <div className="agent-voice-preferences">
       <button type="button" aria-label="Voice settings" aria-expanded={showSettings}
         onClick={() => { setShowSettings(!showSettings); }}>
         <SlidersHorizontal aria-hidden="true" />
       </button>
       {showSettings ? <div className="agent-voice-settings" role="group" aria-label="Voice preferences">
+        <label>Speech provider<select value={settings.outputProvider ?? "openai"} onChange={(event) => {
+          setSettings({ ...settings, outputProvider: event.target.value as "openai" | "elevenlabs" });
+        }}><option value="openai">OpenAI</option><option value="elevenlabs">ElevenLabs</option></select></label>
+        {settings.outputProvider === "elevenlabs" ? <ElevenLabsSettings manager={elevenLabsManager}
+          voiceId={settings.elevenLabsVoiceId ?? ""} onSelect={(elevenLabsVoiceId) => setSettings({ ...settings, elevenLabsVoiceId })} /> :
         <label>Voice for this call<select value={selectedVoice} onChange={(event) => {
           setSelectedVoice(event.target.value as Voice.VoiceName);
         }}>
           {Voice.voices.map((name) => <option key={name} value={name}>{name[0]!.toUpperCase() + name.slice(1)}</option>)}
-        </select></label>
+        </select></label>}
         <label>Pace<select value={settings.pace ?? "natural"} onChange={(event) => {
           setSettings({ ...settings, pace: event.target.value as Voice.Settings["pace"] });
         }}>
@@ -402,6 +419,8 @@ function savedVoiceSettings(): Voice.Settings {
     if (!value || typeof value !== "object" || Array.isArray(value)) return {};
     const settings = value as Voice.Settings;
     return {
+      ...(["openai", "elevenlabs"].includes(settings.outputProvider!) ? { outputProvider: settings.outputProvider } : {}),
+      ...(typeof settings.elevenLabsVoiceId === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(settings.elevenLabsVoiceId) ? { elevenLabsVoiceId: settings.elevenLabsVoiceId } : {}),
       voice: Voice.voices.includes(settings.voice!) ? settings.voice : undefined,
       instructions: typeof settings.instructions === "string"
         && !settings.instructions.includes("\0") ? settings.instructions : undefined,

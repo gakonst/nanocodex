@@ -79,8 +79,10 @@ public final class ManagedClient: @unchecked Sendable {
     private let session: URLSession
     private let responseCache: URLCache?
     private let requestOrigin: [String: String]
-    public init(credential: AccountCredential, configuration: URLSessionConfiguration? = nil) {
+    private let locationContext: (@Sendable () async -> JSON?)?
+    public init(credential: AccountCredential, configuration: URLSessionConfiguration? = nil, locationContext: (@Sendable () async -> JSON?)? = nil) {
         self.credential = credential
+        self.locationContext = locationContext
         #if os(iOS)
         let clientName = "ios"
         #elseif os(macOS)
@@ -101,7 +103,7 @@ public final class ManagedClient: @unchecked Sendable {
     public func close() { session.invalidateAndCancel() }
     /// Call on explicit sign-out, not when suspending an observer.
     public func clearCachedResponses() { responseCache?.removeAllCachedResponses(); ManagedAccess.clear() }
-    public func request(path: String, method: String = "GET", body: JSON? = nil, idempotencyKey: String? = nil) throws -> URLRequest {
+    public func request(path: String, method: String = "GET", body: JSON? = nil, idempotencyKey: String? = nil, location: JSON? = nil) throws -> URLRequest {
         guard path.hasPrefix("/v1/"), !path.contains(".."), !path.contains("#"),
               let url = URL(string: credential.origin + path) else { throw APIError.invalidResponse }
         var request = URLRequest(url: url, timeoutInterval: 20)
@@ -112,7 +114,12 @@ public final class ManagedClient: @unchecked Sendable {
         request.setValue("Bearer " + credential.apiKey, forHTTPHeaderField: "Authorization")
         request.setValue("application/json", forHTTPHeaderField: "Accept")
         if path == "/v1/agents" || path.hasPrefix("/v1/agents/") {
-            let context = try JSONSerialization.data(withJSONObject: requestOrigin, options: [.sortedKeys])
+            var origin = requestOrigin.mapValues(JSON.string)
+            if method == "POST", path == "/v1/agents" || path.hasSuffix("/turns"), let location {
+                origin["location"] = location
+            }
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            let context = try encoder.encode(JSON.object(origin))
             request.setValue(String(decoding: context, as: UTF8.self), forHTTPHeaderField: "x-nanocodex-client-context")
         }
         if let body {
@@ -124,6 +131,9 @@ public final class ManagedClient: @unchecked Sendable {
         return request
     }
     public func json(path: String, method: String = "GET", body: JSON? = nil, idempotencyKey: String? = nil) async throws -> JSON {
+        let isAdmission = method == "POST" && (path == "/v1/agents" || (path.hasPrefix("/v1/agents/") && path.hasSuffix("/turns")))
+        let location = isAdmission ? await locationContext?() : nil
+        try Task.checkCancellation()
         let isHistory = path.contains("/events/history?")
         let signpostID = OSSignpostID(log: historyPerformanceLog)
         let data: Data
@@ -131,7 +141,7 @@ public final class ManagedClient: @unchecked Sendable {
         do {
             if isHistory { os_signpost(.begin, log: historyPerformanceLog, name: "HistoryTransport", signpostID: signpostID) }
             defer { if isHistory { os_signpost(.end, log: historyPerformanceLog, name: "HistoryTransport", signpostID: signpostID) } }
-            (data, response) = try await ManagedAccess.data(for: request(path: path, method: method, body: body, idempotencyKey: idempotencyKey), using: session)
+            (data, response) = try await ManagedAccess.data(for: request(path: path, method: method, body: body, idempotencyKey: idempotencyKey, location: location), using: session)
         }
         guard let response = response as? HTTPURLResponse else { throw APIError.invalidResponse }
         guard (200..<300).contains(response.statusCode) else {
@@ -160,9 +170,12 @@ public final class ManagedClient: @unchecked Sendable {
             let summary = body["summaries"][id]
             let count = summary["turn_count"].number
             guard count >= 0, count < Double(Int.max), count.rounded(.down) == count else { throw APIError.invalidResponse }
-            return AgentCard(id: id, title: summary["title"].string.isEmpty ? "Untitled agent" : summary["title"].string,
+            var card = AgentCard(id: id, title: summary["title"].string.isEmpty ? "Untitled agent" : summary["title"].string,
                              updatedAt: summary["updated_at"].number, turnCount: Int(summary["turn_count"].number),
-                             mayHaveScheduledJobs: summary["may_have_scheduled_jobs"] != .bool(false))
+                             mayHaveScheduledJobs: summary["may_have_scheduled_jobs"] != .bool(false),
+                             lastUserMessageAt: summary["last_user_message_at"] == .null ? (count > 0 ? summary["updated_at"].number : 0) : summary["last_user_message_at"].number)
+            card.applyPresentation(summary["presentation"])
+            return card
         }
     }
     public static func agentPath(_ id: String) throws -> String {
@@ -220,6 +233,20 @@ public final class ManagedClient: @unchecked Sendable {
         guard Set(jobs.map(\.id)).count == jobs.count else { throw APIError.invalidResponse }
         return jobs
     }
+    public func updateScheduledJob(_ job: ScheduledJob, cron: String, timezone: String, input: String,
+                                   enabled: Bool, startsNewConversation: Bool) async throws -> ScheduledJob {
+        let body: JSON = .object(["cron": .string(cron), "timezone": .string(timezone), "input": .string(input),
+                                  "enabled": .bool(enabled), "session_mode": .string(startsNewConversation ? "new" : "continue")])
+        let value = try await json(path: Self.agentPath(job.agentID) + "/triggers/" + job.triggerID, method: "PATCH", body: body)
+        let updated = try ScheduledJob(value, agentID: job.agentID)
+        guard updated.id == job.id else { throw APIError.invalidResponse }
+        return updated
+    }
+
+    public func cancelScheduledJob(_ job: ScheduledJob) async throws {
+        _ = try await json(path: Self.agentPath(job.agentID) + "/triggers/" + job.triggerID, method: "DELETE")
+    }
+
     /// Deliver each agent's schedules immediately, keeping four reads in flight.
     /// A slow agent must not hold up completed results or the next agent's read.
     public func scheduledJobs(for agentIDs: [String],
@@ -290,9 +317,9 @@ public final class ManagedClient: @unchecked Sendable {
         var events = page.events
         var counts = try await TranscriptPreparation.byteCounts(events)
         let projector = TranscriptStreamProjection()
-        var rows = try await projector.rows(events)
+        var readable = events.contains(where: \.producesConversationRow)
         var hasNewer = false
-        while page.hasMore, !rows.contains(where: { $0.role == "You" || $0.role == "Agent" }) {
+        while page.hasMore, !readable {
             try Task.checkCancellation()
             guard let before = events.first?.cursor else { throw APIError.invalidResponse }
             let older = try await history(id, before: before)
@@ -306,8 +333,12 @@ public final class ManagedClient: @unchecked Sendable {
             if removed > 0 {
                 events.removeLast(removed); counts.removeLast(removed); hasNewer = true
             }
-            rows = try await projector.rows(events)
+            // Only the newly prepended prefix can introduce conversation text.
+            // Projecting the entire growing window here repeatedly rebuilt every
+            // tool row while walking a long tool-only tail.
+            readable = events.prefix(min(older.events.count, events.count)).contains(where: \.producesConversationRow)
         }
+        let rows = try await projector.rows(events)
         try Task.checkCancellation()
         return ConversationHistory(events: events, latest: latest, hasMore: page.hasMore,
                                    byteCounts: counts, rows: rows, hasNewer: hasNewer, projector: projector)
@@ -321,6 +352,8 @@ public final class ManagedClient: @unchecked Sendable {
     /// service owns multipart state; credentials and upload IDs never enter a turn.
     public func uploadAttachment(agentID: String, attachment: MessageAttachment, source: URL, preview: URL? = nil,
                             isCancelled: @Sendable () async -> Bool = { false }) async throws -> String {
+        try Task.checkCancellation()
+        if await isCancelled() { throw CancellationError() }
         guard source.isFileURL else { throw AttachmentError.invalidReference }
         let values = try source.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey, .isSymbolicLinkKey])
         guard values.isRegularFile == true, values.isSymbolicLink != true, values.fileSize == attachment.byteCount else { throw AttachmentError.invalidReference }
@@ -331,6 +364,8 @@ public final class ManagedClient: @unchecked Sendable {
         _ = try attachment.originalContent(path: filePath)
         guard receipt["size"].number == Double(attachment.byteCount) else { throw APIError.invalidResponse }
         if receipt["complete"] == .bool(true) {
+            try Task.checkCancellation()
+            if await isCancelled() { throw CancellationError() }
             if let preview { try await uploadPreview(path: path, source: preview) }
             return filePath
         }
@@ -372,6 +407,8 @@ public final class ManagedClient: @unchecked Sendable {
         let complete = try await json(path: path + "/complete", method: "POST")
         guard complete["complete"] == .bool(true), complete["path"].string == filePath,
               complete["size"].number == Double(attachment.byteCount) else { throw APIError.invalidResponse }
+        try Task.checkCancellation()
+        if await isCancelled() { throw CancellationError() }
         if let preview { try await uploadPreview(path: path, source: preview) }
         return filePath
     }
@@ -380,7 +417,8 @@ public final class ManagedClient: @unchecked Sendable {
         var request = try request(path: path + "/preview", method: "PUT")
         request.setValue("image/jpeg", forHTTPHeaderField: "Content-Type")
         let (_, response) = try await session.upload(for: request, fromFile: source)
-        guard let response = response as? HTTPURLResponse, response.statusCode == 200 else { throw APIError.invalidResponse }
+        guard let response = response as? HTTPURLResponse else { throw APIError.invalidResponse }
+        guard response.statusCode == 200 else { throw APIError.http(response.statusCode) }
     }
 
     /// Account-scoped URLCache retains immutable previews; original bytes never

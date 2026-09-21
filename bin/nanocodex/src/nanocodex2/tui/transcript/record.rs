@@ -335,7 +335,18 @@ impl TranscriptRecord {
     }
 
     pub(crate) fn managed_agent_id(&self) -> Option<u64> {
-        self.agent.as_ref().and_then(|agent| agent.managed_agent_id)
+        let agent = self.agent.as_ref()?;
+        agent.managed_agent_id.or_else(|| {
+            // Local live events and older saved records carry child provenance
+            // in the payload; managed history may supply it in the envelope.
+            #[derive(Deserialize)]
+            struct Provenance {
+                managed_agent_id: Option<u64>,
+            }
+            serde_json::from_str::<Provenance>(self.payload.get())
+                .ok()
+                .and_then(|payload| payload.managed_agent_id)
+        })
     }
 
     pub(crate) fn payload_json(&self) -> &str {
@@ -512,6 +523,31 @@ mod tests {
         assert_eq!(encoded["agent"]["request_id"], "session-a");
         assert_eq!(encoded["agent"]["sequence"], 4);
         assert_eq!(encoded["payload"], payload);
+    }
+
+    #[test]
+    fn child_provenance_survives_live_events_and_saved_record_replay() {
+        let record = TranscriptRecord::from_agent(
+            7,
+            123,
+            AgentEvent {
+                protocol_version: 1,
+                request_id: Arc::from("session-a"),
+                seq: 4,
+                kind: AgentEventKind::AssistantDelta,
+                payload: to_raw_value(&json!({"text": "child", "managed_agent_id": 7}))
+                    .unwrap()
+                    .into(),
+            },
+        );
+        assert_eq!(record.managed_agent_id(), Some(7));
+        let replay: TranscriptRecord =
+            serde_json::from_str(&serde_json::to_string(&record).unwrap()).unwrap();
+        assert_eq!(replay.managed_agent_id(), Some(7));
+        assert_eq!(
+            replay.with_managed_agent_id(Some(8)).managed_agent_id(),
+            Some(8)
+        );
     }
 
     #[test]

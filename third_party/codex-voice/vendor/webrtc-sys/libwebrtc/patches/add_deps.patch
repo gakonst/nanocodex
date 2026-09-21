@@ -1,0 +1,34 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index b484f5b938..378349c45e 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -25,6 +25,7 @@ import("//build/config/linux/pkg_config.gni")
+ import("//build/config/sanitizers/sanitizers.gni")
+ import("//testing/test.gni")
+ import("webrtc.gni")
++import("//third_party/libaom/options.gni")
+ 
+ if (rtc_rust) {
+   import("//build/rust/rust_unit_tests_group.gni")
+@@ -332,6 +333,10 @@ config("common_config") {
+     defines += [ "WEBRTC_INCLUDE_INTERNAL_AUDIO_DEVICE" ]
+   }
+ 
++  if (enable_libaom) {
++    defines += [ "RTC_USE_LIBAOM_AV1_ENCODER" ]
++  }
++
+   if (rtc_libvpx_build_vp9) {
+     defines += [ "RTC_ENABLE_VP9" ]
+   }
+@@ -564,6 +569,10 @@ if (!build_with_chromium) {
+       "pc:libjingle_peerconnection",
+       "pc:rtc_pc",
+       "video",
++      "//third_party/zlib",
++      "rtc_base:log_sinks",
++      "media:rtc_simulcast_encoder_adapter",
++      "api/crypto:frame_crypto_transformer",
+     ]
+ 
+     if (rtc_include_builtin_audio_codecs) {

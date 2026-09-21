@@ -97,8 +97,8 @@ impl VmArgs {
 }
 
 impl ConfiguredVm {
-    pub(crate) fn tools_builder(&self) -> ToolsBuilder {
-        nanocodex::Tools::builder()
+    pub(crate) async fn tools_builder(&self) -> Result<ToolsBuilder> {
+        Err(unsupported_error(None))
     }
 
     pub(crate) async fn shutdown(self) -> Result<()> {

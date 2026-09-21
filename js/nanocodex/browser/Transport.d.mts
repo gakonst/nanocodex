@@ -26,6 +26,8 @@ export type WorkerTransport = ResponsesTransport & Readonly<{
 
 type SharedEndpointOptions = Readonly<{
   apiBaseUrl?: string | undefined;
+  /** Use HTTPS with full history replay, no stored responses, and no WebSocket warmup or preconnect. */
+  stateless?: boolean | undefined;
   websocketUrl?: string | undefined;
   /** Open the persistent socket as soon as Agent.create returns. Defaults to true for hostManaged. */
   websocketPreconnect?: boolean | undefined;

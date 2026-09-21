@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleIdentifier</key>
+    <string>ai.nanocodex.voice-recorder</string>
+    <key>CFBundleName</key>
+    <string>Nanocodex Voice Recorder</string>
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Record a local voice sample for you to review before choosing whether to upload it.</string>
+</dict>
+</plist>

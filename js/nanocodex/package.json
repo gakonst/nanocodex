@@ -51,6 +51,10 @@
       "types": "./cloudflare/index.d.mts",
       "import": "./cloudflare/index.mjs"
     },
+    "./cloudflare/workers-ai-responses": {
+      "types": "./cloudflare/workers-ai-responses.d.mts",
+      "import": "./cloudflare/workers-ai-responses.mjs"
+    },
     "./cloudflare/managed-access": {
       "types": "./cloudflare/managed-access.d.mts",
       "import": "./cloudflare/managed-access.mjs"
@@ -134,6 +138,10 @@
     "./tools/environment": {
       "types": "./tools/environment.d.mts",
       "import": "./tools/environment.mjs"
+    },
+    "./cloudflare/gateway-responses": {
+      "types": "./cloudflare/gateway-responses.d.mts",
+      "import": "./cloudflare/gateway-responses.mjs"
     }
   },
   "files": [

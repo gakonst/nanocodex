@@ -36,3 +36,5 @@ pub(crate) use root::{
 pub(crate) use transcript::image::{initialize as initialize_image_renderer, video_picker};
 
 mod voice;
+
+mod voice_menu;

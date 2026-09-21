@@ -8,7 +8,7 @@ export type RemoteHand = Readonly<{
 }>;
 export type BroadcastPreset = "source" | "1080p" | "720p" | "twitch" | "x";
 export type BroadcastStatus = "idle" | "starting" | "live" | "reconnecting" | "stopping" | "failed" | "stopped";
-export type RemoteState = Readonly<{ broadcastStatus?: BroadcastStatus; broadcastAudio?: boolean; broadcastPending?: boolean; broadcastError?: string; status: string; connected: boolean; controlling: boolean; connecting: boolean; audioAvailable?: boolean; audioEnabled?: boolean; controlPending?: boolean; relativePointer?: boolean }>;
+export type RemoteState = Readonly<{ broadcastStatus?: BroadcastStatus; broadcastAudio?: boolean; broadcastPending?: boolean; broadcastError?: string; status: string; connected: boolean; controlling: boolean; connecting: boolean; audioAvailable?: boolean; audioEnabled?: boolean; microphoneAvailable?: boolean; microphoneEnabled?: boolean; microphonePending?: boolean; microphoneError?: string; controlPending?: boolean; relativePointer?: boolean }>;
 /** The start button waits for a known, inactive native stream state. */
 export function canStartBroadcast(state: RemoteState): boolean {
   return state.connected && !state.broadcastPending && ["idle", "failed", "stopped"].includes(state.broadcastStatus ?? "");
@@ -92,6 +92,15 @@ export class RemoteBrowserSession {
   private reliable?: RTCDataChannel;
   private motion?: RTCDataChannel;
   private sequence = 0;
+  private microphoneSupported = false;
+  private microphoneTransceiver?: RTCRtpTransceiver;
+  private microphoneRequest?: string;
+  private microphoneCapturing = false;
+  private microphoneStream?: MediaStream;
+  private microphoneDeadline?: ReturnType<typeof setTimeout>;
+  // Serializing sender updates prevents a late replaceTrack from reattaching a
+  // stopped track or an old cleanup from removing a newly opted-in microphone.
+  private microphoneSenderWork: Promise<void> = Promise.resolve();
   private broadcastRequest?: string;
   private broadcastTimer?: ReturnType<typeof setInterval>;
   private broadcastDeadline?: ReturnType<typeof setTimeout>;
@@ -114,6 +123,8 @@ export class RemoteBrowserSession {
   private frameDeadline?: ReturnType<typeof setTimeout>;
   private framePending = 0;
   private frameQueued = 0;
+  private frameDecodeQueue: { bytes: Uint8Array<ArrayBuffer>; width: unknown; height: unknown }[] = [];
+  private frameDecoding = false;
   private get frameWindow(): number {
     const size = this.hand.frame_window;
     return Number.isInteger(size) && size! >= 1 && size! <= 6 ? size! : 1;
@@ -187,9 +198,16 @@ export class RemoteBrowserSession {
         peer.onicecandidate = ({ candidate }) => {
           if (this.current(epoch) && candidate) this.signal({ type: "candidate", candidate: candidate.candidate, sdpMid: candidate.sdpMid, sdpMLineIndex: candidate.sdpMLineIndex });
         };
-        peer.ontrack = ({ track }) => {
+        peer.ontrack = ({ track, receiver }) => {
           if (!this.current(epoch)) return;
           if (track.kind !== "video" && track.kind !== "audio") return;
+          // Request interactive playout for both synchronized tracks. This is
+          // a preference; the receiver still adapts to actual network jitter.
+          const lowDelay = receiver as { jitterBufferTarget?: number | null; playoutDelayHint?: number };
+          try {
+            if ("jitterBufferTarget" in lowDelay) lowDelay.jitterBufferTarget = 0;
+            else if ("playoutDelayHint" in lowDelay) lowDelay.playoutDelayHint = 0;
+          } catch { /* Unsupported setters must not prevent media playback. */ }
           const stream = this.video.srcObject instanceof MediaStream ? this.video.srcObject : new MediaStream();
           for (const previous of stream.getTracks()) {
             if (previous.kind === track.kind) { stream.removeTrack(previous); previous.stop(); }
@@ -272,7 +290,14 @@ export class RemoteBrowserSession {
               broadcastError: message.error === undefined ? undefined : message.error === "busy" ? "A stream is already running on this Hand." : message.error === "unsupported" ? "Streaming is unavailable on this Hand." : "Streaming failed. Check the endpoint and try again." });
           }
           else if (message.type === "pong") return; // Liveness is not lease authorization.
-          else if (frames && message.type === "frame") await this.renderFrame(message, epoch);
+          else if (frames && message.type === "frame") {
+            // Validate in wire order, but never hold control/lease processing
+            // behind image decoding. Credits include queued and decoding frames.
+            if (!this.renewTimer) throw new RemoteError("Unexpected remote frame.", true);
+            const bytes = frameBytes(message);
+            this.frameDecodeQueue.push({ bytes, width: message.width, height: message.height });
+            void this.decodeFrames(epoch);
+          }
           else if (frames && message.type === "control") this.receiveControl(message.data, epoch);
           else if (!frames && message.type === "signal") {
             await peerReady;
@@ -296,10 +321,21 @@ export class RemoteBrowserSession {
               if (!this.current(epoch)) return;
               for (const candidate of candidates.splice(0)) await peer.addIceCandidate(candidate);
               if (!this.current(epoch)) return;
+              // Reserve return audio without requesting permission or capturing.
+              // The offer limits the negotiated direction (sendonly hosts cannot
+              // receive a microphone even though our preferred direction is duplex).
+              const transceiver = peer.getTransceivers().find(value => value.receiver.track.kind === "audio" && value.direction !== "stopped");
+              if (this.microphoneTransceiver && this.microphoneTransceiver !== transceiver) this.stopMicrophone(true);
+              this.microphoneTransceiver = transceiver;
+              if (transceiver) transceiver.direction = "sendrecv";
               const answer = await peer.createAnswer();
               if (!this.current(epoch)) return;
               await peer.setLocalDescription(answer);
-              if (this.current(epoch)) this.signal({ type: "answer", sdp: peer.localDescription!.sdp });
+              if (this.current(epoch)) {
+                if (!this.microphoneCanSend()) this.stopMicrophone(true);
+                this.update({ microphoneAvailable: this.microphoneAvailable() });
+                this.signal({ type: "answer", sdp: peer.localDescription!.sdp });
+              }
             } else throw new RemoteError("Invalid remote offer.", true);
           } else throw new RemoteError("Invalid remote signal.", true);
         }).catch(error => { if (this.current(epoch)) this.fail(error instanceof SyntaxError ? new RemoteError("Invalid remote signal.", true) : error); }).finally(() => { queuedMessages--; });
@@ -351,6 +387,94 @@ export class RemoteBrowserSession {
     this.update({ audioEnabled: enabled });
     await this.playMedia(this.epoch);
   }
+  /** Explicit opt-in only. Neither a grant nor reconnect restarts capture. */
+  setMicrophoneEnabled(enabled: boolean): void {
+    if (!enabled) { this.stopMicrophone(true); return; }
+    if (this.closed || this.suspended || this.suspendTimer !== undefined || !this.state.connected || !this.state.controlling
+      || !this.microphoneAvailable() || !this.generation || this.microphoneRequest) return;
+    const request = crypto.randomUUID();
+    this.microphoneRequest = request;
+    this.update({ microphonePending: true, microphoneError: undefined });
+    this.microphoneDeadline = setTimeout(() => {
+      if (this.microphoneRequest !== request) return;
+      this.stopMicrophone(true);
+      this.update({ microphoneError: "The remote microphone did not respond." });
+    }, 5000);
+    this.send({ type: "microphone", generation: this.generation, requestID: request, enabled: true });
+  }
+  private microphoneCanSend(): boolean {
+    const transceiver = this.microphoneTransceiver;
+    return !!transceiver && transceiver.direction !== "stopped" && ["sendrecv", "sendonly"].includes(transceiver.currentDirection ?? "");
+  }
+  private microphoneAvailable(): boolean {
+    return this.hand.transport !== "frames-v1" && this.microphoneSupported && !!this.generation
+      && typeof globalThis.navigator?.mediaDevices?.getUserMedia === "function" && this.microphoneCanSend();
+  }
+  private replaceMicrophoneTrack(sender: RTCRtpSender, track: MediaStreamTrack | null, valid = () => true): Promise<void> {
+    const task = this.microphoneSenderWork.then(async () => { if (valid()) await sender.replaceTrack(track); });
+    this.microphoneSenderWork = task.catch(() => {});
+    return task;
+  }
+  private stopMicrophone(notifyHost: boolean): void {
+    const requested = this.microphoneRequest !== undefined;
+    this.microphoneRequest = undefined; this.microphoneCapturing = false;
+    clearTimeout(this.microphoneDeadline); this.microphoneDeadline = undefined;
+    for (const track of this.microphoneStream?.getTracks() ?? []) { track.onended = null; track.enabled = false; track.stop(); }
+    this.microphoneStream = undefined;
+    if (requested && this.microphoneTransceiver) void this.replaceMicrophoneTrack(this.microphoneTransceiver.sender, null).catch(() => {});
+    // Cleanup must never reenter detach/recovery through send().
+    if (notifyHost && requested && this.generation && this.reliable?.readyState === "open") {
+      try { this.reliable.send(JSON.stringify({ type: "microphone", generation: this.generation, requestID: crypto.randomUUID(), enabled: false })); }
+      catch { /* Closing or releasing the lease also stops the host receiver. */ }
+    }
+    this.update({ microphoneEnabled: false, microphonePending: false, microphoneError: undefined });
+  }
+  private receiveMicrophone(value: any, epoch: number): void {
+    const request = this.microphoneRequest, generation = this.generation;
+    if (!request || !this.state.connected || !this.state.controlling || !this.microphoneAvailable()
+      || value.generation !== generation || value.requestID !== request) return;
+    if (typeof value.enabled !== "boolean") throw new RemoteError("Invalid remote microphone response.", true);
+    if (!value.enabled) {
+      this.stopMicrophone(false); this.update({ microphoneError: "The remote microphone is unavailable." }); return;
+    }
+    if (this.microphoneCapturing || this.state.microphoneEnabled) return;
+    this.microphoneCapturing = true;
+    clearTimeout(this.microphoneDeadline);
+    this.microphoneDeadline = setTimeout(() => {
+      if (this.microphoneRequest !== request) return;
+      this.stopMicrophone(true); this.update({ microphoneError: "Microphone access timed out. Try again." });
+    }, 30_000);
+    const transceiver = this.microphoneTransceiver!;
+    const valid = () => this.current(epoch) && this.microphoneRequest === request && this.generation === generation
+      && this.state.controlling && this.peer?.connectionState === "connected" && this.microphoneTransceiver === transceiver && this.microphoneCanSend();
+    void (async () => {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+        if (!valid()) { for (const track of stream.getTracks()) track.stop(); return; }
+        this.microphoneStream = stream;
+        const track = stream.getAudioTracks()[0];
+        const live = () => track?.readyState === "live";
+        if (!track || !live()) throw new Error("No microphone track");
+        // Even while replaceTrack is pending, revoke/mute stops every local track.
+        for (const value of stream.getTracks()) { value.enabled = false; if (value !== track) value.stop(); }
+        track.onended = () => {
+          if (!valid()) return;
+          this.stopMicrophone(true); this.update({ microphoneError: "Microphone stopped because the audio device changed or was interrupted." });
+        };
+        await this.replaceMicrophoneTrack(transceiver.sender, track, valid);
+        if (!valid()) return;
+        if (!live()) throw new Error("Microphone stopped");
+        track.enabled = true;
+        clearTimeout(this.microphoneDeadline); this.microphoneDeadline = undefined;
+        this.microphoneCapturing = false;
+        this.update({ microphoneEnabled: true, microphonePending: false });
+      } catch {
+        if (!valid()) return;
+        this.stopMicrophone(true);
+        this.update({ microphoneError: "Microphone access is unavailable. Check this browser’s microphone permission." });
+      }
+    })();
+  }
   private async playMedia(epoch: number): Promise<void> {
     try { await this.video.play(); }
     catch {
@@ -374,6 +498,9 @@ export class RemoteBrowserSession {
     this.control = "acquiring"; this.update({ controlPending: true }); this.send({ type: "acquire" });
   }
   releaseControl(): void {
+    this.stopMicrophone(true);
+    this.microphoneSupported = false;
+    this.update({ microphoneAvailable: false });
     this.controlRequested = false;
     const generation = this.generation;
     if (this.control === "acquiring") this.control = "cancelled-acquire";
@@ -395,6 +522,10 @@ export class RemoteBrowserSession {
   }
   private detach(): void {
     ++this.epoch;
+    this.stopMicrophone(true);
+    this.microphoneSupported = false; this.microphoneTransceiver = undefined;
+    // A retired peer's unresolved sender operation must not block a new peer.
+    this.microphoneSenderWork = Promise.resolve();
     clearInterval(this.broadcastTimer); clearTimeout(this.broadcastDeadline);
     this.broadcastTimer = undefined; this.broadcastDeadline = undefined; this.broadcastRequest = undefined;
     // Teardown is best effort: never let a failed release reenter recovery.
@@ -409,6 +540,7 @@ export class RemoteBrowserSession {
     this.abort.abort();
     clearTimeout(this.watchdog); clearTimeout(this.connectingTimer); clearTimeout(this.retryTimer);
     clearTimeout(this.frameTimer); clearTimeout(this.frameDeadline); this.framePending = 0; this.frameQueued = 0;
+    this.frameDecodeQueue = []; this.frameDecoding = false;
     clearInterval(this.renewTimer); clearInterval(this.controlTimer);
     clearTimeout(this.renewRetryTimer); clearTimeout(this.disconnectTimer);
     this.renewRetryTimer = this.disconnectTimer = undefined; this.renewing = false;
@@ -418,7 +550,7 @@ export class RemoteBrowserSession {
     if (this.peer) { this.peer.onconnectionstatechange = this.peer.ontrack = this.peer.onicecandidate = this.peer.ondatachannel = null; this.peer.close(); }
     this.socket = undefined; this.peer = undefined; this.reliable = undefined; this.motion = undefined;
     this.video.srcObject = null;
-    this.update({ audioAvailable: false, controlPending: false, relativePointer: false, broadcastStatus: undefined, broadcastAudio: undefined, broadcastPending: false, broadcastError: undefined });
+    this.update({ audioAvailable: false, microphoneAvailable: false, controlPending: false, relativePointer: false, broadcastStatus: undefined, broadcastAudio: undefined, broadcastPending: false, broadcastError: undefined });
     if (this.canvas) { this.canvas.width = 0; this.canvas.height = 0; }
   }
   private fail(error: unknown): void {
@@ -488,9 +620,19 @@ export class RemoteBrowserSession {
     clearTimeout(this.frameDeadline);
     this.frameDeadline = setTimeout(() => { if (this.current(epoch)) this.fail(new RemoteError("This screen stopped sending frames.")); }, 10_000);
   }
-  private async renderFrame(value: { jpeg?: unknown; width?: unknown; height?: unknown }, epoch: number): Promise<void> {
+  private async decodeFrames(epoch: number): Promise<void> {
+    if (this.frameDecoding || !this.current(epoch)) return;
+    this.frameDecoding = true;
+    try {
+      while (this.current(epoch) && this.frameDecodeQueue.length) {
+        await this.renderFrame(this.frameDecodeQueue.shift()!, epoch);
+      }
+    } catch (error) { if (this.current(epoch)) this.fail(error); }
+    finally { if (this.current(epoch)) this.frameDecoding = false; }
+  }
+  private async renderFrame(value: { bytes: Uint8Array<ArrayBuffer>; width: unknown; height: unknown }, epoch: number): Promise<void> {
     if (!this.framePending || !this.canvas) throw new RemoteError("Unexpected remote frame.", true);
-    const bytes = frameBytes(value);
+    const { bytes } = value;
     let bitmap: ImageBitmap | undefined;
     try {
       bitmap = await createImageBitmap(new Blob([bytes], { type: "image/jpeg" }));
@@ -528,6 +670,7 @@ export class RemoteBrowserSession {
     if (!this.current(epoch)) return;
     if (!value || typeof value !== "object" || (value.generation !== undefined &&
       (typeof value.generation !== "string" || !value.generation.length || value.generation.length > 128))) throw new RemoteError("Invalid remote control response.", true);
+    if (value.type === "microphone") { this.receiveMicrophone(value, epoch); return; }
     if (value.type === "granted" && typeof value.generation === "string" && value.generation.length > 0 && value.generation.length <= 128) {
       if (this.control === "cancelled-acquire") {
         this.control = { kind: "releasing", generation: value.generation };
@@ -535,13 +678,18 @@ export class RemoteBrowserSession {
       }
       if (this.control !== "acquiring") throw new RemoteError("Invalid remote control response.", true);
       if (value.relativePointer !== undefined && typeof value.relativePointer !== "boolean") throw new RemoteError("Invalid remote control response.", true);
+      if (value.microphone !== undefined && typeof value.microphone !== "boolean") throw new RemoteError("Invalid remote control response.", true);
       this.control = { kind: "held", generation: value.generation }; this.sequence = 0;
+      this.microphoneSupported = value.microphone === true;
+      this.update({ microphoneAvailable: this.microphoneAvailable() });
       this.update({ controlling: true, controlPending: false, relativePointer: value.relativePointer === true, status: "You’re controlling" });
       clearInterval(this.controlTimer);
       this.controlTimer = setInterval(() => { if (this.current(epoch)) this.send({ type: "renew", generation: this.generation }); }, 3000);
     } else if (value.type === "revoked") {
       if (typeof this.control === "object") {
         if (value.generation !== undefined && value.generation !== this.control.generation) return;
+        this.stopMicrophone(false); this.microphoneSupported = false;
+        this.update({ microphoneAvailable: false });
         const released = this.control.kind === "releasing";
         this.control = "idle";
         clearInterval(this.controlTimer); this.controlTimer = undefined;

@@ -125,7 +125,8 @@ automatically on first voice use.
 On macOS and Windows, current native CLIs and Hands automatically provision
 OpenAI's signed CUA runtime and select its upstream MCP tools. The macOS installer
 fetches the official app bundle; Windows uses its official Microsoft Store package.
-Linux keeps the Linux computer backend. Use `nanocodex2 computer setup --refresh`
+Linux requires an explicitly installed upstream MCP provider; no custom CUA backend is bundled.
+Use `nanocodex2 computer setup --refresh`
 to update or repair the runtime, or `NANOCODEX_COMPUTER=off` to disable it.
 See [runtime installation and platform limits](docs/computer/upstream-provider.md).
 
@@ -224,10 +225,9 @@ arguments, and waits for remote registration and the native desktop catalog.
 reconnect independently of SSH. Re-running setup reuses identities and private
 VM roots under `/srv/nanocodex`; it never replaces a retained workspace. A setup
 already enrolled to another account or origin is rejected. `--artifacts DIR`
-accepts matching locally built Linux `nanocodex2`, `nanocodex-vm-guest`, and
-`nanocodex-computer` executables for development. The CLI bundles the computer
-runtime source needed to build the VM image; no local checkout is required.
-Image reuse includes that source in its cache key.
+accepts matching locally built Linux `nanocodex2` and `nanocodex-vm-guest`
+executables for development. Computer use in a guest requires an explicitly
+configured upstream MCP provider; no custom CUA runtime is built into the image.
 
 ### Windows Hand
 
@@ -236,8 +236,8 @@ double-click it on an x86-64 Windows 10 or 11 computer. Keep **Sign in and
 connect this computer now** selected, then enter the account phone number and
 the six-digit SMS code. No terminal setup or administrator access is required.
 
-The installer bundles the account Hand and native Windows computer-control
-runtime. It verifies both before enrollment, uses a dedicated per-user account
+The installer bundles the account Hand and provisions OpenAI’s official computer-use
+runtime. It verifies the runtime before use, uses a dedicated per-user account
 credential, and registers a hidden interactive startup task with failure
 recovery. Running in the signed-in session is deliberate: Windows Graphics
 Capture, UI Automation, and input cannot control that desktop from a Session 0
@@ -607,34 +607,33 @@ runtime includes the bounded OpenAI/Codex-compatible web-search boundary, and
 JavaScript hosts can use the matching `web()` factory. Applications decide
 which network tool to install and where credentials live.
 
-For full deterministic Chromium control, the supported source-distributed
-[`nanocodex-browser`](crates/nanocodex-browser/README.md) crate
-provides an ordinary deferred `BrowserTool`. It supports semantic/CSS/role/text
-targets, tabs and frames, bounded DOM/layout/style and network inspection,
-screenshots and pixel diffs, PDFs, traces, video, accessibility, performance,
-coverage, heap and React diagnostics, uploads, and virtual passkeys. The full
-roughly 67 KiB action contract stays runtime-only until discovered, adding no
-browser schema bytes to the initial model request.
+Nanocodex agents use a Hand's `cua_repl` MCP provider for browser interaction.
+Route each CUA call with `workdir`, just like a shell call. First call
+`tools.mcp__cua_repl__js({workdir: "/desktop"})` to read the provider contract;
+then pass its arguments alongside `workdir`. The host consumes `workdir` and
+forwards every other argument unchanged. There is no `select_computer` tool or
+global target. Different Hands can run concurrently in one Code Mode cell:
 
-```rust,ignore
-use nanocodex::{Nanocodex, OpenAi, Tools};
-use nanocodex_browser::BrowserTool;
-
-# fn build(openai: OpenAi) -> Result<(), Box<dyn std::error::Error>> {
-let tools = Tools::builder().provider(BrowserTool::new()?).build()?;
-let (_agent, _events) = Nanocodex::builder(openai).tools(tools).build()?;
-# Ok(())
-# }
+```js
+await Promise.all([
+  tools.mcp__cua_repl__js({ workdir: "/desktop", code: desktopCode }),
+  tools.mcp__cua_repl__js({ workdir: "/vm", code: vmCode }),
+]);
 ```
 
-Local CLI mode uses a dedicated persistent browser profile by default so login
-and site state survive Nanocodex restarts; `--browser-profile=temporary` opts
-back into one disposable profile with host-cookie import. The profile is still
-private browser state, not an OS sandbox. The optional
-`BrowserVm` composition starts an unprivileged headed Chromium under Xvfb in a
-disposable libkrun guest and closes CDP, Chromium, networking, VMM, and disk as
-one owned lifecycle. Run the source in
-[`examples/browser_agent.rs`](examples/browser_agent.rs).
+Read each provider's contract first; `code` above assumes that provider's schema.
+JS and reset calls to the same Hand are ordered. Each cell pins its captured Hand
+connections, as shell routing does. A published screen alone does not provide
+CUA; attach a supported computer or report the missing capability.
+
+The managed cloud runtime and native/VM Hands do not expose `browser_execute`
+or the managed `browser_vault_*` tools. Secure Vault intake remains available,
+but automated Vault browser login needs a supported private CUA integration.
+Do not pass Vault secrets into CUA code or ordinary tool arguments.
+
+The source-distributed [`nanocodex-browser`](crates/nanocodex-browser/README.md)
+library remains in the workspace for explicit library consumers and legacy
+utilities; it is disabled as an agent browser backend.
 
 ## VMs, sandboxes, and voice
 
@@ -693,6 +692,9 @@ cargo run -p nanocodex-examples --bin realtime-pipe \
 
 Runnable sources: [`examples/voice.rs`](examples/voice.rs) and
 [`examples/realtime_pipe.rs`](examples/realtime_pipe.rs).
+
+The managed terminal UI also supports [ChatGPT and ElevenLabs voice switching
+and instant cloning](docs/voice/terminal.md) through `/voice` commands.
 
 ## Evaluation is a product boundary
 

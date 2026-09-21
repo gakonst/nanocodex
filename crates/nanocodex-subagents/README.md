@@ -43,3 +43,23 @@ agent.shutdown().await?;
 The crate supports native executors and `wasm32-unknown-unknown`. JavaScript
 consumers use the same runtime through `Subagents.create()` in the `nanocodex`
 Node and browser packages.
+
+Completion requires an accepted `submit_result` for the active turn token. Plain
+assistant JSON is not accepted implicitly. Rejected submissions expose a stable
+`CompletionErrorCode`, `recoverable`, and `recovery` guidance; native callers can
+downcast the underlying `io::Error` to `CompletionError` or serialize it for
+structured diagnostics. Tool-error text stays readable in failure cards. Schema diagnostics contain bounded instance
+and schema paths, never rejected values. A stale-token correction must incorporate
+steering instructions before submitting again.
+
+`recoverable` refers to correcting a submission in the current turn, not replaying
+the delegated task. Missing-result completion remains fail-closed: the reusable
+agent's prompt API does not enforce a formatting-only tool allowlist, so an
+automatic follow-up prompt could repeat side effects. Callers should inspect the
+child evidence before assigning recovery work. Completion instructions refer to
+the actual callable tool catalog rather than assuming a Code Mode binding.
+
+If cancellation or closure wins settlement after result acceptance, execution
+keeps its interrupted/closing status and `last_output` retains the accepted result
+as evidence. The active token and submission slot are cleared; that result cannot
+satisfy the next turn's contract.

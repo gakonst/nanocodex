@@ -208,3 +208,19 @@ extension ManagedClient {
         return try BrowserTakeoverFrame.parse(response, finishing: action["action"] == .string("finish"))
     }
 }
+
+/// Transcript display only; the original bound receipt remains intact for delivery.
+public enum BrowserReceiptPresentation {
+    public static func summary(_ text: String) -> String? {
+        guard text.utf8.count <= 1024, let data = text.data(using: .utf8),
+              let value = try? JSONDecoder().decode(JSON.self, from: data),
+              case .object(let fields) = value,
+              Set(fields.keys) == Set(["type", "status", "challenge_id"]),
+              value["challenge_id"].string.range(of: #"^[A-Za-z0-9_-]{22,256}$"#, options: .regularExpression) != nil else { return nil }
+        switch (value["type"].string, value["status"].string) {
+        case ("browser_vault_takeover_receipt", "finished"): return "Private browser control finished"
+        case ("browser_vault_challenge_receipt", "submitted"): return "Browser verification code submitted"
+        default: return nil
+        }
+    }
+}

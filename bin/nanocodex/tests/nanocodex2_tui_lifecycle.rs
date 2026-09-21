@@ -78,10 +78,12 @@ impl Terminal {
         command.env_remove("TERM_PROGRAM");
         command.env_remove("NANOCODEX2_RELOAD_EXECUTABLE");
         command.env("TERM", "xterm-256color");
-        // Clipboard assertions exercise OSC52 in this synthetic terminal, never
-        // the developer's native clipboard (pbcopy can succeed on macOS).
-        command.env("SSH_TTY", "/dev/fixture-pty");
+        // Exercise terminal clipboard output without changing the developer's
+        // native clipboard. This fixture emulates a remote terminal.
+        command.env("SSH_TTY", "/dev/nanocodex-test-pty");
         command.env("NANOCODEX_MANAGED_URL", origin);
+        // Terminal/API tests must not discover or install the developer’s CUA runtime.
+        command.env("NANOCODEX_COMPUTER", "off");
         // Every test terminal gets an isolated registry, even when the caller
         // inherited a real user's reload directory. Only explicit peers share it.
         command.env(
@@ -206,6 +208,8 @@ struct Service {
     receipts: Arc<Mutex<std::collections::HashMap<(String, String), Value>>>,
     receipts_enabled: Arc<AtomicBool>,
     vault_writes: Arc<Mutex<Vec<Value>>>,
+    routing_requests: Arc<Mutex<Vec<String>>>,
+    model_route: Arc<Mutex<Option<Value>>>,
     listed_agent: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
     active: bool,
@@ -419,8 +423,22 @@ async fn state(
             "live_steer": true, "live_cancel": true, "workspace": "cloudflare-computer",
             "execution_environments": true, "execution_namespace": "cwd-root-v1", "native_cross_mounts": false},
         "settings": service.settings.lock().unwrap().clone(),
+        "model_routing_enabled": !service.routing_requests.lock().unwrap().is_empty(),
+        "model_route": service.model_route.lock().unwrap().clone(),
         "latest_event_cursor": service.latest_cursor(), "stream_error": null
     })))
+}
+
+async fn enable_routing(
+    State(service): State<Service>,
+    axum::extract::Path(agent): axum::extract::Path<String>,
+) -> Json<Value> {
+    service.routing_requests.lock().unwrap().push(agent);
+    Json(json!({
+        "enabled": true,
+        "model_routing": {"strategy": "direct", "preferences": {}},
+        "settings": service.settings.lock().unwrap().clone()
+    }))
 }
 
 async fn submit(State(service): State<Service>, Json(input): Json<Value>) -> Json<Value> {
@@ -506,6 +524,8 @@ struct Fixture {
     receipts: Arc<Mutex<std::collections::HashMap<(String, String), Value>>>,
     receipts_enabled: Arc<AtomicBool>,
     vault_writes: Arc<Mutex<Vec<Value>>>,
+    routing_requests: Arc<Mutex<Vec<String>>>,
+    model_route: Arc<Mutex<Option<Value>>>,
     listed_agent: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
     origin: String,
@@ -602,6 +622,8 @@ impl Fixture {
         let vault_writes = Arc::new(Mutex::new(Vec::new()));
         let receipts = Arc::new(Mutex::new(std::collections::HashMap::new()));
         let receipts_enabled = Arc::new(AtomicBool::new(false));
+        let routing_requests = Arc::new(Mutex::new(Vec::new()));
+        let model_route = Arc::new(Mutex::new(None));
         let app = Router::new()
             .route("/v1/credentials", get(vault_metadata))
             .route("/v1/credentials/vault/login/{id}/origin", put(approve_vault_origin))
@@ -621,6 +643,7 @@ impl Fixture {
             .route("/v1/agents/{agent}", get(state))
             .route("/v1/agents/{agent}/ws", get(socket))
             .route("/v1/agents/{agent}/events/history", get(event_history))
+            .route("/v1/agents/{agent}/routing", post(enable_routing))
             .route("/v1/agents/{agent}/turns", post(submit))
             .route("/v1/agents/{agent}/turns/{turn}/steer", post(steer))
             .route("/v1/agents/{agent}/turns/{turn}/steer-receipt", get(steer_receipt))
@@ -630,6 +653,8 @@ impl Fixture {
                 receipts: receipts.clone(),
                 receipts_enabled: receipts_enabled.clone(),
                 vault_writes: vault_writes.clone(),
+                routing_requests: routing_requests.clone(),
+                model_route: model_route.clone(),
                 listed_agent: listed_agent.clone(),
                 resume_gate: resume_gate.clone(),
                 active,
@@ -653,13 +678,21 @@ impl Fixture {
         let terminal = Terminal::start_with_reload_dir(&origin, attach, reload_dir);
         let events = tokio::time::timeout(TIMEOUT, connections.recv())
             .await
-            .unwrap()
+            .unwrap_or_else(|_| {
+                panic!(
+                    "initial connection missing: {}\nRaw output: {:?}",
+                    terminal.screen.lock().unwrap().screen().contents(),
+                    String::from_utf8_lossy(&terminal.output.lock().unwrap())
+                )
+            })
             .unwrap();
         Self {
             socket_paths,
             receipts,
             receipts_enabled,
             vault_writes,
+            routing_requests,
+            model_route,
             listed_agent,
             resume_gate,
             origin,
@@ -772,6 +805,77 @@ impl Drop for Fixture {
     fn drop(&mut self) {
         self.server.abort();
     }
+}
+
+#[tokio::test]
+async fn terminal_autoroute_enables_through_api_then_locks_after_first_prompt() {
+    let mut fixture = Fixture::start().await;
+    fixture.terminal.prompt("/autoroute", "\r");
+    fixture
+        .terminal
+        .wait_text("Automatic routing enabled")
+        .await;
+    assert_eq!(*fixture.routing_requests.lock().unwrap(), [AGENT]);
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+
+    fixture.terminal.prompt("FIRST_ROUTED_TASK", "\r");
+    let turn = fixture.submission("FIRST_ROUTED_TASK").await;
+    // The chooser selects a different model and transport from the startup defaults.
+    *fixture.model_route.lock().unwrap() = Some(json!({
+        "backend": "vercel", "model": "@cf/zai-org/glm-5.3", "thinking": "high"
+    }));
+    fixture.complete(&turn);
+    fixture.terminal.wait_text("done").await;
+    fixture.terminal.wait_text("Vercel").await;
+    fixture.terminal.wait_text("glm-5.3").await;
+
+    fixture.terminal.prompt("/autoroute", "\r");
+    fixture
+        .terminal
+        .wait_text("Auto routing can only be enabled before the first prompt")
+        .await;
+    assert_eq!(*fixture.routing_requests.lock().unwrap(), [AGENT]);
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+
+    // A subsequent ordinary prompt is a barrier: no delayed slash command may
+    // enter the model stream after the local rejection.
+    fixture.terminal.prompt("FOLLOWUP_WITH_PINNED_ROUTE", "\r");
+    let followup = fixture.submission("FOLLOWUP_WITH_PINNED_ROUTE").await;
+    fixture.complete(&followup);
+    assert_eq!(*fixture.routing_requests.lock().unwrap(), [AGENT]);
+}
+
+#[tokio::test]
+async fn terminal_autoroute_cannot_enable_on_an_attached_session_with_history() {
+    let history = vec![
+        json!({"cursor": "1", "turn_id": REMOTE_TURN, "type": "turn_accepted", "id": REMOTE_TURN, "input": "PREVIOUS_USER_MESSAGE", "replayed": false}),
+        json!({"cursor": "2", "turn_id": REMOTE_TURN, "type": "turn_completed", "id": REMOTE_TURN, "final_message": "PREVIOUS_ANSWER", "usage": null, "citations": [], "usage_error": null}),
+    ];
+    let mut fixture = Fixture::start_with_history(false, true, history).await;
+    fixture.terminal.wait_text("PREVIOUS_USER_MESSAGE").await;
+    fixture.terminal.prompt("/autoroute", "\r");
+    fixture
+        .terminal
+        .wait_text("Auto routing can only be enabled before the first prompt")
+        .await;
+    assert!(fixture.routing_requests.lock().unwrap().is_empty());
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn terminal_autoroute_can_enable_on_an_empty_attached_session() {
+    let mut fixture = Fixture::start_with_history(false, true, Vec::new()).await;
+    fixture.terminal.prompt("/autoroute", "\r");
+    fixture
+        .terminal
+        .wait_text("Automatic routing enabled")
+        .await;
+    assert_eq!(*fixture.routing_requests.lock().unwrap(), [AGENT]);
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
 }
 
 #[tokio::test]
@@ -3061,7 +3165,7 @@ async fn terminal_voice_during_attach_waits_and_can_be_muted_or_cancelled() {
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
     let mut fixture = Fixture::launch_with_history(false, true, Vec::new(), gate.clone()).await;
     fixture.terminal.wait_text("Connecting").await;
-    fixture.terminal.prompt("/voice", "\r");
+    fixture.terminal.prompt("/voice on", "\r");
     fixture.terminal.wait_text("ctrl+x mute").await;
     fixture.terminal.prompt("DRAFT_WHILE_VOICE_CONNECTS", "");
     fixture.terminal.input("\x18");
@@ -3071,7 +3175,7 @@ async fn terminal_voice_during_attach_waits_and_can_be_muted_or_cancelled() {
         .wait_text("DRAFT_WHILE_VOICE_CONNECTS")
         .await;
     fixture.terminal.input("\x15");
-    fixture.terminal.prompt("/voice", "\r");
+    fixture.terminal.prompt("/voice off", "\r");
     fixture
         .terminal
         .wait_text_presence("ctrl+x unmute", false)
@@ -3522,6 +3626,54 @@ async fn terminal_vault_approval_cancel_then_explicit_approve_sends_one_safe_rec
             "unsafe/raw Vault output: {forbidden}"
         );
     }
+}
+
+#[tokio::test]
+async fn terminal_voice_clone_recording_panel_cancels_without_model_input() {
+    let mut fixture = Fixture::start_with_active(true).await;
+    fixture
+        .terminal
+        .prompt("/voice clone \"Sample speaker\"", "\r");
+    fixture.terminal.wait_text("Sample speaker").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_no_text("Sample speaker").await;
+    fixture.terminal.wait_text("Enter steer").await;
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+    // Opening/canceling the local panel must leave the normal composer usable.
+    fixture.terminal.prompt("/voice voices chatgpt", "\r");
+    fixture.terminal.wait_text("ChatGPT voices").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_no_text("ChatGPT voices").await;
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn terminal_voice_menu_exposes_clone_and_chatgpt_picker_without_model_input() {
+    let mut fixture = Fixture::start_with_active(true).await;
+    fixture.terminal.prompt("/voice", "\r");
+    fixture.terminal.wait_text("Record a voice clone").await;
+    fixture.terminal.wait_text("ChatGPT voices").await;
+    fixture.terminal.wait_text("ElevenLabs voices").await;
+    fixture.terminal.input("\x1b[B\x1b[B\x1b[B\r");
+    fixture.terminal.wait_text("Voice clone: My voice").await;
+    fixture.terminal.wait_text("R: record/re-record").await;
+    fixture.terminal.wait_text("H: read-aloud script").await;
+    fixture.terminal.input("h");
+    fixture.terminal.wait_text("Read naturally").await;
+    fixture.terminal.wait_text("This morning").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_no_text("Voice clone:").await;
+    fixture.terminal.prompt("/voice", "\r");
+    fixture.terminal.wait_text("Record a voice clone").await;
+    fixture.terminal.input("\x1b[B\r");
+    fixture.terminal.wait_text("ChatGPT voices").await;
+    fixture.terminal.wait_text("cove").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_no_text("ChatGPT voices").await;
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
 }
 
 #[cfg(unix)]

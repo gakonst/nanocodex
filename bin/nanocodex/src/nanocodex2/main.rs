@@ -8,8 +8,6 @@
 
 #[path = "../computer.rs"]
 mod computer;
-#[cfg(unix)]
-mod computer_elicitation;
 #[allow(dead_code)]
 mod config;
 mod control;
@@ -28,13 +26,22 @@ mod observation_providers;
 mod reload;
 mod screen_audio;
 mod screen_broadcast;
+#[cfg(target_os = "linux")]
+mod screen_gamepad;
+#[cfg(target_os = "linux")]
+mod screen_host;
 mod screen_ice;
 #[cfg(target_os = "macos")]
 mod screen_macos;
 mod screen_native;
 mod screen_publisher;
 mod screen_video;
-mod screen_video_frames;
+#[cfg(target_os = "linux")]
+mod screen_wayland;
+#[cfg(target_os = "linux")]
+mod screen_wayland_encoder;
+#[cfg(target_os = "linux")]
+mod screen_wayland_input;
 mod service;
 #[allow(dead_code)]
 mod skill;
@@ -54,6 +61,7 @@ mod vm_hand;
 mod vm_hand_config;
 mod vm_host;
 mod voice;
+mod voice_recording;
 mod voice_state;
 
 use std::{
@@ -118,6 +126,16 @@ enum Command {
     #[cfg(target_os = "linux")]
     #[command(name = "__hand-desktop", hide = true)]
     HandDesktop(screen_native::DesktopCommand),
+    /// Share an existing Wayland session through the shared Rust publisher.
+    #[cfg(target_os = "linux")]
+    #[command(name = "wayland-host", hide = true)]
+    WaylandHost(screen_host::HostCommand),
+    #[cfg(target_os = "linux")]
+    #[command(name = "desktop-host", hide = true)]
+    DesktopHost(screen_host::HostCommand),
+    #[cfg(target_os = "linux")]
+    #[command(name = "server-host", hide = true)]
+    ServerHost(screen_host::HostCommand),
     /// Serve a bounded pool of on-demand libkrun VM hands.
     Host(Host),
     /// Create a managed agent and print its receipt as JSON.
@@ -261,11 +279,11 @@ struct Hand {
     #[arg(long, conflicts_with_all = ["rootfs", "docker"], help_heading = "Identity")]
     vm_provider: Option<String>,
 
-    /// Route managed browser work through this host alongside the VM or container Hand.
+    /// Legacy option (disabled); use the Hand's CUA tools for browser interactions.
     #[arg(long, help_heading = "Browser")]
     browser: bool,
 
-    /// Exact Chrome or Chromium executable used by this Hand's private browser.
+    /// Legacy browser executable option (disabled); use the Hand's CUA tools.
     #[arg(
         long,
         value_name = "PATH",
@@ -529,16 +547,66 @@ fn main() -> ExitCode {
 
 fn try_main() -> Result<(), ManagedError> {
     let _ = dotenvy::dotenv();
+    #[cfg(target_os = "linux")]
+    if std::env::var(screen_wayland_encoder::HELPER_ENV).as_deref() == Ok("1") {
+        return tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| ManagedError::Configuration(e.to_string()))?
+            .block_on(screen_wayland_encoder::run(
+                std::env::args().skip(1).collect(),
+            ))
+            .map_err(|e| ManagedError::Configuration(e.to_string()));
+    }
     let cli = Cli::parse();
+    #[cfg(target_os = "linux")]
+    let (cli, prepared) = {
+        let mut cli = cli;
+        let host = match cli.command.take() {
+            Some(Command::WaylandHost(args)) => Some(args.prepare(screen_host::Mode::Wayland)?),
+            Some(Command::DesktopHost(args)) => Some(args.prepare(screen_host::Mode::Desktop)?),
+            Some(Command::ServerHost(args)) => Some(args.prepare(screen_host::Mode::Server)?),
+            other => {
+                cli.command = other;
+                None
+            }
+        };
+        let prepared = if let Some((prepared, environment)) = host {
+            // SAFETY: only standalone process startup reaches this point. No
+            // Tokio, capture, audio, or provider threads have been started yet.
+            for (key, value) in environment {
+                #[allow(unsafe_code)]
+                unsafe {
+                    std::env::set_var(key, value);
+                }
+            }
+            Some(prepared)
+        } else {
+            None
+        };
+        (cli, prepared)
+    };
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| ManagedError::Configuration(format!("failed to start Tokio: {error}")))?
-        .block_on(run(cli))
+        .block_on(async move {
+            #[cfg(target_os = "linux")]
+            if let Some(prepared) = prepared {
+                return screen_host::serve(prepared).await;
+            }
+            run(cli).await
+        })
 }
 
 async fn run(cli: Cli) -> Result<(), ManagedError> {
     let command = match cli.command {
+        #[cfg(target_os = "linux")]
+        Some(Command::WaylandHost(_) | Command::DesktopHost(_) | Command::ServerHost(_)) => {
+            return Err(ManagedError::Configuration(
+                "standalone host must initialize before runtime startup".into(),
+            ));
+        }
         Some(Command::Computer(command)) => {
             return command.run().await.map_err(ManagedError::Configuration);
         }
@@ -666,6 +734,10 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         ),
         Some(Command::Cancel(command)) => {
             write_json(&client.cancel(&command.agent_id, &command.turn_id).await?)
+        }
+        #[cfg(target_os = "linux")]
+        Some(Command::WaylandHost(_) | Command::DesktopHost(_) | Command::ServerHost(_)) => {
+            unreachable!("handled before runtime startup")
         }
         Some(Command::VmRunConfig(_)) => unreachable!("handled before managed client setup"),
         Some(Command::VmCloneImage { .. }) => unreachable!("handled before managed client setup"),

@@ -157,12 +157,6 @@ jobs:
           cargo build --locked --release \
             --package nanocodex2-bin --bin nanocodex2 \
             --target ${{ matrix.target }}
-      - name: Install Linux computer dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes pkg-config libpulse-dev libxkbcommon-dev
-      - name: Build computer companion
-        shell: bash
-        run: cargo build --locked --release --manifest-path crates/experimental/nanocodex-computer/runtime/Cargo.toml --target ${{ matrix.target }} --bin nanocodex-computer
       - name: Sign macOS VM hand host
         if: matrix.target == 'aarch64-apple-darwin'
         shell: bash
@@ -184,12 +178,10 @@ jobs:
           cp "voice-dist/nanocodex-voice-${{ matrix.target }}.tar.gz" dist/
           cp "target/${{ matrix.target }}/release/nanocodex" "dist/${{ matrix.artifact }}"
           cp "target/${{ matrix.target }}/release/nanocodex2" "dist/${{ matrix.companion }}"
-          cp "crates/experimental/nanocodex-computer/runtime/target/${{ matrix.target }}/release/nanocodex-computer" "dist/nanocodex-computer-${{ matrix.target }}"
           gzip -n -9 -c "dist/${{ matrix.artifact }}" \
             > "dist/${{ matrix.artifact }}.gz"
           gzip -n -9 -c "dist/${{ matrix.companion }}" \
             > "dist/${{ matrix.companion }}.gz"
-          gzip -n -9 -c "dist/nanocodex-computer-${{ matrix.target }}" > "dist/nanocodex-computer-${{ matrix.target }}.gz"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact }}
@@ -225,16 +217,11 @@ jobs:
         run: |
           cargo build --locked --release --package nanocodex2-bin --bin nanocodex2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo build --locked --release `
-            --manifest-path crates/experimental/nanocodex-computer/runtime/Cargo.toml `
-            --bin nanocodex-computer
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Sign payload when Authenticode is configured
         shell: pwsh
         run: >-
           ./windows/hand/sign.ps1 -Path
-          ./target/release/nanocodex2.exe,
-          ./crates/experimental/nanocodex-computer/runtime/target/release/nanocodex-computer.exe
+          ./target/release/nanocodex2.exe
       - name: Build and sign one-click installer
         shell: pwsh
         env:
@@ -243,7 +230,6 @@ jobs:
           $version = $env:RELEASE_VERSION.TrimStart("v")
           ./windows/hand/build.ps1 `
             -Nanocodex2 ./target/release/nanocodex2.exe `
-            -Computer ./crates/experimental/nanocodex-computer/runtime/target/release/nanocodex-computer.exe `
             -Version $version `
             -NumericVersion $version
           ./windows/hand/sign.ps1 -Path ./dist/windows-hand/nanocodex-hand-setup-x86_64.exe
@@ -251,7 +237,6 @@ jobs:
         shell: pwsh
         run: |
           Copy-Item target/release/nanocodex2.exe dist/windows-hand/nanocodex2-x86_64-pc-windows-msvc.exe
-          Copy-Item crates/experimental/nanocodex-computer/runtime/target/release/nanocodex-computer.exe dist/windows-hand/nanocodex-computer-x86_64-pc-windows-msvc.exe
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nanocodex-hand-x86_64-pc-windows-msvc

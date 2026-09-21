@@ -1,35 +1,35 @@
 import { execFile, spawn } from "node:child_process";
-import { access, readFile, stat } from "node:fs/promises";
+import { access, stat } from "node:fs/promises";
 import { constants, readFileSync } from "node:fs";
-import { delimiter, dirname, join, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { namedTool } from "nanocodex-tools/named-tool";
 import { toolResult } from "nanocodex-tools/runtime/code-runtime";
-import { CUA_DESCRIPTION, CUA_PARAMETERS, CUA_RESET_DESCRIPTION, CUA_RESET_PARAMETERS, validateInput } from "./contract.mjs";
 
 const runSetup = promisify(execFile);
 const preparations = new Map();
+const interruptedGuidance = "Upstream/native input may still be running and effects are uncertain; do not replay uncertain input. Call cua_repl.js_reset, then inspect the surface before continuing. Reset does not prove earlier input stopped.";
 const supportsManagedComputer = () => ["darwin", "win32"].includes(process.platform);
 const managedRoot = () => join(process.env.NANOCODEX_DIR || join(process.env.HOME || process.env.USERPROFILE || homedir(), ".nanocodex"), "runtimes", "openai-cua");
-function windowsProvider() {
-  if (process.platform !== "win32") return undefined;
+function managedProvider() {
+  if (!supportsManagedComputer()) return undefined;
   let source;
   try { source = readFileSync(join(managedRoot(), "provider.json"), "utf8"); }
   catch (error) { if (error.code === "ENOENT") return undefined; throw error; }
   if (source.length > 65536) throw new Error("Invalid managed CUA receipt; run nanocodex2 computer setup");
   const value = JSON.parse(source);
-  if (value.status !== "installed" || value.transport !== "mcp" || typeof value.executable !== "string"
+  if (value?.status !== "installed" || value.transport !== "mcp" || typeof value.executable !== "string" || !isAbsolute(value.executable)
     || !Array.isArray(value.args) || !value.args.every(arg => typeof arg === "string")
-    || !value.environment || typeof value.environment !== "object" || !Object.values(value.environment).every(v => typeof v === "string")) {
+    || !value.environment || typeof value.environment !== "object" || Array.isArray(value.environment) || !Object.values(value.environment).every(v => typeof v === "string")) {
     throw new Error("Invalid managed CUA receipt; run nanocodex2 computer setup");
   }
   return value;
 }
-const managedComputer = () => process.platform === "win32" ? windowsProvider()?.executable : join(managedRoot(), "current", "cua-provider");
+const managedComputer = () => managedProvider()?.executable;
 function managedOptions(options) {
-  const managed = windowsProvider();
+  if (process.env.NANOCODEX_COMPUTER) return options;
+  const managed = managedProvider();
   if (!managed || resolve(options.executable) !== resolve(managed.executable)) return options;
   return { ...options, args: options.args ?? managed.args, environment: { ...managed.environment, ...options.environment } };
 }
@@ -37,13 +37,15 @@ async function executableExists(path) {
   try { if (!path) return false; await access(path, constants.X_OK); return (await stat(path)).isFile(); } catch { return false; }
 }
 
-/** Provision the managed provider only when missing, using a trusted native CLI. */
+/** Select the installed helper’s current host once per process and install root. */
 export async function ensureComputer({ binary } = {}) {
   if (process.env.NANOCODEX_COMPUTER || !supportsManagedComputer()) return discoverComputer({ binary });
-  const executable = managedComputer();
-  if (await executableExists(executable)) return executable;
   const retry = "Run nanocodex2 computer setup to retry, or set NANOCODEX_COMPUTER to an explicit provider (off disables CUA).";
-  if (!binary) throw new Error(`OpenAI CUA setup requires the installed Nanocodex native helper. Reinstall Nanocodex. ${retry}`);
+  if (!binary) {
+    const executable = managedComputer();
+    if (await executableExists(executable)) return executable;
+    throw new Error(`OpenAI CUA setup requires the installed Nanocodex native helper. Reinstall Nanocodex. ${retry}`);
+  }
   const identity = JSON.stringify([resolve(binary), resolve(managedRoot())]);
   if (preparations.has(identity)) return preparations.get(identity);
   const preparation = (async () => {
@@ -64,7 +66,7 @@ export async function ensureComputer({ binary } = {}) {
     }
   })();
   preparations.set(identity, preparation);
-  try { return await preparation; } finally { preparations.delete(identity); }
+  try { return await preparation; } catch (error) { preparations.delete(identity); throw error; }
 }
 
 /** Read-only discovery of trusted installed providers; no app or browser starts. */
@@ -73,62 +75,25 @@ export async function discoverComputer({ binary } = {}) {
   if (["off", "none", "0"].includes(explicit)) return undefined;
   if (explicit) return explicit;
   if (supportsManagedComputer() && await executableExists(managedComputer())) return managedComputer();
-  const name = process.platform === "win32" ? "nanocodex-computer.exe" : "nanocodex-computer";
-  const candidates = [
-    ...(binary ? [join(dirname(binary), name)] : []),
-    join(dirname(process.execPath), name),
-    // Source checkout only. Bundled builds resolve these to nonexistent paths.
-    join(dirname(fileURLToPath(import.meta.url)), "../../crates/experimental/nanocodex-computer/runtime/target/debug", name),
-    join(dirname(fileURLToPath(import.meta.url)), "../../crates/experimental/nanocodex-computer/runtime/target/release", name),
-    join(homedir(), ".cargo", "bin", name),
-    ...(process.env.PATH ?? "").split(delimiter).filter(Boolean).map(path => join(path, name)),
-  ];
-  for (const path of candidates) {
-    try { await access(path, constants.X_OK); return path; } catch {}
-  }
 }
 
 /** Discover the provider's actual MCP declarations before publishing tools. */
 export async function connectComputerTools(options) {
   if (!options?.executable) throw new TypeError("A trusted CUA executable is required");
   options = managedOptions(options);
-  options = { ...options, transport: computerTransport(options.executable, options.transport) };
-  const providerProcess = new ComputerProcess(options.executable, launchArguments(options), options.environment ?? {}, options.transport === "mcp", options);
+  const providerProcess = new ComputerProcess(options.executable, options.args ?? [], options.environment ?? {});
   try {
-    await providerProcess.initialize();
-    const definitions = await providerProcess.discover();
+    const definitions = await providerProcess.start();
     return createComputerTools({ ...options, definitions });
   } finally { providerProcess.close(); }
 }
 
-function computerTransport(executable, transport) {
-  if (transport !== undefined) return transport;
-  if (process.env.NANOCODEX_COMPUTER_TRANSPORT !== undefined) return process.env.NANOCODEX_COMPUTER_TRANSPORT === "mcp" ? "mcp" : undefined;
-  return supportsManagedComputer() && managedComputer() && resolve(executable) === resolve(managedComputer()) ? "mcp" : undefined;
-}
-
-function launchArguments({ args = [], transport }) {
-  const result = [...args];
-  if (transport === "mcp") return result;
-  for (const [name, flag] of [["NANOCODEX_COMPUTER_SECURITY_CONFIG", "--security-config"], ["NANOCODEX_COMPUTER_CDP", "--cdp"], ["NANOCODEX_COMPUTER_BROWSER_PREFERENCES", "--browser-preferences"], ["NANOCODEX_COMPUTER_IAB_CONFIG", "--iab-config"], ["NANOCODEX_COMPUTER_RUNTIME_CONFIG", "--runtime-config"], ["NANOCODEX_COMPUTER_PLATFORM_CONFIG", "--platform-config"]]) {
-    if (process.env[name]) result.push(flag, process.env[name]);
-  }
-  return result;
-}
-
 /** A native attachment owns the executable/configuration, each conversation a JS scope. */
 export function createComputerTools(options) {
-  const { executable, args = [], environment = {}, desktopRuntime, definitions, elicitationHandler, elicitationTimeoutMs = 300_000 } = managedOptions(options);
-  let { transport } = options;
-  validateElicitationOptions({ elicitationHandler, elicitationTimeoutMs });
+  const { executable, args = [], environment = {}, definitions } = managedOptions(options);
   if (!executable) throw new TypeError("A trusted CUA executable is required");
-  transport = computerTransport(executable, transport);
-  if (transport === "mcp" && definitions === undefined) throw new TypeError("External MCP providers require connectComputerTools discovery or a trusted catalog");
-  const launchArgs = launchArguments({ args, transport });
-  const catalog = validateCatalog(definitions ?? [
-    { name: "js", description: CUA_DESCRIPTION, inputSchema: CUA_PARAMETERS },
-    { name: "js_reset", description: CUA_RESET_DESCRIPTION, inputSchema: CUA_RESET_PARAMETERS },
-  ]);
+  if (definitions === undefined) throw new TypeError("MCP providers require connectComputerTools discovery or a trusted catalog");
+  const catalog = validateCatalog(definitions);
   const sessions = new Map();
   let disposed = false;
   const releaseSession = id => {
@@ -139,8 +104,6 @@ export function createComputerTools(options) {
   };
   const close = async () => { disposed = true; for (const id of sessions.keys()) releaseSession(id); };
   const invoke = (name, input, context) => {
-    const reset = name === "js_reset";
-    const value = definitions === undefined ? validateInput(input, reset) : input;
     const id = context.sessionId;
     if (!id) throw new Error("CUA requires a conversation identity");
     if (disposed) throw new Error("CUA attachment is closed");
@@ -151,75 +114,61 @@ export function createComputerTools(options) {
       });
     }
     const session = sessions.get(id);
+    // Tool arguments (including timeout_ms) belong exclusively to the provider.
+    // Queueing and transport must not consume or duplicate its execution budget.
     const signal = AbortSignal.any([session.lifetime.signal, ...(context.signal ? [context.signal] : [])]);
+    let dispatched = false;
+    const cancellationReason = () => dispatched
+      ? new Error(`CUA call cancelled after dispatch; native effects may continue and completion is unknown. ${interruptedGuidance}`, { cause: signal.reason })
+      : signal.reason;
     const run = async () => {
       signal.throwIfAborted();
       if (disposed) throw new Error("CUA attachment is closed");
       if (sessions.get(id) !== session) throw new Error("CUA conversation was released");
-      if (session.interrupted && !reset) throw new Error("CUA session was interrupted. Call cua_repl.js_reset, then select the surface again.");
-      const deadline = new AbortController();
-      const operation = AbortSignal.any([signal, deadline.signal]);
-      const abort = () => { session.process?.close(operation.reason); session.process = undefined; session.interrupted = true; };
-      const cancelTimeout = transport === "mcp" || !Number.isSafeInteger(value?.timeout_ms) || value.timeout_ms < 1
-        ? () => {}
-        : scheduleDeadline(() => deadline.abort(new Error("CUA runtime timed out; call cua_repl.js_reset before continuing")), value.timeout_ms + 5_000);
-      operation.addEventListener("abort", abort, { once: true });
+      if (session.interrupted && name !== "js_reset") throw new Error(`CUA session interrupted. ${interruptedGuidance}`);
+      const abort = () => { session.process?.close(cancellationReason()); session.process = undefined; };
+      signal.addEventListener("abort", abort, { once: true });
       try {
         if (!session.process) {
-          let desktopEnvironment = {};
-          if (desktopRuntime) {
-            if (environment.NANOCODEX_COMPUTER_BACKGROUND !== undefined || process.env.NANOCODEX_COMPUTER_BACKGROUND !== undefined) throw new Error("Background CUA cannot be combined with a private X11 desktop");
-            const ready = JSON.parse(await readFile(join(desktopRuntime, "ready"), "utf8")
-              .catch(() => { throw new Error("This Hand's desktop is unavailable; start its screen before using CUA."); }));
-            if (typeof ready.display !== "string" || !ready.display.startsWith(":")) throw new Error("Hand desktop did not publish a local X display");
-            desktopEnvironment = { DISPLAY: ready.display, XAUTHORITY: join(desktopRuntime, "Xauthority"), WAYLAND_DISPLAY: undefined };
-          }
-          operation.throwIfAborted();
+          signal.throwIfAborted();
           if (disposed) throw new Error("CUA attachment is closed");
-          session.process = new ComputerProcess(executable, launchArgs, { ...environment, ...desktopEnvironment }, transport === "mcp", { elicitationHandler, elicitationTimeoutMs });
-          session.process.context = context;
-          await session.process.initialize();
-          const discovered = await session.process.discover();
-          // The legacy synchronous constructor declares only its bundled tools.
-          // Verify every declared field exactly, allowing additional provider tools
-          // and metadata. Discovery-based attachments pin the complete catalog,
-          // including hidden lifecycle definitions and their optional metadata.
-          const matches = definitions === undefined
-            ? catalog.every(expected => {
-                const actual = discovered.find(tool => tool.name === expected.name);
-                return actual && modelVisible(actual) && Object.entries(expected)
-                  .every(([key, value]) => canonical(actual[key]) === canonical(value));
-              })
-            : canonical(discovered) === canonical(catalog);
+          session.process = new ComputerProcess(executable, args, environment);
+          const discovered = await session.process.start();
+          const matches = canonical(discovered) === canonical(catalog);
           if (!matches) throw new Error("CUA provider catalog changed; reconnect the attachment before invoking it");
         }
-        session.process.context = context;
+        signal.throwIfAborted();
+        dispatched = true;
         const result = await session.process.rpc("tools/call", {
-          name, arguments: value,
+          name, arguments: input,
           _meta: { "x-codex-turn-metadata": {
             session_id: id,
             ...(context.turnId == null ? {} : { turn_id: context.turnId }),
             thread_id: id, call_id: context.callId, model: context.model,
           } },
         });
-        operation.throwIfAborted();
+        signal.throwIfAborted();
         const content = outputContent(result);
-        session.interrupted = false;
+        if (name === "js_reset" && result.isError !== true) session.interrupted = false;
         return toolResult(content, result, { value: result, success: result.isError !== true, metadata: result._meta });
       } catch (error) {
-        session.process?.close(); session.process = undefined; session.interrupted = true; throw error;
+        session.process?.close(); session.process = undefined;
+        if (dispatched) {
+          session.interrupted = true;
+          throw new Error(`CUA call interrupted after dispatch. ${interruptedGuidance}`, { cause: error });
+        }
+        throw error;
       } finally {
-        if (session.process) session.process.context = undefined;
-        cancelTimeout(); operation.removeEventListener("abort", abort);
+        signal.removeEventListener("abort", abort);
       }
     };
-    // A QuickJS scope is ordered, but every conversation owns an independent
+    // Provider calls are ordered, but every conversation owns an independent
     // chain and process. Long work in one conversation never blocks another.
     const result = session.tail.then(run);
     session.tail = result.catch(() => {});
     // A queued cancellation reaches the caller immediately. The queued run
     // still checks the signal and session identity before touching its process.
-    return interruptible(result, signal);
+    return interruptible(result, signal, cancellationReason);
   };
   const allTools = catalog.map(tool => namedTool(`mcp__cua_repl__${tool.name}`, {
       description: tool.description ?? "", parameters: tool.inputSchema,
@@ -236,45 +185,20 @@ export function createComputerTools(options) {
   });
 }
 
-function interruptible(result, signal) {
+function interruptible(result, signal, cancellationReason) {
   return new Promise((resolve, reject) => {
-    const abort = () => reject(signal.reason);
+    const abort = () => reject(cancellationReason());
     if (signal.aborted) abort();
     else signal.addEventListener("abort", abort, { once: true });
     result.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
   });
 }
 
-// Node's setTimeout overflows above 2^31-1 ms. Long valid Codex timeouts must
-// remain long instead of unexpectedly terminating the kernel after one ms.
-function scheduleDeadline(callback, milliseconds) {
-  const deadline = performance.now() + milliseconds;
-  let timer;
-  const tick = () => {
-    const remaining = deadline - performance.now();
-    if (remaining <= 0) callback();
-    else timer = setTimeout(tick, Math.min(remaining, 2_147_483_647));
-  };
-  tick();
-  return () => clearTimeout(timer);
-}
-
-function validateElicitationOptions({ elicitationHandler, elicitationTimeoutMs = 300_000 }) {
-  if (elicitationHandler !== undefined && typeof elicitationHandler !== "function") throw new TypeError("elicitationHandler must be a function");
-  if (!Number.isSafeInteger(elicitationTimeoutMs) || elicitationTimeoutMs < 1) throw new TypeError("elicitationTimeoutMs must be a positive safe integer");
-}
-
-function isObject(value) { return value !== null && typeof value === "object" && !Array.isArray(value); }
-
 class ComputerProcess {
-  constructor(executable, args, environment, mcp = false, options = {}) {
-    validateElicitationOptions(options);
-    this.elicitationHandler = options.elicitationHandler;
-    this.elicitationTimeoutMs = options.elicitationTimeoutMs ?? 300_000;
-    this.elicitations = new Map();
-    const env = Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "SystemRoot", "LOCALAPPDATA", "DISPLAY", "XAUTHORITY", "WAYLAND_DISPLAY", "HYPRLAND_INSTANCE_SIGNATURE", "NANOCODEX_COMPUTER_BACKGROUND", "NANOCODEX_HYPRLAND_CAPTURE", "XDG_RUNTIME_DIR", "DBUS_SESSION_BUS_ADDRESS", "LANG", "SKY_ENABLE_AUDIO"]
+  constructor(executable, args, environment) {
+    const env = Object.fromEntries(["PATH", "HOME", "USER", "LOGNAME", "TMPDIR", "TEMP", "SystemRoot", "LOCALAPPDATA", "LANG", "SKY_ENABLE_AUDIO"]
       .filter(key => process.env[key] !== undefined).map(key => [key, process.env[key]]));
-    this.child = spawn(executable, mcp ? args : [...args, "--allow-native-control", "serve"], { env: { ...env, ...environment }, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
+    this.child = spawn(executable, args, { env: { ...env, ...environment }, stdio: ["pipe", "pipe", "ignore"], windowsHide: true });
     this.pending = new Map(); this.sequence = 0; this.lines = new LineBuffer();
     this.child.stdout.on("data", chunk => {
       try {
@@ -283,13 +207,11 @@ class ComputerProcess {
           const value = JSON.parse(line.toString("utf8"));
           if (value.method) {
             if (value.id !== undefined) void this.serverRequest(value).catch(error => this.close(error));
-            else if (value.method === "notifications/cancelled") this.elicitations.get(value.params?.requestId)?.abort(new Error("CUA provider cancelled elicitation"));
             continue;
           }
           const pending = this.pending.get(value.id);
           if (!pending) throw new Error("CUA response belongs to an unknown call");
           this.pending.delete(value.id);
-          for (const controller of this.elicitations.values()) controller.abort(new Error("CUA requesting call completed"));
           if (value.error) pending.reject(new Error(value.error.message ?? "CUA runtime error"));
           else pending.resolve(value.result);
         }
@@ -300,60 +222,19 @@ class ComputerProcess {
     this.child.stdin.on("error", error => this.close(error));
   }
   async serverRequest(request) {
-    const reply = value => this.send({ jsonrpc: "2.0", id: request.id, ...value });
-    if (!["elicitation/create", "openai/elicitation/create"].includes(request.method) || !this.elicitationHandler) {
-      await reply({ error: { code: -32601, message: "No host form elicitation handler for this request" } });
-      return;
-    }
-    const params = request.params;
-    if (!isObject(params) || (params.mode !== undefined && params.mode !== "form")
-      || typeof params.message !== "string" || !isObject(params.requestedSchema)
-      || (params._meta !== undefined && !isObject(params._meta))) {
-      await reply({ error: { code: -32602, message: "Expected MCP form elicitation parameters" } });
-      return;
-    }
-    if (this.elicitations.has(request.id) || this.elicitations.size >= 32) {
-      throw new Error("CUA provider sent duplicate or excessive pending elicitations");
-    }
-    const callId = this.pending.keys().next().value;
-    if (callId === undefined) {
-      await reply({ error: { code: -32601, message: "No active CUA call for form elicitation" } });
-      return;
-    }
-    const controller = new AbortController();
-    this.elicitations.set(request.id, controller);
-    const cancelTimeout = scheduleDeadline(() => controller.abort(new Error("CUA form elicitation timed out")), this.elicitationTimeoutMs);
-    const context = this.context;
+    await this.send({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "Method not found" } });
+  }
+  async start() {
+    // Bound only provider startup/catalog discovery, never tools/call or queue wait.
+    const timer = setTimeout(() => this.close(new Error("CUA provider startup/discovery timed out after 120000 ms")), 120_000);
+    timer.unref();
     try {
-      // Forward the complete provider request, including approval/persistence
-      // hints in _meta. Only a genuine host UI may select the response.
-      const result = await interruptible(Promise.resolve().then(() => {
-        controller.signal.throwIfAborted();
-        return this.elicitationHandler(params, {
-          sessionId: context?.sessionId, callId: context?.callId, model: context?.model,
-          requestId: request.id, signal: controller.signal,
-        });
-      }), controller.signal);
-      controller.signal.throwIfAborted();
-      if (!this.pending.has(callId)) return;
-      if (!isObject(result) || !["accept", "decline", "cancel"].includes(result.action)
-        || (result.content !== undefined && !isObject(result.content))
-        || (result._meta !== undefined && !isObject(result._meta))) {
-        await reply({ error: { code: -32602, message: "Invalid host form elicitation response" } });
-      } else if (!this.closed && this.pending.has(callId)) {
-        await reply({ result });
-      }
-    } catch (error) {
-      if (!this.closed && this.pending.has(callId)) await reply(controller.signal.aborted
-        ? { result: { action: "cancel" } }
-        : { error: { code: -32603, message: "Host form elicitation failed" } });
-    } finally {
-      cancelTimeout();
-      this.elicitations.delete(request.id);
-    }
+      await this.initialize();
+      return await this.discover();
+    } finally { clearTimeout(timer); }
   }
   async initialize() {
-    await this.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: this.elicitationHandler ? { elicitation: { form: {} } } : {}, clientInfo: { name: "nanocodex-computer", version: "0.1.0" } });
+    await this.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "nanocodex-computer", version: "0.1.0" } });
     await this.send({ jsonrpc: "2.0", method: "notifications/initialized" });
   }
   async discover() {
@@ -389,8 +270,6 @@ class ComputerProcess {
   close(error = new Error("CUA session stopped")) {
     if (this.closed) return;
     this.closed = error;
-    for (const controller of this.elicitations.values()) controller.abort(error);
-    this.elicitations.clear();
     this.child.kill("SIGKILL");
     this.child.stdin.destroy(); this.child.stdout.destroy();
     for (const pending of this.pending.values()) pending.reject(error);
@@ -432,25 +311,16 @@ export function outputContent(result) {
   if (!Array.isArray(result?.content)) throw new TypeError("CUA result requires content");
   return result.content.map(item => {
     if (item.type === "text" && typeof item.text === "string") return { type: "input_text", text: item.text };
-    if (item.type === "image" && ["image/png", "image/jpeg", "image/webp"].includes(item.mimeType) && typeof item.data === "string") {
-      const bytes = decodeBase64(item.data);
-      const mime = bytes.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ? "image/png"
-        : bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255 ? "image/jpeg"
-        : bytes.toString("ascii", 0, 4) === "RIFF" && bytes.toString("ascii", 8, 12) === "WEBP" ? "image/webp" : undefined;
-      if (!mime) throw new TypeError("Invalid CUA image bytes");
-      return { type: "input_image", image_url: `data:${mime};base64,${item.data}`, detail: "original" };
+    if (item.type === "image" && typeof item.mimeType === "string" && typeof item.data === "string") {
+      return { type: "input_image", image_url: `data:${item.mimeType};base64,${item.data}`, detail: "original" };
     }
-    if (item.type === "audio" && ["audio/wav", "audio/mpeg"].includes(item.mimeType) && typeof item.data === "string") {
-      decodeBase64(item.data);
+    if (item.type === "audio" && typeof item.mimeType === "string" && typeof item.data === "string") {
       return { type: "input_audio", audio_url: `data:${item.mimeType};base64,${item.data}` };
     }
-    throw new TypeError("Unsupported CUA output content");
+    // The model transport has no native MCP resource block. Preserve its full
+    // JSON as text; the untouched provider result is also available as value.
+    return { type: "input_text", text: JSON.stringify(item) };
   });
-}
-
-function decodeBase64(data) {
-  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(data) || !data.length) throw new TypeError("Invalid CUA base64 content");
-  return Buffer.from(data, "base64");
 }
 
 function canonical(value) {

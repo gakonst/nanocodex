@@ -1872,6 +1872,7 @@ async fn read_frame(
 const fn set_request_id(request: &mut SessionRequest, id: u64) {
     match request {
         SessionRequest::Ready(request) => request.id = id,
+        SessionRequest::ComputerCatalog(request) => request.id = id,
         SessionRequest::Tool(request) => request.id = id,
         SessionRequest::WriteFile(request) => request.id = id,
         SessionRequest::CreateDirectory(request) => request.id = id,
@@ -1965,22 +1966,38 @@ fn elapsed_ns(started_at: Instant) -> u64 {
 
 #[async_trait::async_trait]
 impl VmToolClient for VmToolSessionHandle {
+    async fn computer_catalog(
+        &self,
+    ) -> Result<Vec<nanocodex_computer::ProviderTool>, nanocodex_tools::contract::ToolError> {
+        let response = self
+            .control_request(|id| {
+                SessionRequest::ComputerCatalog(super::protocol::ComputerCatalogRequest { id })
+            })
+            .await?;
+        let SessionResponse::ComputerCatalog(response) = response else {
+            return Err(
+                VmToolSessionError::Protocol("expected a computer catalog response").into(),
+            );
+        };
+        if let Some(error) = response.error {
+            return Err(VmToolSessionError::Guest(error).into());
+        }
+        response
+            .tools
+            .ok_or_else(|| "Guest did not return an upstream Sky tool catalog".into())
+    }
+
     async fn computer(
         &self,
-        request: Option<nanocodex_computer::ComputerRequest>,
+        name: &str,
+        arguments: serde_json::Value,
         context: ToolContext<'_>,
     ) -> ToolResult {
-        use super::protocol::{ComputerToolKind, GuestTool};
-        let (kind, args) = match request {
-            Some(request) => {
-                request.validate()?;
-                (ComputerToolKind::Cua, serde_json::to_value(request)?)
-            }
-            None => (ComputerToolKind::CuaReset, serde_json::json!({})),
-        };
         self.request_inner(
-            GuestTool::Computer(kind),
-            ToolInput::Function(serde_json::value::to_raw_value(&args)?),
+            super::protocol::GuestTool::Computer {
+                name: name.to_owned(),
+            },
+            ToolInput::Function(serde_json::value::to_raw_value(&arguments)?),
             context,
             &tracing::Span::current(),
         )
@@ -2211,6 +2228,44 @@ mod tracing_tests {
         });
     }
 
+    #[tokio::test]
+    async fn computer_proxy_discovers_then_invokes_guest_provider_tool() {
+        use nanocodex_tools::Tool as _;
+        let catalog = r#"{"kind":"computer_catalog","payload":{"id":0,"tools":[{"name":"provider_extra","description":"Guest upstream documentation","inputSchema":{"type":"object","properties":{"custom":{"type":"string"}}}}],"error":null}}"#;
+        let output = r#"{"kind":"tool","payload":{"id":1,"execution":{"output":"guest-provider-output","success":true,"structured_result":null,"metadata":null,"process_trace":null},"error":null}}"#;
+        let script = format!(
+            "IFS= read -r catalog\n\
+             case \"$catalog\" in *'\"kind\":\"computer_catalog\"'*) ;; *) exit 91 ;; esac\n\
+             printf '%s\\n' '{catalog}'\n\
+             IFS= read -r call\n\
+             case \"$call\" in *'\"tool\":{{\"name\":\"provider_extra\"}}'*) ;; *) exit 92 ;; esac\n\
+             case \"$call\" in *'\"arguments\":{{\"custom\":\"opaque\"}}'*) ;; *) exit 93 ;; esac\n\
+             printf '%s\\n' '{output}'"
+        );
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.arg("-c").arg(script);
+        let session = VmToolSession::spawn(&mut command).unwrap();
+        let computer = session.tools().computer_tools().await.unwrap();
+        assert_eq!(
+            computer.catalog()[0].description.as_deref(),
+            Some("Guest upstream documentation")
+        );
+        let result = computer
+            .tool("provider_extra")
+            .unwrap()
+            .execute(
+                ToolInput::Function(to_raw_value(&json!({"custom":"opaque"})).unwrap()),
+                ToolContext::new("model", "session", "call", &[], 100),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        let ToolOutputBody::Text(text) = result.output else {
+            panic!("lost guest output")
+        };
+        assert_eq!(text, "guest-provider-output");
+    }
+
     #[test]
     fn managed_tool_process_termination_keeps_the_vm_session_open() {
         let _test_guard = TRACE_TEST_LOCK.lock().unwrap();
@@ -2257,9 +2312,9 @@ mod tracing_tests {
 
         runtime.block_on(async {
             let session = VmToolSession::spawn(&mut command).unwrap();
-            let tools = session
-                .tools()
-                .tools_builder()
+            let tools = nanocodex_tools::Tools::builder()
+                .workspace(false)
+                .tool(session.tools().exec_command_tool())
                 .web_search(false)
                 .image_generation(false)
                 .build()

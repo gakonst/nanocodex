@@ -6,7 +6,7 @@ export type ManagedProxyEnv = {
   NANOCODEX_HAND_BROKER?: DurableObjectNamespace;
 };
 
-const MANAGED_ROUTE = /^(?:\/auth(?:\/.*)?|\/webauthn\/.*|\/sandbox-preview\/[^/]+(?:\/.*)?|\/v1\/(?:auth(?:\/.*)?|me|account\/(?:admin|communication|tool-host|vm-host|hand-hosts(?:\/[0-9a-f-]{36})?|hands(?:\/(?:screens|host|view|renew|ice))?)|hand-hosts\/[0-9a-f-]{36}\/[0-9a-f-]{36}\/hands\/(?:host|ice|renew)|system\/vm-host|vm-host-attachments\/[A-Za-z0-9_-]{43}\/[0-9a-f-]{36}\/(?:tool-host|hands\/(?:host|ice|renew))|wallet(?:\/(?:balance|connect|revoke-access-key))?|egress|api-keys(?:\/.*)?|credentials(?:\/.*)?|connect(?:\/.*)?|connectors(?:\/.*)?|agents(?:\/.*)?|rooms(?:\/.*)?|history(?:\/.*)?|memory(?:\/.*)?|organization(?:\/.*)?))$/;
+const MANAGED_ROUTE = /^(?:\/auth(?:\/.*)?|\/webauthn\/.*|\/sandbox-preview\/[^/]+(?:\/.*)?|\/v1\/(?:auth(?:\/.*)?|me|account\/(?:admin|communication|tool-host|vm-host|hand-hosts(?:\/[0-9a-f-]{36})?|hands(?:\/(?:screens|host|view|renew|ice))?)|hand-hosts\/[0-9a-f-]{36}\/[0-9a-f-]{36}\/hands\/(?:host|ice|renew)|system\/vm-host|vm-host-attachments\/[A-Za-z0-9_-]{43}\/[0-9a-f-]{36}\/(?:tool-host|hands\/(?:host|ice|renew))|wallet(?:\/(?:balance|connect|revoke-access-key))?|egress|responses|models|inference(?:\/.*)?|api-keys(?:\/.*)?|credentials(?:\/.*)?|connect(?:\/.*)?|connectors(?:\/.*)?|agents(?:\/.*)?|rooms(?:\/.*)?|history(?:\/.*)?|memory(?:\/.*)?|organization(?:\/.*)?))$/;
 
 export function isManagedRoutePath(pathname: string): boolean {
   return MANAGED_ROUTE.test(pathname) || /^\/v1\/phone\/bridge\/(?:health|check|calls(?:\/[0-9a-f-]{36}(?:\/(?:hangup|steer))?)?|status\/[0-9a-f-]{36}|media\/[0-9a-f-]{36}\/|internal\/(?:state|setup))$/.test(pathname);
@@ -26,6 +26,11 @@ export async function routeManaged(
   url: URL,
 ): Promise<Response | undefined> {
   if (!isManagedRoutePath(url.pathname)) return undefined;
+  if (/\bnci_/i.test(request.headers.get("authorization") ?? "")
+    && url.pathname !== "/v1/responses" && url.pathname !== "/v1/models"
+    && url.pathname !== "/v1/inference" && !url.pathname.startsWith("/v1/inference/")) {
+    return json({ error: "inference_key_scope" }, { status: 403 });
+  }
   if (!env.NANOCODEX_BACKEND) {
     return json({ error: "managed_service_unavailable" }, { status: 503 });
   }

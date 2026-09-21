@@ -88,6 +88,8 @@ export const AgentExperience = memo(function AgentExperience({
   const accountId = account.account?.id;
   const conversationsQuery = useQuery({
     ...managedConversationsQueryOptions(accountId ?? ""),
+    refetchInterval: 10_000,
+    refetchIntervalInBackground: false,
     enabled: !landing && account.status === "ready" && Boolean(accountId) && hasDurableCredential && authStatus?.state === "ready",
   });
   const managedConversations = conversationsQuery.data ?? [];

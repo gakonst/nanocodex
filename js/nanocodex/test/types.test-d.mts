@@ -548,6 +548,7 @@ async function check() {
     }),
   });
   const workerTransport: BrowserTransport.WorkerTransport = BrowserTransport.hostManaged({
+    stateless: true,
     websocketUrl: "wss://example.com/api/responses",
   });
   const durability = createMemoryDurabilityStore("journal-1");

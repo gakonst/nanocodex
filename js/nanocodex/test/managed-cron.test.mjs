@@ -103,3 +103,23 @@ test("cron SDK preserves prompts beyond the former 64 KiB limit", async () => {
   const saved = await agent.triggers.put("morning", { cron: trigger.cron, input });
   assert.equal(saved.input, input);
 });
+
+test("cron SDK patches only supplied settings and rejects invalid patches locally", async () => {
+  const calls = [];
+  const agent = Agent.open(agentId, { baseUrl: "https://managed.example", fetch: async (url, init) => {
+    const request = new Request(url, init);
+    const patch = await request.json();
+    calls.push([request.method, new URL(request.url).pathname, patch]);
+    return Response.json({ ...trigger, ...patch });
+  } });
+  const updated = await agent.triggers.update("morning", { enabled: false, input: undefined });
+  assert.equal(updated.enabled, false);
+  assert.equal(updated.input, trigger.input);
+  assert.ok(Object.isFrozen(updated));
+  assert.deepEqual(calls, [["PATCH", `/v1/agents/${agentId}/triggers/morning`, { enabled: false }]]);
+  for (const patch of [null, [], {}, { enabled: undefined }, { enabled: 1 }, { cron: "* *" }, { input: " " }, { extra: true }, { session_mode: "fork" }]) {
+    await assert.rejects(agent.triggers.update("morning", patch), TypeError);
+  }
+  await assert.rejects(agent.triggers.update("../bad", { enabled: false }), TypeError);
+  assert.equal(calls.length, 1);
+});

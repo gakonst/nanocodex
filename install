@@ -58,13 +58,6 @@ fi
 release_url="https://github.com/$repository/releases/download/$release_tag"
 curl --fail --silent --show-error --location "$release_url/SHA256SUMS" --output "$temporary_dir/SHA256SUMS"
 
-# Older releases predate the experimental companion. New bundles install it
-# under the same verified version directory as both CLIs.
-if awk -v asset="nanocodex-computer-$target" '$2 == asset || $2 == asset ".gz" || $2 == "*" asset || $2 == "*" asset ".gz" { found = 1 } END { exit !found }' "$temporary_dir/SHA256SUMS"; then
-  binaries+=("nanocodex-computer-$target")
-  installed_names+=("nanocodex-computer")
-fi
-
 if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
   echo "nanocodex: sha256sum or shasum is required to verify the download" >&2
   exit 1
@@ -269,8 +262,29 @@ export NANOCODEX_DIR="$install_root"
 exec "$install_root/current/nanocodex2" "$@"
 EOF
 install -m 755 "$temporary_dir/nanocodex2-launcher" "$bin_dir/nanocodex2"
-if [[ -f "$version_dir/nanocodex-computer" ]]; then
-  ln -sfn ../current/nanocodex-computer "$bin_dir/nanocodex-computer"
+# Retire only launchers installed by older Nanocodex releases.
+retired_launcher="$bin_dir/nanocodex-computer"
+if [[ -L "$retired_launcher" ]]; then
+  retired_target="$(readlink "$retired_launcher")"
+  if [[ "$retired_target" == ../current/nanocodex-computer ||
+        "$retired_target" == "$install_root/current/nanocodex-computer" ]]; then
+    rm "$retired_launcher"
+  fi
+else
+  cat > "$temporary_dir/retired-computer-launcher" <<'EOF'
+#!/bin/sh
+set -eu
+case "$0" in
+    */*) launcher=$0 ;;
+    *) launcher=$(command -v "$0") ;;
+esac
+bin_dir=$(CDPATH= cd -- "$(dirname -- "$launcher")" && pwd -P)
+install_root=$(dirname -- "$bin_dir")
+exec "$install_root/current/nanocodex-computer" "$@"
+EOF
+  if cmp -s "$temporary_dir/retired-computer-launcher" "$retired_launcher"; then
+    rm "$retired_launcher"
+  fi
 fi
 
 # Both CLIs and local Hands use the same per-user upstream runtime. The native
@@ -279,13 +293,11 @@ if [[ "$platform" == apple-darwin ]]; then
   case "${NANOCODEX_COMPUTER:-}" in
     off|none|0) ;;
     *)
-      if [[ -z "${NANOCODEX_COMPUTER:-}" ]]; then
-        if ! "$version_dir/nanocodex2" computer setup --help >/dev/null 2>&1; then
-          echo "nanocodex: this release predates automatic upstream CUA setup; update to a release with 'computer setup' support." >&2
-        elif ! NANOCODEX_DIR="$install_root" "$version_dir/nanocodex2" computer setup --refresh; then
-          echo "nanocodex: CLIs installed, but upstream CUA setup failed. Retry: nanocodex2 computer setup" >&2
-          exit 1
-        fi
+      if ! "$version_dir/nanocodex2" computer setup --help >/dev/null 2>&1; then
+        echo "nanocodex: this release predates automatic upstream CUA setup; update to a release with 'computer setup' support." >&2
+      elif ! NANOCODEX_DIR="$install_root" "$version_dir/nanocodex2" computer setup --refresh; then
+        echo "nanocodex: CLIs installed, but upstream CUA setup failed. Retry: nanocodex2 computer setup" >&2
+        exit 1
       fi
       ;;
   esac

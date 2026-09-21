@@ -15,6 +15,7 @@ import {
 } from "../browser/VoiceSession.mjs";
 import { createAgentClient, defineRuntime } from "../internal.mjs";
 import { Agent as ManagedAgent } from "../managed/index.mjs";
+import { registerManagedAgent } from "../managed/internal.mjs";
 import { initializeBrowserEngine } from "../browser/engine.mjs";
 
 test("browser voice exposes Codex's ChatGPT V3 catalog and default", () => {
@@ -1404,3 +1405,83 @@ function restoreGlobal(name, descriptor) {
   if (descriptor) Object.defineProperty(globalThis, name, descriptor);
   else delete globalThis[name];
 }
+
+test('ElevenLabs primes audio on start and keeps OpenAI media muted', async () => {
+  const fixture = installBrowserVoiceFixture();
+  const previousAudio = Object.getOwnPropertyDescriptor(globalThis, 'Audio');
+  const previousContext = Object.getOwnPropertyDescriptor(globalThis, 'AudioContext');
+  const previousDocument = Object.getOwnPropertyDescriptor(globalThis, 'document');
+  const speaker = { muted: false, play: async () => {}, pause() {} };
+  let primed = 0;
+  globalThis.Audio = class { constructor() { return speaker; } };
+  globalThis.AudioContext = class { async resume() { primed++; } async close() {} };
+  globalThis.document = new EventTarget();
+  const calls = [];
+  const core = fakeVoiceCore(calls, { sidebandOpened: () => JSON.stringify({ playback_enabled: true }) });
+  const session = new BrowserVoiceSession({ core, voice: 'cove', settings: { outputProvider: 'elevenlabs', elevenLabsVoiceId: 'synthetic_voice' },
+    synthesize: async () => new Response(new Uint8Array()), captureMicrophone: async () => fakeMicrophone(calls), onStatus() {}, onTranscript() {}, onTerminated: assert.fail });
+  try {
+    const starting = session.start();
+    assert.equal(primed, 1);
+    await starting;
+    fixture.peer.emit('track', { track: {}, streams: [{}] });
+    assert.equal(speaker.muted, true);
+  } finally {
+    await session.close(); fixture.restore();
+    restoreGlobal('Audio', previousAudio); restoreGlobal('AudioContext', previousContext); restoreGlobal('document', previousDocument);
+  }
+});
+
+test('default account synthesis uses the voice selected by each start', async () => {
+  const fixture = installBrowserVoiceFixture();
+  const previousContext = Object.getOwnPropertyDescriptor(globalThis, 'AudioContext');
+  globalThis.AudioContext = class { async resume() {} async close() {} };
+  const originalFetch = globalThis.fetch;
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    if (url !== '/api/voice/elevenlabs/speech') return originalFetch(url, init);
+    requests.push(init);
+    return new Response(new Uint8Array());
+  };
+  const calls = [];
+  const core = fakeVoiceCore(calls, {
+    sidebandOpened: () => JSON.stringify({ playback_enabled: true }),
+    realtimeMessage: (payload) => JSON.stringify(JSON.parse(payload).type === 'session.started' ? { ready: true } : { playback_enabled: true, transcripts: [{ speaker: 'assistant', id: 0, text: 'Hello.', is_partial: false }] }),
+  });
+  const { agent } = await testAgent(core, calls);
+  const voice = Voice.create(agent, { outputProvider: 'elevenlabs', elevenLabsVoiceId: 'original_voice', captureMicrophone: async () => fakeMicrophone(calls) });
+  try {
+    for (const id of ['selected_one', 'selected_two']) {
+      await voice.start({ elevenLabsVoiceId: id });
+      fixture.sideband.message({ type: 'output_transcript.added', item: { text: 'Hello.' } });
+      await waitFor(() => requests.length === (id === 'selected_one' ? 1 : 2));
+      assert.deepEqual(JSON.parse(requests.at(-1).body), { voice_id: id, text: 'Hello.', output_format: 'pcm_24000' });
+      assert.equal(requests.at(-1).credentials, 'same-origin');
+      await voice.stop();
+    }
+  } finally { await voice.destroy(); agent.dispose(); fixture.restore(); restoreGlobal('AudioContext', previousContext); }
+});
+
+test('invalid provider settings reject before core creation or microphone capture', async () => {
+  const calls = [];
+  const { agent } = await testAgent(fakeVoiceCore(calls), calls);
+  const voice = Voice.create(agent, { captureMicrophone: assert.fail });
+  try {
+    for (const settings of [{ outputProvider: 'unknown' }, { outputProvider: 'elevenlabs' },
+      { outputProvider: 'elevenlabs', elevenLabsVoiceId: '../invalid' }]) {
+      await assert.rejects(voice.start(settings), TypeError);
+      assert.equal(voice.getSnapshot().status, 'idle');
+    }
+    assert.deepEqual(calls, []);
+  } finally { await voice.destroy(); agent.dispose(); }
+});
+
+test('Connect cannot synthesize with visitor account credentials by default', async () => {
+  const agent = { type: 'connect', id: 'synthetic-agent', turn: { prompt: assert.fail }, events: { watch: assert.fail } };
+  registerManagedAgent(agent, {}, agent.id);
+  const voice = Voice.create(agent, { captureMicrophone: assert.fail });
+  try {
+    await assert.rejects(voice.start({ outputProvider: 'elevenlabs', elevenLabsVoiceId: 'synthetic_voice' }), /explicit authorized synthesis transport/);
+    assert.equal(voice.getSnapshot().status, 'idle');
+  } finally { await voice.destroy(); }
+});

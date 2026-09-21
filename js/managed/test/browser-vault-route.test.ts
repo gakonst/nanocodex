@@ -45,7 +45,7 @@ describe("private browser direct challenge endpoint", () => {
     expect((await call({ ...principal, authorizationEpoch: 2 })).status).toBe(404);
     expect((await call({ ...principal, kind: "account_session" })).status).toBe(403);
     expect((await call({ ...principal, kind: "account_session" }, { headers: { origin: "https://evil.example" } })).status).toBe(403);
-    expect((await call({ ...principal, kind: "account_session" }, { headers: { origin: "https://nanocodex.example" } })).status).toBe(409);
+    expect((await call({ ...principal, kind: "account_session" }, { headers: { origin: "https://nanocodex.example" } })).status).toBe(410);
   });
   it("bounds and validates input without reflecting it", async () => {
     const { principal, call } = await fixture();
@@ -66,8 +66,8 @@ describe("private browser direct challenge endpoint", () => {
     }
     expect((await call(principal, {}, "?code=123456")).status).toBe(400);
     const unavailable = await call();
-    expect(unavailable.status).toBe(409);
-    expect(await unavailable.json()).toEqual({ error: "challenge_unavailable" });
+    expect(unavailable.status).toBe(410);
+    expect(await unavailable.json()).toEqual({ error: "managed_browser_disabled" });
   });
   it("rejects internal submissions lacking owner assertions", async () => {
     const { stub } = await fixture();
@@ -90,15 +90,38 @@ describe("private browser direct takeover endpoint", () => {
     expect((await call({ ...principal, kind: "account_session" }, init)).status).toBe(403);
     expect((await call({ ...principal, connectGrant: { grantId: `0x${"a".repeat(64)}`, connectors: ["chatgpt"], mcpIds: [] } }, init)).status).toBe(403);
     const response = await call(principal, init);
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(410);
     expect(response.headers.get("cache-control")).toBe("no-store");
-    expect(await response.json()).toEqual({ error: "challenge_unavailable" });
+    expect(await response.json()).toEqual({ error: "managed_browser_disabled" });
+  });
+  it("disables native mobile browser continuation after authorization", async () => {
+    const { principal, call } = await fixture("takeover");
+    for (const action of [
+      { action: "observe", viewport: { width: 390, height: 700, mobile: true } },
+      { action: "touch", phase: "start", x: 0.5, y: 0.5 },
+      { action: "touch", phase: "move", x: 0.5, y: 0.2 },
+      { action: "touch", phase: "end" },
+      { action: "touch", phase: "cancel" },
+      { action: "edit", delete_backward: 1, text: "synthetic🙂" },
+      { action: "finish" },
+    ]) {
+      const response = await call(principal, { body: JSON.stringify({ challenge_id: "opaque-fixture", ...action }) });
+      // Valid old clients receive an explicit disabled response without creating a browser.
+      expect(response.status, JSON.stringify(action)).toBe(410);
+      expect(await response.json()).toEqual({ error: "managed_browser_disabled" });
+    }
   });
   it("rejects arbitrary or oversized action input before invoking runtime", async () => {
     const { principal, call } = await fixture("takeover");
     for (const action of [
       { action: "evaluate", code: "private-text" },
       { action: "observe", text: "private-text" },
+      { action: "observe", viewport: { width: 390, height: 700, mobile: true, secret: "private-text" } },
+      { action: "observe", viewport: { width: 239, height: 700, mobile: true } },
+      { action: "touch", phase: "start", x: 0.5 },
+      { action: "touch", phase: "other" },
+      { action: "edit", delete_backward: 129, text: "private-text" },
+      { action: "edit", delete_backward: 0, text: "x".repeat(513) },
       { action: "click", x: 2, y: 0.5 },
       { action: "click", x: 0.5 },
       { action: "type", text: "x".repeat(513) },

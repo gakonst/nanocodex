@@ -2026,6 +2026,13 @@ mod tests {
     }
 
     #[test]
+    fn tool_catalog_rejects_removed_capability_negotiation() {
+        assert!(!valid_tool_catalog(
+            r#"{"type":"catalog","tools":[],"capabilities":["turn_metadata"]}"#
+        ));
+    }
+
+    #[test]
     fn tool_catalog_accepts_the_runtime_timeout_range() {
         let mut catalog = json!({"type": "catalog", "tools": [{
             "provider": "native", "remote_name": "exec_command", "parallel_safe": true,

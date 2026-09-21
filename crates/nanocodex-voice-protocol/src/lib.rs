@@ -5,7 +5,9 @@ mod browser_delivery;
 mod managed;
 mod settings;
 mod transcript;
-pub use settings::{VoiceHandoffMode, VoicePace, VoiceSettings, VoiceTextRole, VoiceUpdates};
+pub use settings::{
+    VoiceHandoffMode, VoiceOutputProvider, VoicePace, VoiceSettings, VoiceTextRole, VoiceUpdates,
+};
 
 pub use managed::{
     ManagedVoiceProtocol, bootstrap_plan, format_delegation, managed_startup_context,

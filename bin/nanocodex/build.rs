@@ -1,9 +1,4 @@
-use std::{
-    error::Error,
-    fs, io,
-    path::{Path, PathBuf},
-    process::Command,
-};
+use std::{error::Error, io, path::PathBuf, process::Command};
 
 use chrono::DateTime;
 use vergen::EmitBuilder;
@@ -11,7 +6,6 @@ use vergen::EmitBuilder;
 fn main() -> Result<(), Box<dyn Error>> {
     println!("cargo:rerun-if-changed=build.rs");
     emit_linked_worktree_ref_reruns();
-    bundle_hand_computer_sources()?;
 
     EmitBuilder::builder()
         .build_timestamp()
@@ -55,54 +49,6 @@ fn main() -> Result<(), Box<dyn Error>> {
         println!("cargo:rustc-env=NANOCODEX_LONG_VERSION_{index}={line}");
     }
 
-    Ok(())
-}
-
-// The SSH installer must be self-contained even when the CLI runs outside a
-// checkout. Keep the named Docker build context tied to this CLI's source.
-fn bundle_hand_computer_sources() -> Result<(), Box<dyn Error>> {
-    let root = PathBuf::from(env_var("CARGO_MANIFEST_DIR")?)
-        .join("../../crates/experimental/nanocodex-computer/runtime")
-        .canonicalize()?;
-    let mut files = Vec::new();
-    for name in ["Cargo.toml", "Cargo.lock", "src", "extensions"] {
-        collect_hand_sources(&root.join(name), &mut files)?;
-    }
-    files.sort();
-    let mut source = String::from("&[\n");
-    for file in files {
-        let name = file
-            .strip_prefix(&root)?
-            .to_string_lossy()
-            .replace('\\', "/");
-        source.push_str(&format!(
-            "({name:?}, include_bytes!({:?})),\n",
-            file.to_str().ok_or("non-UTF-8 source path")?
-        ));
-    }
-    source.push_str("]\n");
-    fs::write(
-        PathBuf::from(env_var("OUT_DIR")?).join("hand_computer_sources.rs"),
-        source,
-    )?;
-    Ok(())
-}
-
-fn collect_hand_sources(path: &Path, files: &mut Vec<PathBuf>) -> io::Result<()> {
-    println!("cargo:rerun-if-changed={}", path.display());
-    let metadata = fs::symlink_metadata(path)?;
-    if metadata.is_dir() {
-        for entry in fs::read_dir(path)? {
-            collect_hand_sources(&entry?.path(), files)?;
-        }
-    } else if metadata.is_file() {
-        files.push(path.to_owned());
-    } else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "Hand sources must be ordinary files or directories",
-        ));
-    }
     Ok(())
 }
 

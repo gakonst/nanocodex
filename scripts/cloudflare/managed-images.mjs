@@ -20,7 +20,8 @@ export const images = {
     dockerfile: 'js/managed/Dockerfile', context: 'js/managed', source: './Dockerfile',
     inputs: ['js/managed/Dockerfile', 'js/managed/Dockerfile.dockerignore', 'js/managed/.dockerignore',
       'js/managed/scripts/prepare-hand-image.mjs', 'js/managed/scripts/bundle-hand-desktop.sh',
-      'js/managed/scripts/check-dev-stack.sh', 'hands/remote', 'crates/nanocodex-vm/image/toolkit'],
+      'js/managed/scripts/check-dev-stack.sh', 'hands/remote', 'Cargo.toml', 'Cargo.lock',
+      'bin', 'crates', 'examples', 'js/nanocodex', 'py/bindings', 'third_party'],
   },
 };
 const commonInputs = ['scripts/cloudflare/managed-images.mjs', 'scripts/cloudflare/wrangler-docker.mjs'];

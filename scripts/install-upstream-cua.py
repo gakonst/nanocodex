@@ -76,7 +76,9 @@ if len(sky_apps) == 1:
     variables['NODE_REPL_UNTRUSTED_ENV_ALLOWLIST'] = 'SKY_CUA_SERVICE_PATH'
     if sys.platform == 'darwin':
         subprocess.run(['/usr/bin/codesign', '--verify', '--deep', '--strict', str(sky_apps[0])], check=True)
-variables.update(CUA_REPL_NODE_REPL_PATH=str(node_repl), CUA_REPL_ENABLED_SURFACES=args.surfaces)
+# Match the official host's Tab.ax capability used by browser tab lookup/creation.
+variables.update(CUA_REPL_NODE_REPL_PATH=str(node_repl), CUA_REPL_ENABLED_SURFACES=args.surfaces,
+                 BROWSER_USE_TINYSKY_ENABLED='1')
 command = [str(node), str(provider)]
 kind = 'cua-repl'
 launcher = destination / 'cua-provider'

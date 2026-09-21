@@ -147,7 +147,7 @@ pub mod __private {
 /// The default Responses model used by this SDK.
 pub const MODEL: &str = Model::Astra.as_str();
 
-/// Supported OpenAI coding models.
+/// Supported coding models.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
@@ -161,6 +161,9 @@ pub enum Model {
     /// GPT-6 Astra.
     #[default]
     Astra,
+    /// Z.ai GLM-5.3 served by Cloudflare Workers AI.
+    #[serde(rename = "glm-5.3")]
+    Glm53,
 }
 
 impl Model {
@@ -168,7 +171,7 @@ impl Model {
     #[must_use]
     pub const fn default_thinking(self) -> Thinking {
         match self {
-            Self::Sol | Self::Astra => Thinking::Low,
+            Self::Sol | Self::Astra | Self::Glm53 => Thinking::Low,
             Self::Terra | Self::Luna => Thinking::Medium,
         }
     }
@@ -180,25 +183,35 @@ impl Model {
             Self::Terra => "gpt-5.6-terra",
             Self::Luna => "gpt-5.6-luna",
             Self::Astra => "gpt-6-astra",
+            Self::Glm53 => "@cf/zai-org/glm-5.3",
         }
     }
 
     /// Returns whether the model accepts the requested reasoning effort.
     #[must_use]
     pub const fn supports_thinking(self, thinking: Thinking) -> bool {
-        !matches!((self, thinking), (Self::Astra, Thinking::None))
+        match self {
+            Self::Glm53 => matches!(thinking, Thinking::Low | Thinking::Medium | Thinking::High),
+            _ => !matches!((self, thinking), (Self::Astra, Thinking::None)),
+        }
     }
 
     /// Returns whether the model accepts the requested reasoning execution mode.
     #[must_use]
     pub const fn supports_reasoning_mode(self, mode: ReasoningMode) -> bool {
-        !matches!((self, mode), (Self::Astra, ReasoningMode::Pro))
+        !matches!(
+            (self, mode),
+            (Self::Astra | Self::Glm53, ReasoningMode::Pro)
+        )
     }
 
     /// Largest Codex-compatible prompt context for this model.
     #[must_use]
     pub const fn max_context_window_tokens(self) -> u64 {
-        MAX_CONTEXT_WINDOW_TOKENS
+        match self {
+            Self::Glm53 => 1_310_720,
+            _ => MAX_CONTEXT_WINDOW_TOKENS,
+        }
     }
 }
 
@@ -217,8 +230,9 @@ impl FromStr for Model {
             "gpt-5.6-terra" | "terra" => Ok(Self::Terra),
             "gpt-5.6-luna" | "luna" => Ok(Self::Luna),
             "gpt-6-astra" | "astra" => Ok(Self::Astra),
+            "@cf/zai-org/glm-5.3" | "glm-5.3" | "glm53" => Ok(Self::Glm53),
             _ => Err(format!(
-                "invalid model {value:?}; expected gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, or gpt-6-astra"
+                "invalid model {value:?}; expected gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-6-astra, or @cf/zai-org/glm-5.3"
             )),
         }
     }
@@ -689,6 +703,27 @@ mod tests {
         MAX_CONTEXT_WINDOW_TOKENS, Model, Prompt, PromptMessage, PromptValidationError,
         ReasoningMode, Thinking,
     };
+
+    #[test]
+    fn glm53_has_distinct_identity_and_policy() {
+        for name in ["glm53", "glm-5.3", "@cf/zai-org/glm-5.3"] {
+            assert_eq!(name.parse(), Ok(Model::Glm53));
+        }
+        assert_eq!(Model::Glm53.as_str(), "@cf/zai-org/glm-5.3");
+        assert_eq!(
+            serde_json::to_value(Model::Glm53).unwrap(),
+            json!("glm-5.3")
+        );
+        assert_eq!(Model::Glm53.default_thinking(), Thinking::Low);
+        assert_eq!(Model::Glm53.max_context_window_tokens(), 1_310_720);
+        for effort in [Thinking::Low, Thinking::Medium, Thinking::High] {
+            assert!(Model::Glm53.supports_thinking(effort));
+        }
+        for effort in [Thinking::None, Thinking::Xhigh, Thinking::Max] {
+            assert!(!Model::Glm53.supports_thinking(effort));
+        }
+        assert!(!Model::Glm53.supports_reasoning_mode(ReasoningMode::Pro));
+    }
 
     #[test]
     fn model_parses_short_and_api_names() {

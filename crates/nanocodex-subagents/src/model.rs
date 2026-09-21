@@ -239,7 +239,7 @@ pub(super) fn agent_prompt(id: AgentId, task: &str) -> String {
     )
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(tag = "state", rename_all = "snake_case")]
 pub enum AgentStatus {
     Pending,
@@ -271,7 +271,7 @@ impl AgentStatus {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct AgentDescriptor {
     pub id: AgentId,
     pub session_id: String,

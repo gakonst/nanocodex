@@ -143,7 +143,7 @@ describe("account Hosted Tools provider", () => {
       socket.accept();
       const ready = nextFrame(socket);
       socket.send(JSON.stringify({
-        type: "catalog", attachment_id: "desktop-vm", tools: [machineEntry()],
+        type: "catalog", capabilities: ["turn_metadata"], attachment_id: "desktop-vm", tools: [machineEntry()],
         machines: [{ id: "desktop-vm", name: "Desktop VM", workspace: "/app", capabilities: ["shell"] }],
       }));
       await expect(ready).resolves.toEqual({ type: "ready" });
@@ -252,11 +252,9 @@ describe("account Hosted Tools provider", () => {
       const context = { sessionId: "agent", callId: "possibly-admitted" };
       const tool = provider.machineTool("laptop", "exec_command")!;
       const failure = tool.handler({ cmd: "touch receipt" }, context);
-      await expect(failure).rejects.toMatchObject({ code: "host_interrupted" });
+      await expect(failure).resolves.toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
       if (mode === "truncated" || mode === "invalid") {
-        await expect(failure).rejects.toThrow("response could not be decoded");
-      } else if (mode === "transport") {
-        await expect(failure).rejects.toMatchObject({ cause: transportError });
+        await expect(failure).resolves.toMatchObject({ output: expect.stringContaining("response could not be decoded") });
       }
       expect(calls).toHaveLength(1);
       await expect(tool.handler({ cmd: "touch receipt" }, context)).resolves.toMatchObject({ output: "retained receipt" });
@@ -264,6 +262,48 @@ describe("account Hosted Tools provider", () => {
       expect(calls[1]).toEqual(calls[0]);
     },
   );
+
+  it("settles a broken Hand locally while another tool in the same agent continues", async () => {
+    const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([[ACCOUNT_A, async request => {
+      if (new URL(request.url).pathname === "/snapshot") return Response.json(snapshot);
+      throw new Error("fixture network disconnected");
+    }]])), ACCOUNT_A, () => true);
+    await provider.refresh();
+    const broken = provider.machineTool("laptop", "exec_command")!;
+    const router = new ToolRouter([toolMapSource("fixture", {
+      broken: { description: "Broken Hand", parameters: { type: "object" },
+        handler: (input: unknown, context: Parameters<typeof broken.handler>[1]) => broken.handler(input, context), supportsParallelToolCalls: true },
+      healthy: { description: "Independent work", parameters: { type: "object" },
+        handler: () => "still running", supportsParallelToolCalls: true },
+    })]);
+    const controller = new AbortController();
+    const context = { sessionId: "agent", model: "fixture", signal: controller.signal };
+    const [failed, healthy] = await Promise.all([
+      router.execute("broken", {}, { ...context, callId: "broken" }),
+      router.execute("healthy", {}, { ...context, callId: "healthy" }),
+    ]);
+    expect(failed).toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
+    expect(healthy).toBe("still running");
+    expect(controller.signal.aborted).toBe(false);
+  });
+
+  it("contains a failed routing refresh without an invocation resend", async () => {
+    let reads = 0;
+    let sends = 0;
+    const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([[ACCOUNT_A, async request => {
+      if (new URL(request.url).pathname === "/snapshot") {
+        if (++reads > 1) throw new Error("discovery unavailable");
+        return Response.json(snapshot);
+      }
+      sends++;
+      return new Response(null, { status: 409 });
+    }]])), ACCOUNT_A, () => true);
+    await provider.refresh();
+    await expect(provider.machineTool("laptop", "exec_command")!.handler({}, {
+      sessionId: "agent", callId: "one-call",
+    })).resolves.toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
+    expect(sends).toBe(1);
+  });
 
   it("bounds stale-route recovery even when the replacement route is rejected", async () => {
     const calls: Record<string, unknown>[] = [];
@@ -281,11 +321,107 @@ describe("account Hosted Tools provider", () => {
     await provider.refresh();
     await expect(provider.machineTool("laptop", "exec_command")!.handler(
       { cmd: "fixture-effect" }, { sessionId: "agent", callId: "stable-effect" },
-    )).rejects.toMatchObject({ code: "host_interrupted" });
+    )).resolves.toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
     expect(discoveries).toBe(2);
     expect(calls).toHaveLength(2);
     expect(calls[1]).toEqual({ ...calls[0], route_token: "route-2" });
   });
+
+  it("recovers a cached iPhone contact tool through the real broker after socket replacement", async () => {
+    const namespace = (env as unknown as {
+      NANOCODEX_ACCOUNT_TOOLS: DurableObjectNamespace<AccountHostedTools>;
+    }).NANOCODEX_ACCOUNT_TOOLS;
+    const owner = crypto.randomUUID();
+    const stub = namespace.getByName(owner);
+    const attach = async () => {
+      const response = await stub.fetch("https://account-tools.internal/tool-host", {
+        headers: { upgrade: "websocket", "x-nanocodex-owner-id": owner },
+      });
+      const socket = response.webSocket!;
+      socket.accept();
+      const ready = nextFrame(socket);
+      socket.send(JSON.stringify({
+        type: "catalog", capabilities: ["turn_metadata"], attachment_id: "fixture-phone",
+        machines: [{ id: "fixture-phone", name: "Fixture iPhone", workspace: "/app", capabilities: ["contacts"] }],
+        tools: [{
+          provider: "machine", remote_name: "search_contacts", parallel_safe: true, timeout_ms: 10_000,
+          definition: { type: "function", name: "search_contacts", description: "Search fixture contacts", strict: false,
+            parameters: { type: "object", properties: { query: { type: "string" } }, additionalProperties: false } },
+        }],
+      }));
+      await expect(ready).resolves.toEqual({ type: "ready" });
+      return socket;
+    };
+    const first = await attach();
+    const provider = new AccountHostedToolsProvider(namespace, owner, () => true);
+    await provider.refresh();
+    const cached = provider.resolve("user_fixture-phone_search_contacts")!;
+    expect(cached).toBeDefined();
+    const successor = await attach();
+    try {
+      const framePromise = nextFrame(successor);
+      const completed = cached.handler({ query: "Example" }, { sessionId: "agent", callId: "contact-lookup" });
+      const frame = await framePromise;
+      expect(frame).toMatchObject({ type: "call", name: "search_contacts", input: { query: "Example" } });
+      successor.send(JSON.stringify({
+        type: "result", call_id: frame.call_id,
+        outcome: { status: "completed", output: { output: "contact found", success: true,
+          structured_result: { contacts: [] }, metadata: null, process_trace: null } },
+      }));
+      await expect(completed).resolves.toMatchObject({ success: true, output: "contact found" });
+      expect(provider.resolve("user_fixture-phone_search_contacts")!.routeToken).not.toBe(cached.routeToken);
+    } finally {
+      first.close(1000, "test complete");
+      successor.close(1000, "test complete");
+    }
+  });
+
+  it.each([404, 409])("refreshes a reconnected personal tool after a %s routing rejection", async status => {
+    const calls: Record<string, unknown>[] = [];
+    let discoveries = 0;
+    const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([[ACCOUNT_A, async request => {
+      if (new URL(request.url).pathname === "/snapshot") {
+        discoveries++;
+        return Response.json({ ...snapshot, tools: [{ ...snapshot.tools[0], route_token: `personal-${discoveries}` }] });
+      }
+      calls.push(await request.json<Record<string, unknown>>());
+      if (calls.length === 1) return new Response(null, { status });
+      return Response.json({ output: "contact found", structured_result: null, success: true, metadata: null, value: null });
+    }]])), ACCOUNT_A, () => true);
+    await provider.refresh();
+    await expect(provider.resolve("fixture__lookup")!.handler({ query: "Example" }, {
+      sessionId: "agent", turnId: "turn", callId: "contact-lookup",
+    })).resolves.toMatchObject({ success: true, output: "contact found" });
+    expect(discoveries).toBe(2);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toEqual({ ...calls[0], route_token: "personal-2" });
+  });
+
+  it.each(["unchanged", "removed", "rejected", "revoked", "server", "transport", "truncated"])(
+    "bounds personal tool recovery for %s routes and uncertain outcomes", async mode => {
+      let discoveries = 0;
+      let allowed = true;
+      const calls: Record<string, unknown>[] = [];
+      const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([[ACCOUNT_A, async request => {
+        if (new URL(request.url).pathname === "/snapshot") {
+          discoveries++;
+          if (discoveries > 1 && mode === "revoked") allowed = false;
+          return Response.json({ ...snapshot, tools: mode === "removed" && discoveries > 1 ? [] : [{
+            ...snapshot.tools[0], route_token: mode === "unchanged" ? "personal-1" : `personal-${discoveries}`,
+          }] });
+        }
+        calls.push(await request.json<Record<string, unknown>>());
+        if (mode === "transport") throw new Error("connection lost");
+        if (mode === "truncated") return new Response("{");
+        return new Response(null, { status: mode === "server" ? 503 : 409 });
+      }]])), ACCOUNT_A, () => allowed);
+      await provider.refresh();
+      const result = await provider.resolve("fixture__lookup")!.handler({}, { sessionId: "agent", callId: "lookup" });
+      expect(result).toMatchObject({ success: false });
+      expect(discoveries).toBe(["server", "transport", "truncated"].includes(mode) ? 1 : 2);
+      expect(calls).toHaveLength(mode === "rejected" ? 2 : 1);
+    },
+  );
 
   it("releases stalled discovery and fences its late response from the next refresh", async () => {
     vi.useFakeTimers();
@@ -329,7 +465,7 @@ describe("account Hosted Tools provider", () => {
       socket.accept();
       const ready = nextFrame(socket);
       socket.send(JSON.stringify({
-        type: "catalog",
+        type: "catalog", capabilities: ["turn_metadata"],
         attachment_id: id,
         tools: [machineEntry()],
         machines: [{
@@ -396,8 +532,7 @@ describe("account Hosted Tools provider", () => {
     socket.accept();
     const ready = nextFrame(socket);
     socket.send(JSON.stringify({
-      type: "catalog",
-      capabilities: ["turn_metadata"],
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: snapshot.tools.map(({ definition, route_token: _routeToken, ...entry }) => ({
         ...entry,
         definition: { ...definition, defer_loading: undefined },
@@ -468,8 +603,7 @@ describe("account Hosted Tools provider", () => {
     successor.accept();
     const successorReady = nextFrame(successor);
     successor.send(JSON.stringify({
-      type: "catalog",
-      capabilities: ["turn_metadata"],
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: snapshot.tools.map(({ definition, route_token: _routeToken, ...entry }) => ({
         ...entry,
         definition: { ...definition, defer_loading: undefined },
@@ -632,7 +766,7 @@ describe("account Hosted Tools provider", () => {
     const tool = provider.resolve("fixture__lookup")!;
 
     const stale = await tool.handler({}, { sessionId: "agent-a", callId: "call-stale" });
-    expect(stale).toMatchObject({ success: false, structuredResult: { status: "unavailable" } });
+    expect(stale).toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
     mode = "truncated";
     const truncated = await tool.handler({}, { sessionId: "agent-a", callId: "call-truncated" });
     expect(truncated).toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
@@ -739,4 +873,68 @@ it("an invalidated in-flight discovery cannot publish or satisfy the next refres
   expect(provider.definitions()).toEqual([]);
   await provider.refresh(120_000);
   expect(fetch).toHaveBeenCalledTimes(2);
+});
+
+it("settles optional account tools without waiting for cold discovery", async () => {
+  const stalled = Promise.withResolvers<Response>();
+  const fetch = vi.fn(() => stalled.promise);
+  const provider = new AccountHostedToolsProvider({ getByName: () => ({ fetch }) } as unknown as DurableObjectNamespace<AccountHostedTools>, ACCOUNT_A, () => true);
+  const refresh = provider.refreshOptional(120_000);
+  await provider.settled();
+  expect(provider.machines()).toEqual([]);
+  stalled.resolve(Response.json(snapshot));
+  await refresh;
+  expect(provider.machines()).toHaveLength(1);
+});
+
+it("backs off optional failures while forced discovery and live authorization remain independent", async () => {
+  let now = 1000, allowed = true;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  const fetch = vi.fn(async () => Response.json(snapshot));
+  const provider = new AccountHostedToolsProvider({ getByName: () => ({ fetch }) } as unknown as DurableObjectNamespace<AccountHostedTools>, ACCOUNT_A, () => allowed);
+  try {
+    await provider.refreshOptional(120_000);
+    const captured = provider.machineTool("laptop", "exec_command")!;
+    now += 120_000;
+    fetch.mockImplementation(async () => new Response(null, { status: 503 }));
+    await expect(provider.refreshOptional(120_000)).rejects.toThrow("Account hand discovery interrupted");
+    expect(provider.machines()).toHaveLength(1);
+    await provider.refreshOptional(120_000);
+    expect(fetch).toHaveBeenCalledTimes(2);
+    allowed = false;
+    expect(provider.definitions()).toEqual([]);
+    expect(provider.machines()).toEqual([]);
+    expect(provider.machineTool("laptop", "exec_command")).toBeUndefined();
+    await captured.handler({ cmd: "must not run" }, { sessionId: "fixture", callId: "revoked" });
+    expect(fetch).toHaveBeenCalledTimes(2);
+    allowed = true;
+    now += 10_000;
+    await expect(provider.refreshOptional(120_000)).rejects.toThrow();
+    expect(fetch).toHaveBeenCalledTimes(3);
+    fetch.mockImplementation(async () => Response.json({ tools: [], machines: [] }));
+    await provider.refresh();
+    expect(fetch).toHaveBeenCalledTimes(4);
+    expect(provider.machines()).toEqual([]);
+  } finally { clock.mockRestore(); }
+});
+
+it("clears inventory on authority changes and fences a late prior discovery", async () => {
+  const old = Promise.withResolvers<Response>();
+  const fetch = vi.fn().mockResolvedValueOnce(Response.json(snapshot))
+    .mockImplementationOnce(() => old.promise)
+    .mockResolvedValue(Response.json({ tools: [], machines: [] }));
+  const provider = new AccountHostedToolsProvider({ getByName: () => ({ fetch }) } as unknown as DurableObjectNamespace<AccountHostedTools>, ACCOUNT_A, () => true);
+  await provider.refresh();
+  const prior = provider.refresh();
+  provider.invalidate({ clearCatalog: true });
+  expect(provider.machines()).toEqual([]);
+  expect(provider.definitions()).toEqual([]);
+  expect(provider.machineTool("laptop", "exec_command")).toBeUndefined();
+  const current = provider.refreshOptional(120_000);
+  old.resolve(Response.json(snapshot));
+  await prior;
+  expect(provider.machines()).toEqual([]);
+  await current;
+  expect(fetch).toHaveBeenCalledTimes(3);
+  expect(provider.machines()).toEqual([]);
 });

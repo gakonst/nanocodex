@@ -726,3 +726,13 @@
   }
 
 }
+
+.agent-elevenlabs-settings { display: grid; gap: 10px; }
+.agent-elevenlabs-settings details { display: grid; gap: 8px; }
+.agent-elevenlabs-settings details > label { margin-block: 8px; }
+.agent-elevenlabs-settings summary { cursor: pointer; }
+.agent-elevenlabs-settings input:not([type="checkbox"]) {
+  width: 100%; box-sizing: border-box; padding: 7px; font: inherit; color: inherit;
+  background: var(--terminal-background, #fff); border: 1px solid var(--terminal-border, #ddd);
+}
+.agent-voice-settings .agent-voice-consent { display: flex; align-items: flex-start; }

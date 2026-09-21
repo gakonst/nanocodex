@@ -213,8 +213,11 @@ impl VmArgs {
 }
 
 impl ConfiguredVm {
-    pub(crate) fn tools_builder(&self) -> ToolsBuilder {
-        self.session.tools_builder()
+    pub(crate) async fn tools_builder(&self) -> Result<ToolsBuilder> {
+        self.session
+            .tools_builder()
+            .await
+            .map_err(|error| eyre::eyre!(error.to_string()))
     }
 
     pub(crate) async fn shutdown(self) -> Result<()> {

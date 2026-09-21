@@ -13,11 +13,20 @@ import UIKit
 import AVFoundation
 import os.signpost
 
+private struct ConversationComposerHeightKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
 private struct ConversationNavigationActiveKey: EnvironmentKey {
     static let defaultValue = false
 }
 
 private extension EnvironmentValues {
+    var conversationComposerHeight: CGFloat {
+        get { self[ConversationComposerHeightKey.self] }
+        set { self[ConversationComposerHeightKey.self] = newValue }
+    }
+
     var conversationNavigationActive: Bool {
         get { self[ConversationNavigationActiveKey.self] }
         set { self[ConversationNavigationActiveKey.self] = newValue }
@@ -51,10 +60,14 @@ struct InboxView: View {
     @ObservedObject var model: InboxModel
     @State private var showConversations = false
     @State private var drawerTranslation: CGFloat = 0
+    @State private var drawerDragIsHorizontal: Bool?
+    @GestureState private var drawerGestureActive = false
     @State private var readingPositions = ConversationReadingPositions()
     @State private var showScheduledJobs = false
     @State private var showConnectors = false
     @State private var showSettings = false
+    @StateObject private var appUpdates = NativeAppUpdateModel()
+    @Environment(\.scenePhase) private var updateScenePhase
     @State private var showScreens = false
     @State private var screenThreads: Set<String> = []
     @State private var screenExpanded = false
@@ -62,6 +75,7 @@ struct InboxView: View {
     @State private var screenViewerRevision = UUID()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var composerFocused = false
+    @State private var composerHeight: CGFloat = 80
 
     var body: some View {
         NavigationStack {
@@ -88,6 +102,38 @@ struct InboxView: View {
                         .navigationBarTitleDisplayMode(.inline)
                         #endif
                 }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {
+            if !model.isDemo, let update = appUpdates.update {
+                HStack(spacing: 12) {
+                    Image(systemName: "arrow.down.app.fill").font(.title2)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text("Nanocodex update available").font(.headline)
+                        Text(appUpdates.installRequested
+                             ? "Confirm Install, then return to the Home Screen."
+                             : "Build \(update.build) is ready to install.")
+                            .font(.caption).foregroundStyle(.secondary)
+                        if let error = appUpdates.error { Text(error).font(.caption).foregroundStyle(.red) }
+                    }
+                    Spacer(minLength: 0)
+                    Button(appUpdates.installing ? "Opening…" : "Install") {
+                        Task { await appUpdates.install(update) }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(appUpdates.installing)
+                    .accessibilityIdentifier("install-update-banner")
+                }
+                .padding().background(.regularMaterial)
+                .accessibilityIdentifier("app-update-banner")
+            }
+        }
+        .task(id: updateScenePhase) {
+            guard updateScenePhase == .active, !model.isDemo else { return }
+            while !Task.isCancelled {
+                await appUpdates.check()
+                do { try await Task.sleep(for: .seconds(60)) }
+                catch { return }
+            }
         }
         .foregroundStyle(Ink.text)
         .tint(Ink.accent)
@@ -189,11 +235,16 @@ struct InboxView: View {
             .clipped()
             .contentShape(Rectangle())
             .simultaneousGesture(DragGesture(minimumDistance: 16)
+                .updating($drawerGestureActive) { _, active, _ in active = true }
                 .onChanged { value in
-                    // Reserve navigation for a rightward pull from the left
-                    // edge. Code blocks and transcript swipes keep their input.
-                    guard showConversations || value.startLocation.x <= 28,
-                          abs(value.translation.width) > abs(value.translation.height) * 1.5 else { return }
+                    // Keep the direction through onEnded: GestureState can reset
+                    // before that callback on iOS 18. Cancellation is handled below.
+                    if drawerDragIsHorizontal == nil {
+                        drawerDragIsHorizontal = (showConversations || value.startLocation.x <= 28)
+                            && abs(value.translation.width) > abs(value.translation.height) * 1.5
+                            && (showConversations || value.translation.width > 0)
+                    }
+                    guard drawerDragIsHorizontal == true else { return }
                     if showConversations {
                         drawerTranslation = max(-width, min(0, value.translation.width))
                     } else if value.translation.width > 0 {
@@ -202,8 +253,9 @@ struct InboxView: View {
                     }
                 }
                 .onEnded { value in
-                    guard showConversations || value.startLocation.x <= 28 else { return }
-                    let horizontal = abs(value.translation.width) > abs(value.translation.height) * 1.5
+                    let horizontal = drawerDragIsHorizontal == true
+                    drawerDragIsHorizontal = nil
+                    guard horizontal else { return }
                     let visible: Bool
                     if showConversations {
                         visible = !(horizontal && (value.translation.width < -width * 0.25
@@ -214,6 +266,11 @@ struct InboxView: View {
                     }
                     setConversationsVisible(visible)
                 })
+                .onChange(of: drawerGestureActive) { _, active in
+                    guard !active else { return }
+                    drawerDragIsHorizontal = nil
+                    if drawerTranslation != 0 { setConversationsVisible(showConversations) }
+                }
         }
     }
     private func setConversationsVisible(_ visible: Bool) {
@@ -255,6 +312,7 @@ struct InboxView: View {
             Group {
                     if let identity = model.focusedConversationIdentity {
                         ConversationView(model: model, identity: identity, readingPositions: readingPositions).id(identity)
+                            .environment(\.conversationComposerHeight, composerHeight)
                     } else { emptyState.frame(maxWidth: .infinity, maxHeight: .infinity) }
             }
             .frame(maxHeight: screenExpanded && screenThreads.contains(model.focusedConversationIdentity ?? "") ? 0 : .infinity)
@@ -267,20 +325,20 @@ struct InboxView: View {
                 ConnectionStatusView(status: model.threadLoading ? "" : model.connection, retry: { model.retryConnection() }, signIn: { showSettings = true })
                     .padding(.horizontal, 16)
             }
-            if let error = model.error {
-                HStack(alignment: .top) {
-                    Text(error).font(.caption).foregroundStyle(Ink.amber)
-                    Spacer(minLength: 4)
-                    Button { model.error = nil } label: { Image(systemName: "xmark") }
-                        .accessibilityLabel("Dismiss error")
-                }
-                .padding(12).background(Ink.card, in: RoundedRectangle(cornerRadius: 12)).padding(.horizontal, 12)
-            } else if let notice = model.notice, !composerFocused {
-                Text(notice).font(.caption).foregroundStyle(Ink.muted).accessibilityIdentifier("notice")
-            }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        .overlay(alignment: .bottom) {
             VStack(spacing: 0) {
+                if let error = model.error {
+                    HStack(alignment: .top) {
+                        Text(error).font(.caption).foregroundStyle(Ink.amber)
+                        Spacer(minLength: 4)
+                        Button { model.error = nil } label: { Image(systemName: "xmark") }
+                            .accessibilityLabel("Dismiss error")
+                    }
+                    .padding(12).background(Ink.card, in: RoundedRectangle(cornerRadius: 12)).padding(.horizontal, 12)
+                } else if let notice = model.notice, !composerFocused {
+                    Text(notice).font(.caption).foregroundStyle(Ink.muted).accessibilityIdentifier("notice")
+                }
                 if model.focused != nil {
                     AgentComposerView(model: model, focused: $composerFocused, onVoiceChat: {
                         composerFocused = false
@@ -288,10 +346,7 @@ struct InboxView: View {
                 }
             }
             .padding(.bottom, 4)
-            .background {
-                LinearGradient(colors: [Ink.background.opacity(0), Ink.background, Ink.background], startPoint: .top, endPoint: .bottom)
-                    .ignoresSafeArea(edges: .bottom)
-            }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
         }
     }
 
@@ -422,18 +477,12 @@ struct InboxView: View {
                     Text("Tasks you start can keep this Hand connected in the background on iOS 26 or later. iOS shows progress and lets you stop the task. When idle, this phone connects only during brief background windows or while Nanocodex is open. Force-quitting ends background work.").font(.caption).foregroundStyle(.secondary)
                     if let error = model.handBackgroundError { Text(error).font(.caption).foregroundStyle(.secondary) }
                 }
-                Section("Nanocodex updates") {
-                    LabeledContent("Installed", value: (Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—") + " (" + (Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "—") + ")")
-                    Button("Install available update") {
-                        guard let testFlight = URL(string: "itms-beta://") else { return }
-                        UIApplication.shared.open(testFlight) { opened in
-                            guard !opened, let store = URL(string: "https://apps.apple.com/app/testflight/id899247664") else { return }
-                            UIApplication.shared.open(store)
-                        }
-                    }
-                    .accessibilityIdentifier("install-nanocodex-update")
-                    Text("Builds requested from Nanocodex are delivered through Apple's internal TestFlight channel. Turn on Automatic Updates there for hands-free installation after Apple finishes processing.").font(.caption).foregroundStyle(.secondary)
-                }
+                NativeAppUpdateSection(updater: appUpdates)
+            }
+            Section {
+                NavigationLink { DevicePermissionsView() } label: {
+                    Label("Device access", systemImage: "hand.raised")
+                }.accessibilityIdentifier("settings-device-access")
             }
             Section("Controls") {
                 Text("Open Conversations at the top to switch agents. The compose button creates a conversation. Back, Screens, and captured context are in the more menu.")
@@ -470,59 +519,96 @@ private struct InboxHeaderGlass: ViewModifier {
 }
 
 /// Navigation uses roster summaries only, without parsing Markdown or starting preview streams.
+private struct SidebarCard: Identifiable, Equatable {
+    let id: String
+    let title: String
+    let lastUserMessageAt: Double
+    let sidebarStatus: String
+    let sidebarActivity: String
+    let error: String?
+
+    init(_ card: AgentCard) {
+        id = card.id; title = card.title; lastUserMessageAt = card.lastUserMessageAt
+        sidebarStatus = card.sidebarStatus
+        sidebarActivity = card.sidebarActivity; error = card.error
+    }
+}
+
 private struct ConversationDrawer: View {
-    @ObservedObject var model: InboxModel
+    let model: InboxModel
     let select: (String) -> Void
     let close: () -> Void
     let create: () -> Void
     let settings: () -> Void
     @State private var query = ""
-    @State private var order: [String]
 
-    init(model: InboxModel, select: @escaping (String) -> Void, close: @escaping () -> Void,
-         create: @escaping () -> Void, settings: @escaping () -> Void) {
-        self.model = model; self.select = select; self.close = close
-        self.create = create; self.settings = settings
-        _order = State(initialValue: model.cards.sorted(by: AgentCard.mostRecentFirst).map(\.id))
-    }
-
-    private var visibleCards: [AgentCard] {
+    var body: some View {
         let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Include previously hidden tabs: navigation no longer has a hidden state.
-        let byID = Dictionary(uniqueKeysWithValues: model.cards.map { ($0.id, $0) })
-        let cards = order.compactMap { byID[$0] }
-        return cards.filter { card in
+        // Preview is search input, not rendered state. Streaming preview changes
+        // only cross the equality boundary if they change search membership.
+        let cards = model.cards.filter { card in
             search.isEmpty
                 || card.title.localizedCaseInsensitiveContains(search)
                 || card.id.localizedCaseInsensitiveContains(search)
                 || card.preview.localizedCaseInsensitiveContains(search)
+        }.map(SidebarCard.init)
+        ConversationDrawerContent(cards: cards, focusedID: model.focused?.id,
+                                  query: query, queryChanged: { query = $0 },
+                                  select: select, close: close, create: create, settings: settings)
+            .equatable()
+    }
+}
+
+private struct ConversationDrawerContent: View, Equatable {
+    // Deliberately omit transcript rows, previews, cursors, drafts, and connection
+    // state so model publications cannot rebuild an unchanged native scroll view.
+    let cards: [SidebarCard]
+    let focusedID: String?
+    let query: String
+    let queryChanged: (String) -> Void
+    let select: (String) -> Void
+    let close: () -> Void
+    let create: () -> Void
+    let settings: () -> Void
+    @ScaledMetric(relativeTo: .subheadline) private var titleSize = 15
+    @ScaledMetric(relativeTo: .footnote) private var detailSize = 13
+    @ScaledMetric(relativeTo: .caption) private var statusSize = 12
+
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.cards == rhs.cards && lhs.focusedID == rhs.focusedID && lhs.query == rhs.query
+    }
+
+    private var visibleCards: [SidebarCard] {
+        // Match AgentCard.mostRecentlyMessagedFirst, including its ID tie break.
+        cards.sorted {
+            $0.lastUserMessageAt != $1.lastUserMessageAt
+                ? $0.lastUserMessageAt > $1.lastUserMessageAt : $0.id < $1.id
         }
     }
 
-    private func conversationRow(_ card: AgentCard) -> some View {
-        let preview = String(card.preview.prefix(160))
-        // A roster entry has no activity state yet. Do not present the model's
-        // initial "Checking" value as ongoing work in every conversation.
-        let knownStatus = card.isRunning ? "Running" : card.status == "Checking" ? "" : card.status
-        let subtitle = card.error != nil ? "Couldn’t refresh" : card.isRunning ? card.activitySummary : (preview.isEmpty ? knownStatus : preview)
-        let status = [knownStatus, preview, card.error ?? ""].filter { !$0.isEmpty }.joined(separator: ". ")
-        return HStack(alignment: .top, spacing: 10) {
-            Image(systemName: card.isRunning ? "circle.fill" : card.error != nil ? "exclamationmark.circle" : "bubble.left")
-                .font(.system(size: card.isRunning ? 8 : 15))
-                .foregroundStyle(card.isRunning ? Ink.running : Ink.muted)
-                .frame(width: 18, height: 22).accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 5) {
-                Text(card.title).font(.subheadline.weight(model.focused?.id == card.id ? .semibold : .regular))
-                    .lineLimit(2).foregroundStyle(card.isRunning ? Ink.running : Ink.text)
-                if !subtitle.isEmpty {
-                    Text(subtitle)
-                        .font(.caption).foregroundStyle(Ink.muted).lineLimit(1)
-                }
+    private func conversationRow(_ card: SidebarCard) -> some View {
+        let knownStatus = card.sidebarStatus
+        let running = ["Running", "Stopping"].contains(knownStatus)
+        let subtitle = card.error != nil ? "Couldn’t refresh" : card.sidebarActivity
+        let status = [knownStatus, subtitle, card.error ?? ""].filter { !$0.isEmpty }.joined(separator: ". ")
+        return VStack(alignment: .leading, spacing: 6) {
+            Text(card.title)
+                .font(.system(size: titleSize, weight: focusedID == card.id ? .medium : .regular))
+                .foregroundStyle(Ink.text).lineLimit(2)
+            HStack(spacing: 6) {
+                Circle().fill(running ? Ink.running : Ink.muted.opacity(0.65))
+                    .frame(width: 5, height: 5).accessibilityHidden(true)
+                Text(knownStatus).font(.system(size: statusSize)).foregroundStyle(Ink.muted)
             }
-            Spacer(minLength: 0)
+            if !subtitle.isEmpty {
+                Text(subtitle).font(.system(size: detailSize)).foregroundStyle(Ink.muted)
+                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
         }
-        .padding(12).frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
-        .background(model.focused?.id == card.id ? Ink.surface : Color.clear, in: RoundedRectangle(cornerRadius: 18))
+        .padding(.horizontal, 12).padding(.vertical, 11)
+        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
+        .background(focusedID == card.id ? Ink.surface : Color.clear,
+                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
         .contentShape(Rectangle())
         // Tap recognition must fail when dragging. A plain Button can fire
         // on release after the drawer's simultaneous swipe gesture.
@@ -530,23 +616,41 @@ private struct ConversationDrawer: View {
         .accessibilityRepresentation {
             Button(card.title) { select(card.id) }
                 .accessibilityValue(status)
-                .accessibilityAddTraits(model.focused?.id == card.id ? [.isSelected] : [])
+                .accessibilityAddTraits(focusedID == card.id ? [.isSelected] : [])
                 .accessibilityIdentifier("conversation-row:" + card.id)
         }
     }
 
     var body: some View {
-        VStack(spacing: 16) {
-            HStack {
-                Button(action: settings) { Image(systemName: "gearshape").frame(width: 44, height: 44) }
-                    .modifier(InboxHeaderGlass()).accessibilityLabel("Account settings")
+        let visibleCards = visibleCards
+        VStack(spacing: 12) {
+            HStack(spacing: 4) {
+                Text("Agents").font(.headline.weight(.medium)).foregroundStyle(Ink.text)
+                    .padding(.leading, 12)
                 Spacer()
-                Text("Conversations").font(.subheadline.weight(.semibold))
-                Spacer()
-                Button(action: close) { Image(systemName: "chevron.left").frame(width: 44, height: 44) }
-                    .modifier(InboxHeaderGlass()).accessibilityLabel("Return to conversation")
-                    .accessibilityIdentifier("conversation-drawer-close")
+                Button(action: create) {
+                    Image(systemName: "square.and.pencil").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("New conversation").accessibilityIdentifier("drawer-new-conversation")
+                Button(action: close) {
+                    Image(systemName: "sidebar.left").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Return to conversation").accessibilityIdentifier("conversation-drawer-close")
             }
+            .font(.system(size: 17, weight: .regular))
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").foregroundStyle(Ink.muted)
+                TextField("Search agents", text: Binding(get: { query }, set: queryChanged))
+                    .textInputAutocapitalization(.never).autocorrectionDisabled()
+                    .accessibilityIdentifier("conversation-search")
+                if !query.isEmpty {
+                    Button { queryChanged("") } label: {
+                        Image(systemName: "xmark.circle.fill").frame(width: 44, height: 44)
+                    }.foregroundStyle(Ink.muted).accessibilityLabel("Clear search")
+                }
+            }
+            .font(.system(size: detailSize)).padding(.horizontal, 12).frame(minHeight: 44)
+            .background(Ink.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
             ScrollView {
                 LazyVStack(spacing: 4) {
                     ForEach(visibleCards) { card in
@@ -560,38 +664,23 @@ private struct ConversationDrawer: View {
             }
             .scrollDismissesKeyboard(.interactively)
             .accessibilityIdentifier("conversation-list")
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(Ink.muted)
-                TextField("Search conversations", text: $query)
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .accessibilityIdentifier("conversation-search")
-                if !query.isEmpty {
-                    Button { query = "" } label: { Image(systemName: "xmark.circle.fill").frame(width: 44, height: 44) }
-                        .foregroundStyle(Ink.muted).accessibilityLabel("Clear search")
+            Divider().overlay(Ink.border.opacity(0.3))
+            Button(action: settings) {
+                HStack(spacing: 10) {
+                    Image(systemName: "gearshape")
+                    Text("Settings").font(.system(size: detailSize))
+                    Spacer()
                 }
-            }
-            .font(.subheadline).padding(.horizontal, 14).frame(minHeight: 48)
-            .modifier(InboxHeaderGlass())
-            HStack {
-                Spacer()
-                Button(action: create) { Image(systemName: "square.and.pencil").frame(width: 44, height: 44) }
-                    .modifier(InboxHeaderGlass()).accessibilityLabel("New conversation")
-                    .accessibilityIdentifier("drawer-new-conversation")
-            }
+                .foregroundStyle(Ink.muted).padding(.horizontal, 12).frame(minHeight: 44)
+                .contentShape(Rectangle())
+            }.accessibilityLabel("Account settings")
         }
         .buttonStyle(.plain)
         .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 8)
-        .background(Ink.background)
+        .background(ChatPalette.sidebar)
         .accessibilityElement(children: .contain)
         .accessibilityIdentifier("conversation-drawer")
         .accessibilityAction(.escape, close)
-        .onChange(of: model.cards.map(\.id)) { _, ids in
-            // Streaming updates must not move a different row beneath a finger.
-            let available = Set(ids)
-            order.removeAll { !available.contains($0) }
-            let known = Set(order)
-            order.append(contentsOf: ids.filter { !known.contains($0) })
-        }
     }
 }
 
@@ -750,16 +839,17 @@ private struct AgentComposerView: View {
                                         AttachmentPhotoThumbnail(attachment: attachment, model: model)
                                     }
                                 }
-                                    .frame(width: 88, height: 76)
+                                    .frame(width: 120, height: 120)
                                     .overlay(alignment: .topTrailing) {
                                         Button { model.removeAttachment(attachment.id) } label: {
-                                            Image(systemName: "xmark.circle.fill").symbolRenderingMode(.palette)
-                                                .foregroundStyle(Ink.text, Ink.background).frame(width: 44, height: 44)
+                                            Image(systemName: "xmark").font(.system(size: 10, weight: .bold))
+                                                .foregroundStyle(.white).frame(width: 20, height: 20)
+                                                .background(.black.opacity(0.65), in: Circle())
+                                                .frame(width: 44, height: 44).contentShape(Rectangle())
                                         }.buttonStyle(.plain).accessibilityLabel("Remove " + attachment.name)
                                             .accessibilityIdentifier("remove-attachment-" + attachment.id)
                                     }
-                                Text(attachment.name).font(.caption2).lineLimit(1)
-                            }.frame(width: 88).accessibilityElement(children: .contain)
+                            }.frame(width: 120).accessibilityElement(children: .contain)
                                 .accessibilityIdentifier("attachment-" + attachment.id)
                         }
                     }.padding(.horizontal, 16).padding(.top, 10).padding(.bottom, 6)
@@ -778,18 +868,14 @@ private struct AgentComposerView: View {
                 Text(error).font(.caption).foregroundStyle(Ink.muted).frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.horizontal, 16).padding(.vertical, 8).accessibilityIdentifier("attachment-error")
             }
+            if !attachments.isEmpty {
+                composerText.frame(minHeight: 52, alignment: .topLeading).padding(.horizontal, 12)
+            }
             HStack(alignment: .bottom, spacing: 2) {
                 Button { focused = false; showAttachmentMenu = true } label: {
                     Image(systemName: "plus").frame(width: 44, height: 44).contentShape(Rectangle())
                 }.accessibilityLabel("Add attachments").accessibilityIdentifier("add-attachments")
-                ChatComposerEditor(text: $model.draft, focused: $focused, overflowing: $composerOverflows)
-                    .accessibilityIdentifier("composer")
-                    .overlay(alignment: .topLeading) {
-                        if model.draft.isEmpty {
-                            Text("Ask Nanocodex").font(.body).foregroundStyle(.tertiary)
-                                .padding(.top, 8).allowsHitTesting(false).accessibilityHidden(true)
-                        }
-                    }
+                if attachments.isEmpty { composerText } else { Spacer(minLength: 0) }
                 if let agentID = card?.id {
                     NanocodexVoiceControl(session: model.voice, onReturnToChat: onVoiceChat) {
                         focused = false
@@ -873,6 +959,7 @@ private struct AgentComposerView: View {
                     draft: $model.draft,
                     canSend: model.canSend,
                     attachmentCount: model.focusedAttachments.count,
+                    onPasteImages: pasteImages,
                     onCollapse: {
                         showExpandedEditor = false
                         focused = true
@@ -898,10 +985,18 @@ private struct AgentComposerView: View {
             } message: { Text("Enable Camera in Settings to take a photo for your message.") }
             #endif
             .photosPicker(isPresented: $showPhotos, selection: $selectedPhotos, maxSelectionCount: nil, matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
-            .onChange(of: selectedPhotos) { _, items in
-                guard !items.isEmpty, let target = photoTarget else { return }
-                model.importAttachmentPhotos(items, target: target)
+            .task(id: showPhotos ? [] : selectedPhotos) {
+                // Selection can arrive in several updates. Keep the picker binding
+                // intact until dismissal, then import the complete batch once.
+                guard !showPhotos, !selectedPhotos.isEmpty else { return }
+                await Task.yield()
+                // A final selection update restarts this task, including when
+                // the presentation binding changes before the selection binding.
+                guard !Task.isCancelled, !showPhotos,
+                      !selectedPhotos.isEmpty, let target = photoTarget else { return }
+                let items = selectedPhotos
                 selectedPhotos = []; photoTarget = nil
+                model.importAttachmentPhotos(items, target: target)
             }
             .fileImporter(isPresented: $showFiles, allowedContentTypes: [.image, .movie], allowsMultipleSelection: true) { result in
                 guard let target = fileTarget else { return }
@@ -911,6 +1006,24 @@ private struct AgentComposerView: View {
                 case .failure(let error): pickerError = error.localizedDescription
                 }
             }
+    }
+
+    private func pasteImages(_ providers: [NSItemProvider]) {
+        guard let target = model.captureAttachmentTarget() else { return }
+        pickerError = nil
+        model.importAttachmentProviders(providers, target: target)
+    }
+
+    private var composerText: some View {
+                ChatComposerEditor(text: $model.draft, focused: $focused, overflowing: $composerOverflows,
+                                   onPasteImages: pasteImages)
+                    .accessibilityIdentifier("composer")
+                    .overlay(alignment: .topLeading) {
+                        if model.draft.isEmpty {
+                            Text("Ask Nanocodex").font(.body).foregroundStyle(.tertiary)
+                                .padding(.top, 8).allowsHitTesting(false).accessibilityHidden(true)
+                        }
+                    }
     }
 
     private func attachmentOption(_ title: String, icon: String, action: AttachmentAction, identifier: String) -> some View {
@@ -963,17 +1076,18 @@ private struct ExpandedAgentComposer: View {
     @Binding var draft: String
     let canSend: Bool
     let attachmentCount: Int
+    let onPasteImages: ([NSItemProvider]) -> Void
     let onCollapse: () -> Void
     let onSend: () -> Void
-    @FocusState private var editorFocused: Bool
+    @State private var editorFocused = false
+    @State private var editorOverflow = false
 
     var body: some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 8) {
-                TextEditor(text: $draft)
-                    .font(.body)
-                    .scrollContentBackground(.hidden)
-                    .focused($editorFocused)
+                ChatComposerEditor(text: $draft, focused: $editorFocused, overflowing: $editorOverflow,
+                                   expandsToFill: true, onPasteImages: onPasteImages)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
                     .accessibilityLabel("Message")
                     .accessibilityIdentifier("expanded-composer")
                     .overlay(alignment: .topLeading) {
@@ -1111,25 +1225,80 @@ private struct VideoAttachmentView: View {
     }
 }
 
+private struct AttachmentGridLayout: Layout {
+    private let gap: CGFloat = 6
+    private func metrics(_ proposal: ProposedViewSize, count: Int) -> (columns: Int, side: CGFloat) {
+        let columns = min(3, max(1, count))
+        let maximum: CGFloat = count <= 2 ? 256 : 360
+        let width = min(proposal.width ?? maximum, maximum)
+        return (columns, max(1, (width - CGFloat(columns - 1) * gap) / CGFloat(columns)))
+    }
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        guard !subviews.isEmpty else { return .zero }
+        let (columns, side) = metrics(proposal, count: subviews.count)
+        if subviews.count == 1 {
+            let ideal = subviews[0].sizeThatFits(ProposedViewSize(width: side, height: nil))
+            let height = max(1, ideal.height)
+            let scale = min(1, 320 / height)
+            return CGSize(width: side * scale, height: height * scale)
+        }
+        let rows = (subviews.count + columns - 1) / columns
+        return CGSize(width: CGFloat(columns) * side + CGFloat(columns - 1) * gap,
+                      height: CGFloat(rows) * side + CGFloat(rows - 1) * gap)
+    }
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let (columns, side) = metrics(ProposedViewSize(width: bounds.width, height: nil), count: subviews.count)
+        if subviews.count == 1 {
+            subviews[0].place(at: bounds.origin, anchor: .topLeading, proposal: ProposedViewSize(bounds.size))
+            return
+        }
+        for (index, view) in subviews.enumerated() {
+            let row = index / columns, column = index % columns
+            let rowCount = min(columns, subviews.count - row * columns)
+            let leading = bounds.maxX - CGFloat(rowCount) * side - CGFloat(rowCount - 1) * gap
+            view.place(at: CGPoint(x: leading + CGFloat(column) * (side + gap), y: bounds.minY + CGFloat(row) * (side + gap)),
+                       anchor: .topLeading, proposal: ProposedViewSize(width: side, height: side))
+        }
+    }
+}
+
 private struct OriginalImageAttachmentView: View {
+    @Environment(\.nativeTranscriptVisible) private var visible
     let attachment: MessageAttachment
     let model: InboxModel
     let agentID: String
+    var preservesAspectRatio = false
+    @State private var imageRatio: CGFloat = 1
     @State private var preview: Data?
-    @State private var visible = false
     @State private var error: String?
+    @State private var selection: URL?
+    private var localPreview: URL? {
+        model.attachmentURL(attachment) ?? model.attachmentOriginalURL(attachment)
+    }
+    private var thumbnail: some View {
+        AttachmentImageView(source: localPreview.map(AttachmentImageSource.file) ?? preview.map(AttachmentImageSource.data),
+                            contentMode: preservesAspectRatio ? .fit : .fill, imageRatio: preservesAspectRatio ? $imageRatio : nil)
+            .aspectRatio(preservesAspectRatio ? imageRatio : 1, contentMode: .fit)
+            .accessibilityLabel("Open " + attachment.name).accessibilityIdentifier("message-image")
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            ChatMediaPreview(title: attachment.name, load: { [try await model.downloadAttachment(attachment, agentID: agentID)] }) {
-                AttachmentImageView(source: preview.map(AttachmentImageSource.data), contentMode: .fit)
-                    .frame(maxWidth: 240).frame(height: 180)
-                    .accessibilityLabel("Open " + attachment.name).accessibilityIdentifier("message-image")
+            if let original = model.attachmentOriginalURL(attachment) {
+                // ChatMediaPreview owns and deletes disposable downloads. The
+                // phone's retained original must survive preview dismissal.
+                Button { selection = original } label: { thumbnail }
+                    .buttonStyle(.plain)
+                    .nativeMediaPreview($selection, in: [original], title: attachment.name)
+            } else {
+                ChatMediaPreview(title: attachment.name, load: { [try await model.downloadAttachment(attachment, agentID: agentID)] }) {
+                    thumbnail
+                }
             }
             if let error { Text(error).font(.caption).foregroundStyle(.secondary) }
         }
-        .onScrollVisibilityChange(threshold: 0.01) { visible = $0 }
         .task(id: visible ? attachment.id : nil) {
-            guard visible, preview == nil else { return }
+            guard visible else { preview = nil; return }
+            guard preview == nil, localPreview == nil else { return }
             do {
                 let data = try await model.attachmentPreview(attachment, agentID: agentID)
                 guard !Task.isCancelled else { return }
@@ -1141,40 +1310,80 @@ private struct OriginalImageAttachmentView: View {
     }
 }
 
-private struct AttachmentImageView: View {
-    let source: AttachmentImageSource?
-    var contentMode: ContentMode = .fill
-    @State private var thumbnail: CGImage?
-    @State private var visible = false
-
+private struct InlinePhotoAttachmentView: View {
+    let source: String
+    let preservesAspectRatio: Bool
+    @State private var imageRatio: CGFloat = 1
     var body: some View {
-        Group {
-            if let thumbnail {
-                Image(decorative: thumbnail, scale: 1).resizable().aspectRatio(contentMode: contentMode)
-            } else {
-                Image(systemName: "photo").font(.title2).foregroundStyle(Ink.muted)
-                    .frame(maxWidth: .infinity, maxHeight: .infinity)
-            }
-        }
-        .background(Ink.surface).clipShape(RoundedRectangle(cornerRadius: 12))
-        .accessibilityElement(children: .ignore).accessibilityLabel("Attached image")
-        .onScrollVisibilityChange(threshold: 0.01) { visible = $0 }
-        .task(id: visible ? source : nil) {
-            thumbnail = nil
-            guard visible else { return }
-            let captured = source
-            let decoded = await Task.detached(priority: .utility) { Self.decode(captured) }.value
-            guard !Task.isCancelled else { return }
-            thumbnail = decoded
+        ChatMediaPreview(load: { [try await ChatMediaFile.inline(source)] }) {
+            AttachmentImageView(source: .inline(source), contentMode: preservesAspectRatio ? .fit : .fill,
+                                imageRatio: preservesAspectRatio ? $imageRatio : nil)
+                .aspectRatio(preservesAspectRatio ? imageRatio : 1, contentMode: .fit)
+                .accessibilityLabel("Open attached image").accessibilityIdentifier("message-image")
         }
     }
+}
+
+private struct AttachmentImageView: View {
+    @Environment(\.nativeTranscriptVisible) private var visible
+    let source: AttachmentImageSource?
+    var contentMode: ContentMode = .fill
+    var imageRatio: Binding<CGFloat>? = nil
+    @State private var thumbnail: CGImage?
+
+    var body: some View {
+        GeometryReader { geometry in
+            ZStack {
+                Ink.surface
+                if let thumbnail {
+                    Image(decorative: thumbnail, scale: 1).resizable()
+                        .interpolation(.high).aspectRatio(contentMode: contentMode)
+                        .frame(width: geometry.size.width, height: geometry.size.height)
+                        .clipped()
+                } else {
+                    ProgressView().controlSize(.small).tint(Ink.muted)
+                }
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .overlay(RoundedRectangle(cornerRadius: 22, style: .continuous).strokeBorder(.primary.opacity(0.06), lineWidth: 0.5))
+        .contentShape(RoundedRectangle(cornerRadius: 22, style: .continuous))
+        .accessibilityElement(children: .ignore).accessibilityLabel("Attached image")
+        .accessibilityValue(thumbnail == nil ? "Loading image" : "Image loaded")
+        .task(id: visible ? source : nil) {
+            guard visible, let source else { thumbnail = nil; return }
+            if let cached = Self.cache.object(forKey: ThumbnailKey(source)) {
+                thumbnail = cached
+                imageRatio?.wrappedValue = CGFloat(cached.width) / CGFloat(cached.height)
+                return
+            }
+            let decoded = await Task.detached(priority: .userInitiated) { Self.decode(source) }.value
+            guard !Task.isCancelled else { return }
+            if let decoded { Self.cache.setObject(decoded, forKey: ThumbnailKey(source), cost: decoded.bytesPerRow * decoded.height) }
+            thumbnail = decoded
+            if let decoded { imageRatio?.wrappedValue = CGFloat(decoded.width) / CGFloat(decoded.height) }
+        }
+    }
+
+    private final class ThumbnailKey: NSObject {
+        let source: AttachmentImageSource
+        init(_ source: AttachmentImageSource) { self.source = source }
+        override var hash: Int { source.hashValue }
+        override func isEqual(_ other: Any?) -> Bool { (other as? ThumbnailKey)?.source == source }
+    }
+    private static let cache: NSCache<ThumbnailKey, CGImage> = {
+        let cache = NSCache<ThumbnailKey, CGImage>()
+        cache.totalCostLimit = 24 * 1024 * 1024
+        cache.countLimit = 32
+        return cache
+    }()
 
     private nonisolated static func decode(_ source: AttachmentImageSource?) -> CGImage? {
         let image: CGImageSource?
         switch source {
         case .file(let url):
             guard url.isFileURL else { return nil }
-            image = CGImageSourceCreateWithURL(url as CFURL, nil)
+            image = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary)
         case .inline(let value):
             guard value.hasPrefix("data:image/"), let separator = value.firstIndex(of: ","),
                   value[..<separator].hasSuffix(";base64"),
@@ -1187,7 +1396,7 @@ private struct AttachmentImageView: View {
         return CGImageSourceCreateThumbnailAtIndex(image, 0, [
             kCGImageSourceCreateThumbnailFromImageAlways: true,
             kCGImageSourceCreateThumbnailWithTransform: true,
-            kCGImageSourceThumbnailMaxPixelSize: 480,
+            kCGImageSourceThumbnailMaxPixelSize: 960,
             kCGImageSourceShouldCacheImmediately: true,
         ] as CFDictionary)
     }
@@ -1320,18 +1529,35 @@ private struct ConnectView: View {
     }
 }
 
+// Capture model-derived presentation when the conversation updates. Individual
+// historical rows must not subscribe to every InboxModel publication.
 private struct ConversationMessageView: View {
     let row: TranscriptRow
-    @ObservedObject var model: InboxModel
+    let model: InboxModel
     let agentID: String
-    var body: some View {
+    let steering: SteeringTransfer?
+    let canWithdraw: Bool
+    let delivery: PendingMessage?
+    let connected: Bool
+    let canRetry: Bool
+
+    init(row: TranscriptRow, model: InboxModel, agentID: String) {
+        self.row = row
+        self.model = model
+        self.agentID = agentID
         let steering = model.steeringTransfer(row.turnID ?? row.id)
-        let canWithdraw = steering.map { transfer in
+        self.steering = steering
+        canWithdraw = steering.map { transfer in
             model.cards.first(where: { $0.id == agentID })?.activeTurns.contains(transfer.targetTurnID) == true
         } ?? false
-        let delivery = model.pending.first { $0.agentID == agentID && $0.id == (row.turnID ?? row.id) }
+        delivery = model.pending.first { $0.agentID == agentID && $0.id == (row.turnID ?? row.id) }
+        connected = model.connected
+        canRetry = model.connected && !model.busy.contains(agentID)
+    }
+
+    var body: some View {
         ConversationMessageContent(row: row, model: model, agentID: agentID, steering: steering, canWithdraw: canWithdraw,
-                                   delivery: delivery, canRetry: model.connected && !model.busy.contains(agentID)).equatable()
+                                   delivery: delivery, connected: connected, canRetry: canRetry).equatable()
     }
 }
 
@@ -1342,90 +1568,103 @@ private struct ConversationMessageContent: View, Equatable {
     let steering: SteeringTransfer?
     let canWithdraw: Bool
     let delivery: PendingMessage?
+    let connected: Bool
     let canRetry: Bool
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.row == rhs.row && lhs.agentID == rhs.agentID && lhs.steering == rhs.steering && lhs.canWithdraw == rhs.canWithdraw
-            && lhs.delivery == rhs.delivery && lhs.canRetry == rhs.canRetry
+            && lhs.delivery == rhs.delivery && lhs.connected == rhs.connected && lhs.canRetry == rhs.canRetry
             && lhs.model === rhs.model
     }
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
-            if row.role == "You" { Spacer(minLength: 44) }
-            VStack(alignment: .leading, spacing: 10) {
-                if row.role == "Thinking" {
-                    ChatMarkdown(text: row.text, compact: true)
-                        .foregroundStyle(Ink.muted)
-                } else if row.role == "You", let content = ContextPrompt.separate(row.text) {
-                    Text(content.request).font(.body).lineSpacing(3).textSelection(.enabled)
-                    DisclosureGroup("Captured context (\(content.captures.count))") {
-                        ForEach(Array(content.captures.enumerated()), id: \.offset) { _, capture in
-                            VStack(alignment: .leading, spacing: 4) {
-                                Text(capture.source + (capture.sender.isEmpty ? "" : " · " + capture.sender)).font(.caption.weight(.semibold))
-                                Text(capture.text.isEmpty ? capture.url : capture.text).font(.subheadline).textSelection(.enabled)
-                            }.padding(.vertical, 4)
+            if row.role == "You" { Spacer(minLength: (delivery?.attachments ?? row.imageFiles ?? []).count >= 3 ? 0 : 44) }
+            VStack(alignment: row.role == "You" ? .trailing : .leading, spacing: 8) {
+                media
+                if !row.text.isEmpty || !row.detail.isEmpty || delivery?.phase == .failed || steering != nil {
+                    VStack(alignment: .leading, spacing: 10) {
+                        if row.role == "Thinking" {
+                            ChatMarkdown(text: row.text, compact: true)
+                                .foregroundStyle(Ink.muted)
+                        } else if row.role == "You", let receipt = BrowserReceiptPresentation.summary(row.text) {
+                            Label(receipt, systemImage: "lock.shield").font(.subheadline)
+                        } else if row.role == "You", let content = ContextPrompt.separate(row.text) {
+                            Text(content.request).font(.body).lineSpacing(3).textSelection(.enabled)
+                            DisclosureGroup("Captured context (\(content.captures.count))") {
+                                ForEach(Array(content.captures.enumerated()), id: \.offset) { _, capture in
+                                    VStack(alignment: .leading, spacing: 4) {
+                                        Text(capture.source + (capture.sender.isEmpty ? "" : " · " + capture.sender)).font(.caption.weight(.semibold))
+                                        Text(capture.text.isEmpty ? capture.url : capture.text).font(.subheadline).textSelection(.enabled)
+                                    }.padding(.vertical, 4)
+                                }
+                            }.font(.caption).foregroundStyle(Ink.muted)
+                        } else if row.role == "Agent", !row.text.isEmpty {
+                            ChatMarkdown(text: row.text, compact: true)
+                        } else if !row.text.isEmpty {
+                            Text(row.text).font(.system(size: row.role == "Status" ? 14 : 17))
+                                .lineSpacing(5).textSelection(.enabled)
+                                .foregroundStyle(row.role == "Status" ? Ink.muted : Ink.text)
                         }
-                    }.font(.caption).foregroundStyle(Ink.muted)
-                } else if row.role == "Agent", !row.text.isEmpty {
-                    ChatMarkdown(text: row.text, compact: true)
-                } else if !row.text.isEmpty {
-                    Text(row.text).font(.system(size: row.role == "Status" ? 14 : 17))
-                        .lineSpacing(5).textSelection(.enabled)
-                        .foregroundStyle(row.role == "Status" ? Ink.muted : Ink.text)
-                }
-                if !row.detail.isEmpty { Text(row.detail).font(.caption).foregroundStyle(Ink.muted) }
-                if let delivery, delivery.phase == .failed {
-                    Label("Couldn’t confirm delivery", systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.secondary)
-                    HStack {
-                        Button("Retry") { model.retryPending(delivery.id) }.accessibilityIdentifier("retry-pending")
-                        Button("Cancel") { model.cancelPending(delivery.id) }.accessibilityLabel("Cancel message")
-                    }.font(.caption).disabled(!canRetry)
-                }
-                if let transfer = steering, transfer.direct == true, transfer.error != nil, transfer.canResume {
-                    Button("Retry sending") { model.steerNow(transfer.id) }
-                        .font(.caption).accessibilityIdentifier("retry-steering")
-                        .disabled(!model.connected)
-                }
-                if let transfer = steering, canWithdraw, (transfer.wasAccepted || transfer.phase == .unconfirmed), transfer.phase != .withdrawn {
-                    Button(transfer.phase == .withdrawing ? "Withdrawing…" : "Withdraw steering") { model.withdrawSteering(transfer.id) }
-                        .font(.caption).accessibilityIdentifier("withdraw-steering")
-                        .disabled(!model.connected || (transfer.phase == .withdrawing && transfer.error == nil))
-                }
-                if let images = row.images {
-                    ForEach(Array(images.enumerated()), id: \.offset) { _, image in
-                        ConversationUserImageView(source: image).frame(maxWidth: 240)
-                            .accessibilityIdentifier("message-image")
-                    }
-                }
-                if let attachments = delivery?.attachments, !attachments.isEmpty {
-                    ForEach(attachments) { attachment in
-                        if attachment.isVideo {
-                            AttachmentMovieThumbnail(attachment: attachment, poster: model.attachmentURL(attachment), movie: model.attachmentMovieURL(attachment))
-                                .frame(width: 240, height: 180)
-                        } else {
-                            AttachmentPhotoThumbnail(attachment: attachment, model: model).frame(width: 240, height: 180)
+                        if !row.detail.isEmpty { Text(row.detail).font(.caption).foregroundStyle(Ink.muted) }
+                        if let delivery, delivery.phase == .failed {
+                            Label("Couldn’t confirm delivery", systemImage: "exclamationmark.circle").font(.caption).foregroundStyle(.secondary)
+                            HStack {
+                                Button("Retry") { model.retryPending(delivery.id) }.accessibilityIdentifier("retry-pending")
+                                Button("Cancel") { model.cancelPending(delivery.id) }.accessibilityLabel("Cancel message")
+                            }.font(.caption).disabled(!canRetry)
+                        }
+                        if let transfer = steering, transfer.direct == true, transfer.error != nil, transfer.canResume {
+                            Button("Retry sending") { model.steerNow(transfer.id) }
+                                .font(.caption).accessibilityIdentifier("retry-steering")
+                                .disabled(!connected)
+                        }
+                        if let transfer = steering, canWithdraw, (transfer.wasAccepted || transfer.phase == .unconfirmed), transfer.phase != .withdrawn {
+                            Button(transfer.phase == .withdrawing ? "Withdrawing…" : "Withdraw steering") { model.withdrawSteering(transfer.id) }
+                                .font(.caption).accessibilityIdentifier("withdraw-steering")
+                                .disabled(!connected || (transfer.phase == .withdrawing && transfer.error == nil))
                         }
                     }
-                } else {
-                    ForEach(row.imageFiles ?? []) { OriginalImageAttachmentView(attachment: $0, model: model, agentID: agentID) }
-                    ForEach(row.videos ?? []) { VideoAttachmentView(video: $0, model: model, agentID: agentID) }
+                    .accessibilityElement(children: .contain)
+                    .accessibilityLabel(row.role == "You" ? "Your message" : row.role == "Agent" ? "Assistant message" : row.role)
+                    .padding(.horizontal, row.role == "You" ? 12 : 0)
+                    .padding(.vertical, row.role == "You" || row.role == "Agent" ? 9 : 0)
+                    .background(row.role == "You" ? Ink.userMessage : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 18))
+                    .contextMenu {
+                        if row.role == "Agent", !row.text.isEmpty {
+                            ChatCopyButton(text: row.text, showsLabel: true)
+                        }
+                    }
+                    .accessibilityAction(named: "Copy response") {
+                        UIPasteboard.general.string = row.text
+                    }
                 }
-            }
-            .accessibilityElement(children: .contain)
-            .accessibilityLabel(row.role == "You" ? "Your message" : row.role == "Agent" ? "Assistant message" : row.role)
-            .padding(.horizontal, row.role == "You" ? 12 : 0)
-            .padding(.vertical, row.role == "You" || row.role == "Agent" ? 9 : 0)
-            .background(row.role == "You" ? Ink.userMessage : Color.clear,
-                        in: RoundedRectangle(cornerRadius: 18))
-            .contextMenu {
-                if row.role == "Agent", !row.text.isEmpty {
-                    ChatCopyButton(text: row.text, showsLabel: true)
-                }
-            }
-            .accessibilityAction(named: "Copy response") {
-                UIPasteboard.general.string = row.text
             }
             if row.role != "You" { Spacer(minLength: row.role == "Agent" ? 16 : 0) }
         }.frame(maxWidth: .infinity, alignment: row.role == "You" ? .trailing : .leading)
+    }
+
+    @ViewBuilder private var media: some View {
+        let pendingAttachments = delivery?.attachments ?? []
+        let attachments = pendingAttachments.isEmpty ? (row.imageFiles ?? []) : pendingAttachments
+        let photos = attachments.filter { !$0.isVideo }
+        let inline = row.images ?? []
+        if !photos.isEmpty || !inline.isEmpty {
+            AttachmentGridLayout {
+                ForEach(photos) { attachment in
+                    OriginalImageAttachmentView(attachment: attachment, model: model, agentID: agentID, preservesAspectRatio: photos.count + inline.count == 1)
+                }
+                ForEach(Array(inline.enumerated()), id: \.offset) { _, image in
+                    InlinePhotoAttachmentView(source: image, preservesAspectRatio: photos.count + inline.count == 1)
+                }
+            }.accessibilityElement(children: .contain).accessibilityIdentifier("message-photo-grid")
+        }
+        ForEach(attachments.filter(\.isVideo)) { attachment in
+            AttachmentMovieThumbnail(attachment: attachment, poster: model.attachmentURL(attachment), movie: model.attachmentMovieURL(attachment))
+                .frame(width: 240, height: 180)
+        }
+        if pendingAttachments.isEmpty {
+            ForEach(row.videos ?? []) { VideoAttachmentView(video: $0, model: model, agentID: agentID) }
+        }
     }
 }
 
@@ -1437,6 +1676,26 @@ private final class ConversationReadingPositions {
         var childID: String? = nil
     }
     var values: [String: Position] = [:]
+    var tools: [String: ConversationToolExpansion] = [:]
+    func toolExpansion(for identity: String) -> ConversationToolExpansion {
+        if let value = tools[identity] { return value }
+        let value = ConversationToolExpansion()
+        tools[identity] = value
+        return value
+    }
+}
+
+@Observable private final class ConversationToolExpansion {
+    private var allExpanded: Bool?
+    var expanded: [String: Bool] = [:]
+    func isExpanded(_ id: String, initiallyExpanded: Bool = false) -> Bool {
+        expanded[id] ?? allExpanded ?? initiallyExpanded
+    }
+    func binding(_ id: String, initiallyExpanded: Bool = false) -> Binding<Bool> {
+        Binding(get: { self.isExpanded(id, initiallyExpanded: initiallyExpanded) },
+                set: { self.expanded[id] = $0 })
+    }
+    func setAllExpanded(_ value: Bool) { allExpanded = value; expanded.removeAll() }
 }
 
 private struct ConversationRenderedItem: Identifiable, Equatable, Sendable {
@@ -1463,19 +1722,19 @@ private struct ConversationRenderedItem: Identifiable, Equatable, Sendable {
 // Use measured row heights; decoding follows native viewport visibility.
 private struct ConversationUserImageView: View {
     let source: String
-    @State private var visible = false
+    @Environment(\.nativeTranscriptVisible) private var visible
     var body: some View {
         ChatImageAttachment(source: source, loadsThumbnail: visible)
-            .onScrollVisibilityChange(threshold: 0.01) { visible = $0 }
+
     }
 }
 
 private struct ConversationOutputView: View {
     let output: ChatGeneratedOutput
-    @State private var visible = false
+    @Environment(\.nativeTranscriptVisible) private var visible
     var body: some View {
         ChatGeneratedOutputView(output: output, loadsThumbnail: visible)
-            .onScrollVisibilityChange(threshold: 0.01) { visible = $0 }
+
     }
 }
 
@@ -1490,21 +1749,52 @@ private final class ConversationRenderProjection: ObservableObject {
         var pending: [PendingMessage]
         var items: [ConversationRenderedItem]
         var itemsByID: [String: ConversationRenderedItem]
+        var itemIndices: [String: Int]
+        var userIndices: [Int]
+        var cellRevisions: [String: UUID]
     }
     @Published private(set) var value: Value?
     private(set) var rebuildCount: UInt64 = 0
 
-    func prepare(_ model: InboxModel, identity: String) async {
+    private var preparation: Task<Void, Never>?
+    private var preparationID = UUID()
+
+    func request(_ model: InboxModel, identity: String) {
+        guard preparation == nil else { return }
+        // Revision changes coalesce behind one worker instead of cancelling
+        // expensive grouping on every incoming tool event.
+        let requestID = UUID()
+        preparationID = requestID
+        preparation = Task { [weak self] in
+            guard let self else { return }
+            defer { if self.preparationID == requestID { self.preparation = nil } }
+            while !Task.isCancelled, model.focusedConversationIdentity == identity {
+                await self.prepare(model, identity: identity)
+                if self.value?.revision == model.focusedTranscriptRevision { return }
+                await Task.yield()
+            }
+        }
+    }
+
+    func cancel() {
+        preparation?.cancel()
+        preparation = nil
+        preparationID = UUID()
+    }
+
+    private func prepare(_ model: InboxModel, identity: String) async {
         let revision = model.focusedTranscriptRevision
         if value?.revision == revision, value?.identity == identity { return }
-        guard let queue = await model.prepareFocusedQueue(),
-              !Task.isCancelled, model.focusedTranscriptRevision == revision,
-              model.focusedConversationIdentity == identity else { return }
-        let rows = queue.rows
-        let pending = queue.messages
+        // Capture all inputs before suspension, so a completed older snapshot
+        // never mixes its rows with a newer revision's turns or media.
         let turns = model.focused?.activeTurns ?? []
         let outputs = model.generatedOutputsByRow
+        guard let queue = await model.prepareFocusedQueue(),
+              !Task.isCancelled, model.focusedConversationIdentity == identity else { return }
+        let rows = queue.rows
+        let pending = queue.messages
         rebuildCount = rebuildCount == .max ? .max : rebuildCount + 1
+        let previous = value.flatMap { $0.identity == identity ? $0 : nil }
         let worker = Task.detached(priority: .userInitiated) { () -> Value? in
             guard !Task.isCancelled else { return nil }
             let log = OSLog(subsystem: "ai.nanocodex.inbox", category: "ConversationRendering")
@@ -1516,7 +1806,12 @@ private final class ConversationRenderProjection: ObservableObject {
             let items = ConversationRenderedItem.project(groups, outputs: outputs)
             guard !Task.isCancelled else { return nil }
             return Value(revision: revision, identity: identity, rows: rows, pending: pending,
-                         items: items, itemsByID: Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) }))
+                         items: items, itemsByID: Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) }),
+                         itemIndices: Dictionary(uniqueKeysWithValues: items.enumerated().map { ($0.element.id, $0.offset) }),
+                         userIndices: items.indices.filter { items[$0].message?.role == "You" },
+                         cellRevisions: Dictionary(uniqueKeysWithValues: items.map { item in
+                             (item.id, previous?.itemsByID[item.id] == item ? (previous?.cellRevisions[item.id] ?? UUID()) : UUID())
+                         }))
         }
         let prepared = await withTaskCancellationHandler {
             await worker.value
@@ -1524,7 +1819,6 @@ private final class ConversationRenderProjection: ObservableObject {
             worker.cancel()
         }
         guard !Task.isCancelled, let prepared,
-              model.focusedTranscriptRevision == revision,
               model.focusedConversationIdentity == identity else { return }
         value = prepared
     }
@@ -1543,15 +1837,21 @@ private struct ConversationView: View {
         let preparing = rendered?.revision != revision
         ConversationContentView(model: model,
                                 identity: identity, readingPositions: readingPositions,
+                                tools: readingPositions.toolExpansion(for: identity),
                                 revision: .init(projectionRevision: rendered?.revision, preparing: preparing,
                                                 rows: rendered?.rows ?? [], items: rendered?.items ?? [],
-                                                itemsByID: rendered?.itemsByID ?? [:], pending: rendered?.pending ?? [],
+                                                itemsByID: rendered?.itemsByID ?? [:],
+                                                itemIndices: rendered?.itemIndices ?? [:], userIndices: rendered?.userIndices ?? [],
+                                                cellRevisions: rendered?.cellRevisions ?? [:], pending: rendered?.pending ?? [],
                                                 title: model.focused?.title ?? "Conversation",
                                                 activeTurns: model.focused?.activeTurns ?? [],
+                                                connected: model.connected,
+                                                canRetry: model.connected && !model.busy.contains(model.focused?.id ?? ""),
                                                 loading: model.threadLoading || (rendered == nil && preparing), error: model.threadError,
                                                 hasOlder: model.hasOlder, loadingOlder: model.loadingOlder || preparing,
                                                 hasNewer: model.hasNewer, loadingNewer: model.loadingNewer || preparing))
-            .task(id: revision) { await projection.prepare(model, identity: identity) }
+            .task(id: revision) { projection.request(model, identity: identity) }
+            .onDisappear { projection.cancel() }
             #if DEBUG
             .overlay(alignment: .topTrailing) {
                 if ProcessInfo.processInfo.environment["NANOCODEX_RENDER_COUNTER"] == "1" {
@@ -1573,9 +1873,15 @@ private struct ConversationContentView: View {
         var rows: [TranscriptRow]
         var items: [ConversationRenderedItem]
         var itemsByID: [String: ConversationRenderedItem]
+        var itemIndices: [String: Int]
+        var userIndices: [Int]
+        var cellRevisions: [String: UUID]
         var pending: [PendingMessage]
         var title: String
         var activeTurns: [String]
+        // These controls can change without a transcript projection revision.
+        var connected: Bool
+        var canRetry: Bool
         var loading: Bool
         var error: String?
         var hasOlder: Bool
@@ -1595,7 +1901,18 @@ private struct ConversationContentView: View {
     let model: InboxModel
     let identity: String
     let readingPositions: ConversationReadingPositions
+    let tools: ConversationToolExpansion
     let revision: Revision
+    private struct UserNavigationTargets: Equatable {
+        var previous: String?
+        var next: String?
+    }
+    @Environment(\.conversationComposerHeight) private var composerHeight
+    @State private var userNavigationTargets = UserNavigationTargets()
+    @State private var selectedUserMessage: String?
+    @State private var pendingUserDirection: HistoryDirection?
+    @State private var navigationKnownIDs: Set<String> = []
+    @State private var navigationProjectionRevision: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @Environment(\.conversationNavigationActive) private var navigationActive
     @State private var followsLatest = true
@@ -1605,6 +1922,11 @@ private struct ConversationContentView: View {
     @State private var hasInitialPosition = false
     @State private var pendingReadingRestore: ConversationReadingPositions.Position?
     @State private var rowGeometry = ConversationRowGeometry()
+    @State private var scroll = NativeConversationScrollProxy()
+    @State private var nativeScrollState = ConversationNativeScrollState()
+    #if DEBUG
+    @State private var rowMeasurementCount: UInt64 = 0
+    #endif
     private var historyRestore: (id: String, offsetY: CGFloat, childID: String?)? {
         get { rowGeometry.historyRestore }
         nonmutating set { rowGeometry.historyRestore = newValue }
@@ -1616,8 +1938,8 @@ private struct ConversationContentView: View {
     @State private var historyRequestInFlight = false
     @State private var historyRequestRevision: UUID?
     private func rememberHistoryPosition(in viewport: GeometryProxy) {
-        let visible = rowGeometry.frames.filter { revision.itemsByID[$0.key] != nil && $0.value.maxY > 0 && $0.value.minY < viewport.size.height }
-        let sourceRows = visible.keys.compactMap { revision.itemsByID[$0]?.sourceRowID }
+        let visible = rowGeometry.visibleFrames(height: viewport.size.height).filter { revision.itemsByID[rowGeometry.semanticID(for: $0.key)] != nil }
+        let sourceRows = visible.keys.compactMap { rowGeometry.sourceRowIDs[$0] }
         model.protectHistoryRows(Set(visible.keys).union(sourceRows))
         guard let first = visible.min(by: { $0.value.minY < $1.value.minY }) else { return }
         historyRestore = (first.key, first.value.minY, nil)
@@ -1638,7 +1960,7 @@ private struct ConversationContentView: View {
             historyRequestInFlight = false
         }
     }
-    private func restoreHistoryPosition(using scroll: ScrollViewProxy) {
+    private func restoreHistoryPosition(using scroll: NativeConversationScrollProxy) {
         guard !revision.preparing, !model.loadingOlder, !model.loadingNewer,
               let target = historyRestore else { return }
         var transaction = Transaction()
@@ -1666,7 +1988,7 @@ private struct ConversationContentView: View {
         // direction may load a page, so trimming cannot undo their navigation.
         if historyDirection == .older, historyContent.nearTop { loadHistory(.older, in: viewport) }
         else if historyDirection == .newer,
-                historyContent.atLatest || rowGeometry.frames["history-gap"].map({ $0.minY < viewport.size.height + 240 }) == true {
+                historyContent.atLatest || rowGeometry["history-gap"].map({ $0.minY < viewport.size.height + 240 }) == true {
             loadHistory(.newer, in: viewport)
         }
     }
@@ -1675,15 +1997,13 @@ private struct ConversationContentView: View {
               pendingReadingRestore == nil, historyReady, historyContent.isMeasured,
               !historyRequestInFlight, !revision.preparing, !navigationActive else { return }
         if !followsLatest {
-            let visible = rowGeometry.frames.filter {
-                revision.itemsByID[$0.key] != nil && $0.value.maxY > 0 && $0.value.minY < viewport.size.height
-            }
-            let sourceRows = visible.keys.compactMap { revision.itemsByID[$0]?.sourceRowID }
+            let visible = rowGeometry.visibleFrames(height: viewport.size.height).filter { revision.itemsByID[rowGeometry.semanticID(for: $0.key)] != nil }
+            let sourceRows = visible.keys.compactMap { rowGeometry.sourceRowIDs[$0] }
             model.protectHistoryRows(Set(visible.keys).union(sourceRows))
         }
         if followsLatest && !model.needsLatestHistory {
             readingPositions.values[identity] = .init(atLatest: true)
-        } else if let first = rowGeometry.frames.filter({ revision.itemsByID[$0.key] != nil && $0.value.maxY > 0 && $0.value.minY < viewport.size.height })
+        } else if let first = rowGeometry.visibleFrames(height: viewport.size.height).filter({ revision.itemsByID[rowGeometry.semanticID(for: $0.key)] != nil })
             .min(by: {
                 let leftFull = $0.value.minY >= 0 && $0.value.maxY <= viewport.size.height
                 let rightFull = $1.value.minY >= 0 && $1.value.maxY <= viewport.size.height
@@ -1694,22 +2014,221 @@ private struct ConversationContentView: View {
             readingPositions.values[identity] = .init(atLatest: false, rowID: first.key, offsetY: first.value.minY)
         }
     }
-    private func followLatest(using scroll: ScrollViewProxy) {
+    private func followLatest(using scroll: NativeConversationScrollProxy) {
         guard followsLatest, pendingReadingRestore == nil,
               !model.needsLatestHistory, !isScrollGestureActive, !navigationActive else { return }
         // Animate only the scroll offset, not the transcript's text or tool state.
         // Initial positioning and accessibility Reduce Motion remain immediate.
         withAnimation(hasInitialPosition && !reduceMotion ? .smooth(duration: 0.24) : nil) {
-            scroll.scrollTo("latest", anchor: .bottom)
+            scroll.scrollTo("latest", anchor: .bottom, animated: hasInitialPosition && !reduceMotion)
         }
     }
-    var body: some View {
-        ScrollViewReader { scroll in
-            GeometryReader { viewport in
-            let boundaryItemID = historyBoundaryItemID
-            ZStack(alignment: .top) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 18) {
+    private func userTarget(_ direction: HistoryDirection) -> String? {
+        let users = revision.userIndices
+        if let selectedUserMessage, let itemIndex = revision.itemIndices[selectedUserMessage] {
+            let index = userInsertionIndex(itemIndex)
+            let next = direction == .older ? index - 1 : index + 1
+            return users.indices.contains(next) ? revision.items[users[next]].id : nil
+        }
+        if historyContent.atLatest { return direction == .older ? users.last.map { revision.items[$0].id } : nil }
+        return direction == .older ? userNavigationTargets.previous : userNavigationTargets.next
+    }
+    private func userInsertionIndex(_ itemIndex: Int) -> Int {
+        var lower = 0, upper = revision.userIndices.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if revision.userIndices[middle] < itemIndex { lower = middle + 1 }
+            else { upper = middle }
+        }
+        return lower
+    }
+    private func jumpToUser(_ id: String, using scroll: NativeConversationScrollProxy) {
+        followsLatest = false
+        model.setHistoryAtLatest(false)
+        model.protectHistoryRows([id])
+        historyDirection = nil
+        historyRestore = nil
+        selectedUserMessage = id
+        pendingUserDirection = nil
+        pendingReadingRestore = .init(atLatest: false, rowID: id, offsetY: 0)
+        readingPositions.values[identity] = pendingReadingRestore
+        // Measured restoration retains the target through streaming and layout changes.
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { scroll.scrollTo(id, anchor: .top) }
+    }
+    private func navigateUser(_ direction: HistoryDirection, using scroll: NativeConversationScrollProxy) {
+        // History insertion/restoration must finish before another explicit jump.
+        guard !model.loadingOlder, !model.loadingNewer else { return }
+        if let id = userTarget(direction) { jumpToUser(id, using: scroll); return }
+        guard pendingUserDirection == nil, !revision.preparing,
+              !model.loadingOlder, !model.loadingNewer,
+              direction == .older ? model.hasOlder : model.hasNewer else { return }
+        navigationKnownIDs = Set(revision.items.map(\.id))
+        pendingUserDirection = direction
+        pendingReadingRestore = nil
+        historyRestore = nil
+        historyDirection = nil
+        followsLatest = false
+        fetchUserHistory(direction)
+    }
+    private func fetchUserHistory(_ direction: HistoryDirection) {
+        navigationProjectionRevision = revision.projectionRevision
+        Task {
+            guard model.focusedConversationIdentity == identity else { return }
+            let before = model.focusedTranscriptRevision
+            if direction == .older { await model.loadOlder() }
+            else { await model.loadNewer() }
+            guard model.focusedConversationIdentity == identity else { return }
+            if model.focusedTranscriptRevision == before { pendingUserDirection = nil }
+        }
+    }
+    private func continueUserNavigation(using scroll: NativeConversationScrollProxy) {
+        guard model.focusedConversationIdentity == identity,
+              let direction = pendingUserDirection, !revision.preparing,
+              !model.loadingOlder, !model.loadingNewer else { return }
+        // Model history finishes before its off-main render projection. Wait for
+        // that publication before deciding whether another page is necessary.
+        guard revision.projectionRevision != navigationProjectionRevision || revision.error != nil else { return }
+        // Only inspect the requested side of the retained window. A live user
+        // message can arrive at the opposite end while history is in flight.
+        let page = direction == .older
+            ? Array(revision.items.prefix { !navigationKnownIDs.contains($0.id) })
+            : Array(revision.items.reversed().prefix { !navigationKnownIDs.contains($0.id) }.reversed())
+        let candidates = page.filter { $0.message?.role == "You" }
+        if let target = direction == .older ? candidates.last : candidates.first {
+            jumpToUser(target.id, using: scroll)
+        } else if revision.error == nil && (direction == .older ? model.hasOlder : model.hasNewer) {
+            navigationKnownIDs.formUnion(revision.items.map(\.id))
+            fetchUserHistory(direction)
+        } else { pendingUserDirection = nil }
+    }
+    private func updateRowPositions(in viewport: GeometryProxy, using scroll: NativeConversationScrollProxy) {
+        let frames = rowGeometry
+        // Only visible cells participate in scroll bookkeeping. User-message
+        // locations are indexed once by the background projection, then searched
+        // logarithmically even when the retained transcript is very large.
+        if let first = frames.firstFrame(where: { revision.itemIndices[rowGeometry.semanticID(for: $0)] != nil }),
+           let itemIndex = revision.itemIndices[rowGeometry.semanticID(for: first.key)] {
+            let insertion = userInsertionIndex(itemIndex)
+            let currentIsUser = revision.userIndices.indices.contains(insertion)
+                && revision.userIndices[insertion] == itemIndex
+            let previous = insertion - (currentIsUser && first.value.minY < -1 ? 0 : 1)
+            let next = insertion + (currentIsUser && first.value.minY <= verticalPadding + 1 ? 1 : 0)
+            let targets = UserNavigationTargets(
+                previous: revision.userIndices.indices.contains(previous) ? revision.items[revision.userIndices[previous]].id : nil,
+                next: revision.userIndices.indices.contains(next) ? revision.items[revision.userIndices[next]].id : nil)
+            if userNavigationTargets != targets { userNavigationTargets = targets }
+        }
+        if !navigationActive, !isInteractingTranscript, let target = pendingReadingRestore, let id = target.rowID, let parent = frames[id] {
+            let frame = target.childID.flatMap { frames[$0] } ?? parent
+            if abs(frame.minY - target.offsetY) < 1 {
+                // Retain the semantic position through keyboard/viewport
+                // changes. The next touch or explicit jump releases it.
+                historyReady = true
+            } else {
+                let available = viewport.size.height - composerHeight - 52 - parent.height
+                if abs(available) > 0.5 {
+                    // The timeline can grow while loading older steps.
+                    // Preserve the step's screen position within its parent.
+                    let origin = parent.minY + target.offsetY - frame.minY
+                    scroll.scrollTo(id, anchor: UnitPoint(x: 0, y: origin / available))
+                }
+            }
+        }
+        saveReadingPosition(in: viewport)
+        updateHistoryPosition(in: viewport)
+        // Continue following the reader during a slow history request,
+        // until the insertion changes the coordinate space.
+        if historyRequestInFlight, model.historyMutationRevision == historyRequestRevision {
+            rememberHistoryPosition(in: viewport)
+        }
+    }
+    private var hasExpandedTools: Bool {
+        revision.items.contains { item in
+            guard let content = item.content else { return false }
+            if content.childAgentID != nil || content.isCodeModeBatch {
+                return tools.isExpanded(content.id, initiallyExpanded: content.childAgentID == nil && content.isCodeModeBatch)
+            }
+            return content.activity.contains { tools.isExpanded($0.id) }
+        }
+    }
+    private func threadControls(using scroll: NativeConversationScrollProxy) -> some View {
+        HStack(spacing: 8) {
+            Button {
+                followsLatest = false
+                if let first = rowGeometry.firstFrame(where: { revision.itemsByID[$0] != nil }) {
+                    pendingReadingRestore = .init(atLatest: false, rowID: first.key,
+                        offsetY: revision.itemsByID[first.key]?.message == nil ? max(0, first.value.minY) : first.value.minY)
+                }
+                tools.setAllExpanded(!hasExpandedTools)
+            } label: { Image(systemName: hasExpandedTools ? "rectangle.compress.vertical" : "rectangle.expand.vertical").frame(width: 44, height: 44)
+                    .background(.regularMaterial, in: Circle())
+                    .overlay(Circle().strokeBorder(Ink.border, lineWidth: 0.5))
+                    .contentShape(Rectangle()) }
+                .accessibilityLabel(hasExpandedTools ? "Collapse all tool calls" : "Expand all tool calls")
+                .accessibilityIdentifier("toggle-all-tools")
+            Button { navigateUser(.older, using: scroll) } label: {
+                Image(systemName: "arrow.up").frame(width: 44, height: 44)
+                    .background(.regularMaterial, in: Circle())
+                    .overlay(Circle().strokeBorder(Ink.border, lineWidth: 0.5))
+                    .contentShape(Rectangle())
+            }.accessibilityLabel("Previous user message").accessibilityIdentifier("previous-user-message")
+                .disabled(userTarget(.older) == nil && (!model.hasOlder || revision.preparing || model.loadingOlder || model.loadingNewer || pendingUserDirection != nil))
+            Button { navigateUser(.newer, using: scroll) } label: {
+                Image(systemName: "arrow.down").frame(width: 44, height: 44)
+                    .background(.regularMaterial, in: Circle())
+                    .overlay(Circle().strokeBorder(Ink.border, lineWidth: 0.5))
+                    .contentShape(Rectangle())
+            }.accessibilityLabel("Next user message").accessibilityIdentifier("next-user-message")
+                .disabled(userTarget(.newer) == nil && (!model.hasNewer || revision.preparing || model.loadingOlder || model.loadingNewer || pendingUserDirection != nil))
+        }
+        .buttonStyle(.plain)
+        .disabled(revision.loading || model.loadingOlder || model.loadingNewer)
+        .padding(.horizontal, 20).padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .trailing)
+    }
+    @ViewBuilder
+    private func nativeRow(_ item: ConversationRenderedItem, in viewport: GeometryProxy) -> some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if let row = item.message {
+                ConversationMessageView(row: row, model: model, agentID: model.focused?.id ?? "")
+            } else if let output = item.output {
+                ConversationOutputView(output: output)
+            }
+        }.id(item.id)
+            .accessibilityElement(children: .contain)
+            .accessibilityIdentifier((item.message?.role == "You" ? "message-user-" : item.message?.role == "Agent" ? "message-assistant-" : "message-") + item.id)
+    }
+    private func nativeToolToggle(_ rowID: String) {
+        rowGeometry.onToolToggle?(rowID)
+    }
+    private struct CellRevision: Hashable {
+        var revision: UUID?
+        var connected: Bool
+        var canRetry: Bool
+        var vaultAccount: String
+        var activeTurns: [String]
+        var expanded: Bool = false
+        var showsJavaScript: Bool = false
+    }
+    private func nativeRows(in viewport: GeometryProxy) -> [NativeConversationTranscript.Row] {
+        // Retained cell closures resolve actions through the newest transcript
+        // snapshot and viewport, even when their own content has not changed.
+        rowGeometry.onToolToggle = { rowID in
+            followsLatest = false
+            pendingReadingRestore = rowGeometry[rowID].map {
+                .init(atLatest: false, rowID: rowID, offsetY: $0.minY)
+            }
+            if historyRequestInFlight { rememberHistoryPosition(in: viewport) }
+        }
+        rowGeometry.onFollowLatest = { followLatest(using: scroll) }
+        var rows: [NativeConversationTranscript.Row] = []
+        var semanticIDs: [String: String] = [:]
+        var sourceRowIDs: [String: String] = [:]
+        if revision.items.isEmpty || revision.error != nil {
+            rows.append(.init(id: "transcript-header", revision: String(describing: revision.error) + String(revision.loading) + String(model.hasOlder), content: {
+                AnyView(VStack(alignment: .leading, spacing: 18) {
                     if revision.rows.isEmpty, revision.pending.isEmpty, !revision.loading, revision.error == nil {
                         VStack(alignment: .leading, spacing: 8) {
                             if model.hasOlder {
@@ -1723,47 +2242,99 @@ private struct ConversationContentView: View {
                         }.padding(.top, 24).accessibilityElement(children: .contain).accessibilityIdentifier("conversation-empty")
                     }
                     if let error = revision.error { Text(error).font(.subheadline).foregroundStyle(Ink.muted) }
-                    ForEach(revision.items) { item in
-                        VStack(alignment: .leading, spacing: 0) {
-                        if let row = item.message {
-                        ConversationMessageView(row: row, model: model, agentID: model.focused?.id ?? "")
-                        } else if let output = item.output {
-                            ConversationOutputView(output: output)
-                        } else if let content = item.content {
-                            ForEach(content.activity.filter { $0.tool?.vaultIntake != nil }) { row in
-                                if let intake = row.tool?.vaultIntake {
-                                    VaultIntakeCard(model: model, intake: intake)
-                                        .id("\(row.id):\(model.vaultIntakeAccount)")
-                                        .padding(.bottom, 12)
-                                }
+                })
+            }))
+        }
+        for item in revision.items {
+            let firstNativeIndex = rows.count
+            defer {
+                let activityIDs = Set(item.content?.activity.map(\.id) ?? [])
+                for row in rows[firstNativeIndex...] {
+                    semanticIDs[row.id] = item.id
+                    sourceRowIDs[row.id] = item.sourceRowID
+                        ?? (activityIDs.contains(row.id) ? row.id : item.content?.activity.first?.id ?? item.id)
+                }
+            }
+            let cellRevision = CellRevision(revision: revision.cellRevisions[item.id], connected: revision.connected,
+                canRetry: revision.canRetry, vaultAccount: String(describing: model.vaultIntakeAccount),
+                activeTurns: revision.activeTurns)
+            guard item.message == nil, let content = item.content, !content.activity.isEmpty else {
+                rows.append(.init(id: item.id, revision: cellRevision, content: { AnyView(nativeRow(item, in: viewport)) }))
+                continue
+            }
+            // Each activity is an independent native cell. A large expanded batch
+            // must never cause one hosting view to construct every tool's body.
+            let groupExpanded = tools.isExpanded(content.id,
+                initiallyExpanded: content.childAgentID == nil && content.isCodeModeBatch)
+            var groupRevision = cellRevision
+            groupRevision.expanded = groupExpanded
+            groupRevision.showsJavaScript = tools.isExpanded(content.id + ":javascript")
+            if let child = content.childAgentID {
+                rows.append(.init(id: item.id, revision: groupRevision, content: {
+                    AnyView(Button {
+                        nativeToolToggle(item.id)
+                        tools.binding(content.id).wrappedValue.toggle()
+                    } label: {
+                        HStack {
+                            Text("Agent " + child + " activity")
+                            Spacer()
+                            Image(systemName: groupExpanded ? "chevron.up" : "chevron.down")
+                        }.frame(minHeight: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                        .accessibilityIdentifier("child-agent-activity-" + child)
+                        .accessibilityValue(groupExpanded ? "Expanded" : "Collapsed"))
+                }))
+            } else if content.isCodeModeBatch {
+                rows.append(.init(id: item.id, revision: groupRevision, content: {
+                    AnyView(ConversationCodeModeBatch(item: content, showsHeader: true,
+                        expanded: tools.binding(content.id, initiallyExpanded: true),
+                        showsJavaScript: tools.binding(content.id + ":javascript"),
+                        onToggle: { nativeToolToggle(item.id) }))
+                }))
+            }
+            // Intake prompts remain reachable even when their group is collapsed.
+            for activity in content.activity where activity.tool?.vaultIntake != nil {
+                if let intake = activity.tool?.vaultIntake {
+                    rows.append(.init(id: item.id + ":vault:" + activity.id, revision: cellRevision, content: {
+                        AnyView(VaultIntakeCard(model: model, intake: intake)
+                            .id("\(activity.id):\(model.vaultIntakeAccount)"))
+                    }))
+                }
+            }
+            let isGroup = content.childAgentID != nil || content.isCodeModeBatch
+            if !isGroup || groupExpanded {
+                for (index, activity) in content.activity.enumerated() {
+                    if content.isCodeModeBatch && content.childAgentID == nil && index == 0 { continue }
+                    let rowID = content.childAgentID != nil && activity.id == item.id
+                        ? item.id + ":activity" : (!isGroup && index == 0 ? item.id : activity.id)
+                    let expansionID = activity.id + (content.childAgentID == nil ? "" : ":detail")
+                    var activityRevision = cellRevision
+                    activityRevision.expanded = tools.isExpanded(expansionID)
+                    rows.append(.init(id: rowID, revision: activityRevision, content: {
+                        AnyView(Group {
+                            if activity.role == "Tool" || content.childAgentID == nil {
+                                ConversationToolCard(row: activity, live: content.isRunning && activity.running,
+                                    expanded: tools.binding(expansionID),
+                                    onToggle: { nativeToolToggle(rowID) })
+                            } else {
+                                ConversationMessageView(row: activity, model: model, agentID: model.focused?.id ?? "")
                             }
-                            ForEach(content.activity) { row in
-                                ConversationToolCard(row: row, live: content.isRunning) {
-                                    // Opening details is a reading action. Keep the
-                                    // tapped card in place instead of following the bottom.
-                                    followsLatest = false
-                                    pendingReadingRestore = rowGeometry.frames[item.id].map {
-                                        .init(atLatest: false, rowID: item.id, offsetY: $0.minY)
-                                    }
-                                    if historyRequestInFlight { rememberHistoryPosition(in: viewport) }
-                                }
-                            }
-                        }
-                        }.id(item.id)
-                            .background(GeometryReader { geometry in
-                                Color.clear.preference(key: ConversationRowFrames.self, value: [item.id: geometry.frame(in: .named("conversation-viewport"))])
-                            })
-                            .accessibilityElement(children: .contain)
-                            .accessibilityIdentifier((item.message?.role == "You" ? "message-user-" : item.message?.role == "Agent" ? "message-assistant-" : "message-") + item.id)
-                        if item.id == boundaryItemID {
-                            Color.clear.frame(height: 1).accessibilityHidden(true)
-                                .background(GeometryReader { geometry in
-                                    Color.clear.preference(key: ConversationRowFrames.self,
-                                        value: ["history-gap": geometry.frame(in: .named("conversation-viewport"))])
-                                })
-                        }
-                    }
-
+                        })
+                    }))
+                }
+                if content.isCodeModeBatch && content.childAgentID == nil {
+                    let rowID = item.id + ":javascript"
+                    rows.append(.init(id: rowID, revision: groupRevision, content: {
+                        AnyView(ConversationCodeModeBatch(item: content, showsHeader: false,
+                            expanded: tools.binding(content.id, initiallyExpanded: true),
+                            showsJavaScript: tools.binding(content.id + ":javascript"),
+                            onToggle: { nativeToolToggle(rowID) }))
+                    }))
+                }
+            }
+        }
+        rows.append(.init(id: "latest", revision: revision.projectionRevision, content: {
+            AnyView(VStack(alignment: .leading, spacing: 0) {
                     if let agentID = model.focused?.id {
                         NanocodexVoiceTranscript(session: model.voice, conversationID: agentID, durableRows: revision.rows, rowContent: { transcript in
                             let row = TranscriptRow(id: "voice-" + transcript.id.uuidString,
@@ -1771,62 +2342,63 @@ private struct ConversationContentView: View {
                             return AnyView(ConversationMessageView(row: row, model: model, agentID: agentID)
                                 .accessibilityIdentifier("voice-transcript-" + transcript.speaker))
                         }) {
-                            followLatest(using: scroll)
+                            rowGeometry.onFollowLatest?()
                         }
                     }
-                    Color.clear.frame(height: 1).id("latest")
-                }.padding(.horizontal, 20).padding(.vertical, verticalPadding).frame(maxWidth: 780).frame(maxWidth: .infinity)
-
-            }
-            // Clip hit testing as well as drawing: offscreen disclosure buttons
-            // must not intercept the header at accessibility text sizes.
-            .contentShape(Rectangle())
-            .defaultScrollAnchor(.top)
-            // Keep layout from snapping to the bottom before animated following runs.
-            .defaultScrollAnchor(.top, for: .sizeChanges)
-            .defaultScrollAnchor(readingPositions.values[identity]?.atLatest == false ? .top : .bottom, for: .initialOffset)
-            .scrollDismissesKeyboard(.interactively)
-            .scrollBounceBehavior(.always, axes: .vertical)
-            .coordinateSpace(name: "conversation-viewport")
-            .onPreferenceChange(ConversationRowFrames.self) { frames in
-                rowGeometry.frames = frames
-                if !navigationActive, !isInteractingTranscript, let target = pendingReadingRestore, let id = target.rowID, let parent = frames[id] {
-                    let frame = target.childID.flatMap { frames[$0] } ?? parent
-                    if abs(frame.minY - target.offsetY) < 1 {
-                        // Retain the semantic position through keyboard/viewport
-                        // changes. The next touch or explicit jump releases it.
-                        historyReady = true
-                    } else {
-                        let available = viewport.size.height - parent.height
-                        if abs(available) > 0.5 {
-                            // The timeline can grow while loading older steps.
-                            // Preserve the step's screen position within its parent.
-                            let origin = parent.minY + target.offsetY - frame.minY
-                            scroll.scrollTo(id, anchor: UnitPoint(x: 0, y: origin / available))
-                        }
+                    Color.clear.frame(height: 1)
+            })
+        }))
+        rowGeometry.semanticIDs = semanticIDs
+        rowGeometry.sourceRowIDs = sourceRowIDs
+        return rows
+    }
+    var body: some View {
+        Group {
+            ZStack(alignment: .bottom) {
+            // The transcript fills the viewport and scrolls beneath the controls
+            // and composer. Content margins keep the final message reachable.
+            GeometryReader { viewport in
+            let boundaryItemID = historyBoundaryItemID
+            ZStack(alignment: .top) {
+            NativeConversationTranscript(
+                rows: nativeRows(in: viewport), proxy: scroll,
+                followsLatest: followsLatest && pendingReadingRestore == nil && !model.needsLatestHistory && !navigationActive,
+                bottomInset: composerHeight + 52,
+                onFrames: { frames in
+                    // Native frames contain only realized cells in viewport coordinates.
+                    var visible = frames
+                    if let boundaryItemID, let boundary = frames.filter({ rowGeometry.semanticID(for: $0.key) == boundaryItemID }).values.max(by: { $0.maxY < $1.maxY }) {
+                        visible["history-gap"] = CGRect(x: 0, y: boundary.maxY, width: 1, height: 1)
                     }
-                }
-                saveReadingPosition(in: viewport)
-                updateHistoryPosition(in: viewport)
-                // Continue following the reader during a slow history request,
-                // until the insertion changes the coordinate space.
-                if historyRequestInFlight, model.historyMutationRevision == historyRequestRevision {
-                    rememberHistoryPosition(in: viewport)
-                }
-            }
-            .onScrollGeometryChange(for: ConversationContentPosition.self) { geometry in
-                ConversationContentPosition(
-                    nearTop: geometry.contentOffset.y + geometry.contentInsets.top <= 240,
-                    approachingTop: geometry.contentOffset.y + geometry.contentInsets.top <= max(800, geometry.containerSize.height * 2),
-                    atLatest: geometry.contentSize.height - geometry.contentOffset.y
-                        - geometry.containerSize.height <= verticalPadding + 1,
-                    isMeasured: geometry.containerSize.height > 0)
-            } action: { _, position in
-                historyContent = position
-                updateHistoryPosition(in: viewport)
-                saveReadingPosition(in: viewport)
-            }
-            .onScrollPhaseChange { previous, phase in
+                    rowGeometry.updateOffset(0)
+                    rowGeometry.updateContentFrames(visible)
+                    updateRowPositions(in: viewport, using: scroll)
+                },
+                onMetrics: { metrics in
+                    let previous = nativeScrollState.metrics
+                    nativeScrollState.metrics = metrics
+                    let contentPosition = ConversationContentPosition(
+                        nearTop: metrics.contentOffset.y + metrics.contentInsets.top <= 240,
+                        approachingTop: metrics.contentOffset.y + metrics.contentInsets.top <= max(800, metrics.containerSize.height * 2),
+                        atLatest: metrics.contentSize.height - metrics.contentOffset.y - metrics.containerSize.height + metrics.contentInsets.bottom <= verticalPadding + 1,
+                        isMeasured: metrics.containerSize.height > 0)
+                    if historyContent != contentPosition { historyContent = contentPosition }
+                    if let previous, isInteractingTranscript, !navigationActive,
+                       abs(previous.contentOffset.y - metrics.contentOffset.y) > 0.5, !historyRequestInFlight {
+                        if followsLatest { followsLatest = false }
+                        if selectedUserMessage != nil { selectedUserMessage = nil }
+                        if pendingUserDirection != nil { pendingUserDirection = nil }
+                        if pendingReadingRestore != nil { pendingReadingRestore = nil }
+                        let towardLatest = metrics.contentOffset.y > previous.contentOffset.y
+                        if scrollsTowardLatest != towardLatest { scrollsTowardLatest = towardLatest }
+                        let direction: HistoryDirection = towardLatest ? .newer : .older
+                        if historyDirection != direction { historyDirection = direction }
+                        if hasInitialPosition && !historyReady { historyReady = true }
+                    }
+                    updateHistoryPosition(in: viewport)
+                    saveReadingPosition(in: viewport)
+                },
+                onPhase: { previous, phase in
                 if phase == .tracking { scrollsTowardLatest = false }
                 isInteractingTranscript = phase == .interacting
                 isScrollGestureActive = phase == .tracking || phase == .interacting || phase == .decelerating
@@ -1842,13 +2414,10 @@ private struct ConversationContentView: View {
                     // changing reading intent. Catch up when the finger lifts.
                     followLatest(using: scroll)
                 }
-            }
-            .onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height } action: { _, _ in
-                // Rendered height also changes within a streaming row, without
-                // adding a new row ID. Follow after that layout has arrived.
-                followLatest(using: scroll)
-            }
+                })
+            .contentShape(Rectangle())
             .onChange(of: revision.projectionRevision) { _, _ in
+                continueUserNavigation(using: scroll)
                 restoreHistoryPosition(using: scroll)
                 // Content-height observation follows after layout; issuing a second
                 // scroll here would retarget against the previous geometry.
@@ -1859,34 +2428,30 @@ private struct ConversationContentView: View {
                 guard active, !followsLatest, pendingReadingRestore == nil else { return }
                 // Capture before keyboard dismissal / drawer animation can resize
                 // the viewport. Keep the same row and point offset on close too.
-                if let first = rowGeometry.frames.filter({ revision.itemsByID[$0.key] != nil && $0.value.maxY > 0 && $0.value.minY < viewport.size.height })
+                if let first = rowGeometry.visibleFrames(height: viewport.size.height).filter({ revision.itemsByID[rowGeometry.semanticID(for: $0.key)] != nil })
                     .min(by: { $0.value.minY < $1.value.minY }) {
                     pendingReadingRestore = .init(atLatest: false, rowID: first.key, offsetY: first.value.minY)
                 }
             }
             .onChange(of: hasInitialPosition) { _, _ in updateHistoryPosition(in: viewport) }
+            .onChange(of: revision.error) { _, error in
+                if error != nil { pendingUserDirection = nil }
+            }
             .onChange(of: model.hasOlder) { _, _ in updateHistoryPosition(in: viewport) }
             .onChange(of: model.threadLoading) { _, _ in updateHistoryPosition(in: viewport) }
             .onChange(of: model.loadingOlder) { _, loading in
-                if !loading { restoreHistoryPosition(using: scroll) }
+                if !loading {
+                    continueUserNavigation(using: scroll)
+                    restoreHistoryPosition(using: scroll)
+                }
                 updateHistoryPosition(in: viewport)
             }
             .onChange(of: model.hasNewer) { _, _ in updateHistoryPosition(in: viewport) }
             .onChange(of: model.loadingNewer) { _, loading in
-                if !loading { restoreHistoryPosition(using: scroll) }
-                updateHistoryPosition(in: viewport)
-            }
-            .onScrollGeometryChange(for: CGFloat.self) { $0.contentOffset.y } action: { previous, offset in
-                // Deceleration, bounce-back and restoration change offsets too.
-                // Only direct interaction establishes a new paging direction.
-                // A prefetched page can arrive while the finger is still down.
-                // Its inserted height is not a reversal of the reader's swipe.
-                guard isInteractingTranscript, !navigationActive, abs(previous - offset) > 0.5, !historyRequestInFlight else { return }
-                followsLatest = false
-                pendingReadingRestore = nil
-                scrollsTowardLatest = offset > previous
-                historyDirection = scrollsTowardLatest ? .newer : .older
-                if hasInitialPosition { historyReady = true }
+                if !loading {
+                    continueUserNavigation(using: scroll)
+                    restoreHistoryPosition(using: scroll)
+                }
                 updateHistoryPosition(in: viewport)
             }
             .background(Ink.background)
@@ -1900,6 +2465,8 @@ private struct ConversationContentView: View {
                 Spacer(minLength: 0)
                 if historyContent.isMeasured, !model.threadLoading, model.needsLatestHistory || (!followsLatest && !historyContent.atLatest) {
                     Button {
+                        selectedUserMessage = nil
+                        pendingUserDirection = nil
                         historyDirection = nil
                         historyRestore = nil
                         pendingReadingRestore = nil
@@ -1921,7 +2488,7 @@ private struct ConversationContentView: View {
                     }
                     .buttonStyle(.plain)
                     .frame(width: 42, height: 42)
-                    .padding(.bottom, 8)
+                    .padding(.bottom, composerHeight + 60)
                     .disabled(model.loadingNewer || model.loadingOlder)
                     .accessibilityLabel("Latest messages")
                     .accessibilityHint("Scroll to the latest message and follow new responses")
@@ -1945,13 +2512,16 @@ private struct ConversationContentView: View {
             }
             }
             }
+            threadControls(using: scroll)
+                .padding(.bottom, composerHeight)
+            }
             .onChange(of: revision.rows.first?.id, initial: true) { _, _ in
                 if !hasInitialPosition, !revision.rows.isEmpty {
                     // Position a newly opened conversation once. Later viewport
                     // changes, including the keyboard, retain its top edge.
                     if let saved = readingPositions.values[identity], !saved.atLatest,
                        let id = saved.rowID,
-                       revision.items.contains(where: { $0.id == id }) {
+                       revision.items.contains(where: { $0.id == rowGeometry.semanticID(for: id) }) {
                         followsLatest = false
                         pendingReadingRestore = saved
                         scroll.scrollTo(id, anchor: .top)
@@ -1994,8 +2564,57 @@ private struct InboxGeneratedOutputView: View, Equatable {
 
 // Geometry is reading-position bookkeeping, not rendered state. Updating each
 // pixel must not invalidate the conversation's SwiftUI body.
+private final class ConversationNativeScrollState {
+    var metrics: NativeConversationScrollMetrics?
+}
+
 private final class ConversationRowGeometry {
-    var frames: [String: CGRect] = [:]
+    var onToolToggle: ((String) -> Void)?
+    var onFollowLatest: (() -> Void)?
+    var semanticIDs: [String: String] = [:]
+    var sourceRowIDs: [String: String] = [:]
+    func semanticID(for id: String) -> String { semanticIDs[id] ?? id }
+    private var contentFrames: [String: CGRect] = [:]
+    private var orderedFrames: [(key: String, value: CGRect)] = []
+    private var offsetY: CGFloat = 0
+
+    func updateContentFrames(_ value: [String: CGRect]) {
+        contentFrames = value
+        // These are non-overlapping siblings in the measured vertical stack.
+        // Index only when layout changes, never for a native scroll offset.
+        orderedFrames = value.sorted { $0.value.minY < $1.value.minY }
+    }
+
+    func updateOffset(_ value: CGFloat) { offsetY = value }
+
+    subscript(_ id: String) -> CGRect? {
+        contentFrames[id]?.offsetBy(dx: 0, dy: -offsetY)
+    }
+
+    private var firstVisibleIndex: Int {
+        var lower = 0, upper = orderedFrames.count
+        while lower < upper {
+            let middle = lower + (upper - lower) / 2
+            if orderedFrames[middle].value.maxY <= offsetY { lower = middle + 1 }
+            else { upper = middle }
+        }
+        return lower
+    }
+
+    func visibleFrames(height: CGFloat) -> [String: CGRect] {
+        var visible: [String: CGRect] = [:]
+        for entry in orderedFrames.dropFirst(firstVisibleIndex) {
+            guard entry.value.minY < offsetY + height else { break }
+            visible[entry.key] = entry.value.offsetBy(dx: 0, dy: -offsetY)
+        }
+        return visible
+    }
+
+    func firstFrame(where matches: (String) -> Bool) -> (key: String, value: CGRect)? {
+        guard let entry = orderedFrames.dropFirst(firstVisibleIndex).first(where: { matches($0.key) }) else { return nil }
+        return (entry.key, entry.value.offsetBy(dx: 0, dy: -offsetY))
+    }
+
     var historyRestore: (id: String, offsetY: CGFloat, childID: String?)?
 }
 
@@ -2013,11 +2632,102 @@ private struct ConversationContentPosition: Equatable {
     var isMeasured = false
 }
 
+
+private struct ConversationCodeModeBatch: View {
+    let item: ConversationItem
+    let showsHeader: Bool
+    @Binding var expanded: Bool
+    @Binding var showsJavaScript: Bool
+    var onToggle: () -> Void
+    @State private var sourceSheet: ToolSourceDocument?
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        if let parent = item.activity.first {
+            VStack(alignment: .leading, spacing: 10) {
+                if showsHeader {
+                    Button {
+                        onToggle()
+                        withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { expanded.toggle() }
+                    } label: {
+                        HStack(spacing: 8) {
+                            Image(systemName: "curlybraces").foregroundStyle(Color.accentColor)
+                            Text("Code Mode").font(.subheadline.weight(.medium))
+                            Text(item.activity.count == 2 ? "1 tool" : "\(item.activity.count - 1) tools").font(.caption).foregroundStyle(Ink.muted)
+                            Spacer(minLength: 4)
+                            if item.isRunning {
+                                ProgressView().controlSize(.mini).accessibilityLabel("Running")
+                            } else if parent.running || parent.tool?.status == "Running" {
+                                Text("Interrupted").font(.caption2).foregroundStyle(Ink.muted)
+                            } else if let status = parent.tool?.status, status != "Completed" {
+                                Text(status).font(.caption2)
+                                    .foregroundStyle(status == "Failed" ? Color.orange : Ink.muted)
+                            } else {
+                                Image(systemName: "checkmark").font(.caption2.weight(.semibold))
+                                    .foregroundStyle(Ink.muted).accessibilityLabel("Completed")
+                            }
+                            Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                                .font(.caption2.weight(.semibold)).foregroundStyle(Ink.muted)
+                        }.frame(minHeight: 44).contentShape(Rectangle())
+                    }.buttonStyle(.plain)
+                        .accessibilityIdentifier("code-mode-batch-" + parent.id)
+                        .accessibilityValue(expanded ? "Expanded" : "Collapsed")
+                }
+                if !showsHeader && expanded {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Button {
+                            onToggle()
+                            showsJavaScript.toggle()
+                        } label: {
+                            HStack {
+                                Text("JavaScript and batch output")
+                                Spacer()
+                                Image(systemName: showsJavaScript ? "chevron.up" : "chevron.down")
+                            }.font(.caption).foregroundStyle(Ink.muted)
+                                .frame(minHeight: 44).contentShape(Rectangle())
+                        }.buttonStyle(.plain)
+                            .accessibilityIdentifier("code-mode-javascript-" + parent.id)
+                            .accessibilityValue(showsJavaScript ? "Expanded" : "Collapsed")
+                        if showsJavaScript {
+                            if let source = parent.tool?.input.first(where: { $0.label == "Code" })?.value {
+                                HStack {
+                                    Spacer()
+                                    Button("Copy code", systemImage: "doc.on.doc") { UIPasteboard.general.string = source }
+                                        .buttonStyle(.plain).font(.caption).frame(minHeight: 44)
+                                        .accessibilityIdentifier("code-mode-copy-" + parent.id)
+                                }
+                                if ChatCodePreview(source, maximumCharacters: 16_384, maximumLines: 120).isTruncated {
+                                    Button("View full code") { sourceSheet = .init(title: "Code", source: source) }
+                                        .frame(minHeight: 44)
+                                        .accessibilityIdentifier("code-mode-full-source-" + parent.id)
+                                } else {
+                                    ScrollView(.horizontal) {
+                                        ChatCodeText(source: source, language: "javascript")
+                                            .font(.system(.footnote, design: .monospaced))
+                                            .textSelection(.enabled).fixedSize(horizontal: true, vertical: true)
+                                            .accessibilityIdentifier("code-mode-source-" + parent.id)
+                                    }
+                                }
+                            }
+                            ToolActivityView(row: parent, hidesCode: true).padding(.vertical, 12)
+                                .accessibilityIdentifier("tool-detail-" + parent.id)
+                        }
+                    }
+                }
+            }.padding(12)
+                .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(Ink.border, lineWidth: 0.5))
+                .accessibilityElement(children: .contain)
+                .sheet(item: $sourceSheet) { document in ToolSourceSheet(document: document) }
+        }
+    }
+}
+
 private struct ConversationToolCard: View {
     let row: TranscriptRow
     let live: Bool
+    @Binding var expanded: Bool
     var onToggle: () -> Void
-    @State private var expanded = false
+    @State private var sourceSheet: ToolSourceDocument?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     private var failed: Bool { row.tool?.status == "Failed" }
     private var title: String { row.tool?.title ?? row.text }
@@ -2085,13 +2795,18 @@ private struct ConversationToolCard: View {
                             statusIndicator
                             disclosure
                         }
-                        ChatCodeText(source: command, language: "bash")
+                        let preview = ChatCodePreview(command)
+                        ChatCodeText(source: preview.text, language: "bash")
                             .font(.system(.footnote, design: .monospaced))
                             .foregroundStyle(Ink.text)
                             .multilineTextAlignment(.leading)
                             .fixedSize(horizontal: false, vertical: true)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                            .lineLimit(preview.isTruncated ? 3 : nil)
                             .accessibilityIdentifier("command-source-" + row.id)
+                        if preview.isTruncated {
+                            Text("Show command and results").font(.caption2).foregroundStyle(Ink.muted)
+                        }
                         if let shell {
                             Text(shell).font(.caption2.monospaced()).foregroundStyle(Ink.muted)
                         }
@@ -2105,7 +2820,9 @@ private struct ConversationToolCard: View {
                             disclosure
                         }
                         if !expanded {
-                            ChatCodeText(source: source, language: "javascript")
+                            // The disclosure preview must not highlight an entire
+                            // program that is clipped to three visible lines.
+                            ChatCodeText(source: ChatCodePreview(source).text, language: "javascript")
                                 .font(.system(.caption, design: .monospaced))
                                 .foregroundStyle(Ink.text)
                                 .multilineTextAlignment(.leading)
@@ -2148,6 +2865,11 @@ private struct ConversationToolCard: View {
                     }
                 }
             if expanded {
+                if let command, ChatCodePreview(command).isTruncated {
+                    Button("View full command") { sourceSheet = .init(title: "Command", source: command) }
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("command-full-source-" + row.id)
+                }
                 if let source = codeModeSource {
                     Divider()
                     HStack {
@@ -2163,25 +2885,83 @@ private struct ConversationToolCard: View {
                         .frame(minHeight: 44)
                         .accessibilityIdentifier("code-mode-copy-" + row.id)
                     }
-                    ScrollView(.horizontal) {
-                        ChatCodeText(source: source, language: "javascript")
-                            .font(.system(.footnote, design: .monospaced))
-                            .foregroundStyle(Ink.text)
-                            .lineSpacing(4)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: true, vertical: true)
-                            .padding(.bottom, 12)
-                            .accessibilityIdentifier("code-mode-source-" + row.id)
+                    if ChatCodePreview(source, maximumCharacters: 16_384, maximumLines: 120).isTruncated {
+                        Button("View full code") { sourceSheet = .init(title: "Code", source: source) }
+                            .frame(minHeight: 44)
+                            .accessibilityIdentifier("code-mode-full-source-" + row.id)
+                    } else {
+                        ScrollView(.horizontal) {
+                            ChatCodeText(source: source, language: "javascript")
+                                .font(.system(.footnote, design: .monospaced))
+                                .foregroundStyle(Ink.text)
+                                .lineSpacing(4)
+                                .textSelection(.enabled)
+                                .fixedSize(horizontal: true, vertical: true)
+                                .padding(.bottom, 12)
+                                .accessibilityIdentifier("code-mode-source-" + row.id)
+                        }
+                        .accessibilityIdentifier("code-mode-scroll-" + row.id)
                     }
-                    .accessibilityIdentifier("code-mode-scroll-" + row.id)
                 }
                 Divider()
                 ToolActivityView(row: row, hidesCommand: command != nil, hidesCode: codeModeSource != nil).padding(.vertical, 12)
                     .accessibilityIdentifier("tool-detail-" + row.id)
             }
         }.padding(.horizontal, 12)
+            .sheet(item: $sourceSheet) { document in ToolSourceSheet(document: document) }
             .background(Ink.surface, in: RoundedRectangle(cornerRadius: 12))
             .accessibilityElement(children: .contain)
+    }
+}
+
+private struct ToolSourceDocument: Identifiable {
+    let id = UUID()
+    let title: String
+    let source: String
+}
+
+/// A viewport-sized native text view owns scrolling for large source payloads.
+/// Never ask the transcript to measure the full document's intrinsic height.
+private struct ToolSourceSheet: View {
+    let document: ToolSourceDocument
+    @Environment(\.dismiss) private var dismiss
+    var body: some View {
+        NavigationStack {
+            ToolSourceTextView(source: document.source)
+                .navigationTitle(document.title)
+                .navigationBarTitleDisplayMode(.inline)
+                .toolbar {
+                    ToolbarItem(placement: .topBarLeading) {
+                        Button("Copy source") { UIPasteboard.general.string = document.source }
+                            .accessibilityIdentifier("tool-source-copy")
+                    }
+                    ToolbarItem(placement: .topBarTrailing) {
+                        Button("Done") { dismiss() }.accessibilityIdentifier("tool-source-done")
+                    }
+                }
+        }
+    }
+}
+
+private struct ToolSourceTextView: UIViewRepresentable {
+    let source: String
+    func makeUIView(context: Context) -> UITextView {
+        let view = UITextView(usingTextLayoutManager: true)
+        view.isEditable = false
+        view.isSelectable = true
+        view.isScrollEnabled = true
+        view.alwaysBounceVertical = true
+        view.font = UIFontMetrics(forTextStyle: .footnote).scaledFont(for: .monospacedSystemFont(ofSize: 13, weight: .regular))
+        view.adjustsFontForContentSizeCategory = true
+        view.textColor = .label
+        view.backgroundColor = .systemBackground
+        view.textContainerInset = UIEdgeInsets(top: 16, left: 16, bottom: 16, right: 16)
+        view.accessibilityIdentifier = "tool-source-text"
+        view.text = source
+        return view
+    }
+    func updateUIView(_ view: UITextView, context: Context) {
+        if view.text != source { view.text = source }
     }
 }
 
@@ -2451,10 +3231,15 @@ private struct BrowserTakeoverSheet: View {
         queue.removeAll(); screen = nil; keyboard = nil; inputs = []; keyboardVisible = false
         finishing = false; touching = false
     }
-    private func observe() {
-        enqueue(["action": .string("observe"), "viewport": .object([
-            "width": .number(Double(min(1920, max(240, viewport.width)).rounded())),
-            "height": .number(Double(min(1920, max(240, viewport.height)).rounded())), "mobile": .bool(true)])])
+    private func observe(configureViewport: Bool = false) {
+        // Poll pixels without resizing the remote page as the native keyboard opens.
+        var action: [String: JSON] = ["action": .string("observe")]
+        if configureViewport {
+            action["viewport"] = .object([
+                "width": .number(Double(min(1920, max(240, viewport.width)).rounded())),
+                "height": .number(Double(min(1920, max(240, viewport.height)).rounded())), "mobile": .bool(true)])
+        }
+        enqueue(action)
     }
     private func enqueue(_ action: [String: JSON]) {
         guard scenePhase == .active, account == model.vaultIntakeAccount, !finishing else { return }
@@ -2506,11 +3291,16 @@ private struct BrowserTakeoverSheet: View {
                         enabled: screen != nil && failure == nil && !finishing && scenePhase == .active,
                         send: enqueue, showKeyboard: { hint in keyboard = hint; keyboardVisible = true })
                         .onAppear { viewport = geometry.size }
-                        .onChange(of: geometry.size) { _, size in viewport = size }
+                        .onChange(of: geometry.size) { _, size in if !keyboardVisible { viewport = size } }
                 }
                 if let failure { Text(failure).font(.footnote).foregroundStyle(.red).padding(8) }
             }
             .background(Color.black).privacySensitive()
+            .overlay {
+                if screen == nil && failure == nil {
+                    ProgressView("Opening private browser…").tint(.white).foregroundStyle(.white)
+                }
+            }
             .navigationTitle(intake.origin ?? "Private browser")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
@@ -2519,7 +3309,7 @@ private struct BrowserTakeoverSheet: View {
                         .disabled(finishing || scenePhase != .active)
                 }
                 ToolbarItemGroup(placement: .bottomBar) {
-                    Button { guard submission == nil else { return }; failure = nil; observe() } label: {
+                    Button { guard submission == nil else { return }; failure = nil; observe(configureViewport: true) } label: {
                         Label("Refresh", systemImage: "arrow.clockwise")
                     }.disabled(submission != nil || finishing || touching)
                     Spacer()
@@ -2532,7 +3322,7 @@ private struct BrowserTakeoverSheet: View {
         .presentationDetents([.large]).presentationDragIndicator(.hidden)
         .interactiveDismissDisabled()
         .task {
-            account = model.vaultIntakeAccount; observe()
+            account = model.vaultIntakeAccount; observe(configureViewport: true)
             observing = Task { @MainActor in
                 while !Task.isCancelled {
                     try? await Task.sleep(for: .seconds(1))
@@ -2543,7 +3333,7 @@ private struct BrowserTakeoverSheet: View {
         }
         .onDisappear { observing?.cancel(); clear() }
         .onChange(of: scenePhase) { _, phase in
-            if phase != .active { clear(); failure = "Private view paused. Refresh to continue." }
+            if phase != .active { clear(); if failure == nil { failure = "Private view paused. Refresh to continue." } }
         }
         .onChange(of: model.vaultIntakeAccount) { _, _ in clear(); dismiss() }
         .onChange(of: model.connected) { _, connected in if !connected { clear(); dismiss() } }
@@ -2696,5 +3486,99 @@ private struct PrivateBrowserCanvas: UIViewRepresentable {
     override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard let touch = tracked, touches.contains(touch) else { return }
         if acceptsInput { emit("cancel", touch.location(in: self)) }; resetTouch()
+    }
+}
+
+
+// Reject all feed redirects: update discovery only contacts the pinned endpoint.
+private final class AppUpdateSessionDelegate: NSObject, URLSessionTaskDelegate, @unchecked Sendable {
+    func urlSession(_ session: URLSession, task: URLSessionTask,
+                    willPerformHTTPRedirection response: HTTPURLResponse,
+                    newRequest request: URLRequest,
+                    completionHandler: @escaping (URLRequest?) -> Void) {
+        completionHandler(nil)
+    }
+}
+
+@MainActor
+private final class NativeAppUpdateModel: ObservableObject {
+    @Published var update: AppUpdate?
+    @Published var checking = false
+    @Published var checked = false
+    @Published var installing = false
+    @Published var error: String?
+    @Published var installRequested = false
+    var installedBuild: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "" }
+    var installedVersion: String { Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "—" }
+
+    func check() async {
+        guard !checking else { return }
+        checking = true
+        error = nil
+        defer { checking = false }
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.timeoutIntervalForRequest = 20
+        configuration.timeoutIntervalForResource = 30
+        let session = URLSession(configuration: configuration, delegate: AppUpdateSessionDelegate(), delegateQueue: nil)
+        defer { session.invalidateAndCancel() }
+        do {
+            var request = URLRequest(url: AppUpdate.feedURL)
+            request.cachePolicy = .reloadIgnoringLocalCacheData
+            let (data, response) = try await session.data(for: request)
+            try Task.checkCancellation()
+            guard let response = response as? HTTPURLResponse, response.statusCode == 200,
+                  response.url == AppUpdate.feedURL, data.count <= 128 * 1024 else {
+                throw AppUpdate.ValidationError.invalidFeed
+            }
+            let candidate = try JSONDecoder().decode(AppUpdate.self, from: data)
+            try candidate.validate()
+            let next = try AppUpdate.isNewer(candidate.build, than: installedBuild) ? candidate : nil
+            if next?.build != update?.build { installRequested = false }
+            update = next
+            checked = true
+        } catch is CancellationError {
+        } catch {
+            self.error = "Couldn’t check for updates. " + error.localizedDescription
+        }
+    }
+
+    func install(_ candidate: AppUpdate) async {
+        error = nil
+        installRequested = false
+        do {
+            guard let url = try candidate.installationURL(installedBuild: installedBuild) else { return }
+            installing = true
+            defer { installing = false }
+            // Open the installer scheme directly, independent of the default web browser.
+            let opened = await UIApplication.shared.open(url, options: [:])
+            if opened { installRequested = true }
+            else { error = "iOS couldn’t open the installer. Try Install update again." }
+        } catch { self.error = error.localizedDescription }
+    }
+}
+
+@MainActor
+private struct NativeAppUpdateSection: View {
+    @ObservedObject var updater: NativeAppUpdateModel
+    var body: some View {
+        Section("Nanocodex updates") {
+            LabeledContent("Installed", value: "\(updater.installedVersion) (\(updater.installedBuild))")
+            if updater.checking { ProgressView("Checking for updates…") }
+            if let update = updater.update {
+                LabeledContent("Available", value: "\(update.version) (\(update.build))")
+                if let notes = update.notes, !notes.isEmpty { Text(notes).font(.caption).foregroundStyle(.secondary) }
+                Button(updater.installing ? "Opening installer…" : "Install update") { Task { await updater.install(update) } }
+                    .disabled(updater.installing)
+                    .accessibilityIdentifier("install-nanocodex-update")
+            } else if updater.checked && !updater.checking && updater.error == nil {
+                Text("You’re up to date.").foregroundStyle(.secondary)
+            }
+            if updater.installRequested { Text("Confirm the iOS installation prompt, then return to the Home Screen while the app updates.").font(.caption).foregroundStyle(.secondary) }
+            if let error = updater.error { Text(error).font(.caption).foregroundStyle(.red) }
+            Button(updater.error == nil ? "Check for updates" : "Retry update check") { Task { await updater.check() } }
+                .disabled(updater.checking || updater.installing)
+                .accessibilityIdentifier("check-nanocodex-update")
+        }
+        .task { await updater.check() }
     }
 }

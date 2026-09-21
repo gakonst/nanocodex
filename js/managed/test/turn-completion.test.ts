@@ -155,6 +155,21 @@ describe("materializeTurnResolution", () => {
     }))).toEqual({ kind: "retry", error: "blocked", reopenAgent: false, blockedBy: "unfinished-operation" });
   });
 
+  it("reopens the Agent to resume an unsettled host interruption", async () => {
+    const error = Object.assign(new Error("Account hand discovery interrupted"), { code: "host_interrupted" });
+    const turn = { result: async () => { throw error; } } as unknown as Turn;
+    await expect(materializeTurnResolution("interrupted", turn)).resolves.toEqual({
+      kind: "retry", error: error.message, reopenAgent: true,
+    });
+    expect(classifyTurnFailure("interrupted", new Error("admission failed", { cause: error })))
+      .toEqual({ kind: "retry", error: error.message, reopenAgent: true });
+    expect(classifyTurnFailure("interrupted", new Error("transport failed", { cause: error })))
+      .toEqual({ kind: "retry", error: error.message, reopenAgent: true });
+    expect(classifyTurnFailure("committed", Object.assign(new Error("turn failed", { cause: error }), {
+      code: "failed",
+    }))).toMatchObject({ kind: "terminal", terminal: { type: "turn_failed" } });
+  });
+
   it("does not turn unsettled cancellation text into terminal cancellation", () => {
     expect(classifyTurnFailure("pending", Object.assign(new Error("turn was cancelled"), {
       code: "retryable",

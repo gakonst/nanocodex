@@ -193,6 +193,26 @@ impl VoiceHost {
         Ok(())
     }
 
+    pub(crate) async fn pcm_request(&mut self, request: Message) -> Result<crate::PcmStatus> {
+        let generation = match &request {
+            Message::BeginPcm { generation, .. }
+            | Message::WritePcm { generation, .. }
+            | Message::DrainPcm { generation }
+            | Message::CancelPcm { generation } => *generation,
+            _ => anyhow::bail!("invalid PCM request"),
+        };
+        let response = self.request(request, DEADLINE).await?;
+        let Message::PcmState {
+            generation: returned,
+            status,
+        } = response
+        else {
+            anyhow::bail!("unexpected PCM response");
+        };
+        ensure!(returned == generation, "unexpected PCM generation");
+        Ok(status)
+    }
+
     async fn exchange(
         &mut self,
         request: Message,

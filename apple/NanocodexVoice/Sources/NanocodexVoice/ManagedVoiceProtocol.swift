@@ -3,11 +3,12 @@ import InboxCore
 import NanocodexVoiceCore
 
 public struct ManagedVoiceTranscript: Equatable, Sendable {
+    public var id: UInt64? = nil
     public var speaker: String
     public var text: String
     public var isFinal: Bool
-    public init(speaker: String, text: String, isFinal: Bool = true) {
-        self.speaker = speaker; self.text = text; self.isFinal = isFinal
+    public init(speaker: String, text: String, isFinal: Bool = true, id: UInt64? = nil) {
+        self.id = id; self.speaker = speaker; self.text = text; self.isFinal = isFinal
     }
 }
 public struct ManagedVoiceEffects: Equatable, Sendable {
@@ -134,7 +135,7 @@ public final class ManagedVoiceProtocol: @unchecked Sendable {
     private func effects(_ value: JSON) throws -> ManagedVoiceEffects {
         var effects = ManagedVoiceEffects()
         effects.frames = try value["frames"].array.map { try JSONDecoder().decode(JSON.self, from: Data($0.string.utf8)) }
-        effects.transcripts = value["transcripts"].array.map { .init(speaker: $0["speaker"].string, text: $0["text"].string, isFinal: !$0["is_partial"].bool) }
+        effects.transcripts = value["transcripts"].array.map { .init(speaker: $0["speaker"].string, text: $0["text"].string, isFinal: !$0["is_partial"].bool, id: $0["id"] == .null ? nil : UInt64($0["id"].number)) }
         effects.ready = value["ready"].bool
         effects.inputGeneration = value["input_generation"] == .null ? nil : UInt64(value["input_generation"].number)
         effects.undeliveredAnswers = value["undelivered_answers"].array.map(\.string)

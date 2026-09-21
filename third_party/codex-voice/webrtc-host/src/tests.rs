@@ -40,9 +40,48 @@ async fn pair() -> Result<(Media, PeerConnection, NativeAudioSource)> {
     Ok((media, remote, source))
 }
 
+async fn pair_with_trickled_ice() -> Result<(Media, PeerConnection, NativeAudioSource)> {
+    let (media, offer) = Media::start().await?;
+    let (local_tx, mut local_rx) = tokio::sync::mpsc::unbounded_channel();
+    media.peer.on_ice_candidate(Some(Box::new(move |candidate| {
+        let _ = local_tx.send(candidate);
+    })));
+    let factory = PeerConnectionFactory::default();
+    let mut config = RtcConfiguration::default();
+    config.continual_gathering_policy = ContinualGatheringPolicy::GatherOnce;
+    let remote = factory.create_peer_connection(config)?;
+    let (remote_tx, mut remote_rx) = tokio::sync::mpsc::unbounded_channel();
+    remote.on_ice_candidate(Some(Box::new(move |candidate| {
+        let _ = remote_tx.send(candidate);
+    })));
+    let source = NativeAudioSource::new(AudioSourceOptions::default(), 48000, 1, 0);
+    let track = factory.create_audio_track("test-tone", source.clone());
+    remote.add_track(track.into(), &["test"])?;
+    remote
+        .set_remote_description(SessionDescription::parse(&offer, SdpType::Offer)?)
+        .await?;
+    let answer = remote.create_answer(AnswerOptions::default()).await?;
+    remote.set_local_description(answer.clone()).await?;
+    media.peer.set_remote_description(answer).await?;
+    // Exchange candidates explicitly: this fixture has no managed signaling
+    // server, and a current description is not available while an offer is pending.
+    tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            if media.peer.connection_state() == PeerConnectionState::Connected { break; }
+            tokio::select! {
+                Some(candidate) = local_rx.recv() => remote.add_ice_candidate(candidate).await?,
+                Some(candidate) = remote_rx.recv() => media.peer.add_ice_candidate(candidate).await?,
+                _ = tokio::time::sleep(Duration::from_millis(10)) => {},
+            }
+        }
+        anyhow::Ok(())
+    }).await.context("connecting loopback peers")??;
+    Ok((media, remote, source))
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn opus_audio_is_continuous_through_real_peer_and_neteq() -> Result<()> {
-    let (media, remote, source) = pair().await?;
+    let (media, remote, source) = pair_with_trickled_ice().await?;
     let track = media
         .peer
         .receivers()
@@ -378,5 +417,182 @@ async fn speaker_suppression_does_not_interrupt_microphone_capture() -> Result<(
         levels.len() == 400 && silent <= 3,
         "microphone capture gaps"
     );
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore = "requires BlackHole; uses only explicit virtual capture/playout and local peer"]
+async fn external_pcm_uses_factory_device_while_provider_suppressed_and_mic_active() -> Result<()> {
+    use codex_realtime_webrtc::PcmStatus;
+    let (mut media, remote, source) = pair_with_trickled_ice().await?;
+    media.open_devices()?;
+    let output = (0..media.factory.playout_devices() as u16)
+        .find(|i| media.factory.playout_device_name(*i).contains("BlackHole"))
+        .context("BlackHole output")?;
+    let input = (0..media.factory.recording_devices() as u16)
+        .find(|i| {
+            media
+                .factory
+                .recording_device_name(*i)
+                .contains("BlackHole")
+        })
+        .context("BlackHole input")?;
+    ensure!(
+        media.factory.set_playout_device(output),
+        "select virtual speaker"
+    );
+    ensure!(
+        media.factory.set_recording_device(input),
+        "select virtual microphone"
+    );
+    let device = cpal::default_host()
+        .input_devices()?
+        .find(|d| {
+            d.description()
+                .is_ok_and(|d| d.name().contains("BlackHole"))
+        })
+        .context("BlackHole monitor")?;
+    let supported = device.default_input_config()?;
+    ensure!(
+        supported.sample_format() == cpal::SampleFormat::F32,
+        "float monitor"
+    );
+    let config: cpal::StreamConfig = supported.into();
+    let samples = Arc::new(std::sync::Mutex::new(Vec::<f32>::with_capacity(1_000_000)));
+    let captured = samples.clone();
+    let stream = device.build_input_stream(
+        config,
+        move |data: &[f32], _| {
+            let mut captured = captured.lock().unwrap();
+            if captured.len() + data.len() <= 1_000_000 {
+                captured.extend_from_slice(data);
+            }
+        },
+        |_| {},
+        None,
+    )?;
+    stream.play()?;
+    media.controls(AudioControls {
+        microphone_muted: false,
+        speaker_suppressed: true,
+    })?;
+    ensure!(
+        media.microphone.enabled() && media.factory.adm_recording_enabled(),
+        "microphone inactive"
+    );
+    ensure!(media.pcm.begin(123, 24000) == PcmStatus::Ready, "begin PCM");
+    let mut max_peak = 0;
+    let mut clock = tokio::time::interval(Duration::from_millis(10));
+    clock.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut external_sample = 0usize;
+    for frame in 0..400 {
+        clock.tick().await;
+        // Provider keeps producing throughout. The output must be silent except
+        // while external PCM is admitted (frames 50..350).
+        let mut provider = AudioFrame::new(48000, 1, 480);
+        for (i, sample) in provider.data.to_mut().iter_mut().enumerate() {
+            *sample = (((frame * 480 + i) as f64 * 880.0 * std::f64::consts::TAU / 48000.0).sin()
+                * 10000.0) as i16;
+        }
+        source.capture_frame(&provider).await?;
+        // HTTP-like 40ms bursts with alternating 80/10/60/10ms stalls.
+        // Keep the waveform phase continuous independently of arrival time.
+        if (50..350).contains(&frame) && [0, 8, 9, 15].contains(&((frame - 50) % 16)) {
+            let external: Vec<_> = (0..960)
+                .map(|i| {
+                    (((external_sample + i) as f64 * 440.0 * std::f64::consts::TAU / 24000.0).sin()
+                        * 10000.0) as i16
+                })
+                .collect();
+            external_sample += external.len();
+            ensure!(
+                media.pcm.write(123, &external) == PcmStatus::Ready,
+                "PCM backpressure while paced"
+            );
+        }
+        if frame == 350 {
+            ensure!(media.pcm.cancel(123) == PcmStatus::Ready, "cancel PCM");
+            ensure!(
+                media.pcm.write(123, &[10000; 240]) == PcmStatus::Stale,
+                "cancelled generation accepted samples"
+            );
+            ensure!(
+                media.pcm.begin(123, 24000) == PcmStatus::Stale,
+                "cancelled generation restarted"
+            );
+            ensure!(
+                media.pcm.begin(124, 24000) == PcmStatus::Ready,
+                "fresh generation rejected"
+            );
+            ensure!(
+                media.pcm.cancel(123) == PcmStatus::Stale,
+                "stale cancellation touched fresh generation"
+            );
+            ensure!(
+                media.pcm.cancel(124) == PcmStatus::Ready,
+                "fresh generation was invalidated"
+            );
+        }
+        max_peak = max_peak.max(media.pcm.take_peak());
+    }
+    stream.pause()?;
+    drop(stream);
+    ensure!(
+        max_peak > 9000,
+        "PCM did not reach production factory mixer"
+    );
+    ensure!(
+        media.microphone.enabled() && media.factory.adm_recording_enabled(),
+        "PCM playback or cancellation muted capture"
+    );
+    ensure!(
+        media
+            .peer
+            .receivers()
+            .iter()
+            .filter_map(|receiver| receiver.track())
+            .all(|track| !track.enabled()),
+        "provider receiver became enabled during PCM playback"
+    );
+    let outbound_received = remote
+        .get_stats()
+        .await?
+        .into_iter()
+        .filter_map(|s| match s {
+            RtcStats::InboundRtp(s) => Some(s.inbound.total_samples_received),
+            _ => None,
+        })
+        .sum::<u64>();
+    ensure!(
+        outbound_received > 48000 * 2,
+        "microphone capture did not continue"
+    );
+    let samples = samples.lock().unwrap();
+    let block = config.sample_rate as usize / 100 * config.channels as usize;
+    let levels: Vec<_> = samples
+        .chunks_exact(block)
+        .map(|chunk| {
+            (chunk.iter().map(|v| f64::from(*v).powi(2)).sum::<f64>() / chunk.len() as f64).sqrt()
+        })
+        .collect();
+    ensure!(levels.len() >= 390, "insufficient monitor samples");
+    ensure!(
+        levels[20..40].iter().all(|v| *v < 0.0001),
+        "provider audio leaked before PCM"
+    );
+    let silent = levels[100..330].iter().filter(|v| **v < 0.005).count();
+    ensure!(silent <= 3, "external PCM output gaps: {silent}");
+    ensure!(
+        levels[375..390].iter().all(|v| *v < 0.0001),
+        "audio continued after cancel"
+    );
+    eprintln!(
+        "jittered external PCM BlackHole: audible_blocks={} silent_blocks={} peak={} mic_samples={}",
+        230 - silent,
+        silent,
+        max_peak,
+        outbound_received
+    );
+    remote.close();
     Ok(())
 }

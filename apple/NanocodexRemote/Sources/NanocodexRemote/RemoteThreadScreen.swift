@@ -33,7 +33,7 @@ public struct RemoteThreadScreen: View {
                     Button("Change desktop") { viewer.close(); selection = nil }
                         .disabled(selection == nil)
                     Button("Screen controls") { viewer.suspend(); onControls(selection) }
-                    Button("Refresh") { Task { await refresh() } }
+                    Button("Refresh") { Task { await refresh(reconnect: true) } }
                 } label: { Image(systemName: "ellipsis").frame(width: 44, height: 44) }
                     .accessibilityLabel("Screen options").accessibilityIdentifier("thread-screen-options")
                 Button { expanded.toggle() } label: {
@@ -50,7 +50,7 @@ public struct RemoteThreadScreen: View {
                     else if hands.isEmpty {
                         VStack(spacing: 6) {
                             Text(error == nil ? "No desktops available" : "Couldn’t load desktops").font(.subheadline)
-                            Button("Refresh") { Task { await refresh() } }
+                            Button("Refresh") { Task { await refresh(reconnect: true) } }
                         }
                     } else {
                         ScrollView {
@@ -96,7 +96,7 @@ public struct RemoteThreadScreen: View {
                         else {
                             Text(error == nil ? "This desktop is offline" : "Couldn’t load this desktop").font(.subheadline)
                             Text("Your selection is saved for this thread.").font(.caption).foregroundStyle(.secondary)
-                            Button("Refresh") { Task { await refresh() } }
+                            Button("Refresh") { Task { await refresh(reconnect: true) } }
                         }
                     }
                 }
@@ -127,13 +127,15 @@ public struct RemoteThreadScreen: View {
         .onDisappear { visible = false; connectionTask?.cancel(); viewer.close() }
     }
 
-    private func refresh() async {
+    private func refresh(reconnect: Bool = false) async {
         do {
             let values = try await service.list()
             guard visible, scenePhase == .active, !Task.isCancelled else { return }
             hands = values; loaded = true; error = nil
             if let selection, viewer.hand == nil, let hand = values.first(where: selection.matches) {
                 await viewer.connect(service: service, hand: hand)
+            } else if reconnect {
+                await viewer.refreshConnection()
             }
         } catch {
             if !Task.isCancelled { loaded = true; self.error = error.localizedDescription }

@@ -71,6 +71,7 @@
   ],
   "durable_objects": {
     "bindings": [
+      { "name": "ELEVENLABS_ACCOUNTS", "class_name": "ElevenLabsAccount" },
       { "name": "NANOCODEX_HAND_BROKER", "class_name": "AccountHostedTools", "script_name": "nanocodex-durable-agent" },
       {
         "name": "BYOK_SESSIONS",
@@ -109,7 +110,8 @@
         "EvalCoordinator",
         "ChatGptEgress"
       ]
-    }
+    },
+    { "tag": "v2-elevenlabs", "new_sqlite_classes": ["ElevenLabsAccount"] }
   ],
   "containers": [
     {
@@ -215,6 +217,7 @@
       ],
       "durable_objects": {
         "bindings": [
+          { "name": "ELEVENLABS_ACCOUNTS", "class_name": "ElevenLabsAccount" },
           { "name": "BYOK_SESSIONS", "class_name": "ByokSession" },
           { "name": "CHATGPT_SESSIONS", "class_name": "ChatGptSession" },
           { "name": "GIT_REPOSITORY", "class_name": "GitRepository" },

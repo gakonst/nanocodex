@@ -130,6 +130,7 @@ final class AppModel: ObservableObject {
     private let isolatedSession: Bool
     private var currentCredential: AccountKeychain.Credential? {
         didSet {
+            showingScheduledJobs = false
             resetRemoteSharing()
             if let credential = currentCredential, let origin = URL(string: credential.baseUrl) {
                 remoteService = try? RemoteService(origin: origin) { request in
@@ -139,6 +140,13 @@ final class AppModel: ObservableObject {
             }
         }
     }
+    @Published var showingScheduledJobs = false
+
+    func schedulesClient() throws -> ManagedClient {
+        guard let credential = currentCredential else { throw APIError.invalidCredential }
+        return ManagedClient(credential: try .init(origin: credential.baseUrl, apiKey: credential.apiKey))
+    }
+
     func attachmentPreview(_ attachment: MessageAttachment, agentID: String) async throws -> Data {
         guard let credential = currentCredential else { throw APIError.invalidCredential }
         let epoch = generation

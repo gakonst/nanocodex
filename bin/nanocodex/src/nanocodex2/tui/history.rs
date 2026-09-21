@@ -677,7 +677,7 @@ mod tests {
         for record in records {
             model.apply(&record);
         }
-        assert!(model.entries().iter().any(|entry| matches!(&entry.kind, EntryKind::Assistant { text, complete: true } if text == "retained final answer")));
+        assert!(model.entries().iter().any(|entry| matches!(&entry.kind, EntryKind::Assistant { text, complete: true, agent_id: None } if text == "retained final answer")));
     }
 
     #[test]

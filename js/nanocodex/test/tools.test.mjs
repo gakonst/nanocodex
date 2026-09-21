@@ -322,3 +322,21 @@ test("standard shared definitions match the compiled upstream contract fixture",
     assert.deepEqual(tool.outputSchema, expected.output_schema, tool.name);
   }
 });
+
+test("view_image loader receives per-call detail and retains its bounded output contract", async () => {
+  const bytes = new Uint8Array([255, 216, 255, 224, 0]);
+  const seen = [];
+  const tool = viewImage({
+    workspace: { readFile: async () => { throw new Error("unexpected workspace read"); } },
+    loadImage: async (path, detail) => { seen.push([path, detail]); return { bytes }; },
+  });
+  const [high, original] = await Promise.all([
+    tool.handler({ path: "/high.jpg" }, context),
+    tool.handler({ path: "/original.jpg", detail: "original" }, context),
+  ]);
+  assert.deepEqual(seen, [["/high.jpg", "high"], ["/original.jpg", "original"]]);
+  assert.equal(high.value.detail, "high");
+  assert.equal(original.value.detail, "original");
+  const oversized = viewImage({ workspace: {}, loadImage: async () => ({ bytes: new Uint8Array(10 * 1024 * 1024 + 1) }) });
+  await assert.rejects(oversized.handler({ path: "/large.jpg" }, context), /exceeds 10 MiB/);
+});

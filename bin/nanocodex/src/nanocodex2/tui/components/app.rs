@@ -196,6 +196,13 @@ pub(crate) enum AppEvent {
         model: Model,
         skills: Arc<[Skill]>,
     },
+    RoutingHydrated {
+        pane: PaneId,
+        enabled: bool,
+        provider: Option<String>,
+        model: Option<Model>,
+        effort: Option<ReasoningEffort>,
+    },
     SettingsHydrated {
         pane: PaneId,
         effort: ReasoningEffort,
@@ -219,6 +226,10 @@ pub(crate) enum AppEvent {
         id: String,
     },
     VoiceStatus(Option<crate::voice_state::Status>),
+    VoiceOutput {
+        pane: PaneId,
+        text: String,
+    },
     NotifyError {
         pane: PaneId,
         error: String,
@@ -535,6 +546,21 @@ impl AppNode {
                     skills,
                 },
             ),
+            AppEvent::RoutingHydrated {
+                pane,
+                enabled,
+                provider,
+                model,
+                effort,
+            } => self.update_root(
+                pane,
+                RootEvent::RoutingHydrated {
+                    enabled,
+                    provider,
+                    model,
+                    effort,
+                },
+            ),
             AppEvent::SettingsHydrated {
                 pane,
                 effort,
@@ -565,6 +591,9 @@ impl AppNode {
             }
             AppEvent::NotifyError { pane, error } => {
                 self.update_root(pane, RootEvent::NotifyError(error))
+            }
+            AppEvent::VoiceOutput { pane, text } => {
+                self.update_root(pane, RootEvent::VoiceOutput(text))
             }
             AppEvent::NotifySuccess { pane, message } => {
                 self.update_root(pane, RootEvent::NotifySuccess(message))
@@ -1150,6 +1179,34 @@ mod screen_tests {
             KeyModifiers::NONE,
         ))))
     }
+    #[test]
+    fn routing_hydration_reaches_the_requested_pane() {
+        let mut app = app();
+        app.update(AppEvent::RoutingHydrated {
+            pane: PaneId::Main,
+            enabled: true,
+            provider: Some("Vercel".into()),
+            model: Some(Model::Glm53),
+            effort: Some(ReasoningEffort::Low),
+        });
+        let composer = app.root(PaneId::Main).unwrap().composer();
+        assert!(composer.auto_routing());
+        assert_eq!(composer.model(), Model::Glm53);
+        assert_eq!(composer.effort(), ReasoningEffort::Low);
+        // A late update for an absent pane cannot replace the visible route.
+        app.update(AppEvent::RoutingHydrated {
+            pane: PaneId::Fork(99),
+            enabled: true,
+            provider: Some("OpenRouter".into()),
+            model: Some(Model::Sol),
+            effort: Some(ReasoningEffort::High),
+        });
+        assert_eq!(
+            app.root(PaneId::Main).unwrap().composer().model(),
+            Model::Glm53
+        );
+    }
+
     #[test]
     fn screen_and_zoom_are_local_and_tab_cycles_without_changing_sessions() {
         let mut app = app();

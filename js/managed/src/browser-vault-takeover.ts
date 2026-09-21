@@ -1,4 +1,4 @@
-import { isBrowserVaultOrigin, type BrowserVaultIdentity, type PrivateBrowserCdp } from "./browser-vault";
+import { PrivateBrowserNoActiveTouch, isBrowserVaultOrigin, type BrowserVaultIdentity, type PrivateBrowserCdp } from "./browser-vault";
 
 export type BrowserVaultTakeoverAction =
   | { action: "observe"; viewport?: { width: number; height: number; mobile: boolean } }
@@ -107,7 +107,7 @@ export async function privateVaultTakeover(
         catch (error) {
           // A replaced channel can have no finger despite uncertain lease state.
           // Only Chrome's specific absent-sequence rejection confirms recovery.
-          if (!(error instanceof Error) || !/(?:^|: )Must send a TouchStart first to start a new touch\.$/.test(error.message)) throw error;
+          if (!(error instanceof PrivateBrowserNoActiveTouch)) throw error;
         }
       }
       touch.active = false; touch.uncertain = false;

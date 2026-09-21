@@ -3,6 +3,20 @@ import XCTest
 @testable import InboxCore
 
 final class VaultIntakeTests: XCTestCase {
+    func testBrowserReceiptDisplayPreservesOnlyRecognizedCompletion() {
+        let id = String(repeating: "a", count: 32)
+        let receipt: JSON = .object(["type": .string("browser_vault_takeover_receipt"),
+            "status": .string("finished"), "challenge_id": .string(id)])
+        XCTAssertEqual(BrowserReceiptPresentation.summary(receipt.pretty), "Private browser control finished")
+        let verification: JSON = .object(["type": .string("browser_vault_challenge_receipt"),
+            "status": .string("submitted"), "challenge_id": .string(id)])
+        XCTAssertEqual(BrowserReceiptPresentation.summary(verification.pretty), "Browser verification code submitted")
+        XCTAssertNil(BrowserReceiptPresentation.summary("ordinary user message"))
+        XCTAssertNil(BrowserReceiptPresentation.summary(receipt.pretty.replacingOccurrences(of: "finished", with: "active")))
+        XCTAssertNil(BrowserReceiptPresentation.summary(receipt.pretty.replacingOccurrences(of: id, with: "short")))
+        XCTAssertNil(BrowserReceiptPresentation.summary("{\"type\":\"browser_vault_takeover_receipt\",\"status\":\"finished\",\"challenge_id\":\"\(id)\",\"extra\":true}"))
+    }
+
     func testAutomaticBrowserPresentationRequiresCurrentAgentAndUnexpiredRequest() throws {
         let hint: JSON = .object(["type": .string("browser_vault_takeover"), "status": .string("input_required"),
             "challenge_id": .string(String(repeating: "a", count: 32)), "agent_id": .string("agent_1"),

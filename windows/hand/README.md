@@ -29,6 +29,10 @@ Uninstall removes the service and this user's dedicated Hand credential,
 identity, and logs. Worker logs live in `%LOCALAPPDATA%\Nanocodex\Hand\hand.log`;
 supervisor logs live beside the installed executable as `service.log`.
 
+Installation provisions the official OpenAI Sky runtime for the signed-in user
+with `nanocodex2 computer setup --refresh`. Setup must succeed before the Hand
+starts; no custom computer-control runtime is bundled.
+
 The installer bundles FFmpeg for H.264 screen streaming. The stream requests
 60 fps; actual distinct frame rate depends on the Windows display, capture
 source, available CPU, and network. A software-rendered VM does not guarantee
@@ -52,13 +56,11 @@ The installer preserves existing firewall policy.
 
 ## Build
 
-Build `nanocodex2.exe` from the main workspace and `nanocodex-computer.exe` from
-`crates/experimental/nanocodex-computer/runtime`, then run:
+Build `nanocodex2.exe` from the main workspace, then run:
 
 ```powershell
 .\windows\hand\build.ps1 `
   -Nanocodex2 .\target\release\nanocodex2.exe `
-  -Computer .\crates\experimental\nanocodex-computer\runtime\target\release\nanocodex-computer.exe `
   -Version 0.6.1
 ```
 

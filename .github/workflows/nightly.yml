@@ -21,7 +21,7 @@ concurrency:
   cancel-in-progress: ${{ inputs.pr != '' }}
 
 jobs:
-  # CLI, computer and voice builds are independent. Keep them on separate
+  # CLI and voice builds are independent. Keep them on separate
   # runners, then assemble the same complete per-platform downloads as before.
   build:
     if: github.repository == 'gakonst/nanocodex'
@@ -34,7 +34,7 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-22.04, macos-15]
-        component: [cli, computer, voice]
+        component: [cli, voice]
         include:
           - os: ubuntu-22.04
             target: x86_64-unknown-linux-gnu
@@ -44,8 +44,6 @@ jobs:
             init-target: aarch64-unknown-linux-musl
           - component: cli
             workspaces: .
-          - component: computer
-            workspaces: crates/experimental/nanocodex-computer/runtime
           - component: voice
             workspaces: |
               .
@@ -73,7 +71,7 @@ jobs:
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
           key: nightly-${{ matrix.component }}-${{ matrix.target }}
-          # Computer and voice helpers have their own Cargo target directories.
+          # Voice helpers have their own Cargo target directories.
           workspaces: ${{ matrix.workspaces }}
           cache-on-failure: true
       - name: Enforce ring-only Rustls provider
@@ -101,13 +99,6 @@ jobs:
         if: matrix.component == 'cli'
         shell: bash
         run: python3 scripts/check-vm-init.py "target/${{ matrix.target }}/nightly/build"
-      - name: Install Linux computer dependencies
-        if: runner.os == 'Linux' && matrix.component == 'computer'
-        run: sudo apt-get update && sudo apt-get install --yes pkg-config libpulse-dev libxkbcommon-dev
-      - name: Build computer companion
-        if: matrix.component == 'computer'
-        shell: bash
-        run: cargo build --locked --release --timings --manifest-path crates/experimental/nanocodex-computer/runtime/Cargo.toml --target ${{ matrix.target }} --bin nanocodex-computer
       - name: Sign macOS VM hand host
         if: runner.os == 'macOS' && matrix.component == 'cli'
         shell: bash
@@ -135,11 +126,6 @@ jobs:
                 cp "target/$TARGET/nightly/$binary" "dist/$binary-$TARGET"
               done
               ;;
-            computer)
-              binary="crates/experimental/nanocodex-computer/runtime/target/$TARGET/release/nanocodex-computer"
-              "$binary" --help >/dev/null
-              cp "$binary" "dist/nanocodex-computer-$TARGET"
-              ;;
             voice)
               # The composite action verifies initialization and relocation.
               test -s "dist/nanocodex-voice-$TARGET.tar.gz"
@@ -159,7 +145,6 @@ jobs:
           name: nightly-timings-${{ matrix.component }}-${{ matrix.target }}
           path: |
             target/cargo-timings/*.html
-            crates/experimental/nanocodex-computer/runtime/target/cargo-timings/*.html
           if-no-files-found: ignore
           retention-days: 7
 
@@ -185,7 +170,7 @@ jobs:
           PR_NUMBER: ${{ inputs.pr }}
         run: |
           mkdir dist
-          for component in cli computer voice; do
+          for component in cli voice; do
             part="parts/nightly-component-$component-$TARGET"
             cmp "parts/nightly-component-cli-$TARGET/BUILD_SHA-cli" "$part/BUILD_SHA-$component"
             cp "$part"/nanocodex* dist/
@@ -196,7 +181,7 @@ jobs:
             test "$BUILD_SHA" = "$GITHUB_SHA"
           fi
           cd dist
-          for binary in "nanocodex-$TARGET" "nanocodex2-$TARGET" "nanocodex-computer-$TARGET"; do
+          for binary in "nanocodex-$TARGET" "nanocodex2-$TARGET"; do
             test -s "$binary"
             # Artifact downloads do not preserve executable permissions.
             chmod +x "$binary"
@@ -207,7 +192,7 @@ jobs:
           test -s "nanocodex-voice-$TARGET.tar.gz"
           if [[ -n "$PR_NUMBER" ]]; then
             sha256sum "nanocodex-$TARGET" "nanocodex2-$TARGET" \
-              "nanocodex-computer-$TARGET" "nanocodex-voice-$TARGET.tar.gz" \
+              "nanocodex-voice-$TARGET.tar.gz" \
               > "nanocodex-$TARGET.sha256"
             printf '{"repository":"%s","pr":%s,"sha":"%s","artifact":"%s","run_id":%s}\n' \
               "$GITHUB_REPOSITORY" "$PR_NUMBER" "$BUILD_SHA" "nanocodex-$TARGET" \
@@ -248,7 +233,6 @@ jobs:
           key: nightly-windows-hand
           workspaces: |
             . -> target
-            crates/experimental/nanocodex-computer/runtime -> target
           cache-on-failure: true
       - name: Build Windows Hand payload
         shell: pwsh
@@ -257,23 +241,17 @@ jobs:
         run: |
           cargo build --locked --profile nightly --timings --package nanocodex2-bin --bin nanocodex2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          cargo build --locked --release --timings `
-            --manifest-path crates/experimental/nanocodex-computer/runtime/Cargo.toml `
-            --bin nanocodex-computer
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Sign payload when Authenticode is configured
         shell: pwsh
         run: >-
           ./windows/hand/sign.ps1 -Path
-          ./target/nightly/nanocodex2.exe,
-          ./crates/experimental/nanocodex-computer/runtime/target/release/nanocodex-computer.exe
+          ./target/nightly/nanocodex2.exe
       - name: Build and sign one-click installer
         shell: pwsh
         run: |
           $displayVersion = "nightly-$($env:BUILD_SHA.Substring(0, 10))"
           ./windows/hand/build.ps1 `
             -Nanocodex2 ./target/nightly/nanocodex2.exe `
-            -Computer ./crates/experimental/nanocodex-computer/runtime/target/release/nanocodex-computer.exe `
             -Version $displayVersion `
             -NumericVersion 0.0.0.0
           ./windows/hand/sign.ps1 -Path ./dist/windows-hand/nanocodex-hand-setup-x86_64.exe
@@ -283,7 +261,6 @@ jobs:
           PR_NUMBER: ${{ inputs.pr }}
         run: |
           Copy-Item target/nightly/nanocodex2.exe dist/windows-hand/nanocodex2-x86_64-pc-windows-msvc.exe
-          Copy-Item crates/experimental/nanocodex-computer/runtime/target/release/nanocodex-computer.exe dist/windows-hand/nanocodex-computer-x86_64-pc-windows-msvc.exe
           if (-not [string]::IsNullOrWhiteSpace($env:PR_NUMBER)) {
             [pscustomobject]@{
               repository = $env:GITHUB_REPOSITORY
@@ -306,7 +283,6 @@ jobs:
           name: nightly-timings-windows-hand
           path: |
             target/cargo-timings/*.html
-            crates/experimental/nanocodex-computer/runtime/target/cargo-timings/*.html
           if-no-files-found: ignore
           retention-days: 7
 
@@ -442,9 +418,6 @@ jobs:
                 nanocodex-x86_64-unknown-linux-gnu|nanocodex-x86_64-unknown-linux-gnu.gz|\
                 nanocodex2-aarch64-apple-darwin|nanocodex2-aarch64-apple-darwin.gz|\
                 nanocodex2-x86_64-unknown-linux-gnu|nanocodex2-x86_64-unknown-linux-gnu.gz|\
-                nanocodex-computer-aarch64-apple-darwin|nanocodex-computer-aarch64-apple-darwin.gz|\
-                nanocodex-computer-x86_64-unknown-linux-gnu|nanocodex-computer-x86_64-unknown-linux-gnu.gz|\
-                nanocodex-computer-x86_64-pc-windows-msvc.exe|\
                 nanocodex2-x86_64-pc-windows-msvc.exe|nanocodex-hand-setup-x86_64.exe|\
                 nanocodex-voice-aarch64-apple-darwin.tar.gz|nanocodex-voice-x86_64-unknown-linux-gnu.tar.gz|\
                 nanocodex-vm-guest-x86_64-unknown-linux-musl|nanocodex-vm-guest-x86_64-unknown-linux-musl.gz)

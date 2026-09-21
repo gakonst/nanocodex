@@ -1,0 +1,143 @@
+diff --git a/api/media_stream_interface.h b/api/media_stream_interface.h
+index 643b5f273b..7b5b568692 100644
+--- a/api/media_stream_interface.h
++++ b/api/media_stream_interface.h
+@@ -270,6 +270,11 @@ class RTC_EXPORT AudioSourceInterface : public MediaSourceInterface {
+   // audio network adaptation on the source is the wrong layer of abstraction).
+   virtual const AudioOptions options() const;
+   virtual void SetOptions(const AudioOptions & /* options */) {}
++
++  // Returns true if this source delivers audio externally (via AddSink),
++  // bypassing the ADM/AudioState audio distribution path.
++  // When true, AudioSendStream should not register with AudioState.
++  virtual bool is_external_source() const { return false; }
+ };
+ 
+ // Interface of the audio processor used by the audio track to collect
+diff --git a/audio/audio_send_stream.cc b/audio/audio_send_stream.cc
+index e9e72b48e7..ca21052ff7 100644
+--- a/audio/audio_send_stream.cc
++++ b/audio/audio_send_stream.cc
+@@ -377,8 +377,13 @@ void AudioSendStream::Start() {
+   }
+   channel_send_->StartSend();
+   sending_ = true;
+-  audio_state()->AddSendingStream(this, encoder_sample_rate_hz_,
+-                                  encoder_num_channels_);
++  // Only register with AudioState if not using external source.
++  // External sources (like NativeAudioSource) deliver audio directly via AddSink,
++  // so we don't want AudioState to also send device audio to this stream.
++  if (!config_.external_source) {
++    audio_state()->AddSendingStream(this, encoder_sample_rate_hz_,
++                                    encoder_num_channels_);
++  }
+ }
+ 
+ void AudioSendStream::Stop() {
+@@ -389,8 +394,10 @@ void AudioSendStream::Stop() {
+   RTC_LOG(LS_INFO) << "AudioSendStream::Stop: " << config_.rtp.ssrc;
+   RemoveBitrateObserver();
+   channel_send_->StopSend();
+-  sending_ = false;
+-  audio_state()->RemoveSendingStream(this);
++  // Only unregister if we registered (when not using external source).
++  if (!config_.external_source) {
++    audio_state()->RemoveSendingStream(this);
++  }
+ }
+ 
+ void AudioSendStream::SendAudioData(std::unique_ptr<AudioFrame> audio_frame) {
+diff --git a/call/audio_send_stream.h b/call/audio_send_stream.h
+index 40bfd812a4..a482b16d70 100644
+--- a/call/audio_send_stream.h
++++ b/call/audio_send_stream.h
+@@ -176,6 +176,12 @@ class AudioSendStream : public AudioSender {
+     // An optional frame transformer used by insertable streams to transform
+     // encoded frames.
+     scoped_refptr<webrtc::FrameTransformerInterface> frame_transformer;
++
++    // When true, this stream uses an external audio source (not ADM).
++    // AudioState will NOT send device-captured audio to this stream.
++    // Audio is delivered directly via the source's AddSink mechanism.
++    // This prevents mixing of device audio with externally-sourced audio.
++    bool external_source = false;
+   };
+ 
+   ~AudioSendStream() override = default;
+diff --git a/media/base/audio_source.h b/media/base/audio_source.h
+index 04a7d19dfa..9f513f3c75 100644
+--- a/media/base/audio_source.h
++++ b/media/base/audio_source.h
+@@ -49,6 +49,10 @@ class AudioSource {
+   // to the source at a time.
+   virtual void SetSink(Sink* sink) = 0;
+ 
++  // Returns true if this source delivers audio externally (bypassing ADM).
++  // When true, AudioSendStream should not register with AudioState.
++  virtual bool is_external_source() const { return false; }
++
+  protected:
+   virtual ~AudioSource() {}
+ };
+diff --git a/media/engine/webrtc_voice_engine.cc b/media/engine/webrtc_voice_engine.cc
+index 38a3a2f2d9..e3a3bfdfe7 100644
+--- a/media/engine/webrtc_voice_engine.cc
++++ b/media/engine/webrtc_voice_engine.cc
+@@ -936,6 +936,14 @@ class WebRtcVoiceSendChannel::WebRtcAudioSendStream : public AudioSource::Sink {
+       RTC_DCHECK(source_ == source);
+       return;
+     }
++
++    // Check if this is an external audio source (delivers audio via AddSink).
++    // If so, mark the config so AudioState doesn't send device audio to this
++    // stream. This must be done before UpdateSendState() calls Start().
++    if (source->is_external_source() && !config_.external_source) {
++      config_.external_source = true;
++      stream_->Reconfigure(config_, nullptr);
++    }
+     source->SetSink(this);
+     source_ = source;
+     UpdateSendState();
+diff --git a/pc/rtp_sender.cc b/pc/rtp_sender.cc
+index b360be5ec6..55f8bcfb87 100644
+--- a/pc/rtp_sender.cc
++++ b/pc/rtp_sender.cc
+@@ -1265,6 +1265,13 @@ void AudioRtpSender::SetSend() {
+   if (stopped_) {
+     return;
+   }
++
++  // Propagate is_external_source from AudioSourceInterface to the sink adapter.
++  // This ensures the voice engine knows not to mix ADM audio with external sources.
++  if (audio_track()->GetSource() && audio_track()->GetSource()->is_external_source()) {
++    sink_adapter_->set_is_external_source(true);
++  }
++
+   AudioOptions options;
+   const bool track_enabled = track_->enabled();
+   std::optional<AudioOptions> track_source_options;
+diff --git a/pc/rtp_sender.h b/pc/rtp_sender.h
+index a8f3bbd08a..85ab34497e 100644
+--- a/pc/rtp_sender.h
++++ b/pc/rtp_sender.h
+@@ -368,6 +368,12 @@ class LocalAudioSinkAdapter : public AudioTrackSinkInterface,
+   LocalAudioSinkAdapter();
+   ~LocalAudioSinkAdapter() override;
+ 
++  // Set whether the original AudioSourceInterface is an external source.
++  // This propagates the is_external_source state from AudioSourceInterface
++  // to this AudioSource adapter.
++  void set_is_external_source(bool value) { is_external_source_ = value; }
++  bool is_external_source() const override { return is_external_source_; }
++
+  private:
+   // AudioSinkInterface implementation.
+   void OnData(const void* audio_data,
+@@ -398,6 +404,7 @@ class LocalAudioSinkAdapter : public AudioTrackSinkInterface,
+   // Critical section protecting `sink_`.
+   Mutex lock_;
+   int num_preferred_channels_ = -1;
++  bool is_external_source_ = false;
+ };
+ 
+ class AudioRtpSender : public DtmfProviderInterface, public RtpSenderBase {

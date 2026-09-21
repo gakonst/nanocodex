@@ -1,3 +1,5 @@
+import { ElevenLabsPlayback } from "./ElevenLabsPlayback.mjs";
+
 export const MICROPHONE_CAPTURE_TIMEOUT_MS = 15_000;
 export const ICE_GATHERING_TIMEOUT_MS = 15_000;
 export const REALTIME_CALL_TIMEOUT_MS = 15_000;
@@ -85,6 +87,7 @@ export class BrowserVoiceSession {
   #microphone;
   #speaker;
   #playbackEnabled = false;
+  #elevenLabs;
   #muted = false;
   #inputGeneration = 0;
   #meterTimer;
@@ -102,10 +105,17 @@ export class BrowserVoiceSession {
 
   constructor(options) {
     this.#options = options;
+    if (options.settings?.outputProvider === "elevenlabs") {
+      if (typeof options.synthesize !== "function") throw new TypeError("ElevenLabs output requires an authenticated synthesis transport");
+      this.#elevenLabs = new ElevenLabsPlayback(options.synthesize, (error) => {
+        if (!this.#closed) options.onTerminated(error.message);
+      });
+    }
     this.#backendReady = new Promise((resolve) => { this.#resolveBackendReady = resolve; });
   }
 
   start() {
+    if (!this.#starting) void this.#elevenLabs?.prime()?.catch((error) => this.#options.onTerminated(error.message));
     this.#starting ??= this.#start();
     return this.#starting;
   }
@@ -271,7 +281,7 @@ export class BrowserVoiceSession {
       }
       const stream = event.streams[0] ?? new MediaStream([event.track]);
       this.#speaker ??= new SpeakerPlayback(new Audio(), this.#options.onStatus);
-      this.#speaker.setEnabled(this.#playbackEnabled);
+      this.#speaker.setEnabled(this.#playbackEnabled && !this.#elevenLabs);
       this.#speaker.attach(stream);
     });
     peer.addEventListener("connectionstatechange", () => {
@@ -301,6 +311,7 @@ export class BrowserVoiceSession {
 
   noteTypedInput() {
     this.#playbackEnabled = false;
+    this.#elevenLabs?.interrupt();
     this.#speaker?.setEnabled(false);
     return this.#applyLive(async () => {
       const core = await this.#options.core;
@@ -417,10 +428,12 @@ export class BrowserVoiceSession {
     for (const text of effects.undelivered_answers ?? []) this.#options.onUndeliveredAnswer?.(text);
     if (effects.input_generation !== undefined) {
       if (effects.input_generation < this.#inputGeneration) return;
+      if (effects.input_generation > this.#inputGeneration) this.#elevenLabs?.interrupt();
       this.#inputGeneration = effects.input_generation;
     }
     if (effects.playback_enabled === false) {
       this.#playbackEnabled = false;
+      this.#elevenLabs?.interrupt();
       this.#speaker?.setEnabled(false);
     }
     let sent = 0;
@@ -436,9 +449,10 @@ export class BrowserVoiceSession {
     if (effects.acknowledge_frames && sent > 0) await this.#core?.framesSent(sent);
     if (!this.#closed && effects.playback_enabled === true && sent === (effects.frames?.length ?? 0)) {
       this.#playbackEnabled = true;
-      this.#speaker?.setEnabled(true);
+      this.#speaker?.setEnabled(!this.#elevenLabs);
     }
     for (const entry of effects.transcripts ?? []) {
+      if (this.#playbackEnabled && !this.#closed) this.#elevenLabs?.transcript(entry);
       this.#options.onTranscript(entry.speaker, entry.text, entry);
     }
     if (effects.status) this.#status(effects.status);
@@ -549,6 +563,7 @@ export class BrowserVoiceSession {
   }
 
   #stopBrowserMedia() {
+    this.#elevenLabs?.close();
     if (this.#meterTimer !== undefined) window.clearTimeout(this.#meterTimer);
     this.#meterTimer = undefined;
     this.#call?.abort();

@@ -24,7 +24,7 @@ use nanocodex_vm::{
 };
 use tokio::process::Command;
 
-# async fn build() -> Result<(), Box<dyn std::error::Error>> {
+# async fn build() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 let vmm = Command::new("dedicated-vmm-process");
 let session = VmToolSession::spawn_configured(
     vmm,
@@ -39,6 +39,7 @@ let session = VmToolSession::spawn_configured(
 let tools = session
     .tools()
     .tools_builder()
+    .await?
     .working_directory("/workspace")
     .build()?;
 # let _ = tools;
@@ -62,7 +63,7 @@ protocol and keeps one native workspace-tool runtime alive:
 ```no_run
 use nanocodex_vm::tools::serve_guest;
 
-# async fn run() -> Result<(), Box<dyn std::error::Error>> {
+# async fn run() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 serve_guest("/workspace").await?;
 # Ok(())
 # }
@@ -177,10 +178,17 @@ pub use session::{
     )
 ))]
 pub trait VmToolClient: Send + Sync {
+    /// Discover the guest provider's complete upstream MCP tool catalog.
+    async fn computer_catalog(
+        &self,
+    ) -> Result<Vec<nanocodex_computer::ProviderTool>, nanocodex_tools::contract::ToolError> {
+        Err("This VM transport does not support upstream Sky tool discovery".into())
+    }
     /// Execute CUA in the guest owning this capability, never on the VMM host.
     async fn computer(
         &self,
-        _request: Option<nanocodex_computer::ComputerRequest>,
+        _name: &str,
+        _arguments: serde_json::Value,
         _context: ToolContext<'_>,
     ) -> ToolResult {
         Err("This VM transport does not support CUA".into())
@@ -216,8 +224,14 @@ pub struct VmTools {
 ))]
 impl VmTools {
     /// Computer tools backed by this exact guest attachment.
-    pub fn computer_tools(&self) -> nanocodex_computer::ComputerTools {
-        nanocodex_computer::ComputerTools::new(ComputerProxy(self.client.clone()))
+    pub async fn computer_tools(
+        &self,
+    ) -> Result<nanocodex_computer::ComputerTools, nanocodex_tools::contract::ToolError> {
+        let catalog = self.client.computer_catalog().await?;
+        Ok(nanocodex_computer::ComputerTools::new(
+            ComputerProxy(self.client.clone()),
+            catalog,
+        ))
     }
     /// Creates a VM tool family over one clone-cheap execution capability.
     #[must_use]
@@ -258,10 +272,13 @@ impl VmTools {
     /// implementations. `update_plan` also stays host-side because it has no
     /// workspace effect. Callers can keep configuring the returned builder,
     /// including setting the guest-visible working directory and shell.
-    #[must_use]
-    pub fn tools_builder(&self) -> ToolsBuilder {
-        self.workspace_tools(Tools::builder().workspace(false))
-            .tool(UpdatePlanTool::new())
+    pub async fn tools_builder(
+        &self,
+    ) -> Result<ToolsBuilder, nanocodex_tools::contract::ToolError> {
+        Ok(self
+            .workspace_tools(Tools::builder().workspace(false))
+            .await?
+            .tool(UpdatePlanTool::new()))
     }
 
     /// Starts an attachment-safe selection containing only VM-backed workspace
@@ -270,24 +287,40 @@ impl VmTools {
     /// Host-owned tools such as web search, image generation, and
     /// `update_plan` deliberately stay with the managed brain rather than
     /// being advertised by a remote VM hand.
-    #[must_use]
-    pub fn attachment_tools_builder(&self) -> ToolsBuilder {
-        Tools::builder()
-            .without_defaults()
-            .tool(self.exec_command_tool())
-            .tool(self.write_stdin_tool())
-            .tool(self.computer_tools().js())
-            .tool(self.computer_tools().reset())
+    pub async fn attachment_tools_builder(
+        &self,
+    ) -> Result<ToolsBuilder, nanocodex_tools::contract::ToolError> {
+        self.add_computer_tools(
+            Tools::builder()
+                .without_defaults()
+                .tool(self.exec_command_tool())
+                .tool(self.write_stdin_tool()),
+        )
+        .await
     }
 
-    fn workspace_tools(&self, builder: ToolsBuilder) -> ToolsBuilder {
-        builder
-            .tool(self.computer_tools().js())
-            .tool(self.computer_tools().reset())
-            .tool(self.exec_command_tool())
-            .tool(self.write_stdin_tool())
-            .tool(self.apply_patch_tool())
-            .tool(self.view_image_tool())
+    async fn workspace_tools(
+        &self,
+        builder: ToolsBuilder,
+    ) -> Result<ToolsBuilder, nanocodex_tools::contract::ToolError> {
+        self.add_computer_tools(
+            builder
+                .tool(self.exec_command_tool())
+                .tool(self.write_stdin_tool())
+                .tool(self.apply_patch_tool())
+                .tool(self.view_image_tool()),
+        )
+        .await
+    }
+
+    async fn add_computer_tools(
+        &self,
+        mut builder: ToolsBuilder,
+    ) -> Result<ToolsBuilder, nanocodex_tools::contract::ToolError> {
+        for tool in self.computer_tools().await?.tools() {
+            builder = builder.tool(tool);
+        }
+        Ok(builder)
     }
 
     fn tool(&self, standard: StandardTool) -> VmTool {
@@ -407,6 +440,15 @@ mod tests {
 
     #[async_trait::async_trait]
     impl VmToolClient for RecordingClient {
+        async fn computer_catalog(
+            &self,
+        ) -> Result<Vec<nanocodex_computer::ProviderTool>, nanocodex_tools::contract::ToolError>
+        {
+            Ok(serde_json::from_value(serde_json::json!([
+                {"name":"provider_specific_tool", "description":"Discovered provider documentation", "inputSchema":{"type":"object","properties":{"custom":{"type":"string"}}}},
+                {"name":"provider_private_hook", "inputSchema":{"type":"object"}, "_meta":{"ui":{"visibility":["app"]}}}
+            ]))?)
+        }
         async fn execute(
             &self,
             tool: StandardTool,
@@ -418,11 +460,13 @@ mod tests {
         }
     }
 
-    #[test]
-    fn composes_vm_workspace_tools_with_the_host_plan_tool() {
+    #[tokio::test]
+    async fn composes_vm_workspace_tools_with_the_host_plan_tool() {
         let vm = VmTools::new(RecordingClient::default());
         let tools = vm
             .tools_builder()
+            .await
+            .unwrap()
             .working_directory("/workspace")
             .default_shell("sh")
             .build()
@@ -433,16 +477,63 @@ mod tests {
         assert!(tools.image_generation_enabled());
     }
 
-    #[test]
-    fn attachment_selection_excludes_host_owned_defaults() {
+    #[tokio::test]
+    async fn attachment_selection_excludes_host_owned_defaults() {
         let tools = VmTools::new(RecordingClient::default())
             .attachment_tools_builder()
+            .await
+            .unwrap()
             .build()
             .unwrap();
 
         assert!(!tools.workspace_enabled());
         assert!(!tools.web_search_enabled());
         assert!(!tools.image_generation_enabled());
+    }
+
+    #[tokio::test]
+    async fn computer_tools_use_discovered_catalog_and_filter_private_hooks() {
+        let vm = VmTools::new(RecordingClient::default());
+        let computer = vm.computer_tools().await.unwrap();
+        assert_eq!(computer.catalog().len(), 2);
+        let visible = computer.tools().collect::<Vec<_>>();
+        assert_eq!(visible.len(), 1);
+        assert_eq!(
+            visible[0].definition().name(),
+            "mcp__cua_repl__provider_specific_tool"
+        );
+        let definition = serde_json::to_value(visible[0].definition()).unwrap();
+        assert!(
+            definition
+                .to_string()
+                .contains("Discovered provider documentation")
+        );
+        assert!(definition.to_string().contains("custom"));
+        assert!(computer.tool("provider_private_hook").is_some());
+        assert!(computer.tool("js").is_none());
+    }
+
+    #[tokio::test]
+    async fn computer_discovery_failure_prevents_tool_registration() {
+        struct NoProvider;
+        #[async_trait::async_trait]
+        impl VmToolClient for NoProvider {
+            async fn execute(
+                &self,
+                _tool: StandardTool,
+                _input: ToolInput,
+                _context: ToolContext<'_>,
+            ) -> nanocodex_tools::ToolResult {
+                unreachable!()
+            }
+        }
+        let vm = VmTools::new(NoProvider);
+        let error = vm.attachment_tools_builder().await.err().unwrap();
+        assert!(
+            error
+                .to_string()
+                .contains("does not support upstream Sky tool discovery")
+        );
     }
 
     #[test]

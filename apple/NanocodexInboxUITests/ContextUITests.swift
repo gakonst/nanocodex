@@ -125,6 +125,9 @@ final class ContextUITests: XCTestCase {
     }
     func testCaptureSearchSelectAndDurableRetry() {
         let app = launch()
+        // Exercise durable submission retry on an idle conversation. Sending
+        // to the running demo now steers directly and has different retry rules.
+        app.buttons["new-conversation"].tap()
         openContext(app)
         toggleCapture(app)
         capture(app, source: "Instagram", text: "Dinner with Alex on Friday")
@@ -151,10 +154,9 @@ final class ContextUITests: XCTestCase {
         app.buttons["retry-pending"].tap()
         // A restored demo intentionally fails once again, then succeeds.
         if app.buttons["retry-pending"].waitForExistence(timeout: 3) { app.buttons["retry-pending"].tap() }
-        // Admission preserves the follow-up behind the active demo turn. Steer
-        // it into that turn before asserting its transcript representation.
-        XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 10))
-        app.buttons["steer-now"].tap()
+        let delivered = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: app.buttons["retry-pending"])
+        XCTAssertEqual(XCTWaiter.wait(for: [delivered], timeout: 10), .completed)
         let conversation = app.scrollViews["conversation"]
         let request = conversation.staticTexts["Help me plan Friday"]
         for _ in 0..<12 {

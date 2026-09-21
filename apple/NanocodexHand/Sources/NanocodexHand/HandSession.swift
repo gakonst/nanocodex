@@ -33,6 +33,16 @@ public final class HandSession {
         session = URLSession(configuration: config, delegate: HandNoRedirects(), delegateQueue: nil)
     }
 
+    public var workspaceID: String { workspace.id }
+
+    public func localImageURL(attachment: MessageAttachment, preview: Bool) -> URL? {
+        workspace.localImageURL(attachment: attachment, preview: preview)
+    }
+
+    public func publishImage(attachment: MessageAttachment, source: URL, preview: URL) async throws -> String {
+        try await workspace.publishImage(attachment: attachment, source: source, preview: preview)
+    }
+
     public func start() {
         guard loop == nil, !closed else { return }
         let epoch = generation
@@ -145,6 +155,28 @@ public final class HandSession {
         receipts[id] = (identity, result)
         return result
     }
+    /// Hosted tools carry typed model images separately from the MCP-shaped
+    /// structured result used by Code Mode. A JSON/base64 string is not an image.
+    static func toolOutput(_ value: JSON, success: Bool, name: String) throws -> JSON {
+        let body: JSON
+        if success, ["read_photo", "view_image"].contains(name) {
+            let content = value["content"].array
+            guard content.count == 2, content[0]["type"].string == "text",
+                  content[1]["type"].string == "image", content[1]["mimeType"].string == "image/jpeg" else {
+                throw HandFailure.protocolViolation
+            }
+            body = .array([
+                .object(["type": .string("input_text"), "text": content[0]["text"]]),
+                .object(["type": .string("input_image"), "image_url": .string("data:image/jpeg;base64," + content[1]["data"].string), "detail": .string("high")])
+            ])
+        } else {
+            let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
+            body = .string(String(decoding: try encoder.encode(value), as: UTF8.self))
+        }
+        return .object(["output": body, "success": .bool(success), "structured_result": value,
+                        "metadata": .null, "process_trace": .null])
+    }
+
     private func execute(_ frame: JSON, id: String, budget: Double) async throws -> JSON {
         try Task.checkCancellation()
         let encoder = JSONEncoder(); encoder.outputFormatting = [.sortedKeys]
@@ -157,11 +189,7 @@ public final class HandSession {
             catch {
                 value = .object(["error": .string((error as? HandFailure)?.localizedDescription ?? "The device could not access this workspace file.")]); success = false
             }
-            let data = try encoder.encode(value)
-            let output: JSON = .object([
-                "output": .string(String(decoding: data, as: UTF8.self)), "success": .bool(success),
-                "structured_result": value, "metadata": .null, "process_trace": .null
-            ])
+            let output = try Self.toolOutput(value, success: success, name: frame["name"].string)
             let outputBytes = try encoder.encode(output).count
             if frame["deadline_at"].number <= Date().timeIntervalSince1970 * 1000 || Double(outputBytes) > budget {
                 outcome = .object(["status": .string("ambiguous"), "message": .string("The device operation ran, but its result exceeded the deadline or output budget.")])

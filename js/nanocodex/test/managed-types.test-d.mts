@@ -74,6 +74,9 @@ async function checkManaged() {
   void mode; void runAgent;
   await opened.triggers.put(cron.id, { cron: cron.cron, input: cron.input, enabled: false, session_mode: "continue" });
   await opened.triggers.get(cron.id);
+  await opened.triggers.update(cron.id, { enabled: false });
+  // @ts-expect-error updates still validate setting types.
+  await opened.triggers.update(cron.id, { enabled: "yes" });
   await opened.triggers.delete(cron.id);
   const schedules: readonly import("nanocodex/managed").ManagedCronTrigger[] = await opened.triggers.list();
   void nextRun; void schedules;

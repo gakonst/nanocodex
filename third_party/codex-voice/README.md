@@ -3,8 +3,9 @@
 macOS packages use `webrtc-host`, a Rust helper built on LiveKit's pinned
 `libwebrtc` bindings. Google libWebRTC owns Opus, adaptive NetEq playout,
 CoreAudio device callbacks, echo cancellation, noise suppression and gain control.
-There is no Swift helper, PCM pipe, GStreamer pipeline or CPAL render queue in
-this path. The bounded control protocol and same-build isolation remain shared
+There is no Swift helper, GStreamer pipeline or CPAL render queue in
+this path. External synthesized PCM uses a bounded pipe ingress into this same
+libWebRTC mixer, before its reverse echo processing and CoreAudio output. The bounded control protocol and same-build isolation remain shared
 with the other platforms; provider credentials never enter the helper.
 
 `pnpm build:voice-native` stages this engine on macOS. Both development and
@@ -92,3 +93,52 @@ playback. The playout test selects the virtual speaker explicitly and verifies
 continuous output, silence during suppression, and continuous output after resume.
 These tests do not change the system default devices. They test audio devices and
 Opus locally; they do not establish subjective quality of a live provider call.
+
+## External PCM on macOS
+
+`RealtimeWebrtcSessionHandle` exposes async `begin_pcm_stream(generation, sample_rate)`,
+`write_pcm(generation, Vec<i16>)`, `drain_pcm(generation)` and `cancel_pcm(generation)`.
+Samples are signed mono PCM at 16, 24 or 48 kHz; each write is 1–960 samples.
+Serialize writes and use strictly increasing nonzero generations for each session.
+The host resamples 10 ms frames with libWebRTC's sinc resampler, retains at most
+200 ms in its native queue, and backpressures without blocking the control actor.
+The existing eight-command client queue also bounds queued pipe requests. A stuck
+write or drain times out after five seconds. Cancel invalidates buffered and partial
+PCM, and a stale write, drain or cancel cannot modify a newer stream.
+
+`set_speaker_suppressed(true)` disables provider receiver tracks separately from
+external PCM. It does not mute the microphone or restart the ADM. External audio
+enters the existing factory's mixer; that mixed output goes through libWebRTC's
+normal reverse APM reference and the same device output used by ChatGPT. No local
+Opus loopback or second audio device is created. Keep microphone controls independent
+so the server can detect speech during external playback.
+
+Drain flushes a partial 10 ms frame and the resampler tail, waits for native mixer
+consumption, then allows 100 ms of hardware grace. This is **not a DAC completion
+receipt**: platform/Bluetooth buffers may be longer, and samples already submitted
+to hardware cannot be recalled by cancel. This patch does not claim a measured
+physical-speaker echo-rejection result; synthetic mixer tests verify ingress and
+fencing. Legacy GNU Linux/MSVC GStreamer helpers explicitly return Unsupported for
+external PCM; this path currently ships in the macOS libWebRTC package only.
+
+`vendor/webrtc-sys` is the pinned 0.3.45 crate with a small factory-mixer patch,
+not a different native WebRTC archive. See its `NANOCODEX.md` for patch boundaries.
+Build and stage the actual Mac package with:
+
+```sh
+CARGO_NET_OFFLINE=true python3 scripts/build-voice-native.py --output target/local-elevenlabs
+NANOCODEX_VOICE_PACKAGE="$PWD/target/local-elevenlabs" target/local-elevenlabs/nanocodex
+```
+
+The application executable must be built separately into that package directory;
+the staging command places the helper/resources there. Set the same
+`STABLE_GIT_COMMIT` for application and helper, or leave both unset for `dev`.
+Keep the full `nanocodex-resources/voice` directory with the executable. Offline
+builds require the pinned Rust crates and native archive already cached.
+
+Device-free regression checks for the new path:
+
+```sh
+cargo test --offline --locked -p nanocodex-voice-native
+cargo test --offline --locked --manifest-path third_party/codex-voice/Cargo.toml -p nanocodex-webrtc-voice-host pcm::tests
+```

@@ -29,7 +29,7 @@ const TURN_STATE_READ_TIMEOUT_MS = 2_000;
 const ALLOWED_OPTIONS = new Set(["apiKey", "baseUrl", "fetch", "toolsTransport", "requestOrigin"]);
 const CREATE_SETTINGS = new Set(["model", "thinking", "reasoningMode", "fastMode"]);
 const SETTINGS_PATCH = CREATE_SETTINGS;
-const MODELS = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra"]);
+const MODELS = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "@cf/zai-org/glm-5.3"]);
 const THINKING = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
 const REASONING_MODES = new Set(["standard", "pro"]);
 const eventEncoder = new TextEncoder();
@@ -144,6 +144,9 @@ function managedCreateOptions(options) {
       || !REASONING_MODES.has(settings.reasoningMode)
       || typeof settings.fastMode !== "boolean") {
     throw new TypeError("managed agent creation settings are invalid");
+  }
+  if (settings.model === "@cf/zai-org/glm-5.3" && ((settings.thinking !== undefined && !["low", "medium", "high"].includes(settings.thinking)) || settings.reasoningMode === "pro")) {
+    throw new TypeError("GLM-5.3 requires low, medium, or high thinking and standard reasoning mode");
   }
   if (settings.model === "gpt-6-astra" && settings.thinking === "none") {
     throw new TypeError("GPT-6 Astra requires low, medium, high, xhigh, or max thinking");
@@ -363,6 +366,9 @@ function agentHandle(client, id, summary, retainedEventStream) {
       put: async (triggerId, config) => managedCronTrigger(await client.json(cronTriggerPath(id, triggerId), {
         method: "PUT", body: cronTriggerBody(config),
       })),
+      update: async (triggerId, patch) => managedCronTrigger(await client.json(cronTriggerPath(id, triggerId), {
+        method: "PATCH", body: cronTriggerPatch(patch),
+      })),
       delete: async (triggerId) => { await client.empty(cronTriggerPath(id, triggerId), { method: "DELETE" }); },
     }),
     toolsTarget: () => client.toolsTarget(id),
@@ -399,6 +405,14 @@ function cronTriggerBody(config) {
   return JSON.stringify(config);
 }
 
+function cronTriggerPatch(patch) {
+  if (!patch || typeof patch !== "object" || Array.isArray(patch)) throw new TypeError("invalid cron trigger patch");
+  const defined = Object.fromEntries(Object.entries(patch).filter(([, value]) => value !== undefined));
+  if (!Object.keys(defined).length) throw new TypeError("cron trigger patch must contain a setting");
+  cronTriggerBody({ cron: "0 9 * * *", input: "validation", ...defined });
+  return JSON.stringify(defined);
+}
+
 function managedCronTrigger(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)
     || typeof value.id !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(value.id)
@@ -431,6 +445,9 @@ function managedSettingsPatch(patch) {
     || (Object.hasOwn(patch, "fastMode") && typeof patch.fastMode !== "boolean")) {
     throw new TypeError("managed agent settings patch is invalid");
   }
+  if (patch.model === "@cf/zai-org/glm-5.3" && ((patch.thinking !== undefined && !["low", "medium", "high"].includes(patch.thinking)) || patch.reasoningMode === "pro")) {
+    throw new TypeError("GLM-5.3 requires low, medium, or high thinking and standard reasoning mode");
+  }
   if (patch.model === "gpt-6-astra" && patch.thinking === "none") {
     throw new TypeError("GPT-6 Astra requires low, medium, high, xhigh, or max thinking");
   }
@@ -449,6 +466,7 @@ function managedSettings(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)
     || !MODELS.has(value.model) || !THINKING.has(value.thinking)
     || !REASONING_MODES.has(value.reasoning_mode) || typeof value.fast_mode !== "boolean"
+    || (value.model === "@cf/zai-org/glm-5.3" && (!["low", "medium", "high"].includes(value.thinking) || value.reasoning_mode === "pro"))
     || (value.model === "gpt-6-astra" && value.thinking === "none")
     || (value.model === "gpt-6-astra" && value.reasoning_mode === "pro")) {
     throw new ManagedError("invalid_response", "managed agent settings are malformed");
@@ -510,7 +528,19 @@ function managedSummary(value) {
     createdAt: value.created_at,
     updatedAt: value.updated_at,
     turnCount: value.turn_count,
+    lastUserMessageAt: nonnegativeNumber(value.last_user_message_at) ? value.last_user_message_at : value.turn_count > 0 ? value.updated_at : 0,
+    ...(validPresentation(value.presentation) ? { presentation: Object.freeze({ ...value.presentation, activeTurnIds: Object.freeze([...value.presentation.activeTurnIds]) }) } : {}),
   });
+}
+
+function validPresentation(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    && Number.isSafeInteger(value.revision) && value.revision > 0
+    && ["running", "stopping", "completed", "cancelled", "failed", "idle"].includes(value.status)
+    && Array.isArray(value.activeTurnIds) && value.activeTurnIds.every(id => typeof id === "string")
+    && nonnegativeNumber(value.updatedAt)
+    && (value.activity === undefined || typeof value.activity === "string")
+    && (value.activityTurnId === undefined || typeof value.activityTurnId === "string");
 }
 
 function nonnegativeNumber(value) {
@@ -1567,7 +1597,7 @@ function managedClient(options) {
 
   const response = async (path, init = {}) => {
     const headers = new Headers();
-    if (path === "/v1/agents" || path.startsWith("/v1/agents/")) headers.set("x-nanocodex-client-context", JSON.stringify(requestOrigin));
+    if (path === "/v1/agent-runs" || path === "/v1/agents" || path.startsWith("/v1/agents/")) headers.set("x-nanocodex-client-context", JSON.stringify(requestOrigin));
     if (init.body !== undefined) headers.set("content-type", "application/json");
     if (init.accept) headers.set("accept", init.accept);
     if (init.idempotencyKey) headers.set("idempotency-key", init.idempotencyKey);

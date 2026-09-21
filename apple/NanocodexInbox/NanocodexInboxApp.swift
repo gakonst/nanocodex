@@ -1,5 +1,6 @@
 import SwiftUI
 import InboxCore
+import NanocodexVoice
 
 @main
 struct NanocodexInboxApp: App {
@@ -9,14 +10,14 @@ struct NanocodexInboxApp: App {
     @Environment(\.scenePhase) private var scenePhase
     var body: some Scene {
         WindowGroup("Nanocodex", id: "inbox") {
-            #if DEBUG
-            if ProcessInfo.processInfo.arguments.contains("--soundcloud-loopback-smoke") {
-                SpotifyLoopbackSmokeView(provider: .soundcloud)
-            } else if ProcessInfo.processInfo.arguments.contains("--spotify-loopback-smoke") {
-                SpotifyLoopbackSmokeView()
+            #if DEBUG && targetEnvironment(simulator)
+            if ProcessInfo.processInfo.arguments.contains("--voice-clone-ui-fixture") {
+                VoiceCloneUIFixture()
             } else {
-                content
+                debugContent
             }
+            #elseif DEBUG
+            debugContent
             #else
             content
             #endif
@@ -26,6 +27,23 @@ struct NanocodexInboxApp: App {
         }
     }
 
+    #if DEBUG
+    @ViewBuilder private var debugContent: some View {
+        if ProcessInfo.processInfo.arguments.contains("--soundcloud-loopback-smoke") {
+            SpotifyLoopbackSmokeView(provider: .soundcloud)
+        } else if ProcessInfo.processInfo.arguments.contains("--spotify-loopback-smoke") {
+            SpotifyLoopbackSmokeView()
+        } else {
+            content.preferredColorScheme(demoColorScheme)
+        }
+    }
+
+    private var demoColorScheme: ColorScheme? {
+        guard ProcessInfo.processInfo.arguments.contains("--demo") else { return nil }
+        return ["light": ColorScheme.light, "dark": ColorScheme.dark][ProcessInfo.processInfo.environment["NANOCODEX_DEMO_APPEARANCE"] ?? ""]
+    }
+    #endif
+
     private var content: some View {
         InboxView(model: model)
                 .onAppear { Task { await model.start() } }
@@ -34,6 +52,10 @@ struct NanocodexInboxApp: App {
                 }
                 .sheet(isPresented: $showQuickVoice) { QuickVoiceView(model: model) }
                 .onOpenURL { url in
+                    if url.scheme == "nanocodex", url.host == "voice", url.path == "/recovery", url.query == nil, url.fragment == nil {
+                        Task { await model.openLockedVoiceRecovery() }
+                        return
+                    }
                     if QuickVoiceInput.matches(url) { showQuickVoice = true; return }
                     if url.scheme == "nanocodex", url.host == "connect", ["/spotify", "/soundcloud"].contains(url.path), url.query == nil, url.fragment == nil {
                         model.musicConnectorToOpen = MusicLoopbackProvider(rawValue: String(url.path.dropFirst()))

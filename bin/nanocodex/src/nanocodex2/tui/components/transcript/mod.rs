@@ -1329,7 +1329,12 @@ fn is_running_tool(entry: &TranscriptEntry) -> bool {
 fn is_expandable(entry: &TranscriptEntry) -> bool {
     matches!(
         entry.kind,
-        EntryKind::Tool(_) | EntryKind::DirectedMessage(_)
+        EntryKind::Tool(_)
+            | EntryKind::DirectedMessage(_)
+            | EntryKind::Assistant {
+                agent_id: Some(_),
+                ..
+            }
     )
 }
 
@@ -1819,6 +1824,28 @@ fn render_entry(
 ) -> markdown::Layout {
     let mut layout = match &entry.kind {
         EntryKind::User { text, .. } => render_user(text, width, theme),
+        EntryKind::Assistant {
+            text,
+            agent_id: Some(agent_id),
+            ..
+        } => {
+            // Child JSON and prose remain inspectable, but never masquerade as
+            // the root answer in either live or replayed managed transcripts.
+            if expanded {
+                markdown::render_cached(
+                    &format!("**Agent {agent_id} activity**\n\n{text}"),
+                    width,
+                    theme,
+                    workspace,
+                    images,
+                )
+            } else {
+                layout_without_links(vec![Line::from(Span::styled(
+                    format!("▸ Agent {agent_id} activity"),
+                    Style::default().fg(theme.muted()),
+                ))])
+            }
+        }
         EntryKind::Assistant { text, .. } => {
             markdown::render_cached(text, width, theme, workspace, images)
         }
@@ -2110,6 +2137,51 @@ mod history_tests {
                 payload: serde_json::value::to_raw_value(&payload).unwrap().into(),
             },
         ));
+    }
+
+    #[test]
+    fn child_json_is_collapsed_and_inspectable_while_root_json_remains_visible() {
+        use nanocodex::agent::events::{AgentEvent, AgentEventKind};
+        let mut t = Transcript::new();
+        for (sequence, child) in [(1, Some(7_u64)), (2, None)] {
+            let payload = serde_json::json!({"text": "{\"report\":\"private-child-result\"}", "model_call_index": 0, "managed_agent_id": child});
+            t.model.apply(&TranscriptRecord::from_agent(
+                sequence,
+                0,
+                AgentEvent {
+                    protocol_version: 1,
+                    request_id: Arc::from("test"),
+                    seq: sequence,
+                    kind: AgentEventKind::AssistantMessage,
+                    payload: serde_json::value::to_raw_value(&payload).unwrap().into(),
+                },
+            ));
+        }
+        let theme = Theme::default();
+        let child = &t.model.entries()[0];
+        assert!(super::is_expandable(child));
+        let collapsed = t.cache.layout(child, &t.model, 80, &theme);
+        let text = collapsed
+            .iter()
+            .map(ToString::to_string)
+            .collect::<String>();
+        assert!(text.contains("Agent 7 activity"));
+        assert!(!text.contains("private-child-result"));
+        t.cache.toggle(child);
+        let expanded = t.cache.layout(child, &t.model, 80, &theme);
+        assert!(
+            expanded
+                .iter()
+                .any(|line| line.to_string().contains("private-child-result"))
+        );
+        let root = &t.model.entries()[1];
+        assert!(!super::is_expandable(root));
+        let root_layout = t.cache.layout(root, &t.model, 80, &theme);
+        assert!(
+            root_layout
+                .iter()
+                .any(|line| line.to_string().contains("private-child-result"))
+        );
     }
 
     #[test]

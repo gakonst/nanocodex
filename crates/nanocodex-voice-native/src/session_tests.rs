@@ -202,3 +202,37 @@ async fn startup_completion_preserves_classified_failure() {
         assert_eq!(handle.take_error(), None);
     }
 }
+
+#[tokio::test]
+async fn pcm_backpressure_yields_to_cancel_and_stale_write_fails_without_closing() {
+    let (handle, mut commands, _) = handles();
+    let writing = handle.clone();
+    let write = tokio::spawn(async move { writing.write_pcm(7, vec![1; 480]).await });
+    let Some(Command::Pcm(crate::Message::WritePcm { generation: 7, .. }, done)) =
+        commands.recv().await
+    else {
+        panic!("expected PCM write")
+    };
+    done.send(Ok(crate::PcmStatus::Busy)).unwrap();
+    let cancelling = handle.clone();
+    let cancel = tokio::spawn(async move { cancelling.cancel_pcm(7).await });
+    loop {
+        match commands.recv().await.unwrap() {
+            Command::Pcm(crate::Message::CancelPcm { generation: 7 }, done) => {
+                done.send(Ok(crate::PcmStatus::Ready)).unwrap();
+                break;
+            }
+            Command::Pcm(crate::Message::WritePcm { .. }, done) => {
+                done.send(Ok(crate::PcmStatus::Busy)).unwrap();
+            }
+            _ => panic!("unexpected command"),
+        }
+    }
+    cancel.await.unwrap().unwrap();
+    let Some(Command::Pcm(crate::Message::WritePcm { .. }, done)) = commands.recv().await else {
+        panic!("expected retry")
+    };
+    done.send(Ok(crate::PcmStatus::Stale)).unwrap();
+    assert!(write.await.unwrap().is_err());
+    assert!(!handle.0.stop.is_aborted());
+}

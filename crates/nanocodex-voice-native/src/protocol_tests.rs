@@ -26,3 +26,26 @@ fn signaling_bounds_apply_to_untrusted_wire_input() {
         assert_eq!(error.to_string(), "invalid voice frame");
     }
 }
+
+#[test]
+fn pcm_chunks_are_bounded_on_both_sides_of_the_pipe() {
+    for length in [0, MAX_PCM_SAMPLES + 1] {
+        let message = Message::WritePcm {
+            generation: 42,
+            samples: vec![123; length],
+        };
+        assert!(encode_frame(&message).is_err());
+        let payload = serde_json::to_vec(&message).unwrap();
+        let mut wire = (payload.len() as u32).to_be_bytes().to_vec();
+        wire.extend(payload);
+        assert!(decode_frame(&wire).is_err());
+    }
+    let message = Message::WritePcm {
+        generation: 42,
+        samples: vec![i16::MIN; MAX_PCM_SAMPLES],
+    };
+    assert_eq!(
+        decode_frame(&encode_frame(&message).unwrap()).unwrap(),
+        Some(message)
+    );
+}

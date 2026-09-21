@@ -22,6 +22,12 @@ pub(crate) struct Args {
     /// Realtime voice.
     #[arg(long, default_value = "cove", value_parser = clap::builder::PossibleValuesParser::new(nanocodex_voice_protocol::CHATGPT_REALTIME_VOICES.iter().copied()))]
     pub voice: String,
+    /// Output provider; microphone and conversation remain on ChatGPT realtime.
+    #[arg(long, default_value = "chatgpt", value_parser = ["chatgpt", "elevenlabs"])]
+    pub provider: String,
+    /// ElevenLabs output voice ID.
+    #[arg(long)]
+    pub elevenlabs_voice: Option<String>,
     /// Start with microphone muted.
     #[arg(long)]
     pub muted: bool,
@@ -34,7 +40,12 @@ pub(crate) struct Args {
 
 #[path = "voice_command.rs"]
 mod command;
-pub(crate) use command::Command;
+pub(crate) use command::{Command, HELP, Provider, Selection};
+#[path = "voice_elevenlabs.rs"]
+pub(crate) mod elevenlabs;
+#[path = "voice_playback.rs"]
+mod playback;
+use nanocodex_voice_protocol::{VoiceOutputProvider, VoiceSettings};
 
 enum Input {
     Typed,
@@ -46,10 +57,11 @@ struct MediaControl {
     media: Option<RealtimeWebrtcSessionHandle>,
     ready: bool,
     muted: bool,
+    stopped: bool,
 }
 impl MediaControl {
     fn microphone_muted(&self) -> bool {
-        !self.ready || self.muted
+        !self.ready || self.muted || self.stopped
     }
     fn apply_microphone(&self) -> Result<(), ManagedError> {
         if let Some(media) = &self.media {
@@ -64,6 +76,7 @@ impl MediaControl {
 pub(crate) struct Session {
     stop: CancellationToken,
     native_stop: AbortHandle,
+    playback: Option<Arc<playback::Playback>>,
     control: Arc<Mutex<MediaControl>>,
     input: mpsc::Sender<Input>,
     muted: watch::Sender<bool>,
@@ -73,18 +86,27 @@ pub(crate) struct Session {
     task: Option<tokio::task::JoinHandle<()>>,
 }
 impl Session {
-    pub(crate) fn start(
+    pub(crate) fn start_with_settings(
         client: ManagedClient,
         agent: String,
-        voice: &str,
+        settings: VoiceSettings,
         muted: bool,
     ) -> Result<Self, ManagedError> {
+        settings.validate_chatgpt().map_err(error)?;
+        let eleven = if settings.output_provider == VoiceOutputProvider::Elevenlabs {
+            Some(elevenlabs::Client::from_env()?)
+        } else {
+            None
+        };
         if !RealtimeWebrtcSession::is_supported() {
             return Err(error(
                 "Voice runtime missing. Install the matching nightly voice package beside nanocodex2.",
             ));
         }
-        let mut protocol = ManagedVoiceProtocol::new(voice).map_err(error)?;
+        let mut protocol = ManagedVoiceProtocol::new(&settings.voice).map_err(error)?;
+        protocol
+            .dispatch(&json!({"op":"configure","settings":settings}))
+            .map_err(error)?;
         protocol.enable_client_managed_handoffs();
         let session = uuid::Uuid::now_v7().to_string();
         protocol.bind_session(&session);
@@ -98,16 +120,48 @@ impl Session {
             ..Status::default()
         });
         let (transcript_tx, transcripts) = mpsc::channel(128);
-        let presentation = status_tx.clone();
         let control = Arc::new(Mutex::new(MediaControl {
             muted: *microphone.borrow(),
             ..Default::default()
         }));
+        let playback_control = control.clone();
+        let playback = eleven.map(|client| {
+            Arc::new(playback::Playback::new(
+                client,
+                settings.eleven_labs_voice_id.clone().unwrap(),
+                status_tx.clone(),
+                Arc::new(move || {
+                    let control = playback_control
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    if control.stopped || !control.ready {
+                        return Err(error("Native voice output is not ready"));
+                    }
+                    control
+                        .media
+                        .clone()
+                        .ok_or_else(|| error("Native voice output is unavailable"))
+                }),
+            ))
+        });
+        let output_label = if settings.output_provider == VoiceOutputProvider::Elevenlabs {
+            format!(
+                "ElevenLabs {}",
+                settings.eleven_labs_voice_id.as_deref().unwrap()
+            )
+        } else {
+            format!("ChatGPT {}", settings.voice)
+        };
+        let actor_playback = playback.clone();
+        let presentation = status_tx.clone();
         let actor_control = control.clone();
         let owner_stop = stop.clone();
         let owner_native_stop = native_stop.clone();
         let task = tokio::spawn(async move {
             let mut actor = Actor {
+                output_label,
+                playback: actor_playback,
+                captions: SpeechCaptions::default(),
                 client,
                 agent,
                 session,
@@ -126,8 +180,20 @@ impl Session {
                 () = owner_stop.cancelled() => Ok(()),
                 result = actor.run(native_registration, commands, microphone) => result,
             };
+            // Fence restoration callbacks before terminating native media.
+            {
+                let mut control = actor
+                    .control
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                control.stopped = true;
+                let _ = control.apply_microphone();
+            }
             // Native capture/playback stops before any network cleanup.
             owner_native_stop.abort();
+            if let Some(playback) = &actor.playback {
+                playback.cancel();
+            }
             if let Some(media) = actor.media.take() {
                 media.close();
             }
@@ -146,6 +212,7 @@ impl Session {
                 status.phase = Phase::Stopping;
                 status.microphone = 0;
                 status.speaker = 0;
+                status.speaking = false;
             });
             // Cleanup uses stable identities and remains bounded even when a call was
             // cancelled during admission. A stale stop cannot close a newer session.
@@ -162,6 +229,7 @@ impl Session {
         Ok(Self {
             stop,
             native_stop,
+            playback,
             control,
             input,
             muted,
@@ -172,13 +240,28 @@ impl Session {
         })
     }
     pub(crate) fn stop(&self) {
+        {
+            let mut control = self
+                .control
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            control.stopped = true;
+            let _ = control.apply_microphone();
+        }
+        if let Some(playback) = &self.playback {
+            playback.cancel();
+        }
         self.native_stop.abort();
         self.stop.cancel();
         self.presentation.send_modify(|status| {
             status.phase = Phase::Stopping;
             status.microphone = 0;
             status.speaker = 0;
+            status.speaking = false;
         });
+    }
+    pub(crate) fn accepting_transcripts(&self) -> bool {
+        !self.stop.is_cancelled()
     }
     pub(crate) fn is_muted(&self) -> bool {
         *self.muted.borrow()
@@ -193,11 +276,16 @@ impl Session {
             status.muted = muted;
         });
         control.muted = muted;
-        if control.apply_microphone().is_err() {
+        let failed = control.apply_microphone().is_err();
+        drop(control);
+        if failed {
             self.stop();
         }
     }
     pub(crate) fn typed(&self) {
+        if let Some(playback) = &self.playback {
+            playback.cancel();
+        }
         if let Some(media) = self
             .control
             .lock()
@@ -223,7 +311,87 @@ impl Drop for Session {
         self.stop();
     }
 }
+// Caption IDs are monotonic for a session. An interrupted caption stays suppressed
+// even if its delayed final arrives after playback is enabled again.
+struct SpeechCaptions {
+    generation: u64,
+    caption: Option<u64>,
+    suppressed: Option<u64>,
+    completed: Option<u64>,
+    speech_error: Option<&'static str>,
+    enabled: bool,
+}
+impl Default for SpeechCaptions {
+    fn default() -> Self {
+        Self {
+            generation: 0,
+            caption: None,
+            suppressed: None,
+            completed: None,
+            speech_error: None,
+            enabled: true,
+        }
+    }
+}
+impl SpeechCaptions {
+    fn update(&mut self, generation: Option<u64>, enabled: Option<bool>) -> bool {
+        if generation.is_some_and(|g| g < self.generation) {
+            return false;
+        }
+        let changed = generation.is_some_and(|g| g > self.generation);
+        if let Some(g) = generation {
+            self.generation = g;
+        }
+        let interrupted = changed || enabled == Some(false);
+        if interrupted {
+            self.suppressed = self.suppressed.max(self.caption);
+        }
+        if let Some(enabled) = enabled {
+            self.enabled = enabled;
+        }
+        interrupted
+    }
+    /// Suppress audio only; the complete caption remains visible.
+    fn suppress_remainder(&mut self, id: u64) {
+        self.completed = self.completed.max(Some(id));
+    }
+
+    fn consume(&mut self, speaker: &str, id: u64, text: &str, is_partial: bool) -> Option<String> {
+        if speaker != "assistant" || self.caption.is_some_and(|previous| id < previous) {
+            return None;
+        }
+        self.caption = Some(id);
+        if !self.enabled {
+            self.suppressed = self.suppressed.max(Some(id));
+            return None;
+        }
+        if self.suppressed.is_some_and(|previous| id <= previous)
+            || self.completed.is_some_and(|previous| id <= previous)
+        {
+            return None;
+        }
+        // Bound retained state and requests without truncating the visible text.
+        if text.len() > 16000 {
+            self.suppress_remainder(id);
+            self.speech_error = Some(
+                "ElevenLabs caption exceeds 16000 bytes; remaining reply is available as text",
+            );
+            return None;
+        }
+        // Keep each reply in one synthesis request so sentence boundaries do not
+        // restart the provider's prosody and native audio stream.
+        if is_partial {
+            return None;
+        }
+        self.completed = Some(id);
+        let text = text.trim();
+        (!text.is_empty()).then(|| text.to_owned())
+    }
+}
 struct Actor {
+    output_label: String,
+    captions: SpeechCaptions,
+    playback: Option<Arc<playback::Playback>>,
     client: ManagedClient,
     agent: String,
     session: String,
@@ -239,8 +407,9 @@ struct Actor {
 }
 impl Actor {
     fn status(&self, text: impl Into<String>) {
+        let text = output_status(text.into(), &self.output_label);
         self.status.send_modify(|status| {
-            status.text = text.into();
+            status.text = text;
         });
     }
     fn timing(&self, stage: &str) {
@@ -279,6 +448,9 @@ impl Actor {
                     .control
                     .lock()
                     .unwrap_or_else(std::sync::PoisonError::into_inner);
+                started
+                    .handle
+                    .set_speaker_suppressed(self.playback.is_some());
                 control.media = Some(started.handle.clone());
                 control.apply_microphone()?;
             }
@@ -289,13 +461,16 @@ impl Actor {
         // Match the desktop app: context belongs in call creation, before
         // speech starts. Appending startup fragments to a running conversation
         // can provoke unsolicited responses while the user begins speaking.
-        let ((state, admitted), started) = tokio::try_join!(start, prepare_media)?;
+        let ((state, admitted), started) =
+            tokio::try_join!(connection_step("agent admission", start), prepare_media)?;
         self.timing("agent.ready");
         let settings = initial_call_settings(&mut self.protocol, &admitted["context"])?;
-        let call = self
-            .client
-            .voice_call(&self.agent, &self.session, &started.offer_sdp, settings)
-            .await?;
+        let call = connection_step(
+            "realtime call creation",
+            self.client
+                .voice_call(&self.agent, &self.session, &started.offer_sdp, settings),
+        )
+        .await?;
         self.timing("call.answer");
         let handle = started.handle;
         let answer = async {
@@ -334,17 +509,25 @@ impl Actor {
         let mut first_audio = false;
         let mut first_input = false;
         let mut last_speech: Option<Instant> = None;
-        self.status(if *muted.borrow() {
-            "Voice active · microphone muted"
-        } else {
-            "Voice active · listening"
-        });
+        self.status("Voice connecting · waiting for realtime session…");
+        let ready_deadline = tokio::time::sleep(Duration::from_secs(30));
+        tokio::pin!(ready_deadline);
         loop {
             tokio::select! {
                 biased;
+                () = &mut ready_deadline, if self.status.borrow().phase == Phase::Connecting => {
+                    return Err(error("Timed out waiting for realtime session readiness; stop and retry voice"));
+                }
                 changed = muted.changed() => {
                     changed.map_err(|_| error("Voice controls closed"))?;
-                    self.status(if *muted.borrow() { "Voice active · microphone muted" } else { "Voice active · listening" });
+                    let connecting = self.status.borrow().phase == Phase::Connecting;
+                    self.status(if connecting {
+                        "Voice connecting · waiting for realtime session…"
+                    } else if *muted.borrow() {
+                        "Voice active · microphone muted"
+                    } else {
+                        "Voice active · listening"
+                    });
                 }
                 command = commands.recv() => match command {
                     Some(Input::Typed) => { active_turn = None; let effects = self.protocol.note_typed_input(); self.apply(&mut socket, effects).await?; }
@@ -430,15 +613,54 @@ impl Actor {
         socket: &mut ManagedVoiceSocket,
         effects: BrowserVoiceEffects,
     ) -> Result<(), ManagedError> {
-        if let Some(enabled) = effects.playback_enabled
+        let stale_speech = effects
+            .input_generation
+            .is_some_and(|g| g < self.captions.generation);
+        if !stale_speech
+            && let Some(enabled) = effects.playback_enabled
             && let Some(media) = &self.media
         {
-            media.set_speaker_suppressed(!enabled);
+            media.set_speaker_suppressed(self.playback.is_some() || !enabled);
+        }
+        if self
+            .captions
+            .update(effects.input_generation, effects.playback_enabled)
+            && let Some(playback) = &self.playback
+        {
+            playback.cancel();
         }
         if let Some(status) = effects.status {
             self.status(status);
         }
         for transcript in effects.transcripts {
+            if stale_speech {
+                continue;
+            }
+            if let Some(segment) = self.captions.consume(
+                &transcript.speaker,
+                transcript.id,
+                &transcript.text,
+                transcript.is_partial,
+            ) && let Some(playback) = &self.playback
+                && let Err(error) = playback.enqueue(segment)
+            {
+                self.captions.suppress_remainder(transcript.id);
+                self.status(error.to_string());
+            }
+            if let Some(message) = self.captions.speech_error.take()
+                && self.playback.is_some()
+            {
+                self.status(message.to_owned());
+            }
+            if transcript.speaker == "assistant"
+                && (!self.captions.enabled
+                    || self
+                        .captions
+                        .suppressed
+                        .is_some_and(|id| transcript.id <= id))
+            {
+                continue;
+            }
             self.transcripts
                 .send(super::voice_state::Transcript {
                     session: self.session.clone(),
@@ -516,6 +738,18 @@ impl Actor {
         Ok(())
     }
 }
+fn output_status(text: String, output_label: &str) -> String {
+    if text.starts_with("Voice active") {
+        let detail = text.split_once('·').map(|(_, detail)| detail.trim());
+        match detail {
+            Some(detail) => format!("Voice active · {output_label} · {detail}"),
+            None => format!("Voice active · {output_label}"),
+        }
+    } else {
+        text
+    }
+}
+
 fn initial_call_settings(
     protocol: &mut ManagedVoiceProtocol,
     context: &serde_json::Value,
@@ -546,6 +780,9 @@ fn spawn_event_reader(
 }
 impl Drop for Actor {
     fn drop(&mut self) {
+        if let Some(playback) = &self.playback {
+            playback.cancel();
+        }
         if let Some(task) = &self.event_reader {
             task.abort();
         }
@@ -557,6 +794,17 @@ impl Drop for Actor {
         }
     }
 }
+// Bound admission including retries and call creation including authentication.
+// Native offer/answer and sideband transport have their own deadlines.
+async fn connection_step<T>(
+    stage: &str,
+    future: impl std::future::Future<Output = Result<T, ManagedError>>,
+) -> Result<T, ManagedError> {
+    tokio::time::timeout(Duration::from_secs(30), future)
+        .await
+        .map_err(|_| error(format!("Timed out during {stage}; stop and retry voice")))?
+}
+
 fn error(message: impl Into<String>) -> ManagedError {
     ManagedError::Configuration(message.into())
 }
@@ -572,10 +820,24 @@ pub(crate) async fn run(client: &ManagedClient, args: Args) -> Result<(), Manage
             nanocodex_observability::LogOutput::Stderr,
         )
         .map_err(|e| error(e.to_string()))?;
+    let settings = VoiceSettings {
+        voice: args.voice,
+        output_provider: if args.provider == "elevenlabs" {
+            VoiceOutputProvider::Elevenlabs
+        } else {
+            VoiceOutputProvider::Openai
+        },
+        eleven_labs_voice_id: args.elevenlabs_voice,
+        ..Default::default()
+    };
+    settings.validate_chatgpt().map_err(error)?;
+    if settings.output_provider == VoiceOutputProvider::Elevenlabs {
+        elevenlabs::Client::from_env()?;
+    }
     let (agent, mut workspace_events, id, _) =
         super::open_workspace_agent_from(client, args.agent, None, None).await?;
     eprintln!("Managed agent: {id}");
-    let mut session = Session::start(client.clone(), id, &args.voice, args.muted)?;
+    let mut session = Session::start_with_settings(client.clone(), id, settings, args.muted)?;
     let mut status = session.status.clone();
     let deadline = tokio::time::sleep(Duration::from_secs(args.duration.unwrap_or(86400)));
     tokio::pin!(deadline);
@@ -619,6 +881,188 @@ pub(crate) async fn run(client: &ManagedClient, args: Args) -> Result<(), Manage
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn stalled_connection_reports_stage_and_allows_retry() {
+        let failure = connection_step::<()>("agent admission", std::future::pending())
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(failure.contains("Timed out during agent admission"));
+        assert!(failure.contains("retry voice"));
+        assert_eq!(
+            connection_step("agent admission", async { Ok(42) })
+                .await
+                .unwrap(),
+            42
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_preserves_underlying_errors() {
+        let failure = connection_step::<()>("realtime sideband", async { Err(error("denied")) })
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(failure.contains("denied"));
+        assert!(!failure.contains("Timed out"));
+    }
+
+    #[test]
+    fn active_status_names_selected_output_provider_and_voice() {
+        assert_eq!(
+            output_status("Voice active (cove)".into(), "ElevenLabs synthetic_voice"),
+            "Voice active · ElevenLabs synthetic_voice"
+        );
+        assert_eq!(
+            output_status("Voice active · microphone muted".into(), "ChatGPT maple"),
+            "Voice active · ChatGPT maple · microphone muted"
+        );
+        assert_eq!(
+            output_status("Voice reconnecting…".into(), "ElevenLabs synthetic_voice"),
+            "Voice reconnecting…"
+        );
+    }
+    #[test]
+    fn captions_dedupe_finals_and_permanently_suppress_interrupted_ids() {
+        let mut captions = SpeechCaptions::default();
+        let mut id = 1;
+        let mut partial = true;
+        assert!(
+            captions
+                .consume("assistant", id, "hello", partial)
+                .is_none()
+        );
+        assert!(captions.update(Some(1), Some(false)));
+        assert!(!captions.update(Some(0), Some(true)));
+        assert!(!captions.enabled);
+        captions.update(Some(1), Some(true));
+        partial = false;
+        assert!(
+            captions
+                .consume("assistant", id, "hello", partial)
+                .is_none()
+        );
+        id = 2;
+        assert!(
+            captions
+                .consume("assistant", id, "hello", partial)
+                .is_some()
+        );
+        assert!(
+            captions
+                .consume("assistant", id, "hello", partial)
+                .is_none()
+        );
+        id = 3;
+        partial = true;
+        assert!(
+            captions
+                .consume("assistant", id, "hello", partial)
+                .is_none()
+        );
+        assert!(captions.update(Some(2), None));
+        partial = false;
+        assert!(
+            captions
+                .consume("assistant", id, "hello", partial)
+                .is_none()
+        );
+        id = 4;
+        assert!(
+            captions
+                .consume("assistant", id, "hello", partial)
+                .is_some()
+        );
+    }
+    #[test]
+    fn captions_emit_one_complete_reply_after_long_partial_burst() {
+        let mut captions = SpeechCaptions::default();
+        let mut text = String::new();
+        for sentence in 0..100 {
+            text.push_str(&format!("Sentence {sentence}. More detail! Next? "));
+            assert_eq!(captions.consume("assistant", 1, &text, true), None);
+        }
+        assert_eq!(
+            captions.consume("assistant", 1, &text, false).as_deref(),
+            Some(text.trim())
+        );
+        assert_eq!(captions.consume("assistant", 1, &text, false), None);
+        assert_eq!(captions.consume("assistant", 1, &text, true), None);
+        assert_eq!(
+            captions
+                .consume("assistant", 2, "No punctuation", false)
+                .as_deref(),
+            Some("No punctuation")
+        );
+    }
+
+    #[test]
+    fn captions_accept_corrected_partials_and_preserve_utf8_final() {
+        let mut captions = SpeechCaptions::default();
+        assert_eq!(captions.consume("assistant", 1, "Old. More", true), None);
+        assert_eq!(captions.consume("assistant", 1, "Café! 世界", true), None);
+        assert_eq!(
+            captions
+                .consume("assistant", 1, "Café! 世界", false)
+                .as_deref(),
+            Some("Café! 世界")
+        );
+        assert_eq!(captions.consume("assistant", 1, "Old. More", false), None);
+    }
+
+    #[test]
+    fn captions_interrupt_and_queue_failure_fence_finals() {
+        let mut captions = SpeechCaptions::default();
+        assert_eq!(captions.consume("assistant", 1, "First. tail", true), None);
+        assert!(captions.update(Some(1), Some(false)));
+        captions.update(Some(1), Some(true));
+        assert_eq!(captions.consume("assistant", 1, "First. tail", false), None);
+        assert_eq!(
+            captions
+                .consume("assistant", 2, "Next. tail", false)
+                .as_deref(),
+            Some("Next. tail")
+        );
+        captions.suppress_remainder(2);
+        assert_eq!(captions.consume("assistant", 2, "Next. tail", false), None);
+        assert!(captions.enabled);
+        assert_eq!(
+            captions.suppressed,
+            Some(1),
+            "queue failure must not hide UI captions"
+        );
+        assert_eq!(
+            captions.consume("assistant", 3, "Fresh", false).as_deref(),
+            Some("Fresh")
+        );
+        assert_eq!(captions.consume("user", 4, "User.", false), None);
+    }
+
+    #[test]
+    fn captions_bound_requests_and_report_oversized_speech() {
+        let mut captions = SpeechCaptions::default();
+        assert_eq!(
+            captions.consume("assistant", 1, &"é".repeat(8001), true),
+            None
+        );
+        assert!(captions.speech_error.take().unwrap().contains("16000"));
+        assert_eq!(
+            captions.consume("assistant", 1, "shorter final", false),
+            None
+        );
+        let limit = "é".repeat(8000);
+        assert_eq!(
+            captions.consume("assistant", 2, &limit, false).as_deref(),
+            Some(limit.as_str())
+        );
+        assert_eq!(
+            captions.consume("assistant", 3, &"x".repeat(16001), false),
+            None
+        );
+        assert!(captions.speech_error.take().unwrap().contains("16000"));
+    }
+
     #[tokio::test]
     async fn busy_realtime_events_do_not_cancel_agent_stream_connection() {
         use axum::{Router, http::header, routing::get};
@@ -700,6 +1144,27 @@ mod tests {
         );
         control.muted = false;
         assert!(!control.microphone_muted());
+    }
+
+    #[test]
+    fn native_playback_preserves_user_mute_and_stop_fence() {
+        let mut control = MediaControl {
+            ready: true,
+            ..Default::default()
+        };
+        assert!(
+            !control.microphone_muted(),
+            "native echo cancellation allows barge-in"
+        );
+        control.muted = true;
+        assert!(control.microphone_muted());
+        control.muted = false;
+        assert!(!control.microphone_muted());
+        control.stopped = true;
+        assert!(
+            control.microphone_muted(),
+            "late playback cannot reopen capture"
+        );
     }
 
     #[test]

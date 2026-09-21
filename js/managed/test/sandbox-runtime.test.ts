@@ -1,4 +1,4 @@
-import { CUA_JS_NAME, CUA_PARAMETERS, CUA_RESET_PARAMETERS } from "nanocodex-computer/contract";
+import { CUA_JS_NAME } from "nanocodex-computer/contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ToolMap } from "nanocodex";
 
@@ -107,7 +107,8 @@ describe("sandbox runtime egress", () => {
 describe("managed sandbox preview wiring", () => {
   it("reads shared /brain files from the durable R2 prefix and preserves private fallback reads", async () => {
     const bucket = {
-      get: vi.fn(async () => ({ arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer })),
+      head: vi.fn(async () => ({ size: 3 })),
+      get: vi.fn(async () => ({ size: 3, body: new Response(new Uint8Array([1, 2, 3])).body })),
     } as unknown as R2Bucket;
     const fallback = { readFile: vi.fn(async () => new Uint8Array([9])) };
     const workspace = createSharedBrainReadWorkspace(bucket, "durable-agent", fallback);
@@ -176,7 +177,7 @@ describe("managed sandbox preview wiring", () => {
       (_machineId, name) => sourceTools[name],
     );
 
-    expect(tools.map(({ name }) => name)).toEqual(["select_computer", "mcp__cua_repl__js", "mcp__cua_repl__js_reset", "exec_command", "write_stdin", "preview"]);
+    expect(tools.map(({ name }) => name)).toEqual(["mcp__cua_repl__js", "mcp__cua_repl__js_reset", "exec_command", "write_stdin", "preview"]);
     const exec = tools.find(({ name }) => name === "exec_command")!;
     await expect(exec.handler(
       { cmd: "pwd", workdir: "/test" },
@@ -198,10 +199,10 @@ describe("managed sandbox preview wiring", () => {
     const invoke = vi.fn(async () => ({ content: [] }));
     const tools = createManagedNamespaceTools(() => allowed,
       () => [{ id: "desktop", workspace: "/" }],
-      (_id, name) => name.startsWith("mcp__cua_repl__") ? { handler: invoke, definition: { description: "Fixture CUA provider", parameters: name === CUA_JS_NAME ? CUA_PARAMETERS : CUA_RESET_PARAMETERS } } : undefined);
-    await tools.find(tool => tool.name === "select_computer")!.handler({ workdir: "/desktop" }, toolContext());
+      (_id, name) => name.startsWith("mcp__cua_repl__") ? { handler: invoke, definition: { description: "Fixture CUA provider", parameters: { type: "object", additionalProperties: true } } } : undefined);
+    await tools.find(tool => tool.name === "mcp__cua_repl__js")!.handler({ workdir: "/desktop" }, toolContext());
     allowed = false;
-    await expect(tools.find(tool => tool.name === "mcp__cua_repl__js")!.handler({ code: "1" }, toolContext()))
+    await expect(tools.find(tool => tool.name === "mcp__cua_repl__js")!.handler({ workdir: "/desktop", code: "1" }, toolContext()))
       .rejects.toMatchObject({ status: 403, code: "namespace_forbidden" });
     expect(invoke).not.toHaveBeenCalled();
   });

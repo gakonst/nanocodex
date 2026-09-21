@@ -318,7 +318,7 @@ test("managed Agent covers account-scoped create, list, get, and delete", async 
   const listed = await Agent.list(clientOptions);
   assert.deepEqual(listed.map((agent) => agent.id), [agentId]);
   assert.deepEqual(listed[0].summary, {
-    title: "First task", createdAt: 10, updatedAt: 20, turnCount: 3,
+    title: "First task", createdAt: 10, updatedAt: 20, turnCount: 3, lastUserMessageAt: 20,
   });
   assert.equal(Agent.open(agentId, clientOptions).id, agentId);
   assert.equal((await Agent.get(agentId, clientOptions)).id, agentId);
@@ -2313,4 +2313,38 @@ test("a failed different-payload steer cannot reuse an earlier ID receipt", asyn
     assert.equal(posts, 2, "neither ambiguous POST is replayed");
     assert.equal(reads, 1);
   }
+});
+
+test("managed client carries a bounded optional location in the existing context header", async () => {
+  const location = { latitude: 37.5, longitude: -122.5, accuracy_meters: 25, timestamp_ms: Date.now(), approximate: false };
+  let captured;
+  await Agent.list({ baseUrl: origin, apiKey, requestOrigin: { client: "iphone", location }, fetch: async (_url, init) => {
+    captured = new Headers(init.headers);
+    return Response.json({ data: [] });
+  } });
+  assert.deepEqual(JSON.parse(captured.get("x-nanocodex-client-context")), { client: "iphone", location });
+});
+
+test("atomic create-and-prompt forwards caller location at first admission", async () => {
+  const location = { latitude: 37.5, longitude: -122.5, accuracy_meters: 25, timestamp_ms: Date.now(), approximate: true };
+  let captured;
+  const result = await Agent.createAndPrompt({ baseUrl: origin, apiKey, idempotencyKey: "location-start", input: "hello",
+    requestOrigin: { client: "iphone", location }, fetch: async (url, init) => {
+      assert.equal(new URL(url).pathname, "/v1/agent-runs");
+      captured = new Headers(init.headers);
+      return Response.json({ agent_id: agentId, turn_id: "turn-location", turn_idempotency_key: "turn-location", accepted_cursor: "1" });
+    } });
+  assert.equal(result.agent.id, agentId);
+  assert.deepEqual(JSON.parse(captured.get("x-nanocodex-client-context")), { client: "iphone", location });
+});
+
+test("agent listings retain bounded sidebar metadata and tolerate legacy summaries", async () => {
+  const presentation = { revision: 2, status: "running", activeTurnIds: ["turn"], activityTurnId: "turn", activity: "I'm checking sidebar state", updatedAt: 30 };
+  const fetch = async () => Response.json({ data: [agentId], summaries: {
+    [agentId]: { title: "Fix sidebar", created_at: 10, updated_at: 20, turn_count: 1, last_user_message_at: 15, presentation },
+  } });
+  const agents = await Agent.list({ baseUrl: "https://example.test", apiKey, fetch });
+  assert.equal(agents[0].summary.lastUserMessageAt, 15);
+  assert.deepEqual(agents[0].summary.presentation, presentation);
+  assert.equal(Object.isFrozen(agents[0].summary.presentation.activeTurnIds), true);
 });

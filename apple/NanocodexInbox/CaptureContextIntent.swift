@@ -107,6 +107,7 @@ struct CaptureFileContextIntent: AppIntent {
 
 struct ContextShortcuts: AppShortcutsProvider {
     static var appShortcuts: [AppShortcut] {
+        AppShortcut(intent: StartLockedVoiceIntent(), phrases: ["Record a voice task with \(.applicationName)"], shortTitle: "Record Voice Task", systemImageName: "mic.fill")
         AppShortcut(intent: RunAgentTaskIntent(), phrases: ["Run a task with \(.applicationName)"], shortTitle: "Run Agent Task", systemImageName: "hand.raised")
         AppShortcut(intent: CaptureIMessageIntent(), phrases: ["Capture an iMessage in \(.applicationName)"], shortTitle: "Capture iMessage", systemImageName: "message")
         AppShortcut(intent: CaptureWhatsAppIntent(), phrases: ["Capture WhatsApp in \(.applicationName)"], shortTitle: "Capture WhatsApp", systemImageName: "message")

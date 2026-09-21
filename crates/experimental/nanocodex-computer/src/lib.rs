@@ -1,10 +1,11 @@
-//! Persistent CUA tools over the independent computer runtime.
+//! Persistent tools from an official external Sky MCP provider.
 //!
 //! Each conversation owns its JavaScript process. Conversations execute in
 //! parallel; calls within one persistent JavaScript scope remain ordered.
-//! Protocol, timeout and cancellation failures discard only the affected
-//! process. Model arguments cannot choose an executable, inherit credentials,
-//! or change trusted runtime configuration.
+//! Protocol and cancellation failures discard only the affected
+//! transport process. This does not prove upstream/native input stopped; effects
+//! may be uncertain and input must not be replayed. Model arguments cannot choose
+//! an executable, inherit credentials, or change trusted runtime configuration.
 
 pub mod provision;
 
@@ -26,11 +27,9 @@ use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     process::{Child, ChildStdin, ChildStdout, Command},
     sync::{mpsc, oneshot},
-    task::{AbortHandle, JoinSet},
 };
 
-// The shared JSON contract cannot represent integers above JavaScript's range.
-const MAX_TIMEOUT_MS: u64 = 9_007_199_254_740_991;
+const PROVIDER_STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Trusted launch configuration, supplied by the embedding application.
 #[derive(Clone, Debug)]
@@ -38,53 +37,22 @@ pub struct ComputerConfig {
     pub executable: PathBuf,
     pub args: Vec<OsString>,
     pub environment: BTreeMap<OsString, OsString>,
-    /// Private Linux Hand desktop directory; resolved when a session starts.
-    pub desktop_runtime: Option<PathBuf>,
-    /// True for an exact external MCP command, without companion launch flags.
-    pub mcp_transport: bool,
     provider_catalog: Option<Vec<ProviderTool>>,
-    /// Host UI callback. No elicitation capability is advertised without it.
-    pub elicitation_handler: Option<Arc<dyn ComputerElicitationHandler>>,
-    /// Maximum time for a host response; expiry returns `cancel`, never consent.
-    pub elicitation_timeout: Duration,
 }
 
 impl ComputerConfig {
     pub fn new(executable: impl Into<PathBuf>) -> Self {
-        let mut args = Vec::new();
-        for (name, flag) in [
-            ("NANOCODEX_COMPUTER_SECURITY_CONFIG", "--security-config"),
-            ("NANOCODEX_COMPUTER_CDP", "--cdp"),
-            (
-                "NANOCODEX_COMPUTER_BROWSER_PREFERENCES",
-                "--browser-preferences",
-            ),
-            ("NANOCODEX_COMPUTER_IAB_CONFIG", "--iab-config"),
-            ("NANOCODEX_COMPUTER_RUNTIME_CONFIG", "--runtime-config"),
-            ("NANOCODEX_COMPUTER_PLATFORM_CONFIG", "--platform-config"),
-        ] {
-            if let Some(value) = std::env::var_os(name) {
-                args.extend([flag.into(), value]);
-            }
-        }
         Self {
             executable: executable.into(),
-            args,
+            args: Vec::new(),
             environment: BTreeMap::new(),
-            desktop_runtime: None,
-            mcp_transport: false,
             provider_catalog: None,
-            elicitation_handler: None,
-            elicitation_timeout: Duration::from_secs(300),
         }
     }
 
     /// Configure an external CUA MCP provider with its exact host-supplied args.
     pub fn mcp(executable: impl Into<PathBuf>) -> Self {
-        let mut config = Self::new(executable);
-        config.args.clear();
-        config.mcp_transport = true;
-        config
+        Self::new(executable)
     }
 
     /// Provision the platform's upstream runtime on first use, then discover it.
@@ -101,173 +69,29 @@ impl ComputerConfig {
         Ok(Self::discover())
     }
 
-    /// Discover the installed companion. An explicit setting never silently
-    /// falls back to a different executable.
+    /// Discover only an explicitly configured or managed upstream MCP launcher.
+    /// There is no custom runtime, sibling executable, or PATH fallback.
     pub fn discover() -> Option<Self> {
         if let Some(path) = std::env::var_os("NANOCODEX_COMPUTER").filter(|value| !value.is_empty())
         {
             if path == "off" || path == "none" || path == "0" {
                 return None;
             }
-            return Some(
-                if std::env::var("NANOCODEX_COMPUTER_TRANSPORT").as_deref() == Ok("mcp") {
-                    Self::mcp(path)
-                } else {
-                    Self::new(path)
-                },
-            );
-        }
-        if let Some(path) = provision::managed_provider_path()
-            && path.is_file()
-        {
             return Some(Self::mcp(path));
         }
-        let name = if cfg!(windows) {
-            "nanocodex-computer.exe"
-        } else {
-            "nanocodex-computer"
-        };
-        let sibling = std::env::current_exe().ok()?.with_file_name(name);
-        if sibling.is_file() {
-            return Some(Self::new(sibling));
-        }
-        if cfg!(debug_assertions) {
-            // Source builds keep the isolated runtime in its own target directory.
-            for profile in ["debug", "release"] {
-                let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("runtime/target")
-                    .join(profile)
-                    .join(name);
-                if path.is_file() {
-                    return Some(Self::new(path));
-                }
-            }
-        }
-        std::env::var_os("PATH")
-            .and_then(|paths| {
-                std::env::split_paths(&paths)
-                    .map(|directory| directory.join(name))
-                    .find(|path| path.is_file())
-            })
-            .map(Self::new)
+        provision::managed_provider_path().map(Self::mcp)
     }
 }
 
-/// Trusted call identity for routing a form to the correct conversation UI.
-#[derive(Clone, Debug)]
-pub struct ComputerElicitationContext {
-    pub session_id: String,
-    pub call_id: String,
-    pub model: String,
-}
-
-/// Provider-owned form, including the complete original `params._meta`.
-/// Provider text and persistence suggestions are untrusted UI data, not consent.
-#[derive(Clone, Debug)]
-pub struct ComputerElicitationRequest {
-    /// Opaque process lifetime. A session permission must never outlive or cross it.
-    pub provider_session: std::sync::Weak<()>,
-    pub id: Value,
-    pub params: Value,
-    /// Absent during initial provider discovery.
-    pub context: Option<ComputerElicitationContext>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
-#[serde(rename_all = "lowercase")]
-pub enum ComputerElicitationAction {
-    Accept,
-    Decline,
-    Cancel,
-}
-
-/// Only the host's explicit response is sent; no content or persistence is added.
-#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
-pub struct ComputerElicitationResponse {
-    pub action: ComputerElicitationAction,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub content: Option<Value>,
-    #[serde(rename = "_meta", skip_serializing_if = "Option::is_none")]
-    pub meta: Option<Value>,
-}
-
-/// Implemented by the embedding application's approval/form UI, never a tool.
-/// The future is dropped on timeout, provider cancellation, connection closure,
-/// requesting call completion, or caller cancellation. Hosts must dismiss pending
-/// UI when it is dropped.
-#[async_trait]
-pub trait ComputerElicitationHandler: Send + Sync + std::fmt::Debug + 'static {
-    async fn elicit(
-        &self,
-        request: ComputerElicitationRequest,
-    ) -> Result<ComputerElicitationResponse, ToolError>;
-}
-
-/// Serializable invocation shared by native and VM transports.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ComputerRequest {
-    pub code: String,
-    #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default = "default_timeout", deserialize_with = "deserialize_timeout")]
-    pub timeout_ms: u64,
-}
-fn deserialize_timeout<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
-    Ok(Option::<u64>::deserialize(deserializer)?.unwrap_or_else(default_timeout))
-}
-fn default_timeout() -> u64 {
-    MAX_TIMEOUT_MS
-}
-
-impl ComputerRequest {
-    pub fn validate(&self) -> Result<(), ToolError> {
-        if !(1..=MAX_TIMEOUT_MS).contains(&self.timeout_ms) {
-            return Err("CUA timeout must be a positive safe integer in milliseconds".into());
-        }
-        if self
-            .title
-            .as_ref()
-            .is_some_and(|title| title.trim().is_empty())
-        {
-            return Err("CUA title must be non-empty".into());
-        }
-        Ok(())
-    }
-}
-
-/// An execution capability bound by the host to one actual computer.
+/// An upstream execution capability bound by the host to one actual computer.
 #[async_trait]
 pub trait ComputerExecutor: Send + Sync + 'static {
-    async fn invoke(
-        &self,
-        request: Option<ComputerRequest>,
-        context: ToolContext<'_>,
-    ) -> ToolResult;
-
-    /// Generic provider invocation. Existing typed executors retain the bundled pair.
     async fn invoke_tool(
         &self,
         name: &str,
         arguments: Value,
         context: ToolContext<'_>,
-    ) -> ToolResult {
-        let request = match name {
-            "js" => {
-                let request: ComputerRequest = serde_json::from_value(arguments)?;
-                request.validate()?;
-                Some(request)
-            }
-            "js_reset"
-                if arguments.is_null()
-                    || arguments.as_object().is_some_and(|value| value.is_empty()) =>
-            {
-                None
-            }
-            _ => return Err(format!("Unsupported CUA tool or arguments: {name}").into()),
-        };
-        self.invoke(request, context).await
-    }
+    ) -> ToolResult;
 }
 
 /// An MCP tool declaration. The provider owns its schema and documentation.
@@ -293,24 +117,6 @@ impl ProviderTool {
     }
 }
 
-fn bundled_catalog() -> Vec<ProviderTool> {
-    vec![
-        ProviderTool {
-            metadata: BTreeMap::new(),
-            name: "js".into(),
-            description: Some(include_str!("description.md").into()),
-            input_schema: serde_json::from_str(include_str!("js-schema.json"))
-                .expect("embedded CUA schema"),
-        },
-        ProviderTool {
-            metadata: BTreeMap::new(),
-            name: "js_reset".into(),
-            description: Some(include_str!("reset_description.md").into()),
-            input_schema: json!({"type":"object","properties":{},"additionalProperties":false}),
-        },
-    ]
-}
-
 #[derive(Clone)]
 pub struct ComputerTools {
     executor: Arc<dyn ComputerExecutor>,
@@ -318,19 +124,19 @@ pub struct ComputerTools {
 }
 impl ComputerTools {
     /// Discover every MCP tool before publishing its exact description and schema.
+    /// A trusted 120-second deadline bounds initialization and complete catalog
+    /// discovery together, independently of provider tool arguments.
     pub async fn connect(mut config: ComputerConfig) -> Result<Self, ToolError> {
-        let mut discovery_config = config.clone();
-        discovery_config.desktop_runtime = None;
-        let process = Process::start(&discovery_config).await?;
+        let process = Process::start(&config).await?;
         config.provider_catalog = Some(process.catalog.clone());
         Ok(Self::local(config))
     }
-    pub fn local(config: ComputerConfig) -> Self {
+    fn local(config: ComputerConfig) -> Self {
         let catalog = Arc::new(
             config
                 .provider_catalog
                 .clone()
-                .unwrap_or_else(bundled_catalog),
+                .expect("connect discovers the upstream catalog before registration"),
         );
         let (dispatch, requests) = mpsc::unbounded_channel();
         tokio::spawn(route_sessions(config, requests));
@@ -339,11 +145,11 @@ impl ComputerTools {
             catalog,
         }
     }
-    /// Legacy typed executors implement the bundled companion pair.
-    pub fn new(executor: impl ComputerExecutor) -> Self {
+    /// Bind a remote transport to its discovered upstream catalog.
+    pub fn new(executor: impl ComputerExecutor, catalog: Vec<ProviderTool>) -> Self {
         Self {
             executor: Arc::new(executor),
-            catalog: Arc::new(bundled_catalog()),
+            catalog: Arc::new(catalog),
         }
     }
     /// Complete provider catalog, including tools reserved for trusted lifecycle hooks.
@@ -435,26 +241,16 @@ struct SessionRequest {
 
 #[async_trait]
 impl ComputerExecutor for LocalComputer {
-    async fn invoke(
-        &self,
-        request: Option<ComputerRequest>,
-        context: ToolContext<'_>,
-    ) -> ToolResult {
-        let (name, arguments) = match request {
-            Some(request) => {
-                request.validate()?;
-                ("js", serde_json::to_value(request)?)
-            }
-            None => ("js_reset", json!({})),
-        };
-        self.invoke_tool(name, arguments, context).await
-    }
     async fn invoke_tool(
         &self,
         name: &str,
         arguments: Value,
         context: ToolContext<'_>,
     ) -> ToolResult {
+        // Provider arguments (including timeout_ms) are opaque. Queueing and
+        // startup must not consume the provider's execution budget. Dropping
+        // this caller future still closes the receiver and discards only its
+        // owned transport; it cannot establish that native input has stopped.
         let session = context.session_id().to_owned();
         let (response, result) = oneshot::channel();
         self.dispatch
@@ -501,8 +297,7 @@ async fn route_sessions(
     }
 }
 
-// Keep legacy fields for existing companions; missing host context remains
-// absent rather than fabricating a turn from a per-call identifier.
+// Forward host context; never fabricate a turn from a per-call identifier.
 fn turn_metadata(session: &str, turn: Option<&str>, call: &str, model: &str) -> Value {
     let mut metadata =
         json!({"session_id":session,"thread_id":session,"call_id":call,"model":model});
@@ -529,35 +324,23 @@ async fn run_session(
             mut response,
             ..
         } = request;
-        if interrupted && name != "js_reset" {
-            let _ = response.send(Err("CUA session ended during cancellation or transport failure. Call cua_repl.js_reset, then select the surface again.".into()));
+        // A caller cancelled while queued never owned the active scope.
+        if response.is_closed() {
             continue;
         }
-        // External schemas are provider-owned; never reinterpret their fields.
-        let timeout = Duration::from_millis(
-            if config.mcp_transport {
-                MAX_TIMEOUT_MS
-            } else {
-                arguments
-                    .get("timeout_ms")
-                    .and_then(Value::as_u64)
-                    .unwrap_or_else(default_timeout)
-                    .min(MAX_TIMEOUT_MS)
-            } + 5_000,
-        );
-        // Taking ownership ensures cancellation drops and kills the process.
-        // The interrupted flag prevents continuation in a silently fresh scope.
+        if interrupted && name != "js_reset" {
+            let _ = response.send(Err("CUA session interrupted by caller cancellation or transport failure. Upstream/native input may still be running and effects are uncertain; do not replay uncertain input. Call cua_repl.js_reset, then inspect the surface before continuing. Reset does not prove earlier input stopped.".into()));
+            continue;
+        }
+        // Taking ownership ensures cancellation drops only this transport process.
+        // Upstream/native work may outlive it. The interrupted flag requires
+        // explicit recovery instead of continuation in a silently fresh scope.
         let previous = process.take();
         let execution = async {
             let mut process = match previous {
                 Some(process) => process,
                 None => Process::start(&config).await?,
             };
-            process.elicitation_context = Some(ComputerElicitationContext {
-                session_id: session.clone(),
-                call_id: call_id.clone(),
-                model: model.clone(),
-            });
             let value = process.rpc("tools/call", json!({"name":name,"arguments":arguments,
                 "_meta":{"x-codex-turn-metadata":turn_metadata(&session, turn_id.as_deref(), &call_id, &model)}})).await?;
             let output = output(value)?;
@@ -569,14 +352,14 @@ async fn run_session(
                 interrupted = true;
                 continue;
             }
-            outcome = tokio::time::timeout(timeout, execution) => {
-                outcome.map_err(|_| "CUA runtime timed out; its process was stopped. Call cua_repl.js_reset before continuing.".into()).and_then(|result| result)
-            }
+            outcome = execution => outcome,
         };
         match outcome {
             Ok((owned, output)) => {
                 process = Some(owned);
-                interrupted = false;
+                if name == "js_reset" && output.success {
+                    interrupted = false;
+                }
                 if response.send(Ok(output)).is_err() {
                     // The caller disappeared at the completion boundary. Its
                     // state transition is ambiguous, so discard the process
@@ -594,23 +377,25 @@ async fn run_session(
 }
 
 struct Process {
-    elicitation_session: Arc<()>,
     _child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
     next_id: u64,
     catalog: Vec<ProviderTool>,
-    elicitation_handler: Option<Arc<dyn ComputerElicitationHandler>>,
-    elicitation_timeout: Duration,
-    elicitation_context: Option<ComputerElicitationContext>,
 }
 impl Process {
     async fn start(config: &ComputerConfig) -> Result<Self, ToolError> {
+        // Startup has a trusted cumulative deadline; tool execution does not.
+        // Dropping this future discards its owned transport, not proof that any
+        // upstream/native work has stopped. No startup or input is replayed.
+        tokio::time::timeout(PROVIDER_STARTUP_TIMEOUT, Self::start_and_discover(config))
+            .await
+            .map_err(|_| "CUA provider startup timed out after 120 seconds during initialization or catalog discovery; owned transport discarded. Upstream/native work may continue.")?
+    }
+
+    async fn start_and_discover(config: &ComputerConfig) -> Result<Self, ToolError> {
         let mut command = Command::new(&config.executable);
         command.args(&config.args).env_clear();
-        if !config.mcp_transport {
-            command.arg("--allow-native-control").arg("serve");
-        }
         // Desktop connection and OS home variables only. Account/API tokens do
         // not cross into a model-controlled JavaScript process.
         for name in [
@@ -626,8 +411,6 @@ impl Process {
             "XAUTHORITY",
             "WAYLAND_DISPLAY",
             "HYPRLAND_INSTANCE_SIGNATURE",
-            "NANOCODEX_COMPUTER_BACKGROUND",
-            "NANOCODEX_HYPRLAND_CAPTURE",
             "XDG_RUNTIME_DIR",
             "DBUS_SESSION_BUS_ADDRESS",
             "LANG",
@@ -638,27 +421,6 @@ impl Process {
             }
         }
         command.envs(&config.environment);
-        if let Some(directory) = &config.desktop_runtime {
-            if config
-                .environment
-                .contains_key(std::ffi::OsStr::new("NANOCODEX_COMPUTER_BACKGROUND"))
-                || std::env::var_os("NANOCODEX_COMPUTER_BACKGROUND").is_some()
-            {
-                return Err("Background CUA cannot be combined with a private X11 desktop".into());
-            }
-            let ready: Value =
-                serde_json::from_slice(&std::fs::read(directory.join("ready")).map_err(
-                    |_| "This Hand's desktop is unavailable; start its screen before using CUA.",
-                )?)?;
-            let display = ready["display"]
-                .as_str()
-                .filter(|display| display.starts_with(':'))
-                .ok_or("Hand desktop did not publish a local X display")?;
-            command
-                .env("DISPLAY", display)
-                .env("XAUTHORITY", directory.join("Xauthority"))
-                .env_remove("WAYLAND_DISPLAY");
-        }
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -666,29 +428,20 @@ impl Process {
             .kill_on_drop(true);
         let mut child = command.spawn().map_err(|error| {
             format!(
-                "Cannot start CUA companion {}: {error}. Run pnpm build:computer first.",
+                "Cannot start upstream Sky MCP provider {}: {error}. Check the host provider installation.",
                 config.executable.display()
             )
         })?;
         let input = child.stdin.take().ok_or("CUA stdin unavailable")?;
         let output = BufReader::new(child.stdout.take().ok_or("CUA stdout unavailable")?);
         let mut process = Self {
-            elicitation_session: Arc::new(()),
             _child: child,
             input,
             output,
             next_id: 0,
             catalog: Vec::new(),
-            elicitation_handler: config.elicitation_handler.clone(),
-            elicitation_timeout: config.elicitation_timeout,
-            elicitation_context: None,
         };
-        let capabilities = if config.elicitation_handler.is_some() {
-            json!({"elicitation":{"form":{}}})
-        } else {
-            json!({})
-        };
-        process.rpc("initialize", json!({"protocolVersion":"2025-06-18","capabilities":capabilities,"clientInfo":{"name":"nanocodex-computer","version":env!("CARGO_PKG_VERSION")}})).await?;
+        process.rpc("initialize", json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"nanocodex-computer","version":env!("CARGO_PKG_VERSION")}})).await?;
         process
             .send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
             .await?;
@@ -766,90 +519,16 @@ impl Process {
         let id = self.next_id;
         self.send(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
             .await?;
-        // Owned tasks are aborted when this RPC is dropped or its transport closes.
-        // Continue reading while the host is deciding so EOF/cancellation cannot
-        // leave approval UI running against a dead provider.
-        let mut elicitations = JoinSet::<(Value, Value)>::new();
-        let mut pending = BTreeMap::<String, AbortHandle>::new();
         let mut line = Vec::new();
         loop {
-            tokio::select! {
-                completed = elicitations.join_next(), if !elicitations.is_empty() => {
-                    if completed.as_ref().is_some_and(|result| result.as_ref().is_err_and(|error| !error.is_cancelled())) {
-                        return Err("CUA host elicitation task failed".into());
-                    }
-                    if let Some(Ok((request_id, response))) = completed {
-                        let key = request_id.to_string();
-                        if pending.remove(&key).is_some() {
-                            self.send(response).await?;
-                        }
-                    }
-                    continue;
-                }
-                read = self.output.read_until(b'\n', &mut line) => {
-                    if read? == 0 {
-                        return Err("CUA runtime closed its output".into());
-                    }
-                }
+            if self.output.read_until(b'\n', &mut line).await? == 0 {
+                return Err("CUA runtime closed its output".into());
             }
             let value: Value = serde_json::from_slice(&line)?;
             line.clear();
-            if let Some(method) = value.get("method") {
-                if method == "notifications/cancelled" {
-                    if let Some(request_id) = value.pointer("/params/requestId")
-                        && let Some(task) = pending.remove(&request_id.to_string())
-                    {
-                        task.abort();
-                        self.send(
-                            json!({"jsonrpc":"2.0","id":request_id,"result":{"action":"cancel"}}),
-                        )
-                        .await?;
-                    }
-                } else if let Some(request_id) = value.get("id") {
-                    let params = value.get("params").cloned().unwrap_or(Value::Null);
-                    let handler = self.elicitation_handler.clone();
-                    if (method != "elicitation/create" && method != "openai/elicitation/create")
-                        || handler.is_none()
-                    {
-                        self.send(json!({"jsonrpc":"2.0","id":request_id,"error":{"code":-32601,"message":"No host handler for this server request"}})).await?;
-                        continue;
-                    }
-                    if !params.is_object()
-                        || !params.get("message").is_some_and(Value::is_string)
-                        || !params.get("requestedSchema").is_some_and(Value::is_object)
-                        || params.get("mode").is_some_and(|mode| mode != "form")
-                        || params.get("_meta").is_some_and(|meta| !meta.is_object())
-                    {
-                        self.send(json!({"jsonrpc":"2.0","id":request_id,"error":{"code":-32602,"message":"Expected a form elicitation request"}})).await?;
-                        continue;
-                    }
-                    let key = request_id.to_string();
-                    if pending.contains_key(&key) || pending.len() >= 32 {
-                        return Err(
-                            "CUA provider sent duplicate or excessive pending elicitations".into(),
-                        );
-                    }
-                    let request = ComputerElicitationRequest {
-                        provider_session: Arc::downgrade(&self.elicitation_session),
-                        id: request_id.clone(),
-                        params,
-                        context: self.elicitation_context.clone(),
-                    };
-                    let timeout = self.elicitation_timeout;
-                    let handler = handler.expect("checked above");
-                    let task = elicitations.spawn(async move {
-                        let response = tokio::time::timeout(timeout, handler.elicit(request.clone())).await;
-                        let response = match response {
-                            Ok(Ok(result)) if result.content.as_ref().is_some_and(|value| !value.is_object())
-                                || result.meta.as_ref().is_some_and(|value| !value.is_object()) =>
-                                json!({"jsonrpc":"2.0","id":request.id,"error":{"code":-32602,"message":"Invalid host form elicitation response"}}),
-                            Ok(Ok(result)) => json!({"jsonrpc":"2.0","id":request.id,"result":result}),
-                            Ok(Err(_)) => json!({"jsonrpc":"2.0","id":request.id,"error":{"code":-32603,"message":"Host form elicitation failed"}}),
-                            Err(_) => json!({"jsonrpc":"2.0","id":request.id,"result":{"action":"cancel"}}),
-                        };
-                        (request.id, response)
-                    });
-                    pending.insert(key, task);
+            if value.get("method").is_some() {
+                if let Some(request_id) = value.get("id") {
+                    self.send(json!({"jsonrpc":"2.0","id":request_id,"error":{"code":-32601,"message":"Unsupported provider server request"}})).await?;
                 }
                 continue;
             }
@@ -980,9 +659,6 @@ mod provider_contract_tests {
     struct EchoProvider;
     #[async_trait]
     impl ComputerExecutor for EchoProvider {
-        async fn invoke(&self, _: Option<ComputerRequest>, _: ToolContext<'_>) -> ToolResult {
-            panic!("generic provider calls must not enter the typed companion adapter")
-        }
         async fn invoke_tool(
             &self,
             name: &str,

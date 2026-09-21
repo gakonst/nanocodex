@@ -209,6 +209,12 @@ pub(crate) enum RootEvent {
         model: Model,
         skills: Arc<[Skill]>,
     },
+    RoutingHydrated {
+        enabled: bool,
+        provider: Option<String>,
+        model: Option<Model>,
+        effort: Option<ReasoningEffort>,
+    },
     SettingsHydrated {
         effort: ReasoningEffort,
         fast_mode: bool,
@@ -219,6 +225,7 @@ pub(crate) enum RootEvent {
     },
     NotifyError(String),
     NotifySuccess(String),
+    VoiceOutput(String),
     ConfirmReviewDownload,
     UpdateAvailable(Version),
     SteerAdmitted(QueueId),
@@ -289,6 +296,7 @@ pub(crate) enum SessionListKind {
 
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum RootEffect {
+    AutoRoute,
     Reload,
     Bug(String),
     Screen,
@@ -362,6 +370,9 @@ pub(crate) enum RootEffect {
 enum Overlay {
     VaultReview(crate::tui::vault::Review),
     AgentId(String),
+    VoiceOutput { text: String, scroll: u16 },
+    VoiceMenu(Node<super::voice_menu::VoiceMenu>),
+    VoiceClone(String, bool, u16, bool),
     Actions(Node<ActionsMenu>),
     ContextDiagnostics(Node<ContextDiagnosticsPanel>),
     Effort(Node<EffortSelector>),
@@ -914,6 +925,117 @@ impl RootNode {
                         frame.render_widget(Paragraph::new("Enlarge the terminal to review the complete website approval. Approval is disabled until all details fit. Esc cancels.").wrap(Wrap { trim: false }), layout.body);
                     }
                 }
+                Overlay::VoiceClone(text, consent_visible, scroll, script) => {
+                    let layout = Floating::new(
+                        "Record a voice clone",
+                        96,
+                        area.height.saturating_sub(4).min(28),
+                        &[
+                            ("R", "record"),
+                            ("S", "stop"),
+                            ("P", "play"),
+                            ("U", "consent + upload"),
+                            ("esc", "cancel"),
+                        ],
+                    )
+                    .render(frame, area, theme);
+                    if *script {
+                        *consent_visible = false;
+                        let meter = text.lines().find(|line| line.starts_with("● RECORDING"));
+                        let header = vec![
+                            Line::raw("Read naturally; keep talking until 60–90s. Cap: 120s."),
+                            Line::styled(
+                                meter.unwrap_or_else(|| {
+                                    text.lines().nth(1).unwrap_or("R starts recording")
+                                }),
+                                Style::default().fg(Color::Red).add_modifier(Modifier::BOLD),
+                            ),
+                            Line::raw("↑↓ / PgUp/PgDn: scroll · H: back · S: stop · Esc: cancel"),
+                        ];
+                        let header_height = 3.min(layout.body.height);
+                        frame.render_widget(
+                            Paragraph::new(header),
+                            Rect {
+                                height: header_height,
+                                ..layout.body
+                            },
+                        );
+                        let body = Rect {
+                            y: layout.body.y + header_height,
+                            height: layout.body.height.saturating_sub(header_height),
+                            ..layout.body
+                        };
+                        let paragraph =
+                            Paragraph::new(include_str!("../voice_clone_script.txt").trim())
+                                .wrap(Wrap { trim: false });
+                        let max_scroll = paragraph
+                            .line_count(body.width)
+                            .saturating_sub(usize::from(body.height));
+                        *scroll = (*scroll).min(u16::try_from(max_scroll).unwrap_or(u16::MAX));
+                        frame.render_widget(paragraph.scroll((*scroll, 0)), body);
+                    } else {
+                        let lines: Vec<Line<'_>> = text
+                            .lines()
+                            .map(|line| {
+                                if line.starts_with("● RECORDING") {
+                                    Line::styled(
+                                        line,
+                                        Style::default()
+                                            .fg(Color::Red)
+                                            .add_modifier(Modifier::BOLD),
+                                    )
+                                } else {
+                                    Line::raw(line)
+                                }
+                            })
+                            .collect();
+                        let paragraph = Paragraph::new(lines).wrap(Wrap { trim: false });
+                        *consent_visible = paragraph.line_count(layout.body.width)
+                            <= usize::from(layout.body.height);
+                        if *consent_visible {
+                            frame.render_widget(paragraph, layout.body);
+                        } else {
+                            // Preserve useful recorder diagnostics even when all consent
+                            // text cannot fit. Upload stays disabled until it is visible.
+                            let error = text
+                                .split_once("No automatic upload.\n")
+                                .map(|(_, error)| error.trim())
+                                .unwrap_or("");
+                            let fallback = if error.is_empty() {
+                                format!(
+                                    "Upload disabled: enlarge terminal to review consent. Esc cancels.\n\n{text}"
+                                )
+                            } else {
+                                format!(
+                                    "{error}\n\nUpload disabled: enlarge terminal to review consent. R retries; Esc cancels."
+                                )
+                            };
+                            frame.render_widget(
+                                Paragraph::new(fallback).wrap(Wrap { trim: false }),
+                                layout.body,
+                            );
+                        }
+                    }
+                }
+                Overlay::VoiceOutput { text, scroll } => {
+                    let layout = Floating::new(
+                        "Voice · local controls",
+                        100,
+                        area.height.saturating_sub(4),
+                        &[
+                            ("↑↓ pgup/pgdn", "scroll"),
+                            ("c", "copy all"),
+                            ("esc", "close"),
+                        ],
+                    )
+                    .render(frame, area, theme);
+                    let paragraph = Paragraph::new(text.as_str()).wrap(Wrap { trim: false });
+                    let max_scroll = paragraph
+                        .line_count(layout.body.width)
+                        .saturating_sub(usize::from(layout.body.height));
+                    *scroll = (*scroll).min(u16::try_from(max_scroll).unwrap_or(u16::MAX));
+                    frame.render_widget(paragraph.scroll((*scroll, 0)), layout.body);
+                }
                 Overlay::AgentId(id) => {
                     let layout =
                         Floating::new("Agent ID", 58, 7, &[("enter", "copy"), ("esc", "close")])
@@ -925,6 +1047,7 @@ impl RootNode {
                         layout.body,
                     );
                 }
+                Overlay::VoiceMenu(menu) => menu.render(frame, area, theme),
                 Overlay::Actions(actions) => actions.render(frame, area, theme),
                 Overlay::ContextDiagnostics(panel) => panel.render(frame, area, theme),
                 Overlay::Effort(selector) => selector.render(frame, area, theme),
@@ -1039,6 +1162,17 @@ impl RootNode {
         &mut self,
         mut event: Event,
     ) -> ComponentUpdate<RootEffect> {
+        // Voice controls remain local and navigable during a managed reconnect.
+        if matches!(
+            self.overlay,
+            Some(
+                Overlay::VoiceMenu(_)
+                    | Overlay::VoiceOutput { .. }
+                    | Overlay::VoiceClone(_, _, _, _)
+            )
+        ) {
+            return self.update_overlay(event, Instant::now());
+        }
         if self.resuming_session {
             return ComponentUpdate::none();
         }
@@ -1086,6 +1220,7 @@ impl RootNode {
                         .update_composer(ComposerEvent::Terminal(event), RenderRequest::Immediate);
                     if !connecting && update.effects.iter().any(|effect| matches!(effect,
                         RootEffect::Voice(crate::voice::Command::Start(_))
+                        | RootEffect::Voice(crate::voice::Command::Select(_))
                         | RootEffect::Voice(crate::voice::Command::Toggle) if self.voice_status.is_none()))
                     {
                         self.reconnecting = Some(true);
@@ -1543,6 +1678,68 @@ impl RootNode {
         match &self.overlay {
             Some(Overlay::VaultReview(_)) => self.update_vault_review(event),
             Some(Overlay::AgentId(_)) => self.update_agent_id(event),
+            Some(Overlay::VoiceClone(_, consent_visible, _, _)) => {
+                let consent_visible = *consent_visible;
+                if let Event::Key(key) = &event
+                    && key.kind == KeyEventKind::Press
+                    && key.modifiers.is_empty()
+                    && let Some(Overlay::VoiceClone(text, visible, scroll, script)) =
+                        &mut self.overlay
+                {
+                    match key.code {
+                        KeyCode::Char('h' | 'H')
+                            if text.contains("H: read-aloud script")
+                                || text.contains("Opening your microphone")
+                                || text.contains("Waiting for realtime") =>
+                        {
+                            *script = !*script;
+                            *visible = false;
+                            return ComponentUpdate::render(RenderRequest::Immediate);
+                        }
+                        KeyCode::Down | KeyCode::PageDown if *script => {
+                            *scroll = scroll.saturating_add(if key.code == KeyCode::Down {
+                                1
+                            } else {
+                                8
+                            });
+                            return ComponentUpdate::render(RenderRequest::Immediate);
+                        }
+                        KeyCode::Up | KeyCode::PageUp if *script => {
+                            *scroll =
+                                scroll.saturating_sub(if key.code == KeyCode::Up { 1 } else { 8 });
+                            return ComponentUpdate::render(RenderRequest::Immediate);
+                        }
+                        _ => {}
+                    }
+                }
+                let command = match event {
+                    Event::Key(key)
+                        if key.kind == KeyEventKind::Press && key.modifiers.is_empty() =>
+                    {
+                        match key.code {
+                            KeyCode::Esc => Some(crate::voice::Command::CloneCancel),
+                            KeyCode::Char('r' | 'R') => {
+                                Some(crate::voice::Command::CloneRecord(None))
+                            }
+                            KeyCode::Char('s' | 'S' | ' ') => {
+                                Some(crate::voice::Command::CloneStop)
+                            }
+                            KeyCode::Char('p' | 'P') => Some(crate::voice::Command::ClonePlay),
+                            KeyCode::Char('u' | 'U') if consent_visible => {
+                                Some(crate::voice::Command::CloneSubmit)
+                            }
+                            _ => None,
+                        }
+                    }
+                    _ => None,
+                };
+                command.map_or_else(ComponentUpdate::none, |command| ComponentUpdate {
+                    effects: vec![RootEffect::Voice(command)],
+                    render: RenderRequest::Immediate,
+                })
+            }
+            Some(Overlay::VoiceMenu(_)) => self.update_voice_menu(event),
+            Some(Overlay::VoiceOutput { .. }) => self.update_voice_output(event),
             Some(Overlay::Actions(_)) => self.update_actions(event),
             Some(Overlay::ContextDiagnostics(_)) => self.update_context_diagnostics(event),
             Some(Overlay::Effort(_)) => self.update_effort(EffortEvent::Terminal { event, now }),
@@ -1760,7 +1957,10 @@ impl RootNode {
                 && self.queue.component().is_empty(),
             fork: self.can_fork(),
             fast_mode: self.composer.component().fast_mode(),
-            model: self.thread == ThreadState::New,
+            model: self.thread == ThreadState::New && !self.composer.component().auto_routing(),
+            auto_route: self.thread == ThreadState::New
+                && !self.has_active_turns()
+                && !self.composer.component().auto_routing(),
         }
     }
 
@@ -1798,6 +1998,10 @@ impl RootNode {
             Some(ActionsEffect::Trigger(Action::Bug)) => {
                 self.overlay = None;
                 return self.apply_settings_command(SettingsCommand::Bug(String::new()));
+            }
+            Some(ActionsEffect::Trigger(Action::AutoRoute)) => {
+                self.overlay = None;
+                return self.apply_settings_command(SettingsCommand::AutoRoute);
             }
             Some(ActionsEffect::Trigger(Action::Reload)) => {
                 self.overlay = None;
@@ -1964,7 +2168,18 @@ impl RootNode {
         }
     }
 
+    fn routing_settings_locked(&mut self) -> ComponentUpdate<RootEffect> {
+        self.notification = Some(Notification::plain(
+            "Automatic routing controls the model and effort for this thread".into(),
+            Color::Red,
+        ));
+        ComponentUpdate::render(RenderRequest::Immediate)
+    }
+
     fn open_effort(&mut self) -> ComponentUpdate<RootEffect> {
+        if self.composer.component().auto_routing() {
+            return self.routing_settings_locked();
+        }
         self.overlay = Some(Overlay::Effort(Node::new(EffortSelector::new(
             self.composer.component().effort(),
             self.preferred_reasoning_mode == ReasoningMode::Pro,
@@ -1973,6 +2188,9 @@ impl RootNode {
     }
 
     fn open_model(&mut self) -> ComponentUpdate<RootEffect> {
+        if self.composer.component().auto_routing() {
+            return self.routing_settings_locked();
+        }
         if self.thread != ThreadState::New {
             self.notification = Some(Notification::plain(
                 "The model can only be changed before the first prompt".to_owned(),
@@ -2310,6 +2528,68 @@ impl RootNode {
         }
     }
 
+    fn update_voice_menu(&mut self, event: Event) -> ComponentUpdate<RootEffect> {
+        let Some(Overlay::VoiceMenu(menu)) = &mut self.overlay else {
+            return ComponentUpdate::none();
+        };
+        let update = menu.update(event);
+        if let Some(command) = update.effects.into_iter().next() {
+            self.overlay = None;
+            if let Some(command) = command {
+                let starts_voice = matches!(
+                    command,
+                    crate::voice::Command::Start(_) | crate::voice::Command::Select(_)
+                );
+                let mut update = self.apply_settings_command(SettingsCommand::Voice(command));
+                if starts_voice && self.reconnecting == Some(false) {
+                    self.reconnecting = Some(true);
+                    update.render = update
+                        .render
+                        .max(self.reconnection_status("Reconnecting…").render);
+                    update.effects.push(RootEffect::Reconnect);
+                }
+                return update;
+            }
+        }
+        ComponentUpdate::render(update.render)
+    }
+
+    fn update_voice_output(&mut self, event: Event) -> ComponentUpdate<RootEffect> {
+        if is_escape(&event) {
+            self.overlay = None;
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        let Some(Overlay::VoiceOutput { text, scroll }) = &mut self.overlay else {
+            return ComponentUpdate::none();
+        };
+        match event {
+            Event::Key(key) if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) => {
+                match key.code {
+                    KeyCode::Char('c') => {
+                        return ComponentUpdate {
+                            effects: vec![RootEffect::Copy(text.clone())],
+                            render: RenderRequest::Immediate,
+                        };
+                    }
+                    KeyCode::Up => *scroll = scroll.saturating_sub(1),
+                    KeyCode::Down => *scroll = scroll.saturating_add(1),
+                    KeyCode::PageUp => *scroll = scroll.saturating_sub(10),
+                    KeyCode::PageDown => *scroll = scroll.saturating_add(10),
+                    KeyCode::Home => *scroll = 0,
+                    KeyCode::End => *scroll = u16::MAX,
+                    _ => return ComponentUpdate::none(),
+                }
+            }
+            Event::Mouse(mouse) => match mouse.kind {
+                MouseEventKind::ScrollUp => *scroll = scroll.saturating_sub(3),
+                MouseEventKind::ScrollDown => *scroll = scroll.saturating_add(3),
+                _ => return ComponentUpdate::none(),
+            },
+            _ => return ComponentUpdate::none(),
+        }
+        ComponentUpdate::render(RenderRequest::Immediate)
+    }
+
     fn update_agent_id(&mut self, event: Event) -> ComponentUpdate<RootEffect> {
         let Some(Overlay::AgentId(id)) = &self.overlay else {
             return ComponentUpdate::none();
@@ -2359,6 +2639,9 @@ impl RootNode {
     }
 
     fn apply_effort(&mut self, effort: ReasoningEffort, pro: bool) -> ComponentUpdate<RootEffect> {
+        if self.composer.component().auto_routing() {
+            return self.routing_settings_locked();
+        }
         let reasoning_mode = if pro {
             ReasoningMode::Pro
         } else {
@@ -2414,6 +2697,9 @@ impl RootNode {
     }
 
     fn apply_model(&mut self, model: Model) -> ComponentUpdate<RootEffect> {
+        if self.composer.component().auto_routing() {
+            return self.routing_settings_locked();
+        }
         if self.thread != ThreadState::New {
             self.notification = Some(Notification::plain(
                 "The model can only be changed before the first prompt".to_owned(),
@@ -2680,6 +2966,31 @@ impl RootNode {
                 effects: vec![RootEffect::Bug(description)],
                 render: RenderRequest::Immediate,
             },
+            SettingsCommand::AutoRoute => {
+                if self.thread != ThreadState::New || self.has_active_turns() {
+                    self.notification = Some(Notification::plain(
+                        "Auto routing can only be enabled before the first prompt".into(),
+                        Color::Red,
+                    ));
+                    return ComponentUpdate::render(RenderRequest::Immediate);
+                }
+                if self.composer.component().auto_routing() {
+                    return self.routing_settings_locked();
+                }
+                self.interactive = false;
+                let _ = self
+                    .composer
+                    .component_mut()
+                    .update(ComposerEvent::Activity {
+                        active: true,
+                        status: Some("Enabling automatic routing…".into()),
+                        now: Instant::now(),
+                    });
+                ComponentUpdate {
+                    effects: vec![RootEffect::AutoRoute],
+                    render: RenderRequest::Immediate,
+                }
+            }
             SettingsCommand::Attach => {
                 if !self.action_availability().new_session {
                     self.notification = Some(Notification::plain(
@@ -2698,6 +3009,20 @@ impl RootNode {
                 }],
                 render: RenderRequest::Immediate,
             },
+            SettingsCommand::Voice(crate::voice::Command::Toggle | crate::voice::Command::List) => {
+                self.overlay = Some(Overlay::VoiceMenu(Node::new(
+                    super::voice_menu::VoiceMenu::new(self.voice_status.is_some()),
+                )));
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
+            SettingsCommand::Voice(crate::voice::Command::ListProvider(
+                crate::voice::Provider::Chatgpt,
+            )) => {
+                self.overlay = Some(Overlay::VoiceMenu(Node::new(
+                    super::voice_menu::VoiceMenu::chatgpt(),
+                )));
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
             SettingsCommand::Reload => ComponentUpdate {
                 effects: vec![RootEffect::Reload],
                 render: RenderRequest::Immediate,
@@ -3663,16 +3988,40 @@ impl Component for RootNode {
                 self.set_skills(skills);
                 ComponentUpdate::render(RenderRequest::Immediate)
             }
+            RootEvent::RoutingHydrated {
+                enabled,
+                provider,
+                model,
+                effort,
+            } => {
+                self.composer
+                    .component_mut()
+                    .update(ComposerEvent::RoutingHydrated {
+                        enabled,
+                        provider,
+                        model,
+                        effort,
+                    });
+                let effort = self.composer.component().effort();
+                self.transcript.component_mut().set_effort(effort);
+                self.subagents.set_effort(effort);
+                if enabled && matches!(self.overlay, Some(Overlay::Model(_) | Overlay::Effort(_))) {
+                    self.overlay = None;
+                }
+                self.refresh_actions();
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
             RootEvent::SettingsHydrated {
                 effort,
                 fast_mode,
                 model,
             } => {
-                self.transcript.component_mut().set_effort(effort);
-                self.subagents.set_effort(effort);
                 self.composer
                     .component_mut()
                     .update(ComposerEvent::SetEffort(effort));
+                let effective_effort = self.composer.component().effort();
+                self.transcript.component_mut().set_effort(effective_effort);
+                self.subagents.set_effort(effective_effort);
                 self.set_fast_mode(fast_mode);
                 self.set_model(model);
                 self.restore_session_activity()
@@ -3694,7 +4043,41 @@ impl Component for RootNode {
                 self.overlay = Some(Overlay::AgentId(id));
                 ComponentUpdate::render(RenderRequest::Immediate)
             }
+            RootEvent::VoiceOutput(text) => {
+                if matches!(self.overlay, Some(Overlay::VoiceClone(_, _, _, _))) {
+                    return ComponentUpdate::render(RenderRequest::Immediate);
+                }
+                self.overlay = Some(
+                    if let Some(menu) = super::voice_menu::VoiceMenu::elevenlabs_catalog(&text) {
+                        Overlay::VoiceMenu(Node::new(menu))
+                    } else {
+                        Overlay::VoiceOutput { text, scroll: 0 }
+                    },
+                );
+                ComponentUpdate::render(RenderRequest::Immediate)
+            }
             RootEvent::VoiceStatus(status) => {
+                if let Some(status) = status
+                    .as_ref()
+                    .filter(|status| status.text.starts_with("Voice clone:"))
+                {
+                    let (scroll, script) = match &self.overlay {
+                        Some(Overlay::VoiceClone(_, _, scroll, script)) => (*scroll, *script),
+                        _ => (0, false),
+                    };
+                    let script = script
+                        && (status.text.contains("H: read-aloud script")
+                            || status.text.contains("Opening your microphone")
+                            || status.text.contains("Waiting for realtime"));
+                    self.overlay = Some(Overlay::VoiceClone(
+                        status.text.clone(),
+                        false,
+                        scroll,
+                        script,
+                    ));
+                } else if matches!(self.overlay, Some(Overlay::VoiceClone(_, _, _, _))) {
+                    self.overlay = None;
+                }
                 self.voice_status = status;
                 ComponentUpdate::render(RenderRequest::Immediate)
             }
@@ -4064,7 +4447,9 @@ fn is_plain_key(event: &Event, character: char) -> bool {
 
 #[cfg(test)]
 mod history_tests {
-    use super::{Component, RenderRequest, RootEffect, RootEvent, RootNode};
+    use super::{
+        Component, Overlay, RenderRequest, RootEffect, RootEvent, RootNode, SettingsCommand,
+    };
     use crate::config::ReasoningEffort;
     use crate::tui::{
         theme::Theme,
@@ -4073,6 +4458,287 @@ mod history_tests {
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
     use ratatui::{Terminal, backend::TestBackend};
     use std::sync::Arc;
+
+    #[test]
+    fn bare_voice_opens_visible_menu_and_routes_clone_without_starting_audio() {
+        use crate::voice::Command;
+        let mut root = RootNode::new(std::path::Path::new("/workspace"), ReasoningEffort::Medium);
+        root.reconnecting = Some(false);
+        let update =
+            root.apply_settings_command(SettingsCommand::Voice(Command::parse("").unwrap()));
+        assert!(update.effects.is_empty());
+        assert!(matches!(root.overlay, Some(Overlay::VoiceMenu(_))));
+        let mut terminal = Terminal::new(TestBackend::new(100, 25)).unwrap();
+        terminal
+            .draw(|frame| root.render_focused(frame, frame.area(), &Theme::default(), true))
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("Record a voice clone"));
+        assert!(screen.contains("ChatGPT voices"));
+        assert!(screen.contains("ElevenLabs voices"));
+        for _ in 0..3 {
+            root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+                KeyCode::Down,
+                KeyModifiers::NONE,
+            ))));
+        }
+        let update = root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))));
+        assert!(
+            matches!(update.effects.as_slice(), [RootEffect::Voice(Command::CloneOpen(name))] if name == "My voice")
+        );
+    }
+
+    #[test]
+    fn bare_voices_opens_provider_menu_without_catalog_fetch() {
+        let mut root = RootNode::new(std::path::Path::new("/workspace"), ReasoningEffort::Medium);
+        let update = root.apply_settings_command(SettingsCommand::Voice(
+            crate::voice::Command::parse("voices").unwrap(),
+        ));
+        assert!(update.effects.is_empty());
+        assert!(matches!(root.overlay, Some(Overlay::VoiceMenu(_))));
+    }
+
+    #[test]
+    fn voice_menu_chatgpt_selection_and_escape_are_local() {
+        use crate::voice::{Command, Selection};
+        let mut root = RootNode::new(std::path::Path::new("/workspace"), ReasoningEffort::Medium);
+        root.apply_settings_command(SettingsCommand::Voice(Command::Toggle));
+        root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Down,
+            KeyModifiers::NONE,
+        ))));
+        let update = root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))));
+        assert!(update.effects.is_empty());
+        let update = root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Enter,
+            KeyModifiers::NONE,
+        ))));
+        assert!(matches!(
+            update.effects.as_slice(),
+            [RootEffect::Voice(Command::Select(Selection::Chatgpt(_)))]
+        ));
+        root.apply_settings_command(SettingsCommand::Voice(Command::Toggle));
+        let update = root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        ))));
+        assert!(update.effects.is_empty());
+        assert!(root.overlay.is_none());
+    }
+
+    #[test]
+    fn voice_clone_modal_routes_keys_locally_and_escape_cancels() {
+        use crate::voice::Command;
+        let mut root = RootNode::new(std::path::Path::new("/workspace"), ReasoningEffort::Medium);
+        root.update(RootEvent::VoiceStatus(Some(crate::voice_state::Status {
+            text: "Voice clone: Synthetic voice".into(),
+            ..Default::default()
+        })));
+        for (key, expected) in [
+            (KeyCode::Char('r'), Command::CloneRecord(None)),
+            (KeyCode::Char(' '), Command::CloneStop),
+            (KeyCode::Char('p'), Command::ClonePlay),
+            (KeyCode::Esc, Command::CloneCancel),
+        ] {
+            let update = root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+                key,
+                KeyModifiers::NONE,
+            ))));
+            assert!(
+                matches!(update.effects.as_slice(), [RootEffect::Voice(command)] if *command == expected)
+            );
+        }
+        root.update(RootEvent::VoiceStatus(None));
+        assert!(root.overlay.is_none());
+    }
+
+    #[test]
+    fn voice_clone_upload_requires_visible_consent() {
+        let mut root = RootNode::new(std::path::Path::new("/workspace"), ReasoningEffort::Medium);
+        let panel = crate::tui::voice_clone::Panel::new("Synthetic voice".into());
+        root.update(RootEvent::VoiceStatus(Some(crate::voice_state::Status {
+            text: panel.text(),
+            ..Default::default()
+        })));
+        for (width, height, allowed) in [(40, 10, false), (80, 24, true), (120, 35, true)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| root.render_focused(frame, frame.area(), &Theme::default(), true))
+                .unwrap();
+            let update = root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+                KeyCode::Char('u'),
+                KeyModifiers::NONE,
+            ))));
+            assert_eq!(
+                matches!(
+                    update.effects.as_slice(),
+                    [RootEffect::Voice(crate::voice::Command::CloneSubmit)]
+                ),
+                allowed
+            );
+        }
+    }
+
+    #[test]
+    fn clone_script_scroll_survives_ticks_and_escape_cancels() {
+        let mut root = RootNode::new(std::path::Path::new("/workspace"), ReasoningEffort::Medium);
+        let panel = crate::tui::voice_clone::Panel::new("Synthetic voice".into());
+        let text = format!(
+            "{}\n● RECORDING  00:30 / 02:00   mic [▮▮··········]",
+            panel.text()
+        );
+        let tick = |text: String| {
+            RootEvent::VoiceStatus(Some(crate::voice_state::Status {
+                text,
+                ..Default::default()
+            }))
+        };
+        root.update(tick(text.clone()));
+        for key in [KeyCode::Char('h'), KeyCode::PageDown] {
+            root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+                key,
+                KeyModifiers::NONE,
+            ))));
+        }
+        for status in [
+            "Waiting for realtime voice cleanup",
+            "Opening your microphone…",
+        ] {
+            root.update(tick(format!("Voice clone: Synthetic voice\n{status}")));
+            assert!(matches!(
+                root.overlay,
+                Some(Overlay::VoiceClone(_, false, 8, true))
+            ));
+        }
+        root.update(tick(text));
+        assert!(matches!(
+            root.overlay,
+            Some(Overlay::VoiceClone(_, false, 8, true))
+        ));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| root.render_focused(frame, frame.area(), &Theme::default(), true))
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("00:30 / 02:00"), "{screen}");
+        assert!(screen.contains("mic [▮▮"), "{screen}");
+        let upload = root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::NONE,
+        ))));
+        assert!(upload.effects.is_empty());
+        let cancel = root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        ))));
+        assert!(matches!(
+            cancel.effects.as_slice(),
+            [RootEffect::Voice(crate::voice::Command::CloneCancel)]
+        ));
+        root.update(tick(
+            "Voice clone: Synthetic voice\nRecording stopped".into(),
+        ));
+        assert!(matches!(
+            root.overlay,
+            Some(Overlay::VoiceClone(_, false, _, false))
+        ));
+    }
+
+    #[test]
+    fn clone_diagnostics_remain_visible_when_consent_does_not_fit() {
+        let mut root = RootNode::new(std::path::Path::new("/workspace"), ReasoningEffort::Medium);
+        let mut panel = crate::tui::voice_clone::Panel::new("Synthetic voice".into());
+        panel.error = Some(format!("Microphone failed: {}", "diagnostic ".repeat(30)));
+        root.update(RootEvent::VoiceStatus(Some(crate::voice_state::Status {
+            text: panel.text(),
+            ..Default::default()
+        })));
+        for (width, height) in [(40, 10), (100, 30)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| root.render_focused(frame, frame.area(), &Theme::default(), true))
+                .unwrap();
+            let screen = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(screen.contains("Microphone failed:"), "{screen}");
+            if width == 40 {
+                assert!(matches!(
+                    root.overlay,
+                    Some(Overlay::VoiceClone(_, false, _, _))
+                ));
+            } else {
+                assert!(matches!(
+                    root.overlay,
+                    Some(Overlay::VoiceClone(_, true, _, _))
+                ));
+            }
+        }
+    }
+
+    #[test]
+    fn voice_output_panel_scrolls_copies_and_preserves_draft() {
+        let mut root = RootNode::new(std::path::Path::new("/workspace"), ReasoningEffort::Medium);
+        root.composer
+            .component_mut()
+            .replace_draft("keep my draft".into());
+        let text = (0..40)
+            .map(|index| format!("voice_{index:02} — Speaker {index}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let update = root.update(RootEvent::VoiceOutput(text.clone()));
+        assert!(update.effects.is_empty());
+        let mut terminal = Terminal::new(TestBackend::new(90, 20)).unwrap();
+        terminal
+            .draw(|frame| root.render_focused(frame, frame.area(), &Theme::default(), true))
+            .unwrap();
+        root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::End,
+            KeyModifiers::NONE,
+        ))));
+        terminal
+            .draw(|frame| root.render_focused(frame, frame.area(), &Theme::default(), true))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let rendered = (0..20)
+            .map(|y| (0..90).map(|x| buffer[(x, y)].symbol()).collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(rendered.contains("voice_39"), "{rendered}");
+        let copy = root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::NONE,
+        ))));
+        assert!(matches!(copy.effects.as_slice(), [RootEffect::Copy(value)] if value == &text));
+        root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
+            KeyCode::Esc,
+            KeyModifiers::NONE,
+        ))));
+        assert!(root.overlay.is_none());
+        assert_eq!(root.composer.component().draft(), "keep my draft");
+    }
 
     #[test]
     fn live_voice_is_inline_and_mute_preserves_the_draft() {
@@ -4818,6 +5484,203 @@ mod live_control_tests {
         root.in_flight_turns = 1;
         assert!(root.update(key(KeyCode::Enter)).effects.is_empty());
         assert!(root.pending_session_list.is_none());
+    }
+
+    #[test]
+    fn slash_autoroute_from_draft_and_actions_never_dispatches_a_prompt() {
+        for typed in [false, true] {
+            for command in ["/autoroute", "/autoroute extra"] {
+                for state in 0..4 {
+                    let mut root = root_with_draft("");
+                    if state == 1 {
+                        root.composer
+                            .component_mut()
+                            .replace_draft("first prompt".into());
+                        assert!(matches!(
+                            root.update(key(KeyCode::Enter)).effects.as_slice(),
+                            [RootEffect::Submit(_)]
+                        ));
+                        root.update(RootEvent::WorkerTurnFinished {
+                            terminal_expected: false,
+                        });
+                    }
+                    root.in_flight_turns = usize::from(state == 2);
+                    root.managed_active_turns = usize::from(state == 3);
+                    let _ = root.sync_live_controls();
+                    assert_eq!(root.action_availability().auto_route, state == 0);
+                    if typed {
+                        for character in command.chars() {
+                            root.update(key(KeyCode::Char(character)));
+                        }
+                        assert!(matches!(root.overlay, Some(super::Overlay::Actions(_))));
+                    } else {
+                        root.composer
+                            .component_mut()
+                            .replace_draft(command.to_owned());
+                    }
+                    let update = root.update(key(KeyCode::Enter));
+                    if state == 0 && command == "/autoroute" {
+                        assert_eq!(update.effects, [RootEffect::AutoRoute]);
+                        assert!(root.notification.is_none());
+                    } else {
+                        assert!(update.effects.is_empty());
+                        let notification = root.notification.as_ref().expect("command error");
+                        assert_eq!(notification.color, ratatui::style::Color::Red);
+                        if state != 0 && command == "/autoroute" {
+                            assert!(
+                                notification
+                                    .message
+                                    .to_string()
+                                    .contains("before the first prompt")
+                            );
+                        }
+                    }
+                    assert!(root.composer.component().draft().is_empty());
+                    assert!(root.overlay.is_none());
+                    assert!(root.queue.component().is_empty());
+                    assert_eq!(root.in_flight_turns, usize::from(state == 2));
+                    assert_eq!(root.managed_active_turns, usize::from(state == 3));
+                    assert_eq!(root.thread == super::ThreadState::New, state != 1);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn autoroute_pauses_prompt_submission_until_settings_are_hydrated() {
+        let mut root = root_with_draft("/autoroute");
+        assert_eq!(
+            root.update(key(KeyCode::Enter)).effects,
+            [RootEffect::AutoRoute]
+        );
+        assert!(!root.interactive);
+        root.composer
+            .component_mut()
+            .replace_draft("first prompt".into());
+        assert!(root.update(key(KeyCode::Enter)).effects.is_empty());
+        assert_eq!(root.composer.component().draft(), "first prompt");
+        assert!(matches!(root.thread, super::ThreadState::New));
+        assert_eq!(root.in_flight_turns, 0);
+
+        root.update(RootEvent::SettingsHydrated {
+            effort: ReasoningEffort::Medium,
+            fast_mode: false,
+            model: Model::Sol,
+        });
+        assert!(root.interactive);
+        assert!(matches!(
+            root.update(key(KeyCode::Enter)).effects.as_slice(),
+            [RootEffect::Submit(prompt)] if prompt.display_text() == "first prompt"
+        ));
+    }
+
+    #[test]
+    fn autoroute_locks_model_and_effort_commands_while_pending_and_resolved() {
+        for model in [None, Some(Model::Glm53)] {
+            for command in [
+                "/model",
+                "/model sol",
+                "/effort",
+                "/effort high",
+                "/thinking high",
+                "/autoroute",
+            ] {
+                let mut root = root_with_draft(command);
+                root.update(RootEvent::RoutingHydrated {
+                    enabled: true,
+                    provider: Some("Vercel".into()),
+                    model,
+                    effort: model.map(|_| ReasoningEffort::Low),
+                });
+                assert!(!root.action_availability().model);
+                assert!(!root.action_availability().auto_route);
+                let update = root.update(key(KeyCode::Enter));
+                assert!(update.effects.is_empty(), "{command}");
+                assert!(root.overlay.is_none(), "{command}");
+                assert!(
+                    root.notification
+                        .as_ref()
+                        .unwrap()
+                        .message
+                        .to_string()
+                        .contains("Automatic routing")
+                );
+                assert!(root.queue.component().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn repeated_autoroute_after_first_prompt_preserves_the_before_first_diagnostic() {
+        for active in [false, true] {
+            let mut root = root_with_draft("/autoroute");
+            root.update(RootEvent::RoutingHydrated {
+                enabled: true,
+                provider: Some("Vercel".into()),
+                model: Some(Model::Glm53),
+                effort: Some(ReasoningEffort::Low),
+            });
+            if active {
+                root.managed_active_turns = 1;
+            } else {
+                root.thread = super::ThreadState::Started;
+            }
+            let update = root.apply_settings_command(super::SettingsCommand::AutoRoute);
+            assert!(update.effects.is_empty());
+            assert!(
+                root.notification
+                    .as_ref()
+                    .unwrap()
+                    .message
+                    .to_string()
+                    .contains("before the first prompt")
+            );
+        }
+    }
+
+    #[test]
+    fn routing_hydration_closes_selectors_and_session_reset_clears_the_route() {
+        for open_model in [false, true] {
+            let mut root = root_with_draft("");
+            if open_model {
+                root.open_model();
+            } else {
+                root.open_effort();
+            }
+            assert!(root.overlay.is_some());
+            root.update(RootEvent::RoutingHydrated {
+                enabled: true,
+                provider: Some("Vercel".into()),
+                model: Some(Model::Glm53),
+                effort: Some(ReasoningEffort::Low),
+            });
+            assert!(root.overlay.is_none());
+            assert_eq!(root.composer.component().model(), Model::Glm53);
+            root.reset_session(
+                Path::new("/workspace"),
+                ReasoningEffort::Medium,
+                ReasoningMode::Standard,
+                ReasoningMode::Standard,
+                super::DraftReset::Clear,
+            );
+            assert!(!root.composer.component().auto_routing());
+            assert_eq!(root.composer.component().model(), Model::default());
+            assert!(root.action_availability().model);
+            // Restore/reconnect can hydrate a different route on the new pane state.
+            root.update(RootEvent::RoutingHydrated {
+                enabled: true,
+                provider: Some("OpenRouter".into()),
+                model: Some(Model::Sol),
+                effort: Some(ReasoningEffort::High),
+            });
+            root.update(RootEvent::SettingsHydrated {
+                effort: ReasoningEffort::Medium,
+                model: Model::Astra,
+                fast_mode: false,
+            });
+            assert_eq!(root.composer.component().model(), Model::Sol);
+            assert_eq!(root.composer.component().effort(), ReasoningEffort::High);
+        }
     }
 
     #[test]

@@ -100,6 +100,22 @@ final class RemotePeerTests: XCTestCase {
             }
         }
         await fulfillment(of: [control, motion, reply, rendered, firstDecodedFrame], timeout: 10)
+        let hold: [RemoteInput] = [
+            .init(kind: .button, sequence: 1, generation: "capture", x: 0.5, y: 0.5, button: 1, down: true),
+            .init(kind: .relativeMove, sequence: 2, generation: "capture", deltaX: 24, deltaY: -12),
+            .init(kind: .button, sequence: 3, generation: "capture", button: 1, down: false),
+        ]
+        let heldInput = expectation(description: "Captured right-button movement arrives reliably in order")
+        heldInput.expectedFulfillmentCount = hold.count
+        var receivedHold: [RemoteInput] = []
+        publisher.onData = { data, isMotion in
+            XCTAssertFalse(isMotion, "Relative displacements cannot use the lossy motion channel")
+            do { receivedHold.append(try RemoteInput.decode(data)); heldInput.fulfill() }
+            catch { XCTFail("Invalid captured input: \(error)") }
+        }
+        for event in hold { try viewer.send(JSONEncoder().encode(event)) }
+        await fulfillment(of: [heldInput], timeout: 5)
+        XCTAssertEqual(receivedHold, hold)
         let originalCandidate = await publisher.selectedLocalCandidate()
         if relay != nil { XCTAssertTrue(originalCandidate?.hasPrefix("relay:") == true) }
         let restartedInput = expectation(description: "Existing input channel survives ICE restart")
@@ -127,5 +143,57 @@ final class RemotePeerTests: XCTestCase {
         frames.cancel()
         viewer.remoteVideoTrack?.remove(renewedRenderer)
         await publisherQueue?.value; await viewerQueue?.value
+    }
+}
+
+extension RemotePeerTests {
+    @MainActor func testAudioRequiresNegotiatedMicrophoneAndCloseRevokesState() async throws {
+        let peer = try RemotePeer(publishing: false, ice: [])
+        XCTAssertFalse(peer.microphoneEnabled)
+        XCTAssertTrue(peer.speakersEnabled)
+        // Rejection occurs before any OS permission request or capture device.
+        do {
+            try await peer.setMicrophoneEnabled(true)
+            XCTFail("A viewer without a negotiated return audio sender cannot enable microphone")
+        } catch {
+            XCTAssertFalse(peer.microphoneEnabled)
+        }
+        peer.setSpeakersEnabled(false)
+        XCTAssertFalse(peer.speakersEnabled)
+        try await peer.setMicrophoneEnabled(false)
+        peer.close()
+        peer.stopMicrophone()
+        XCTAssertFalse(peer.microphoneEnabled)
+        do {
+            try await peer.setMicrophoneEnabled(true)
+            XCTFail("Closed peer cannot request microphone access")
+        } catch { XCTAssertFalse(peer.microphoneEnabled) }
+    }
+}
+
+// These exercise lifecycle state without opening a capture device.
+extension RemotePeerTests {
+    @MainActor func testAudioSessionStopNotifiesViewerWithoutClosingTransport() throws {
+        let peer = try RemotePeer(publishing: false, ice: [])
+        defer { peer.close() }
+        var stops = 0
+        var transportChanges = 0
+        peer.onMicrophoneStopped = { stops += 1; XCTAssertFalse(peer.microphoneEnabled) }
+        peer.onState = { _ in transportChanges += 1 }
+        peer.audioSessionStoppedMicrophone()
+        XCTAssertEqual(stops, 1, "Notify even before capture starts to cancel pending viewer opt-in")
+        XCTAssertEqual(transportChanges, 0, "An audio interruption is not a transport failure")
+        XCTAssertTrue(peer.speakersEnabled)
+        peer.close()
+        peer.audioSessionStoppedMicrophone()
+        XCTAssertEqual(stops, 1, "Queued OS notifications cannot mutate a closed viewer")
+    }
+
+    @MainActor func testAudioSessionStopDoesNotAffectPublisher() throws {
+        let peer = try RemotePeer(publishing: true, ice: [])
+        defer { peer.close() }
+        peer.onMicrophoneStopped = { XCTFail("Publisher does not own viewer microphone") }
+        peer.audioSessionStoppedMicrophone()
+        XCTAssertFalse(peer.microphoneEnabled)
     }
 }

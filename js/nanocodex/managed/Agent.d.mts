@@ -227,11 +227,24 @@ export type State = Readonly<{
   }>;
 }>;
 
+export type AgentPresentation = Readonly<{
+  revision: number;
+  status: "running" | "stopping" | "completed" | "cancelled" | "failed" | "idle";
+  activeTurnIds: readonly string[];
+  title?: string;
+  activity?: string;
+  activityTurnId?: string;
+  lastUserMessageAt?: number;
+  updatedAt: number;
+}>;
+
 export type Summary = Readonly<{
   title: string;
   createdAt: number;
   updatedAt: number;
   turnCount: number;
+  lastUserMessageAt?: number;
+  presentation?: AgentPresentation;
 }>;
 
 export type TurnState =
@@ -369,7 +382,7 @@ export type CronTriggerConfig = Readonly<{
   cron: string;
   /** IANA time zone. Defaults to UTC. */
   timezone?: string | undefined;
-  /** Text prompt submitted for each occurrence, at most 64 KiB. */
+  /** Text prompt submitted for each occurrence. */
   input: string;
   /** Defaults to true; false pauses future occurrences. */
   enabled?: boolean | undefined;
@@ -424,6 +437,9 @@ export type Agent = Readonly<{
     get(id: string): Promise<CronTrigger>;
     /** Create or replace an account-owned schedule using a stable id. */
     put(id: string, config: CronTriggerConfig): Promise<CronTrigger>;
+    /** Update an existing schedule; omitted settings are preserved. */
+    update(id: string, patch: Partial<CronTriggerConfig>): Promise<CronTrigger>;
+    /** Stop future occurrences. Already dispatched runs are not cancelled. */
     delete(id: string): Promise<void>;
   }>;
   /** Reverse-tool endpoint with cookie/bearer transport retained in a private closure. */

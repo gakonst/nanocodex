@@ -1,0 +1,28 @@
+[package]
+name = "nanocodex-remote"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish = false
+description = "Shared Hand publisher media transport and input lease policy"
+
+[dependencies]
+async-trait.workspace = true
+futures-util.workspace = true
+serde_json.workspace = true
+tempfile.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "process", "rt-multi-thread", "sync", "time"] }
+tracing.workspace = true
+uuid.workspace = true
+url.workspace = true
+libc.workspace = true
+reqwest.workspace = true
+tokio-tungstenite.workspace = true
+rustls.workspace = true
+rustls-native-certs.workspace = true
+webrtc.workspace = true
+opusic-c.workspace = true
+
+[lints]
+workspace = true
