@@ -4,7 +4,7 @@ import SwiftUI
 
 final class ChatMarkdownTests: XCTestCase {
     func testTrailingSourceLinksHaveExplicitAppearanceAndKeepDestinations() {
-        let labels = ["Their explanation", "Implementation", "Our receiver", "Protocol timing"]
+        let labels = ["Their explanation", "Implementation", "Our receiver", "Protocol timing", "Protocol details"]
         for label in labels {
             let source = "A complete sentence. [\(label)](https://example.com/source)"
             let block = ChatMarkdownBlock.parse(source)[0]
@@ -17,6 +17,25 @@ final class ChatMarkdownTests: XCTestCase {
             XCTAssertEqual(links.first?.underlineStyle, .single)
             XCTAssertNil(styled.runs.first?.foregroundColor)
         }
+    }
+
+    func testReportedThreeColumnTableKeepsLinksAndEveryColumn() {
+        let source = """
+        | Direction | Their addon | Ours |
+        | --- | --- | --- |
+        | Receiver | Their implementation | Our implementation |
+        | Protocol | [Protocol details](https://github.com/0xinuarashi/wow-forever-codex#how-the-two-way-channel-works) | A wrapped explanation of the receiver protocol |
+        """
+        guard case .table(let rows) = ChatMarkdownBlock.parse(source)[0].kind else {
+            return XCTFail("Expected a table")
+        }
+        XCTAssertEqual(rows.map(\.count), [3, 3, 3])
+        XCTAssertEqual(rows[0].map { String($0.characters) }, ["Direction", "Their addon", "Ours"])
+        let styled = ChatMarkdownInline.style(rows[2][1], textSize: 17)
+        XCTAssertEqual(String(styled.characters), "Protocol details")
+        XCTAssertEqual(styled.runs.first?.link?.absoluteString,
+                       "https://github.com/0xinuarashi/wow-forever-codex#how-the-two-way-channel-works")
+        XCTAssertEqual(styled.runs.first?.underlineStyle, .single)
     }
 
     @MainActor
@@ -55,7 +74,7 @@ final class ChatMarkdownTests: XCTestCase {
         let short = try renderedHeight(2, 17, false)
         let wrapped = try renderedHeight(2, 17, true)
         XCTAssertGreaterThan(wrapped, short + 100, "Long cells must wrap into multiple lines")
-        let wide = try renderedHeight(4, 17, true)
+        let wide = try renderedHeight(3, 17, true)
         XCTAssertGreaterThan(wide, wrapped, "Overflow tables include a visible scrolling hint")
         let scaled = try renderedHeight(2, 28, true)
         XCTAssertGreaterThan(scaled, wrapped, "Larger text must grow vertically without clipping")
