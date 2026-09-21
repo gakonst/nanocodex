@@ -163,6 +163,8 @@ describe("materializeTurnResolution", () => {
     });
     expect(classifyTurnFailure("interrupted", new Error("admission failed", { cause: error })))
       .toEqual({ kind: "retry", error: error.message, reopenAgent: true });
+    expect(classifyTurnFailure("interrupted", new Error("transport failed", { cause: error })))
+      .toEqual({ kind: "retry", error: error.message, reopenAgent: true });
     expect(classifyTurnFailure("committed", Object.assign(new Error("turn failed", { cause: error }), {
       code: "failed",
     }))).toMatchObject({ kind: "terminal", terminal: { type: "turn_failed" } });

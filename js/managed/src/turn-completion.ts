@@ -167,6 +167,8 @@ function selectFailure(failures: readonly ClassifiedError[]): ClassifiedError {
   const terminal = failures.find((failure) =>
     failure.code === "failed" || failure.code === "invalid_request" || failure.code === "conflict");
   if (terminal) return terminal;
+  const interrupted = failures.find((failure) => failure.code === "host_interrupted");
+  if (interrupted) return interrupted;
   return failures.find((failure) => isRetryable(failure))
     ?? failures.find((failure) => /\bturn was cancelled\b/i.test(failure.message))
     ?? failures.find((failure) => failure.code === "failed")
