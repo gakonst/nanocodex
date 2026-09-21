@@ -9,6 +9,8 @@ type Fetch = (request: Request) => Promise<Response>;
 export type ElevenLabsEnv = CredentialVaultEnv & {
   NANOCODEX_BACKEND?: { fetch: Fetch };
   ELEVENLABS_ACCOUNTS?: DurableObjectNamespace;
+  ELEVENLABS_API_KEY?: string;
+  ELEVENLABS_ACCOUNT_ID?: string;
 };
 
 /** Public boundary: identity comes exclusively from the account service, never request parameters. */
@@ -45,10 +47,17 @@ export class ElevenLabsAccount {
   readonly #storage: DurableObjectStorage;
   readonly #vault: CredentialVault;
   readonly #fetch: Fetch;
-  constructor(state: DurableObjectState, env: CredentialVaultEnv, providerFetch: Fetch = fetch) {
+  readonly #fallbackKey: string | undefined;
+  constructor(state: DurableObjectState, env: ElevenLabsEnv, providerFetch: Fetch = fetch) {
     this.#storage = state.storage;
     this.#vault = new CredentialVault(env, `elevenlabs/${state.id.toString()}`);
     this.#fetch = providerFetch;
+    // Scope deployment secrets by object identity, never by request headers.
+    const key = env.ELEVENLABS_API_KEY?.trim();
+    if (env.ELEVENLABS_ACCOUNT_ID && env.ELEVENLABS_ACCOUNTS && key && key.length <= 1024 && !/[^\x21-\x7e]/.test(key)
+      && state.id.toString() === env.ELEVENLABS_ACCOUNTS.idFromName(env.ELEVENLABS_ACCOUNT_ID).toString()) {
+      this.#fallbackKey = key;
+    }
   }
 
   async fetch(request: Request): Promise<Response> {
@@ -62,9 +71,11 @@ export class ElevenLabsAccount {
   async #route(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/" && request.method === "GET") {
-      return json({ configured: Boolean(await this.#storage.get("credential")) });
+      return json({ configured: Boolean(await this.#storage.get("credential") || await this.#fallback()) });
     }
     if (url.pathname === "/" && request.method === "DELETE") {
+      // Persist the opt-out even if deployment secrets are added or rotated later.
+      await this.#storage.put("fallbackDisabled", true);
       await this.#storage.delete("credential");
       return json({ configured: false });
     }
@@ -77,6 +88,8 @@ export class ElevenLabsAccount {
       if (!checked.ok) return providerError(checked);
       await checked.body?.cancel();
       await this.#storage.put("credential", await this.#vault.seal({ apiKey }));
+      // A successful explicit reconnect restores fallback eligibility.
+      await this.#storage.delete("fallbackDisabled");
       return json({ configured: true });
     }
     const list = url.pathname === "/voices" && request.method === "GET";
@@ -84,10 +97,15 @@ export class ElevenLabsAccount {
     const speech = url.pathname === "/speech" && request.method === "POST";
     if (!list && !clone && !speech) return json({ error: "method_not_allowed" }, 405);
     const envelope = await this.#storage.get<EncryptedEnvelope>("credential");
-    if (!envelope) return json({ error: "elevenlabs_not_configured" }, 409);
-    const opened = await this.#vault.open<{ apiKey: string }>(envelope);
-    if (opened.reseal) await this.#storage.put("credential", await this.#vault.seal(opened.value));
-    const apiKey = opened.value.apiKey;
+    let apiKey: string | undefined;
+    if (envelope) {
+      const opened = await this.#vault.open<{ apiKey: string }>(envelope);
+      if (opened.reseal) await this.#storage.put("credential", await this.#vault.seal(opened.value));
+      apiKey = opened.value.apiKey;
+    } else {
+      apiKey = await this.#fallback();
+    }
+    if (!apiKey) return json({ error: "elevenlabs_not_configured" }, 409);
     if (list) {
       const query = new URLSearchParams({ page_size: "100" });
       const cursor = url.searchParams.get("next_page_token");
@@ -147,6 +165,10 @@ export class ElevenLabsAccount {
     const body = await readProviderJson(upstream);
     if (typeof body.voice_id !== "string" || !ID.test(body.voice_id) || typeof body.requires_verification !== "boolean") throw new Error("invalid provider response");
     return json({ voice_id: body.voice_id, requires_verification: body.requires_verification }, 201);
+  }
+
+  async #fallback(): Promise<string | undefined> {
+    return this.#fallbackKey && !await this.#storage.get("fallbackDisabled") ? this.#fallbackKey : undefined;
   }
 
   #provider(path: string, apiKey: string, request: Request, init: RequestInit = {}): Promise<Response> {

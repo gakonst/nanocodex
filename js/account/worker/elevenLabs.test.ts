@@ -4,10 +4,9 @@ import { ElevenLabsAccount, routeElevenLabs } from "./elevenLabs.ts";
 import { CredentialVault } from "./credentialVault.ts";
 
 const env = { ENVIRONMENT: "production", SESSION_CREDENTIAL_KEY: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA" };
-function fixture(provider: (request: Request) => Promise<Response>, id = "synthetic-account") {
-  const data = new Map<string, unknown>();
+function fixture(provider: (request: Request) => Promise<Response>, id = "synthetic-account", config: Parameters<typeof routeElevenLabs>[1] = env, data = new Map<string, unknown>()) {
   const storage = { get: async (key: string) => data.get(key), put: async (key: string, value: unknown) => { data.set(key, value); }, delete: async (key: string) => data.delete(key) };
-  const object = new ElevenLabsAccount({ id: { toString: () => id }, storage } as unknown as DurableObjectState, env, provider);
+  const object = new ElevenLabsAccount({ id: { toString: () => id }, storage } as unknown as DurableObjectState, config, provider);
   const call = (path = "/", method = "GET", body?: unknown) => object.fetch(new Request(`https://elevenlabs.internal${path}`, { method, ...(body === undefined ? {} : { headers: { "content-type": "application/json" }, body: JSON.stringify(body) }) }));
   return { data, object, call };
 }
@@ -104,4 +103,90 @@ test("oversized requests are rejected before provider requests", async () => {
   const f = fixture(async () => { throw new Error("unexpected provider call"); });
   const response = await f.object.fetch(new Request("https://elevenlabs.internal/", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify({ api_key: "x".repeat(5000) }) }));
   assert.equal(response.status, 413);
+});
+
+const fallbackEnv = {
+  ...env,
+  ELEVENLABS_API_KEY: "synthetic-deployment-key",
+  ELEVENLABS_ACCOUNT_ID: "synthetic-owner",
+  ELEVENLABS_ACCOUNTS: { idFromName: (id: string) => ({ toString: () => `object-${id}` }) } as unknown as DurableObjectNamespace,
+};
+
+test("deployment credential is available only to its configured owner object", async () => {
+  let calls = 0;
+  const provider = async (request: Request) => {
+    calls++;
+    assert.equal(request.headers.get("xi-api-key"), "synthetic-deployment-key");
+    return Response.json({ voices: [] });
+  };
+  const owner = fixture(provider, "object-synthetic-owner", fallbackEnv);
+  assert.deepEqual(await (await owner.call()).json(), { configured: true });
+  const voices = await owner.call("/voices");
+  assert.equal(voices.status, 200);
+  assert.doesNotMatch(await voices.text(), /synthetic-deployment-key/);
+  assert.equal(owner.data.size, 0);
+  for (const [id, config] of [
+    ["object-other-account", fallbackEnv],
+    ["object-synthetic-owner", { ...fallbackEnv, ELEVENLABS_ACCOUNT_ID: undefined }],
+    ["object-synthetic-owner", { ...fallbackEnv, ELEVENLABS_ACCOUNTS: undefined }],
+    ["object-synthetic-owner", { ...fallbackEnv, ELEVENLABS_API_KEY: undefined }],
+    ["object-synthetic-owner", { ...fallbackEnv, ELEVENLABS_API_KEY: "  " }],
+    ["object-synthetic-owner", { ...fallbackEnv, ELEVENLABS_API_KEY: "invalid\nkey" }],
+    ["object-synthetic-owner", env],
+  ] as const) {
+    const f = fixture(provider, id, config);
+    assert.deepEqual(await (await f.call()).json(), { configured: false });
+    assert.equal((await f.call("/voices")).status, 409);
+  }
+  assert.equal(calls, 1);
+});
+
+test("stored credential wins; disconnect survives restart and secret rotation until explicit reconnect", async () => {
+  const keys: Array<string | null> = [];
+  const provider = async (request: Request) => {
+    keys.push(request.headers.get("xi-api-key"));
+    return Response.json({ voices: [] });
+  };
+  const f = fixture(provider, "object-synthetic-owner", fallbackEnv);
+  await f.call("/", "PUT", { api_key: "synthetic-own-key" });
+  await f.call("/voices");
+  assert.deepEqual(keys, ["synthetic-own-key", "synthetic-own-key"]);
+  assert.deepEqual(await (await f.call("/", "DELETE")).json(), { configured: false });
+  const restarted = fixture(provider, "object-synthetic-owner", { ...fallbackEnv, ELEVENLABS_API_KEY: "rotated-key" }, f.data);
+  assert.deepEqual(await (await restarted.call()).json(), { configured: false });
+  assert.equal((await restarted.call("/voices")).status, 409);
+  assert.equal(keys.length, 2);
+  const rejected = fixture(async () => new Response(null, { status: 401 }), "object-synthetic-owner", fallbackEnv, f.data);
+  assert.equal((await rejected.call("/", "PUT", { api_key: "bad-key" })).status, 403);
+  assert.deepEqual(await (await rejected.call()).json(), { configured: false });
+  assert.equal((await restarted.call("/", "PUT", { api_key: "reconnected-key" })).status, 200);
+  assert.equal(f.data.has("fallbackDisabled"), false);
+  await restarted.call("/voices");
+  assert.equal(keys.at(-1), "reconnected-key");
+});
+
+test("forged account headers cannot select the deployment owner or reach the object", async () => {
+  let calls = 0;
+  const other = fixture(async () => { calls++; return Response.json({ voices: [] }); }, "object-synthetic-other", fallbackEnv);
+  const routeEnv = {
+    ...fallbackEnv,
+    NANOCODEX_BACKEND: { fetch: async (request: Request) => {
+      assert.equal(request.headers.get("x-account-id"), null);
+      return Response.json({ authentication: "account_session", user: { persistent: true, id: "synthetic-other" } });
+    } },
+    ELEVENLABS_ACCOUNTS: {
+      idFromName: (id: string) => { assert.equal(id, "synthetic-other"); return id; },
+      get: () => ({ fetch: async (request: Request) => {
+        assert.deepEqual([...request.headers], []);
+        return other.object.fetch(request);
+      } }),
+    } as unknown as DurableObjectNamespace,
+  };
+  const url = new URL("https://app.test/api/voice/elevenlabs/voices?account_id=synthetic-owner");
+  const response = await routeElevenLabs(new Request(url, { headers: {
+    "x-account-id": "synthetic-owner", "x-elevenlabs-account-id": "synthetic-owner",
+    "x-nanocodex-account-id": "synthetic-owner", "xi-api-key": "synthetic-deployment-key",
+  } }), routeEnv, url);
+  assert.equal(response?.status, 409);
+  assert.equal(calls, 0);
 });
