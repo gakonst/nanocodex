@@ -544,7 +544,16 @@ export function createBrowserHost(options = {}) {
     cancelCodeTurn: code.cancelTurn,
     nextCodeUpdate: code.nextCodeUpdate,
     executeTool: code.executeTool,
+    routeSubagent: (request) => {
+      if (!options.subagentRouting) throw new Error("subagent routing is not configured");
+      return options.subagentRouting.resolve(request);
+    },
+    bindSubagentRoute: (request) => {
+      if (!options.subagentRouting) throw new Error("subagent routing is not configured");
+      return options.subagentRouting.bind(request);
+    },
     bindSubagentSession: code.bindSubagentSession,
+    checkpointSubagents: (encoded) => options.subagentSessions?.checkpointLive?.(encoded),
     cancelCode: code.cancel,
     readWorkspaceFile: async (path) => {
       if (!options.filesystem) throw new Error("browser workspace is unavailable");

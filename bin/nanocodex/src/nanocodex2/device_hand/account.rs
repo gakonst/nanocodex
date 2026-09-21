@@ -85,7 +85,15 @@ pub(super) async fn identify(
         // A long server-directed wait ends this background attempt instead of
         // retrying too soon or holding startup indefinitely. Emit only one error.
         if !retryable || attempt == ATTEMPTS || delay > MAX_DELAY {
-            return Err(error(diagnostic(status, &headers, attempt)));
+            let message = diagnostic(status, &headers, attempt);
+            return Err(match status {
+                Some(status) if matches!(status.as_u16(), 401 | 403) => ManagedError::Http {
+                    status,
+                    code: "hand_account_access".into(),
+                    message,
+                },
+                _ => error(message),
+            });
         }
         tokio::time::sleep(delay).await;
     }

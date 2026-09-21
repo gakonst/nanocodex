@@ -221,7 +221,7 @@ test('queued cancellation does not disconnect active work; remote disconnect fai
   assert.equal(host.messages.filter(x => x.value.method === 'mcpServer/tool/call').length, 1);
 });
 
-test('upstream errors retain data; timeout and EOF close only owned transport', options, async t => {
+test('upstream errors retain data; EOF closes only owned transport', options, async t => {
   let held;
   const received = new Promise(resolve => held = resolve);
   const host = await fixture(t, (value, io) => {
@@ -237,7 +237,11 @@ test('upstream errors retain data; timeout and EOF close only owned transport', 
   peer.send(2, 'tools/call', { name: 'js', arguments: { error: true } });
   assert.deepEqual((await peer.response(2)).error, { code: -32042, message: 'synthetic upstream error', data: { preserved: true } });
   peer.send(3, 'tools/call', { name: 'js', arguments: {} }); await received;
-  assert.match((await peer.response(3)).error.message, /timed out/);
+  peer.input.end();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(app.closed);
+  assert.equal(app.pending.size, 0);
+  assert.equal(host.messages.filter(x => x.value.method === 'mcpServer/tool/call').length, 2);
   const other = client(t, host.url);
   const otherPeer = mcp(t, other);
   otherPeer.send(1, 'initialize', {}); await otherPeer.response(1);
@@ -277,4 +281,134 @@ test('failed materialization cannot reuse a partially initialized thread or repl
   await assert.rejects(app.call({ name: 'js' }), /synthetic append failure/);
   assert.equal(host.messages.filter(x => x.value.method === 'thread/inject_items').length, 1);
   assert.equal(host.messages.some(x => x.value.method === 'mcpServer/tool/call'), false);
+});
+
+test('headless calls use ephemeral threads without opening a GUI or changing permission policy', options, async t => {
+  const host = await fixture(t, (value, io) => {
+    defaults(value, io);
+    if (value.method === 'mcpServer/tool/call') io.reply(result);
+  });
+  const app = client(t, host.url, { headless: true });
+  app.openGui = () => { throw new Error('must not launch a GUI'); };
+  assert.deepEqual(await app.call({ name: 'js', arguments: { code: 'synthetic-code' } }), result);
+  const sent = host.messages.map(x => x.value);
+  assert.deepEqual(sent.find(x => x.method === 'thread/start').params,
+    { ephemeral: true, historyMode: 'paginated', cwd: process.cwd() });
+  assert.equal(sent.some(x => x.method === 'thread/inject_items'), false);
+  assert.equal(sent.some(x => /turn\/start|config\/.+write/.test(x.method)), false);
+});
+
+test('headless mode declines unresolved own elicitation and leaves other threads and servers alone', options, async t => {
+  let replyToCall;
+  const host = await fixture(t, (value, io) => {
+    defaults(value, io);
+    if (value.method === 'mcpServer/tool/call') {
+      replyToCall = io.reply;
+      io.send({ id: 'other-thread', method: 'mcpServer/elicitation/request', params: { threadId: 'peer-thread', serverName: 'cua_repl' } });
+      io.send({ id: 'other-server', method: 'mcpServer/elicitation/request', params: { threadId: 'synthetic-thread', serverName: 'peer-server' } });
+      io.send({ id: 'unknown', method: 'unknown/request', params: { threadId: 'synthetic-thread', serverName: 'cua_repl' } });
+      io.send({ id: 'own-form', method: 'mcpServer/elicitation/request', params: { threadId: 'synthetic-thread', serverName: 'cua_repl', mode: 'form', message: 'Synthetic prompt', requestedSchema: { type: 'object', properties: {} } } });
+    }
+    if (value.id === 'own-form' && !value.method) {
+      assert.deepEqual(value.result, { action: 'decline', content: null, _meta: null });
+      replyToCall({ content: [{ type: 'text', text: 'Computer Use was not approved' }], isError: true });
+    }
+  });
+  const app = client(t, host.url, { headless: true });
+  assert.equal((await app.call({ name: 'js', arguments: { code: 'synthetic-code' } })).isError, true);
+  const responses = host.messages.map(x => x.value).filter(x => !x.method && x.result);
+  assert.deepEqual(responses.map(x => x.id), ['own-form']);
+});
+
+// Virtual time exercises minute/hour budgets without wall-clock sleeps. The
+// synthetic socket still runs connect, discovery, thread creation and routing.
+function timedClient(t, heldMethod = 'mcpServer/tool/call') {
+  const messages = [];
+  class Socket extends EventTarget {
+    constructor() {
+      super();
+      if (heldMethod !== 'open') queueMicrotask(() => this.dispatchEvent(new Event('open')));
+    }
+    send(data) {
+      const value = JSON.parse(data);
+      messages.push(value);
+      if (value.method === heldMethod) return;
+      const reply = result => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ id: value.id, result }) }));
+      if (value.method === 'mcpServerStatus/list') {
+        reply({ data: [{ name: 'cua_repl', tools: { ...Object.fromEntries(tools.map(tool => [tool.name, tool])), js_reset: { name: 'js_reset', inputSchema: {} } } }] });
+      } else defaults(value, { reply });
+    }
+    close() {}
+  }
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const app = new AppServer({ url: 'ws://127.0.0.1:1234', timeoutMs: 120000, openGui: false }, { WebSocketImpl: Socket, onThread: () => {} });
+  t.after(() => app.close());
+  return { app, messages };
+}
+const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test('forwarded tools await upstream success or error beyond wrapper and provider argument deadlines', options, async t => {
+  for (const name of ['js', 'js_reset', 'turn_ended']) {
+    for (const budget of [undefined, 1, 180000, 'provider-owned']) {
+      for (const outcome of ['result', 'error']) await t.test(`${name}/${budget}/${outcome}`, async t => {
+        const { app, messages } = timedClient(t);
+        const args = { code: 'synthetic', ...(budget === undefined ? {} : { timeout_ms: budget }), nested: { unchanged: true } };
+        let settled = false;
+        const call = app.call({ name, arguments: args }).finally(() => { settled = true; });
+        const error = { code: -32042, message: 'synthetic provider deadline', data: { preserved: true } };
+        const completed = outcome === 'error'
+          ? assert.rejects(call, e => { assert.deepEqual(e.rpcError, error); return true; })
+          : call.then(value => assert.deepEqual(value, result));
+        await flush();
+        const sent = messages.find(x => x.method === 'mcpServer/tool/call');
+        assert.deepEqual(sent.params.arguments, args);
+        // Exceed both the wrapper configuration and the former budget+grace.
+        // A silent upstream remains pending until it responds or the caller cancels.
+        t.mock.timers.tick(600000);
+        await flush();
+        assert.equal(settled, false);
+        assert.equal(app.closed, undefined);
+        app.receive(JSON.stringify({ id: sent.id, [outcome]: outcome === 'error' ? error : result }));
+        await completed;
+        t.mock.timers.tick(600000);
+        assert.equal(app.closed, undefined);
+        assert.equal(app.pending.size, 0);
+        assert.equal(messages.filter(x => x.method === 'mcpServer/tool/call').length, 1);
+      });
+    }
+  }
+});
+
+test('caller cancellation after the wrapper deadline rejects active and queued work without replay', options, async t => {
+  const { app, messages } = timedClient(t);
+  const peer = mcp(t, app);
+  peer.send(1, 'initialize', {}); await peer.response(1);
+  peer.send(2, 'tools/call', { name: 'js', arguments: { timeout_ms: 1 } });
+  await flush();
+  peer.send(3, 'tools/call', { name: 'js', arguments: { timeout_ms: 1 } });
+  t.mock.timers.tick(600000);
+  await flush();
+  assert.equal(peer.responses.some(value => value.id === 2 || value.id === 3), false);
+  peer.send(undefined, 'notifications/cancelled', { requestId: 2 });
+  assert.equal((await peer.response(2)).error.code, -32800);
+  assert.match((await peer.response(2)).error.message, /upstream\/native work may continue/);
+  assert.ok((await peer.response(3)).error);
+  assert.equal(messages.filter(x => x.method === 'mcpServer/tool/call').length, 1);
+  assert.equal(messages.some(x => /interrupt|archive|shutdown|reset/.test(x.method)), false);
+});
+
+test('tool budgets never override connection, initialization, discovery or thread startup timeouts', options, async t => {
+  for (const heldMethod of ['open', 'initialize', 'mcpServerStatus/list', 'thread/start', 'thread/inject_items']) {
+    await t.test(heldMethod, async t => {
+      const { app, messages } = timedClient(t, heldMethod);
+      const rejected = assert.rejects(app.call({ name: 'js', arguments: { timeout_ms: 180000 } }), /timed out/);
+      await flush();
+      t.mock.timers.tick(119999);
+      assert.equal(app.closed, undefined);
+      t.mock.timers.tick(1);
+      await rejected;
+      assert.equal(messages.some(x => x.method === 'mcpServer/tool/call'), false);
+      assert.equal(app.config.timeoutMs, 120000);
+    });
+  }
 });

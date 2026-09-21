@@ -60,7 +60,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tokio::{sync::mpsc, task::JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -160,7 +160,7 @@ type CancelCompletion = (PaneId, CancelTarget, Result<CancelDisposition, String>
 type SettingsCompletion = (
     PaneId,
     String,
-    &'static str,
+    SettingsMutation,
     Result<AgentSettings, ManagedError>,
 );
 type HistoryCompletion = (
@@ -481,6 +481,7 @@ enum ConnectionResult {
 
 #[derive(Clone, Copy)]
 enum SettingsMutation {
+    AutoRoute,
     Complete(AgentSettings),
     Thinking(Thinking),
     FastMode(bool),
@@ -489,6 +490,7 @@ enum SettingsMutation {
 impl SettingsMutation {
     fn failure_subject(self) -> &'static str {
         match self {
+            Self::AutoRoute => "enable automatic routing",
             Self::Complete(_) => "select model",
             Self::Thinking(_) => "change thinking effort",
             Self::FastMode(_) => "change fast mode",
@@ -524,6 +526,15 @@ struct DriverRuntime {
     agent_id: String,
     settings: AgentSettings,
     pending_settings: Option<AgentSettings>,
+    pending_autoroute: Option<PaneId>,
+    routing_enabled: bool,
+    routing_resolved: bool,
+    routing_generation: u64,
+    routing_updates: JoinSet<(
+        String,
+        u64,
+        Result<nanocodex_managed::RoutingStatus, ManagedError>,
+    )>,
     workspace: PathBuf,
     sequence: u64,
     next_turn: u64,
@@ -1321,6 +1332,32 @@ impl DriverRuntime {
         live_managed_projection(event, &self.agent_id, &self.workspace, &mut self.sequence)
     }
 
+    fn refresh_routing(&mut self) {
+        if self.agent_id.is_empty() || !self.routing_updates.is_empty() {
+            return;
+        }
+        let client = self.client.clone();
+        let agent_id = self.agent_id.clone();
+        let generation = self.routing_generation;
+        self.routing_updates.spawn(async move {
+            let result = client.routing_status(&agent_id).await;
+            (agent_id, generation, result)
+        });
+    }
+
+    fn enable_autoroute(&mut self, pane: PaneId) {
+        if self.agent.is_none() {
+            self.pending_autoroute = Some(pane);
+            if self.connection.is_empty()
+                && let Some(target) = self.retry_target.take()
+            {
+                self.spawn_connection(ConnectionPurpose::Startup, target);
+            }
+            return;
+        }
+        self.queue_settings(pane, SettingsMutation::AutoRoute);
+    }
+
     fn queue_settings(&mut self, pane: PaneId, mutation: SettingsMutation) {
         self.settings_queue
             .push_back((pane, self.agent_id.clone(), mutation));
@@ -1337,6 +1374,10 @@ impl DriverRuntime {
         let client = self.client.clone();
         self.settings_updates.spawn(async move {
             let result = match mutation {
+                SettingsMutation::AutoRoute => client
+                    .enable_auto_routing(&agent_id)
+                    .await
+                    .map(|receipt| receipt.settings),
                 SettingsMutation::Complete(settings) => {
                     client.set_settings(&agent_id, settings).await
                 }
@@ -1347,7 +1388,7 @@ impl DriverRuntime {
                     client.set_fast_mode(&agent_id, enabled).await
                 }
             };
-            (pane, agent_id, mutation.failure_subject(), result)
+            (pane, agent_id, mutation, result)
         });
     }
 
@@ -1376,6 +1417,11 @@ impl DriverRuntime {
         self.settings_updates = JoinSet::new();
         self.settings_queue.clear();
         self.pending_settings = None;
+        self.pending_autoroute = None;
+        self.routing_enabled = false;
+        self.routing_resolved = false;
+        self.routing_generation = self.routing_generation.wrapping_add(1);
+        self.routing_updates = JoinSet::new();
         self.controls.clear();
         self.admitting.clear();
         self.cancel_after_admission.clear();
@@ -1417,6 +1463,11 @@ impl DriverRuntime {
         self.agent_id.clear();
         self.settings = settings;
         self.pending_settings = None;
+        self.pending_autoroute = None;
+        self.routing_enabled = false;
+        self.routing_resolved = false;
+        self.routing_generation = self.routing_generation.wrapping_add(1);
+        self.routing_updates = JoinSet::new();
         self.managed_active_turns = ManagedActiveTurns::default();
         self.local_managed_turns.clear();
         self.submitted_turns.clear();
@@ -1777,6 +1828,11 @@ async fn run_inner(
         agent_id: String::new(),
         settings: initial_settings,
         pending_settings: None,
+        pending_autoroute: None,
+        routing_enabled: false,
+        routing_resolved: false,
+        routing_generation: 0,
+        routing_updates: JoinSet::new(),
         workspace: workspace.clone(),
         sequence: 1,
         next_turn: 1,
@@ -1862,6 +1918,8 @@ async fn run_inner(
     let mut clone_tick = tokio::time::interval(std::time::Duration::from_millis(200));
     clone_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut stopping = false;
+    let mut routing_tick = tokio::time::interval(Duration::from_secs(1));
+    routing_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     while !stopping {
         // Finish thread selection and prompt admission before detaching. The durable
@@ -1919,6 +1977,7 @@ async fn run_inner(
             {
                 runtime.start_submission(pane, id, prompt);
             }
+            runtime.refresh_routing();
             runtime.start_history_prefetch(PaneId::Main);
         }
         if runtime.recovery.is_none()
@@ -2021,6 +2080,25 @@ async fn run_inner(
                 (Some(&mut voice.status), Some(&mut voice.transcripts))
             });
         tokio::select! {
+            _ = routing_tick.tick(), if runtime.routing_enabled && !runtime.routing_resolved
+                && (!runtime.controls.is_empty() || !runtime.admitting.is_empty() || !runtime.managed_active_turns.ids.is_empty()) => {
+                runtime.refresh_routing();
+            }
+            result = runtime.routing_updates.join_next(), if !runtime.routing_updates.is_empty() => {
+                if let Some(Ok((agent_id, generation, Ok(status)))) = result
+                    && agent_id == runtime.agent_id && generation == runtime.routing_generation
+                {
+                    runtime.routing_enabled = status.enabled;
+                    runtime.routing_resolved = status.route.is_some();
+                    let (provider, model, effort) = status.route.map_or((None, None, None), |route| {
+                        runtime.settings.model = route.model;
+                        runtime.settings.thinking = route.thinking;
+                        (Some(route.backend.label().to_owned()), Some(route.model), Some(effort_from_thinking(route.thinking)))
+                    });
+                    request_render(app.update(AppEvent::RoutingHydrated { pane: PaneId::Main,
+                        enabled: status.enabled, provider, model, effort }), &mut scheduler);
+                }
+            }
             _ = clone_tick.tick(), if runtime.clone_panel.as_ref().is_some_and(|panel| matches!(panel.state, voice_clone::State::Recording(_))) => {
                 let panel = runtime.clone_panel.as_mut().unwrap();
                 let stop_reason = match &mut panel.state {
@@ -2208,6 +2286,10 @@ async fn run_inner(
                             ManagedEventData::TurnCompleted { id, .. }
                             | ManagedEventData::TurnCancelled { id }
                             | ManagedEventData::TurnFailed { id, .. } => {
+                                if runtime.routing_enabled && !runtime.routing_resolved {
+                                    runtime.routing_updates = JoinSet::new();
+                                    runtime.refresh_routing();
+                                }
                                 runtime.cancellation_fences.managed_terminal(id);
                                 if let Some(local_id) = runtime
                                     .local_managed_turns
@@ -2563,6 +2645,9 @@ async fn run_inner(
                                     SettingsMutation::Complete(requested),
                                 );
                             }
+                            if let Some(pane) = runtime.pending_autoroute.take() {
+                                runtime.queue_settings(pane, SettingsMutation::AutoRoute);
+                            }
                             if let Some(warning) = warning {
                                 request_render(app.update(AppEvent::NotifyError {
                                     pane: PaneId::Main,
@@ -2575,6 +2660,7 @@ async fn run_inner(
                             {
                                 runtime.start_submission(pane, id, prompt);
                             }
+                            runtime.refresh_routing();
                             runtime.start_history_prefetch(pane);
                         }
                         ConnectionResult::Agent { purpose, result: Err(failure) } => {
@@ -2679,16 +2765,30 @@ async fn run_inner(
             }
             result = runtime.settings_updates.join_next(), if !runtime.settings_updates.is_empty() => {
                 if let Some(result) = result {
-                    let (pane, agent_id, failure_subject, outcome) = result.map_err(|error| {
+                    let (pane, agent_id, mutation, outcome) = result.map_err(|error| {
                         ManagedError::Configuration(format!("settings task failed: {error}"))
                     })?;
                     if agent_id == runtime.agent_id {
                         match outcome {
-                            Ok(settings) => runtime.settings = settings,
+                            Ok(settings) => {
+                                runtime.settings = settings;
+                                if matches!(mutation, SettingsMutation::AutoRoute) {
+                                    runtime.routing_generation = runtime.routing_generation.wrapping_add(1);
+                                    runtime.routing_updates = JoinSet::new();
+                                    runtime.routing_enabled = true;
+                                    runtime.routing_resolved = false;
+                                    request_render(app.update(AppEvent::RoutingHydrated { pane, enabled: true,
+                                        provider: None, model: None, effort: None }), &mut scheduler);
+                                    request_render(app.update(AppEvent::NotifySuccess {
+                                        pane,
+                                        message: "Automatic routing enabled. Jev will choose from your first message, then lock this thread’s provider and model.".to_owned(),
+                                    }), &mut scheduler);
+                                }
+                            },
                             Err(error) => request_render(
                                 app.update(AppEvent::NotifyError {
                                     pane,
-                                    error: format!("Could not {failure_subject}: {error}"),
+                                    error: format!("Could not {}: {error}", mutation.failure_subject()),
                                 }),
                                 &mut scheduler,
                             ),
@@ -2815,6 +2915,10 @@ async fn run_inner(
                 }
             }
             result = runtime.completions.join_next(), if !runtime.completions.is_empty() => {
+                if runtime.routing_enabled && !runtime.routing_resolved {
+                    runtime.routing_updates = JoinSet::new();
+                    runtime.refresh_routing();
+                }
                 if let Some(result) = result {
                     let (pane, id, outcome) = result.map_err(|error| ManagedError::Configuration(format!("turn task failed: {error}")))?;
                     if outcome.as_ref().is_err_and(connection_failure) {
@@ -3085,6 +3189,16 @@ async fn run_inner(
         agent.shutdown().await.map_err(super::agent_error)
     } else {
         agent.disconnect().await.map_err(super::agent_error)
+    }
+}
+
+fn fresh_thread_settings(was_routed: bool, settings: AgentSettings) -> AgentSettings {
+    // A routed GLM/provider choice is owned by the old conversation, not a new
+    // manual default (GLM is only admissible through an explicit routing policy).
+    if was_routed {
+        new_agent_settings()
+    } else {
+        settings
     }
 }
 
@@ -3751,12 +3865,12 @@ async fn apply_update(
                             continue;
                         }
                         let root = app.root(pane).expect("new-session pane must exist");
-                        let settings = AgentSettings {
+                        let settings = fresh_thread_settings(root.composer().auto_routing(), AgentSettings {
                             model,
                             thinking: thinking_from_effort(root.composer().effort()),
                             reasoning_mode: managed_reasoning_mode(root.preferred_reasoning_mode()),
                             fast_mode: root.composer().fast_mode(),
-                        };
+                        });
                         request_render(app.update(AppEvent::VoiceStatus(None)), scheduler);
                         runtime.start_new_session(settings);
                         absorb(
@@ -3867,6 +3981,7 @@ async fn apply_update(
                         scheduler,
                     );
                     }
+                    RootEffect::AutoRoute => runtime.enable_autoroute(pane),
                     RootEffect::SetModel(model) => {
                         let root = app.root(pane).expect("model-selection pane must exist");
                         let requested = AgentSettings {
@@ -4198,6 +4313,24 @@ mod tests {
     }
 
     #[test]
+    fn new_threads_do_not_inherit_a_routed_provider_model_or_effort() {
+        let routed = AgentSettings {
+            model: nanocodex::Model::Glm53,
+            thinking: nanocodex_managed::Thinking::High,
+            ..AgentSettings::default()
+        };
+        assert_eq!(
+            super::fresh_thread_settings(true, routed),
+            new_agent_settings()
+        );
+        let manual = AgentSettings {
+            model: nanocodex::Model::Sol,
+            ..AgentSettings::default()
+        };
+        assert_eq!(super::fresh_thread_settings(false, manual), manual);
+    }
+
+    #[test]
     fn new_agents_select_astra_without_an_entitlement_probe() {
         assert_eq!(
             new_agent_settings(),
@@ -4473,6 +4606,11 @@ mod tests {
             agent_id: "agent-1".to_owned(),
             settings: AgentSettings::default(),
             pending_settings: None,
+            pending_autoroute: None,
+            routing_enabled: false,
+            routing_resolved: false,
+            routing_generation: 0,
+            routing_updates: JoinSet::new(),
             workspace: Path::new("/workspace").to_path_buf(),
             sequence,
             next_turn: sequence,
@@ -4992,6 +5130,41 @@ mod tests {
                 .is_some()
         );
         assert_eq!(runtime.live_records.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn autoroute_waits_for_connection_and_does_not_leak_into_new_sessions() {
+        let mut runtime = history_runtime(HistoryWindow::default());
+        runtime.agent_id.clear();
+        runtime.enable_autoroute(PaneId::Main);
+        assert_eq!(runtime.pending_autoroute, Some(PaneId::Main));
+        assert!(runtime.settings_updates.is_empty());
+        assert!(runtime.admissions.is_empty());
+        runtime.start_new_session(new_agent_settings());
+        assert!(runtime.pending_autoroute.is_none());
+    }
+
+    #[tokio::test]
+    async fn autoroute_settings_update_holds_the_first_prompt_until_it_settles() {
+        let mut runtime = history_runtime(HistoryWindow::default());
+        // A pending API receipt fences the first prompt, including non-keyboard input.
+        runtime.settings_updates.spawn(std::future::pending());
+        runtime.start_submission(
+            PaneId::Main,
+            TurnId::new(1),
+            Submission::text("first task".into()),
+        );
+        assert!(runtime.admissions.is_empty());
+        assert!(runtime.submitted_turns.is_empty());
+        assert_eq!(
+            runtime
+                .pending_submission
+                .as_ref()
+                .unwrap()
+                .2
+                .display_text(),
+            "first task"
+        );
     }
 
     #[tokio::test]

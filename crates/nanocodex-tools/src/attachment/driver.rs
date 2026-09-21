@@ -1,5 +1,5 @@
 use std::{
-    collections::{HashMap, VecDeque},
+    collections::{HashMap, HashSet},
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -37,6 +37,8 @@ const STABLE_CONNECTION: Duration = Duration::from_secs(30);
 #[cfg(test)]
 const STABLE_CONNECTION: Duration = Duration::from_millis(250);
 
+const MAX_ACTIVE_CALLS: usize = 32;
+
 pub(crate) struct Config {
     pub(crate) endpoint: Url,
     pub(crate) authorization: Box<str>,
@@ -56,6 +58,7 @@ pub(crate) async fn run(
     status: watch::Sender<AttachmentStatus>,
     closed: watch::Sender<Option<Result<(), AttachmentError>>>,
 ) {
+    let mut active = Vec::<InFlight>::new();
     let mut backoff = Duration::from_millis(100);
     let terminal = loop {
         let _ = status.send(AttachmentStatus::Connecting);
@@ -127,6 +130,7 @@ pub(crate) async fn run(
                 runtime: &runtime,
                 events: &events,
                 status: &status,
+                active: &mut active,
             },
             &mut commands,
         )
@@ -158,6 +162,7 @@ pub(crate) async fn run(
             }
         }
     };
+    shutdown_calls(&mut active).await;
     runtime.shutdown().await;
     if terminal.is_ok() {
         emit(
@@ -201,25 +206,35 @@ enum ConnectionEnd {
 }
 
 enum Completion {
-    Result {
-        call_id: Box<str>,
-        outcome: Value,
-        observed: AttachmentCallOutcome,
-    },
+    Result { call_id: Box<str>, outcome: Value },
 }
 
 struct InFlight {
     task: tokio::task::JoinHandle<()>,
-    identity: CallIdentity,
     parallel_safe: bool,
-    events: CallEvents,
 }
 
-struct PendingCall {
-    identity: CallIdentity,
-    tool_timeout: u64,
-    parallel_safe: bool,
-    events: CallEvents,
+async fn shutdown_calls(active: &mut Vec<InFlight>) {
+    for call in active.iter() {
+        call.task.abort();
+    }
+    for call in active.drain(..) {
+        let _ = call.task.await;
+    }
+}
+
+// Completion telemetry follows execution, even after the receiving socket is gone.
+struct TaskEvents {
+    call: Option<CallEvents>,
+    events: mpsc::Sender<AttachmentEvent>,
+}
+
+impl Drop for TaskEvents {
+    fn drop(&mut self) {
+        if let Some(call) = self.call.take() {
+            call.complete(&self.events, AttachmentCallOutcome::Ambiguous);
+        }
+    }
 }
 
 struct CallEvents {
@@ -324,7 +339,6 @@ const fn attachment_call_outcome_name(outcome: AttachmentCallOutcome) -> &'stati
     }
 }
 
-#[derive(Clone, PartialEq)]
 struct CallIdentity {
     session_id: Box<str>,
     turn_id: Option<Box<str>>,
@@ -337,131 +351,94 @@ struct CallIdentity {
     deadline_at: u64,
 }
 
-struct Receipt {
-    identity: CallIdentity,
-    outcome: Value,
-}
-
-fn admitted_identity<'a>(
-    in_flight: &'a HashMap<Box<str>, InFlight>,
-    pending: &'a VecDeque<PendingCall>,
-    call_id: &str,
-) -> Option<&'a CallIdentity> {
-    in_flight
-        .get(call_id)
-        .map(|call| &call.identity)
-        .or_else(|| {
-            pending
-                .iter()
-                .find(|call| call.identity.call_id.as_ref() == call_id)
-                .map(|call| &call.identity)
-        })
-}
-
-fn start_ready_calls(
+fn start_call(
     runtime: &Arc<PreparedToolRuntime>,
-    pending: &mut VecDeque<PendingCall>,
-    in_flight: &mut HashMap<Box<str>, InFlight>,
-    completed: &mpsc::UnboundedSender<Completion>,
-) {
-    loop {
-        if in_flight.values().any(|call| !call.parallel_safe) {
-            break;
-        }
-        let Some(next) = pending.front() else { break };
-        if !next.parallel_safe && !in_flight.is_empty() {
-            break;
-        }
-        let Some(PendingCall {
-            identity,
-            tool_timeout,
-            parallel_safe,
-            events,
-        }) = pending.pop_front()
-        else {
-            break;
-        };
-        let runtime = Arc::clone(runtime);
-        let tx = completed.clone();
-        let id = identity.call_id.clone();
-        let id_for_task = id.clone();
-        let task_identity = identity.clone();
-        let task_span = events.span.clone();
-        let task = tokio::spawn(
-            async move {
-                let remaining = task_identity.deadline_at.saturating_sub(now_ms());
-                let (outcome, observed) = if remaining == 0 {
-                    (
-                        unavailable("tool deadline elapsed before execution"),
-                        AttachmentCallOutcome::Unavailable,
-                    )
-                } else {
-                    let duration = Duration::from_millis(remaining.min(tool_timeout));
-                    let call = PreparedToolCall::new(
-                        task_identity.model.to_string(),
-                        task_identity.session_id.to_string(),
-                        task_identity.call_id.to_string(),
-                        task_identity.name.to_string(),
-                        task_identity.input.clone(),
-                        task_identity.output_token_budget as usize,
-                    )
-                    .with_turn_id(task_identity.turn_id.as_deref().map(str::to_owned));
-                    match tokio::time::timeout(duration, runtime.execute(call)).await {
-                        Ok(Ok(output)) => match serde_json::to_value(output) {
-                            Ok(output)
-                                if serde_json::to_vec(&output).is_ok_and(|bytes| {
-                                    bytes.len() as u64 <= task_identity.output_byte_budget
-                                }) =>
-                            {
-                                (
-                                    json!({"status":"completed", "output":output}),
-                                    AttachmentCallOutcome::Completed,
-                                )
-                            }
-                            Ok(_) => bounded_completed_failure(
-                                "tool output exceeded byte budget",
-                                task_identity.output_byte_budget,
-                            ),
-                            Err(_) => (
-                                ambiguous("tool output could not be encoded"),
-                                AttachmentCallOutcome::Ambiguous,
-                            ),
-                        },
-                        Ok(Err(error @ PreparedToolError::InvalidOutput(_))) => (
-                            ambiguous(&error.to_string()),
-                            AttachmentCallOutcome::Ambiguous,
-                        ),
-                        Ok(Err(error)) => (
-                            unavailable(&error.to_string()),
-                            AttachmentCallOutcome::Unavailable,
+    active: &mut Vec<InFlight>,
+    identity: CallIdentity,
+    tool_timeout: u64,
+    events: CallEvents,
+    completed: mpsc::UnboundedSender<Completion>,
+    event_sender: &mpsc::Sender<AttachmentEvent>,
+) -> tokio::task::AbortHandle {
+    let parallel_safe = runtime.parallel_safe(&identity.name);
+    let runtime = Arc::clone(runtime);
+    let task_span = events.span.clone();
+    let mut events = TaskEvents {
+        call: Some(events),
+        events: event_sender.clone(),
+    };
+    let task = tokio::spawn(
+        async move {
+            let task_identity = identity;
+            let remaining = task_identity.deadline_at.saturating_sub(now_ms());
+            let (outcome, observed) = if remaining == 0 {
+                (
+                    unavailable("tool deadline elapsed before execution"),
+                    AttachmentCallOutcome::Unavailable,
+                )
+            } else {
+                let duration = Duration::from_millis(remaining.min(tool_timeout));
+                let call = PreparedToolCall::new(
+                    task_identity.model.to_string(),
+                    task_identity.session_id.to_string(),
+                    task_identity.call_id.to_string(),
+                    task_identity.name.to_string(),
+                    task_identity.input.clone(),
+                    task_identity.output_token_budget as usize,
+                )
+                .with_turn_id(task_identity.turn_id.as_deref().map(str::to_owned));
+                match tokio::time::timeout(duration, runtime.execute(call)).await {
+                    Ok(Ok(output)) => match serde_json::to_value(output) {
+                        Ok(output)
+                            if serde_json::to_vec(&output).is_ok_and(|bytes| {
+                                bytes.len() as u64 <= task_identity.output_byte_budget
+                            }) =>
+                        {
+                            (
+                                json!({"status":"completed", "output":output}),
+                                AttachmentCallOutcome::Completed,
+                            )
+                        }
+                        Ok(_) => bounded_completed_failure(
+                            "tool output exceeded byte budget",
+                            task_identity.output_byte_budget,
                         ),
                         Err(_) => (
-                            ambiguous("tool deadline elapsed"),
+                            ambiguous("tool output could not be encoded"),
                             AttachmentCallOutcome::Ambiguous,
                         ),
-                    }
-                };
-                let _ = tx.send(Completion::Result {
-                    call_id: id_for_task,
-                    outcome,
-                    observed,
-                });
+                    },
+                    Ok(Err(error @ PreparedToolError::InvalidOutput(_))) => (
+                        ambiguous(&error.to_string()),
+                        AttachmentCallOutcome::Ambiguous,
+                    ),
+                    Ok(Err(error)) => (
+                        unavailable(&error.to_string()),
+                        AttachmentCallOutcome::Unavailable,
+                    ),
+                    Err(_) => (
+                        ambiguous("tool deadline elapsed"),
+                        AttachmentCallOutcome::Ambiguous,
+                    ),
+                }
+            };
+            if let Some(call) = events.call.take() {
+                call.complete(&events.events, observed);
             }
-            .instrument(task_span),
-        );
-        in_flight.insert(
-            id,
-            InFlight {
-                task,
-                identity,
-                parallel_safe,
-                events,
-            },
-        );
-        if !parallel_safe {
-            break;
+            // This channel belongs only to the socket that dispatched the call.
+            let _ = completed.send(Completion::Result {
+                call_id: task_identity.call_id,
+                outcome,
+            });
         }
-    }
+        .instrument(task_span),
+    );
+    let abort = task.abort_handle();
+    active.push(InFlight {
+        task,
+        parallel_safe,
+    });
+    abort
 }
 
 struct ConnectionContext<'a> {
@@ -469,6 +446,7 @@ struct ConnectionContext<'a> {
     runtime: &'a Arc<PreparedToolRuntime>,
     events: &'a mpsc::Sender<AttachmentEvent>,
     status: &'a watch::Sender<AttachmentStatus>,
+    active: &'a mut Vec<InFlight>,
 }
 
 async fn connection<S>(
@@ -484,12 +462,13 @@ where
         runtime,
         events,
         status,
+        active,
     } = context;
     let catalog_started = Instant::now();
     if let Err(error) = send(
         &mut socket,
         &ExecutorFrame::Catalog {
-            capabilities: &["turn_metadata"],
+            capabilities: ["turn_metadata"],
             tools: &config.tools,
             machines: config
                 .metadata
@@ -534,9 +513,8 @@ where
     );
 
     let (completed_tx, mut completed_rx) = mpsc::unbounded_channel::<Completion>();
-    let mut in_flight = HashMap::<Box<str>, InFlight>::new();
-    let mut pending = VecDeque::<PendingCall>::new();
-    let mut receipts = HashMap::<Box<str>, Receipt>::new();
+    let mut in_flight = HashMap::<Box<str>, tokio::task::AbortHandle>::new();
+    let mut receipts = HashSet::<Box<str>>::new();
     let mut heartbeat = tokio::time::interval_at(
         tokio::time::Instant::now() + protocol::HEARTBEAT_INTERVAL,
         protocol::HEARTBEAT_INTERVAL,
@@ -548,13 +526,7 @@ where
     let mut draining = false;
 
     let end = loop {
-        start_ready_calls(runtime, &mut pending, &mut in_flight, &completed_tx);
-        if detaching
-            && draining
-            && pending.is_empty()
-            && in_flight.is_empty()
-            && receipts.is_empty()
-        {
+        if detaching && draining && in_flight.is_empty() && receipts.is_empty() {
             break ConnectionEnd::Detached;
         }
         tokio::select! {
@@ -564,6 +536,14 @@ where
                     break ConnectionEnd::DetachFailed(error);
                 }
                 detaching = true;
+                shutdown_calls(active).await;
+                for (call_id, _) in in_flight.drain() {
+                    let outcome = ambiguous("attachment shut down during execution");
+                    if let Err(error) = send_result(&mut socket, &call_id, &outcome).await {
+                        return ConnectionEnd::DetachFailed(error);
+                    }
+                    receipts.insert(call_id);
+                }
             }
             _ = &mut pong_timeout, if awaiting_pong.is_some() => {
                 break if detaching {
@@ -581,11 +561,9 @@ where
                 awaiting_pong = Some(nonce);
                 pong_timeout.as_mut().reset(tokio::time::Instant::now() + PONG_TIMEOUT);
             }
-            completion = completed_rx.recv() => if let Some(Completion::Result { call_id, outcome, observed }) = completion {
-                let Some(call) = in_flight.remove(&call_id) else { continue };
-                let _ = call.task.await;
-                call.events.complete(events, observed);
-                receipts.insert(call_id.clone(), Receipt { identity: call.identity, outcome: outcome.clone() });
+            completion = completed_rx.recv() => if let Some(Completion::Result { call_id, outcome }) = completion {
+                if in_flight.remove(&call_id).is_none() { continue; }
+                receipts.insert(call_id.clone());
                 if let Err(error) = send_result(&mut socket, &call_id, &outcome).await {
                     break if detaching { ConnectionEnd::DetachFailed(error) } else { ConnectionEnd::Failed(error) };
                 }
@@ -601,14 +579,11 @@ where
                     RemoteFrame::Call { session_id, turn_id, call_id, model, name, input, output_token_budget, output_byte_budget, deadline_at } => {
                         if draining { break ConnectionEnd::Rejected("call received after drain barrier".into()); }
                         let identity = CallIdentity { session_id:session_id.into(), turn_id:turn_id.map(Into::into), call_id:call_id.clone().into(), model:model.into(), name:name.clone().into(), input:input.clone(), output_token_budget, output_byte_budget, deadline_at };
-                        if let Some(receipt) = receipts.get(call_id.as_str()) {
-                            if receipt.identity != identity { break ConnectionEnd::Rejected("duplicate call changed immutable fields".into()); }
-                            if let Err(error) = send_result(&mut socket, &call_id, &receipt.outcome).await { break ConnectionEnd::Failed(error); }
-                            continue;
+                        if receipts.contains(call_id.as_str()) || in_flight.contains_key(call_id.as_str()) {
+                            break ConnectionEnd::Rejected("duplicate call on socket".into());
                         }
-                        if let Some(admitted) = admitted_identity(&in_flight, &pending, &call_id) {
-                            if admitted != &identity { break ConnectionEnd::Rejected("duplicate in-flight call changed immutable fields".into()); }
-                            continue;
+                        if receipts.len() + in_flight.len() >= 64 {
+                            break ConnectionEnd::Disconnected;
                         }
                         let call_events = begin_call_events(
                             events,
@@ -617,34 +592,38 @@ where
                             config.metadata.as_ref().map(AttachmentMetadata::attachment_id),
                         );
                         let tool_timeout = runtime.timeout_ms(&name).unwrap_or(0);
-                        if deadline_at <= now_ms() || tool_timeout == 0 {
-                            let outcome = unavailable(if tool_timeout == 0 { "tool is not in the pinned catalog" } else { "tool deadline elapsed before execution" });
+                        let parallel_safe = runtime.parallel_safe(&name);
+                        active.retain(|call| !call.task.is_finished());
+                        let reason = if tool_timeout == 0 {
+                            Some("tool is not in the pinned catalog")
+                        } else if deadline_at <= now_ms() {
+                            Some("tool deadline elapsed before execution")
+                        } else if active.len() >= MAX_ACTIVE_CALLS
+                            || active.iter().any(|call| !parallel_safe || !call.parallel_safe) {
+                            Some("attachment execution capacity exhausted")
+                        } else { None };
+                        if let Some(reason) = reason {
                             call_events.complete(events, AttachmentCallOutcome::Unavailable);
-                            if let Err(error) = send_result(&mut socket, &call_id, &outcome).await { break ConnectionEnd::Failed(error); }
-                            receipts.insert(call_id.into(), Receipt { identity, outcome });
+                            if let Err(error) = send_result(&mut socket, &call_id, &unavailable(reason)).await { break ConnectionEnd::Failed(error); }
+                            receipts.insert(call_id.into());
                             continue;
                         }
-                        let parallel_safe = runtime.parallel_safe(&name);
-                        pending.push_back(PendingCall { identity, tool_timeout, parallel_safe, events:call_events });
+                        let task = start_call(runtime, active, identity, tool_timeout, call_events, completed_tx.clone(), events);
+                        in_flight.insert(call_id.into(), task);
                     }
                     RemoteFrame::Cancel { call_id } => {
-                        let outcome = cancelled();
-                        if let Some(index) = pending.iter().position(|call| call.identity.call_id.as_ref() == call_id) {
-                            let call = pending.remove(index).expect("position came from the same queue");
-                            call.events.complete(events, AttachmentCallOutcome::Cancelled);
-                            receipts.insert(call_id.clone().into(), Receipt { identity: call.identity, outcome: outcome.clone() });
-                            if let Err(error) = send_result(&mut socket, &call_id, &outcome).await { break ConnectionEnd::Failed(error); }
-                        } else if let Some(call) = in_flight.remove(call_id.as_str()) {
-                            call.task.abort();
-                            let _ = call.task.await;
+                        if let Some(task) = in_flight.get(call_id.as_str()) {
+                            // If execution already finished, its queued result wins the race.
+                            if task.is_finished() { continue; }
+                            task.abort();
+                            in_flight.remove(call_id.as_str());
+                            receipts.insert(call_id.clone().into());
                             let outcome = ambiguous("tool execution was cancelled after dispatch");
-                            call.events.complete(events, AttachmentCallOutcome::Ambiguous);
-                            receipts.insert(call_id.clone().into(), Receipt { identity: call.identity, outcome: outcome.clone() });
                             if let Err(error) = send_result(&mut socket, &call_id, &outcome).await { break ConnectionEnd::Failed(error); }
                         }
                     }
                     RemoteFrame::Ack { call_id } => {
-                        if receipts.remove(call_id.as_str()).is_none() {
+                        if !receipts.remove(call_id.as_str()) {
                             break ConnectionEnd::Rejected("acknowledgement did not match a retained result".into());
                         }
                     }
@@ -674,24 +653,6 @@ where
         end
     };
 
-    if !matches!(end, ConnectionEnd::Detached) {
-        for call in pending {
-            call.events
-                .complete(events, AttachmentCallOutcome::Ambiguous);
-        }
-        for (call_id, call) in in_flight {
-            call.task.abort();
-            let _ = call.task.await;
-            call.events
-                .complete(events, AttachmentCallOutcome::Ambiguous);
-            receipts.entry(call_id).or_insert(Receipt {
-                identity: call.identity,
-                outcome: ambiguous(
-                    "tool execution was interrupted before its result was acknowledged",
-                ),
-            });
-        }
-    }
     match &end {
         ConnectionEnd::Detached => {
             let _ = socket.close(None).await;
@@ -829,9 +790,6 @@ fn unavailable(message: &str) -> Value {
 }
 fn ambiguous(message: &str) -> Value {
     json!({"status":"ambiguous", "message":bounded(message)})
-}
-fn cancelled() -> Value {
-    json!({"status":"cancelled", "message":"tool attachment call was cancelled"})
 }
 fn bounded_completed_failure(
     message: &str,

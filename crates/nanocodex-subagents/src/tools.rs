@@ -178,18 +178,69 @@ pub async fn start_agents_observed(
     tasks: Vec<AgentTask>,
     observe_session: impl Fn(&str) + Send + Sync + 'static,
 ) -> AgentToolResult<Vec<AgentStartReport>> {
+    registry.register_handle(parent.clone());
     let prepared = prepare_batch(tasks)?;
     let mut startup = registry.batch_startup();
     let capacities = registry.reserve_turns(prepared.len())?;
     let reservations = registry.reserve_many(session_id, prepared.len()).await?;
     let host_context = registry.host_context_for_session(session_id).await;
-    let children = parent
-        .spawn_many_observed_with_host_context(
-            prepared.len(),
-            observe_session,
-            host_context.as_ref().map(Arc::clone),
-        )
-        .await?;
+    let children = if let Some(router) = registry.spawn_router() {
+        // Resolve all choices before creating a child. No initial turn runs until
+        // the entire batch has been bound and inserted below.
+        let mut routes = Vec::with_capacity(prepared.len());
+        for (task, _) in &prepared {
+            let route = router
+                .resolve(
+                    session_id,
+                    &task.role,
+                    &task.task,
+                    SpawnOptions::new(),
+                    host_context.as_deref(),
+                )
+                .await?;
+            route.validate(SpawnOptions::new())?;
+            routes.push(route);
+        }
+        let mut children: Vec<(nanocodex_agent::Nanocodex, nanocodex_agent::AgentEvents)> =
+            Vec::with_capacity(routes.len());
+        for route in routes {
+            let outcome = parent
+                .spawn_with_host_context(route.options, host_context.as_ref().map(Arc::clone))
+                .await;
+            let child = match outcome {
+                Ok(child) => child,
+                Err(error) => {
+                    for (child, _) in &children {
+                        let _ = child.shutdown().await;
+                    }
+                    return Err(error.into());
+                }
+            };
+            observe_session(child.0.session_id());
+            if let Err(error) = router.bind(
+                session_id,
+                child.0.session_id(),
+                &route.reference,
+                host_context.as_deref(),
+            ) {
+                let _ = child.0.shutdown().await;
+                for (child, _) in &children {
+                    let _ = child.shutdown().await;
+                }
+                return Err(error.into());
+            }
+            children.push(child);
+        }
+        children
+    } else {
+        parent
+            .spawn_many_observed_with_host_context(
+                prepared.len(),
+                observe_session,
+                host_context.as_ref().map(Arc::clone),
+            )
+            .await?
+    };
 
     let mut reports = Vec::with_capacity(prepared.len());
     let mut launches = Vec::with_capacity(prepared.len());
@@ -299,6 +350,7 @@ async fn start_agent_with_host_context(
     options: SpawnOptions,
     host_context: Option<Arc<str>>,
 ) -> AgentToolResult<AgentStartReport> {
+    registry.register_handle(parent.clone());
     let AgentTask {
         role,
         task,
@@ -312,9 +364,33 @@ async fn start_agent_with_host_context(
         Some(host_context) => Some(host_context),
         None => registry.host_context_for_session(session_id).await,
     };
+    let router = registry.spawn_router();
+    let route = if let Some(router) = &router {
+        let route = router
+            .resolve(session_id, &role, &task, options, host_context.as_deref())
+            .await?;
+        route.validate(options)?;
+        Some(route)
+    } else {
+        None
+    };
     let (child, events) = parent
-        .spawn_with_host_context(options, host_context.as_ref().map(Arc::clone))
+        .spawn_with_host_context(
+            route.as_ref().map_or(options, |route| route.options),
+            host_context.as_ref().map(Arc::clone),
+        )
         .await?;
+    if let (Some(router), Some(route)) = (&router, &route)
+        && let Err(error) = router.bind(
+            session_id,
+            child.session_id(),
+            &route.reference,
+            host_context.as_deref(),
+        )
+    {
+        let _ = child.shutdown().await;
+        return Err(error.into());
+    }
     let session_id = child.session_id().to_string();
     let descriptor = AgentDescriptor {
         id,
@@ -383,6 +459,7 @@ impl Tool for SpawnAgent {
             .registry
             .upgrade()
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
+        #[cfg(not(target_family = "wasm"))]
         let report = start_agent_with_host_context(
             &self.parent,
             &registry,
@@ -392,6 +469,29 @@ impl Tool for SpawnAgent {
             host_context,
         )
         .await?;
+        // Tool futures are Send, while host JS routing and shutdown futures are
+        // isolate-local. Poll them on the WASM executor and await a Send receipt.
+        // Dropping the tool still cancels startup instead of detaching it.
+        #[cfg(target_family = "wasm")]
+        let report = {
+            let parent = self.parent.clone();
+            let session_id = context.session_id().to_owned();
+            let pending = super::platform::spawn(async move {
+                start_agent_with_host_context(
+                    &parent,
+                    &registry,
+                    &session_id,
+                    task,
+                    options,
+                    host_context,
+                )
+                .await
+            });
+            let _cancel = pending.abort_on_drop();
+            pending
+                .await
+                .map_err(|_| std::io::Error::other("subagent startup was cancelled"))??
+        };
         json_output(&report)
     }
 }
@@ -410,7 +510,7 @@ fn spawn_agent_parameters() -> Value {
             },
             "model": {
                 "type": "string",
-                "enum": ["sol", "terra", "luna", "astra"],
+                "enum": ["sol", "terra", "luna", "astra", "glm-5.3"],
                 "description": "Model override for the new agent. Omit to inherit the parent's current model."
             },
             "thinking": {
@@ -419,7 +519,8 @@ fn spawn_agent_parameters() -> Value {
                 "description": "Reasoning effort override for the new agent. Omit to inherit the parent's current thinking level."
             },
             "output_schema": {
-                "description": "The JSON Schema that every successful result from this agent must satisfy. Use an object with one string field for a free-form report."
+                "anyOf": [{ "type": "object" }, { "type": "boolean" }],
+                "description": "The JSON Schema that every successful result from this agent must satisfy. Pass a schema object (not a JSON-encoded string), or a boolean schema. For a free-form report, use an object schema with one string property."
             }
         },
         "required": ["role", "task", "output_schema"],
@@ -447,7 +548,13 @@ impl Tool for SubmitResult {
                 "type": "object",
                 "properties": {
                     "output": {
-                        "description": "The final JSON value required by this agent's output schema."
+                        "anyOf": [
+                            { "type": "object" }, { "type": "array", "items": {} },
+                            { "type": "string" }, { "type": "number" },
+                            { "type": "boolean" }, { "type": "null" }
+                        ],
+                        "description": "The final JSON value required by this agent's output schema. Pass objects and arrays directly, not as JSON-encoded strings. Use a string only when the output schema permits a string. A JSON-encoded object or array is decoded once only if it matches the required schema; the receipt reports decoded_json_text."
+
                     }
                 },
                 "required": ["output"],
@@ -458,7 +565,8 @@ impl Tool for SubmitResult {
             "type": "object",
             "properties": {
                 "accepted": { "type": "boolean" },
-                "status": { "type": "string", "enum": ["accepted", "superseded"] }
+                "status": { "type": "string", "enum": ["accepted", "superseded"] },
+                "decoded_json_text": { "type": "boolean", "const": true }
             },
             "required": ["accepted", "status"],
             "additionalProperties": false
@@ -475,7 +583,13 @@ impl Tool for SubmitResult {
             .submit_result(context.session_id(), context.instruction_revision(), output)
             .await?;
         let output = match outcome {
-            SubmissionOutcome::Accepted => json!({ "accepted": true, "status": "accepted" }),
+            SubmissionOutcome::Accepted { decoded_json_text } => {
+                let mut receipt = json!({ "accepted": true, "status": "accepted" });
+                if decoded_json_text {
+                    receipt["decoded_json_text"] = json!(true);
+                }
+                receipt
+            }
             SubmissionOutcome::Superseded => json!({ "accepted": false, "status": "superseded" }),
         };
         Ok(ToolOutput::from_json(output, true))
@@ -725,6 +839,7 @@ pub fn install_tools(
     parent: AgentHandle,
     registry: Arc<Registry>,
 ) -> Result<Tools, ToolsBuildError> {
+    registry.register_handle(parent.clone());
     tools
         .into_builder()
         .tool(SubmitResult {
@@ -865,12 +980,32 @@ mod tests {
     }
 
     #[test]
+    fn spawn_agent_advertises_schema_values_instead_of_encoded_json() {
+        let validator = jsonschema::validator_for(&spawn_agent_parameters()).unwrap();
+        for schema in [json!({ "type": "object" }), json!(true), json!(false)] {
+            assert!(validator.is_valid(&json!({
+                "role": "reader", "task": "read the fixture", "output_schema": schema,
+            })));
+        }
+        for schema in [
+            json!("{\"type\":\"object\"}"),
+            json!(null),
+            json!(42),
+            json!([]),
+        ] {
+            assert!(!validator.is_valid(&json!({
+                "role": "reader", "task": "read the fixture", "output_schema": schema,
+            })));
+        }
+    }
+
+    #[test]
     fn spawn_agent_exposes_optional_model_and_thinking_overrides() {
         let parameters = spawn_agent_parameters();
 
         assert_eq!(
             parameters["properties"]["model"]["enum"],
-            json!(["sol", "terra", "luna", "astra"])
+            json!(["sol", "terra", "luna", "astra", "glm-5.3"])
         );
         assert_eq!(
             parameters["properties"]["thinking"]["enum"],
@@ -944,6 +1079,24 @@ mod tests {
         .definition();
         let parameters = definition.parameters().unwrap().as_value();
 
+        let validator = jsonschema::validator_for(parameters).unwrap();
+        for output in [
+            json!({ "report": "done" }),
+            json!([1, "two"]),
+            json!("text"),
+            json!(2.5),
+            json!(true),
+            json!(null),
+        ] {
+            assert!(validator.is_valid(&json!({ "output": output })));
+        }
+        assert_eq!(
+            parameters["properties"]["output"]["anyOf"]
+                .as_array()
+                .unwrap()
+                .len(),
+            6
+        );
         assert_eq!(parameters["required"], json!(["output"]));
         assert_eq!(parameters["additionalProperties"], json!(false));
         assert_eq!(parameters["properties"].as_object().unwrap().len(), 1);

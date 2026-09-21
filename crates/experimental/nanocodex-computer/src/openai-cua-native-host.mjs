@@ -391,7 +391,9 @@ export async function connectLease(config, { connect = connectSocket, spawnDaemo
 }
 
 export function bindBridge(lease, { AppServerImpl = AppServer, onThread = () => {} } = {}) {
-  const app = new AppServerImpl({ url: lease.endpoint, openGui: true, timeoutMs: lease.timeoutMs }, { openGui: id => lease.attach(id), onThread });
+  // The official server resolves noninteractive confirmations under its own
+  // effective policy. A GUI attachment is not needed to call the CUA provider.
+  const app = new AppServerImpl({ url: lease.endpoint, openGui: false, headless: true, timeoutMs: lease.timeoutMs }, { onThread });
   const close = app.close.bind(app);
   app.close = error => { close(error); lease.close(error); };
   lease.onClose = error => close(error);

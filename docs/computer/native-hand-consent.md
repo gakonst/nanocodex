@@ -16,3 +16,10 @@ this transport can fail. Removing Nanocodex's custom handlers does not establish
 that every upstream operation supports this client. Use the official provider's
 supported permission flow when required; do not substitute a tool argument or
 synthetic response for user consent.
+
+On macOS, the managed headless app server provides the provider-facing form
+capability. It applies the existing upstream permission policy, including
+noninteractive confirmation handling where that policy permits it. Nanocodex
+neither overrides that policy nor adds prompts. Unresolved interactive requests
+for the bridge's own thread are declined. The desktop ChatGPT/Codex GUI stays
+closed; the signed native helper and OS permissions remain required.

@@ -4,6 +4,7 @@ export const AGENT_MODELS = [
   "gpt-5.6-terra",
   "gpt-5.6-luna",
   "gpt-6-astra",
+  "@cf/zai-org/glm-5.3",
 ] as const;
 
 export const AGENT_THINKING = [
@@ -139,6 +140,10 @@ export function parseCompleteAgentSettings(value: unknown): ManagedAgentSettings
 export function validateAgentSettings(
   settings: ManagedAgentSettings,
 ): ManagedAgentSettings {
+  if (settings.model === "@cf/zai-org/glm-5.3"
+    && (!["low", "medium", "high"].includes(settings.thinking) || settings.reasoning_mode !== "standard" || settings.fast_mode)) {
+    throw new TypeError("GLM-5.3 requires low/medium/high thinking, standard mode, and no fast mode");
+  }
   if (settings.model === "gpt-6-astra" && settings.thinking === "none") {
     throw new TypeError("GPT-6 Astra requires low, medium, high, xhigh, or max thinking");
   }
@@ -146,6 +151,14 @@ export function validateAgentSettings(
     throw new TypeError("GPT-6 Astra does not support pro reasoning mode");
   }
   return settings;
+}
+
+/** Public admission cannot select the OSS model without a committed thread route. */
+export function validateAgentAdmissionSettings(settings: ManagedAgentSettings): ManagedAgentSettings {
+  if (settings.model === "@cf/zai-org/glm-5.3") {
+    throw new TypeError("GLM-5.3 is available only through model_routing; omit explicit model settings");
+  }
+  return validateAgentSettings(settings);
 }
 
 export function parseAgentCreateBody(encoded: string): ManagedAgentCreateBody {
@@ -168,12 +181,17 @@ export function parseAgentCreateBody(encoded: string): ManagedAgentCreateBody {
     if (body[key] !== undefined && (typeof body[key] !== "string" || !/^[A-Za-z0-9_-]{1,64}$/.test(body[key] as string))) throw new TypeError("invalid template ID");
   }
   const settingsProvided = Object.hasOwn(body, "settings");
+  if (settingsProvided && body.configuration && (body.configuration as AgentConfiguration).model_routing) {
+    throw new TypeError("model_routing owns model and thinking; omit settings");
+  }
+  const configuration = body.configuration === undefined ? undefined : parseConfiguration(body.configuration);
+  if (configuration?.settings) validateAgentAdmissionSettings(configuration.settings);
   return {
     ...(Object.hasOwn(body, "durability") ? { durability: body.durability } : {}),
     settings: settingsProvided
-      ? parseCompleteAgentSettings(body.settings)
+      ? validateAgentAdmissionSettings(parseCompleteAgentSettings(body.settings))
       : DEFAULT_AGENT_SETTINGS,
-    ...(body.configuration === undefined ? {} : { configuration: parseConfiguration(body.configuration) }),
+    ...(configuration === undefined ? {} : { configuration }),
     ...(body.definition_id === undefined ? {} : { definition_id: body.definition_id as string }),
     ...(body.environment_template_id === undefined ? {} : { environment_template_id: body.environment_template_id as string }),
     settingsProvided,

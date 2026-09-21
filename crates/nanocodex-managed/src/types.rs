@@ -388,6 +388,64 @@ pub struct AgentCapabilities {
     pub native_cross_mounts: bool,
 }
 
+/// Provider transport that owns a pinned managed conversation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RouteProvider {
+    /// ChatGPT subscription transport.
+    Chatgpt,
+    /// Cloudflare Workers AI.
+    WorkersAi,
+    /// OpenRouter gateway.
+    Openrouter,
+    /// Vercel AI Gateway.
+    Vercel,
+}
+impl RouteProvider {
+    /// Human-readable transport label, independent of the model family.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Chatgpt => "ChatGPT",
+            Self::WorkersAi => "Workers AI",
+            Self::Openrouter => "OpenRouter",
+            Self::Vercel => "Vercel",
+        }
+    }
+}
+
+/// Public display projection of the retained route, without router internals.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct ModelRoute {
+    /// Actual transport selected for this conversation.
+    pub backend: RouteProvider,
+    /// Canonical model selected by the router.
+    #[serde(with = "model_serde")]
+    pub model: Model,
+    /// Reasoning effort selected for this conversation.
+    pub thinking: Thinking,
+}
+
+/// Routing metadata read from the retained agent state.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct RoutingStatus {
+    /// Whether routing has explicitly been enabled; absent on older servers.
+    #[serde(default, rename = "model_routing_enabled")]
+    pub enabled: bool,
+    /// Pinned route, or none while waiting for the opening task.
+    #[serde(default, rename = "model_route")]
+    pub route: Option<ModelRoute>,
+}
+
+/// Receipt for explicitly enabling automatic routing before the first message.
+#[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
+pub struct AutoRoutingStatus {
+    /// Whether this session has automatic routing enabled.
+    pub enabled: bool,
+    /// Current settings; the opening message selects the pinned route.
+    pub settings: AgentSettings,
+}
+
 /// Model and reasoning policy owned by one managed agent.
 ///
 /// Model and reasoning mode may only be changed before the first turn is
@@ -423,12 +481,22 @@ impl AgentSettings {
     pub(crate) fn validate(self) -> Result<Self, ManagedError> {
         if !self.model.supports_thinking(self.thinking) {
             return Err(ManagedError::Configuration(
-                "GPT-6 Astra requires low, medium, high, xhigh, or max reasoning effort".to_owned(),
+                (if self.model == Model::Glm53 {
+                    "GLM-5.3 requires low, medium, or high reasoning effort"
+                } else {
+                    "GPT-6 Astra requires low, medium, high, xhigh, or max reasoning effort"
+                })
+                .to_owned(),
             ));
         }
         if !self.model.supports_reasoning_mode(self.reasoning_mode) {
             return Err(ManagedError::Configuration(
-                "GPT-6 Astra does not support pro reasoning mode".to_owned(),
+                (if self.model == Model::Glm53 {
+                    "GLM-5.3 does not support pro reasoning mode"
+                } else {
+                    "GPT-6 Astra does not support pro reasoning mode"
+                })
+                .to_owned(),
             ));
         }
         Ok(self)
@@ -526,6 +594,7 @@ mod model_serde {
             "gpt-5.6-terra" => Ok(Model::Terra),
             "gpt-5.6-luna" => Ok(Model::Luna),
             "gpt-6-astra" => Ok(Model::Astra),
+            "@cf/zai-org/glm-5.3" => Ok(Model::Glm53),
             value => Err(de::Error::unknown_variant(
                 value,
                 &[
@@ -533,6 +602,7 @@ mod model_serde {
                     "gpt-5.6-terra",
                     "gpt-5.6-luna",
                     "gpt-6-astra",
+                    "@cf/zai-org/glm-5.3",
                 ],
             )),
         }
@@ -724,6 +794,34 @@ mod settings_tests {
     use serde_json::json;
 
     use super::{AgentSettings, AgentSettingsPatch};
+
+    #[test]
+    fn glm53_settings_round_trip_with_canonical_identity() {
+        let settings = AgentSettings {
+            model: Model::Glm53,
+            thinking: Thinking::Medium,
+            reasoning_mode: ReasoningMode::Standard,
+            fast_mode: false,
+        };
+        let value = serde_json::to_value(settings).unwrap();
+        assert_eq!(value["model"], "@cf/zai-org/glm-5.3");
+        assert_eq!(
+            serde_json::from_value::<AgentSettings>(value).unwrap(),
+            settings
+        );
+        assert!(settings.validate().is_ok());
+        let invalid = AgentSettings {
+            thinking: Thinking::Max,
+            ..settings
+        };
+        assert!(
+            invalid
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("GLM-5.3")
+        );
+    }
 
     #[test]
     fn settings_use_canonical_managed_protocol_values() {

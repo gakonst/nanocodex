@@ -114,10 +114,7 @@ async fn launch(destination: &str) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     let mut command = tokio::process::Command::new("xdg-open");
     #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = tokio::process::Command::new("explorer.exe");
-        command
-    };
+    let mut command = tokio::process::Command::new("explorer.exe");
     #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
     return Err("Opening links is unsupported on this platform.".to_owned());
     let status = command

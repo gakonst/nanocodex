@@ -10,7 +10,9 @@ use super::{
     runtime::{DelegationChange, Registry, completion_instructions},
 };
 use nanocodex_agent::input::Prompt;
-use nanocodex_agent::{Nanocodex, NanocodexError, Result as AgentResult, TurnControl, TurnResult};
+use nanocodex_agent::{
+    ChildRuntimeSnapshot, Nanocodex, NanocodexError, Result as AgentResult, TurnControl, TurnResult,
+};
 use std::{collections::VecDeque, sync::Weak};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::Instrument;
@@ -58,6 +60,9 @@ impl EnqueuedDelivery {
 }
 
 enum HarnessCommand {
+    Snapshot {
+        response: oneshot::Sender<std::io::Result<ChildRuntimeSnapshot>>,
+    },
     Start {
         prompt: String,
         capacity: TurnCapacity,
@@ -82,6 +87,7 @@ struct Harness {
     pending_deferred: VecDeque<AgentMessage>,
     pending_urgent: VecDeque<AgentMessage>,
     output_schema: String,
+    restored_assignment: Option<String>,
     capacity: Capacity,
     capacity_revision: watch::Receiver<u64>,
     registry: Weak<Registry>,
@@ -102,6 +108,17 @@ enum HarnessEvent {
 }
 
 impl HarnessHandle {
+    pub(super) async fn snapshot(&self) -> std::io::Result<ChildRuntimeSnapshot> {
+        let (response, result) = oneshot::channel();
+        self.commands
+            .send(HarnessCommand::Snapshot { response })
+            .await
+            .map_err(|_| std::io::Error::other("subagent harness is closed"))?;
+        result
+            .await
+            .map_err(|_| std::io::Error::other("subagent snapshot interrupted"))?
+    }
+
     pub(super) async fn start(
         &self,
         prompt: String,
@@ -177,6 +194,7 @@ pub(super) fn spawn(
     capacity: Capacity,
     registry: Weak<Registry>,
     output_schema: String,
+    restored_assignment: Option<String>,
 ) -> (HarnessHandle, Task<()>) {
     let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
     let (deferred, deferred_receiver) = mpsc::channel(DEFERRED_CAPACITY);
@@ -199,6 +217,7 @@ pub(super) fn spawn(
             pending_deferred: VecDeque::new(),
             pending_urgent: VecDeque::new(),
             output_schema,
+            restored_assignment,
             capacity,
             capacity_revision,
             registry,
@@ -266,6 +285,14 @@ impl Harness {
 
     async fn handle(&mut self, command: HarnessCommand) -> bool {
         match command {
+            HarnessCommand::Snapshot { response } => {
+                let result = match &self.agent {
+                    Some(agent) => agent.child_snapshot().await.map_err(std::io::Error::other),
+                    None => Err(std::io::Error::other("subagent runtime is unloaded")),
+                };
+                let _ = response.send(result);
+                false
+            }
             HarnessCommand::Start {
                 prompt,
                 capacity,
@@ -543,6 +570,13 @@ impl Harness {
                 self.id
             )));
         };
+        // A first turn interrupted before a committed model boundary still
+        // needs its assignment. Include it in the next admitted prompt, without
+        // writing a standalone checkpoint during durable reconstruction.
+        let prompt = match &self.restored_assignment {
+            Some(assignment) => format!("{assignment}\n\n{prompt}"),
+            None => prompt,
+        };
         let prompt = format!(
             "{prompt}\n\n{}",
             completion_instructions(&self.output_schema)
@@ -560,6 +594,7 @@ impl Harness {
                 return Err(std::io::Error::other(error));
             }
         };
+        self.restored_assignment = None;
         let control = turn.control();
         let result = platform::spawn(turn);
         self.active = Some(ActiveTurn {

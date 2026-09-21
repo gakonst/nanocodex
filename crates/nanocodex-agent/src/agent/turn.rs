@@ -406,6 +406,36 @@ impl SpawnOptions {
     }
 }
 
+/// Serializable child driver state, restored with the current host's capabilities.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub struct ChildRuntimeSnapshot {
+    /// Stable child session identity.
+    pub session_id: String,
+    /// Pinned model.
+    pub model: Model,
+    /// Pinned reasoning effort.
+    pub thinking: Thinking,
+    /// Fast-mode policy.
+    pub fast_mode: bool,
+    /// Last safe conversation boundary; absent before the first model turn.
+    pub conversation: Option<SessionSnapshot>,
+}
+
+#[cfg(feature = "openai")]
+impl ChildRuntimeSnapshot {
+    /// Validates stored identity, model policy, and the versioned conversation.
+    pub fn validate(&self) -> Result<()> {
+        self.session_id.parse::<SessionId>().map_err(|error| {
+            NanocodexError::InvalidSessionSnapshot(format!("invalid child session ID: {error}"))
+        })?;
+        super::spawn::validate_model_thinking(self.model, self.thinking)?;
+        if let Some(conversation) = &self.conversation {
+            conversation.clone().into_resume()?;
+        }
+        Ok(())
+    }
+}
+
 #[cfg(feature = "openai")]
 pub(super) enum Command {
     Prompt {
@@ -452,7 +482,11 @@ pub(super) enum Command {
         checkpoint: Option<Arc<CommittedSession>>,
         result: oneshot::Sender<Result<(Nanocodex, AgentEvents)>>,
     },
+    Snapshot {
+        result: oneshot::Sender<Result<ChildRuntimeSnapshot>>,
+    },
     Spawn {
+        restore: Option<ChildRuntimeSnapshot>,
         options: SpawnOptions,
         host_context: Option<Arc<str>>,
         result: oneshot::Sender<Result<(Nanocodex, AgentEvents)>>,

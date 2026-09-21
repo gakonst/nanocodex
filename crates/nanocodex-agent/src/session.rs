@@ -49,6 +49,9 @@ pub(crate) struct CommittedSession {
     lineage_id: Arc<str>,
     selected_model: Model,
     model: ModelCheckpoint,
+    // Runtime preparation may normalize context IDs, images, and request prefix.
+    // Until another boundary is committed, snapshot the retained boundary exactly.
+    retained_snapshot: Option<SessionSnapshot>,
 }
 
 #[cfg(feature = "openai")]
@@ -62,7 +65,13 @@ impl CommittedSession {
             lineage_id,
             selected_model,
             model,
+            retained_snapshot: None,
         }
+    }
+
+    pub(crate) fn with_retained_snapshot(mut self, snapshot: Option<SessionSnapshot>) -> Self {
+        self.retained_snapshot = snapshot;
+        self
     }
 
     pub(crate) fn lineage_id(&self) -> &str {
@@ -94,6 +103,9 @@ impl CommittedSession {
     }
 
     pub(crate) fn snapshot(&self) -> SessionSnapshot {
+        if let Some(snapshot) = &self.retained_snapshot {
+            return snapshot.clone();
+        }
         SessionSnapshot {
             version: SESSION_SNAPSHOT_VERSION,
             model: self.selected_model.as_str().to_owned(),

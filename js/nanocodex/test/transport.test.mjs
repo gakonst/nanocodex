@@ -69,3 +69,15 @@ test("subagents are installed by default and expose branded lifecycle helpers", 
   });
   assert.throws(() => Subagents.create({ maxConcurrency: 0 }), /positive safe integer/);
 });
+
+test("stateless host-managed transport disables eager sockets and maps the WASM config", async () => {
+  const { resolveResponsesTransport } = await import("../runtime/responses-transport.mjs");
+  const { toWasmConfig } = await import("../internal.mjs");
+  const defaults = resolveResponsesTransport(BrowserTransport.hostManaged({ websocketUrl: "wss://fixture.invalid/responses" }));
+  assert.equal(defaults.websocketPreconnect, true);
+  assert.equal(toWasmConfig({ apiKey: "fixture" }).stateless_http, undefined);
+  const setup = resolveResponsesTransport(BrowserTransport.hostManaged({ stateless: true, websocketPreconnect: true }));
+  assert.equal(setup.stateless, true);
+  assert.equal(setup.websocketPreconnect, false);
+  assert.equal(toWasmConfig({ apiKey: "fixture", ...setup }).stateless_http, true);
+});

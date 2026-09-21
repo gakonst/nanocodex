@@ -932,8 +932,6 @@ struct ToolCatalog {
     #[serde(rename = "type")]
     kind: String,
     tools: Vec<ToolCatalogEntry>,
-    #[serde(default)]
-    capabilities: Vec<String>,
     attachment_id: Option<String>,
     #[serde(default)]
     machines: Vec<ToolCatalogMachine>,
@@ -1697,16 +1695,6 @@ fn valid_tool_catalog(encoded: &str) -> bool {
     {
         return false;
     }
-    let mut capabilities = HashSet::new();
-    if catalog.capabilities.len() > 16
-        || catalog.capabilities.iter().any(|capability| {
-            validate_id(capability).is_err()
-                || !capability.as_bytes()[0].is_ascii_alphanumeric()
-                || !capabilities.insert(capability)
-        })
-    {
-        return false;
-    }
     let mut names = HashSet::new();
     let mut identities = HashSet::new();
     for entry in catalog.tools {
@@ -2038,36 +2026,10 @@ mod tests {
     }
 
     #[test]
-    fn tool_catalog_accepts_optional_bounded_capabilities() {
-        for capabilities in [
-            json!([]),
-            json!(["turn_metadata"]),
-            json!(["future_capability"]),
-        ] {
-            assert!(valid_tool_catalog(
-                &json!({
-                    "type": "catalog", "tools": [], "capabilities": capabilities
-                })
-                .to_string()
-            ));
-        }
-        for capabilities in [
-            json!(null),
-            json!(true),
-            json!("turn_metadata"),
-            json!(["turn_metadata", "turn_metadata"]),
-            json!([""]),
-            json!(["_invalid"]),
-            json!(["a".repeat(129)]),
-            json!((0..17).map(|i| format!("cap_{i}")).collect::<Vec<_>>()),
-        ] {
-            assert!(!valid_tool_catalog(
-                &json!({
-                    "type": "catalog", "tools": [], "capabilities": capabilities
-                })
-                .to_string()
-            ));
-        }
+    fn tool_catalog_rejects_removed_capability_negotiation() {
+        assert!(!valid_tool_catalog(
+            r#"{"type":"catalog","tools":[],"capabilities":["turn_metadata"]}"#
+        ));
     }
 
     #[test]

@@ -8,7 +8,9 @@ mod harness;
 mod message;
 mod model;
 mod platform;
+mod routing;
 mod runtime;
+pub use routing::{SpawnRoute, SpawnRouter};
 mod task_tree;
 mod tools;
 
@@ -18,7 +20,8 @@ pub use model::{
     MessagePurpose, MessageSender, ScopedAgentUpdate, SubagentRuntimeId, ThreadId,
 };
 pub use runtime::{
-    AgentDirectoryEntry, AgentSummary, MessageReceipt, Registry, SubagentControl, channel,
+    AgentDirectoryEntry, AgentSummary, ChildCheckpoint, MAX_SUBAGENT_CHECKPOINT_BYTES,
+    MessageReceipt, Registry, SubagentCheckpoint, SubagentControl, channel,
 };
 pub use tools::{
     AgentStartReport, AgentTask, AgentToolResult, install_tools, start_agent, start_agent_with,
