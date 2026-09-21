@@ -19,7 +19,8 @@ use super::{
 use futures_util::future::join_all;
 use jsonschema::Validator;
 use nanocodex_agent::{
-    AgentEvents, ChildRuntimeSnapshot, Nanocodex, NanocodexError, Result as AgentResult, TurnResult,
+    AgentEvents, AgentHandle, ChildRuntimeSnapshot, Nanocodex, NanocodexError,
+    Result as AgentResult, TurnResult,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -201,6 +202,7 @@ impl SubagentCheckpoint {
 }
 
 pub struct Registry {
+    session_handles: std::sync::RwLock<HashMap<String, AgentHandle>>,
     spawn_router: std::sync::RwLock<Option<Arc<dyn crate::SpawnRouter>>>,
     id: SubagentRuntimeId,
     state: tokio::sync::Mutex<RegistryState>,
@@ -717,7 +719,7 @@ impl RegistryState {
                     return None;
                 }
                 let can_message = caller != Some(id)
-                    && session.harness.is_some()
+                    && (session.harness.is_some() || session.stored_runtime.is_some())
                     && !matches!(
                         session.status,
                         AgentStatus::Pending | AgentStatus::Closing | AgentStatus::Closed
@@ -781,7 +783,7 @@ impl RegistryState {
         }
         let harness = target.harness.clone().ok_or_else(|| {
             std::io::Error::other(format!(
-                "agent {to} is not resident and cannot receive messages. Call list_agents with include_completed=true and select a recipient with can_message=true, or spawn a replacement agent. Do not retry this recipient while can_message=false."
+                "agent {to} has no saved runtime history and cannot resume from its retained descriptor. Call list_agents with include_completed=true and select a recipient with can_message=true, or spawn a replacement agent. Do not retry this recipient while can_message=false."
             ))
         })?;
         self.next_access = self.next_access.wrapping_add(1);
@@ -1126,6 +1128,7 @@ impl Registry {
             updates,
             revision,
             capacity: Capacity::new(max_concurrency),
+            session_handles: std::sync::RwLock::new(HashMap::new()),
             max_resident: AtomicUsize::new(crate::DEFAULT_MAX_RESIDENT_SUBAGENTS),
             residency_lock: tokio::sync::Mutex::new(()),
             message_lock: tokio::sync::Mutex::new(()),
@@ -1244,6 +1247,22 @@ impl Registry {
 
     /// Captures the latest safe driver boundaries. Active turns restore as interrupted.
     pub async fn checkpoint(&self, root_session_id: &str) -> std::io::Result<SubagentCheckpoint> {
+        self.capture_checkpoint(root_session_id, true).await
+    }
+
+    /// Captures committed driver history without cancelling ongoing child work.
+    pub async fn live_checkpoint(
+        &self,
+        root_session_id: &str,
+    ) -> std::io::Result<SubagentCheckpoint> {
+        self.capture_checkpoint(root_session_id, false).await
+    }
+
+    async fn capture_checkpoint(
+        &self,
+        root_session_id: &str,
+        interrupt: bool,
+    ) -> std::io::Result<SubagentCheckpoint> {
         let _residency_guard = self.residency_lock.lock().await;
         let _message_guard = self.message_lock.lock().await;
         if self.state.lock().await.root_session_id(root_session_id) != root_session_id {
@@ -1253,7 +1272,7 @@ impl Registry {
         }
         // Joining cancellation commits the safe history boundary before we read
         // status/results. This also rejects mailbox work that cannot survive unload.
-        loop {
+        while interrupt {
             let (root, ids, harnesses) = self
                 .state
                 .lock()
@@ -1299,11 +1318,22 @@ impl Registry {
         };
         let mut children = Vec::with_capacity(runtimes.len());
         for (id, harness, stored) in runtimes {
-            let runtime = match harness {
-                Some(harness) => Some(harness.snapshot().await?),
-                None => stored,
+            let (runtime, state) = loop {
+                let before = {
+                    let state = self.state.lock().await;
+                    let session = &state.scopes[root_session_id].sessions[&id];
+                    (session.status.clone(), session.next_turn_token)
+                };
+                let runtime = match &harness {
+                    Some(harness) => Some(harness.snapshot().await?),
+                    None => stored.clone(),
+                };
+                let state = self.state.lock().await;
+                let session = &state.scopes[root_session_id].sessions[&id];
+                if before == (session.status.clone(), session.next_turn_token) {
+                    break (runtime, state);
+                }
             };
-            let state = self.state.lock().await;
             let session = &state.scopes[root_session_id].sessions[&id];
             if matches!(session.status, AgentStatus::Closed | AgentStatus::Closing) {
                 continue;
@@ -1389,6 +1419,7 @@ impl Registry {
                         })?,
                         None => root,
                     };
+                    let needs_assignment = runtime.conversation.is_none();
                     let (agent, events) = parent
                         .restore_child(runtime, host_context.clone())
                         .await
@@ -1410,6 +1441,8 @@ impl Registry {
                         self.capacity.clone(),
                         Arc::downgrade(self),
                         contract.schema,
+                        needs_assignment
+                            .then(|| super::model::agent_prompt(descriptor.id, &descriptor.task)),
                     );
                     gates.push(start);
                     Some((harness, task, event_task))
@@ -1568,6 +1601,7 @@ impl Registry {
             self.capacity.clone(),
             Arc::downgrade(self),
             schema.clone(),
+            None,
         );
         state.insert(
             root_session_id,
@@ -1777,6 +1811,24 @@ impl Registry {
             if harness.close().await.is_err() {
                 self.harness_closed(root_session_id, id).await;
             }
+            // Drain the old generation before another delivery may restore this
+            // ID. Its late runtime_closed callback must never close the new driver.
+            let tasks = {
+                let mut state = self.state.lock().await;
+                let session = state
+                    .scopes
+                    .get_mut(root_session_id)
+                    .and_then(|scope| scope.sessions.get_mut(&id));
+                session.map(|session| (session.harness_task.take(), session.event_task.take()))
+            };
+            if let Some((harness_task, event_task)) = tasks {
+                if let Some(task) = harness_task {
+                    let _ = task.await;
+                }
+                if let Some(task) = event_task {
+                    let _ = task.await;
+                }
+            }
         }
     }
 
@@ -1848,8 +1900,129 @@ impl Registry {
             .directory(session_id, include_completed, include_self)
     }
 
+    /// Keep weak factory capabilities, never a second owner of a child driver.
+    pub(crate) fn register_handle(&self, handle: AgentHandle) {
+        self.session_handles
+            .write()
+            .expect("session handles poisoned")
+            .insert(handle.session_id().to_owned(), handle);
+    }
+
+    // Caller holds residency_lock and message_lock, fencing eviction, close and
+    // competing deliveries until the exact child is rehydrated and admitted.
+    async fn rehydrate(
+        self: &Arc<Self>,
+        session_id: &str,
+        to: AgentId,
+        purpose: MessagePurpose,
+    ) -> std::io::Result<()> {
+        let (root, mut missing) = {
+            let state = self.state.lock().await;
+            let root = state.root_session_id(session_id).to_owned();
+            let scope = state
+                .scopes
+                .get(&root)
+                .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {to}")))?;
+            if scope.topology.agent_for_session(session_id) == Some(to) {
+                return Err(std::io::Error::other("agents cannot message themselves"));
+            }
+            if purpose == MessagePurpose::Delegate {
+                scope.topology.authorize(session_id, to)?;
+            }
+            let mut id = to;
+            let mut missing = Vec::new();
+            loop {
+                let session = scope
+                    .sessions
+                    .get(&id)
+                    .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {id}")))?;
+                if matches!(
+                    session.status,
+                    AgentStatus::Pending | AgentStatus::Closing | AgentStatus::Closed
+                ) || session.harness.is_some()
+                {
+                    break;
+                }
+                let Some(snapshot) = session.stored_runtime.clone() else {
+                    break;
+                };
+                let parent_session = session
+                    .descriptor
+                    .parent
+                    .and_then(|parent| scope.sessions.get(&parent))
+                    .map_or_else(
+                        || root.clone(),
+                        |parent| parent.descriptor.session_id.clone(),
+                    );
+                missing.push((
+                    id,
+                    parent_session,
+                    snapshot,
+                    session.host_context.clone(),
+                    session.output_schema.clone(),
+                    session.descriptor.task.clone(),
+                ));
+                match session.descriptor.parent {
+                    Some(parent) => id = parent,
+                    None => break,
+                }
+            }
+            (root, missing)
+        };
+        while let Some((id, parent_session, snapshot, host_context, schema, task)) = missing.pop() {
+            let parent = self
+                .session_handles
+                .read()
+                .expect("session handles poisoned")
+                .get(&parent_session)
+                .cloned()
+                .ok_or_else(|| {
+                    std::io::Error::other("subagent parent runtime is unavailable for restoration")
+                })?;
+            let contract = OutputContract::compile(&schema)?;
+            let needs_assignment = snapshot.conversation.is_none();
+            let (agent, events) = parent
+                .restore_child(snapshot, host_context)
+                .await
+                .map_err(std::io::Error::other)?;
+            let (start, ready) = oneshot::channel();
+            let event_task = forward_events(
+                root.clone(),
+                id,
+                events,
+                ready,
+                Arc::downgrade(self),
+                self.updates.clone(),
+            );
+            let (harness, task) = harness::spawn(
+                root.clone(),
+                id,
+                agent,
+                self.capacity.clone(),
+                Arc::downgrade(self),
+                contract.schema,
+                needs_assignment.then(|| super::model::agent_prompt(id, &task)),
+            );
+            let mut state = self.state.lock().await;
+            let session = state
+                .scopes
+                .get_mut(&root)
+                .expect("locked scope")
+                .sessions
+                .get_mut(&id)
+                .expect("retained child");
+            session.harness = Some(harness);
+            session.harness_task = Some(task);
+            session.event_task = Some(event_task);
+            session.evicted = false;
+            drop(state);
+            let _ = start.send(());
+        }
+        Ok(())
+    }
+
     pub async fn send_message(
-        &self,
+        self: &Arc<Self>,
         session_id: &str,
         to: AgentId,
         priority: MessagePriority,
@@ -1857,7 +2030,9 @@ impl Registry {
         in_reply_to: Option<MessageId>,
         body: String,
     ) -> std::io::Result<MessageReceipt> {
+        let _residency_guard = self.residency_lock.lock().await;
         let _message_guard = self.message_lock.lock().await;
+        self.rehydrate(session_id, to, purpose).await?;
         let prepared = self.state.lock().await.prepare_message(
             session_id,
             to,
@@ -3598,7 +3773,7 @@ mod tests {
             .find(|entry| entry.agent_id == interrupted)
             .expect("evicted agent should remain in the directory");
         assert_eq!(entry.status, AgentStatus::Interrupted);
-        assert!(!entry.can_message);
+        assert!(entry.can_message);
         assert!(entry.can_manage);
         let (summaries, timed_out) = registry
             .wait("main", &[interrupted], Duration::from_millis(1))
@@ -4610,6 +4785,125 @@ mod tests {
             14
         );
         assert!(registry.restore_checkpoint(&root, empty).await.is_err());
+        root.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn messaging_rehydrates_evicted_ancestors_once_and_keeps_live_work_running() {
+        let (registry, _, _updates) = super::channel(4);
+        let registrations = Arc::new(std::sync::Mutex::new(HashMap::<String, usize>::new()));
+        let factory_registry = registry.clone();
+        let counts = registrations.clone();
+        let called = Arc::new(Notify::new());
+        let service_called = called.clone();
+        let openai = OpenAi::builder("test-key")
+            .service(move || PendingService {
+                called: service_called.clone(),
+            })
+            .build()
+            .unwrap();
+        let (root, _events) = Nanocodex::builder(openai)
+            .tools_factory(move |handle| {
+                *counts
+                    .lock()
+                    .unwrap()
+                    .entry(handle.session_id().to_owned())
+                    .or_default() += 1;
+                factory_registry.register_handle(handle);
+                nanocodex_tools::Tools::builder().without_defaults().build()
+            })
+            .build()
+            .unwrap();
+        let root_id = root.session_id();
+        let reservation = registry.reserve(root_id).await.unwrap();
+        let (parent, events) = root.spawn().await.unwrap();
+        let (child, child_events) = parent.spawn().await.unwrap();
+        child
+            .append_developer_message("retain amber history across eviction")
+            .await
+            .unwrap();
+        let parent_session =
+            insert_runtime_session(&registry, &reservation, None, parent, events).await;
+        mark_reusable(&registry, root_id, reservation.id).await;
+        let child_reservation = registry.reserve(&parent_session).await.unwrap();
+        let child_session = insert_runtime_session(
+            &registry,
+            &child_reservation,
+            Some(reservation.id),
+            child,
+            child_events,
+        )
+        .await;
+        mark_reusable(&registry, root_id, child_reservation.id).await;
+        let sibling = registry.reserve(root_id).await.unwrap();
+        let (agent, events) = root.spawn().await.unwrap();
+        let sibling_session =
+            insert_runtime_session(&registry, &sibling, None, agent, events).await;
+        mark_reusable(&registry, root_id, sibling.id).await;
+        registry.set_max_resident(1);
+        registry.enforce_resident_limit(root_id).await;
+        {
+            let state = registry.state.lock().await;
+            assert!(
+                state.scopes[root_id].sessions[&reservation.id]
+                    .harness
+                    .is_none()
+            );
+            assert!(
+                state.scopes[root_id].sessions[&child_reservation.id]
+                    .harness
+                    .is_none()
+            );
+        }
+        assert!(
+            registry
+                .send_message(
+                    &sibling_session,
+                    child_reservation.id,
+                    MessagePriority::Deferred,
+                    MessagePurpose::Delegate,
+                    None,
+                    "unauthorized".into()
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(registrations.lock().unwrap()[&child_session], 1);
+        let send = || {
+            registry.send_message(
+                root_id,
+                child_reservation.id,
+                MessagePriority::Deferred,
+                MessagePurpose::Coordinate,
+                None,
+                "continue with retained history".into(),
+            )
+        };
+        let (first, second) = tokio::join!(send(), send());
+        first.unwrap();
+        second.unwrap();
+        assert_eq!(registrations.lock().unwrap()[&parent_session], 2);
+        assert_eq!(registrations.lock().unwrap()[&child_session], 2);
+        timeout(Duration::from_secs(2), called.notified())
+            .await
+            .unwrap();
+        let checkpoint = registry.live_checkpoint(root_id).await.unwrap();
+        assert!(
+            serde_json::to_string(&checkpoint)
+                .unwrap()
+                .contains("retain amber history")
+        );
+        assert!(
+            registry.state.lock().await.scopes[root_id].sessions[&child_reservation.id].active,
+            "live persistence must not interrupt running children or discard their mailbox"
+        );
+        registry.close(root_id, reservation.id).await.unwrap();
+        assert!(
+            send().await.is_err(),
+            "explicitly closed children cannot be revived"
+        );
+        assert_eq!(registrations.lock().unwrap()[&child_session], 2);
+        registry.close_all(root_id).await.unwrap();
         root.shutdown().await.unwrap();
     }
 

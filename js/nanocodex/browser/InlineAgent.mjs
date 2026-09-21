@@ -189,9 +189,24 @@ export async function create(options = {}) {
             const complete = validateRestoredChildBindings(checkpoint, raw.sessionId, restoredSubagents, subagentSessions);
             raw.validateSubagentCheckpoint(checkpoint);
             if (!complete) {
-              // Older owners retained snapshots while admitting new children.
-              // Keep their durable identities, but never replay an obsolete tree.
-              reusableCheckpoint = undefined;
+              // Preserve valid saved children. Only bindings without a runtime
+              // boundary are archival; one missing child must not disable siblings.
+              const merged = JSON.parse(checkpoint);
+              const saved = new Set(merged.children.map((child) => child.descriptor.session_id));
+              for (const binding of restoredSubagents) {
+                if (saved.has(binding.sessionId)) continue;
+                const id = Number(binding.agentId);
+                merged.children.push({
+                  descriptor: { id, session_id: binding.sessionId, role: binding.role,
+                    task: binding.task, parent: binding.parentAgentId == null ? null : Number(binding.parentAgentId) },
+                  runtime: null, output_schema: true, next_turn_token: 0,
+                  status: { state: "interrupted" }, last_output: null,
+                  host_context: subagentSessions?.hostContextRef?.(binding.sessionId) ?? null,
+                });
+                merged.next_agent_id = Math.max(merged.next_agent_id, id + 1);
+              }
+              reusableCheckpoint = JSON.stringify(merged);
+              raw.validateSubagentCheckpoint(reusableCheckpoint);
             }
           }
           if (restoredSubagents.length > 0 || checkpoint !== undefined) {

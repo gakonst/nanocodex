@@ -86,6 +86,7 @@ struct Harness {
     pending_deferred: VecDeque<AgentMessage>,
     pending_urgent: VecDeque<AgentMessage>,
     output_schema: String,
+    restored_assignment: Option<String>,
     capacity: Capacity,
     capacity_revision: watch::Receiver<u64>,
     registry: Weak<Registry>,
@@ -192,6 +193,7 @@ pub(super) fn spawn(
     capacity: Capacity,
     registry: Weak<Registry>,
     output_schema: String,
+    restored_assignment: Option<String>,
 ) -> (HarnessHandle, Task<()>) {
     let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
     let (deferred, deferred_receiver) = mpsc::channel(DEFERRED_CAPACITY);
@@ -214,6 +216,7 @@ pub(super) fn spawn(
             pending_deferred: VecDeque::new(),
             pending_urgent: VecDeque::new(),
             output_schema,
+            restored_assignment,
             capacity,
             capacity_revision,
             registry,
@@ -566,6 +569,13 @@ impl Harness {
                 self.id
             )));
         };
+        // A first turn interrupted before a committed model boundary still
+        // needs its assignment. Include it in the next admitted prompt, without
+        // writing a standalone checkpoint during durable reconstruction.
+        let prompt = match &self.restored_assignment {
+            Some(assignment) => format!("{assignment}\n\n{prompt}"),
+            None => prompt,
+        };
         let prompt = format!(
             "{prompt}\n\n{}",
             completion_instructions(&self.output_schema, turn_token)
@@ -580,6 +590,7 @@ impl Harness {
                 return Err(std::io::Error::other(error));
             }
         };
+        self.restored_assignment = None;
         let control = turn.control();
         let result = platform::spawn(turn);
         self.active = Some(ActiveTurn {

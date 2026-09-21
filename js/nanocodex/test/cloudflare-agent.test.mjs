@@ -641,6 +641,9 @@ test("Cloudflare Agent reconstructs interrupted subagents without stale-owner cl
       })),
     [{ type: "bind", sessionId: descriptor.sessionId, hostContextRef }],
   );
+  // This case intentionally exercises pre-checkpoint descriptor-only recovery.
+  // The synthetic provenance attachment above does not alter the Rust fixture.
+  storage.subagentCheckpoints.clear();
   const predecessorFence = storage.owners.get(storage.stateId).fence;
   storage.onSubagentLoad = () => assert.ok(
     BigInt(storage.owners.get(storage.stateId).fence) > BigInt(predecessorFence),
@@ -1533,6 +1536,23 @@ test("completed object children resume history and pinned routing after owner sh
     assert.equal(classifierCalls, 1);
     assert.equal(acceptedReceipts, 1);
 
+    // No orderly shutdown: a replacement must recover a completed child's live
+    // boundary, then survive a stale predecessor trying to unload afterwards.
+    for (let attempt = 0; attempt < 200; attempt++) {
+      const encoded = [...storage.subagentCheckpoints.values()].join("");
+      if (encoded && JSON.parse(encoded).children[0]?.status.state === "completed") break;
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    const live = JSON.parse([...storage.subagentCheckpoints.values()].join(""));
+    assert.equal(live.children[0].status.state, "completed", "completion is durable before shutdown");
+    assert.ok(JSON.stringify(live).includes(marker), "live checkpoint retains child history");
+    const predecessor = agent;
+    agent = await create(module, durableOwner(storage), options);
+    await predecessor.session.shutdown();
+    const liveRestored = await Subagents.list(agent, { includeCompleted: true });
+    assert.equal(liveRestored.agents[0].can_message, true, "abrupt takeover preserves the same reusable child");
+    assert.equal(classifierCalls, 1);
+
     await agent.session.shutdown();
     assert.equal(storage.subagents.get(childSessionId)?.descriptorJson, retainedDescriptor);
     assert.equal(routes.size, 1, "owner shutdown retains the child's provider pin");
@@ -1615,7 +1635,10 @@ test("completed object children resume history and pinned routing after owner sh
     await Subagents.close(agent, child.agent_id);
     assert.equal(storage.subagents.size, 0, "explicit close releases the child descriptor");
     assert.equal(routes.size, 0, "explicit close releases the child route");
-    assert.equal(storage.subagentCheckpoints.size, 0, "explicit close invalidates the child's retained checkpoint");
+    if (storage.subagentCheckpoints.size > 0) {
+      assert.deepEqual(JSON.parse([...storage.subagentCheckpoints.values()].join("")).children, [],
+        "explicit close cannot leave a reusable child checkpoint");
+    }
     assert.deepEqual(lifecycleEvents.filter(({ type }) => type === "release").map(({ sessionId }) => sessionId), [childSessionId]);
     await agent.session.shutdown();
     if (storage.subagentCheckpoints.size > 0) {
@@ -1826,6 +1849,102 @@ test("closing one child before owner shutdown preserves a resumable sibling", { 
 });
 
 
+test("Cloudflare release atomically preserves sibling history before the next live checkpoint", { timeout: 30_000 }, async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const storage = new MemoryStorage();
+  const marker = "SIBLING_HISTORY_SURVIVES_AT_RELEASE_COMMIT";
+  let calls = 0;
+  const ai = { async run(_model, input) {
+    calls++;
+    assert.ok(calls <= 6, "restoring the release boundary never replays inference");
+    const token = Number([...JSON.stringify(input.messages).matchAll(/turn_token: (\d+)/g)].at(-1)[1]);
+    if (token === 2) assert.ok(JSON.stringify(input.messages).includes(marker));
+    if (input.messages.at(-1)?.role === "tool") {
+      return { choices: [{ finish_reason: "stop", message: { content: marker } }] };
+    }
+    const submit = input.tools.find((tool) => tool.function.description.startsWith("submit_result\n"));
+    return { choices: [{ finish_reason: "tool_calls", message: { content: null, tool_calls: [{
+      id: `release-submit-${calls}`, type: "function", function: {
+        name: submit.function.name, arguments: JSON.stringify({ turn_token: token, output: { turn: token } }),
+      },
+    }] } }] };
+  } };
+  const options = {
+    [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: {
+      model: "@cf/zai-org/glm-5.3", thinking: "high", reasoning_mode: "standard", fast_mode: false,
+    },
+    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: {
+      workersAi: { ai, model: "@cf/zai-org/glm-5.3", thinking: "high" },
+      toolMode: "direct", subagentsEnabled: true,
+    },
+  };
+  let agent = await create(module, durableOwner(storage), options);
+  let replacement;
+  try {
+    const children = [];
+    for (const role of ["surviving-sibling", "closing-parent"]) {
+      const child = await Subagents.spawn(agent, {
+        role, task: "Return the current turn token.",
+        outputSchema: { type: "object", properties: { turn: { type: "integer" } }, required: ["turn"] },
+      });
+      const result = await Subagents.wait(agent, { agentIds: [child.agent_id], timeoutMs: 5_000 });
+      assert.equal(result.agents[0].status.state, "completed");
+      children.push(child);
+    }
+    const [sibling, parent] = children;
+    await agent.session.shutdown();
+    const saved = JSON.parse([...storage.subagentCheckpoints.values()].join(""));
+    const parentSession = saved.children.find((child) => child.descriptor.id === parent.agent_id).descriptor.session_id;
+    // Include a retained archival descendant to exercise subtree topology pruning.
+    const descendant = { agentId: String(saved.next_agent_id++), parentAgentId: String(parent.agent_id),
+      sessionId: "archival-descendant-at-release", role: "descendant", task: "Retained archival work" };
+    storage.subagents.set(descendant.sessionId, {
+      agentId: descendant.agentId, descriptorJson: JSON.stringify(descendant), hostContextRef: null,
+    });
+    saved.children.push({
+      descriptor: { id: Number(descendant.agentId), parent: parent.agent_id, session_id: descendant.sessionId,
+        role: descendant.role, task: descendant.task },
+      runtime: null, output_schema: true, next_turn_token: 0, status: { state: "interrupted" },
+      last_output: null, host_context: null,
+    });
+    storage.subagentCheckpoints = new Map([[0, JSON.stringify(saved)]]);
+    agent = await create(module, durableOwner(storage), options);
+    let releaseBoundary;
+    storage.transactionSync = (callback) => {
+      const hadParent = storage.subagents.has(parentSession);
+      const result = callback();
+      if (hadParent && !storage.subagents.has(parentSession) && releaseBoundary === undefined) {
+        // Capture synchronously at release commit, before WASM can await/capture
+        // a replacement live checkpoint. Later predecessor writes cannot alter it.
+        releaseBoundary = new MemoryStorage();
+        for (const key of Object.keys(releaseBoundary)) {
+          if (key !== "sql") releaseBoundary[key] = structuredClone(storage[key]);
+        }
+      }
+      return result;
+    };
+    await Subagents.close(agent, parent.agent_id);
+    assert.ok(releaseBoundary, "captured the exact release transaction boundary");
+    const pruned = JSON.parse([...releaseBoundary.subagentCheckpoints.values()].join(""));
+    assert.equal(pruned.next_agent_id, saved.next_agent_id, "closed IDs cannot be allocated again");
+    assert.deepEqual(pruned.children.map((child) => child.descriptor.id), [sibling.agent_id]);
+    assert.equal(releaseBoundary.subagents.size, 1, "parent and descendants disappear atomically");
+    assert.deepEqual(pruned.children[0].runtime, saved.children[0].runtime, "sibling history is preserved exactly");
+    replacement = await create(module, durableOwner(releaseBoundary), options);
+    const listed = await Subagents.list(replacement, { includeCompleted: true });
+    assert.deepEqual(listed.agents.map((child) => child.agent_id), [sibling.agent_id]);
+    assert.equal(listed.agents[0].can_message, true);
+    assert.equal(calls, 4);
+    await Subagents.send(replacement, { agentId: sibling.agent_id, message: "Return the next token." });
+    const resumed = await Subagents.wait(replacement, { agentIds: [sibling.agent_id], timeoutMs: 5_000 });
+    assert.deepEqual(resumed.agents[0].status, { state: "completed", output: { turn: 2 } });
+  } finally {
+    await agent.session.shutdown();
+    await replacement?.session.shutdown();
+  }
+});
+
+
 test("Cloudflare SDK sibling shutdown cannot overwrite the root checkpoint", async () => {
   const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
   const storage = new MemoryStorage();
@@ -1853,7 +1972,7 @@ test("Cloudflare SDK sibling shutdown cannot overwrite the root checkpoint", asy
 });
 
 
-test("Cloudflare consumes a restored checkpoint before exposing a mutable owner", async () => {
+test("Cloudflare retains a restored checkpoint across abrupt owner loss", async () => {
   const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
   const storage = new MemoryStorage();
   const first = await create(module, durableOwner(storage));
@@ -1861,8 +1980,8 @@ test("Cloudflare consumes a restored checkpoint before exposing a mutable owner"
   assert.ok(storage.subagentCheckpoints.size > 0);
   const second = await create(module, durableOwner(storage));
   try {
-    assert.equal(storage.subagentCheckpoints.size, 0,
-      "a restored snapshot must not survive subsequent child mutations or abrupt eviction");
+    assert.ok(storage.subagentCheckpoints.size > 0,
+      "the last safe boundary survives until a newer live checkpoint replaces it");
   } finally {
     await second.session.shutdown();
   }
@@ -1905,7 +2024,7 @@ test("Cloudflare recovers a legacy checkpoint older than the retained child bind
   let replacement = await create(module, durableOwner(storage));
   try {
     assert.equal(replacement.sessionId, first.sessionId);
-    assert.equal(storage.subagentCheckpoints.size, 0);
+    assert.ok(storage.subagentCheckpoints.size > 0);
     let listed = await Subagents.list(replacement, { includeCompleted: true });
     assert.deepEqual(listed.agents.map(({ agent_id }) => agent_id).sort(), [1, 2]);
     assert.equal(listed.agents[0].status.state, "interrupted");
@@ -1920,17 +2039,80 @@ test("Cloudflare recovers a legacy checkpoint older than the retained child bind
 });
 
 
-test("Cloudflare checkpoint consumption failure preserves the saved boundary", async () => {
+test("Cloudflare incomplete checkpoints preserve reusable siblings and exact history", { timeout: 30_000 }, async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const storage = new MemoryStorage();
+  const marker = "REUSABLE_HISTORY_WITH_DESCRIPTOR_ONLY_SIBLING";
+  let calls = 0;
+  const ai = { async run(_model, input) {
+    calls++;
+    assert.ok(calls <= 4, "restoration must not replay inference");
+    const token = Number([...JSON.stringify(input.messages).matchAll(/turn_token: (\d+)/g)].at(-1)[1]);
+    if (token === 2) assert.ok(JSON.stringify(input.messages).includes(marker), "continuation retains prior history");
+    if (input.messages.at(-1)?.role === "tool") {
+      return { choices: [{ finish_reason: "stop", message: { content: marker } }] };
+    }
+    const submit = input.tools.find((tool) => tool.function.description.startsWith("submit_result\n"));
+    return { choices: [{ finish_reason: "tool_calls", message: { content: null, tool_calls: [{
+      id: `incomplete-submit-${calls}`, type: "function", function: {
+        name: submit.function.name, arguments: JSON.stringify({ turn_token: token, output: { turn: token } }),
+      },
+    }] } }] };
+  } };
+  const options = {
+    [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: {
+      model: "@cf/zai-org/glm-5.3", thinking: "high", reasoning_mode: "standard", fast_mode: false,
+    },
+    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: {
+      workersAi: { ai, model: "@cf/zai-org/glm-5.3", thinking: "high" },
+      toolMode: "direct", subagentsEnabled: true,
+    },
+  };
+  let agent = await create(module, durableOwner(storage), options);
+  try {
+    const reusable = await Subagents.spawn(agent, {
+      role: "reusable-sibling", task: "Return the current turn token.",
+      outputSchema: { type: "object", properties: { turn: { type: "integer" } }, required: ["turn"] },
+    });
+    const completed = await Subagents.wait(agent, { agentIds: [reusable.agent_id], timeoutMs: 5_000 });
+    assert.deepEqual(completed.agents[0].status, { state: "completed", output: { turn: 1 } });
+    await agent.session.shutdown();
+    const original = JSON.parse([...storage.subagentCheckpoints.values()].join(""));
+    assert.ok(JSON.stringify(original.children[0].runtime).includes(marker));
+    const archive = { agentId: String(original.next_agent_id), parentAgentId: null,
+      sessionId: "extra-descriptor-only-sibling", role: "archival-sibling", task: "No committed runtime" };
+    storage.subagents.set(archive.sessionId, {
+      agentId: archive.agentId, descriptorJson: JSON.stringify(archive), hostContextRef: null,
+    });
+    agent = await create(module, durableOwner(storage), options);
+    const listed = await Subagents.list(agent, { includeCompleted: true });
+    assert.equal(listed.agents.length, 2);
+    assert.equal(listed.agents.find((child) => child.agent_id === reusable.agent_id).can_message, true);
+    assert.equal(listed.agents.find((child) => child.agent_id === Number(archive.agentId)).can_message, false);
+    assert.equal(calls, 2, "incomplete checkpoint recovery never replays inference");
+    await agent.session.shutdown();
+    const merged = JSON.parse([...storage.subagentCheckpoints.values()].join(""));
+    const saved = merged.children.find((child) => child.descriptor.id === reusable.agent_id);
+    assert.deepEqual(saved, original.children[0], "merging an archival sibling must not downgrade the reusable checkpoint");
+    assert.equal(merged.children.find((child) => child.descriptor.id === Number(archive.agentId)).runtime, null);
+    assert.ok(merged.next_agent_id > Number(archive.agentId));
+    agent = await create(module, durableOwner(storage), options);
+    await Subagents.send(agent, { agentId: reusable.agent_id, message: "Return the next token." });
+    const resumed = await Subagents.wait(agent, { agentIds: [reusable.agent_id], timeoutMs: 5_000 });
+    assert.deepEqual(resumed.agents[0].status, { state: "completed", output: { turn: 2 } });
+  } finally { await agent.session.shutdown(); }
+});
+
+
+test("Cloudflare startup does not delete the saved child boundary", async () => {
   const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
   const storage = new MemoryStorage();
   const first = await create(module, durableOwner(storage));
   await first.session.shutdown();
   const retained = new Map(storage.subagentCheckpoints);
   storage.failCheckpointDeletion = true;
-  await assert.rejects(create(module, durableOwner(storage)), /checkpoint deletion failed/);
+  const replacement = await create(module, durableOwner(storage));
   assert.deepEqual(storage.subagentCheckpoints, retained);
   storage.failCheckpointDeletion = false;
-  const replacement = await create(module, durableOwner(storage));
-  assert.equal(storage.subagentCheckpoints.size, 0);
   await replacement.session.shutdown();
 });
