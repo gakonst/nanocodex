@@ -10,6 +10,7 @@ export type Surface =
   | "code"
   | "commits"
   | "requests"
+  | "router"
   | "evals"
   | "connect";
 
@@ -52,6 +53,7 @@ export const demoNavigation = [
 
 export const primaryNavigation = [
   { surface: "docs", label: "Docs", description: "Reference" },
+  { surface: "router", label: "Router", description: "Routing & latency" },
   { surface: "evals", label: "Evals", description: "Benchmarks" },
 ] as const satisfies ReadonlyArray<ProductNavigationItem>;
 
@@ -74,6 +76,7 @@ const surfacePaths: Record<Surface, string> = {
   commits: "/commits",
   requests: "/requests",
   evals: "/evals",
+  router: "/router",
   connect: "/connect",
 };
 

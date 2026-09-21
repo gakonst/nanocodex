@@ -1,3 +1,5 @@
+import { routerDashboard } from "./router-dashboard";
+import { routeObservation } from "./router-telemetry";
 import { routeInferenceApi, type InferenceApiEnv } from "./inference-api";
 export { InferenceKey, InferenceAccount } from "./inference-keys";
 export { InferenceSession } from "./inference-session";
@@ -1685,6 +1687,10 @@ async function managedFetchRoute(
         "https://account-tools.internal/tool-host",
         new Request(request, { headers }),
       );
+    }
+    if (url.pathname === "/v1/router") {
+      const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
+      return routerDashboard(request, env, principal ?? undefined);
     }
     if (url.pathname === "/v1/account/admin") {
       const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
@@ -10343,6 +10349,10 @@ export class DurableAgentSession extends DurableComputerSession {
     ]));
     const probes = this.env.NANOCODEX_PROVIDER_PROBES === "true" ? shared.filter(sample => sample.source === "probe") : [];
     return { ...gatewayAvailability(this.env), ...origin,
+      observeRoute: (route: ThreadRoute) => {
+        const observation = routeObservation(route, origin.clientIngressColo);
+        if (coordinator && observation) this.ctx.waitUntil(coordinator.getByName(PROBE_OWNER).observeRoute(observation).catch(() => false));
+      },
       provider_performance: [...liveCohorts.values(), ...probes] };
   }
 

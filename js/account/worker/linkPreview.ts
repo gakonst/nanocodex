@@ -139,7 +139,7 @@ export function documentStatusForPath(pathname: string): 200 | 404 | null {
     || pathname === "/world" || pathname === "/artifact-runtime"
     || pathname === "/demos/chief-of-staff"
     || pathname === "/changelog" || pathname === "/code" || pathname === "/commits"
-    || pathname === "/requests" || pathname === "/connect"
+    || pathname === "/requests" || pathname === "/router" || pathname === "/connect"
     || pathname === "/connect/device" || pathname === "/connect/vault") return 200;
   if (Object.hasOwn(docsPreview, pathname) || isEvalDocumentPath(pathname)) return 200;
   if (pathname.startsWith("/docs/") || pathname.startsWith("/evals/")) return 404;
