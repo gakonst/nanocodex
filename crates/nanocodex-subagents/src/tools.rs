@@ -7,7 +7,10 @@ use super::{
         AgentDescriptor, AgentId, AgentStatus, AgentUpdate, MessageId, MessagePriority,
         MessagePurpose, agent_prompt,
     },
-    runtime::{AgentDirectoryEntry, AgentSummary, OutputContract, Registry, forward_events},
+    runtime::{
+        AgentDirectoryEntry, AgentSummary, OutputContract, Registry, SubmissionOutcome,
+        forward_events,
+    },
 };
 use async_trait::async_trait;
 use futures_util::future::join_all;
@@ -427,7 +430,6 @@ fn spawn_agent_parameters() -> Value {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct SubmitResultArgs {
-    turn_token: u64,
     output: Value,
 }
 
@@ -440,43 +442,43 @@ impl Tool for SubmitResult {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(
             SUBMIT_RESULT_TOOL,
-            "Submits the current child subagent turn's final JSON output. This tool is unavailable to the root agent; root agents return final output as assistant text. A child calls it exactly once with the turn_token and a value matching its task output schema. Invalid values can be corrected and retried.",
+            "Submits the current child subagent turn's final JSON output. This tool is unavailable to the root agent; root agents return final output as assistant text. Supply only output matching the task schema. Finish after acceptance. If superseded, incorporate pending instructions and submit the updated result. Invalid values can be corrected and retried.",
             json!({
                 "type": "object",
                 "properties": {
                     "output": {
                         "description": "The final JSON value required by this agent's output schema."
-                    },
-                    "turn_token": {
-                        "type": "integer",
-                        "minimum": 1,
-                        "description": "The current turn token stated in the task prompt."
                     }
                 },
-                "required": ["turn_token", "output"],
+                "required": ["output"],
                 "additionalProperties": false
             }),
         )
         .with_output_schema(json!({
             "type": "object",
             "properties": {
-                "accepted": { "type": "boolean", "const": true }
+                "accepted": { "type": "boolean" },
+                "status": { "type": "string", "enum": ["accepted", "superseded"] }
             },
-            "required": ["accepted"],
+            "required": ["accepted", "status"],
             "additionalProperties": false
         }))
     }
 
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let SubmitResultArgs { turn_token, output } = input.decode_json()?;
+        let SubmitResultArgs { output } = input.decode_json()?;
         let registry = self
             .registry
             .upgrade()
             .ok_or_else(|| std::io::Error::other("subagent runtime is closed"))?;
-        registry
-            .submit_result(context.session_id(), turn_token, output)
+        let outcome = registry
+            .submit_result(context.session_id(), context.instruction_revision(), output)
             .await?;
-        Ok(ToolOutput::from_json(json!({ "accepted": true }), true))
+        let output = match outcome {
+            SubmissionOutcome::Accepted => json!({ "accepted": true, "status": "accepted" }),
+            SubmissionOutcome::Superseded => json!({ "accepted": false, "status": "superseded" }),
+        };
+        Ok(ToolOutput::from_json(output, true))
     }
 }
 
@@ -935,16 +937,21 @@ mod tests {
     }
 
     #[test]
-    fn submit_result_requires_the_turn_token_and_one_output_value() {
+    fn submit_result_requires_only_output_and_no_model_chosen_revision() {
         let definition = SubmitResult {
             registry: Weak::<Registry>::new(),
         }
         .definition();
         let parameters = definition.parameters().unwrap().as_value();
 
-        assert_eq!(parameters["required"], json!(["turn_token", "output"]));
+        assert_eq!(parameters["required"], json!(["output"]));
         assert_eq!(parameters["additionalProperties"], json!(false));
-        assert_eq!(parameters["properties"].as_object().unwrap().len(), 2);
+        assert_eq!(parameters["properties"].as_object().unwrap().len(), 1);
+        for key in ["turn_token", "instruction_revision"] {
+            let mut arguments = json!({ "output": {"report": "done"} });
+            arguments[key] = json!(1);
+            assert!(serde_json::from_value::<super::SubmitResultArgs>(arguments).is_err());
+        }
         assert!(
             definition
                 .description()

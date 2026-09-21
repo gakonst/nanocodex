@@ -1671,6 +1671,31 @@ mod tests {
     }
 
     #[test]
+    fn subagent_submission_labels_follow_the_result() {
+        for (result, label) in [
+            (
+                Some(json!({"accepted": true, "status": "accepted"})),
+                "Accepted",
+            ),
+            (
+                Some(json!({"accepted": false, "status": "superseded"})),
+                "Superseded",
+            ),
+            (Some(json!({"accepted": true})), "Accepted"),
+            (None, "Submit"),
+        ] {
+            let mut submission = tool("submit_result", json!({"output": {"report": "done"}}));
+            submission.result = result;
+            let rendered = render(&submission, 140, &Theme::default())[0].to_string();
+            assert!(
+                rendered.contains(&format!("{label}  subagent result")),
+                "{rendered}"
+            );
+            assert!(!rendered.contains("Submitted"));
+        }
+    }
+
+    #[test]
     fn subagent_summaries_keep_schema_and_full_task_out_of_collapsed_view() {
         let mut spawn = tool(
             "spawn_agent",

@@ -41,8 +41,8 @@ pub(super) struct ChildSession {
     pub(super) status: AgentStatus,
     pub(super) active: bool,
     pub(super) output_validator: Validator,
-    pub(super) next_turn_token: u64,
-    pub(super) active_turn_token: Option<u64>,
+    pub(super) next_instruction_revision: u64,
+    pub(super) active_instruction_revision: Option<u64>,
     pub(super) steering: bool,
     pub(super) submitted_output: Option<Value>,
     pub(super) last_output: Option<Value>,
@@ -65,14 +65,23 @@ impl OutputContract {
     }
 }
 
-pub(super) fn completion_instructions(schema: &str, turn_token: u64) -> String {
+pub(super) fn completion_instructions(schema: &str) -> String {
     format!(
-        "Your contractual result is not prose. Before finishing, call `submit_result` exactly \
-         once with `{{ turn_token: {turn_token}, output: ... }}` and a JSON value matching the \
-         output schema below. Use the callable `submit_result` entry in your actual tool catalog. Do not assume \
-         a Code Mode `tools.submit_result` binding exists unless that catalog exposes it. If validation rejects the value, correct it and retry. A turn \
-         that ends without an accepted result fails.\n\nOutput schema:\n{schema}"
+        "Before finishing, call `submit_result` with `{{ output: ... }}` and a JSON value \
+         matching the output schema below. Use the callable entry in your actual tool catalog; \
+         do not assume a Code Mode binding exists unless that catalog exposes it. \
+         If validation rejects the value, correct it and retry. If the result is superseded, \
+         incorporate the pending instructions and submit an updated result without repeating \
+         completed task side effects. Finish after acceptance. A turn that ends without an \
+         accepted result fails.\n\nOutput schema:\n{schema}"
     )
+}
+
+/// Supersession is normal coordination, not a failed child or tool execution.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum SubmissionOutcome {
+    Accepted,
+    Superseded,
 }
 
 pub struct Registry {
@@ -203,8 +212,8 @@ pub(super) struct DelegationChange {
 
 pub(super) struct TurnSteer {
     id: AgentId,
-    previous_token: u64,
-    token: u64,
+    previous_revision: u64,
+    revision: u64,
 }
 
 struct ResidentEviction {
@@ -213,8 +222,8 @@ struct ResidentEviction {
 }
 
 impl TurnSteer {
-    pub(super) const fn token(&self) -> u64 {
-        self.token
+    pub(super) const fn revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -227,9 +236,9 @@ impl RegistryState {
     fn submit_result(
         &mut self,
         session_id: &str,
-        turn_token: u64,
+        instruction_revision: Option<u64>,
         output: Value,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<SubmissionOutcome> {
         let root_session_id = self.root_session_id(session_id).to_owned();
         let scope = self.scopes.get_mut(&root_session_id).ok_or_else(|| {
             CompletionError::new(
@@ -263,22 +272,19 @@ impl RegistryState {
             )
             .into());
         }
-        if session.steering {
+        let Some(instruction_revision) = instruction_revision else {
             return Err(CompletionError::new(
-                CompletionErrorCode::SteeringInProgress,
-                true,
-                "the subagent turn is being steered",
-                "Wait for the steering message, incorporate it, and submit with its turn_token.",
+                CompletionErrorCode::MissingInstructionRevision,
+                false,
+                "submit_result requires runtime-owned instruction context",
+                "The execution host must preserve the originating model response context.",
             )
             .into());
-        }
-        if session.active_turn_token != Some(turn_token) {
-            return Err(CompletionError::new(
-                CompletionErrorCode::StaleTurnToken,
-                true,
-                "submit_result used a stale or unknown turn_token",
-                "Read and incorporate the latest steering instructions before resubmitting; do not only replace the token.",
-            ).with_token(session.active_turn_token).into());
+        };
+        // Compare the immutable origin of this call, never the live revision at
+        // dispatch. Steering admission and acceptance share this registry lock.
+        if session.steering || session.active_instruction_revision != Some(instruction_revision) {
+            return Ok(SubmissionOutcome::Superseded);
         }
         if session.submitted_output.is_some() {
             return Err(CompletionError::new(
@@ -307,10 +313,10 @@ impl RegistryState {
                 true,
                 "submitted output does not match the required schema",
                 "Correct output using the required schema and retry submit_result within this turn; do not repeat task side effects.",
-            ).with_token(session.active_turn_token).with_details(errors).into());
+            ).with_details(errors).into());
         }
         session.submitted_output = Some(output);
-        Ok(())
+        Ok(SubmissionOutcome::Accepted)
     }
 
     fn begin_turn_steer(&mut self, root_session_id: &str, id: AgentId) -> Option<TurnSteer> {
@@ -322,15 +328,15 @@ impl RegistryState {
         if !session.active || session.steering || session.submitted_output.is_some() {
             return None;
         }
-        let previous_token = session.active_turn_token?;
-        let token = session.next_turn_token.checked_add(1)?;
-        session.next_turn_token = token;
-        session.active_turn_token = Some(token);
+        let previous_revision = session.active_instruction_revision?;
+        let revision = session.next_instruction_revision.checked_add(1)?;
+        session.next_instruction_revision = revision;
+        session.active_instruction_revision = Some(revision);
         session.steering = true;
         Some(TurnSteer {
             id,
-            previous_token,
-            token,
+            previous_revision,
+            revision,
         })
     }
 
@@ -342,11 +348,11 @@ impl RegistryState {
         else {
             return;
         };
-        if session.active_turn_token != Some(steer.token) {
+        if session.active_instruction_revision != Some(steer.revision) {
             return;
         }
         if !committed {
-            session.active_turn_token = Some(steer.previous_token);
+            session.active_instruction_revision = Some(steer.previous_revision);
         }
         session.steering = false;
     }
@@ -1159,13 +1165,13 @@ impl Registry {
     pub(super) async fn submit_result(
         &self,
         session_id: &str,
-        turn_token: u64,
+        instruction_revision: Option<u64>,
         output: Value,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<SubmissionOutcome> {
         self.state
             .lock()
             .await
-            .submit_result(session_id, turn_token, output)
+            .submit_result(session_id, instruction_revision, output)
     }
 
     pub(super) async fn begin_turn_steer(
@@ -1224,8 +1230,8 @@ impl Registry {
                 status: AgentStatus::Pending,
                 active: false,
                 output_validator: validator,
-                next_turn_token: 0,
-                active_turn_token: None,
+                next_instruction_revision: 0,
+                active_instruction_revision: None,
                 steering: false,
                 submitted_output: None,
                 last_output: None,
@@ -1258,7 +1264,7 @@ impl Registry {
         root_session_id: &str,
         id: AgentId,
     ) -> Option<u64> {
-        let token = {
+        let revision = {
             let mut state = self.state.lock().await;
             let last_used = state.next_access();
             let session = state
@@ -1268,18 +1274,18 @@ impl Registry {
             if !session.status.can_start_turn() || session.active {
                 None
             } else {
-                let token = session.next_turn_token.checked_add(1)?;
-                session.next_turn_token = token;
-                session.active_turn_token = Some(token);
+                let revision = session.next_instruction_revision.checked_add(1)?;
+                session.next_instruction_revision = revision;
+                session.active_instruction_revision = Some(revision);
                 session.active = true;
                 session.steering = false;
                 session.submitted_output = None;
                 session.last_used = last_used;
                 session.status = AgentStatus::Running;
-                Some(token)
+                Some(revision)
             }
         };
-        if token.is_some() {
+        if revision.is_some() {
             self.send(
                 root_session_id,
                 AgentUpdate::Status {
@@ -1289,7 +1295,7 @@ impl Registry {
             );
             self.changed();
         }
-        token
+        revision
     }
 
     pub(super) async fn harness_turn_start_failed(
@@ -1308,7 +1314,7 @@ impl Registry {
                 return;
             };
             session.active = false;
-            session.active_turn_token = None;
+            session.active_instruction_revision = None;
             session.steering = false;
             session.submitted_output = None;
             if !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed) {
@@ -1339,7 +1345,7 @@ impl Registry {
                 return;
             }
             session.active = false;
-            session.active_turn_token = None;
+            session.active_instruction_revision = None;
             session.steering = false;
             let submitted_output = session.submitted_output.take();
             // Acceptance belongs to this turn even if cancellation/close wins settlement.
@@ -1407,7 +1413,7 @@ impl Registry {
             } else {
                 session.harness = None;
                 session.active = false;
-                session.active_turn_token = None;
+                session.active_instruction_revision = None;
                 session.steering = false;
                 session.submitted_output = None;
                 if session.evicted && !matches!(session.status, AgentStatus::Closing) {
@@ -1898,8 +1904,8 @@ fn restored_tombstone(descriptor: AgentDescriptor, host_context: Option<Arc<str>
         active: false,
         output_validator: jsonschema::validator_for(&Value::Bool(false))
             .expect("the false JSON Schema is valid"),
-        next_turn_token: 0,
-        active_turn_token: None,
+        next_instruction_revision: 0,
+        active_instruction_revision: None,
         steering: false,
         submitted_output: None,
         last_output: None,
@@ -2099,12 +2105,12 @@ mod tests {
         });
 
         let contract = OutputContract::compile(&schema).unwrap();
-        let instructions = completion_instructions(&contract.schema, 7);
+        let instructions = completion_instructions(&contract.schema);
 
         assert!(instructions.contains("actual tool catalog"));
         assert!(instructions.contains("unless that catalog exposes it"));
-        assert!(instructions.contains("turn_token: 7"));
-        assert!(instructions.contains("exactly once"));
+        assert!(!instructions.contains("turn_token"));
+        assert!(instructions.contains("Finish after acceptance"));
         assert!(instructions.contains("\"report\""));
         assert!(contract.validator.is_valid(&json!({ "report": "done" })));
     }
@@ -2580,8 +2586,8 @@ mod tests {
             status: AgentStatus::Pending,
             active: false,
             output_validator: test_contract().validator,
-            next_turn_token: 0,
-            active_turn_token: None,
+            next_instruction_revision: 0,
+            active_instruction_revision: None,
             steering: false,
             submitted_output: None,
             last_output: None,
@@ -2596,8 +2602,8 @@ mod tests {
         let reservation = registry.reserve("main", None).unwrap();
         let mut session = test_session(reservation.id, "child-session", None);
         session.active = true;
-        session.next_turn_token = 1;
-        session.active_turn_token = Some(1);
+        session.next_instruction_revision = 1;
+        session.active_instruction_revision = Some(1);
         session.status = AgentStatus::Running;
         session.output_validator = jsonschema::validator_for(&json!({
             "type": "object",
@@ -2615,7 +2621,7 @@ mod tests {
             )
             .unwrap();
 
-        let invalid = registry.submit_result("child-session", 1, json!({ "answer": "42" }));
+        let invalid = registry.submit_result("child-session", Some(1), json!({ "answer": "42" }));
         let invalid = invalid.unwrap_err();
         let diagnostic = invalid
             .get_ref()
@@ -2627,15 +2633,15 @@ mod tests {
             super::CompletionErrorCode::SchemaValidation
         );
         assert!(diagnostic.recoverable);
-        assert_eq!(diagnostic.current_turn_token, Some(1));
+        assert_eq!(diagnostic.current_turn_token, None);
         assert!(diagnostic.details[0].contains("/answer"));
         assert!(!diagnostic.details[0].contains("42"));
         registry
-            .submit_result("child-session", 1, json!({ "answer": 42 }))
+            .submit_result("child-session", Some(1), json!({ "answer": 42 }))
             .unwrap();
         assert!(
             registry
-                .submit_result("child-session", 1, json!({ "answer": 43 }))
+                .submit_result("child-session", Some(1), json!({ "answer": 43 }))
                 .unwrap_err()
                 .to_string()
                 .contains("already accepted")
@@ -2664,7 +2670,7 @@ mod tests {
     fn root_cannot_submit_a_subagent_result() {
         let mut registry = RegistryState::default();
 
-        let error = registry.submit_result("main", 1, json!({ "report": "no" }));
+        let error = registry.submit_result("main", Some(1), json!({ "report": "no" }));
 
         assert!(
             error
@@ -2698,8 +2704,8 @@ mod tests {
         let reservation = registry.reserve("main", None).unwrap();
         let mut session = test_session(reservation.id, "child-session", None);
         session.active = true;
-        session.next_turn_token = 1;
-        session.active_turn_token = Some(1);
+        session.next_instruction_revision = 1;
+        session.active_instruction_revision = Some(1);
         session.status = AgentStatus::Running;
         registry
             .insert(
@@ -2720,67 +2726,125 @@ mod tests {
             .unwrap();
         session.active = false;
         session.active = true;
-        session.next_turn_token = 2;
-        session.active_turn_token = Some(2);
+        session.next_instruction_revision = 2;
+        session.active_instruction_revision = Some(2);
         session.status = AgentStatus::Running;
 
-        assert!(
+        assert_eq!(
             registry
-                .submit_result("child-session", 1, stale_output)
-                .is_err()
+                .submit_result("child-session", Some(1), stale_output)
+                .unwrap(),
+            super::SubmissionOutcome::Superseded
         );
     }
 
     #[tokio::test]
-    async fn steering_rotates_the_token_and_stops_after_submission() {
+    async fn steering_supersedes_inflight_results_until_latest_instructions_are_consumed() {
         let mut registry = RegistryState::default();
         let reservation = registry.reserve("main", None).unwrap();
-        let mut session = test_session(reservation.id, "child-session", None);
+        let id = reservation.id;
+        let mut session = test_session(id, "child-session", None);
         session.active = true;
-        session.next_turn_token = 1;
-        session.active_turn_token = Some(1);
+        session.next_instruction_revision = 1;
+        session.active_instruction_revision = Some(1);
         session.status = AgentStatus::Running;
         registry
             .insert(
                 reservation.root_session_id,
-                reservation.id,
-                session.descriptor.session_id.clone(),
+                id,
+                "child-session".into(),
                 session,
             )
             .unwrap();
 
-        let steer = registry.begin_turn_steer("main", reservation.id).unwrap();
-        assert_eq!(steer.token(), 2);
-        let error = registry
-            .submit_result("child-session", 1, json!({"report": "before steering"}))
-            .unwrap_err();
-        let diagnostic = error
-            .get_ref()
-            .unwrap()
-            .downcast_ref::<super::CompletionError>()
-            .unwrap();
+        let first = registry.begin_turn_steer("main", id).unwrap();
+        assert_eq!(first.revision(), 2);
         assert_eq!(
-            diagnostic.code,
-            super::CompletionErrorCode::SteeringInProgress
+            registry
+                .submit_result("child-session", Some(1), json!({"report":"in flight"}))
+                .unwrap(),
+            super::SubmissionOutcome::Superseded
         );
-        assert_eq!(diagnostic.current_turn_token, None);
-        registry.finish_turn_steer("main", steer, true);
-        let error = registry
-            .submit_result("child-session", 1, json!({ "report": "stale" }))
-            .unwrap_err();
-        let diagnostic = error
-            .get_ref()
-            .unwrap()
-            .downcast_ref::<super::CompletionError>()
-            .unwrap();
-        assert_eq!(diagnostic.code, super::CompletionErrorCode::StaleTurnToken);
-        assert_eq!(diagnostic.current_turn_token, Some(2));
-        assert!(diagnostic.recoverable);
-        registry
-            .submit_result("child-session", 2, json!({ "report": "current" }))
-            .unwrap();
+        registry.finish_turn_steer("main", first, true);
+        let second = registry.begin_turn_steer("main", id).unwrap();
+        registry.finish_turn_steer("main", second, true);
+        for revision in [1, 2] {
+            assert_eq!(
+                registry
+                    .submit_result(
+                        "child-session",
+                        Some(revision),
+                        json!({"report":"outdated"})
+                    )
+                    .unwrap(),
+                super::SubmissionOutcome::Superseded
+            );
+            assert!(
+                registry.scopes["main"].sessions[&id]
+                    .submitted_output
+                    .is_none()
+            );
+        }
+        assert_eq!(
+            registry.scopes["main"].sessions[&id].status,
+            AgentStatus::Running
+        );
+        assert_eq!(
+            registry
+                .submit_result(
+                    "child-session",
+                    Some(3),
+                    json!({"report":"all instructions incorporated"})
+                )
+                .unwrap(),
+            super::SubmissionOutcome::Accepted
+        );
+        // Acceptance wins the same lock: subsequent steering must queue another turn.
+        assert!(registry.begin_turn_steer("main", id).is_none());
+    }
 
-        assert!(registry.begin_turn_steer("main", reservation.id).is_none());
+    #[tokio::test]
+    async fn failed_steering_restores_revision_and_missing_context_cannot_submit() {
+        let mut registry = RegistryState::default();
+        let reservation = registry.reserve("main", None).unwrap();
+        let id = reservation.id;
+        let mut session = test_session(id, "child-session", None);
+        session.active = true;
+        session.next_instruction_revision = 1;
+        session.active_instruction_revision = Some(1);
+        registry
+            .insert(
+                reservation.root_session_id,
+                id,
+                "child-session".into(),
+                session,
+            )
+            .unwrap();
+        let steer = registry.begin_turn_steer("main", id).unwrap();
+        registry.finish_turn_steer("main", steer, false);
+        let error = registry
+            .submit_result("child-session", None, json!({"report":"unattributed"}))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("runtime-owned instruction context")
+        );
+        assert!(
+            registry.scopes["main"].sessions[&id]
+                .submitted_output
+                .is_none()
+        );
+        assert_eq!(
+            registry
+                .submit_result(
+                    "child-session",
+                    Some(1),
+                    json!({"report":"original instructions"})
+                )
+                .unwrap(),
+            super::SubmissionOutcome::Accepted
+        );
     }
 
     #[tokio::test]
@@ -2790,8 +2854,8 @@ mod tests {
         let id = reservation.id;
         let mut session = test_session(id, "child-session", None);
         session.active = true;
-        session.active_turn_token = Some(1);
-        session.next_turn_token = 1;
+        session.active_instruction_revision = Some(1);
+        session.next_instruction_revision = 1;
         session.status = AgentStatus::Running;
         registry
             .state
@@ -2800,7 +2864,7 @@ mod tests {
             .insert("main".into(), id, "child-session".into(), session)
             .unwrap();
         registry
-            .submit_result("child-session", 1, json!({"report": "accepted"}))
+            .submit_result("child-session", Some(1), json!({"report": "accepted"}))
             .await
             .unwrap();
         registry
@@ -2818,15 +2882,16 @@ mod tests {
                 session.summary().last_output,
                 Some(json!({"report": "accepted"}))
             );
-            assert_eq!(session.active_turn_token, None);
+            assert_eq!(session.active_instruction_revision, None);
             assert_eq!(session.submitted_output, None);
         }
         assert_eq!(registry.harness_turn_started("main", id).await, Some(2));
-        assert!(
+        assert_eq!(
             registry
-                .submit_result("child-session", 1, json!({"report": "old"}))
+                .submit_result("child-session", Some(1), json!({"report": "old"}))
                 .await
-                .is_err()
+                .unwrap(),
+            super::SubmissionOutcome::Superseded
         );
         assert!(
             registry.state.lock().await.scopes["main"].sessions[&id]

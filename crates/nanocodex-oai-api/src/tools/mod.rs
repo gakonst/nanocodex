@@ -345,6 +345,7 @@ pub struct ToolContext<'a> {
     history: &'a [ResponseItem],
     output_token_budget: usize,
     host_context: Option<&'a str>,
+    instruction_revision: Option<u64>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -365,7 +366,21 @@ impl<'a> ToolContext<'a> {
             history,
             output_token_budget,
             host_context: None,
+            instruction_revision: None,
         }
+    }
+
+    /// Captures the runtime instruction revision at the model call boundary.
+    #[must_use]
+    pub const fn with_instruction_revision(mut self, revision: Option<u64>) -> Self {
+        self.instruction_revision = revision;
+        self
+    }
+
+    /// Returns the captured revision, never a live runtime lookup.
+    #[must_use]
+    pub const fn instruction_revision(self) -> Option<u64> {
+        self.instruction_revision
     }
 
     /// Attaches embedding-owned invocation context without exposing it to tool

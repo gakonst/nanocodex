@@ -6,8 +6,11 @@ use std::fmt;
 #[serde(rename_all = "snake_case")]
 pub enum CompletionErrorCode {
     NotChild,
+    MissingInstructionRevision,
     InactiveTurn,
+    /// Legacy diagnostic retained for native API compatibility. Supersession is now an outcome.
     SteeringInProgress,
+    /// Legacy diagnostic retained for native API compatibility; models no longer supply tokens.
     StaleTurnToken,
     AlreadyAccepted,
     SchemaValidation,
@@ -24,6 +27,7 @@ pub struct CompletionError {
     pub recoverable: bool,
     pub message: &'static str,
     pub recovery: &'static str,
+    /// Legacy native API field; new diagnostics never expose instruction revisions.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub current_turn_token: Option<u64>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -45,11 +49,6 @@ impl CompletionError {
             current_turn_token: None,
             details: Vec::new(),
         }
-    }
-
-    pub(crate) fn with_token(mut self, token: Option<u64>) -> Self {
-        self.current_turn_token = token;
-        self
     }
 
     pub(crate) fn with_details(mut self, details: Vec<String>) -> Self {

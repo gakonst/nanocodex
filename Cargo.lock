@@ -6182,6 +6182,7 @@ dependencies = [
  "js-sys",
  "jsonschema",
  "nanocodex-agent",
+ "nanocodex-oai-api",
  "nanocodex-tools",
  "serde",
  "serde_json",
