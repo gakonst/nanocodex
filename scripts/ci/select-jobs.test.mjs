@@ -17,6 +17,57 @@ test("known web/docs changes skip only optional jobs", () => {
   assert.deepEqual(selectJobs([]), none);
 });
 
+// Full changed-path lists from PRs #485 and #489, not just the bridge source.
+const cua485 = [
+  "crates/experimental/nanocodex-computer/src/openai-cua-app-server.mjs",
+  "crates/experimental/nanocodex-computer/src/openai-cua-native-host.mjs",
+  "docs/REMOTE_CONTROL.md",
+  "docs/computer/native-hand-consent.md",
+  "docs/computer/official-app-server-bridge.md",
+  "docs/computer/upstream-provider.md",
+  "js/managed/src/namespace-tools.ts",
+  "js/managed/test/namespace-tools.test.ts",
+  "js/nanocodex-computer/README.md",
+  "scripts/tests/openai-cua-app-server.test.mjs",
+  "scripts/tests/openai-cua-headless-upstream.test.mjs",
+  "scripts/tests/openai-cua-native-host.test.mjs",
+];
+const cua489 = [
+  "crates/experimental/nanocodex-computer/src/openai-cua-app-server.mjs",
+  "docs/computer/official-app-server-bridge.md",
+  "docs/computer/upstream-provider.md",
+  "js/managed/src/namespace-tools.ts",
+  "js/managed/test/namespace-tools.test.ts",
+  "scripts/tests/openai-cua-app-server.test.mjs",
+];
+
+test("CUA PRs retain native coverage without unrelated voice and Python builds", () => {
+  for (const paths of [cua485, cua489]) {
+    assert.deepEqual(selectJobs(paths), { ...none, native: true });
+  }
+  for (const path of [
+    ...cua485.filter(path => /^(crates|scripts)\//.test(path)),
+    "crates/experimental/nanocodex-computer/src/openai-cua-gui-readiness.mjs",
+    "scripts/tests/openai-cua-gui-readiness.test.mjs",
+  ]) assert.deepEqual(selectJobs([path]), { ...none, native: true }, path);
+  assert.deepEqual(selectJobs([...cua489, "py/bindings/tests/test_binding.py"]), { native: true, voice: false, python: true });
+});
+
+test("CUA exceptions never mask shared inputs, new files, or path traversal", () => {
+  for (const path of [
+    "Cargo.lock", "scripts/build-voice-native.py", ".github/workflows/ci.yml",
+    "crates/experimental/nanocodex-computer/src/provision.rs",
+    "crates/experimental/nanocodex-computer/Cargo.toml",
+    "crates/experimental/nanocodex-computer/src/openai-cua-new.mjs",
+    "scripts/tests/openai-cua-new.test.mjs",
+    "scripts/tests/../build-voice-native.py",
+    "js/nanocodex-computer/package.json", "js/nanocodex-computer/new.mjs",
+  ]) {
+    assert.deepEqual(selectJobs([...cua489, path]), full, path);
+    assert.deepEqual(selectJobs([path, ...cua489]), full, path);
+  }
+});
+
 test("native and Python categories combine", () => {
   assert.deepEqual(selectJobs(["windows/hand/build.ps1"]), { ...none, native: true });
   assert.deepEqual(selectJobs(["js/desktop-runtime/src/device-hand.mjs"]), { ...none, native: true });
@@ -79,6 +130,20 @@ test("PR compares event head to merge base even when base and checkout have adva
   const event = { pull_request: { base: { sha: base }, head: { sha: head } } };
   assert.deepEqual(changedPaths("pull_request", event, r.cwd), ["docs/feature.md"]);
   assert.deepEqual(selectionForEvent("pull_request", event, r.cwd).jobs, none);
+});
+
+test("CUA deletions keep native checks and renames into unknown inputs run full CI", t => {
+  const r = repo(t);
+  const source = "crates/experimental/nanocodex-computer/src/openai-cua-app-server.mjs";
+  r.write(source);
+  const before = r.commit();
+  r.git("rm", source);
+  const deleted = r.commit();
+  assert.deepEqual(selectionForEvent("push", { before, after: deleted }, r.cwd).jobs, { ...none, native: true });
+  r.git("checkout", "-b", "rename", before);
+  r.git("mv", source, "crates/experimental/nanocodex-computer/src/new-bridge.mjs");
+  const renamed = r.commit();
+  assert.deepEqual(selectionForEvent("push", { before, after: renamed }, r.cwd).jobs, full);
 });
 
 test("unsupported events, absent endpoints, zero SHAs and unavailable history fail open", t => {

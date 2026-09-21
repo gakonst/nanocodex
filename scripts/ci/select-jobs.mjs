@@ -13,9 +13,26 @@ const webPackages = new Set([
   "nanocodex-connect-ui", "nanocodex-react", "nanocodex-terminal", "x-api",
 ]);
 
+// These bridge scripts are embedded by provision.rs in the native Hand helper.
+// Keep its platform matrix, but they do not feed voice or Python artifacts.
+// Exact paths leave new build inputs and unknown CUA files conservative.
+const cuaNativePaths = new Set([
+  "crates/experimental/nanocodex-computer/src/openai-cua-app-server.mjs",
+  "crates/experimental/nanocodex-computer/src/openai-cua-native-host.mjs",
+  "crates/experimental/nanocodex-computer/src/openai-cua-gui-readiness.mjs",
+  "scripts/tests/openai-cua-app-server.test.mjs",
+  "scripts/tests/openai-cua-native-host.test.mjs",
+  "scripts/tests/openai-cua-gui-readiness.test.mjs",
+  "scripts/tests/openai-cua-headless-upstream.test.mjs",
+]);
+
 export function selectJobs(paths) {
   const jobs = none();
   for (const path of paths) {
+    if (cuaNativePaths.has(path)) {
+      jobs.native = true;
+      continue;
+    }
     const parts = path.split("/");
     const name = parts.at(-1);
     // Check build/configuration inputs before documentation or app allowlists.
@@ -27,7 +44,8 @@ export function selectJobs(paths) {
       jobs.native = true;
     } else if (path.startsWith("py/") || path.startsWith("examples/python/")) {
       jobs.python = true;
-    } else if (path.startsWith("docs/")
+    } else if (path === "js/nanocodex-computer/README.md"
+      || path.startsWith("docs/")
       || /^(README\.md|CHANGELOG\.md|AGENTS\.md|next-steps\.md|LICENSE-APACHE|LICENSE-MIT)$/.test(path)
       || (parts[0] === "js" && webPackages.has(parts[1]) && parts.length > 2)) {
       // Always-on Rust, WASM, bindings, apps, quality and policy jobs still run.
