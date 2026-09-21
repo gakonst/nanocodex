@@ -17,7 +17,6 @@ const principal: Principal = {
 const marker = "synthetic-child-tool-proof";
 const schema = { type: "object", properties: { value: { type: "string" }, turn: { type: "integer" } },
   required: ["value", "turn"], additionalProperties: false };
-const childCandidate = ROUTING_CANDIDATES.find(c => c.backend === "workers_ai" && c.thinking === "high")!;
 const completion = (message: unknown, tool = false) => ({ choices: [{ finish_reason: tool ? "tool_calls" : "stop", message }] });
 function toolCall(input: any, name: string, args: unknown, id: string) {
   const declaration = input.tools.find((tool: any) => tool.function.description.startsWith(`${name}\n`));
@@ -27,7 +26,38 @@ function toolCall(input: any, name: string, args: unknown, id: string) {
   } }] }, true);
 }
 
-it.each(["openrouter", "vercel"] as const)("opt-in %s root and child pin independent transports across real tools, reconnect and two reconstructions", async provider => {
+// Normalize only the synthetic provider fixture; production transports still
+// receive native Responses versus Chat Completions and run the real WASM loop.
+function fromNative(input: any) {
+  expect(input).toMatchObject({ stream: true, store: false });
+  expect(input).not.toHaveProperty("messages");
+  return { tools: input.tools.map((tool: any) => ({ type: "function", function: tool })),
+    messages: input.input.map((item: any) => item.type === "function_call_output"
+      ? { role: "tool", content: item.output } : item) };
+}
+function providerSse(value: any, native: boolean) {
+  const events = native
+    ? [{ type: "response.completed", response: value }]
+    : [{ choices: value.choices.map((choice: any) => ({ index: 0, finish_reason: choice.finish_reason,
+      delta: { ...choice.message, ...(choice.message.tool_calls ? { tool_calls: choice.message.tool_calls.map((call: any, index: number) => ({ ...call, index })) } : {}) },
+    })) }];
+  return new Response(events.map(event => `data: ${JSON.stringify(event)}\n\n`).join("")
+    + (native ? "" : "data: [DONE]\n\n"), { headers: { "content-type": "text/event-stream" } });
+}
+function toNative(chat: any) {
+  const message = chat.choices[0].message;
+  return { object: "response", status: "completed", output: message.tool_calls?.map((call: any) => ({
+    type: "function_call", call_id: call.id, name: call.function.name, arguments: call.function.arguments,
+  })) ?? [{ type: "message", role: "assistant", content: [{ type: "output_text", text: message.content }] }] };
+}
+
+it.each([
+  ["openrouter", "workers_ai", "binding"], ["vercel", "workers_ai", "binding"],
+  ["cloudflare", "workers_ai", "binding"], ["openrouter", "cloudflare", "binding"], ["cloudflare", "cloudflare", "binding"],
+  ["cloudflare", "workers_ai", "rest"], ["openrouter", "cloudflare", "rest"], ["cloudflare", "cloudflare", "rest"],
+] as const)("opt-in %s root and %s child (%s) pin independent transports across real tools, reconnect and two reconstructions", async (provider, childProvider, transport) => {
+  const childModel = childProvider === "cloudflare" ? "gpt-6-astra" : OSS_MODEL;
+  const childCandidate = ROUTING_CANDIDATES.find(c => c.backend === childProvider && c.model === childModel && c.thinking === "high")!;
   const rootCandidate = ROUTING_CANDIDATES.find(c => c.backend === provider && c.model === "gpt-5.6-sol" && c.thinking === "low")!;
   const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
   await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
@@ -46,18 +76,7 @@ it.each(["openrouter", "vercel"] as const)("opt-in %s root and child pin indepen
       observedTools.push(name);
       return toolCall(input, name, args, `root-${rootCalls}`);
     };
-    const original = (session as unknown as { env: Record<string, unknown> }).env;
-    Object.defineProperty(session, "env", { configurable: true, value: { ...original,
-      NANOCODEX_THREAD_ROUTING: "true", OPENROUTER_API_KEY: "synthetic-availability-only", AI_GATEWAY_API_KEY: "synthetic-availability-only", AGENT_IDLE_TIMEOUT_MS: "1000",
-      NANOCODEX_MEMORY: { getByName: () => ({ fetch: async () => new Response(null, { status: 204 }) }) },
-      NANOCODEX_USERS: { getByName: () => ({ fetch: async () => new Response(null, { status: 204 }) }) },
-      NANOCODEX_ACCOUNT_TOOLS: { getByName: () => ({ fetch: async () => Response.json({ tools: [], machines: [], connections: [] }) }) },
-      NANOCODEX: { fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-        const req = new Request(input, init), url = new URL(req.url);
-        if (url.hostname === "broker.internal" && ["PUT", "DELETE"].includes(req.method)) return new Response(null, { status: 204 });
-        return Response.json({ tools: [], machines: [], connections: [], accounts: {} });
-      } },
-      AI: { run: async (model: string, input: any) => {
+    const modelResponse = async (model: string, input: any) => {
         if (model === "typesafe/jev") {
           choices++;
           expect(choices).toBeLessThanOrEqual(2);
@@ -67,47 +86,78 @@ it.each(["openrouter", "vercel"] as const)("opt-in %s root and child pin indepen
           if (choices === 2) expect(chooserState.opening_prompt).toContain("child-fixture-task");
           return { answers: { candidate: { choice: candidate.id, confidence: .99 }, family: { choice: "terminal", confidence: .99 } } };
         }
-        childCalls++;
-        expect(childCalls).toBeLessThanOrEqual(6);
-        expect(model).toBe(OSS_MODEL);
-        expect(input.reasoning_effort).toBe("high");
-        expect(table("managed_subagent_routes")).toHaveLength(1);
-        const binding = JSON.parse(String(table("managed_subagent_routes")[0].binding_json));
-        expect(binding.route).toMatchObject({ backend: "workers_ai", model: OSS_MODEL, thinking: "high" });
-        expect(table("managed_subagent_authorizations")).toHaveLength(1);
-        const tokens = [...JSON.stringify(input.messages).matchAll(/turn_token: (\d+)/g)];
-        const token = Number(tokens.at(-1)?.[1]);
-        expect(token).toBe(phase);
-        const last = input.messages.at(-1);
-        if (last?.role === "tool" && last.content.includes('"accepted":true')) {
-          expect(JSON.parse(last.content)).toMatchObject({ accepted: true, decoded_json_text: true });
-          submissions++;
-          return completion({ content: `CHILD_DONE_${token}` });
+        if (provider === "cloudflare" && model === "openai/gpt-5.6-sol") {
+          expect(input.reasoning).toEqual({ effort: "low" });
+          return toNative(await (await rootResponse(fromNative(input))).json());
         }
-        if (token === 1 && childCalls === 1) {
-          observedTools.push("child:exec_command");
-          return toolCall(input, "exec_command", { cmd: "cat /brain/child-input.txt", workdir: "/brain" }, "child-read");
+        const nativeInput = input;
+        if (childProvider === "cloudflare") {
+          expect(model).toBe("openai/gpt-6-astra");
+          expect(input.reasoning).toEqual({ effort: "high" });
+          input = fromNative(input);
         }
-        if (token === 1) {
-          expect(last.role).toBe("tool");
-          expect(last.content).toContain(marker);
-          childToolResults++;
-        } else {
-          expect(JSON.stringify(input.messages)).toContain(marker);
-          expect(JSON.stringify(input.messages)).toContain("CHILD_DONE_1");
-        }
-        observedTools.push("child:submit_result");
-        return toolCall(input, "submit_result", { turn_token: token, output: JSON.stringify({ value: marker, turn: token }) }, `submit-${token}`);
+        const handleChild = async () => {
+          childCalls++;
+          expect(childCalls).toBeLessThanOrEqual(6);
+          if (childProvider === "workers_ai") {
+            expect(model).toBe(OSS_MODEL);
+            expect(nativeInput.reasoning_effort).toBe("high");
+          }
+          expect(table("managed_subagent_routes")).toHaveLength(1);
+          const binding = JSON.parse(String(table("managed_subagent_routes")[0].binding_json));
+          expect(binding.route).toMatchObject({ backend: childProvider, model: childModel, thinking: "high" });
+          expect(table("managed_subagent_authorizations")).toHaveLength(1);
+          const tokens = [...JSON.stringify(input.messages).matchAll(/turn_token: (\d+)/g)];
+          const token = Number(tokens.at(-1)?.[1]);
+          expect(token).toBe(phase);
+          const last = input.messages.at(-1);
+          if (last?.role === "tool" && last.content.includes('"accepted":true')) {
+            expect(JSON.parse(last.content)).toMatchObject({ accepted: true, decoded_json_text: true });
+            submissions++;
+            return completion({ content: `CHILD_DONE_${token}` });
+          }
+          if (token === 1 && childCalls === 1) {
+            observedTools.push("child:exec_command");
+            return toolCall(input, "exec_command", { cmd: "cat /brain/child-input.txt", workdir: "/brain" }, "child-read");
+          }
+          if (token === 1) {
+            expect(last.role).toBe("tool");
+            expect(last.content).toContain(marker);
+            childToolResults++;
+          } else {
+            expect(JSON.stringify(input.messages)).toContain(marker);
+            expect(JSON.stringify(input.messages)).toContain("CHILD_DONE_1");
+          }
+          observedTools.push("child:submit_result");
+          return toolCall(input, "submit_result", { turn_token: token, output: JSON.stringify({ value: marker, turn: token }) }, `submit-${token}`);
+        };
+        const result = await handleChild();
+        return childProvider === "cloudflare" ? toNative(result) : result;
+    };
+    const original = (session as unknown as { env: Record<string, unknown> }).env;
+    Object.defineProperty(session, "env", { configurable: true, value: { ...original,
+      NANOCODEX_THREAD_ROUTING: "true", NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true", OPENROUTER_API_KEY: "synthetic-availability-only", AI_GATEWAY_API_KEY: "synthetic-availability-only", AGENT_IDLE_TIMEOUT_MS: "1000",
+      NANOCODEX_MEMORY: { getByName: () => ({ fetch: async () => new Response(null, { status: 204 }) }) },
+      NANOCODEX_USERS: { getByName: () => ({ fetch: async () => new Response(null, { status: 204 }) }) },
+      NANOCODEX_ACCOUNT_TOOLS: { getByName: () => ({ fetch: async () => Response.json({ tools: [], machines: [], connections: [] }) }) },
+      NANOCODEX: { fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        const req = new Request(input, init), url = new URL(req.url);
+        if (url.hostname === "broker.internal" && ["PUT", "DELETE"].includes(req.method)) return new Response(null, { status: 204 });
+        return Response.json({ tools: [], machines: [], connections: [], accounts: {} });
+      } },
+      ...(transport === "rest" ? { CLOUDFLARE_AI_API_TOKEN: "synthetic-cloudflare-token", NANOCODEX_CLOUDFLARE_ACCOUNT_ID: "a".repeat(32) } : {}),
+      AI: { run: async (model: string, input: any) => {
+        if (transport === "rest") expect(model.startsWith("openai/")).toBe(false);
+        return modelResponse(model, input);
       } },
     } });
-    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      const req = new Request(input, init);
-      expect(req.url).toBe(provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://ai-gateway.vercel.sh/v1/chat/completions");
-      const body: any = await req.json();
+    const rootResponse = async (body: any) => {
       rootCalls++;
       expect(rootCalls).toBeLessThanOrEqual(20);
-      expect(body.model).toBe("openai/gpt-5.6-sol");
-      expect(provider === "openrouter" ? body.reasoning.effort : body.reasoning_effort).toBe("low");
+      if (provider !== "cloudflare") {
+        expect(body.model).toBe("openai/gpt-5.6-sol");
+        expect(provider === "openrouter" ? body.reasoning.effort : body.reasoning_effort).toBe("low");
+      }
       expect(JSON.parse(String(table("managed_thread_route")[0].route_json))).toMatchObject({ backend: provider, model: "gpt-5.6-sol", thinking: "low" });
       const last = body.messages.at(-1);
       if (phase === 1 && step++ === 0) return Response.json(call(body, "spawn_agent", {
@@ -135,6 +185,23 @@ it.each(["openrouter", "vercel"] as const)("opt-in %s root and child pin indepen
         return Response.json(call(body, "close_agent", { agent_id: childId }));
       }
       return Response.json(completion({ content: "ROOT_DONE_3" }));
+    };
+    const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
+      const req = new Request(input, init);
+      if (new URL(req.url).hostname === "api.cloudflare.com") {
+        expect(transport).toBe("rest");
+        expect(req.url).toBe(`https://api.cloudflare.com/client/v4/accounts/${"a".repeat(32)}/ai/v1/responses`);
+        expect(req.headers.get("authorization")).toBe("Bearer synthetic-cloudflare-token");
+        expect(req.redirect).toBe("manual");
+        const body = await req.json() as any;
+        expect(body.stream).toBe(true);
+        return providerSse(await modelResponse(body.model, body), true);
+      }
+      expect(provider).not.toBe("cloudflare");
+      expect(req.url).toBe(provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://ai-gateway.vercel.sh/v1/chat/completions");
+      const body = await req.json() as any;
+      expect(body.stream).toBe(true);
+      return providerSse(await (await rootResponse(body)).json(), false);
     });
     try {
       expect((await request("/create", "POST", {
@@ -177,6 +244,9 @@ it.each(["openrouter", "vercel"] as const)("opt-in %s root and child pin indepen
         if (phase < 3) {
           expect(table("managed_subagent_routes")).toEqual(childPin);
           expect(table("nanocodex_cloudflare_subagents")).toEqual(retainedDescriptor);
+          if (provider !== "cloudflare" && childProvider !== "cloudflare") {
+            (session as unknown as { env: Record<string, unknown> }).env.NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED = "false";
+          }
           // Drive the production idle alarm after aging only its activity clock.
           sql.exec("UPDATE session_state SET last_active=0");
           await session.alarm();

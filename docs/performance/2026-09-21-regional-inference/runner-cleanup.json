@@ -1,0 +1,20 @@
+[
+  {
+    "runner": "nanocodex-bench-us-20260921",
+    "deleted": true,
+    "exit_code": 0,
+    "at": "2026-09-21T23:32:18.515Z"
+  },
+  {
+    "runner": "nanocodex-bench-eu-20260921",
+    "deleted": true,
+    "exit_code": 0,
+    "at": "2026-09-21T23:32:20.309Z"
+  },
+  {
+    "runner": "nanocodex-bench-ap-20260921",
+    "deleted": true,
+    "exit_code": 0,
+    "at": "2026-09-21T23:32:22.179Z"
+  }
+]

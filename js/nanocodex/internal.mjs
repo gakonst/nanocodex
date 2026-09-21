@@ -571,6 +571,19 @@ const hostBridge = Object.freeze({
     }
     hostSessions.set(sessionId, host);
   },
+  canCheckpointSubagents(hostDefinitionId, rootSessionId) {
+    const host = definitionHosts.get(hostDefinitionId);
+    const reservation = cloudflareHostReservations.get(host);
+    return !!(host && reservation?.committed && reservation.sessionId === rootSessionId
+      && mayReleaseCloudflareSubagentSession(reservation));
+  },
+  checkpointSubagents(hostDefinitionId, rootSessionId, encoded) {
+    const host = definitionHosts.get(hostDefinitionId);
+    const reservation = cloudflareHostReservations.get(host);
+    if (!host || !reservation?.committed || reservation.sessionId !== rootSessionId
+      || !mayReleaseCloudflareSubagentSession(reservation)) return;
+    host.checkpointSubagents?.(encoded);
+  },
   releaseSubagentSession(hostDefinitionId, rootSessionId, sessionId) {
     let host;
     if (sessionId !== undefined) {

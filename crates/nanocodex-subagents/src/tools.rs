@@ -175,6 +175,7 @@ pub async fn start_agents_observed(
     tasks: Vec<AgentTask>,
     observe_session: impl Fn(&str) + Send + Sync + 'static,
 ) -> AgentToolResult<Vec<AgentStartReport>> {
+    registry.register_handle(parent.clone());
     let prepared = prepare_batch(tasks)?;
     let mut startup = registry.batch_startup();
     let capacities = registry.reserve_turns(prepared.len())?;
@@ -346,6 +347,7 @@ async fn start_agent_with_host_context(
     options: SpawnOptions,
     host_context: Option<Arc<str>>,
 ) -> AgentToolResult<AgentStartReport> {
+    registry.register_handle(parent.clone());
     let AgentTask {
         role,
         task,
@@ -833,6 +835,7 @@ pub fn install_tools(
     parent: AgentHandle,
     registry: Arc<Registry>,
 ) -> Result<Tools, ToolsBuildError> {
+    registry.register_handle(parent.clone());
     tools
         .into_builder()
         .tool(SubmitResult {

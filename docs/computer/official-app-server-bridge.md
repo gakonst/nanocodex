@@ -47,7 +47,8 @@ Catalog discovery creates no thread. The first tool call creates a separate
 There is no GUI attachment or GUI-readiness wait. Closing a bridge releases its
 lease; after the final lease the supervisor stops its owned server after 60 seconds
 idle, with 120 seconds startup grace. Server death fails pending work. Calls are
-never replayed, and cancellation cannot undo input already delivered.
+never replayed. Closing a transport or resetting a session does not prove that
+upstream/native input stopped; effects remain uncertain and must not be replayed.
 
 ## Transport
 
@@ -57,18 +58,36 @@ content are preserved. Catalog entries are sorted only for stable discovery.
 Authentic nested caller metadata is preserved; top-level thread routing identifies
 the bridge's own thread. App-server errors retain their code, message, and data.
 
-Calls within one bridge are ordered. Timeout, cancellation, EOF, and connection
-loss close only that connection. A new MCP process gets a fresh thread. The outer
-Nanocodex MCP adapter does not need to advertise elicitation: the official app
-server owns that protocol with the provider.
+Calls within one bridge are ordered. Caller cancellation, startup timeout, EOF,
+and connection loss close only that connection. A new MCP process gets a fresh
+thread. The outer Nanocodex MCP adapter does not need to advertise elicitation:
+the official app server owns that protocol with the provider.
 
-The bridge's connection and startup deadline does not shorten a longer requested
-`js` execution budget. Valid positive integer budgets extend only the tool-call
-transport deadline, with one second for the provider's response and a Node timer
-limit. Missing or invalid budgets retain the configured transport deadline, as
-do budgets whose execution time plus response grace fits that deadline. The outer
-caller deadline still bounds queueing and execution; arguments
-are forwarded unchanged and no timed-out call is replayed.
+Both standalone and managed bridges delegate tool execution timeouts to the
+official app server and provider. The bridge does not parse `arguments.timeout_ms`
+or put a second wall timer around forwarded tool calls. The official app server
+owns its configured MCP tool timeout
+([upstream default: 300 seconds](https://github.com/openai/codex/blob/1427825c4044d48b513c7d4ea32b84e58806a188/codex-rs/codex-mcp/src/rmcp_client.rs#L104));
+[direct tool calls](https://github.com/openai/codex/blob/1427825c4044d48b513c7d4ea32b84e58806a188/codex-rs/core/src/codex_thread.rs#L965)
+supply no requested timeout override. An unresponsive provider is governed
+by that upstream timeout or genuine caller cancellation. The bridge's trusted
+`NANOCODEX_CUA_APP_SERVER_TIMEOUT_MS` still bounds connection, initialization,
+catalog discovery, and thread startup. Provider arguments cannot extend or disable
+those deadlines. The standalone bridge defaults to 300 seconds for these
+transport requests. The managed host supplies its trusted 120-second timeout;
+its metadata discovery, endpoint discovery, readiness checks, and upstream MCP
+startup retain their existing 120-second limits. These are separate phase limits,
+not one cumulative tool-call budget. The outer Rust MCP adapter additionally
+bounds each provider process startup (initialization plus full catalog discovery)
+to a trusted cumulative 120 seconds, both at attachment discovery and when a
+conversation starts its own process. This deadline ends before tool execution.
+
+The outer Nanocodex adapter also forwards `timeout_ms` unchanged and awaits the
+provider result. Queueing and provider startup do not consume that argument's
+execution budget. If the caller cancels or transport fails, the affected session
+requires a successful explicit `js_reset` and fresh observation before continuing. Neither
+transport teardown nor reset proves that earlier native input has stopped. Never
+replay input whose effects are uncertain.
 
 The transport's existing standalone GUI integration remains optional for operators
 who explicitly connect it to an existing official server and set
@@ -89,5 +108,8 @@ Focused tests cover headless thread creation, no GUI attachment, unchanged polic
 and payloads, unresolved-request isolation, cancellation, leases, and child failure.
 The opt-in real-binary test uses an isolated temporary home and synthetic provider
 to verify that full-access policy accepts confirmations while read-only policy
-declines them, without client approval requests. Native app checks must additionally establish that the signed helper
+declines them, without client approval requests. It also verifies that a direct
+tool call with `timeout_ms: 1` receives an unchanged delayed synthetic result.
+Virtual-time tests verify late success and provider errors, no replay, and bounded
+startup. Native app checks must additionally establish that the signed helper
 starts with the desktop GUI closed; a synthetic MCP result alone is not that proof.

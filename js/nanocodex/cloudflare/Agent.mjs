@@ -479,9 +479,9 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
     observeAgentRelease(exposed, () => {
       if (lifecycle.active === active) lifecycle.active = undefined;
     });
-    // Consume only after all startup checks succeed. Once exposed, this owner
-    // may mutate children; only its next clean unload can save a safe snapshot.
-    commitCloudflareAgentSession(sessionReservation, () => subagentSessions.consumeCheckpoint());
+    // Keep the last committed child boundaries across abrupt owner loss.
+    // Registry updates refresh them while this generation is active.
+    commitCloudflareAgentSession(sessionReservation);
     return exposed;
   } catch (error) {
     const cleanupErrors = [];
@@ -766,6 +766,20 @@ function cloudflareSubagentSessions(storage, reservation, lifecycle) {
       }
       storage.sql.exec("DELETE FROM nanocodex_cloudflare_subagent_checkpoints");
     },
+    checkpointLive(encoded) {
+      const checkpoint = JSON.parse(encoded);
+      if (checkpoint.root_session_id !== reservation.sessionId
+        || checkpoint.children.length !== retainedBindings.size) return;
+      const children = new Map(checkpoint.children.map((child) => [child.descriptor.session_id, child]));
+      for (const { descriptor: binding, hostContextRef } of retainedBindings.values()) {
+        const child = children.get(binding.sessionId);
+        if (!child || String(child.descriptor.id) !== binding.agentId
+          || child.descriptor.role !== binding.role
+          || (child.descriptor.parent == null ? null : String(child.descriptor.parent)) !== (binding.parentAgentId ?? null)
+          || (child.host_context ?? null) !== (hostContextRef ?? null)) return;
+      }
+      this.checkpoint(encoded);
+    },
     checkpoint(checkpoint) {
       if (!mayReleaseCloudflareSubagentSession(reservation)) {
         throw new Error("Subagent checkpoint writer no longer owns the session");
@@ -774,18 +788,7 @@ function cloudflareSubagentSessions(storage, reservation, lifecycle) {
       // Check syntax before replacing the last complete checkpoint. Rust owns
       // the versioned tree schema and checks identities during reconstruction.
       JSON.parse(checkpoint);
-      storage.transactionSync(() => {
-        storage.sql.exec("DELETE FROM nanocodex_cloudflare_subagent_checkpoints");
-        for (let offset = 0, index = 0; offset < checkpoint.length; index += 1) {
-          let end = Math.min(offset + 65_536, checkpoint.length);
-          if (end < checkpoint.length && /[\uD800-\uDBFF]/.test(checkpoint[end - 1])) end -= 1;
-          storage.sql.exec(
-            "INSERT INTO nanocodex_cloudflare_subagent_checkpoints (chunk_index, payload) VALUES (?, ?)",
-            index, checkpoint.slice(offset, end),
-          );
-          offset = end;
-        }
-      });
+      storage.transactionSync(() => writeSubagentCheckpoint(storage, checkpoint));
     },
     hostContextRef(sessionId) {
       return restoredHostContextRefs.get(sessionId);
@@ -838,6 +841,7 @@ function cloudflareSubagentSessions(storage, reservation, lifecycle) {
     },
     release(sessionId, hostContextRef) {
       if (!mayReleaseCloudflareSubagentSession(reservation)) return;
+      const released = [];
       storage.transactionSync(() => {
         const retained = storage.sql.exec(
           `SELECT 1 AS retained FROM nanocodex_cloudflare_subagents
@@ -846,23 +850,69 @@ function cloudflareSubagentSessions(storage, reservation, lifecycle) {
           hostContextRef ?? null,
         ).toArray();
         if (retained.length === 0) return;
-        storage.sql.exec("DELETE FROM nanocodex_cloudflare_subagent_checkpoints");
-        notifySubagentLifecycle(lifecycle, {
-          type: "release",
-          rootSessionId: reservation.sessionId,
-          sessionId,
-          hostContextRef,
-        });
-        storage.sql.exec(
-          `DELETE FROM nanocodex_cloudflare_subagents
-           WHERE session_id = ? AND host_context_ref IS ?`,
-          sessionId,
-          hostContextRef ?? null,
-        );
-        retainedBindings.delete(sessionId);
+        // Closing a parent closes its entire subtree. Remove every descendant
+        // binding in the same transaction so a restart cannot restore orphans.
+        const removed = new Set([retainedBindings.get(sessionId).descriptor.agentId]);
+        let changed;
+        do {
+          changed = false;
+          for (const { descriptor } of retainedBindings.values()) {
+            if (removed.has(descriptor.parentAgentId) && !removed.has(descriptor.agentId)) {
+              removed.add(descriptor.agentId);
+              changed = true;
+            }
+          }
+        } while (changed);
+        const encoded = this.restoreCheckpoint();
+        const checkpoint = encoded === undefined
+          ? { version: 1, root_session_id: reservation.sessionId, next_agent_id: 1, children: [] }
+          : JSON.parse(encoded);
+        for (const { descriptor } of retainedBindings.values()) {
+          checkpoint.next_agent_id = Math.max(checkpoint.next_agent_id, Number(descriptor.agentId) + 1);
+        }
+        checkpoint.children = checkpoint.children.filter((child) => !removed.has(String(child.descriptor.id)));
+        // Keep surviving committed histories and the allocator high watermark,
+        // even if the owner disappears before the next asynchronous live save.
+        writeSubagentCheckpoint(storage, JSON.stringify(checkpoint));
+        for (const { descriptor, hostContextRef: retainedContext } of retainedBindings.values()) {
+          if (!removed.has(descriptor.agentId)) continue;
+          released.push(descriptor.sessionId);
+          notifySubagentLifecycle(lifecycle, {
+            type: "release",
+            rootSessionId: reservation.sessionId,
+            sessionId: descriptor.sessionId,
+            hostContextRef: retainedContext,
+          });
+          storage.sql.exec(
+            `DELETE FROM nanocodex_cloudflare_subagents
+             WHERE session_id = ? AND host_context_ref IS ?`,
+            descriptor.sessionId,
+            retainedContext ?? null,
+          );
+        }
       });
+      // Change the cache only after the storage transaction commits.
+      for (const id of released) {
+        retainedBindings.delete(id);
+        restoredHostContextRefs.delete(id);
+      }
     },
   });
+}
+
+// Caller owns the transaction; release also updates bindings atomically.
+function writeSubagentCheckpoint(storage, checkpoint) {
+  validateSubagentCheckpointSize(checkpoint);
+  storage.sql.exec("DELETE FROM nanocodex_cloudflare_subagent_checkpoints");
+  for (let offset = 0, index = 0; offset < checkpoint.length; index += 1) {
+    let end = Math.min(offset + 65_536, checkpoint.length);
+    if (end < checkpoint.length && /[\uD800-\uDBFF]/.test(checkpoint[end - 1])) end -= 1;
+    storage.sql.exec(
+      "INSERT INTO nanocodex_cloudflare_subagent_checkpoints (chunk_index, payload) VALUES (?, ?)",
+      index, checkpoint.slice(offset, end),
+    );
+    offset = end;
+  }
 }
 
 function validateSubagentCheckpointSize(checkpoint) {

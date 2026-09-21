@@ -1,0 +1,12 @@
+{
+  "stage": "streaming",
+  "run_id": "regional-20260921-matched",
+  "intended_calls": 45,
+  "prior_local_calls": 4,
+  "max_total_calls": 200,
+  "incremental_budget_usd": 5,
+  "max_output_tokens": 256,
+  "source": "parent-deployment-receipt",
+  "protocol": "5 samples per provider/caller; pairs 0,1,2 calibration,3,4 heldout. Families alternate short/long/short/long/short. Explicit same Luna low. No retries. SSE requested in both stages.",
+  "reserve_usd_per_call": 0.015
+}

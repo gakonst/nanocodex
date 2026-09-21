@@ -1,0 +1,7 @@
+{
+  "js/managed/src/thread-model-routing.ts": "295a3f0d27a1ee53d76cd367cf1e821743bbd761d43604a00ab86d40ca681653",
+  "js/managed/src/provider-telemetry.ts": "1952bd9d5e0ae3c25b459b0cc36f39addcdd2685fc8eb8c52af6f39e655f09e4",
+  "scripts/regional-inference-bench/core.mjs": "a28c31cc0cc88e60e47322ab33721863ecb3c8b57205f55f89416ddaf036861b",
+  "scripts/regional-inference-bench/jev-core.mjs": "40dcbd728d5d072697e50d24ebe83a7ab566527e22709f88ba6d3749af1832b7",
+  "scripts/regional-inference-bench/jev-worker.mjs": "b4d5d6dcfade83eae403adee884164c32c9f8f5c5c61e778a2219bd3670ddb91"
+}

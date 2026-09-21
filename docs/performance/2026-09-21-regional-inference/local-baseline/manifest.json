@@ -1,0 +1,33 @@
+{
+  "version": "regional-inference-v1",
+  "cases": 4,
+  "reserved_usd": 2,
+  "run_id": "baseline-20260921-a",
+  "stage": "predeploy-buffered",
+  "execute": true,
+  "deployment_version": "not_captured; predeployment observed buffering=buffered on all four responses",
+  "key_array_index": 8,
+  "cost_usd_observed": null,
+  "max_output_tokens": 256,
+  "interval_ms": 7000,
+  "repetitions": 1,
+  "families": [
+    "short",
+    "long-prefix"
+  ],
+  "models": [
+    "auto",
+    "cloudflare:openai/gpt-5.6-luna:low"
+  ],
+  "stream_modes": [
+    false
+  ],
+  "arms": [
+    {
+      "id": "production-buffered",
+      "kind": "direct",
+      "runner": "gak-9-location-unverified",
+      "deployment_version": null
+    }
+  ]
+}

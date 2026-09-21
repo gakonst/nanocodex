@@ -6,7 +6,7 @@ const preferenceObservations = JSON.parse(readFileSync(new NodeURL("./fixtures/t
 };
 import { describe, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { resolveThreadRoute, routingPolicySchema, ThreadRoutePin, ROUTING_CANDIDATES, OSS_MODEL, FRONTIER_MODEL } from "../src/thread-model-routing";
+import { resolveThreadRoute, routingPolicySchema, ThreadRoutePin, ROUTING_CANDIDATES, OSS_MODEL, FRONTIER_MODEL, projectThreadRouteDiagnostics, taskFamily } from "../src/thread-model-routing";
 import { initializeManagedAgentSettingsSchema } from "../src/agent-settings-schema";
 import { parseAgentCreateBody, validateAgentSettings } from "../src/agent-settings";
 import { parseConfiguration } from "../src/agent-configuration";
@@ -253,9 +253,9 @@ describe("cross-provider candidate routing", () => {
   } })) });
   const openrouter = "openrouter:openai/gpt-6-astra:high";
   const vercel = "vercel:openai/gpt-6-astra:high";
-  it("offers 45 unique candidates, preserving every old identity", async () => {
-    expect(ROUTING_CANDIDATES).toHaveLength(45);
-    expect(new Set(ROUTING_CANDIDATES.map(c => c.id)).size).toBe(45);
+  it("offers 57 unique candidates, preserving every old identity", async () => {
+    expect(ROUTING_CANDIDATES).toHaveLength(57);
+    expect(new Set(ROUTING_CANDIDATES.map(c => c.id)).size).toBe(57);
     const p = routingPolicySchema.parse({ candidates: ROUTING_CANDIDATES.map(c => c.id) });
     const ai = choose(vercel);
     const route = await resolveThreadRoute(ai, "task", p, available);
@@ -281,7 +281,7 @@ describe("cross-provider candidate routing", () => {
     expect(route.selection).toBe("prior");
   });
   it.each([
-    [undefined, 15], [{openrouter:true,vercel:false},30], [{openrouter:false,vercel:true},30], [available,45],
+    [undefined, 15], [{openrouter:true,vercel:false},30], [{openrouter:false,vercel:true},30], [available,45], [{...available,cloudflare:true},57], [{openrouter:false,vercel:false,cloudflare:true},27],
   ])("filters unavailable providers before Jev: %j", async (availability, count) => {
     const ai = choose("gpt-6-astra:high");
     const route = await resolveThreadRoute(ai, "task", routingPolicySchema.parse({}), availability);
@@ -334,7 +334,7 @@ describe("trusted regional provider telemetry", () => {
   const runtime = (provider_performance: unknown[]) => ({openrouter:true,vercel:false,workerColo:"LHR",clientIngressColo:"SJC",provider_performance});
   it("projects trusted aggregates into Jev and the audit while distinguishing execution from ingress", async () => {
     const router = ai();
-    const route = await resolveThreadRoute(router,"task",routingPolicySchema.parse({}),runtime([metric({apiKey:"secret",prompt:"private",errorBody:"sensitive"}),metric({source:"probe"})]));
+    const route = await resolveThreadRoute(router,"task",routingPolicySchema.parse({}),runtime([metric({apiKey:"secret",prompt:"private",errorBody:"sensitive"}),metric({source:"probe",scope:"deployment_global",workerColo:null})]));
     const snapshot = route.audit?.provider_telemetry;
     expect(snapshot).toMatchObject({provenance:"trusted_runtime_aggregate",workerColo:"LHR",clientIngressColo:"SJC",windowMs:7200000});
     expect(snapshot?.provider_performance).toHaveLength(2);
@@ -368,7 +368,7 @@ describe("trusted regional provider telemetry", () => {
     expect(route.selection).toBe("prior");
   });
   it("bounds and deduplicates aggregates without merging probe/live cohorts", async () => {
-    const samples = ROUTING_CANDIDATES.filter(c=>c.backend==="openrouter").flatMap(c=>[metric({model:c.model,effort:c.thinking}),metric({model:c.model,effort:c.thinking,source:"probe"})]);
+    const samples = ROUTING_CANDIDATES.filter(c=>c.backend==="openrouter").flatMap(c=>[metric({model:c.model,effort:c.thinking}),metric({model:c.model,effort:c.thinking,source:"probe",scope:"deployment_global",workerColo:null})]);
     const route = await resolveThreadRoute(ai(),"task",routingPolicySchema.parse({}),runtime([samples[0],...samples]));
     expect(route.audit?.provider_telemetry?.provider_performance).toHaveLength(30);
     expect(new Set(route.audit?.provider_telemetry?.provider_performance.map(m => `${m.source}/${m.candidateId}`)).size).toBe(30);
@@ -471,4 +471,129 @@ it("reuses an old v2 pinned route without applying v3 defaults or rerouting", as
   expect(create).not.toHaveBeenCalled();
   expect(commit).not.toHaveBeenCalled();
   expect(old.policy_version).toBe("jev-direct-v2");
+});
+
+
+describe("public Jev route diagnostics", () => {
+  const economy = `${OSS_MODEL}:low`, frontier = `${FRONTIER_MODEL}:high`;
+  const candidates = [economy, frontier];
+  const candidateProbabilities = { [economy]: .87, [frontier]: .13 };
+  const familyProbabilities = Object.fromEntries(taskFamily.options.map(f => [f, f === "terminal" ? 1 : 0]));
+  const payload = () => ({ answers: {
+    candidate: { choice: economy, confidence: .8, probabilities: candidateProbabilities },
+    family: { choice: "terminal", confidence: .94, probabilities: familyProbabilities },
+  }, usage: { echoed: "private input" }, audit: "private input" });
+  const routeFor = (result: unknown, patch = {}) => resolveThreadRoute({ run: async () => result },
+    "private input", routingPolicySchema.parse({ candidates, preferences: { text: "private preference" }, ...patch }));
+
+  it.each([false, true])("preserves actual probabilities separately from confidence (wrapped=%s)", async wrapped => {
+    const result = payload();
+    const route = await routeFor(wrapped ? { state: "Completed", result } : result);
+    expect(projectThreadRouteDiagnostics(route)).toEqual({
+      source: "typesafe/jev", signal_kind: "choice_probabilities_and_confidence_not_task_success",
+      eligible_candidates: candidates, chosen_candidate: economy, proposed_candidate: economy,
+      candidate_confidence: .8, family_confidence: .94,
+      candidate_probabilities: candidateProbabilities, family_probabilities: familyProbabilities,
+      min_confidence: .75, confidence_status: "accepted", fallback_basis: "none",
+    });
+    expect(JSON.stringify(projectThreadRouteDiagnostics(route))).not.toContain("private");
+  });
+
+  it("preserves two-decimal rounded probabilities without renormalizing", async () => {
+    const result = payload();
+    result.answers.candidate.probabilities = { [economy]: .86, [frontier]: .13 };
+    const route = await routeFor(result);
+    expect(projectThreadRouteDiagnostics(route)?.candidate_probabilities).toEqual({ [economy]: .86, [frontier]: .13 });
+  });
+
+  it.each([undefined, null, {}, [1, 0], { [economy]: 1 },
+    { [economy]: .8, "private input": .2 }, { ...candidateProbabilities, "private input": 0 },
+    { [economy]: "0.87", [frontier]: .13 }, { [economy]: NaN, [frontier]: .13 },
+    { [economy]: Infinity, [frontier]: 0 }, { [economy]: -.1, [frontier]: 1.1 },
+    { [economy]: .2, [frontier]: .2 },
+  ])("omits absent or malformed distributions without inventing probabilities %#", async probabilities => {
+    const result = payload();
+    const route = await routeFor({ ...result, answers: { ...result.answers,
+      candidate: { ...result.answers.candidate, probabilities } } });
+    expect(route.selection).toBe("prior");
+    expect(projectThreadRouteDiagnostics(route)).toMatchObject({ candidate_confidence: .8,
+      candidate_probabilities: null, family_probabilities: familyProbabilities });
+  });
+
+  it.each(["proposed", "frontier"])("reports low confidence and %s fallback without changing probabilities", async low_confidence_fallback => {
+    const result = payload(); result.answers.candidate.confidence = .2;
+    const route = await routeFor(result, { low_confidence_fallback });
+    expect(projectThreadRouteDiagnostics(route)).toMatchObject({ proposed_candidate: economy,
+      chosen_candidate: low_confidence_fallback === "proposed" ? economy : frontier,
+      candidate_confidence: .2, family_confidence: .94, min_confidence: .75,
+      confidence_status: "low", fallback_basis: low_confidence_fallback === "proposed" ? "valid_proposal" : "eligible_frontier",
+      candidate_probabilities: candidateProbabilities, family_probabilities: familyProbabilities });
+  });
+
+  it.each(["candidate", "family"])("never projects echoed invalid %s choices", async field => {
+    const result = payload(); result.answers[field as "candidate" | "family"].choice = "private input";
+    const route = await routeFor(result);
+    expect(projectThreadRouteDiagnostics(route)).toMatchObject({ proposed_candidate: null, chosen_candidate: frontier,
+      candidate_confidence: null, family_confidence: null, candidate_probabilities: null, family_probabilities: null,
+      confidence_status: "unavailable_or_invalid", fallback_basis: "eligible_frontier" });
+    expect(JSON.stringify(projectThreadRouteDiagnostics(route))).not.toContain("private");
+  });
+
+  it("checks family keys, eligible candidate keys and bounds again at the public projection", async () => {
+    const route = await routeFor(payload());
+    route.audit!.family_probabilities = { "private input": 1 };
+    expect(projectThreadRouteDiagnostics(route)?.family_probabilities).toBeNull();
+    route.audit!.candidate_probabilities = { [economy]: 2, [frontier]: -1 };
+    expect(projectThreadRouteDiagnostics(route)?.candidate_probabilities).toBeNull();
+    route.audit!.eligible_candidates.push("private input");
+    expect(projectThreadRouteDiagnostics(route)).toBeUndefined();
+  });
+
+  it("omits the optional projection for older pins without diagnostics", async () => {
+    const route = await routeFor(payload());
+    delete route.audit!.confidence_status;
+    expect(projectThreadRouteDiagnostics(route)).toBeUndefined();
+    delete route.audit;
+    expect(projectThreadRouteDiagnostics(route)).toBeUndefined();
+  });
+});
+
+
+describe("Cloudflare frontier opt-in", () => {
+  const id = "cloudflare:openai/gpt-6-astra:high";
+  const available = { openrouter: false, vercel: false, cloudflare: true };
+  const ai = { run: async () => ({ answers: { candidate: { choice: id, confidence: .99 }, family: { choice: "terminal", confidence: .99 } } }) };
+  it("adds exactly twelve frontier entries with unknown prices and retains all old IDs", () => {
+    const cloudflare = ROUTING_CANDIDATES.filter(c => c.backend === "cloudflare");
+    expect(cloudflare).toHaveLength(12);
+    expect(ROUTING_CANDIDATES.filter(c => c.backend !== "chatgpt")).toHaveLength(45);
+    for (const model of [FRONTIER_MODEL, "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      for (const thinking of ["low", "medium", "high"]) {
+        expect(cloudflare.find(c => c.id === `cloudflare:openai/${model}:${thinking}`)).toMatchObject({model, thinking, provider_model:`openai/${model}`,catalog_price_hint:null});
+        expect(ROUTING_CANDIDATES.some(c => c.id === `${model}:${thinking}`)).toBe(true);
+        for (const backend of ["openrouter", "vercel"]) expect(ROUTING_CANDIDATES.some(c => c.id === `${backend}:openai/${model}:${thinking}`)).toBe(true);
+      }
+    }
+    expect(cloudflare.some(c => c.model === OSS_MODEL)).toBe(false);
+  });
+  it("requires an explicitly true runtime gate even for an explicit candidate", async () => {
+    const policy = routingPolicySchema.parse({ candidates: [id] });
+    for (const cloudflare of [undefined, false, "true"]) {
+      await expect(resolveThreadRoute(ai,"task",policy,{...available,cloudflare} as never)).rejects.toThrow("No eligible");
+    }
+    const route = await resolveThreadRoute(ai,"task",policy,available);
+    expect(route).toMatchObject({backend:"cloudflare",model:FRONTIER_MODEL,provider_model:"openai/gpt-6-astra",thinking:"high"});
+    expect(projectThreadRouteDiagnostics(route)?.chosen_candidate).toBe(id);
+  });
+  it("supports only frontier estimates and preserves old committed pins after opt-in", async () => {
+    const estimate = {family:"terminal",backend:"cloudflare",model:FRONTIER_MODEL,thinking:"high",success_rate:.9,expected_cost_usd:.1,expected_duration_ms:100,sample_size:10,source:"heldout-v1"};
+    const policy = routingPolicySchema.parse({candidates:[id],estimates:[estimate],min_success_rate:.8});
+    expect((await resolveThreadRoute(ai,"task",policy,available)).estimate).toMatchObject(estimate);
+    expect(() => routingPolicySchema.parse({estimates:[{...estimate,model:OSS_MODEL}]})).toThrow();
+    const old = await resolveThreadRoute({run:async()=>{throw Error("unavailable");}},"task",routingPolicySchema.parse({}));
+    const retained = JSON.parse(JSON.stringify(old));
+    const pin = new ThreadRoutePin({read:()=>retained,commit:()=>{throw Error("unexpected replacement");}});
+    expect(await pin.resolve(()=>resolveThreadRoute(ai,"task",policy,available))).toEqual(old);
+    expect(retained.backend).toBe("chatgpt");
+  });
 });

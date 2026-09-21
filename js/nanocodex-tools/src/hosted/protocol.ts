@@ -71,7 +71,7 @@ export type HostedToolCallOutcome =
 export type HostedToolsHostFrame =
   | {
       type: "catalog";
-      capabilities?: string[];
+      capabilities: ["turn_metadata"];
       tools: HostedToolCatalogEntry[];
       machines?: HostedMachine[];
       attachment_id?: string;
@@ -183,22 +183,14 @@ function parseCatalog(
   frame: Record<string, unknown>,
 ): Extract<HostedToolsHostFrame, { type: "catalog" }> {
   exactKeys(frame, ["type", "tools", "machines", "attachment_id", "capabilities"]);
+  if (!Array.isArray(frame.capabilities) || frame.capabilities.length !== 1
+    || frame.capabilities[0] !== "turn_metadata") {
+    throw new HostedToolsProtocolError("invalid_catalog", 'capabilities must be ["turn_metadata"]');
+  }
   if (!Array.isArray(frame.tools)) {
     throw new HostedToolsProtocolError(
       "invalid_catalog",
       "tools must be an array",
-    );
-  }
-  const capabilities = frame.capabilities;
-  if (capabilities !== undefined && (
-    !Array.isArray(capabilities)
-    || capabilities.length > 16
-    || capabilities.some((value) => typeof value !== "string" || !IDENTIFIER.test(value))
-    || new Set(capabilities).size !== capabilities.length
-  )) {
-    throw new HostedToolsProtocolError(
-      "invalid_catalog",
-      "capabilities must contain at most 16 unique identifiers",
     );
   }
   const tools = frame.tools.map((entry, index) => catalogEntry(entry, index));
@@ -231,8 +223,8 @@ function parseCatalog(
   }
   return {
     type: "catalog",
+    capabilities: ["turn_metadata"],
     tools,
-    ...(capabilities === undefined ? {} : { capabilities: capabilities as string[] }),
     ...(machines === undefined ? {} : { machines }),
     ...(attachmentId === undefined ? {} : { attachment_id: attachmentId }),
   };

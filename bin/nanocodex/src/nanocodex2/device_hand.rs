@@ -1,6 +1,6 @@
 //! One account Hand per computer, shared by the terminal and desktop clients.
 //! Each client holds a local IPC lease through a child process. A single
-//! publisher survives individual clients and exits after its last lease closes.
+//! publisher is owned by the OS service and survives all client disconnects.
 use clap::Args;
 use nanocodex_managed::{ManagedClient, ManagedError};
 use nanocodex_tools::attachment::AttachmentEvent;
@@ -31,7 +31,7 @@ pub(crate) struct DeviceHand {
     #[arg(long)]
     describe: bool,
     #[arg(long, hide = true)]
-    daemon: bool,
+    pub(super) daemon: bool,
     /// Exit when the owning application closes stdin.
     #[arg(long)]
     parent_pipe: bool,
@@ -151,7 +151,8 @@ fn log_file(directory: &Path, name: &str) -> Result<fs::File, ManagedError> {
         return Err(error("Hand logs must be regular files"));
     }
     let mut options = OpenOptions::new();
-    options.create(true).append(true);
+    // Windows file locking requires read or write access beyond append-only.
+    options.create(true).read(true).append(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -241,6 +242,20 @@ fn emit(value: &Value) {
 }
 
 pub(crate) async fn serve(command: DeviceHand) -> Result<(), ManagedError> {
+    let daemon = command.daemon;
+    match serve_inner(command).await {
+        Err(error)
+            if daemon
+                && matches!(&error, ManagedError::Http { status, .. } if matches!(status.as_u16(), 401 | 403)) =>
+        {
+            tracing::error!(%error, "Computer Hand stopped; update account access and restart the service");
+            Ok(()) // A normal exit prevents the OS service from retrying rejected credentials.
+        }
+        result => result,
+    }
+}
+
+async fn serve_inner(command: DeviceHand) -> Result<(), ManagedError> {
     let (origin, key) = nanocodex_cli_auth::enrollment_credentials(None)?;
     // The managed client installs the shared TLS provider before any identity HTTP request.
     let client = super::client_from_environment(None)?;
@@ -279,14 +294,11 @@ pub(crate) async fn serve(command: DeviceHand) -> Result<(), ManagedError> {
     let result = if command.daemon {
         share(&client, &directory, &origin, &key, &cancel).await
     } else {
-        loop {
-            match connect(&directory, &cancel).await {
-                Ok(()) => break Ok(()),
-                Err(e) => emit(&json!({"status": "connecting", "error": e.to_string()})),
-            }
-            tokio::select! { () = cancel.cancelled() => break Ok(()), () = tokio::time::sleep(Duration::from_secs(1)) => {} }
-        }
+        connect(&directory, &cancel).await
     };
+    if let Err(error) = &result {
+        emit(&json!({"status": "error", "error": error.to_string()}));
+    }
     cancel.cancel();
     watcher.abort();
     result
@@ -302,6 +314,15 @@ async fn share(
     if cancel.is_cancelled() {
         return Ok(());
     }
+    // The installed owner has one publisher across all account identities.
+    let publisher = super::native_hand::NativeStateLock(log_file(
+        &home()?.join(".nanocodex"),
+        "hand-daemon.lock",
+    )?);
+    publisher
+        .0
+        .try_lock()
+        .map_err(|_| error("another computer Hand daemon is running"))?;
     match open(directory) {
         Ok(mut state) => {
             let socket = socket_path(directory)?;
@@ -444,35 +465,9 @@ fn unix_socket_path(base: PathBuf, directory: &Path) -> Result<PathBuf, ManagedE
 
 async fn connect(directory: &Path, cancel: &CancellationToken) -> Result<(), ManagedError> {
     let socket = socket_path(directory)?;
-    let mut stream = None;
-    for attempt in 0..100 {
-        match transport::connect(&socket).await {
-            Ok(connection) => {
-                stream = Some(connection);
-                break;
-            }
-            Err(_) if attempt % 10 == 0 => {
-                let mut command = Command::new(std::env::current_exe().map_err(error)?);
-                #[cfg(unix)]
-                command.process_group(0);
-                #[cfg(windows)]
-                command.creation_flags(0x0000_0008 | 0x0000_0200); // DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP
-                let mut daemon = command
-                    .args(["__device-hand", "--daemon"])
-                    .stdin(Stdio::null())
-                    .stdout(Stdio::null())
-                    .stderr(log_file(directory, "daemon.log")?)
-                    .spawn()
-                    .map_err(error)?;
-                tokio::spawn(async move {
-                    let _ = daemon.wait().await;
-                });
-            }
-            Err(_) => {}
-        }
-        tokio::select! { () = cancel.cancelled() => return Ok(()), () = tokio::time::sleep(Duration::from_millis(100)) => {} }
-    }
-    let mut stream = stream.ok_or_else(|| error("The shared computer Hand did not start"))?;
+    let mut stream = transport::connect(&socket).await.map_err(|_| {
+        error("The computer Hand service is not running; start the installed OS service")
+    })?;
     let mut previous = Value::Null;
     let mut bytes = [0u8; 1];
     loop {
@@ -492,22 +487,16 @@ async fn connect(directory: &Path, cancel: &CancellationToken) -> Result<(), Man
 }
 async fn watch_clients(mut listener: transport::Listener, cancel: CancellationToken) {
     let mut clients = tokio::task::JoinSet::new();
-    let mut idle = tokio::time::Instant::now();
-    let mut ever_connected = false;
     loop {
         tokio::select! {
             () = cancel.cancelled() => break,
             accepted = listener.accept() => match accepted {
                 Ok(mut stream) => {
-                    ever_connected = true;
                     clients.spawn(async move { let mut bytes = [0u8; 1]; let _ = stream.read(&mut bytes).await; });
                 }
                 Err(_) => break,
             },
-            _ = clients.join_next(), if !clients.is_empty() => { idle = tokio::time::Instant::now(); },
-            () = tokio::time::sleep(Duration::from_millis(200)) => {
-                if clients.is_empty() && idle.elapsed() > Duration::from_secs(if ever_connected { 2 } else { 10 }) { break; }
-            }
+            _ = clients.join_next(), if !clients.is_empty() => {},
         }
     }
     cancel.cancel();
@@ -569,7 +558,10 @@ fn factory_recipe(
     } else {
         std::env::consts::OS
     };
-    let name = format!("{platform}-{}", machine_id.replace('-', ""));
+    let name = config["factoryName"]
+        .as_str()
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("{platform}-{}", machine_id.replace('-', "")));
     let mut args = vec![
         "host".into(),
         "--factory-name".into(),
@@ -581,7 +573,11 @@ fn factory_recipe(
         "--vm-workspace".into(),
         "/workspace".into(),
         "--vm-memory-mib".into(),
-        "2048".into(),
+        config["vmMemoryMiB"].as_u64().unwrap_or(2048).to_string(),
+        "--vm-cpus".into(),
+        config["vmCpus"].as_u64().unwrap_or(2).to_string(),
+        "--max-vms".into(),
+        config["maxVms"].as_u64().unwrap_or(4).to_string(),
         "--log-format".into(),
         "json".into(),
     ];
@@ -695,20 +691,18 @@ async fn supervise_factory(
             .spawn();
         if let Ok(mut child) = child {
             let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
-            let mut ready = false;
-            let mut deadline = tokio::time::Instant::now() + Duration::from_secs(90);
             let mut log = log_file(directory, "vm.log").ok();
+            // A live factory owns reconnects, including its initial connection.
             loop {
                 tokio::select! {
                     () = cancel.cancelled() => break,
-                    () = tokio::time::sleep_until(deadline), if !ready => break,
                     line = lines.next_line() => match line {
                         Ok(Some(line)) => {
                             if let Some(log) = &mut log { let _ = writeln!(log, "{}", line.replace(key, "[redacted]")); }
                             if let Ok(entry) = serde_json::from_str::<Value>(&line) {
                                 match entry["fields"]["stage"].as_str() {
-                                    Some("vm.host.ready") => { ready = true; update("connected"); },
-                                    Some("vm.host.reconnecting") => { if ready { deadline = tokio::time::Instant::now() + Duration::from_secs(90); } ready = false; update("connecting"); },
+                                    Some("vm.host.ready") => update("connected"),
+                                    Some("vm.host.reconnecting") => update("connecting"),
                                     _ => {},
                                 }
                             }
@@ -793,6 +787,22 @@ mod tests {
     }
 
     #[test]
+    fn publisher_lock_is_exclusive_and_released_on_drop() {
+        let temp = tempfile::tempdir().unwrap();
+        let publisher = super::super::native_hand::NativeStateLock(
+            log_file(temp.path(), "hand-daemon.lock").unwrap(),
+        );
+        publisher.0.try_lock().unwrap();
+        let contender = log_file(temp.path(), "hand-daemon.lock").unwrap();
+        assert!(matches!(
+            contender.try_lock(),
+            Err(fs::TryLockError::WouldBlock)
+        ));
+        drop(publisher);
+        contender.try_lock().unwrap();
+    }
+
+    #[test]
     #[cfg(unix)]
     fn installed_log_directory_can_be_shared_while_log_contents_remain_private() {
         use std::os::unix::fs::PermissionsExt;
@@ -808,7 +818,7 @@ mod tests {
         assert!(log_file(temp.path(), "hand.log").is_err());
     }
     #[tokio::test]
-    async fn publisher_survives_one_client_and_stops_after_last_client() {
+    async fn publisher_survives_last_client_until_service_shutdown() {
         #[cfg(unix)]
         let path = PathBuf::from(format!("/tmp/ncx-{}.sock", uuid::Uuid::new_v4()));
         #[cfg(windows)]
@@ -826,13 +836,16 @@ mod tests {
             "closing the CLI must not stop the app's native host or VMs"
         );
         drop(second);
-        tokio::time::timeout(Duration::from_secs(4), cancel.cancelled())
-            .await
-            .unwrap();
+        tokio::time::sleep(Duration::from_millis(2300)).await;
+        assert!(
+            !cancel.is_cancelled(),
+            "last client must not stop the service"
+        );
+        cancel.cancel();
         watching.await.unwrap();
     }
     #[tokio::test]
-    async fn reconnect_during_grace_preserves_publisher() {
+    async fn reconnect_preserves_publisher() {
         #[cfg(unix)]
         let path = PathBuf::from(format!("/tmp/ncx-{}.sock", uuid::Uuid::new_v4()));
         #[cfg(windows)]

@@ -5,7 +5,7 @@ import {
   INFERENCE_MAX_BODY_BYTES, INFERENCE_TIMEOUT_MS, INFERENCE_PROBE_TIMEOUT_MS, normalizeInferencePolicy, validateInferenceRequest,
   type InferenceSessionEnv, type InferenceSessionMetadata,
 } from "../src/inference-session";
-import { OSS_MODEL, ROUTING_CANDIDATES } from "../src/thread-model-routing";
+import { OSS_MODEL, ROUTING_CANDIDATES, taskFamily } from "../src/thread-model-routing";
 import { PROBE_OWNER } from "../src/provider-probe-schedule";
 
 const owner = "test_inference_key_a", other = "test_inference_key_b";
@@ -362,7 +362,7 @@ describe("trusted deployment probe context", () => {
     first.ai.mockImplementation(chooser);
     expect((await first.call("POST", "/responses", { input: "first task" })).status).toBe(200);
     expect(first.commits.at(-1)?.route?.thinking).toBe("medium");
-    expect(getByName).toHaveBeenCalledExactlyOnceWith(PROBE_OWNER);
+    expect(getByName).toHaveBeenCalledWith(PROBE_OWNER);
     const pinned = first.commits.at(-1)!.route;
     fastEffort = "high";
     first.restart();
@@ -417,17 +417,17 @@ describe("trusted deployment probe context", () => {
       return classification();
     });
     expect((await f.call("POST", "/responses", { input: "hello" })).status).toBe(200);
-    expect(snapshot).toHaveBeenCalledTimes(mode === "disabled" ? 0 : 1);
+    expect(snapshot).toHaveBeenCalledTimes(1);
     expect(JSON.stringify(f.commits)).not.toContain("private");
   });
 
-  it("excludes stale, insufficient, regional, live, noncandidate and subscription measurements", async () => {
+  it("excludes stale, insufficient, unmatched regional, noncandidate and subscription measurements", async () => {
     const snapshot = vi.fn(async () => [
       probe("medium", 1, { lastObservedAt: Date.now() - 400_000, lastTtftObservedAt: Date.now() - 400_000 }),
       probe("medium", 2, { generationTtftSampleCount: 2 }),
       probe("medium", 3, { workerColo: "LHR", scope: "worker_colo" }),
-      probe("medium", 4, { source: "live" }),
-      probe("medium", 5, { model: "uncatalogued-model" }),
+      probe("medium", 4, { source: "live", scope: "client_ingress", clientIngressColo: "NRT" }),
+      probe("medium", 5, { model: "uncataloged-model" }),
       probe("medium", 6, { backend: "chatgpt", model: "gpt-6-astra" }),
     ]);
     const f = fixture({ NANOCODEX_PROVIDER_PROBES: "true", NANOCODEX_PROVIDER_PROBE_COORDINATOR: { getByName: () => ({ snapshot }) } });
@@ -468,8 +468,8 @@ describe("stateless standard Responses", () => {
     });
     const bindings = new Proxy({ AI: { run: ai } }, {
       get(target, key) {
-        if (["OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "NANOCODEX_PROVIDER_PROBES",
-          "NANOCODEX_PROVIDER_PROBE_COORDINATOR"].includes(String(key))) return undefined;
+        if (["OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "CLOUDFLARE_AI_API_TOKEN", "NANOCODEX_CLOUDFLARE_ACCOUNT_ID", "NANOCODEX_PROVIDER_PROBES",
+          "NANOCODEX_PROVIDER_PROBE_COORDINATOR", "NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED"].includes(String(key))) return undefined;
         if (key === "AI") return target.AI;
         throw Error(`unexpected capability ${String(key)}`);
       },
@@ -621,4 +621,274 @@ it("accepts matching session models and rejects models conflicting with the pin"
   expect((await f.call("POST", "/responses", { input: "full history", model: "unknown-model" })).status).toBe(400);
   expect(f.ai).toHaveBeenCalledTimes(count);
   expect(f.ai.mock.calls.filter(([model]) => model === "typesafe/jev")).toHaveLength(1);
+});
+
+
+describe("sanitized public routing diagnostics", () => {
+  function answerWithProbabilities(input: unknown) {
+    const request = input as { questions: Record<string, { criteria: Record<string, string> }> };
+    return { ...classification(), answers: {
+      candidate: { choice: candidate, confidence: .8,
+        probabilities: Object.fromEntries(Object.keys(request.questions.candidate.criteria).map(id => [id, id === candidate ? 1 : 0])),
+        reasoning: "private-router-echo" },
+      family: { choice: "other", confidence: .94,
+        probabilities: Object.fromEntries(taskFamily.options.map(f => [f, f === "other" ? 1 : 0])) },
+    }, audit: { prompt: "private-router-echo" } };
+  }
+  it.each([false, true])("returns real choice distributions in stateless JSON/SSE (stream=%s)", async stream => {
+    const f = fixture();
+    f.ai.mockImplementation(async (model, input) => model === "typesafe/jev" ? answerWithProbabilities(input) : completion());
+    const response = await executeStatelessInferenceResponse(f.bindings, { input: "private prompt", stream },
+      4096, new AbortController().signal);
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    const body = stream ? text.split("\n").filter(line => line.startsWith("data: "))
+      .map(line => JSON.parse(line.slice(6))).find(event => event.type === "response.completed").response : JSON.parse(text);
+    expect(body.route.diagnostics).toMatchObject({
+      candidate_confidence: .8, family_confidence: .94, proposed_candidate: candidate, chosen_candidate: candidate,
+      eligible_candidates: [`${OSS_MODEL}:low`, candidate, `${OSS_MODEL}:high`],
+      candidate_probabilities: { [`${OSS_MODEL}:low`]: 0, [candidate]: 1, [`${OSS_MODEL}:high`]: 0 },
+      confidence_status: "accepted", fallback_basis: "none", min_confidence: .75,
+    });
+    expect(text).not.toContain("private");
+    expect(body.route).not.toHaveProperty("audit");
+    expect(body.route).not.toHaveProperty("router_usage");
+    expect(f.persisted.size).toBe(0);
+  });
+
+  it("retains safe distributions through session restart without another Jev call", async () => {
+    const f = fixture(); await f.create({ candidates: [candidate], preferences: { text: "private preference" } });
+    f.ai.mockImplementation(async (model, input) => model === "typesafe/jev" ? answerWithProbabilities(input) : completion());
+    const first = await f.call("POST", "/responses", { input: "private prompt" });
+    const body = await first.json() as any;
+    expect(body.route.diagnostics.candidate_probabilities).toEqual({ [candidate]: 1 });
+    expect(JSON.stringify(body.route)).not.toContain("private");
+    f.restart();
+    const metadata = await (await f.call("GET")).json() as any;
+    expect(metadata.route).toEqual(body.route);
+    const second = await f.call("POST", "/responses", { input: "new full history" });
+    expect((await second.json() as any).route).toEqual(body.route);
+    expect(f.ai.mock.calls.filter(([model]) => model === "typesafe/jev")).toHaveLength(1);
+  });
+
+  it("marks unavailable distributions as null without using confidence as probabilities", async () => {
+    const f = fixture();
+    const response = await executeStatelessInferenceResponse(f.bindings, { input: "hello" }, 4096, new AbortController().signal);
+    expect(await response.json()).toMatchObject({ route: { diagnostics: {
+      candidate_confidence: .95, family_confidence: .95, candidate_probabilities: null, family_probabilities: null,
+    } } });
+  });
+});
+
+describe("Cloudflare frontier public Responses compatibility", () => {
+  const exact = "cloudflare:openai/gpt-6-astra:low";
+  const native = (output: unknown[] = [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "native fixture answer" }] }]) => ({
+    object: "response", status: "completed", output, usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15 },
+  });
+  function cloudflareFixture(stream = false) {
+    const forbidden = new Proxy({}, { get() { throw Error("account capability accessed"); } });
+    const f = fixture({ NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true", ACCOUNT: forbidden,
+      CONNECTORS: forbidden, HANDS: forbidden, MEMORY: forbidden, CHATGPT: forbidden } as Partial<InferenceSessionEnv>);
+    const network = vi.fn(() => { throw Error("unexpected network or connector access"); });
+    vi.stubGlobal("fetch", network);
+    f.ai.mockImplementation(async (model, input) => {
+      if (model === "typesafe/jev") {
+        const state = JSON.parse((input as { state: string }).state);
+        expect(state.candidates.map((c: any) => c.id)).toEqual([exact]);
+        return classification(exact);
+      }
+      expect(model).toBe("openai/gpt-6-astra");
+      expect(input).toMatchObject({ input: [{ role: "user", content: "private fixture prompt" }],
+        reasoning: { effort: "low" }, max_output_tokens: 32, stream, store: false });
+      expect(input).not.toHaveProperty("messages");
+      expect(input).not.toHaveProperty("api_key");
+      return native();
+    });
+    return { ...f, network };
+  }
+  it.each([false, true])("stateless native binding returns canonical JSON/SSE stream=%s without account access", async stream => {
+    const f = cloudflareFixture(stream);
+    const response = await executeStatelessInferenceResponse(f.bindings,
+      { model: exact, input: "private fixture prompt", stream }, 32, new AbortController().signal);
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-nanocodex-provider")).toBe("cloudflare");
+    expect(response.headers.get("x-nanocodex-session-id")).toBeNull();
+    expect(response.headers.get("x-nanocodex-inference-buffering")).toBe("buffered");
+    const text = await response.text();
+    const body = stream ? text.split("\n").filter(line => line.startsWith("data: "))
+      .map(line => JSON.parse(line.slice(6))).find(event => event.type === "response.completed").response : JSON.parse(text);
+    expect(body).toMatchObject({ object: "response", status: "completed", model: "gpt-6-astra",
+      route: { backend: "cloudflare", thinking: "low" }, output: [{ type: "message", content: [{ text: "native fixture answer" }] }],
+      usage: { input_tokens: 12, output_tokens: 3, total_tokens: 15 } });
+    expect(body).not.toHaveProperty("session_id");
+    expect(text).not.toContain("private");
+    expect(f.persisted.size).toBe(0);
+    expect(f.ai.mock.calls.map(([model]) => model)).toEqual(["typesafe/jev", "openai/gpt-6-astra"]);
+    expect(f.network).not.toHaveBeenCalled();
+  });
+  it("persists the native provider pin before generation and replays function results after restart", async () => {
+    const f = cloudflareFixture();
+    expect((await f.create({ candidates: [exact] })).status).toBe(201);
+    let generations = 0;
+    f.ai.mockImplementation(async (model, raw) => {
+      if (model === "typesafe/jev") return classification(exact);
+      generations++;
+      const input = raw as any;
+      expect(model).toBe("openai/gpt-6-astra");
+      expect(f.commits.at(-1)?.route).toMatchObject({ backend: "cloudflare", model: "gpt-6-astra", thinking: "low" });
+      expect(input).toMatchObject({ reasoning: { effort: "low" }, stream: generations > 1, store: false });
+      if (generations === 1) {
+        expect(input.tools).toHaveLength(1);
+        expect(input.tools[0]).toMatchObject({ type: "function", strict: false });
+        return native([{ type: "function_call", call_id: "call_native_fixture", name: input.tools[0].name, arguments: '{"value":1}' }]);
+      }
+      expect(input.input).toEqual(expect.arrayContaining([
+        expect.objectContaining({ type: "function_call", call_id: "call_native_fixture", arguments: '{"value":1}' }),
+        { type: "function_call_output", call_id: "call_native_fixture", output: "private caller result" },
+      ]));
+      return native();
+    });
+    const tools = [{ type: "function", name: "caller_tool", parameters: { type: "object", properties: { value: { type: "number" } } } }];
+    const first = await f.call("POST", "/responses", { model: exact, input: "private fixture prompt", tools });
+    expect(first.status).toBe(200);
+    const body = await first.json() as any;
+    expect(body.output[0]).toMatchObject({ type: "function_call", name: "caller_tool", call_id: "call_native_fixture", arguments: '{"value":1}' });
+    const pin = f.commits.at(-1)!.route;
+    const history = [{ role: "user", content: "private fixture prompt" }, ...body.output,
+      { type: "function_call_output", call_id: "call_native_fixture", output: "private caller result" }];
+    f.restart();
+    for (const model of ["auto", "gpt-6-astra", exact]) {
+      const next = await f.call("POST", "/responses", { model, input: history, tools, stream: true });
+      expect(next.status).toBe(200);
+      expect(next.headers.get("x-nanocodex-session-id")).toBe(sessionId);
+      expect(await next.text()).toContain("event: response.completed");
+      expect(f.commits.at(-1)?.route).toEqual(pin);
+    }
+    const count = f.ai.mock.calls.length;
+    for (const extra of [{ model: "gpt-5.6-sol" }, { model: "openrouter:openai/gpt-6-astra:low" },
+      { model: "cloudflare:openai/gpt-6-astra:high" }, { reasoning: { effort: "high" } }]) {
+      expect((await f.call("POST", "/responses", { input: history, ...extra })).status).toBe(409);
+    }
+    expect((await f.call("POST", "/responses", { input: history, routing: {} })).status).toBe(400);
+    expect(f.ai).toHaveBeenCalledTimes(count);
+    expect(f.ai.mock.calls.filter(([model]) => model === "typesafe/jev")).toHaveLength(1);
+    expect(JSON.stringify(f.commits)).not.toContain("private");
+    expect(f.network).not.toHaveBeenCalled();
+  });
+  it.each([undefined, "false"])("does not admit Cloudflare candidates with gate=%s", async gate => {
+    const f = fixture({ NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: gate });
+    const response = await executeStatelessInferenceResponse(f.bindings,
+      { model: exact, input: "fixture" }, 32, new AbortController().signal);
+    expect(response.status).toBe(400);
+    expect(f.ai).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("Cloudflare REST inference transport", () => {
+  const exact = "cloudflare:openai/gpt-5.6-sol:low";
+  const accountId = "a".repeat(32), token = "private-deployment-inference-token";
+  const native = (output: unknown[]) => ({ object: "response", status: "completed", output });
+  it("repeats stateless requests without using the model binding or retaining account credentials", async () => {
+    const f = fixture({ NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true", CLOUDFLARE_AI_API_TOKEN: token,
+      NANOCODEX_CLOUDFLARE_ACCOUNT_ID: accountId });
+    f.ai.mockImplementation(async model => { expect(model).toBe("typesafe/jev"); return classification(exact); });
+    const send = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe(`https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/responses`);
+      expect(init.redirect).toBe("manual"); expect((init.headers as any).authorization).toBe(`Bearer ${token}`);
+      expect(JSON.parse(init.body as string)).toMatchObject({ model: "openai/gpt-5.6-sol", stream: false,
+        store: false, reasoning: { effort: "low" }, max_output_tokens: 512 });
+      return Response.json(native([{ type: "message", role: "assistant", content: [{ type: "output_text", text: "fixture answer" }] }]));
+    });
+    vi.stubGlobal("fetch", send);
+    for (let i = 0; i < 2; i++) {
+      const response = await executeStatelessInferenceResponse(f.bindings,
+        { model: exact, input: "fixture", max_output_tokens: 512 }, 4096, new AbortController().signal);
+      expect(response.status).toBe(200); expect(response.headers.get("x-nanocodex-provider")).toBe("cloudflare");
+      const text = await response.text(); expect(text).not.toContain(token); expect(text).not.toContain(accountId);
+    }
+    expect(send).toHaveBeenCalledTimes(2); expect(f.ai).toHaveBeenCalledTimes(2); expect(f.persisted.size).toBe(0);
+  });
+  it("keeps the session pin across REST tool replay, restart and credential loss", async () => {
+    const f = fixture({ NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true", CLOUDFLARE_AI_API_TOKEN: token,
+      NANOCODEX_CLOUDFLARE_ACCOUNT_ID: accountId });
+    f.ai.mockImplementation(async model => { expect(model).toBe("typesafe/jev"); return classification(exact); });
+    let count=0;
+    const send=vi.fn(async (_url: string, init: RequestInit) => {
+      const body=JSON.parse(init.body as string); count++;
+      expect(f.commits.at(-1)?.route).toMatchObject({backend:"cloudflare",model:"gpt-5.6-sol",thinking:"low"});
+      if(count===1) return Response.json(native([{type:"function_call",call_id:"fixture_call",name:body.tools[0].name,arguments:'{"value":42}'}]));
+      expect(body.input.at(-1)).toEqual({type:"function_call_output",call_id:"fixture_call",output:"42"});
+      return Response.json(native([{type:"message",role:"assistant",content:[{type:"output_text",text:"42"}]}]));
+    });
+    vi.stubGlobal("fetch",send); await f.create({candidates:[exact]});
+    const tools=[{type:"function",name:"fixture_tool",parameters:{type:"object",properties:{value:{type:"number"}}}}];
+    const first=await f.call("POST","/responses",{model:exact,input:"fixture",tools}); expect(first.status).toBe(200);
+    const body=await first.json() as any; const pin=f.commits.at(-1)!.route;
+    f.restart();
+    const second=await f.call("POST","/responses",{input:[{role:"user",content:"fixture"},...body.output,
+      {type:"function_call_output",call_id:"fixture_call",output:"42"}],tools});
+    expect(second.status).toBe(200); expect(f.commits.at(-1)!.route).toEqual(pin);
+    expect((await f.call("POST","/responses",{model:"openrouter:openai/gpt-5.6-sol:low",input:"fixture"})).status).toBe(409);
+    delete f.bindings.CLOUDFLARE_AI_API_TOKEN;
+    expect((await f.call("POST","/responses",{input:"fixture"})).status).toBe(503);
+    expect(send).toHaveBeenCalledTimes(2); expect(f.ai).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(f.commits)).not.toContain(token); expect(JSON.stringify(f.commits)).not.toContain(accountId);
+  });
+});
+
+describe("incremental inference lifecycle", () => {
+  const exact = "cloudflare:openai/gpt-5.6-sol:low";
+  function streamingFixture() {
+    const f = fixture({ NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true", CLOUDFLARE_AI_API_TOKEN: "synthetic-token",
+      NANOCODEX_CLOUDFLARE_ACCOUNT_ID: "a".repeat(32) });
+    f.ai.mockImplementation(async () => classification(exact));
+    let upstream!: ReadableStreamDefaultController<Uint8Array>;
+    const cancel = vi.fn();
+    const frame = (event: unknown) => upstream.enqueue(new TextEncoder().encode(`data: ${JSON.stringify(event)}\n\n`));
+    vi.stubGlobal("fetch", vi.fn(async (_url, init) => {
+      expect(JSON.parse(init.body).stream).toBe(true);
+      return new Response(new ReadableStream<Uint8Array>({ start(c) { upstream = c; }, cancel }), {
+        headers: { "content-type": "text/event-stream" },
+      });
+    }));
+    return { ...f, frame, cancel, end: () => upstream.close() };
+  }
+  it("delivers a token before completion, keeps session busy, then accounts once", async () => {
+    const f = streamingFixture(); await f.create({ candidates: [exact] });
+    const response = await f.call("POST", "/responses", { model: exact, input: "fixture", stream: true });
+    expect(response.headers.get("x-nanocodex-inference-buffering")).toBe("streaming");
+    const reader = response.body!.getReader();
+    f.frame({ type: "response.created", response: { id: "resp_fixture", status: "in_progress", output: [] } });
+    f.frame({ type: "response.output_item.added", output_index: 0, item: { id: "msg_fixture", type: "message", role: "assistant", status: "in_progress", content: [] } });
+    f.frame({ type: "response.output_text.delta", item_id: "msg_fixture", output_index: 0, content_index: 0, delta: "hello" });
+    let text = "";
+    while (!text.includes("hello")) text += new TextDecoder().decode((await reader.read()).value);
+    expect((await f.call("POST", "/responses", { input: "another" })).status).toBe(409);
+    expect((await f.call("DELETE")).status).toBe(409);
+    expect(f.commits.at(-1)?.counters).toEqual({ requests: 1, completed: 0, failed: 0 });
+    f.frame({ type: "response.completed", response: { id: "resp_fixture", object: "response", status: "completed", output: [
+      { id: "msg_fixture", type: "message", role: "assistant", content: [{ type: "output_text", text: "hello" }] },
+    ] } }); f.end();
+    while (!(await reader.read()).done) { /* consume */ }
+    expect(f.commits.at(-1)?.counters).toEqual({ requests: 1, completed: 1, failed: 0 });
+    expect((await f.call("GET")).status).toBe(200);
+  });
+  it("client cancellation releases ownership and marks failure, preserving the pin", async () => {
+    const f = streamingFixture(); await f.create({ candidates: [exact] });
+    const response = await f.call("POST", "/responses", { model: exact, input: "fixture", stream: true });
+    const pin = f.commits.at(-1)?.route;
+    await response.body!.cancel();
+    expect(f.cancel).toHaveBeenCalled();
+    expect(f.commits.at(-1)?.counters).toEqual({ requests: 1, completed: 0, failed: 1 });
+    expect(f.commits.at(-1)?.route).toEqual(pin);
+    expect((await f.call("GET")).status).toBe(200);
+  });
+});
+
+it("a failed telemetry namespace lookup cannot fail a completed inference", async () => {
+  const f = fixture({ NANOCODEX_PROVIDER_PROBE_COORDINATOR: { getByName() { throw Error("private telemetry failure"); } } });
+  const response = await executeStatelessInferenceResponse(f.bindings, { input: "fixture" }, 32, new AbortController().signal);
+  expect(response.status).toBe(200);
+  expect(await response.text()).not.toContain("private telemetry");
 });

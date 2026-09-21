@@ -38,6 +38,34 @@ its effective permission policy without starting the desktop GUI. A provider lau
 outer Nanocodex adapter intentionally advertises no elicitation capability;
 adding it there does not establish a working permission UI.
 
+## Timeout ownership and cancellation
+
+`timeout_ms` belongs to the upstream provider. Nanocodex forwards it unchanged and
+awaits the provider result; it does not subtract queueing or startup time, supply
+a default execution timeout, or abandon a call based on that argument. The macOS
+app-server bridge likewise delegates tool execution timeouts to the official app
+server ([configured MCP tool timeout](official-app-server-bridge.md#transport),
+upstream default 300 seconds) while keeping
+trusted connection and startup deadlines. This applies to standalone and managed
+bridges. An unresponsive tool remains governed by upstream timeout handling or
+caller cancellation.
+
+For direct MCP processes, the Rust adapter gives each provider startup a trusted
+120-second cumulative deadline covering initialization and complete catalog
+discovery. This applies both to `ComputerTools::connect` and to each conversation's
+new provider process. It does not consume or derive from `timeout_ms`, and ends
+before tool execution starts. Startup expiry discards that owned transport; a
+conversation interrupted during startup requires explicit reset. The managed
+macOS launcher also retains its separate phase deadlines.
+
+Genuine caller cancellation discards only the affected conversation's owned
+transport and marks its session interrupted. Other conversations retain their
+sessions. A successful explicit `js_reset` is required before continuing; a failed
+reset leaves the session interrupted. Follow reset with a fresh
+observation of the intended surface. Closing the transport or resetting the
+session is not proof that upstream/native input stopped. Effects may be uncertain;
+never automatically replay that input.
+
 ## Browser selection
 
 OpenAI's browser selector accepts exact discovered browser IDs and lowercase
@@ -61,9 +89,10 @@ and includes an initial accessibility observation. It accepts an app name, path,
 or bundle ID, not a native window ID. A running process alone does not guarantee
 a responsive or usable app window.
 
-If that initial observation stalls, reset the CUA session when the timeout asks
-for it. Use supported CUA to open the intended app normally from an observed
-launcher, such as its item in Finder, then select it again. In live Slack testing,
+If that initial observation fails with a provider timeout, or the caller cancels
+the wait, reset the CUA session before continuing. Reset does not establish that
+earlier upstream/native operations stopped; inspect fresh state before acting.
+Use supported CUA to open the intended app normally from an observed launcher, such as its item in Finder, then select it again. In live Slack testing,
 opening the installed app through Finder recovered a stalled initial snapshot;
 subsequent background observations, search, channel navigation, and a fresh CUA
 session succeeded without opening ChatGPT. This is a verified recovery, not proof

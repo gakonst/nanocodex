@@ -78,3 +78,10 @@ For an already-created empty managed agent, `POST /v1/agents/{id}/routing` with 
 Native `nanocodex` does not yet have production integration for the managed provider router. Its `/autoroute` command explicitly reports that limitation and never claims to enable routing or submits the command as a prompt. The earlier native routing verification used an external adapter; it was not native terminal integration.
 
 The model footer shows `Auto · choosing…` before selection, then the retained model, provider and effort. Child choices never replace the main-thread label. Read-only route metadata restores it on reconnect; a new manual thread returns to normal model defaults. See [terminal and subagent verification](THREAD_ROUTING_UX_2026_09_21.md).
+
+
+### Cloudflare frontier routes
+
+A deployment can opt into Cloudflare's Astra, Sol, Terra, and Luna routes by setting `NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED=true` with its AI binding configured and funded. Their candidate IDs are `cloudflare:openai/<canonical-model>:<low|medium|high>`, and the reported backend is `cloudflare`. Native Cloudflare GLM remains `workers_ai`. Missing/false preserves the prior candidate set; existing committed root and child routes never migrate. Individual threads still require the existing routing opt-in before their first message.
+
+Cloudflare frontier calls use native Responses requests through the AI binding. They support portable tool/history replay and the same independently pinned subagent routing as the other gateways. Synthetic streaming probes use Responses events for generation TTFT; initial headers and creation events are not generated tokens. The existing probe schedule switch controls whether probes run. Unverified Cloudflare token pricing remains unknown rather than zero.

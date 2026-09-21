@@ -248,32 +248,19 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-      actions: read
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       DEPLOY_MESSAGE: GitHub Actions production ${{ github.sha }}
+      GH_TOKEN: ${{ github.token }}
+      DEPLOY_TARGET: ${{ inputs.target }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
       - name: Skip a push superseded while its images were building
         id: current-release
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPO: ${{ github.repository }}
-          EVENT: ${{ github.event_name }}
-        run: |
-          active=true
-          if [ "$EVENT" = push ]; then
-            latest=$(gh api "repos/$GH_REPO/actions/workflows/cloudflare.yml/runs?branch=master&event=push&per_page=1" --jq '.workflow_runs[0].id')
-            [[ "$latest" =~ ^[0-9]+$ ]]
-            if [ "$latest" != "$GITHUB_RUN_ID" ]; then
-              active=false
-              echo 'A newer production push exists; skipping this superseded deployment.'
-            fi
-          fi
-          echo "active=$active" >> "$GITHUB_OUTPUT"
+        run: node scripts/cloudflare/current-production-release.mjs
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         if: steps.current-release.outputs.active == 'true'
         with:
@@ -329,32 +316,38 @@ jobs:
       - name: Build Astra trial application
         if: steps.current-release.outputs.active == 'true'
         run: npm run build:client --prefix examples/astra-mpp-trial
+      - name: Build agent email service
+        if: steps.current-release.outputs.active == 'true'
+        run: pnpm --filter nanocodex-email-service run build
+      # Recheck actual master immediately before every production mutation. A
+      # passing early check cannot authorize a checkout superseded during builds.
+      # Explicit production dispatch still permits an intentional rollback.
       - name: Deploy egress broker
         if: steps.current-release.outputs.active == 'true'
         working-directory: js/egress
-        run: npx wrangler deploy --config wrangler.broker.jsonc --message "$DEPLOY_MESSAGE"
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.broker.jsonc --message "$DEPLOY_MESSAGE"
       - name: Deploy X Worker
         if: steps.current-release.outputs.active == 'true'
-        run: pnpm deploy:x
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- pnpm deploy:x
       - name: Deploy managed agent service
         if: steps.current-release.outputs.active == 'true'
         working-directory: js/managed
-        run: npx wrangler deploy --config wrangler.ci.jsonc --containers-rollout immediate --message "$DEPLOY_MESSAGE"
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.ci.jsonc --containers-rollout immediate --message "$DEPLOY_MESSAGE"
       - name: Deploy agent email service
         if: steps.current-release.outputs.active == 'true'
-        run: pnpm deploy:email
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- pnpm --filter nanocodex-email-service run deploy
       - name: Deploy Connect dialog assets
         if: steps.current-release.outputs.active == 'true'
         working-directory: js/connect-dialog
-        run: npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
       - name: Deploy Connect API
         if: steps.current-release.outputs.active == 'true'
         working-directory: js/connect-api
-        run: npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
       - name: Deploy Astra trial application
         if: steps.current-release.outputs.active == 'true'
         working-directory: examples/astra-mpp-trial
-        run: npx wrangler deploy --env="" --message "$DEPLOY_MESSAGE"
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --env="" --message "$DEPLOY_MESSAGE"
       - name: Configure Astra trial secrets
         if: steps.current-release.outputs.active == 'true'
         working-directory: examples/astra-mpp-trial
@@ -378,23 +371,24 @@ jobs:
                 ["TEMPO_MPP_API_KEY", process.env.TEMPO_API_KEY],
               ].filter(([, value]) => value);
               process.stdout.write(JSON.stringify(Object.fromEntries(entries)));
-            ' | npx wrangler secret bulk --env=""
+            ' | node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler secret bulk --env=""
           fi
       - name: Deploy Chief of Staff integration
         if: steps.current-release.outputs.active == 'true'
         working-directory: js/chief-of-staff
-        run: npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
       - name: Deploy Connect playground
         if: steps.current-release.outputs.active == 'true'
         working-directory: js/connect-playground
-        run: npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
       - name: Deploy account application
+        id: account-release
         if: steps.current-release.outputs.active == 'true'
         working-directory: js/account
-        run: npx wrangler deploy --config dist/nanocodex/wrangler.json --message "$DEPLOY_MESSAGE"
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config dist/nanocodex/wrangler.json --message "$DEPLOY_MESSAGE"
 
       - name: Verify deployed account Worker health
-        if: steps.current-release.outputs.active == 'true'
+        if: steps.account-release.outputs.active == 'true'
         timeout-minutes: 1
         run: |
           node --input-type=module <<'JS'

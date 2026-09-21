@@ -53,6 +53,26 @@ it("real key issuance and public gateway sessions isolate two callers", async ()
   const catalog = await models.json<{data: Array<{provider: string}>}>();
   expect(catalog.data.length).toBe(3);
   expect(catalog.data.every(candidate => candidate.provider === "workers_ai")).toBe(true);
+  // The catalog is deployment gated and inference-only even when every
+  // standalone transport is configured. No subscription/account models leak.
+  bindings.OPENROUTER_API_KEY = "synthetic-catalog-only";
+  bindings.AI_GATEWAY_API_KEY = "synthetic-catalog-only";
+  for (const gate of [undefined, "false", "true"] as const) {
+    bindings.NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED = gate;
+    const result = await call("/models", "GET", undefined, key1.api_key);
+    expect(result.status).toBe(200);
+    const expanded = await result.json<{ data: Array<{ id: string; provider: string }> }>();
+    expect(expanded.data).toHaveLength(gate === "true" ? 45 : 33);
+    expect(expanded.data.some(c => c.provider === "chatgpt")).toBe(false);
+    const cloudflare = expanded.data.filter(c => c.provider === "cloudflare");
+    expect(cloudflare).toHaveLength(gate === "true" ? 12 : 0);
+    if (gate === "true") expect(cloudflare.map(c => c.id).sort()).toEqual(
+      ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].flatMap(model =>
+        ["low", "medium", "high"].map(effort => `cloudflare:openai/${model}:${effort}`)).sort());
+  }
+  delete bindings.OPENROUTER_API_KEY;
+  delete bindings.AI_GATEWAY_API_KEY;
+  delete bindings.NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED;
   const created = await call("/sessions", "POST", {}, key1.api_key);
   expect(created.status).toBe(201);
   const session = await created.json<{id:string; key_id:string; route:null}>();
@@ -103,4 +123,42 @@ it("standard Responses aliases require only inference credentials and preserve t
   expect(await response?.json()).toMatchObject({error:{code:"invalid_inference_request"}});
   const fullAccountRequest=new Request("https://nanocodex.example/v1/responses",{method:"POST",headers:{authorization:"Bearer ncx_live_synthetic"},body:"{}"});
   expect((await routeInferenceApi(fullAccountRequest,bindings,new URL(fullAccountRequest.url)))?.status).toBe(401);
+});
+
+it("takes inference origin only from Cloudflare metadata and rebuilds private session headers", async () => {
+  const userId = crypto.randomUUID();
+  const states: any[] = [], forwarded: Request[] = [];
+  const bindings = { ...env, NANOCODEX_INFERENCE_ENABLED: "true", NANOCODEX_ADMIN_USER_ID: userId,
+    AI: { run: async (model: string, input: any) => {
+      if (model === "typesafe/jev") {
+        states.push(JSON.parse(input.state));
+        return { answers: { candidate: { choice: "@cf/zai-org/glm-5.3:medium", confidence: .9 }, family: { choice: "other", confidence: .9 } } };
+      }
+      return { choices: [{ message: { content: "fixture" }, finish_reason: "stop" }] };
+    } },
+  } as unknown as InferenceApiEnv;
+  const principal = { kind: "api_key", userId, organizationId: crypto.randomUUID(), teamId: crypto.randomUUID(), role: "owner",
+    subjectId: `user:${userId}`, credentialId: "fixture", authorizationEpoch: 1, capabilities: ["api_keys:write"] } as const;
+  const issue = new Request("https://fixture.invalid/v1/inference/keys", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ label: "fixture" }) });
+  const issued = await (await routeInferenceApi(issue, bindings, new URL(issue.url), principal))!.json<{api_key: string}>();
+  for (const origin of [undefined, "LHR"]) {
+    const request = new Request("https://fixture.invalid/v1/responses", { method: "POST",
+      headers: { authorization: `Bearer ${issued.api_key}`, "x-inference-ingress-colo": "NRT", "cf-ipcountry": "JP" },
+      body: JSON.stringify({ input: "fixture" }), ...(origin ? { cf: { colo: origin } } : {}),
+    });
+    const response = (await routeInferenceApi(request, bindings, new URL(request.url)))!;
+    expect(response.status).toBe(200);
+    expect(response.headers.get("x-nanocodex-ingress-colo")).toBe(origin ?? null);
+    await response.text();
+  }
+  expect(states.map(state => state.provider_telemetry.clientIngressColo)).toEqual([null, "LHR"]);
+  bindings.NANOCODEX_INFERENCE_SESSIONS = { getByName: () => ({ fetch: async (request: Request) => {
+    forwarded.push(request); return Response.json({ fixture: true });
+  } }) } as unknown as DurableObjectNamespace;
+  const request = new Request("https://fixture.invalid/v1/responses", { method: "POST",
+    headers: { authorization: `Bearer ${issued.api_key}`, "x-inference-ingress-colo": "NRT" }, cf: { colo: "SJC" },
+    body: JSON.stringify({ input: "fixture", session_id: crypto.randomUUID() }),
+  });
+  expect((await routeInferenceApi(request, bindings, new URL(request.url)))!.status).toBe(200);
+  expect(forwarded[0].headers.get("x-inference-ingress-colo")).toBe("SJC");
 });
