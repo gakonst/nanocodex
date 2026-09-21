@@ -50,25 +50,10 @@ MCP text, image, and audio content is translated to Nanocodex multimodal tool
 output. The full MCP result, including structured content and metadata, remains
 available as the structured result. Provider errors retain their failure status.
 
-Hosts can set `ComputerConfig.elicitation_handler` to an
-`Arc<dyn ComputerElicitationHandler>`. Only this configuration advertises
-`elicitation.form`. Both `elicitation/create` and `openai/elicitation/create`
-route provider-owned forms through that handler. The original request params,
-including `_meta`, and the active conversation/call identity reach the host UI.
-Discovery requests have no conversation identity.
-
-The host returns the user's `Accept`, `Decline`, or `Cancel` action with optional
-content and response metadata. The adapter never invents consent or copies
-provider persistence suggestions into the response. Provider text is untrusted
-UI data. Unsupported requests and forms without a host handler receive an MCP
-error. A handler timeout returns `cancel`, never approval.
-
-The handler future is dropped when the caller cancels, the provider disconnects
-or cancels its request, the requesting call completes, or `elicitation_timeout`
-expires (five minutes by default). Hosts must dismiss pending UI on future drop.
-Provider process lifetimes are exposed as weak references so host permission
-state cannot outlive the process. Upstream policy and operating-system grants
-continue to apply.
+Nanocodex does not advertise host elicitation, display consent forms, or retain
+permission decisions. Unhandled provider-to-client requests receive the standard
+MCP method-not-found error; provider errors are returned to the caller unchanged.
+OpenAI's provider and operating-system permission requirements remain in effect.
 
 Run the transport and provisioning tests without an installed provider:
 
@@ -77,7 +62,7 @@ cargo test -p nanocodex-computer
 ```
 
 The tests use mock stdio MCP processes to verify catalog and argument fidelity,
-conversation isolation, cancellation, and elicitation. The ignored
+conversation isolation, cancellation, and unsupported server requests. The ignored
 `installed_external_provider_discovery_preserves_catalog_and_hides_lifecycle_hook`
 smoke test uses `NANOCODEX_TEST_EXTERNAL_COMPUTER` to inspect an installed upstream
 launcher. It performs discovery only and does not claim to verify native control.

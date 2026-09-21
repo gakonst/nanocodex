@@ -6363,7 +6363,6 @@ dependencies = [
  "fs2",
  "futures-util",
  "image",
- "jsonschema",
  "kvm-ioctls",
  "nanocodex",
  "nanocodex-agent",

@@ -315,14 +315,10 @@ pub(super) async fn run_observed(
     let mut tools = Tools::builder()
         .without_defaults()
         .add(WorkspaceTools::new(state.machine.workspace()));
-    if let Some(mut config) = nanocodex_computer::ComputerConfig::discover_or_install()
+    if let Some(config) = nanocodex_computer::ComputerConfig::discover_or_install()
         .await
         .map_err(ManagedError::Configuration)?
     {
-        #[cfg(unix)]
-        super::computer_elicitation::configure(&mut config);
-        #[cfg(windows)]
-        super::computer_elicitation_windows::configure(&mut config);
         let computer = nanocodex_computer::ComputerTools::connect(config)
             .await
             .map_err(|error| ManagedError::Configuration(error.to_string()))?;

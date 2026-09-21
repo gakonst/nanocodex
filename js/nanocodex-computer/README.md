@@ -56,34 +56,10 @@ CUA calls carry `session_id`, `thread_id`, `call_id`, and `model` in
 `x-codex-turn-metadata`, plus `turn_id` when supplied by the agent runtime. The
 adapter never derives a turn ID from a tool call ID.
 
-Hosts with a genuine user-facing form UI can provide `elicitationHandler`:
-
-```js
-const computer = await connectComputerTools({
-  executable: providerExecutable,
-  args: providerArgs,
-  elicitationHandler: async (params, context) => {
-    // Display the provider's message, schema, and metadata in a real host UI.
-    // Dismiss the form when context.signal is aborted.
-    return await showHostForm(params, context);
-  },
-});
-```
-
-Only a configured handler advertises MCP `elicitation.form`. Form requests from
-`elicitation/create` or `openai/elicitation/create` are forwarded with their raw
-parameters and `_meta`; omitted mode means form. The host response preserves its
-content and metadata. The adapter never fabricates acceptance or persistence.
-Without a handler it returns method-not-found. Unsupported URL requests return
-an error. The desktop app currently supplies no form callback and therefore does
-not advertise interactive elicitation.
-
-Context includes `requestId`, `signal`, and the active tool's `sessionId`,
-`callId`, and `model`; discovery-time requests have no active tool identity.
-`elicitationTimeoutMs` defaults to 300000 and must be a positive safe integer.
-Expiry or provider cancellation returns `cancel`. Caller abort, call completion,
-release, process exit, and attachment close dismiss pending forms; late responses
-are ignored. Host exceptions produce an internal error without exposing details.
+Permissions and consent belong to the official OpenAI provider. The attachment
+advertises no MCP client capabilities and responds to incoming provider RPC
+requests with standard method-not-found (`-32601`) errors. Provider notifications
+receive no response.
 
 Run `pnpm --filter nanocodex-computer test` and
 `pnpm --filter nanocodex-computer typecheck`. Tests use synthetic MCP protocol

@@ -43,11 +43,14 @@ Windows setup also writes a Nanocodex-owned host script outside the verified
 OpenAI resources tree. It starts the packaged `WindowsHelperTransport` and signed
 helper through the upstream native-pipe integration, then starts the official
 MCP provider with that pipe. `CODEX_CLI_PATH` and the provider sandbox remain in
-place. The host forwards authentic turn metadata and approval requests through
-the SDK's `requestComputerUseApproval`/elicitation bridge; it never grants app
-access itself. Timeout, cancellation, disconnect, reset, and turn completion
-close pending approvals and the native helper. Each receipt retains its own host
-script so replacing the selected runtime does not overwrite a running host.
+place. The host forwards authentic turn metadata and the SDK's
+`requestComputerUseApproval` messages between the native helper and official
+provider. This bridge carries upstream protocol messages; it supplies no consent
+UI, permission cache, or approval decision. The Nanocodex MCP client does not
+support host elicitation, so an upstream request that requires it fails explicitly.
+Timeout, cancellation, disconnect, reset, and turn completion close pending
+requests and the native helper. Each receipt retains its own host script so
+replacing the selected runtime does not overwrite a running host.
 
 
 Linux and Linux VM/container guests require an explicitly configured upstream
@@ -74,13 +77,19 @@ are committed to this repository or redistributed in Nanocodex release assets.
 The older `scripts/install-upstream-cua.py` remains an explicit development-only
 copy helper. Normal installations use the shared native provisioning command.
 
-## Approval integration and validation
+## Provider permissions and validation
 
-The adapters preserve upstream `elicitation/create` and
-`openai/elicitation/create` forms. Foreground terminals and native Mac/Windows Hands can present provider forms to
-the user. Installing a provider does not grant consent. A host without a human
-response channel leaves operations requiring a form unavailable. See the native and JavaScript
-adapter READMEs for the embedding callback API.
+Application policy, OS permissions, and provider-supplied approval flows belong
+to the official OpenAI runtime. Nanocodex does not display consent forms, remember
+application permissions, or expose an embedding callback that makes approval
+decisions. Installing a provider does not grant consent.
+
+The adapters advertise no MCP elicitation capability. Unsupported provider
+requests, including `elicitation/create` and `openai/elicitation/create`, receive
+a JSON-RPC method-not-found error (`-32601`), never an approval response. Operations
+that require this host capability can therefore fail; discovery or a successful
+operation does not establish support for every upstream permission flow. See
+[native Hand computer access](native-hand-consent.md).
 
 Validation covers installer invocation/opt-outs, exact command and environment
 forwarding, failed refresh recovery, corrupt cache detection, and desktop first
@@ -91,10 +100,12 @@ approval UI or a full screen/input acceptance test.
 
 
 The Windows native-pipe contract was verified against Store build 26.915.4065.0
-and Codex Desktop 9922. An isolated real-provider test returned app inventory,
+and Codex Desktop 9922. A separate protocol probe returned app inventory,
 forwarded a Calculator approval form, preserved a deliberate denial, and completed
-`turn_ended`. This proves transport and denial handling; it does not establish
-human approval UI, screen capture, or input acceptance. The diagnostic fixture is
+`turn_ended`. That probe supplies its own decline-only response handler; it does
+not represent the Nanocodex adapter, which rejects unsupported host requests.
+It establishes transport and denial handling, not human approval UI, screen
+capture, or input acceptance. The diagnostic fixture is
 `crates/experimental/nanocodex-computer/tests/windows-sky/live-probe.mjs` (place it
 beside the host script and run with the verified bundled Node on Windows). Its
 responses to every elicitation are declines. Transport fixtures run with

@@ -15,7 +15,6 @@ description = "Small managed-agent client with local workspace tools"
 nanocodex-remote = { path = "../../../crates/nanocodex-remote", version = "0.6.4" }
 anyhow.workspace = true
 async-trait.workspace = true
-jsonschema.workspace = true
 nanocodex-computer.workspace = true
 arboard.workspace = true
 base64.workspace = true
@@ -77,7 +76,7 @@ kvm-ioctls = "0.24.0"
 nanocodex-vm = { workspace = true, features = ["desktop"] }
 
 [target.'cfg(unix)'.dependencies]
-nix = { workspace = true, features = ["fs", "term"] }
+nix = { workspace = true, features = ["fs"] }
 
 [dev-dependencies]
 vt100.workspace = true

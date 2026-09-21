@@ -1,69 +1,18 @@
-# Native Hand consent
+# Native Hand computer access
 
-A foreground `nanocodex2 hand` on macOS or Linux can present CUA MCP form
-elicitation in its controlling terminal, including a dedicated tmux pane. Run
-that Hand in the foreground and leave the pane available to the person operating
-it. The handler is installed before external provider discovery, so the MCP
-initialize request advertises form elicitation when a real foreground
-canonical terminal is available on stdin or a supported native dialog is available. The handler opens a separate descriptor
-for the resolved terminal device; it does not read stdin. This avoids macOS
-kqueue rejecting the `/dev/tty` alias. The existing provider configuration and sandbox
-are unchanged.
+Nanocodex delegates computer use to the installed official OpenAI CUA provider.
+The native Hand and desktop app forward the provider's tool declarations, calls,
+and results. Application policy, operating-system permissions, and any approval
+UI supplied by the official provider remain upstream responsibilities.
 
-When Sky asks for application access, the terminal shows the complete provider
-form, including its `_meta`, and the originating session/call when available.
-Provider text is displayed as escaped JSON. The person types one of these lines,
-for the currently displayed request:
+Nanocodex does not add a terminal, AppKit, or WinForms approval dialog, remember
+application consent, or manufacture approval responses. Its MCP client does not
+advertise form elicitation. Unsupported provider-to-host requests, including
+`elicitation/create` and `openai/elicitation/create`, receive a JSON-RPC
+method-not-found error (`-32601`); they are never automatically accepted.
 
-```
-accept
-decline
-cancel
-```
-
-For a form with fields, append the JSON object matching its displayed
-`requestedSchema`. Acceptance is sent only after explicit input after the current prompt appears and valid form content.
-Old terminal input is discarded before displaying a new request. Qualified
-responses containing the request ID remain supported. No field defaults are added. A plain `accept` never adds persistence metadata. Decline and cancel send no content. Malformed or stale answers leave the
-form pending. When the provider offers session persistence and supplies a connector/tool/app
-scope, the terminal also offers `accept-session`. Only this
-explicit choice returns `_meta.persist = "session"` and remembers the response.
-Reuse requires the same live provider process, conversation, and complete form
-parameters except the call correlation fields `_meta.progressToken` and
-`_meta.tool_call_id`, plus transport `_meta.x-codex-turn-metadata`. The connector, tool name, exact tool
-parameters, displayed scope, schema, and risk metadata must all remain identical.
-Different operations can therefore require separate decisions. Reset/restart
-expires the permission. No `always` permission is offered or stored on disk.
-
-Responses go directly to the CUA provider and are not logged as
-model/tool input.
-
-The terminal is read with cancellable, nonblocking I/O. Provider cancellation,
-call completion, or host timeout drops the pending review and invalidates its
-request ID. EOF cancels. Forms are serialized across conversations within the
-Hand. The existing `ComputerConfig.elicitation_timeout` remains the overall
-response deadline (five minutes by default); an enclosing tool deadline can
-cancel sooner. Oversized forms and unsupported schemas fail closed.
-
-On macOS, a Hand running as the console user can instead present a native
-AppKit dialog when no suitable terminal is available. Permission-only forms
-display the provider message and subtitle; forms with fields also display their
-schema and a JSON response editor. Allow Once and Allow This Session preserve
-the same validation and session scope as the terminal path. Windows Hands
-present a native WinForms dialog with per-request approval and schema validation.
-Closing either dialog cancels; cancellation terminates the pending dialog.
-
-These paths are for the local person operating the computer. The agent must
-never enter consent responses through shell, tmux, or CUA tools. They do not
-provide a remote approval inbox. Linux services without a foreground canonical
-terminal do not advertise a local elicitation handler. Native CLI/TUI agent
-sessions are intentionally not wired to the terminal reader because their
-event loop owns input.
-
-Managed UI consent requires a wider protocol change: the attachment transport
-currently carries tool calls/results, cancellation, heartbeats, and draining,
-but has no provider-to-client form request or authenticated user-response frame.
-The existing Vault review is tied to Vault operations and cannot supply a generic
-CUA decision. A managed form implementation must bind replies to the requesting
-Hand/session/call, dismiss on cancellation, and carry an authenticated user
-response rather than a model tool argument.
+An upstream operation that requires a host approval mechanism unavailable through
+this transport can fail. Removing Nanocodex's custom handlers does not establish
+that every upstream operation supports this client. Use the official provider's
+supported permission flow when required; do not substitute a tool argument or
+synthetic response for user consent.
