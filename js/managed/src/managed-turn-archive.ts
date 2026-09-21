@@ -11,6 +11,7 @@ const EMPTY_TRANSFER_DIGEST = "0".repeat(64);
 const encoder = new TextEncoder();
 
 export type ManagedTurnReceipt = Readonly<{
+  internal_completion?: number;
   accepted_at: number;
   accepted_cursor: string | null;
   attempt_count: number;
@@ -545,7 +546,7 @@ export class ManagedTurnArchive {
 }
 
 const RECEIPT_SELECT = `
-  SELECT id, request_key, request_hash, input_json, state,
+  SELECT id, request_key, request_hash, input_json, internal_completion, state,
          CAST(accepted_cursor AS TEXT) AS accepted_cursor,
          terminal_json, CAST(terminal_cursor AS TEXT) AS terminal_cursor,
          error, may_have_inner_operation, attempt_count, retry_at,
@@ -554,6 +555,7 @@ const RECEIPT_SELECT = `
 
 function validateReceipt(value: ManagedTurnReceipt): void {
   if (!value || typeof value !== "object"
+    || (value.internal_completion !== undefined && value.internal_completion !== 0 && value.internal_completion !== 1)
     || typeof value.id !== "string" || value.id.length === 0
     || value.id.length > 128
     || typeof value.request_hash !== "string" || !/^[0-9a-f]{64}$/.test(value.request_hash)

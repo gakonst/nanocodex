@@ -652,6 +652,7 @@ type ManagedTurnState =
   | "failed";
 
 type ManagedTurnRow = {
+  internal_completion: number;
   accepted_at: number | null;
   accepted_cursor: string | null;
   created_at: number;
@@ -3180,6 +3181,7 @@ export class DurableAgentSession extends DurableComputerSession {
         input_json TEXT NOT NULL,
         dispatch_input_chunks INTEGER CHECK (dispatch_input_chunks IS NULL OR dispatch_input_chunks > 0),
         authorization_json TEXT NOT NULL,
+        internal_completion INTEGER NOT NULL DEFAULT 0 CHECK (internal_completion IN (0, 1)),
         state TEXT NOT NULL CHECK (
           state IN ('accepted', 'cancelling', 'completed', 'cancelled', 'failed')
         ),
@@ -3299,6 +3301,11 @@ export class DurableAgentSession extends DurableComputerSession {
       renewLeasedAttachment: (renewal) => this.#renewVmHostAttachment(renewal),
     });
     this.#archiveMaintenance = new ArchiveMaintenance(this.ctx.storage);
+    // Legacy IDs are caller-controlled; never infer internal provenance from them.
+    if (!this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(managed_turns)")
+      .toArray().some(({ name }) => name === "internal_completion")) {
+      this.ctx.storage.sql.exec("ALTER TABLE managed_turns ADD COLUMN internal_completion INTEGER NOT NULL DEFAULT 0 CHECK (internal_completion IN (0, 1))");
+    }
     if (!this.ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(history_projection_outbox)")
       .toArray().some(({ name }) => name === "source_cursor")) {
       this.ctx.storage.sql.exec("ALTER TABLE history_projection_outbox ADD COLUMN source_cursor TEXT NOT NULL DEFAULT '0'");
@@ -5398,7 +5405,7 @@ export class DurableAgentSession extends DurableComputerSession {
           await this.#submitManagedTurn(id, input, await hashManagedInput(input), id, true, authorization, () => {
             if (this.#session()?.authorization_epoch !== watch.authorization_epoch) throw new ManagedRequestError(403, "forbidden", "authorization changed");
             this.#mainCompletions.advance(watch.agent_id, entry.sequence);
-          }, undefined, "unknown", {}, () => this.#authorizeProjectDelivery(watch));
+          }, undefined, "unknown", {}, () => this.#authorizeProjectDelivery(watch), !project);
           this.#mainCompletions.advance(watch.agent_id, entry.sequence);
         }
         // The feed's busy bit includes descendant subscriptions and internal result turns.
@@ -5499,7 +5506,7 @@ export class DurableAgentSession extends DurableComputerSession {
             if (this.#session()?.authorization_epoch !== run.authorization_epoch)
               throw new ManagedRequestError(403, "forbidden", "project authorization changed");
             this.#projectRuns.finish(run.id, "delivered");
-          }, undefined, "unknown", {}, () => this.#authorizeProjectDelivery(run));
+          }, undefined, "unknown", {}, () => this.#authorizeProjectDelivery(run), true);
         // The receipt may already exist after an ambiguous return from admission.
         this.#projectRuns.finish(run.id, "delivered");
       } catch (error) {
@@ -6556,6 +6563,7 @@ export class DurableAgentSession extends DurableComputerSession {
     transport: import("./startup-context").StartupTransport = "unknown",
     caller: CallerContext = {},
     authorizeAdmission?: () => Promise<void>,
+    internalCompletion = false,
   ): Promise<ManagedTurnSubmission> {
     await this.#settingsMutationTail;
     if (this.#deleting || this.#deleted) {
@@ -6588,6 +6596,9 @@ export class DurableAgentSession extends DurableComputerSession {
     }
     const existing = keyed ?? identified;
     if (existing) {
+      if (existing.internal_completion !== Number(internalCompletion)) {
+        throw new ManagedRequestError(409, "idempotency_conflict", "turn provenance differs from the retained admission");
+      }
       if (existing.request_hash !== requestHash) {
         throw new ManagedRequestError(409, "idempotency_conflict", "the idempotent request has different input");
       }
@@ -6655,6 +6666,9 @@ export class DurableAgentSession extends DurableComputerSession {
         now,
         now,
       );
+      if (internalCompletion) {
+        this.ctx.storage.sql.exec("UPDATE managed_turns SET internal_completion = 1 WHERE id = ?", id);
+      }
       if (cancellationRequested) {
         this.ctx.storage.sql.exec(
           "DELETE FROM managed_turn_cancel_intents WHERE turn_id = ?",
@@ -9436,9 +9450,7 @@ export class DurableAgentSession extends DurableComputerSession {
   }
 
   #commitManagedMessage(id: string, requested: ManagedTurnTransition): ManagedTurnRow {
-    const { committed, event } = commitManagedTransition(this.ctx.storage, this.#eventLog, id, requested, () => {
-      if (id.startsWith("project-result:")) this.#mainCompletions.publish(id);
-    });
+    const { committed, event } = commitManagedTransition(this.ctx.storage, this.#eventLog, id, requested);
     if (event) {
       this.#publish(event);
       this.#observe("managed.turn.transition", {
@@ -10650,7 +10662,12 @@ export function commitManagedTransition(
       now,
       id,
     );
-    if (terminal) onTerminal?.();
+    if (terminal) {
+      // Same transaction as the terminal receipt: only trusted internal admission
+      // can publish an outcome that wakes a parent under retained authority.
+      if (row.internal_completion === 1) new MainThreadCompletions(storage).publish(id);
+      onTerminal?.();
+    }
     if (state === "completed") {
       const session = storage.sql.exec<{ runtime_profile: string; session_id: string; first_prompt: string }>(
         "SELECT runtime_profile, session_id, first_prompt FROM session_state WHERE singleton = 1",
@@ -10696,7 +10713,7 @@ export function commitManagedTransition(
 function managedTurns(storage: DurableObjectStorage, clause: string, ...args: (string | number | null)[]): ManagedTurnRow[] {
   return storage.sql
     .exec<ManagedTurnRow>(
-      `SELECT id, request_key, request_hash, input_json, authorization_json, state,
+      `SELECT id, request_key, request_hash, input_json, authorization_json, internal_completion, state,
             dispatch_input_chunks,
             CAST(accepted_cursor AS TEXT) AS accepted_cursor,
             terminal_json, CAST(terminal_cursor AS TEXT) AS terminal_cursor,
@@ -10721,6 +10738,7 @@ class ManagedRequestError extends Error {
 function managedTurnRowFromReceipt(receipt: ManagedTurnReceipt): ManagedTurnRow {
   return {
     ...receipt,
+    internal_completion: receipt.internal_completion ?? 0,
     dispatch_input_chunks: null,
     authorization_json: JSON.stringify({ capabilities: [] } satisfies TurnAuthorization),
   };
