@@ -236,9 +236,6 @@ export const WorkspacePanel = memo(function WorkspacePanel() {
   };
 
   const pull = async () => {
-    if ((dirty || gitStatus?.changes.length) && !window.confirm(
-      "Pulling can replace local workspace changes. Continue?",
-    )) return;
     await syncGit(async () => {
       return pullThread(thread, notificationSource);
     }, "Pulled origin nanocodex into OPFS.");
@@ -299,9 +296,7 @@ export const WorkspacePanel = memo(function WorkspacePanel() {
     }
   };
 
-  const remove = () => selected && workspace && window.confirm(
-    `Delete ${selected.path}${selected.kind === "directory" ? " and everything inside it" : ""}?`,
-  ) && mutate(
+  const remove = () => selected && workspace && mutate(
     () => workspace.remove(selected.path, { recursive: selected.kind === "directory" }),
     `Deleted ${selected.path}`,
   );

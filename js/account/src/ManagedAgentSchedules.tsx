@@ -45,7 +45,6 @@ function ScheduleDialog({ agent, onClose }: { agent: ScheduleAgent; onClose(): v
   const [notice, setNotice] = useState("");
   const [draft, setDraft] = useState<Draft>();
   const [editing, setEditing] = useState(false);
-  const [deleting, setDeleting] = useState<string>();
 
   async function run(operation: () => Promise<void>) {
     if (mutation.isPending) return;
@@ -75,7 +74,7 @@ function ScheduleDialog({ agent, onClose }: { agent: ScheduleAgent; onClose(): v
       <p className="agent-schedules-note">Runs use this agent’s model and account permissions, even when you’re away, and may incur usage charges. Browser or local Hands must be online for tools that need them.</p>
       <div className="agent-schedules-toolbar">
         <button type="button" disabled={pending || rows === undefined || Boolean(draft)} onClick={() => {
-          setDraft(freshDraft()); setEditing(false); setDeleting(undefined); setError(undefined); setNotice("");
+          setDraft(freshDraft()); setEditing(false); setError(undefined); setNotice("");
         }}>New schedule</button>
         <button type="button" disabled={pending} onClick={() => void refresh()}>Refresh</button>
       </div>
@@ -145,25 +144,17 @@ function ScheduleDialog({ agent, onClose }: { agent: ScheduleAgent; onClose(): v
           <div className="agent-schedules-actions">
             <button type="button" disabled={pending || Boolean(draft)} onClick={() => {
               setDraft({ id: row.id, cron: row.cron, timezone: row.timezone, input: row.input, enabled: row.enabled, session_mode: row.session_mode });
-              setEditing(true); setDeleting(undefined); setError(undefined); setNotice("");
+              setEditing(true); setError(undefined); setNotice("");
             }}>Edit</button>
             <button type="button" disabled={pending || Boolean(draft)} onClick={() => void run(async () => {
               const saved = await agent.triggers.put(row.id, { cron: row.cron, timezone: row.timezone, input: row.input, enabled: !row.enabled, session_mode: row.session_mode });
               if (active.current) setNotice(saved.enabled ? "Schedule resumed." : "Schedule paused. Any running turn continues.");
             })}>{row.enabled ? "Pause" : "Resume"}</button>
-            <button type="button" disabled={pending || Boolean(draft)} onClick={() => setDeleting(row.id)}>Delete</button>
+            <button type="button" disabled={pending || Boolean(draft)} onClick={() => void run(async () => {
+              await agent.triggers.delete(row.id);
+              if (active.current) setNotice("Schedule deleted.");
+            })}>Delete</button>
           </div>
-          {deleting === row.id && <div className="agent-schedules-delete">
-            <p>Delete this schedule? Conversation history and any running turn are kept.</p>
-            <div className="agent-schedules-actions">
-              <button type="button" disabled={pending} onClick={() => void run(async () => {
-                await agent.triggers.delete(row.id);
-                if (!active.current) return;
-                setDeleting(undefined); setNotice("Schedule deleted.");
-              })}>Confirm delete</button>
-              <button type="button" disabled={pending} onClick={() => setDeleting(undefined)}>Keep schedule</button>
-            </div>
-          </div>}
         </li>)}
       </ul>
       <p className="agent-schedules-note">Continuing a busy conversation skips that occurrence. New sessions run independently. Missed times are not replayed individually. Pausing or deleting does not cancel a run already dispatched or being delivered.</p>

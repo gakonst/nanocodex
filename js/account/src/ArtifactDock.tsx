@@ -121,7 +121,7 @@ export const ArtifactDock = memo(function ArtifactDock({
   }, [collapsed]);
 
   const remove = async () => {
-    if (!store || !selected || !window.confirm(`Delete the artifact “${selected.title}”?`)) return;
+    if (!store || !selected) return;
     try {
       await store.remove(selected.id);
       await refresh(store);
