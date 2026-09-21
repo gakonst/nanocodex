@@ -112,7 +112,8 @@ function ScheduleDialog({ agent, onClose }: { agent: ScheduleAgent; onClose(): v
         void run(async () => {
           if (!config.input.trim()) throw new Error("Enter a prompt.");
           if (!editing && rows?.some((row) => row.id === id && row.owner.id === agent.id)) throw new Error("That schedule ID already exists. Choose another ID or edit the existing schedule.");
-          await editingAgent.triggers.put(id, config);
+          if (editing) await editingAgent.triggers.update(id, config);
+          else await editingAgent.triggers.put(id, config);
           if (!active.current) return;
           setDraft(undefined); setNotice(editing ? "Schedule updated." : "Schedule created.");
         });
