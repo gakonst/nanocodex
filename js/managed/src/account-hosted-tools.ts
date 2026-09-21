@@ -597,13 +597,16 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     if (!response.ok) {
       try { await response.body?.cancel(); } catch { /* No call was admitted for 404/409. */ }
       const preAdmission = response.status === 404 || response.status === 409;
-      if (machineId !== undefined && preAdmission && refreshRoute && !context.signal?.aborted) {
+      if (preAdmission && refreshRoute && !context.signal?.aborted) {
         // Only an explicit routing rejection permits local reconciliation. Keep
         // the original effect identity so the broker replays any prior receipt;
         // transport/decoding failures and server errors never trigger a retry.
         this.invalidate();
         await this.refresh();
-        const route = this.#machineTools.get(machineToolKey(machineId, name as HostedMachineToolName));
+        // Personal/MCP tools use exposed names; shell tools use machine keys.
+        const route = machineId === undefined
+          ? this.#tools.get(name)
+          : this.#machineTools.get(machineToolKey(machineId, name as HostedMachineToolName));
         if (route?.routeToken && route.routeToken !== routeToken) {
           return this.#invoke(name, route.routeToken, input, context, machineId, false);
         }

@@ -287,6 +287,102 @@ describe("account Hosted Tools provider", () => {
     expect(calls[1]).toEqual({ ...calls[0], route_token: "route-2" });
   });
 
+  it("recovers a cached iPhone contact tool through the real broker after socket replacement", async () => {
+    const namespace = (env as unknown as {
+      NANOCODEX_ACCOUNT_TOOLS: DurableObjectNamespace<AccountHostedTools>;
+    }).NANOCODEX_ACCOUNT_TOOLS;
+    const owner = crypto.randomUUID();
+    const stub = namespace.getByName(owner);
+    const attach = async () => {
+      const response = await stub.fetch("https://account-tools.internal/tool-host", {
+        headers: { upgrade: "websocket", "x-nanocodex-owner-id": owner },
+      });
+      const socket = response.webSocket!;
+      socket.accept();
+      const ready = nextFrame(socket);
+      socket.send(JSON.stringify({
+        type: "catalog", attachment_id: "fixture-phone",
+        machines: [{ id: "fixture-phone", name: "Fixture iPhone", workspace: "/app", capabilities: ["contacts"] }],
+        tools: [{
+          provider: "machine", remote_name: "search_contacts", parallel_safe: true, timeout_ms: 10_000,
+          definition: { type: "function", name: "search_contacts", description: "Search fixture contacts", strict: false,
+            parameters: { type: "object", properties: { query: { type: "string" } }, additionalProperties: false } },
+        }],
+      }));
+      await expect(ready).resolves.toEqual({ type: "ready" });
+      return socket;
+    };
+    const first = await attach();
+    const provider = new AccountHostedToolsProvider(namespace, owner, () => true);
+    await provider.refresh();
+    const cached = provider.resolve("user_fixture-phone_search_contacts")!;
+    expect(cached).toBeDefined();
+    const successor = await attach();
+    try {
+      const framePromise = nextFrame(successor);
+      const completed = cached.handler({ query: "Example" }, { sessionId: "agent", callId: "contact-lookup" });
+      const frame = await framePromise;
+      expect(frame).toMatchObject({ type: "call", name: "search_contacts", input: { query: "Example" } });
+      successor.send(JSON.stringify({
+        type: "result", call_id: frame.call_id,
+        outcome: { status: "completed", output: { output: "contact found", success: true,
+          structured_result: { contacts: [] }, metadata: null, process_trace: null } },
+      }));
+      await expect(completed).resolves.toMatchObject({ success: true, output: "contact found" });
+      expect(provider.resolve("user_fixture-phone_search_contacts")!.routeToken).not.toBe(cached.routeToken);
+    } finally {
+      first.close(1000, "test complete");
+      successor.close(1000, "test complete");
+    }
+  });
+
+  it.each([404, 409])("refreshes a reconnected personal tool after a %s routing rejection", async status => {
+    const calls: Record<string, unknown>[] = [];
+    let discoveries = 0;
+    const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([[ACCOUNT_A, async request => {
+      if (new URL(request.url).pathname === "/snapshot") {
+        discoveries++;
+        return Response.json({ ...snapshot, tools: [{ ...snapshot.tools[0], route_token: `personal-${discoveries}` }] });
+      }
+      calls.push(await request.json<Record<string, unknown>>());
+      if (calls.length === 1) return new Response(null, { status });
+      return Response.json({ output: "contact found", structured_result: null, success: true, metadata: null, value: null });
+    }]])), ACCOUNT_A, () => true);
+    await provider.refresh();
+    await expect(provider.resolve("fixture__lookup")!.handler({ query: "Example" }, {
+      sessionId: "agent", turnId: "turn", callId: "contact-lookup",
+    })).resolves.toMatchObject({ success: true, output: "contact found" });
+    expect(discoveries).toBe(2);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toEqual({ ...calls[0], route_token: "personal-2" });
+  });
+
+  it.each(["unchanged", "removed", "rejected", "revoked", "server", "transport", "truncated"])(
+    "bounds personal tool recovery for %s routes and uncertain outcomes", async mode => {
+      let discoveries = 0;
+      let allowed = true;
+      const calls: Record<string, unknown>[] = [];
+      const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([[ACCOUNT_A, async request => {
+        if (new URL(request.url).pathname === "/snapshot") {
+          discoveries++;
+          if (discoveries > 1 && mode === "revoked") allowed = false;
+          return Response.json({ ...snapshot, tools: mode === "removed" && discoveries > 1 ? [] : [{
+            ...snapshot.tools[0], route_token: mode === "unchanged" ? "personal-1" : `personal-${discoveries}`,
+          }] });
+        }
+        calls.push(await request.json<Record<string, unknown>>());
+        if (mode === "transport") throw new Error("connection lost");
+        if (mode === "truncated") return new Response("{");
+        return new Response(null, { status: mode === "server" ? 503 : 409 });
+      }]])), ACCOUNT_A, () => allowed);
+      await provider.refresh();
+      const result = await provider.resolve("fixture__lookup")!.handler({}, { sessionId: "agent", callId: "lookup" });
+      expect(result).toMatchObject({ success: false });
+      expect(discoveries).toBe(["server", "transport", "truncated"].includes(mode) ? 1 : 2);
+      expect(calls).toHaveLength(mode === "rejected" ? 2 : 1);
+    },
+  );
+
   it("releases stalled discovery and fences its late response from the next refresh", async () => {
     vi.useFakeTimers();
     try {
