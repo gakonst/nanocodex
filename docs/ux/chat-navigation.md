@@ -1,9 +1,11 @@
 # iOS conversation navigation
 
-The transcript scrolls beneath the composer and transparent conversation controls.
+The transcript scrolls beneath the composer and floating conversation controls.
 The measured composer/footer height reserves enough trailing scroll content to
 keep the last message reachable, including multiline drafts and notices.
-Controls retain 44-point rectangular tap targets without material backgrounds.
+Controls retain 44-point rectangular tap targets and individual circular material
+backgrounds. Their containing row stays transparent; no white strip covers the
+transcript.
 
 Previous/Next treat a user message within the top padding band as the current
 message. Explicit jumps preserve their semantic selection until actual vertical
@@ -17,14 +19,13 @@ All images and video use synthetic fixtures, iPhone 17 Pro simulator, iOS 26.5.
 - [Navigation video](media/chat-navigation/navigation.mp4): five repeated Next/Previous cycles at original speed.
 - [First message, content beneath composer](media/chat-navigation/first-message.png)
 - [Next message](media/chat-navigation/next-message.png)
-- [Expanded composer](media/chat-navigation/expanded-composer.png)
 
 The focused UI checks cover collapse and user-message navigation, repeated
 navigation, pages without user messages, streaming follow after Latest, and
 five-line composer expansion/draft preservation.
 
-Five Debug simulator Next/Previous cycles averaged 0.794 seconds per **two-tap
-cycle** (0.788–0.801 seconds), including XCTest event synthesis, idle waits and
+Five Debug simulator Next/Previous cycles averaged 0.766 seconds per **two-tap
+cycle** (0.748–0.784 seconds), including XCTest event synthesis, idle waits and
 assertions. This is an automation timing, not touch-to-render latency or a
 comparison with the previous app. No real-device performance claim is made.
 

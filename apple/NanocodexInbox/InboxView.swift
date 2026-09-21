@@ -2021,7 +2021,7 @@ private struct ConversationContentView: View {
         } else { pendingUserDirection = nil }
     }
     private func threadControls(using scroll: ScrollViewProxy) -> some View {
-        HStack(spacing: 0) {
+        HStack(spacing: 8) {
             Button {
                 followsLatest = false
                 if let first = rowGeometry.frames.filter({ revision.itemsByID[$0.key] != nil && $0.value.maxY > 0 })
@@ -2030,16 +2030,24 @@ private struct ConversationContentView: View {
                         offsetY: revision.itemsByID[first.key]?.message == nil ? max(0, first.value.minY) : first.value.minY)
                 }
                 tools.collapseAll()
-            } label: { Image(systemName: "rectangle.compress.vertical").frame(width: 44, height: 44).contentShape(Rectangle()) }
+            } label: { Image(systemName: "rectangle.compress.vertical").frame(width: 44, height: 44)
+                    .background(.regularMaterial, in: Circle())
+                    .overlay(Circle().strokeBorder(Ink.border, lineWidth: 0.5))
+                    .contentShape(Rectangle()) }
                 .accessibilityLabel("Collapse all tool calls")
                 .accessibilityIdentifier("collapse-all-tools")
-            Divider().frame(height: 20)
             Button { navigateUser(.older, using: scroll) } label: {
-                Image(systemName: "arrow.up").frame(width: 44, height: 44).contentShape(Rectangle())
+                Image(systemName: "arrow.up").frame(width: 44, height: 44)
+                    .background(.regularMaterial, in: Circle())
+                    .overlay(Circle().strokeBorder(Ink.border, lineWidth: 0.5))
+                    .contentShape(Rectangle())
             }.accessibilityLabel("Previous user message").accessibilityIdentifier("previous-user-message")
                 .disabled(userTarget(.older) == nil && (!model.hasOlder || revision.preparing || model.loadingOlder || model.loadingNewer || pendingUserDirection != nil))
             Button { navigateUser(.newer, using: scroll) } label: {
-                Image(systemName: "arrow.down").frame(width: 44, height: 44).contentShape(Rectangle())
+                Image(systemName: "arrow.down").frame(width: 44, height: 44)
+                    .background(.regularMaterial, in: Circle())
+                    .overlay(Circle().strokeBorder(Ink.border, lineWidth: 0.5))
+                    .contentShape(Rectangle())
             }.accessibilityLabel("Next user message").accessibilityIdentifier("next-user-message")
                 .disabled(userTarget(.newer) == nil && (!model.hasNewer || revision.preparing || model.loadingOlder || model.loadingNewer || pendingUserDirection != nil))
         }
@@ -2293,6 +2301,8 @@ private struct ConversationContentView: View {
                         Label("Latest messages", systemImage: "arrow.down")
                             .labelStyle(.iconOnly)
                             .frame(width: 42, height: 42)
+                            .background(.regularMaterial, in: Circle())
+                            .overlay(Circle().strokeBorder(Ink.border, lineWidth: 0.5))
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
