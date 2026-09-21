@@ -13,19 +13,19 @@ export const taskFamily = z.enum([
 export type TaskFamily = z.infer<typeof taskFamily>;
 /** Trusted server runtime only; never populate telemetry from request JSON or policy. */
 export type RoutingAvailability = {
-  openrouter: boolean; vercel: boolean;
+  openrouter: boolean; vercel: boolean; cloudflare?: boolean;
   workerColo?: string | null;
   clientIngressColo?: string | null;
   provider_performance?: readonly unknown[];
 };
-const backendSchema = z.enum(["workers_ai", "chatgpt", "openrouter", "vercel"]);
+const backendSchema = z.enum(["workers_ai", "chatgpt", "openrouter", "vercel", "cloudflare"]);
 const estimate = z.object({
   family: taskFamily, backend: backendSchema, model: z.enum([OSS_MODEL, ...frontierModel.options]), thinking,
   success_rate: z.number().positive().max(1), expected_cost_usd: z.number().nonnegative(),
   expected_duration_ms: z.number().positive(), sample_size: z.number().int().positive(),
   source: z.string().min(1).max(512),
 }).strict().refine(e => (e.backend !== "workers_ai" || e.model === OSS_MODEL)
-  && (e.backend !== "chatgpt" || e.model !== OSS_MODEL), "Unsupported backend/model combination");
+  && ((e.backend !== "chatgpt" && e.backend !== "cloudflare") || e.model !== OSS_MODEL), "Unsupported backend/model combination");
 // Catalog base token prices are dated hints, not matched task-cost or duration measurements.
 const gatewayTokenPrices = {
   openrouter: {
@@ -46,11 +46,14 @@ function catalogPriceHint(backend: z.infer<typeof backendSchema>, model: typeof 
     note: "Dated base token-price hints; exclude long-context tiers and provider routing changes. Not expected task cost, completion probability, or duration. Actual task spend depends on token usage and cache eligibility.",
   };
 }
-// Provider model IDs verified against both public /v1/models catalogs on 2026-09-20.
+// Gateway IDs verified against public /v1/models catalogs on 2026-09-20.
+// Cloudflare frontier IDs follow https://developers.cloudflare.com/ai/models/openai/gpt-6-astra/.
 export const ROUTING_CANDIDATES = [OSS_MODEL, ...frontierModel.options].flatMap(model => {
   const nativeBackend = model === OSS_MODEL ? "workers_ai" as const : "chatgpt" as const;
-  return [nativeBackend, "openrouter" as const, "vercel" as const].flatMap(backend => {
+  return [nativeBackend, "openrouter" as const, "vercel" as const,
+    ...(model === OSS_MODEL ? [] : ["cloudflare" as const])].flatMap(backend => {
     const provider_model = backend === "openrouter" ? (model === OSS_MODEL ? "z-ai/glm-5.3" : `openai/${model}`)
+      : backend === "cloudflare" ? `openai/${model}`
       : backend === "vercel" ? (model === OSS_MODEL ? "zai/glm-5.3" : `openai/${model}`) : model;
     return thinking.options.map(effort => ({
       id: backend === nativeBackend ? `${model}:${effort}` : `${backend}:${provider_model}:${effort}`,
@@ -393,7 +396,7 @@ async function resolveDirect(ai: RoutingAi, input: unknown, p: ThreadRoutingPoli
   const started = Date.now(), opening = openingState(input);
   const { preferences, sources } = effectivePreferences(p);
   const eligible = ROUTING_CANDIDATES.filter(c => (!p.candidates || p.candidates.includes(c.id))
-    && (c.backend !== "openrouter" && c.backend !== "vercel" || availability[c.backend] === true)
+    && (c.backend !== "openrouter" && c.backend !== "vercel" && c.backend !== "cloudflare" || availability[c.backend] === true)
     && (!opening.unsupported || c.model !== OSS_MODEL));
   if (!eligible.length) throw new Error("No eligible routing candidates; no route admitted");
   const providerTelemetry = routingTelemetry(availability, eligible, started);

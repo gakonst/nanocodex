@@ -34,7 +34,7 @@ export function summarizeProviderObservations(samples: ProviderObservation[], no
     .sort((a, b) => a.timestamp - b.timestamp);
   // Workers AI bindings validate generation protocol without exposing HTTP headers/status.
   const successes = fresh.filter(x => x.outcome === "success"
-    && ((x.status !== null && x.status >= 200 && x.status < 300) || (x.backend === "workers_ai" && x.status === null)));
+    && ((x.status !== null && x.status >= 200 && x.status < 300) || ((x.backend === "workers_ai" || x.backend === "cloudflare") && x.status === null)));
   const full = successes.filter(x => validDuration(x.fullResponseMs));
   const ttft = successes.filter(x => validDuration(x.generationTtftMs));
   const stats = (values: number[]) => {
@@ -148,8 +148,9 @@ export function beginLiveProviderObservation(
       if (finished) return false;
       finished = true;
       const elapsedMs = elapsed();
-      // A success requires an observed successful HTTP status and consumed body.
-      const resolvedOutcome = outcome === "success" && (status === null || status < 200 || status >= 300)
+      // Bindings expose no HTTP status; their consumed protocol establishes success.
+      const bindingSuccess = status === null && (metadata.backend === "workers_ai" || metadata.backend === "cloudflare");
+      const resolvedOutcome = outcome === "success" && !bindingSuccess && (status === null || status < 200 || status >= 300)
         ? "http_error" : outcome;
       const { workerColo, clientIngressColo, backend, model, effort } = metadata;
       try {

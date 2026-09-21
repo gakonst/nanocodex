@@ -1,4 +1,5 @@
 import { createWorkersAiResponses } from "./workers-ai-responses.mjs";
+import { toBindingResponsesInput, fromBindingResponsesResult } from "./gateway-binding-responses.mjs";
 
 const ENDPOINTS = Object.freeze({
   openrouter: "https://openrouter.ai/api/v1/chat/completions",
@@ -10,11 +11,16 @@ const fail = message => { throw new Error(`Gateway Responses: ${message}`); };
 /** Server-side, buffered/full-history transport; no WebSocket or opaque compaction. */
 export function createGatewayResponses(options) {
   const { provider, model, reasoningEffort, apiKey, fetch: fetchImpl = globalThis.fetch } = options;
-  if (!Object.hasOwn(ENDPOINTS, provider)) fail("unsupported provider");
+  if (provider !== "cloudflare" && !Object.hasOwn(ENDPOINTS, provider)) fail("unsupported provider");
   if (!MODELS.includes(model)) fail("unsupported canonical model");
   if (!["low", "medium", "high"].includes(reasoningEffort)) fail("unsupported reasoning effort");
-  if (typeof apiKey !== "string" || !apiKey.trim() || /[\r\n]/.test(apiKey)) fail("a server-side API key is required");
-  if (typeof fetchImpl !== "function") fail("fetch is required");
+  if (provider === "cloudflare") {
+    if (model === MODELS[0]) fail("Cloudflare gateway requires an OpenAI canonical model");
+    if (typeof options.ai?.run !== "function") fail("an AI binding is required");
+  } else {
+    if (typeof apiKey !== "string" || !apiKey.trim() || /[\r\n]/.test(apiKey)) fail("a server-side API key is required");
+    if (typeof fetchImpl !== "function") fail("fetch is required");
+  }
   const endpoint = ENDPOINTS[provider];
   const gatewayModel = model === MODELS[0]
     ? (provider === "openrouter" ? "z-ai/glm-5.3" : "zai/glm-5.3") : `openai/${model}`;
@@ -23,6 +29,22 @@ export function createGatewayResponses(options) {
     async run(_model, input) {
       signal?.throwIfAborted();
       if (input.reasoning_effort !== undefined && input.reasoning_effort !== reasoningEffort) fail("reasoning override does not match pinned effort");
+      if (provider === "cloudflare") {
+        const payload = toBindingResponsesInput(input, reasoningEffort);
+        attempt.outcome = "network_error";
+        try { attempt.observer = options.onRequest?.(); } catch { /* telemetry is best effort */ }
+        let value;
+        try { value = await options.ai.run(gatewayModel, payload); }
+        catch {
+          signal?.throwIfAborted();
+          fail("provider request failed");
+        }
+        signal?.throwIfAborted();
+        // A binding has no observable HTTP headers/status. Protocol validation
+        // and the existing portable adapter must both succeed before finish().
+        attempt.outcome = "protocol_error";
+        return fromBindingResponsesResult(value, input.parallel_tool_calls);
+      }
       // Vercel documents reasoning_effort as the Chat Completions alias:
       // https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions/reasoning
       const payload = { ...input, model: gatewayModel, reasoning_effort: reasoningEffort };

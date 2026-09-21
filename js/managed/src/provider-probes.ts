@@ -14,7 +14,7 @@ export const PROVIDER_PROBE_PROMPT_VERSION = "ttft-v1";
 export const PROVIDER_PROBE_TTFT_DEFINITION = "first_nonempty_text_or_reasoning_delta";
 
 export interface ProviderProbeTarget {
-  backend: keyof typeof ENDPOINTS | "workers_ai";
+  backend: keyof typeof ENDPOINTS | "workers_ai" | "cloudflare";
   /** Provider-facing model ID; the scheduler owns canonical catalog mapping. */
   model: string;
   effort: string | null;
@@ -26,6 +26,11 @@ export interface ProviderProbeAiBinding {
     stream: true;
     max_completion_tokens: number;
     reasoning_effort?: string;
+  } | {
+    input: string;
+    stream: true;
+    max_output_tokens: number;
+    reasoning?: { effort: string };
   }, options?: { signal?: AbortSignal }): Promise<unknown>;
 }
 export interface ProviderProbeOptions {
@@ -58,12 +63,13 @@ function integerInRange(value: number, min: number, max: number): boolean {
 function runnable(target: ProviderProbeTarget, ai?: ProviderProbeAiBinding): boolean {
   if (!target || typeof target.model !== "string" || !/^[a-zA-Z0-9_./:@-]{1,160}$/.test(target.model)) return false;
   if (target.effort !== null && !EFFORTS.has(target.effort)) return false;
-  if (target.backend === "workers_ai") return typeof ai?.run === "function";
+  if (target.backend === "workers_ai" || target.backend === "cloudflare") return typeof ai?.run === "function";
   return Object.hasOwn(ENDPOINTS, target.backend) && typeof target.key === "string"
     && !!target.key.trim() && !/[\r\n]/.test(target.key);
 }
 
 class ProbeProtocolError extends Error {}
+class ProbeCancelledError extends Error {}
 function protocolError(): never { throw new ProbeProtocolError(); }
 function record(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
@@ -77,16 +83,43 @@ function nonemptyText(value: unknown): boolean {
 /** SSE framing is independent of transport chunk boundaries. Decode UTF-8
  * incrementally and reject invalid sequences; support LF, CRLF, CR and multiline
  * data. No content, usage metadata, or provider error is retained. */
-function streamParser(onGenerated: () => void, workersAi = false) {
+function streamParser(onGenerated: () => void, workersAi = false, responses = false) {
   const decoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: false });
   let line = "", data: string[] = [], event = "", afterCr = false;
   let finished: string | null = null;
   let done = false;
+  function responseEvent(raw: string) {
+    // Responses completes with a typed terminal event; [DONE] is optional.
+    if (raw === "[DONE]") { if (!done) protocolError(); return; }
+    if (done) protocolError();
+    let value: unknown;
+    try { value = JSON.parse(raw); } catch { return protocolError(); }
+    if (!record(value) || typeof value.type !== "string" || value.error != null
+      || (event && event !== "message" && event !== value.type)) protocolError();
+    const type = value.type;
+    if (type === "response.cancelled" || (record(value.response) && value.response.status === "cancelled")) throw new ProbeCancelledError();
+    if (type === "error" || type === "response.failed" || (record(value.response)
+      && (value.response.error != null || value.response.status === "failed"))) protocolError();
+    if (type === "response.output_text.delta" || type === "response.reasoning_text.delta"
+      || type === "response.reasoning_summary_text.delta") {
+      if (nonemptyText(value.delta)) onGenerated();
+    } else if (type === "response.completed" || type === "response.incomplete") {
+      if (!record(value.response)) protocolError();
+      if (type === "response.completed" ? value.response.status !== "completed"
+        : value.response.status !== "incomplete" || !record(value.response.incomplete_details)
+          || value.response.incomplete_details.reason !== "max_output_tokens") protocolError();
+      done = true;
+    } else if (!type.startsWith("response.")) protocolError();
+    // Created/in-progress, item/tool events, done snapshots and encrypted metadata
+    // are protocol context, never evidence of a generated text/reasoning delta.
+  }
   function dispatch() {
     if (event === "error") protocolError();
     if (event === "ping" || event === "keepalive") {
       // Only empty/comment heartbeats are permitted to bypass JSON validation.
       if (data.some(value => value.trim())) protocolError();
+    } else if (data.length && responses) {
+      responseEvent(data.join("\n"));
     } else if (data.length) {
       if (done || (event && event !== "message")) protocolError();
       const raw = data.join("\n");
@@ -180,7 +213,8 @@ function streamParser(onGenerated: () => void, workersAi = false) {
  * This helper neither registers a schedule nor discovers credentials. Configure
  * ONE durable budget owner; multiplying shards multiplies the 4096/day ceiling.
  * Failed/unterminated streams are censored. A valid stop or length terminal plus
- * [DONE] and generated text establishes TTFT, not answer correctness.
+ * [DONE], or a valid Responses completed/max-output terminal, plus generated
+ * text establishes TTFT, not answer correctness.
  * All cancellation is best effort and never awaited without the probe deadline.
  */
 export async function runProviderProbes(options: ProviderProbeOptions): Promise<number> {
@@ -226,9 +260,13 @@ export async function runProviderProbes(options: ProviderProbeOptions): Promise<
       const messages: { role: "user"; content: string }[] = [{ role: "user",
         content: `${crypto.randomUUID()} ${PROVIDER_PROBE_PROMPT_VERSION}. Reply with only OK.` }];
       let body: ReadableStream<Uint8Array>;
-      if (target.backend === "workers_ai") {
-        const request = options.ai!.run(target.model, { messages, stream: true, max_completion_tokens: maxTokens,
-          ...(target.effort === null ? {} : { reasoning_effort: target.effort }) }, { signal: controller.signal });
+      if (target.backend === "workers_ai" || target.backend === "cloudflare") {
+        const payload = target.backend === "cloudflare"
+          ? { input: messages[0].content, stream: true as const, max_output_tokens: maxTokens,
+            ...(target.effort === null ? {} : { reasoning: { effort: target.effort } }) }
+          : { messages, stream: true as const, max_completion_tokens: maxTokens,
+            ...(target.effort === null ? {} : { reasoning_effort: target.effort }) };
+        const request = options.ai!.run(target.model, payload, { signal: controller.signal });
         // A binding may ignore abort while obtaining a stream. Cancel late arrivals.
         void request.then(value => {
           if (controller.signal.aborted && value instanceof ReadableStream) cancel(value);
@@ -266,7 +304,7 @@ export async function runProviderProbes(options: ProviderProbeOptions): Promise<
       }
       reader = body.getReader();
       let firstGeneratedMs: number | null = null;
-      const parser = streamParser(() => { firstGeneratedMs ??= elapsed(); }, target.backend === "workers_ai");
+      const parser = streamParser(() => { firstGeneratedMs ??= elapsed(); }, target.backend === "workers_ai", target.backend === "cloudflare");
       let bytes = 0;
       while (true) {
         const chunk = await bounded(reader.read());
@@ -280,7 +318,7 @@ export async function runProviderProbes(options: ProviderProbeOptions): Promise<
       observation.fullResponseMs = elapsed(); // Validated SSE completion, not TCP EOF.
       observation.outcome = "success";
     } catch (error) {
-      observation.outcome = controller.signal.aborted ? "timeout" : error instanceof ProbeProtocolError ? "protocol_error" : "network_error";
+      observation.outcome = controller.signal.aborted ? "timeout" : error instanceof ProbeCancelledError ? "cancelled" : error instanceof ProbeProtocolError ? "protocol_error" : "network_error";
     } finally {
       clearTimeout(timer);
       cancel(reader);

@@ -22,6 +22,7 @@ export function configuredProbeTargets(env: ProviderProbeEnvironment): ProviderP
   return ROUTING_CANDIDATES.flatMap<ProviderProbeOptions["targets"][number]>(candidate => {
     const { backend, provider_model: model, thinking: effort } = candidate;
     if (backend === "workers_ai") return env.AI ? [{ backend, model, effort }] : [];
+    if (backend === "cloudflare") return available.cloudflare === true && env.AI ? [{ backend, model, effort }] : [];
     if (backend !== "openrouter" && backend !== "vercel" || !available[backend]) return [];
     return [{ backend, model, effort, key: backend === "openrouter" ? env.OPENROUTER_API_KEY! : env.AI_GATEWAY_API_KEY! }];
   });

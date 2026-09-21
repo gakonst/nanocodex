@@ -326,3 +326,101 @@ test('Workers AI accepts its empty usage trailer only after terminal generation'
   const gateway=await probe({fetch:async()=>sse(valid)});
   assert.equal(gateway.observations[0].outcome,'protocol_error');
 });
+
+const responseEvent = (type, fields = {}) => `event: ${type}\ndata: ${JSON.stringify({ type, ...fields })}\n\n`;
+const responseText = responseEvent('response.output_text.delta', { delta: 'OK' });
+const responseComplete = responseEvent('response.completed', { response: { status: 'completed', error: null } });
+const frontierProbe = (parts, overrides = {}) => probe({ targets: [target({ backend: 'cloudflare', model: 'openai/gpt-6-astra', key: undefined })],
+  ai: { run: async () => chunks(parts) }, ...overrides });
+
+test('Cloudflare frontier uses Responses binding payload and fresh synthetic input at every effort', async () => {
+  const inputs = [];
+  for (const effort of ['low', 'medium', 'high']) {
+    const result = await frontierProbe([], { targets: [target({backend:'cloudflare',model:'openai/gpt-6-astra',effort,key:undefined})],
+      fetch() { assert.fail('HTTP credentials must not be needed'); }, ai: { async run(model, body, options) {
+        assert.equal(model, 'openai/gpt-6-astra');
+        assert.deepEqual(body, {input:body.input,stream:true,max_output_tokens:128,reasoning:{effort}});
+        assert.match(body.input, /^[0-9a-f-]{36} ttft-v1\. Reply with only OK\.$/);
+        inputs.push(body.input);
+        assert.equal(options.signal.aborted, false);
+        return chunks([responseText, responseComplete]);
+      } } });
+    assert.equal(result.observations[0].outcome, 'success');
+    assert.equal(result.observations[0].headersMs, null); assert.equal(result.observations[0].status, null);
+    assert.doesNotMatch(JSON.stringify(result.observations), /Reply|synthetic-secret/);
+  }
+  assert.equal(new Set(inputs).size, 3);
+});
+
+test('native Responses TTFT excludes created, metadata, empty deltas and done snapshots', async () => {
+  let clock = 0, cancelled = false;
+  const metadata = [responseEvent('response.created', {response:{status:'in_progress'}}),
+    responseEvent('response.output_item.added', {item:{type:'reasoning',encrypted_content:'opaque'}}),
+    responseEvent('response.function_call_arguments.delta', {delta:'tool metadata'}),
+    responseEvent('response.output_text.done', {text:'snapshot is not a delta'}),
+    responseEvent('response.output_text.delta', {delta:''})];
+  const frames = [...metadata, responseEvent('response.reasoning_summary_text.delta',{delta:'thinking'}), responseText, responseComplete];
+  const result = await frontierProbe([], {monotonicNow:()=>clock,
+    ai:{run:async()=>chunks(frames, i=>{clock=(i+1)*10;},()=>{cancelled=true;return new Promise(()=>{});})}});
+  assert.equal(result.observations[0].outcome,'success');
+  assert.equal(result.observations[0].generationTtftMs,60); assert.equal(result.observations[0].fullResponseMs,80);
+  assert.equal(cancelled,true);
+  const empty = await frontierProbe([...metadata,responseComplete]);
+  assert.equal(empty.observations[0].outcome,'protocol_error'); assert.equal(empty.observations[0].generationTtftMs,null);
+});
+
+test('Responses handles partial UTF-8 chunks and multiline CRLF/CR frames without requiring DONE', async () => {
+  const wire = '\ufeff: heartbeat\r\n\r\n' + 'event: response.reasoning_text.delta\r\ndata: {"type":"response.reasoning_text.delta",\r\ndata: "delta":"✓"}\r\n\r\n' + responseComplete.replaceAll('\n','\r');
+  const result = await frontierProbe([...encoder.encode(wire)].map(x=>new Uint8Array([x])));
+  assert.equal(result.observations[0].outcome,'success');
+  assert.notEqual(result.observations[0].generationTtftMs,null);
+  assert.equal((await frontierProbe([responseText+responseComplete+done])).observations[0].outcome,'success');
+});
+
+test('Responses requires valid terminals and censors provider errors, cancellation and partial reads', async () => {
+  const invalid = [responseText, responseText+responseComplete.trimEnd(), responseComplete,
+    responseText+responseEvent('response.completed',{response:{status:'in_progress'}}),
+    responseText+responseEvent('response.failed',{response:{status:'failed',error:{message:'synthetic-private-error'}}}),
+    responseText+responseEvent('response.incomplete',{response:{status:'incomplete',incomplete_details:{reason:'content_filter'}}}),
+    responseText+responseEvent('error',{code:'upstream_error',message:'synthetic-private-error'}),
+    responseText+responseComplete+responseText,
+    'event: response.created\ndata: {"type":"response.output_text.delta","delta":"bad"}\n\n'+responseComplete,
+    responseEvent('response.output_text.delta',{delta:{text:'invalid'}})+responseComplete,
+    complete];
+  for (const wire of invalid) {
+    const result = await frontierProbe([wire]);
+    assert.equal(result.observations[0].outcome,'protocol_error',wire);
+    assert.equal(result.observations[0].generationTtftMs,null); assert.equal(result.observations[0].fullResponseMs,null);
+    assert.doesNotMatch(JSON.stringify(result.observations),/synthetic-private-error/);
+  }
+  const cancelled = await frontierProbe([responseText,responseEvent('response.cancelled',{response:{status:'cancelled'}})]);
+  assert.equal(cancelled.observations[0].outcome,'cancelled'); assert.equal(cancelled.observations[0].generationTtftMs,null);
+  const limited = await frontierProbe([responseText,responseEvent('response.incomplete',{response:{status:'incomplete',incomplete_details:{reason:'max_output_tokens'}}})]);
+  assert.equal(limited.observations[0].outcome,'success');
+});
+
+test('Cloudflare deadline bounds binding, partial stream and cancellation and cancels late arrivals', {timeout:2000}, async () => {
+  for (const kind of ['binding','partial']) {
+    let signal, resolve, cancelled = false;
+    const result = await frontierProbe([], {timeoutMs:5, ai:{run:(_,__,options)=>{
+      signal=options.signal;
+      if(kind==='binding') return new Promise(r=>{resolve=r;});
+      return Promise.resolve(new ReadableStream({start(c){c.enqueue(encoder.encode(responseText));},cancel(){cancelled=true;return new Promise(()=>{});}}));
+    }}});
+    assert.equal(result.observations[0].outcome,'timeout'); assert.equal(result.observations[0].generationTtftMs,null);
+    assert.equal(signal.aborted,true);
+    if(kind==='binding') { resolve(new ReadableStream({cancel(){cancelled=true;}})); await new Promise(r=>setImmediate(r)); }
+    assert.equal(cancelled,true);
+  }
+});
+
+test('live binding observations accept protocol success without an invented status',async()=>{
+  const {beginLiveProviderObservation}=await import('../src/provider-telemetry.ts');
+  for(const backend of ['cloudflare','workers_ai','openrouter']) {
+    const rows=[];
+    const observer=beginLiveProviderObservation({...sample(1,2),backend},{append:x=>rows.push(x)});
+    await observer.finish('success');
+    assert.equal(rows[0].outcome,backend==='openrouter'?'http_error':'success');
+    assert.equal(rows[0].status,null);assert.equal(rows[0].headersMs,null);assert.equal(rows[0].generationTtftMs,null);
+  }
+});

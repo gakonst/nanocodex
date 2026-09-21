@@ -47,6 +47,21 @@ describe("hosted child routing", () => {
     expect(ai.run).toHaveBeenCalledTimes(2);
   });
 
+  it("selects Cloudflare for a new child only with availability and restores its pin independently", async () => {
+    const id = "cloudflare:openai/gpt-6-astra:high";
+    const ai = {run:vi.fn(async()=>({answers:{candidate:{choice:id,confidence:.99},family:{choice:"terminal",confidence:.99}}}))};
+    const policy = routingPolicySchema.parse({candidates:[id]});
+    const disabled = fixture({ai,policy});
+    await expect(disabled.controller.resolve({...request,model:"astra",thinking:"high"})).rejects.toThrow("No eligible");
+    expect(ai.run).not.toHaveBeenCalled();
+    const enabled = fixture({ai,policy,availability:()=>({openrouter:false,vercel:false,cloudflare:true})});
+    const resolved = await enabled.controller.resolve({...request,model:"astra",thinking:"high"});
+    enabled.controller.bind({...requestBinding(resolved.routeId),sessionId:"cloudflare-child"});
+    const restored = createSubagentRouteController({...enabled.options,availability:()=>({openrouter:false,vercel:false,cloudflare:false})});
+    expect(restored.routeForSession("cloudflare-child")).toMatchObject({backend:"cloudflare",model:"gpt-6-astra",provider_model:"openai/gpt-6-astra",thinking:"high"});
+    expect(ai.run).toHaveBeenCalledTimes(1);
+  });
+
   it("rejects policy-ineligible explicit model or effort without classification", async () => {
     const { controller, ai } = fixture({ policy: routingPolicySchema.parse({ candidates: ["@cf/zai-org/glm-5.3:low"] }) });
     await expect(controller.resolve({ ...request, model: "astra" })).rejects.toThrow("outside eligible");

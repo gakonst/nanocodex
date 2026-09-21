@@ -53,6 +53,26 @@ it("real key issuance and public gateway sessions isolate two callers", async ()
   const catalog = await models.json<{data: Array<{provider: string}>}>();
   expect(catalog.data.length).toBe(3);
   expect(catalog.data.every(candidate => candidate.provider === "workers_ai")).toBe(true);
+  // The catalog is deployment gated and inference-only even when every
+  // standalone transport is configured. No subscription/account models leak.
+  bindings.OPENROUTER_API_KEY = "synthetic-catalog-only";
+  bindings.AI_GATEWAY_API_KEY = "synthetic-catalog-only";
+  for (const gate of [undefined, "false", "true"] as const) {
+    bindings.NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED = gate;
+    const result = await call("/models", "GET", undefined, key1.api_key);
+    expect(result.status).toBe(200);
+    const expanded = await result.json<{ data: Array<{ id: string; provider: string }> }>();
+    expect(expanded.data).toHaveLength(gate === "true" ? 45 : 33);
+    expect(expanded.data.some(c => c.provider === "chatgpt")).toBe(false);
+    const cloudflare = expanded.data.filter(c => c.provider === "cloudflare");
+    expect(cloudflare).toHaveLength(gate === "true" ? 12 : 0);
+    if (gate === "true") expect(cloudflare.map(c => c.id).sort()).toEqual(
+      ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].flatMap(model =>
+        ["low", "medium", "high"].map(effort => `cloudflare:openai/${model}:${effort}`)).sort());
+  }
+  delete bindings.OPENROUTER_API_KEY;
+  delete bindings.AI_GATEWAY_API_KEY;
+  delete bindings.NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED;
   const created = await call("/sessions", "POST", {}, key1.api_key);
   expect(created.status).toBe(201);
   const session = await created.json<{id:string; key_id:string; route:null}>();

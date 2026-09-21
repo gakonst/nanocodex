@@ -150,7 +150,9 @@ The result is an object with `object: "list"` and a `data` array. Each entry has
 }
 ```
 
-Gateway entries appear only when their deployment credentials are configured. Read the live catalog for available IDs. Native ChatGPT subscription candidates are excluded. `model: "auto"` lets the router choose from eligible candidates. You can also pass a catalog entry's canonical `model` to restrict selection to that model, or its exact `id` to select a particular provider/model/effort candidate. Only eligible deployment-funded candidates are accepted; unavailable and native ChatGPT subscription models are excluded. A canonical model can have multiple candidates; use the exact candidate ID when provider and effort must be fixed.
+Cloudflare frontier entries use `provider: "cloudflare"` and candidate IDs such as `cloudflare:openai/gpt-6-astra:low`. Astra, Sol, Terra, and Luna each support `low`, `medium`, and `high` routing candidates. These use Cloudflare's AI binding and native Responses API through deployment-owned Cloudflare billing; they need no user connector or separate OpenAI key. They appear only when the deployment has an AI binding and `NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED=true`. The gate defaults off when omitted. Cloudflare-hosted GLM retains its existing `workers_ai` identity. Existing sessions keep their exact provider/model/effort pins; disabling Cloudflare frontier access makes a pinned Cloudflare request unavailable rather than switching its provider.
+
+OpenRouter and Vercel gateway entries appear only when their deployment credentials are configured. Read the live catalog for available IDs. Native ChatGPT subscription candidates are excluded. `model: "auto"` lets the router choose from eligible candidates. You can also pass a catalog entry's canonical `model` to restrict selection to that model, or its exact `id` to select a particular provider/model/effort candidate. Only eligible deployment-funded candidates are accepted; unavailable and native ChatGPT subscription models are excluded. A canonical model can have multiple candidates; use the exact candidate ID when provider and effort must be fixed.
 
 ## Optional session extension: create and inspect a session
 
@@ -244,7 +246,7 @@ Both JSON and buffered SSE responses expose the selected route in headers. Sessi
 | Header | Value |
 | --- | --- |
 | `x-nanocodex-session-id` | Public session UUID. |
-| `x-nanocodex-provider` | Selected backend: `workers_ai`, `openrouter`, or `vercel`. |
+| `x-nanocodex-provider` | Selected backend: `workers_ai`, `cloudflare`, `openrouter`, or `vercel`. |
 | `x-nanocodex-model` | Canonical selected model. |
 | `x-nanocodex-thinking` | Selected `low`, `medium`, or `high` effort. |
 | `x-nanocodex-inference-session-id` | Same public session UUID. |

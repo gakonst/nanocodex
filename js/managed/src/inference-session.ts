@@ -6,6 +6,7 @@ import {
   OSS_MODEL, ROUTING_CANDIDATES, resolveThreadRoute, routingPolicySchema, projectThreadRouteDiagnostics,
   type RoutingAi, type RoutingAvailability, type ThreadRoute, type ThreadRoutingPolicy, type ThreadRouteDiagnostics,
 } from "./thread-model-routing";
+import { gatewayAvailability } from "./gateway-runtime";
 import { PROBE_OWNER } from "./provider-probe-schedule";
 
 /** Deployment bindings only. No account credentials or agent runtime belong here. */
@@ -13,6 +14,7 @@ export type InferenceSessionEnv = {
   AI: RoutingAi;
   OPENROUTER_API_KEY?: string;
   AI_GATEWAY_API_KEY?: string;
+  NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED?: string;
   NANOCODEX_PROVIDER_PROBES?: string;
   /** Deployment-global, content-free probe aggregates; never an account service. */
   NANOCODEX_PROVIDER_PROBE_COORDINATOR?: {
@@ -146,7 +148,7 @@ export function normalizeInferencePolicy(value: unknown = {}): ThreadRoutingPoli
  */
 export async function inferenceRoutingAvailability(env: InferenceSessionEnv, signal: AbortSignal): Promise<RoutingAvailability> {
   const availability: RoutingAvailability = {
-    openrouter: Boolean(env.OPENROUTER_API_KEY?.trim()), vercel: Boolean(env.AI_GATEWAY_API_KEY?.trim()),
+    ...gatewayAvailability(env),
     workerColo: null, clientIngressColo: null, provider_performance: [],
   };
   const coordinator = env.NANOCODEX_PROVIDER_PROBE_COORDINATOR;
@@ -161,7 +163,7 @@ export async function inferenceRoutingAvailability(env: InferenceSessionEnv, sig
     ]);
     if (Array.isArray(snapshot)) availability.provider_performance = snapshot.slice(0, 512).filter(metric =>
       metric && typeof metric === "object" && metric.source === "probe" && metric.scope === "deployment_global"
-      && metric.workerColo === null && ["workers_ai", "openrouter", "vercel"].includes(metric.backend));
+      && metric.workerColo === null && ["workers_ai", "openrouter", "vercel", "cloudflare"].includes(metric.backend));
   } catch { /* No retry or provider fallback: unavailable telemetry is unknown. */ }
   finally {
     clearTimeout(timer);
@@ -236,11 +238,23 @@ async function executeRoutedResponse(env: InferenceSessionEnv, route: InferenceR
   if (!admittedRoute(route)) throw new InferenceRequestError("invalid_pinned_route", 503);
   assertPinnedRequest(route, input);
   signal.throwIfAborted();
-  const transport = route.backend === "workers_ai"
-    ? createWorkersAiResponses({ run: (model, body) => env.AI.run(model, body) }, { model: OSS_MODEL })
-    : createGatewayResponses({ provider: route.backend as "openrouter" | "vercel", model: route.model,
+  let transport: ReturnType<typeof createWorkersAiResponses>;
+  if (route.backend === "workers_ai") {
+    transport = createWorkersAiResponses({ run: (model, body) => env.AI.run(model, body) }, { model: OSS_MODEL });
+  } else if (route.backend === "cloudflare") {
+    if (route.model === OSS_MODEL) throw new InferenceRequestError("invalid_pinned_route", 503);
+    if (!gatewayAvailability(env).cloudflare) throw new InferenceRequestError("inference_unavailable", 503);
+    transport = createGatewayResponses({ provider: "cloudflare", model: route.model, reasoningEffort: route.thinking,
+      ai: { run: (model, body) => {
+        signal.throwIfAborted();
+        if (model !== route.provider_model) throw new InferenceRequestError("invalid_pinned_route", 503);
+        return env.AI.run(model, body);
+      } } });
+  } else {
+    transport = createGatewayResponses({ provider: route.backend as "openrouter" | "vercel", model: route.model,
       reasoningEffort: route.thinking, apiKey: (route.backend === "openrouter" ? env.OPENROUTER_API_KEY : env.AI_GATEWAY_API_KEY) ?? "",
       fetch: fetchImpl });
+  }
   const response = await transport.createResponse(`${transport.apiBaseUrl}/responses`, sessionId ?? "", {
     // Pure adapters ignore the legacy session argument; stateless requests invent no session.
     authorization: "host_managed", signal,

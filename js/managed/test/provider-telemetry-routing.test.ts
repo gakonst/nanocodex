@@ -15,7 +15,7 @@ const sample = (patch: Partial<ProviderObservation> = {}): ProviderObservation =
 const aggregate = (patch = {}) => ({
   ...summarizeProviderObservationGroups([sample(), sample(), sample()], now)[0], ...patch,
 });
-const runtime = (metrics: unknown[]) => ({ openrouter: true, vercel: true, workerColo: "LHR", provider_performance: metrics });
+const runtime = (metrics: unknown[]) => ({ openrouter: true, vercel: true, cloudflare: true, workerColo: "LHR", provider_performance: metrics });
 const answer = (id = candidate.id, confidence = .9) => ({ answers: {
   candidate: { choice: id, confidence }, family: { choice: "terminal", confidence: .95 },
 } });
@@ -54,8 +54,8 @@ describe("successful generation TTFT and honest deployment scope", () => {
     expect(result.generationTtftEwmaMs).toBeNull();
     expect(result.availabilityFailureCount).toBe(3);
   });
-  it("accepts validated Workers AI generation without inventing an HTTP status", () => {
-    const result = summarizeProviderObservations(Array.from({ length: 3 }, () => sample({ backend: "workers_ai", status: null, headersMs: null })), now);
+  it.each(["workers_ai", "cloudflare"])("accepts validated %s generation without inventing an HTTP status", backend => {
+    const result = summarizeProviderObservations(Array.from({ length: 3 }, () => sample({ backend, status: null, headersMs: null })), now);
     expect(result).toMatchObject({ successCount: 3, availabilityFailureCount: 0,
       generationTtftSampleCount: 3, generationTtftP50Ms: 100, usable: true });
   });
@@ -86,13 +86,13 @@ describe("successful generation TTFT and honest deployment scope", () => {
 });
 
 describe("Jev responsiveness trust boundary", () => {
-  it("includes all 45 candidates and their matching global TTFT, without a sixteen-group cutoff", async () => {
+  it("includes all 57 candidates and their matching global TTFT, without a sixteen-group cutoff", async () => {
     vi.spyOn(Date, "now").mockReturnValue(now);
     try {
       const metrics = ROUTING_CANDIDATES.map(c => aggregate({ backend: c.backend, model: c.provider_model, effort: c.thinking }));
       const { result, state } = await route(metrics);
-      expect(state.candidates).toHaveLength(45);
-      expect(result.audit?.provider_telemetry?.provider_performance).toHaveLength(45);
+      expect(state.candidates).toHaveLength(57);
+      expect(result.audit?.provider_telemetry?.provider_performance).toHaveLength(57);
       for (const c of state.candidates) {
         expect(c.responsiveness).toMatchObject({ live: null, probe: {
           generationTtftSampleCount: 3, generationTtftP50Ms: 100,
@@ -111,8 +111,8 @@ describe("Jev responsiveness trust boundary", () => {
         aggregate({ backend: c.backend, model: c.provider_model, effort: c.thinking, source: "live", scope: "worker_colo", workerColo: "LHR" }),
       ]);
       const { result, state } = await route(metrics);
-      expect(result.audit?.provider_telemetry?.provider_performance).toHaveLength(90);
-      expect(state.candidates).toHaveLength(45);
+      expect(result.audit?.provider_telemetry?.provider_performance).toHaveLength(114);
+      expect(state.candidates).toHaveLength(57);
       expect(state.provider_telemetry).not.toHaveProperty("provider_performance");
       expect(JSON.stringify(state).length).toBeLessThan(64_000);
       expect(state.candidates.every((c: any) => c.responsiveness.live && c.responsiveness.probe)).toBe(true);

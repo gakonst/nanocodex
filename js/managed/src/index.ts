@@ -386,6 +386,7 @@ export interface Env extends
   /** Deployment-owned provider secrets; never accepted in thread configuration. */
   OPENROUTER_API_KEY?: string;
   AI_GATEWAY_API_KEY?: string;
+  NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED?: string;
   /** Opt-in paid inference PoC; absent/false preserves current routing. */
   NANOCODEX_THREAD_ROUTING?: string;
   NANOCODEX_PROVIDER_PROBE_COORDINATOR?: DurableObjectNamespace<ProviderProbeCoordinator>;
@@ -8319,7 +8320,7 @@ export class DurableAgentSession extends DurableComputerSession {
           const route = this.#threadRoute();
           if (this.env.NANOCODEX_THREAD_ROUTING !== "true"
             || this.#session()?.authorization_epoch !== session.authorization_epoch
-            || !route || (route.backend !== "openrouter" && route.backend !== "vercel")) {
+            || !route || (route.backend !== "openrouter" && route.backend !== "vercel" && route.backend !== "cloudflare")) {
             throw new Error("Gateway route ownership is no longer active");
           }
         }, undefined, gatewayTelemetry),
@@ -9602,7 +9603,7 @@ export class DurableAgentSession extends DurableComputerSession {
             id, route.backend, route.model, route.thinking, requested.type,
             Math.max(0, Date.now() - result.committed.created_at),
             JSON.stringify(requested.type === "turn_completed" && requested.usage
-              ? { ...requested.usage, ...(route.backend === "openrouter" || route.backend === "vercel"
+              ? { ...requested.usage, ...(route.backend === "openrouter" || route.backend === "vercel" || route.backend === "cloudflare"
                 ? { cost_basis: "canonical_model_api_equivalent_not_gateway_invoice", gateway_billing_verified: false } : {}) }
               : null),
           );

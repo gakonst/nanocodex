@@ -253,9 +253,9 @@ describe("cross-provider candidate routing", () => {
   } })) });
   const openrouter = "openrouter:openai/gpt-6-astra:high";
   const vercel = "vercel:openai/gpt-6-astra:high";
-  it("offers 45 unique candidates, preserving every old identity", async () => {
-    expect(ROUTING_CANDIDATES).toHaveLength(45);
-    expect(new Set(ROUTING_CANDIDATES.map(c => c.id)).size).toBe(45);
+  it("offers 57 unique candidates, preserving every old identity", async () => {
+    expect(ROUTING_CANDIDATES).toHaveLength(57);
+    expect(new Set(ROUTING_CANDIDATES.map(c => c.id)).size).toBe(57);
     const p = routingPolicySchema.parse({ candidates: ROUTING_CANDIDATES.map(c => c.id) });
     const ai = choose(vercel);
     const route = await resolveThreadRoute(ai, "task", p, available);
@@ -281,7 +281,7 @@ describe("cross-provider candidate routing", () => {
     expect(route.selection).toBe("prior");
   });
   it.each([
-    [undefined, 15], [{openrouter:true,vercel:false},30], [{openrouter:false,vercel:true},30], [available,45],
+    [undefined, 15], [{openrouter:true,vercel:false},30], [{openrouter:false,vercel:true},30], [available,45], [{...available,cloudflare:true},57], [{openrouter:false,vercel:false,cloudflare:true},27],
   ])("filters unavailable providers before Jev: %j", async (availability, count) => {
     const ai = choose("gpt-6-astra:high");
     const route = await resolveThreadRoute(ai, "task", routingPolicySchema.parse({}), availability);
@@ -555,5 +555,45 @@ describe("public Jev route diagnostics", () => {
     expect(projectThreadRouteDiagnostics(route)).toBeUndefined();
     delete route.audit;
     expect(projectThreadRouteDiagnostics(route)).toBeUndefined();
+  });
+});
+
+
+describe("Cloudflare frontier opt-in", () => {
+  const id = "cloudflare:openai/gpt-6-astra:high";
+  const available = { openrouter: false, vercel: false, cloudflare: true };
+  const ai = { run: async () => ({ answers: { candidate: { choice: id, confidence: .99 }, family: { choice: "terminal", confidence: .99 } } }) };
+  it("adds exactly twelve frontier entries with unknown prices and retains all old IDs", () => {
+    const cloudflare = ROUTING_CANDIDATES.filter(c => c.backend === "cloudflare");
+    expect(cloudflare).toHaveLength(12);
+    expect(ROUTING_CANDIDATES.filter(c => c.backend !== "chatgpt")).toHaveLength(45);
+    for (const model of [FRONTIER_MODEL, "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+      for (const thinking of ["low", "medium", "high"]) {
+        expect(cloudflare.find(c => c.id === `cloudflare:openai/${model}:${thinking}`)).toMatchObject({model, thinking, provider_model:`openai/${model}`,catalog_price_hint:null});
+        expect(ROUTING_CANDIDATES.some(c => c.id === `${model}:${thinking}`)).toBe(true);
+        for (const backend of ["openrouter", "vercel"]) expect(ROUTING_CANDIDATES.some(c => c.id === `${backend}:openai/${model}:${thinking}`)).toBe(true);
+      }
+    }
+    expect(cloudflare.some(c => c.model === OSS_MODEL)).toBe(false);
+  });
+  it("requires an explicitly true runtime gate even for an explicit candidate", async () => {
+    const policy = routingPolicySchema.parse({ candidates: [id] });
+    for (const cloudflare of [undefined, false, "true"]) {
+      await expect(resolveThreadRoute(ai,"task",policy,{...available,cloudflare} as never)).rejects.toThrow("No eligible");
+    }
+    const route = await resolveThreadRoute(ai,"task",policy,available);
+    expect(route).toMatchObject({backend:"cloudflare",model:FRONTIER_MODEL,provider_model:"openai/gpt-6-astra",thinking:"high"});
+    expect(projectThreadRouteDiagnostics(route)?.chosen_candidate).toBe(id);
+  });
+  it("supports only frontier estimates and preserves old committed pins after opt-in", async () => {
+    const estimate = {family:"terminal",backend:"cloudflare",model:FRONTIER_MODEL,thinking:"high",success_rate:.9,expected_cost_usd:.1,expected_duration_ms:100,sample_size:10,source:"heldout-v1"};
+    const policy = routingPolicySchema.parse({candidates:[id],estimates:[estimate],min_success_rate:.8});
+    expect((await resolveThreadRoute(ai,"task",policy,available)).estimate).toMatchObject(estimate);
+    expect(() => routingPolicySchema.parse({estimates:[{...estimate,model:OSS_MODEL}]})).toThrow();
+    const old = await resolveThreadRoute({run:async()=>{throw Error("unavailable");}},"task",routingPolicySchema.parse({}));
+    const retained = JSON.parse(JSON.stringify(old));
+    const pin = new ThreadRoutePin({read:()=>retained,commit:()=>{throw Error("unexpected replacement");}});
+    expect(await pin.resolve(()=>resolveThreadRoute(ai,"task",policy,available))).toEqual(old);
+    expect(retained.backend).toBe("chatgpt");
   });
 });
