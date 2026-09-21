@@ -207,8 +207,8 @@ for (const provider of ["openrouter", "vercel"]) {
 const nativeResponse = (output, extra = {}) => ({ object: "response", status: "completed", output, ...extra });
 const nativeText = text => ({ type: "message", role: "assistant", status: "completed", content: [{ type: "output_text", text }] });
 const bindingOptions = { provider: "cloudflare", model: "gpt-6-astra", reasoningEffort: "high" };
-for (const model of models.slice(1)) {
-  test(`cloudflare/${model} uses native Responses and round-trips all managed tools`, async () => {
+for (const wire of ["binding", "rest"]) for (const model of models.slice(1)) {
+  test(`cloudflare/${wire}/${model} uses native Responses and round-trips all managed tools`, async () => {
     const observed = [], requests = [];
     const declared = [
       { type: "namespace", name: "functions", tools: [{ type: "custom", name: "exec", format: { syntax: "lark", definition: "start: /.+/" } }] },
@@ -216,9 +216,7 @@ for (const model of models.slice(1)) {
       { type: "tool_search", execution: "client", parameters: { type: "object", properties: { query: { type: "string" } } } },
     ];
     const discovered = [{ type: "namespace", name: "remote", tools: [{ type: "function", name: "read", parameters: { type: "object" } }] }];
-    const transport = createGatewayResponses({ ...bindingOptions, model,
-      onRequest: () => ({ headers(status) { observed.push(status); }, finish(outcome) { observed.push(outcome); } }),
-      ai: { async run(upstream, input) {
+    const run = async (upstream, input) => {
         assert.equal(upstream, `openai/${model}`); requests.push(input);
         assert.equal(input.messages, undefined); assert.equal(input.model, undefined);
         assert.equal(input.stream, false); assert.equal(input.store, false);
@@ -248,7 +246,16 @@ for (const model of models.slice(1)) {
         assert.equal(calls[3].name, input.tools[3].name);
         assert.equal(input.input.at(-1).output, "remote contents");
         return nativeResponse([nativeText("done")]);
-      } },
+    };
+    const transport = createGatewayResponses({ ...bindingOptions, model,
+      onRequest: () => ({ headers(status) { observed.push(status); }, finish(outcome) { observed.push(outcome); } }),
+      ...(wire === "binding" ? { ai: { run } } : { accountId: "a".repeat(32), apiKey: secret,
+        fetch: async (url, init) => {
+          assert.equal(url, `https://api.cloudflare.com/client/v4/accounts/${"a".repeat(32)}/ai/v1/responses`);
+          assert.equal(init.redirect, "manual"); assert.equal(init.headers.authorization, `Bearer ${secret}`);
+          const { model: upstream, ...input } = JSON.parse(init.body);
+          return Response.json(await run(upstream, input));
+        } }),
     });
     const common = { model, tools: declared, max_output_tokens: 512 };
     const first = (await events(await invoke(transport, { ...common, input: "run", tool_choice: { type: "custom", namespace: "functions", name: "exec" } }))).at(-1).response;
@@ -267,7 +274,7 @@ for (const model of models.slice(1)) {
     const third = (await events(await invoke(transport, { ...common, input: [...history, ...second.output,
       { type: "function_call_output", call_id: "found", output: "remote contents" }] }))).at(-1).response;
     assert.equal(third.output[0].content[0].text, "done"); assert.equal(third.end_turn, true);
-    assert.deepEqual(observed, ["success", "success", "success"]);
+    assert.deepEqual(observed, wire === "binding" ? ["success", "success", "success"] : [200, "success", 200, "success", 200, "success"]);
   });
 }
 
@@ -382,4 +389,32 @@ test("Cloudflare replays portable text and historical tools in native Responses 
   assert.equal(stream.at(-1).response.output.length, 1);
   assert.equal(stream.at(-1).response.output[0].content[0].text, "done");
   assert.equal(JSON.stringify(stream).includes("opaque"), false);
+});
+
+
+test("Cloudflare REST rejects malformed or ambiguous credential configuration before dispatch", () => {
+  const base = { ...bindingOptions, accountId: "a".repeat(32), apiKey: secret };
+  for (const extra of [{accountId:"../other"}, {accountId:"https://untrusted.invalid"}, {accountId:""},
+    {apiKey:undefined}, {apiKey:""}, {apiKey:"bad\r\nheader"}, {ai:{run(){}}}, {model:models[0]}, {fetch:42}]) {
+    assert.throws(() => createGatewayResponses({...base,...extra}), /Gateway Responses/);
+  }
+});
+for (const status of [302, 429, 503]) test(`Cloudflare REST sanitizes HTTP ${status} without retry or binding fallback`, async () => {
+  const observed=[]; let calls=0;
+  const transport=createGatewayResponses({...bindingOptions,accountId:"a".repeat(32),apiKey:secret,
+    onRequest:()=>({headers(status){observed.push(status);},finish(outcome){observed.push(outcome);}}),
+    fetch:async()=>{calls++;return new Response("private provider error "+secret,{status});}});
+  await assert.rejects(()=>invoke(transport,{input:"fixture"}), error => !String(error).includes(secret) && !String(error).includes("private"));
+  assert.equal(calls,1); assert.deepEqual(observed,[status,"http_error"]);
+});
+test("Cloudflare REST validates native Responses bodies and propagates caller cancellation", async () => {
+  const observed=[];
+  const transport=createGatewayResponses({...bindingOptions,accountId:"a".repeat(32),apiKey:secret,
+    onRequest:()=>({headers(){},finish(outcome){observed.push(outcome);}}),
+    fetch:async()=>Response.json({object:"response",status:"completed",output:[{type:"web_search_call"}]})});
+  await assert.rejects(()=>invoke(transport,{input:"fixture"}));assert.deepEqual(observed,["protocol_error"]);
+  const controller=new AbortController();let sent;
+  const cancelled=createGatewayResponses({...bindingOptions,accountId:"a".repeat(32),apiKey:secret,
+    fetch:async(_url,init)=>{sent=init.signal;controller.abort(new DOMException("Stopped","AbortError"));throw controller.signal.reason;}});
+  await assert.rejects(()=>invoke(cancelled,{input:"fixture"},controller.signal),{name:"AbortError"});assert.equal(sent,controller.signal);
 });

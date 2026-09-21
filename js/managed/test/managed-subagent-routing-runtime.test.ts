@@ -43,9 +43,10 @@ function toNative(chat: any) {
 }
 
 it.each([
-  ["openrouter", "workers_ai"], ["vercel", "workers_ai"],
-  ["cloudflare", "workers_ai"], ["openrouter", "cloudflare"], ["cloudflare", "cloudflare"],
-] as const)("opt-in %s root and %s child pin independent transports across real tools, reconnect and two reconstructions", async (provider, childProvider) => {
+  ["openrouter", "workers_ai", "binding"], ["vercel", "workers_ai", "binding"],
+  ["cloudflare", "workers_ai", "binding"], ["openrouter", "cloudflare", "binding"], ["cloudflare", "cloudflare", "binding"],
+  ["cloudflare", "workers_ai", "rest"], ["openrouter", "cloudflare", "rest"], ["cloudflare", "cloudflare", "rest"],
+] as const)("opt-in %s root and %s child (%s) pin independent transports across real tools, reconnect and two reconstructions", async (provider, childProvider, transport) => {
   const childModel = childProvider === "cloudflare" ? "gpt-6-astra" : OSS_MODEL;
   const childCandidate = ROUTING_CANDIDATES.find(c => c.backend === childProvider && c.model === childModel && c.thinking === "high")!;
   const rootCandidate = ROUTING_CANDIDATES.find(c => c.backend === provider && c.model === "gpt-5.6-sol" && c.thinking === "low")!;
@@ -66,18 +67,7 @@ it.each([
       observedTools.push(name);
       return toolCall(input, name, args, `root-${rootCalls}`);
     };
-    const original = (session as unknown as { env: Record<string, unknown> }).env;
-    Object.defineProperty(session, "env", { configurable: true, value: { ...original,
-      NANOCODEX_THREAD_ROUTING: "true", NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true", OPENROUTER_API_KEY: "synthetic-availability-only", AI_GATEWAY_API_KEY: "synthetic-availability-only", AGENT_IDLE_TIMEOUT_MS: "1000",
-      NANOCODEX_MEMORY: { getByName: () => ({ fetch: async () => new Response(null, { status: 204 }) }) },
-      NANOCODEX_USERS: { getByName: () => ({ fetch: async () => new Response(null, { status: 204 }) }) },
-      NANOCODEX_ACCOUNT_TOOLS: { getByName: () => ({ fetch: async () => Response.json({ tools: [], machines: [], connections: [] }) }) },
-      NANOCODEX: { fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
-        const req = new Request(input, init), url = new URL(req.url);
-        if (url.hostname === "broker.internal" && ["PUT", "DELETE"].includes(req.method)) return new Response(null, { status: 204 });
-        return Response.json({ tools: [], machines: [], connections: [], accounts: {} });
-      } },
-      AI: { run: async (model: string, input: any) => {
+    const modelResponse = async (model: string, input: any) => {
         if (model === "typesafe/jev") {
           choices++;
           expect(choices).toBeLessThanOrEqual(2);
@@ -134,6 +124,22 @@ it.each([
         };
         const result = await handleChild();
         return childProvider === "cloudflare" ? toNative(result) : result;
+    };
+    const original = (session as unknown as { env: Record<string, unknown> }).env;
+    Object.defineProperty(session, "env", { configurable: true, value: { ...original,
+      NANOCODEX_THREAD_ROUTING: "true", NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true", OPENROUTER_API_KEY: "synthetic-availability-only", AI_GATEWAY_API_KEY: "synthetic-availability-only", AGENT_IDLE_TIMEOUT_MS: "1000",
+      NANOCODEX_MEMORY: { getByName: () => ({ fetch: async () => new Response(null, { status: 204 }) }) },
+      NANOCODEX_USERS: { getByName: () => ({ fetch: async () => new Response(null, { status: 204 }) }) },
+      NANOCODEX_ACCOUNT_TOOLS: { getByName: () => ({ fetch: async () => Response.json({ tools: [], machines: [], connections: [] }) }) },
+      NANOCODEX: { fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
+        const req = new Request(input, init), url = new URL(req.url);
+        if (url.hostname === "broker.internal" && ["PUT", "DELETE"].includes(req.method)) return new Response(null, { status: 204 });
+        return Response.json({ tools: [], machines: [], connections: [], accounts: {} });
+      } },
+      ...(transport === "rest" ? { CLOUDFLARE_AI_API_TOKEN: "synthetic-cloudflare-token", NANOCODEX_CLOUDFLARE_ACCOUNT_ID: "a".repeat(32) } : {}),
+      AI: { run: async (model: string, input: any) => {
+        if (transport === "rest") expect(model.startsWith("openai/")).toBe(false);
+        return modelResponse(model, input);
       } },
     } });
     const rootResponse = async (body: any) => {
@@ -172,8 +178,16 @@ it.each([
       return Response.json(completion({ content: "ROOT_DONE_3" }));
     };
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockImplementation(async (input, init) => {
-      expect(provider).not.toBe("cloudflare");
       const req = new Request(input, init);
+      if (new URL(req.url).hostname === "api.cloudflare.com") {
+        expect(transport).toBe("rest");
+        expect(req.url).toBe(`https://api.cloudflare.com/client/v4/accounts/${"a".repeat(32)}/ai/v1/responses`);
+        expect(req.headers.get("authorization")).toBe("Bearer synthetic-cloudflare-token");
+        expect(req.redirect).toBe("manual");
+        const body = await req.json() as any;
+        return Response.json(await modelResponse(body.model, body));
+      }
+      expect(provider).not.toBe("cloudflare");
       expect(req.url).toBe(provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://ai-gateway.vercel.sh/v1/chat/completions");
       return rootResponse(await req.json());
     });

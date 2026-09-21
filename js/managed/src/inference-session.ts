@@ -6,7 +6,7 @@ import {
   OSS_MODEL, ROUTING_CANDIDATES, resolveThreadRoute, routingPolicySchema, projectThreadRouteDiagnostics,
   type RoutingAi, type RoutingAvailability, type ThreadRoute, type ThreadRoutingPolicy, type ThreadRouteDiagnostics,
 } from "./thread-model-routing";
-import { gatewayAvailability } from "./gateway-runtime";
+import { gatewayAvailability, gatewayRuntime } from "./gateway-runtime";
 import { PROBE_OWNER } from "./provider-probe-schedule";
 
 /** Deployment bindings only. No account credentials or agent runtime belong here. */
@@ -14,6 +14,8 @@ export type InferenceSessionEnv = {
   AI: RoutingAi;
   OPENROUTER_API_KEY?: string;
   AI_GATEWAY_API_KEY?: string;
+  CLOUDFLARE_AI_API_TOKEN?: string;
+  NANOCODEX_CLOUDFLARE_ACCOUNT_ID?: string;
   NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED?: string;
   NANOCODEX_PROVIDER_PROBES?: string;
   /** Deployment-global, content-free probe aggregates; never an account service. */
@@ -244,12 +246,9 @@ async function executeRoutedResponse(env: InferenceSessionEnv, route: InferenceR
   } else if (route.backend === "cloudflare") {
     if (route.model === OSS_MODEL) throw new InferenceRequestError("invalid_pinned_route", 503);
     if (!gatewayAvailability(env).cloudflare) throw new InferenceRequestError("inference_unavailable", 503);
-    transport = createGatewayResponses({ provider: "cloudflare", model: route.model, reasoningEffort: route.thinking,
-      ai: { run: (model, body) => {
-        signal.throwIfAborted();
-        if (model !== route.provider_model) throw new InferenceRequestError("invalid_pinned_route", 503);
-        return env.AI.run(model, body);
-      } } });
+    const gateway = gatewayRuntime(env, route, () => signal.throwIfAborted(), fetchImpl);
+    if (!gateway) throw new InferenceRequestError("inference_unavailable", 503);
+    transport = createGatewayResponses(gateway);
   } else {
     transport = createGatewayResponses({ provider: route.backend as "openrouter" | "vercel", model: route.model,
       reasoningEffort: route.thinking, apiKey: (route.backend === "openrouter" ? env.OPENROUTER_API_KEY : env.AI_GATEWAY_API_KEY) ?? "",

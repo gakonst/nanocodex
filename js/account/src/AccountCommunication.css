@@ -1,4 +1,0 @@
-.account-communication dl { display: grid; gap: 12px; margin: 16px 0; }
-.account-communication dl > div { display: grid; gap: 4px; }
-.account-communication dt { font-size: 12px; opacity: .7; }
-.account-communication dd { margin: 0; overflow-wrap: anywhere; user-select: text; }

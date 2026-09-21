@@ -14,14 +14,21 @@ export function createGatewayResponses(options) {
   if (provider !== "cloudflare" && !Object.hasOwn(ENDPOINTS, provider)) fail("unsupported provider");
   if (!MODELS.includes(model)) fail("unsupported canonical model");
   if (!["low", "medium", "high"].includes(reasoningEffort)) fail("unsupported reasoning effort");
+  const cloudflareHttp = provider === "cloudflare" && (options.accountId !== undefined || apiKey !== undefined);
   if (provider === "cloudflare") {
     if (model === MODELS[0]) fail("Cloudflare gateway requires an OpenAI canonical model");
-    if (typeof options.ai?.run !== "function") fail("an AI binding is required");
-  } else {
-    if (typeof apiKey !== "string" || !apiKey.trim() || /[\r\n]/.test(apiKey)) fail("a server-side API key is required");
+    if (cloudflareHttp) {
+      if (options.ai !== undefined) fail("choose one Cloudflare transport");
+      if (typeof options.accountId !== "string" || !/^[a-f0-9]{32}$/i.test(options.accountId)) fail("a valid Cloudflare account ID is required");
+    } else if (typeof options.ai?.run !== "function") fail("an AI binding is required");
+  }
+  if (provider !== "cloudflare" || cloudflareHttp) {
+    if (typeof apiKey !== "string" || !apiKey.trim() || /[\r\n]/.test(apiKey)
+      || (cloudflareHttp && !/^[\x21-\x7e]+$/.test(apiKey))) fail("a server-side API key is required");
     if (typeof fetchImpl !== "function") fail("fetch is required");
   }
-  const endpoint = ENDPOINTS[provider];
+  const endpoint = cloudflareHttp
+    ? `https://api.cloudflare.com/client/v4/accounts/${options.accountId}/ai/v1/responses` : ENDPOINTS[provider];
   const gatewayModel = model === MODELS[0]
     ? (provider === "openrouter" ? "z-ai/glm-5.3" : "zai/glm-5.3") : `openai/${model}`;
   const apiBaseUrl = `https://${provider}-responses.invalid/v1`;
@@ -29,7 +36,7 @@ export function createGatewayResponses(options) {
     async run(_model, input) {
       signal?.throwIfAborted();
       if (input.reasoning_effort !== undefined && input.reasoning_effort !== reasoningEffort) fail("reasoning override does not match pinned effort");
-      if (provider === "cloudflare") {
+      if (provider === "cloudflare" && !cloudflareHttp) {
         const payload = toBindingResponsesInput(input, reasoningEffort);
         attempt.outcome = "network_error";
         try { attempt.observer = options.onRequest?.(); } catch { /* telemetry is best effort */ }
@@ -47,7 +54,9 @@ export function createGatewayResponses(options) {
       }
       // Vercel documents reasoning_effort as the Chat Completions alias:
       // https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions/reasoning
-      const payload = { ...input, model: gatewayModel, reasoning_effort: reasoningEffort };
+      const payload = cloudflareHttp
+        ? { ...toBindingResponsesInput(input, reasoningEffort), model: gatewayModel }
+        : { ...input, model: gatewayModel, reasoning_effort: reasoningEffort };
       if (provider === "openrouter") {
         delete payload.reasoning_effort;
         payload.reasoning = { effort: reasoningEffort };
@@ -91,7 +100,7 @@ export function createGatewayResponses(options) {
         && (value.choices ?? []).some(choice => (choice.message?.tool_calls?.length ?? 0) > 1)) {
         fail("provider returned parallel tool calls despite a single-call contract");
       }
-      return value;
+      return cloudflareHttp ? fromBindingResponsesResult(value, input.parallel_tool_calls) : value;
     },
   }, { model, apiBaseUrl });
   return Object.freeze({ apiBaseUrl, stateless: true,

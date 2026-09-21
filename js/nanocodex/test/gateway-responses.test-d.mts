@@ -26,9 +26,9 @@ createGatewayResponses({ provider: "cloudflare", model: "gpt-6-astra", reasoning
 } });
 // @ts-expect-error Cloudflare requires its AI binding
 createGatewayResponses({ provider: "cloudflare", model: "gpt-6-astra", reasoningEffort: "high" });
-// @ts-expect-error Cloudflare has no API key
+// @ts-expect-error Binding transport excludes an API key
 createGatewayResponses({ provider: "cloudflare", model: "gpt-6-astra", reasoningEffort: "high", ai, apiKey: "synthetic" });
-// @ts-expect-error Cloudflare has no fetch transport
+// @ts-expect-error Binding transport excludes fetch
 createGatewayResponses({ provider: "cloudflare", model: "gpt-6-astra", reasoningEffort: "high", ai, fetch: globalThis.fetch });
 // @ts-expect-error GLM continues to use the Workers AI transport
 createGatewayResponses({ provider: "cloudflare", model: "@cf/zai-org/glm-5.3", reasoningEffort: "high", ai });
@@ -36,3 +36,11 @@ createGatewayResponses({ provider: "cloudflare", model: "@cf/zai-org/glm-5.3", r
 createGatewayResponses({ provider: "openrouter", model: "gpt-6-astra", reasoningEffort: "high" });
 // @ts-expect-error HTTP gateways do not accept a binding
 createGatewayResponses({ provider: "vercel", model: "gpt-6-astra", reasoningEffort: "high", apiKey: "synthetic", ai });
+
+createGatewayResponses({ provider: "cloudflare", model: "gpt-5.6-sol", reasoningEffort: "low", accountId: "a".repeat(32), apiKey: "synthetic", fetch: globalThis.fetch });
+// @ts-expect-error REST requires an account ID
+createGatewayResponses({ provider: "cloudflare", model: "gpt-5.6-sol", reasoningEffort: "low", apiKey: "synthetic" });
+// @ts-expect-error REST requires a token
+createGatewayResponses({ provider: "cloudflare", model: "gpt-5.6-sol", reasoningEffort: "low", accountId: "a".repeat(32) });
+// @ts-expect-error REST and binding cannot be mixed
+createGatewayResponses({ provider: "cloudflare", model: "gpt-5.6-sol", reasoningEffort: "low", accountId: "a".repeat(32), apiKey: "synthetic", ai });

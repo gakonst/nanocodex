@@ -1,8 +1,0 @@
-1789583868.749683 mmap(NULL, 8192, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0xffff8c0ad000 <0.000002>
-1789583868.749692 recvmsg(3, {msg_namelen=0}, 0) = -1 EAGAIN (Resource temporarily unavailable) <0.000001>
-1789583868.749701 recvmsg(3, {msg_namelen=0}, 0) = -1 EAGAIN (Resource temporarily unavailable) <0.000001>
-1789583868.749708 recvmsg(3, {msg_namelen=0}, 0) = -1 EAGAIN (Resource temporarily unavailable) <0.000009>
-1789583868.749725 ppoll([{fd=3, events=POLLIN}], 1, {tv_sec=5, tv_nsec=0}, NULL, 8) = 0 (Timeout) <5.006094>
-1789583873.756003 ppoll([{fd=3, events=POLLIN|POLLOUT}], 1, NULL, NULL, 8) = 1 ([{fd=3, revents=POLLOUT}]) <0.000005>
-1789583873.756056 writev(3, [{iov_base="\22\0\30\0\f\0`\0(\0\0\0)\0\0\0 \0\2\0\22\0\0\0X\3\0\0\0\0\0\0"..., iov_len=100}, {iov_base=NULL, iov_len=0}, {iov_base="", iov_len=0}], 3) = 100 <0.000016>
-1789583873.756099 ppoll([{fd=3, events=POLLIN}], 1, NULL, NULL, 8) = 1 ([{fd=3, revents=POLLIN}]) <0.000239>

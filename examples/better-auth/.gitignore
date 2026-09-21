@@ -1,5 +1,0 @@
-.dev.vars
-!.dev.vars.example
-.wrangler/
-dist/
-node_modules/

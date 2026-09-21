@@ -20,6 +20,7 @@ export type GatewayResponsesOptions = GatewayResponsesCommonOptions & (Readonly<
   /** Injectable HTTP transport, defaulting to global fetch. */
   fetch?: typeof globalThis.fetch;
   ai?: never;
+  accountId?: never;
 }> | Readonly<{
   provider: "cloudflare";
   model: Exclude<ResponsesCanonicalModel, "@cf/zai-org/glm-5.3">;
@@ -27,6 +28,16 @@ export type GatewayResponsesOptions = GatewayResponsesCommonOptions & (Readonly<
   ai: { run(model: `openai/${Exclude<ResponsesCanonicalModel, "@cf/zai-org/glm-5.3">}`, input: Record<string, unknown>): Promise<unknown> };
   apiKey?: never;
   fetch?: never;
+  accountId?: never;
+}> | Readonly<{
+  provider: "cloudflare";
+  model: Exclude<ResponsesCanonicalModel, "@cf/zai-org/glm-5.3">;
+  /** Account-scoped native Responses REST; no provider API key or connector access. */
+  accountId: string;
+  /** Deployment-owned Cloudflare API token with inference access. */
+  apiKey: string;
+  fetch?: typeof globalThis.fetch;
+  ai?: never;
 }>);
 /** Buffered Responses SSE with complete replay, text/tool history, fixed origin and pinned model/effort. */
 export function createGatewayResponses(options: GatewayResponsesOptions): WorkersAiResponsesTransport & Readonly<{ stateless: true }>;

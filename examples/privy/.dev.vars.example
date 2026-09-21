@@ -1,3 +1,0 @@
-# Copy to .dev.vars. Never expose these as VITE_* values.
-PRIVY_APP_SECRET=replace-with-your-privy-app-secret
-NANOCODEX_HOST_PROJECT_SECRET=replace-with-at-least-32-random-characters

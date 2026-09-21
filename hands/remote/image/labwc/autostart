@@ -1,3 +1,0 @@
-# This is the guest desktop session's startup, owned by labwc.
-wlr-randr --output HEADLESS-1 --custom-mode 1600x900
-foot --title='Nanocodex VM' &

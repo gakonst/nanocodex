@@ -1,3 +1,0 @@
-# Preserve the upstream model catalog's exact bytes, including trailing spaces.
-astra.md whitespace=-blank-at-eol
-system.md whitespace=-blank-at-eol

@@ -424,3 +424,114 @@ test('live binding observations accept protocol success without an invented stat
     assert.equal(rows[0].status,null);assert.equal(rows[0].headersMs,null);assert.equal(rows[0].generationTtftMs,null);
   }
 });
+
+const frontierRestTarget = overrides => target({ backend: 'cloudflare', model: 'openai/gpt-6-astra',
+  accountId: '0123456789abcdef0123456789abcdef', key: 'fixture-cloudflare-token', ...overrides });
+const frontierRestProbe = overrides => probe({ targets: [frontierRestTarget()],
+  ai: { run() { assert.fail('REST must never fall back to the binding'); } }, ...overrides });
+
+test('Cloudflare REST probes send native Responses with exact model, effort, entropy and HTTP timings', async () => {
+  const inputs = [];
+  for (const effort of ['none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', null]) {
+    let clock = 0, reservations = 0, signal, cancelled = false;
+    const observations = [];
+    const result = await frontierRestProbe({ targets: [frontierRestTarget({ effort })], maxCompletionTokens: 512,
+      monotonicNow: () => clock, store: { reserveProbe() { reservations++; return true; }, append(row) { observations.push(row); } },
+      fetch: async (url, init) => {
+        assert.equal(reservations, 1);
+        assert.equal(url, 'https://api.cloudflare.com/client/v4/accounts/0123456789abcdef0123456789abcdef/ai/v1/responses');
+        assert.equal(init.method, 'POST'); assert.equal(init.redirect, 'manual');
+        assert.equal(init.headers.authorization, 'Bearer fixture-cloudflare-token');
+        assert.equal(init.headers['content-type'], 'application/json'); assert.equal(init.headers.accept, 'text/event-stream');
+        signal = init.signal; assert.equal(signal.aborted, false);
+        const body = JSON.parse(init.body);
+        assert.deepEqual(body, { model: 'openai/gpt-6-astra', input: body.input, stream: true, max_output_tokens: 512,
+          ...(effort === null ? {} : { reasoning: { effort } }) });
+        assert.match(body.input, /^[0-9a-f-]{36} ttft-v1\. Reply with only OK\.$/); inputs.push(body.input);
+        clock = 5;
+        return sse(chunks([responseEvent('response.created', { response: { status: 'in_progress' } }),
+          responseEvent('response.reasoning_text.delta', { delta: 'fixture-private-reasoning' }), responseText, responseComplete],
+        i => { clock = 10 + i * 10; }, () => { cancelled = true; }));
+      } });
+    assert.equal(result.attempted, 1); assert.equal(observations.length, 1);
+    const row = observations[0];
+    assert.equal(row.outcome, 'success'); assert.equal(row.status, 200); assert.equal(row.headersMs, 5);
+    assert.equal(row.generationTtftMs, 20); assert.equal(row.fullResponseMs, 40);
+    assert.equal(row.effort, effort); assert.equal(row.model, 'openai/gpt-6-astra');
+    assert.equal(signal.aborted, true); assert.equal(cancelled, true);
+    assert.doesNotMatch(JSON.stringify(observations), /fixture-cloudflare-token|0123456789abcdef|fixture-private|Reply|ttft-v1/);
+  }
+  assert.equal(new Set(inputs).size, inputs.length);
+});
+
+test('Cloudflare invalid or partial REST credentials cannot reserve, dispatch or fall back to a binding', async () => {
+  for (const invalid of [{ key: undefined }, { accountId: undefined }, { key: '' }, { key: ' ' }, { key: 'bad\r\nheader' },
+    { key: 'bad\ttoken' }, { key: 'bad\0token' }, { key: 'bad token' }, { key: 'non-ascii-✓' },
+    { accountId: '' }, { accountId: 'x'.repeat(32) }, { accountId: '0'.repeat(31) }, { accountId: '0'.repeat(33) },
+    { accountId: '../other-account' }, { accountId: 'https://evil.example' }, { accountId: '0'.repeat(32) + '?override=1' },
+    { accountId: '0'.repeat(32) + '\n' }]) {
+    const result = await frontierRestProbe({ targets: [frontierRestTarget(invalid)],
+      store: { reserveProbe() { assert.fail('reserved'); }, append() { assert.fail('appended'); } },
+      fetch() { assert.fail('dispatched'); } });
+    assert.equal(result.attempted, 0);
+  }
+  const capped = await frontierRestProbe({ store: { reserveProbe: () => false, append() { assert.fail('appended'); } },
+    fetch() { assert.fail('dispatched over budget'); } });
+  assert.equal(capped.attempted, 0);
+});
+
+test('Cloudflare REST uses native Responses parsing and censors incomplete, cancelled and failed streams', async () => {
+  const cases = [
+    [responseText + responseComplete, 'success'],
+    [responseEvent('response.reasoning_summary_text.delta', { delta: '✓' }) + responseComplete, 'success'],
+    [responseText + responseEvent('response.incomplete', { response: { status: 'incomplete', incomplete_details: { reason: 'max_output_tokens' } } }), 'success'],
+    [responseText, 'protocol_error'], [responseComplete, 'protocol_error'], [complete, 'protocol_error'],
+    [responseText + responseEvent('response.failed', { response: { status: 'failed', error: { message: 'fixture-private-error' } } }), 'protocol_error'],
+    [responseText + responseEvent('response.cancelled', { response: { status: 'cancelled' } }), 'cancelled'],
+  ];
+  for (const [wire, outcome] of cases) {
+    const result = await frontierRestProbe({ fetch: async () => sse(chunks([...encoder.encode(wire)].map(x => new Uint8Array([x])))) });
+    const row = result.observations[0];
+    assert.equal(row.outcome, outcome); assert.equal(row.status, 200);
+    assert.equal(row.generationTtftMs !== null, outcome === 'success');
+    assert.equal(row.fullResponseMs !== null, outcome === 'success');
+    assert.doesNotMatch(JSON.stringify(row), /fixture-private-error|fixture-cloudflare-token|0123456789abcdef/);
+  }
+});
+
+test('Cloudflare REST errors and redirects retain real status, cancel bodies and never retry or fall back', async () => {
+  for (const status of [302, 307, 401, 429, 500]) {
+    let cancelled = false, calls = 0, clock = 0;
+    const result = await frontierRestProbe({ monotonicNow: () => clock, fetch: async (_, init) => {
+      calls++; assert.equal(init.redirect, 'manual'); clock = 7;
+      return new Response(new ReadableStream({ cancel() { cancelled = true; return new Promise(() => {}); } }),
+        { status, headers: { location: 'https://evil.example' } });
+    } });
+    assert.equal(calls, 1); assert.equal(cancelled, true);
+    const row = result.observations[0];
+    assert.equal(row.outcome, 'http_error'); assert.equal(row.status, status); assert.equal(row.headersMs, 7);
+    assert.equal(row.generationTtftMs, null); assert.equal(row.fullResponseMs, null);
+  }
+  const buffered = await frontierRestProbe({ fetch: async () => Response.json({ output_text: 'OK' }) });
+  assert.equal(buffered.observations[0].outcome, 'protocol_error');
+});
+
+test('Cloudflare REST deadline cancels partial and late streams without retry or binding fallback', { timeout: 2000 }, async () => {
+  for (const kind of ['fetch', 'partial']) {
+    let signal, resolve, cancelled = false, calls = 0;
+    const result = await frontierRestProbe({ timeoutMs: 5, fetch: async (_, init) => {
+      calls++; signal = init.signal;
+      if (kind === 'fetch') return new Promise(r => { resolve = r; });
+      return sse(new ReadableStream({ start(c) { c.enqueue(encoder.encode(responseText)); },
+        cancel() { cancelled = true; return new Promise(() => {}); } }));
+    } });
+    const row = result.observations[0];
+    assert.equal(row.outcome, 'timeout'); assert.equal(row.generationTtftMs, null); assert.equal(row.fullResponseMs, null);
+    assert.equal(row.status, kind === 'fetch' ? null : 200); assert.equal(calls, 1); assert.equal(signal.aborted, true);
+    if (kind === 'fetch') {
+      resolve(sse(new ReadableStream({ cancel() { cancelled = true; } })));
+      await new Promise(r => setImmediate(r));
+    }
+    assert.equal(cancelled, true); assert.equal(result.observations.length, 1);
+  }
+});

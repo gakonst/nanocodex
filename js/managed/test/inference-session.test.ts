@@ -468,7 +468,7 @@ describe("stateless standard Responses", () => {
     });
     const bindings = new Proxy({ AI: { run: ai } }, {
       get(target, key) {
-        if (["OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "NANOCODEX_PROVIDER_PROBES",
+        if (["OPENROUTER_API_KEY", "AI_GATEWAY_API_KEY", "CLOUDFLARE_AI_API_TOKEN", "NANOCODEX_CLOUDFLARE_ACCOUNT_ID", "NANOCODEX_PROVIDER_PROBES",
           "NANOCODEX_PROVIDER_PROBE_COORDINATOR", "NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED"].includes(String(key))) return undefined;
         if (key === "AI") return target.AI;
         throw Error(`unexpected capability ${String(key)}`);
@@ -781,5 +781,58 @@ describe("Cloudflare frontier public Responses compatibility", () => {
       { model: exact, input: "fixture" }, 32, new AbortController().signal);
     expect(response.status).toBe(400);
     expect(f.ai).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("Cloudflare REST inference transport", () => {
+  const exact = "cloudflare:openai/gpt-5.6-sol:low";
+  const accountId = "a".repeat(32), token = "private-deployment-inference-token";
+  const native = (output: unknown[]) => ({ object: "response", status: "completed", output });
+  it("repeats stateless requests without using the model binding or retaining account credentials", async () => {
+    const f = fixture({ NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true", CLOUDFLARE_AI_API_TOKEN: token,
+      NANOCODEX_CLOUDFLARE_ACCOUNT_ID: accountId });
+    f.ai.mockImplementation(async model => { expect(model).toBe("typesafe/jev"); return classification(exact); });
+    const send = vi.fn(async (url: string, init: RequestInit) => {
+      expect(url).toBe(`https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/responses`);
+      expect(init.redirect).toBe("manual"); expect((init.headers as any).authorization).toBe(`Bearer ${token}`);
+      expect(JSON.parse(init.body as string)).toMatchObject({ model: "openai/gpt-5.6-sol", stream: false,
+        store: false, reasoning: { effort: "low" }, max_output_tokens: 512 });
+      return Response.json(native([{ type: "message", role: "assistant", content: [{ type: "output_text", text: "fixture answer" }] }]));
+    });
+    vi.stubGlobal("fetch", send);
+    for (let i = 0; i < 2; i++) {
+      const response = await executeStatelessInferenceResponse(f.bindings,
+        { model: exact, input: "fixture", max_output_tokens: 512 }, 4096, new AbortController().signal);
+      expect(response.status).toBe(200); expect(response.headers.get("x-nanocodex-provider")).toBe("cloudflare");
+      const text = await response.text(); expect(text).not.toContain(token); expect(text).not.toContain(accountId);
+    }
+    expect(send).toHaveBeenCalledTimes(2); expect(f.ai).toHaveBeenCalledTimes(2); expect(f.persisted.size).toBe(0);
+  });
+  it("keeps the session pin across REST tool replay, restart and credential loss", async () => {
+    const f = fixture({ NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true", CLOUDFLARE_AI_API_TOKEN: token,
+      NANOCODEX_CLOUDFLARE_ACCOUNT_ID: accountId });
+    f.ai.mockImplementation(async model => { expect(model).toBe("typesafe/jev"); return classification(exact); });
+    let count=0;
+    const send=vi.fn(async (_url: string, init: RequestInit) => {
+      const body=JSON.parse(init.body as string); count++;
+      expect(f.commits.at(-1)?.route).toMatchObject({backend:"cloudflare",model:"gpt-5.6-sol",thinking:"low"});
+      if(count===1) return Response.json(native([{type:"function_call",call_id:"fixture_call",name:body.tools[0].name,arguments:'{"value":42}'}]));
+      expect(body.input.at(-1)).toEqual({type:"function_call_output",call_id:"fixture_call",output:"42"});
+      return Response.json(native([{type:"message",role:"assistant",content:[{type:"output_text",text:"42"}]}]));
+    });
+    vi.stubGlobal("fetch",send); await f.create({candidates:[exact]});
+    const tools=[{type:"function",name:"fixture_tool",parameters:{type:"object",properties:{value:{type:"number"}}}}];
+    const first=await f.call("POST","/responses",{model:exact,input:"fixture",tools}); expect(first.status).toBe(200);
+    const body=await first.json() as any; const pin=f.commits.at(-1)!.route;
+    f.restart();
+    const second=await f.call("POST","/responses",{input:[{role:"user",content:"fixture"},...body.output,
+      {type:"function_call_output",call_id:"fixture_call",output:"42"}],tools});
+    expect(second.status).toBe(200); expect(f.commits.at(-1)!.route).toEqual(pin);
+    expect((await f.call("POST","/responses",{model:"openrouter:openai/gpt-5.6-sol:low",input:"fixture"})).status).toBe(409);
+    delete f.bindings.CLOUDFLARE_AI_API_TOKEN;
+    expect((await f.call("POST","/responses",{input:"fixture"})).status).toBe(503);
+    expect(send).toHaveBeenCalledTimes(2); expect(f.ai).toHaveBeenCalledTimes(1);
+    expect(JSON.stringify(f.commits)).not.toContain(token); expect(JSON.stringify(f.commits)).not.toContain(accountId);
   });
 });

@@ -19,6 +19,8 @@ export interface ProviderProbeTarget {
   model: string;
   effort: string | null;
   key?: string;
+  /** Deployment-owned Cloudflare REST account; never retained in telemetry. */
+  accountId?: string;
 }
 export interface ProviderProbeAiBinding {
   run(model: string, input: {
@@ -63,7 +65,16 @@ function integerInRange(value: number, min: number, max: number): boolean {
 function runnable(target: ProviderProbeTarget, ai?: ProviderProbeAiBinding): boolean {
   if (!target || typeof target.model !== "string" || !/^[a-zA-Z0-9_./:@-]{1,160}$/.test(target.model)) return false;
   if (target.effort !== null && !EFFORTS.has(target.effort)) return false;
-  if (target.backend === "workers_ai" || target.backend === "cloudflare") return typeof ai?.run === "function";
+  if (target.backend === "cloudflare") {
+    // Any REST configuration selects REST exclusively, including invalid/partial
+    // configuration. Never fall back to the binding with a different identity.
+    if (target.key !== undefined || target.accountId !== undefined) {
+      return typeof target.accountId === "string" && /^[a-fA-F0-9]{32}$/.test(target.accountId)
+        && typeof target.key === "string" && /^[\x21-\x7e]+$/.test(target.key);
+    }
+    return typeof ai?.run === "function";
+  }
+  if (target.backend === "workers_ai") return typeof ai?.run === "function";
   return Object.hasOwn(ENDPOINTS, target.backend) && typeof target.key === "string"
     && !!target.key.trim() && !/[\r\n]/.test(target.key);
 }
@@ -260,10 +271,10 @@ export async function runProviderProbes(options: ProviderProbeOptions): Promise<
       const messages: { role: "user"; content: string }[] = [{ role: "user",
         content: `${crypto.randomUUID()} ${PROVIDER_PROBE_PROMPT_VERSION}. Reply with only OK.` }];
       let body: ReadableStream<Uint8Array>;
-      if (target.backend === "workers_ai" || target.backend === "cloudflare") {
-        const payload = target.backend === "cloudflare"
-          ? { input: messages[0].content, stream: true as const, max_output_tokens: maxTokens,
-            ...(target.effort === null ? {} : { reasoning: { effort: target.effort } }) }
+      const responsesPayload = { input: messages[0].content, stream: true as const, max_output_tokens: maxTokens,
+        ...(target.effort === null ? {} : { reasoning: { effort: target.effort } }) };
+      if (target.backend === "workers_ai" || (target.backend === "cloudflare" && target.accountId === undefined)) {
+        const payload = target.backend === "cloudflare" ? responsesPayload
           : { messages, stream: true as const, max_completion_tokens: maxTokens,
             ...(target.effort === null ? {} : { reasoning_effort: target.effort }) };
         const request = options.ai!.run(target.model, payload, { signal: controller.signal });
@@ -276,13 +287,17 @@ export async function runProviderProbes(options: ProviderProbeOptions): Promise<
         body = value;
         // The binding exposes no HTTP status or header timing; do not invent either.
       } else {
-        const payload = { model: target.model, messages, stream: true,
+        const payload = target.backend === "cloudflare" ? { model: target.model, ...responsesPayload }
+          : { model: target.model, messages, stream: true,
           ...(target.backend === "openrouter"
             ? { max_tokens: maxTokens, provider: { require_parameters: true },
               ...(target.effort === null ? {} : { reasoning: { effort: target.effort, exclude: false } }) }
             : { max_completion_tokens: maxTokens,
               ...(target.effort === null ? {} : { reasoning_effort: target.effort }) }) };
-        const request = (options.fetch ?? fetch)(ENDPOINTS[target.backend], {
+        const endpoint = target.backend === "cloudflare"
+          ? `https://api.cloudflare.com/client/v4/accounts/${target.accountId}/ai/v1/responses`
+          : ENDPOINTS[target.backend];
+        const request = (options.fetch ?? fetch)(endpoint, {
           method: "POST", redirect: "manual", signal: controller.signal,
           headers: { authorization: `Bearer ${target.key}`, "content-type": "application/json", accept: "text/event-stream" },
           body: JSON.stringify(payload),
