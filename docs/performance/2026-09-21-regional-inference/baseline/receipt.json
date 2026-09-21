@@ -1,0 +1,142 @@
+{
+  "status": "baseline_complete",
+  "production_changed": false,
+  "baseline_source": "89439eb (parent confirms production unchanged)",
+  "attempts": 45,
+  "successes": 45,
+  "buffering": [
+    "buffered"
+  ],
+  "prior_attempts": 16,
+  "parent_adapter_smoke_reserve": 3,
+  "total_attempts_including_parent_reserve": 64,
+  "remaining_of_200": 136,
+  "expires_at": "2026-09-22T01:04Z",
+  "regions": [
+    {
+      "runner": "nanocodex-bench-us-20260921",
+      "n": 15,
+      "placement_response_values": [
+        "remote-IAD",
+        "remote-"
+      ],
+      "api_ingress_values": [
+        "IAD"
+      ],
+      "missing_named_placement": 9,
+      "providers": [
+        "cloudflare",
+        "openrouter",
+        "vercel"
+      ]
+    },
+    {
+      "runner": "nanocodex-bench-eu-20260921",
+      "n": 15,
+      "placement_response_values": [
+        "remote-LHR",
+        "remote-"
+      ],
+      "api_ingress_values": [
+        "LHR"
+      ],
+      "missing_named_placement": 5,
+      "providers": [
+        "cloudflare",
+        "openrouter",
+        "vercel"
+      ]
+    },
+    {
+      "runner": "nanocodex-bench-ap-20260921",
+      "n": 15,
+      "placement_response_values": [
+        "remote-",
+        "remote-NRT"
+      ],
+      "api_ingress_values": [
+        "NRT"
+      ],
+      "missing_named_placement": 8,
+      "providers": [
+        "cloudflare",
+        "openrouter",
+        "vercel"
+      ]
+    }
+  ],
+  "cells": [
+    {
+      "runner": "nanocodex-bench-us-20260921",
+      "backend": "cloudflare",
+      "n": 5,
+      "first_meaningful_p50_ms": 1700,
+      "first_meaningful_p95_ms": 3398,
+      "note": "Mixed short/long descriptive only; family summaries in baseline/summary.json"
+    },
+    {
+      "runner": "nanocodex-bench-us-20260921",
+      "backend": "openrouter",
+      "n": 5,
+      "first_meaningful_p50_ms": 1290,
+      "first_meaningful_p95_ms": 2295,
+      "note": "Mixed short/long descriptive only; family summaries in baseline/summary.json"
+    },
+    {
+      "runner": "nanocodex-bench-us-20260921",
+      "backend": "vercel",
+      "n": 5,
+      "first_meaningful_p50_ms": 2045,
+      "first_meaningful_p95_ms": 3093,
+      "note": "Mixed short/long descriptive only; family summaries in baseline/summary.json"
+    },
+    {
+      "runner": "nanocodex-bench-eu-20260921",
+      "backend": "cloudflare",
+      "n": 5,
+      "first_meaningful_p50_ms": 2112,
+      "first_meaningful_p95_ms": 5540,
+      "note": "Mixed short/long descriptive only; family summaries in baseline/summary.json"
+    },
+    {
+      "runner": "nanocodex-bench-eu-20260921",
+      "backend": "openrouter",
+      "n": 5,
+      "first_meaningful_p50_ms": 1661,
+      "first_meaningful_p95_ms": 2522,
+      "note": "Mixed short/long descriptive only; family summaries in baseline/summary.json"
+    },
+    {
+      "runner": "nanocodex-bench-eu-20260921",
+      "backend": "vercel",
+      "n": 5,
+      "first_meaningful_p50_ms": 1951,
+      "first_meaningful_p95_ms": 3196,
+      "note": "Mixed short/long descriptive only; family summaries in baseline/summary.json"
+    },
+    {
+      "runner": "nanocodex-bench-ap-20260921",
+      "backend": "cloudflare",
+      "n": 5,
+      "first_meaningful_p50_ms": 1953,
+      "first_meaningful_p95_ms": 6687,
+      "note": "Mixed short/long descriptive only; family summaries in baseline/summary.json"
+    },
+    {
+      "runner": "nanocodex-bench-ap-20260921",
+      "backend": "openrouter",
+      "n": 5,
+      "first_meaningful_p50_ms": 1748,
+      "first_meaningful_p95_ms": 3005,
+      "note": "Mixed short/long descriptive only; family summaries in baseline/summary.json"
+    },
+    {
+      "runner": "nanocodex-bench-ap-20260921",
+      "backend": "vercel",
+      "n": 5,
+      "first_meaningful_p50_ms": 1757,
+      "first_meaningful_p95_ms": 3724,
+      "note": "Mixed short/long descriptive only; family summaries in baseline/summary.json"
+    }
+  ]
+}

@@ -1,0 +1,456 @@
+{
+  "cases": 18,
+  "outer_jev_attempts": 18,
+  "downstream_attempts": 18,
+  "downstream_completed": 18,
+  "classifier_binding_ok": {
+    "false": 9,
+    "true": 9
+  },
+  "confidence_status": {
+    "unavailable_or_invalid": 9,
+    "low": 8,
+    "accepted": 1
+  },
+  "selection": {
+    "fallback": 17,
+    "prior": 1
+  },
+  "candidate_probability_rows": 9,
+  "origin_validated": 18,
+  "chosen": {
+    "openrouter:openai/gpt-5.6-luna:low": 16,
+    "vercel:openai/gpt-5.6-luna:low": 1,
+    "cloudflare:openai/gpt-5.6-luna:low": 1
+  },
+  "per_region": [
+    {
+      "runner": "nanocodex-jev-us-20260921",
+      "cases": 6
+    },
+    {
+      "runner": "nanocodex-jev-ap-20260921",
+      "cases": 6
+    },
+    {
+      "runner": "nanocodex-jev-eu-20260921",
+      "cases": 6
+    }
+  ],
+  "rows": [
+    {
+      "runner": "nanocodex-jev-us-20260921",
+      "prompt_index": 0,
+      "arm": "global",
+      "binding_ok": false,
+      "confidence_status": "unavailable_or_invalid",
+      "confidence": null,
+      "probabilities": null,
+      "selected": "openrouter:openai/gpt-5.6-luna:low",
+      "scope": [
+        "deployment_global",
+        "deployment_global",
+        "deployment_global"
+      ],
+      "outer_router_ms": 3919,
+      "inner_router_ms": 3011,
+      "downstream_delivery_ms": 4415,
+      "experiment_delivery_ms": 8334,
+      "preflight_ms": 1112,
+      "placement": "remote-IAD"
+    },
+    {
+      "runner": "nanocodex-jev-ap-20260921",
+      "prompt_index": 0,
+      "arm": "global",
+      "binding_ok": false,
+      "confidence_status": "unavailable_or_invalid",
+      "confidence": null,
+      "probabilities": null,
+      "selected": "openrouter:openai/gpt-5.6-luna:low",
+      "scope": [
+        "deployment_global",
+        "deployment_global",
+        "deployment_global"
+      ],
+      "outer_router_ms": 4415,
+      "inner_router_ms": 4466,
+      "downstream_delivery_ms": 6107,
+      "experiment_delivery_ms": 10522,
+      "preflight_ms": 53,
+      "placement": "remote-"
+    },
+    {
+      "runner": "nanocodex-jev-eu-20260921",
+      "prompt_index": 0,
+      "arm": "regional",
+      "binding_ok": false,
+      "confidence_status": "unavailable_or_invalid",
+      "confidence": null,
+      "probabilities": null,
+      "selected": "openrouter:openai/gpt-5.6-luna:low",
+      "scope": [
+        "client_ingress",
+        "client_ingress",
+        "client_ingress"
+      ],
+      "outer_router_ms": 3036,
+      "inner_router_ms": 6629,
+      "downstream_delivery_ms": 8538,
+      "experiment_delivery_ms": 11574,
+      "preflight_ms": 103,
+      "placement": "remote-LHR"
+    },
+    {
+      "runner": "nanocodex-jev-us-20260921",
+      "prompt_index": 0,
+      "arm": "regional",
+      "binding_ok": false,
+      "confidence_status": "unavailable_or_invalid",
+      "confidence": null,
+      "probabilities": null,
+      "selected": "openrouter:openai/gpt-5.6-luna:low",
+      "scope": [
+        "client_ingress",
+        "client_ingress",
+        "client_ingress"
+      ],
+      "outer_router_ms": 3195,
+      "inner_router_ms": 3321,
+      "downstream_delivery_ms": 4103,
+      "experiment_delivery_ms": 7298,
+      "preflight_ms": 654,
+      "placement": "remote-IAD"
+    },
+    {
+      "runner": "nanocodex-jev-eu-20260921",
+      "prompt_index": 0,
+      "arm": "global",
+      "binding_ok": false,
+      "confidence_status": "unavailable_or_invalid",
+      "confidence": null,
+      "probabilities": null,
+      "selected": "openrouter:openai/gpt-5.6-luna:low",
+      "scope": [
+        "deployment_global",
+        "deployment_global",
+        "deployment_global"
+      ],
+      "outer_router_ms": 2770,
+      "inner_router_ms": 3146,
+      "downstream_delivery_ms": 4103,
+      "experiment_delivery_ms": 6873,
+      "preflight_ms": 32,
+      "placement": "remote-LHR"
+    },
+    {
+      "runner": "nanocodex-jev-ap-20260921",
+      "prompt_index": 0,
+      "arm": "regional",
+      "binding_ok": false,
+      "confidence_status": "unavailable_or_invalid",
+      "confidence": null,
+      "probabilities": null,
+      "selected": "openrouter:openai/gpt-5.6-luna:low",
+      "scope": [
+        "client_ingress",
+        "client_ingress",
+        "client_ingress"
+      ],
+      "outer_router_ms": 3962,
+      "inner_router_ms": 3940,
+      "downstream_delivery_ms": 4806,
+      "experiment_delivery_ms": 8768,
+      "preflight_ms": 39,
+      "placement": "remote-NRT"
+    },
+    {
+      "runner": "nanocodex-jev-us-20260921",
+      "prompt_index": 1,
+      "arm": "regional",
+      "binding_ok": false,
+      "confidence_status": "unavailable_or_invalid",
+      "confidence": null,
+      "probabilities": null,
+      "selected": "openrouter:openai/gpt-5.6-luna:low",
+      "scope": [
+        "client_ingress",
+        "client_ingress",
+        "client_ingress"
+      ],
+      "outer_router_ms": 3033,
+      "inner_router_ms": 2981,
+      "downstream_delivery_ms": 5357,
+      "experiment_delivery_ms": 8390,
+      "preflight_ms": 22,
+      "placement": "remote-IAD"
+    },
+    {
+      "runner": "nanocodex-jev-ap-20260921",
+      "prompt_index": 1,
+      "arm": "regional",
+      "binding_ok": false,
+      "confidence_status": "unavailable_or_invalid",
+      "confidence": null,
+      "probabilities": null,
+      "selected": "openrouter:openai/gpt-5.6-luna:low",
+      "scope": [
+        "client_ingress",
+        "client_ingress",
+        "client_ingress"
+      ],
+      "outer_router_ms": 3847,
+      "inner_router_ms": 4112,
+      "downstream_delivery_ms": 6498,
+      "experiment_delivery_ms": 10345,
+      "preflight_ms": 10,
+      "placement": "remote-NRT"
+    },
+    {
+      "runner": "nanocodex-jev-eu-20260921",
+      "prompt_index": 1,
+      "arm": "global",
+      "binding_ok": false,
+      "confidence_status": "unavailable_or_invalid",
+      "confidence": null,
+      "probabilities": null,
+      "selected": "openrouter:openai/gpt-5.6-luna:low",
+      "scope": [
+        "deployment_global",
+        "deployment_global",
+        "deployment_global"
+      ],
+      "outer_router_ms": 3630,
+      "inner_router_ms": 5941,
+      "downstream_delivery_ms": 8490,
+      "experiment_delivery_ms": 12120,
+      "preflight_ms": 7,
+      "placement": "remote-LHR"
+    },
+    {
+      "runner": "nanocodex-jev-us-20260921",
+      "prompt_index": 1,
+      "arm": "global",
+      "binding_ok": true,
+      "confidence_status": "low",
+      "confidence": 0.32,
+      "probabilities": {
+        "openrouter:openai/gpt-5.6-luna:low": 0.55,
+        "vercel:openai/gpt-5.6-luna:low": 0.41,
+        "cloudflare:openai/gpt-5.6-luna:low": 0.04
+      },
+      "selected": "openrouter:openai/gpt-5.6-luna:low",
+      "scope": [
+        "deployment_global",
+        "deployment_global",
+        "deployment_global"
+      ],
+      "outer_router_ms": 3930,
+      "inner_router_ms": 179,
+      "downstream_delivery_ms": 1884,
+      "experiment_delivery_ms": 5814,
+      "preflight_ms": 6,
+      "placement": "remote-IAD"
+    },
+    {
+      "runner": "nanocodex-jev-ap-20260921",
+      "prompt_index": 1,
+      "arm": "global",
+      "binding_ok": true,
+      "confidence_status": "low",
+      "confidence": 0.29,
+      "probabilities": {
+        "openrouter:openai/gpt-5.6-luna:low": 0.46,
+        "vercel:openai/gpt-5.6-luna:low": 0.53,
+        "cloudflare:openai/gpt-5.6-luna:low": 0.01
+      },
+      "selected": "vercel:openai/gpt-5.6-luna:low",
+      "scope": [
+        "deployment_global",
+        "deployment_global",
+        "deployment_global"
+      ],
+      "outer_router_ms": 234,
+      "inner_router_ms": 200,
+      "downstream_delivery_ms": 2444,
+      "experiment_delivery_ms": 2678,
+      "preflight_ms": 11,
+      "placement": "remote-NRT"
+    },
+    {
+      "runner": "nanocodex-jev-eu-20260921",
+      "prompt_index": 1,
+      "arm": "regional",
+      "binding_ok": true,
+      "confidence_status": "low",
+      "confidence": 0.35,
+      "probabilities": {
+        "openrouter:openai/gpt-5.6-luna:low": 0.57,
+        "vercel:openai/gpt-5.6-luna:low": 0.01,
+        "cloudflare:openai/gpt-5.6-luna:low": 0.42
+      },
+      "selected": "openrouter:openai/gpt-5.6-luna:low",
+      "scope": [
+        "client_ingress",
+        "client_ingress",
+        "client_ingress"
+      ],
+      "outer_router_ms": 324,
+      "inner_router_ms": 292,
+      "downstream_delivery_ms": 4027,
+      "experiment_delivery_ms": 4351,
+      "preflight_ms": 8,
+      "placement": "remote-LHR"
+    },
+    {
+      "runner": "nanocodex-jev-us-20260921",
+      "prompt_index": 2,
+      "arm": "global",
+      "binding_ok": true,
+      "confidence_status": "low",
+      "confidence": 0.36,
+      "probabilities": {
+        "openrouter:openai/gpt-5.6-luna:low": 0.57,
+        "vercel:openai/gpt-5.6-luna:low": 0.42,
+        "cloudflare:openai/gpt-5.6-luna:low": 0.01
+      },
+      "selected": "openrouter:openai/gpt-5.6-luna:low",
+      "scope": [
+        "deployment_global",
+        "deployment_global",
+        "deployment_global"
+      ],
+      "outer_router_ms": 299,
+      "inner_router_ms": 258,
+      "downstream_delivery_ms": 945,
+      "experiment_delivery_ms": 1244,
+      "preflight_ms": 757,
+      "placement": "remote-"
+    },
+    {
+      "runner": "nanocodex-jev-ap-20260921",
+      "prompt_index": 2,
+      "arm": "global",
+      "binding_ok": true,
+      "confidence_status": "low",
+      "confidence": 0.47,
+      "probabilities": {
+        "openrouter:openai/gpt-5.6-luna:low": 0.65,
+        "vercel:openai/gpt-5.6-luna:low": 0.34,
+        "cloudflare:openai/gpt-5.6-luna:low": 0.01
+      },
+      "selected": "openrouter:openai/gpt-5.6-luna:low",
+      "scope": [
+        "deployment_global",
+        "deployment_global",
+        "deployment_global"
+      ],
+      "outer_router_ms": 204,
+      "inner_router_ms": 219,
+      "downstream_delivery_ms": 1690,
+      "experiment_delivery_ms": 1894,
+      "preflight_ms": 10,
+      "placement": "remote-"
+    },
+    {
+      "runner": "nanocodex-jev-eu-20260921",
+      "prompt_index": 2,
+      "arm": "regional",
+      "binding_ok": true,
+      "confidence_status": "low",
+      "confidence": 0.26,
+      "probabilities": {
+        "openrouter:openai/gpt-5.6-luna:low": 0.48,
+        "vercel:openai/gpt-5.6-luna:low": 0.01,
+        "cloudflare:openai/gpt-5.6-luna:low": 0.51
+      },
+      "selected": "cloudflare:openai/gpt-5.6-luna:low",
+      "scope": [
+        "client_ingress",
+        "client_ingress",
+        "client_ingress"
+      ],
+      "outer_router_ms": 296,
+      "inner_router_ms": 300,
+      "downstream_delivery_ms": 1736,
+      "experiment_delivery_ms": 2032,
+      "preflight_ms": 7,
+      "placement": "remote-LHR"
+    },
+    {
+      "runner": "nanocodex-jev-us-20260921",
+      "prompt_index": 2,
+      "arm": "regional",
+      "binding_ok": true,
+      "confidence_status": "low",
+      "confidence": 0.54,
+      "probabilities": {
+        "openrouter:openai/gpt-5.6-luna:low": 0.7,
+        "vercel:openai/gpt-5.6-luna:low": 0.3,
+        "cloudflare:openai/gpt-5.6-luna:low": 0
+      },
+      "selected": "openrouter:openai/gpt-5.6-luna:low",
+      "scope": [
+        "client_ingress",
+        "client_ingress",
+        "client_ingress"
+      ],
+      "outer_router_ms": 379,
+      "inner_router_ms": 204,
+      "downstream_delivery_ms": 941,
+      "experiment_delivery_ms": 1320,
+      "preflight_ms": 9,
+      "placement": "remote-IAD"
+    },
+    {
+      "runner": "nanocodex-jev-ap-20260921",
+      "prompt_index": 2,
+      "arm": "regional",
+      "binding_ok": true,
+      "confidence_status": "accepted",
+      "confidence": 0.95,
+      "probabilities": {
+        "openrouter:openai/gpt-5.6-luna:low": 0.97,
+        "vercel:openai/gpt-5.6-luna:low": 0.03,
+        "cloudflare:openai/gpt-5.6-luna:low": 0
+      },
+      "selected": "openrouter:openai/gpt-5.6-luna:low",
+      "scope": [
+        "client_ingress",
+        "client_ingress",
+        "client_ingress"
+      ],
+      "outer_router_ms": 271,
+      "inner_router_ms": 252,
+      "downstream_delivery_ms": 1136,
+      "experiment_delivery_ms": 1407,
+      "preflight_ms": 11,
+      "placement": "remote-NRT"
+    },
+    {
+      "runner": "nanocodex-jev-eu-20260921",
+      "prompt_index": 2,
+      "arm": "global",
+      "binding_ok": true,
+      "confidence_status": "low",
+      "confidence": 0.38,
+      "probabilities": {
+        "openrouter:openai/gpt-5.6-luna:low": 0.59,
+        "vercel:openai/gpt-5.6-luna:low": 0.4,
+        "cloudflare:openai/gpt-5.6-luna:low": 0.01
+      },
+      "selected": "openrouter:openai/gpt-5.6-luna:low",
+      "scope": [
+        "deployment_global",
+        "deployment_global",
+        "deployment_global"
+      ],
+      "outer_router_ms": 914,
+      "inner_router_ms": 342,
+      "downstream_delivery_ms": 1237,
+      "experiment_delivery_ms": 2151,
+      "preflight_ms": 38,
+      "placement": "remote-LHR"
+    }
+  ]
+}
