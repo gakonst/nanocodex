@@ -5,7 +5,7 @@ import {
   INFERENCE_MAX_BODY_BYTES, INFERENCE_TIMEOUT_MS, INFERENCE_PROBE_TIMEOUT_MS, normalizeInferencePolicy, validateInferenceRequest,
   type InferenceSessionEnv, type InferenceSessionMetadata,
 } from "../src/inference-session";
-import { OSS_MODEL, ROUTING_CANDIDATES } from "../src/thread-model-routing";
+import { OSS_MODEL, ROUTING_CANDIDATES, taskFamily } from "../src/thread-model-routing";
 import { PROBE_OWNER } from "../src/provider-probe-schedule";
 
 const owner = "test_inference_key_a", other = "test_inference_key_b";
@@ -621,4 +621,61 @@ it("accepts matching session models and rejects models conflicting with the pin"
   expect((await f.call("POST", "/responses", { input: "full history", model: "unknown-model" })).status).toBe(400);
   expect(f.ai).toHaveBeenCalledTimes(count);
   expect(f.ai.mock.calls.filter(([model]) => model === "typesafe/jev")).toHaveLength(1);
+});
+
+
+describe("sanitized public routing diagnostics", () => {
+  function answerWithProbabilities(input: unknown) {
+    const request = input as { questions: Record<string, { criteria: Record<string, string> }> };
+    return { ...classification(), answers: {
+      candidate: { choice: candidate, confidence: .8,
+        probabilities: Object.fromEntries(Object.keys(request.questions.candidate.criteria).map(id => [id, id === candidate ? 1 : 0])),
+        reasoning: "private-router-echo" },
+      family: { choice: "other", confidence: .94,
+        probabilities: Object.fromEntries(taskFamily.options.map(f => [f, f === "other" ? 1 : 0])) },
+    }, audit: { prompt: "private-router-echo" } };
+  }
+  it.each([false, true])("returns real choice distributions in stateless JSON/SSE (stream=%s)", async stream => {
+    const f = fixture();
+    f.ai.mockImplementation(async (model, input) => model === "typesafe/jev" ? answerWithProbabilities(input) : completion());
+    const response = await executeStatelessInferenceResponse(f.bindings, { input: "private prompt", stream },
+      4096, new AbortController().signal);
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    const body = stream ? text.split("\n").filter(line => line.startsWith("data: "))
+      .map(line => JSON.parse(line.slice(6))).find(event => event.type === "response.completed").response : JSON.parse(text);
+    expect(body.route.diagnostics).toMatchObject({
+      candidate_confidence: .8, family_confidence: .94, proposed_candidate: candidate, chosen_candidate: candidate,
+      eligible_candidates: [`${OSS_MODEL}:low`, candidate, `${OSS_MODEL}:high`],
+      candidate_probabilities: { [`${OSS_MODEL}:low`]: 0, [candidate]: 1, [`${OSS_MODEL}:high`]: 0 },
+      confidence_status: "accepted", fallback_basis: "none", min_confidence: .75,
+    });
+    expect(text).not.toContain("private");
+    expect(body.route).not.toHaveProperty("audit");
+    expect(body.route).not.toHaveProperty("router_usage");
+    expect(f.persisted.size).toBe(0);
+  });
+
+  it("retains safe distributions through session restart without another Jev call", async () => {
+    const f = fixture(); await f.create({ candidates: [candidate], preferences: { text: "private preference" } });
+    f.ai.mockImplementation(async (model, input) => model === "typesafe/jev" ? answerWithProbabilities(input) : completion());
+    const first = await f.call("POST", "/responses", { input: "private prompt" });
+    const body = await first.json() as any;
+    expect(body.route.diagnostics.candidate_probabilities).toEqual({ [candidate]: 1 });
+    expect(JSON.stringify(body.route)).not.toContain("private");
+    f.restart();
+    const metadata = await (await f.call("GET")).json() as any;
+    expect(metadata.route).toEqual(body.route);
+    const second = await f.call("POST", "/responses", { input: "new full history" });
+    expect((await second.json() as any).route).toEqual(body.route);
+    expect(f.ai.mock.calls.filter(([model]) => model === "typesafe/jev")).toHaveLength(1);
+  });
+
+  it("marks unavailable distributions as null without using confidence as probabilities", async () => {
+    const f = fixture();
+    const response = await executeStatelessInferenceResponse(f.bindings, { input: "hello" }, 4096, new AbortController().signal);
+    expect(await response.json()).toMatchObject({ route: { diagnostics: {
+      candidate_confidence: .95, family_confidence: .95, candidate_probabilities: null, family_probabilities: null,
+    } } });
+  });
 });

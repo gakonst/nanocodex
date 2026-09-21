@@ -8,6 +8,32 @@ https://nanocodex.gakonst.workers.dev/v1
 
 Every credential and identifier in the examples is a placeholder. Obtain an inference key from the deployment operator before making requests.
 
+### Terminal demo
+
+Download `inference-demo.sh` from the companion Gist, or run `bash scripts/inference-demo.sh` from the repository. Requires Bash 3.2 or newer, curl, and jq. It prompts privately for an inference key when `NANOCODEX_INFERENCE_KEY` is unset:
+
+```sh
+bash inference-demo.sh
+```
+
+The demo lists the live model/provider/effort catalog and runs six varied prompts through `model: "auto"`. Each prompt is a separate stateless request, so each receives a fresh routing decision. It prints the generated answer, Jev diagnostics exposed by the server, selected provider/model/effort, router duration, HTTP timing, and token usage, followed by a comparison table. It does not execute tools or use connectors or Hands.
+
+```sh
+# Catalog only; no generation quota consumed.
+bash inference-demo.sh --models-only
+
+# Custom questions; repeat --prompt to compare independent routes.
+bash inference-demo.sh --prompt 'Explain binary search in two sentences.' \
+  --prompt 'Find the bug: function sum(a) { return a.reduce((x,y) => x+y); }'
+
+# Save request/response JSON and results locally for inspection.
+bash inference-demo.sh --output ./inference-results
+```
+
+Use `--help` for all options. The default run makes six generation requests, which count toward the key's quota and use provider credits. A failed or ambiguous request is never automatically retried. Saved output contains your prompts and generated answers; credentials are excluded.
+
+Jev choice confidence describes routing/classification confidence, **not task-success probability**. Missing distributions stay unavailable; the demo never creates a probability distribution from a winning choice's confidence. HTTP time to first byte measures this buffered API's delivery, **not model generation TTFT**. Check response status: a successful HTTP request may still contain an incomplete generation.
+
 ### Python (OpenAI SDK)
 
 Install `openai` and set `NANOCODEX_INFERENCE_KEY` in your environment:
@@ -179,6 +205,22 @@ For example, to restrict a session to one model/provider/effort:
 Preferences are not probabilities, quotas, billing caps, or deadlines. Router confidence and provider latency do not establish task success rates. A route pin does not guarantee provider availability.
 
 Once chosen, the `route` object reports `version`, `policy_version`, `backend`, `model`, `provider_model`, `thinking`, `reasoning_mode`, `fast_mode`, `family`, `confidence`, `objective`, `selection`, `created_at`, and `router_duration_ms`. Free-form routing reasons, raw router usage, and full audit payloads are omitted. The response body also includes this route.
+
+New routing decisions also include an optional `route.diagnostics` allowlist. Older pinned sessions may omit it. `route.confidence` is the task-family classifier confidence; it is not the model-choice confidence.
+
+| Diagnostic field | Meaning |
+| --- | --- |
+| `source`, `signal_kind` | `typesafe/jev`; these are choice probabilities and confidence, not task-success predictions. |
+| `eligible_candidates` | Exact catalog candidate IDs considered for this request. |
+| `proposed_candidate`, `chosen_candidate` | Jev's valid proposal, if available, and the final candidate after fallback policy. |
+| `candidate_confidence`, `family_confidence` | Separate confidence scores in [0,1], or `null` when Jev was unavailable/invalid. |
+| `candidate_probabilities` | Jev's probability for each eligible candidate, keyed by exact candidate ID; `null` if absent or invalid. |
+| `family_probabilities` | Jev's probability for each diagnostic task family; `null` if absent or invalid. |
+| `min_confidence`, `confidence_status` | Policy threshold and `accepted`, `low`, or `unavailable_or_invalid`. |
+| `fallback_basis` | `none`, `valid_proposal`, or `eligible_frontier`. A low-confidence valid proposal may be retained. |
+
+The two probability maps are independent distributions from [Jev's two choice questions](https://developers.cloudflare.com/ai/models/typesafe/jev/). They are included only when all expected choices have finite probabilities in [0,1] and the total is 1 within rounding tolerance. The server does not fill in missing choices, renormalize a distribution, or derive probabilities from confidence. The projection excludes prompt text, free-form explanations, raw usage, and the full policy/audit payload.
+
 
 ## Generate with the optional session extension
 

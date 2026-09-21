@@ -3,8 +3,8 @@ import { z } from "zod";
 import { createGatewayResponses } from "nanocodex/cloudflare/gateway-responses";
 import { createWorkersAiResponses } from "nanocodex/cloudflare/workers-ai-responses";
 import {
-  OSS_MODEL, ROUTING_CANDIDATES, resolveThreadRoute, routingPolicySchema,
-  type RoutingAi, type RoutingAvailability, type ThreadRoute, type ThreadRoutingPolicy,
+  OSS_MODEL, ROUTING_CANDIDATES, resolveThreadRoute, routingPolicySchema, projectThreadRouteDiagnostics,
+  type RoutingAi, type RoutingAvailability, type ThreadRoute, type ThreadRoutingPolicy, type ThreadRouteDiagnostics,
 } from "./thread-model-routing";
 import { PROBE_OWNER } from "./provider-probe-schedule";
 
@@ -78,7 +78,7 @@ const requestSchema = z.object({
 export type InferenceRequest = z.infer<typeof requestSchema>;
 export type InferenceRoute = Pick<ThreadRoute, "version" | "policy_version" | "backend" | "provider_model" |
   "model" | "thinking" | "reasoning_mode" | "fast_mode" | "family" | "confidence" | "objective" |
-  "selection" | "created_at" | "router_duration_ms">;
+  "selection" | "created_at" | "router_duration_ms"> & { diagnostics?: ThreadRouteDiagnostics };
 export type InferenceSessionMetadata = {
   id: string; key_id: string; routing: ThreadRoutingPolicy; route: InferenceRoute | null;
   counters: { requests: number; completed: number; failed: number };
@@ -172,11 +172,13 @@ export async function inferenceRoutingAvailability(env: InferenceSessionEnv, sig
 
 /** Deliberately omit router usage, free-form reasons and audit payloads: these may echo input. */
 function retainRoute(route: ThreadRoute): InferenceRoute {
+  const diagnostics = projectThreadRouteDiagnostics(route);
   return { version: route.version, policy_version: route.policy_version, backend: route.backend,
     provider_model: route.provider_model, model: route.model, thinking: route.thinking,
     reasoning_mode: route.reasoning_mode, fast_mode: route.fast_mode, family: route.family,
     confidence: route.confidence, objective: route.objective, selection: route.selection,
-    created_at: route.created_at, router_duration_ms: route.router_duration_ms };
+    created_at: route.created_at, router_duration_ms: route.router_duration_ms,
+    ...(diagnostics ? { diagnostics } : {}) };
 }
 function admittedRoute(route: InferenceRoute, policy?: ThreadRoutingPolicy) {
   return route.backend !== "chatgpt" && ROUTING_CANDIDATES.some(c => c.backend === route.backend

@@ -203,11 +203,80 @@ export type ThreadRoute = {
     preference_sources: Record<"completion" | "cost" | "duration", "explicit" | "prompt_or_default">;
     eligible_candidates: string[]; candidate_choice: string; proposed_candidate: string | null;
     candidate_confidence: number; classifier_confidence: number;
+    candidate_probabilities?: Record<string, number> | null;
+    family_probabilities?: Record<string, number> | null;
     confidence_status?: "accepted" | "low" | "unavailable_or_invalid";
     fallback_basis?: "none" | "valid_proposal" | "eligible_frontier";
     provider_telemetry?: ReturnType<typeof routingTelemetry>;
   };
 };
+
+const probability = z.number().min(0).max(1);
+/** Jev choice probabilities are separate from its confidence score. Require the
+ * complete question's choice set and a normalized distribution; never fill gaps,
+ * renormalize, or derive probabilities from confidence. Allow rounding error only.
+ * https://developers.cloudflare.com/ai/models/typesafe/jev/
+ */
+function choiceProbabilities(value: unknown, choices: readonly string[]): Record<string, number> | null {
+  const parsed = z.record(z.string(), probability).safeParse(value);
+  if (!parsed.success) return null;
+  const entries = Object.entries(parsed.data);
+  if (entries.length !== choices.length || entries.some(([key]) => !choices.includes(key))
+    || Math.abs(entries.reduce((sum, [, value]) => sum + value, 0) - 1) > 0.001) return null;
+  return Object.fromEntries(choices.map(key => [key, parsed.data[key]!]));
+}
+
+export type ThreadRouteDiagnostics = {
+  source: "typesafe/jev";
+  signal_kind: "choice_probabilities_and_confidence_not_task_success";
+  eligible_candidates: string[];
+  proposed_candidate: string | null;
+  chosen_candidate: string;
+  candidate_confidence: number | null;
+  family_confidence: number | null;
+  candidate_probabilities: Record<string, number> | null;
+  family_probabilities: Record<string, number> | null;
+  min_confidence: number;
+  confidence_status: "accepted" | "low" | "unavailable_or_invalid";
+  fallback_basis: "none" | "valid_proposal" | "eligible_frontier";
+};
+
+/** Public allowlist projection; never spread audit, policy, usage or free text.
+ * Older pins without the required diagnostics remain readable without projection.
+ */
+export function projectThreadRouteDiagnostics(route: ThreadRoute): ThreadRouteDiagnostics | undefined {
+  const parsed = z.object({
+    eligible_candidates: z.array(z.string().refine(id => ROUTING_CANDIDATES.some(c => c.id === id)))
+      .min(1).max(ROUTING_CANDIDATES.length).refine(ids => new Set(ids).size === ids.length),
+    proposed_candidate: z.string().nullable(), candidate_choice: z.string(),
+    candidate_confidence: probability, classifier_confidence: probability,
+    confidence_status: z.enum(["accepted", "low", "unavailable_or_invalid"]),
+    fallback_basis: z.enum(["none", "valid_proposal", "eligible_frontier"]),
+    policy: z.object({ min_confidence: probability }),
+    candidate_probabilities: z.unknown().optional(), family_probabilities: z.unknown().optional(),
+  }).safeParse(route.audit);
+  if (!parsed.success || !taskFamily.safeParse(route.family).success) return undefined;
+  const a = parsed.data;
+  const chosen = ROUTING_CANDIDATES.find(c => c.backend === route.backend && c.model === route.model
+    && c.provider_model === route.provider_model && c.thinking === route.thinking);
+  if (!chosen || a.candidate_choice !== chosen.id || !a.eligible_candidates.includes(chosen.id)) return undefined;
+  const valid = a.confidence_status !== "unavailable_or_invalid";
+  if (valid && (a.proposed_candidate === null || !a.eligible_candidates.includes(a.proposed_candidate))) return undefined;
+  if (valid && ((a.candidate_confidence >= a.policy.min_confidence) !== (a.confidence_status === "accepted"))) return undefined;
+  if ((a.confidence_status === "accepted" && (a.fallback_basis !== "none" || a.proposed_candidate !== chosen.id))
+    || (!valid && a.fallback_basis !== "eligible_frontier")
+    || (a.confidence_status === "low" && (a.fallback_basis === "none"
+      || (a.fallback_basis === "valid_proposal" && a.proposed_candidate !== chosen.id)))) return undefined;
+  return {
+    source: "typesafe/jev", signal_kind: "choice_probabilities_and_confidence_not_task_success",
+    eligible_candidates: a.eligible_candidates, proposed_candidate: valid ? a.proposed_candidate : null,
+    chosen_candidate: chosen.id, candidate_confidence: valid ? a.candidate_confidence : null,
+    family_confidence: valid ? a.classifier_confidence : null,
+    candidate_probabilities: valid ? choiceProbabilities(a.candidate_probabilities, a.eligible_candidates) : null,
+    family_probabilities: valid ? choiceProbabilities(a.family_probabilities, taskFamily.options) : null,
+    min_confidence: a.policy.min_confidence, confidence_status: a.confidence_status, fallback_basis: a.fallback_basis,
+  };
+}
 
 function openingState(input: unknown): { state: string; unsupported: boolean; oversized: boolean } {
   // Bounded input avoids sending a whole long transcript or binary attachments to Jev.
@@ -347,6 +416,7 @@ async function resolveDirect(ai: RoutingAi, input: unknown, p: ThreadRoutingPoli
   let family: TaskFamily = "other", confidence = 0, candidateConfidence = 0;
   let selected: typeof eligible[number] | undefined, routerUsage: unknown = null;
   let proposedCandidate: string | null = null;
+  let candidateProbabilities: Record<string, number> | null = null, familyProbabilities: Record<string, number> | null = null;
   let confidenceStatus: "accepted" | "low" | "unavailable_or_invalid" = "unavailable_or_invalid";
   let reason = "Jev unavailable or invalid result; eligible fallback";
   if (!opening.unsupported && !opening.oversized) {
@@ -377,15 +447,19 @@ async function resolveDirect(ai: RoutingAi, input: unknown, p: ThreadRoutingPoli
         new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("Jev timeout")), 10_000); }),
       ]) as { state?: unknown; result?: unknown };
       const raw = (response?.state === undefined ? response : response.state === "Completed" ? response.result : null);
-      const answerSchema = z.object({ choice: z.string(), confidence: z.number().min(0).max(1) });
+      const answerSchema = z.object({ choice: z.string(), confidence: probability, probabilities: z.unknown().optional() });
       const payload = z.object({ answers: z.object({ candidate: answerSchema, family: answerSchema }), usage: z.unknown().optional() }).parse(raw);
-      family = taskFamily.parse(payload.answers.family.choice);
+      const parsedFamily = taskFamily.parse(payload.answers.family.choice);
+      const proposed = eligible.find(c => c.id === payload.answers.candidate.choice);
+      if (!proposed) throw new Error("Unknown candidate");
+      family = parsedFamily;
       confidence = payload.answers.family.confidence;
       candidateConfidence = payload.answers.candidate.confidence;
       routerUsage = payload.usage ?? null;
       proposedCandidate = payload.answers.candidate.choice;
-      selected = eligible.find(c => c.id === proposedCandidate);
-      if (!selected) throw new Error("Unknown candidate");
+      selected = proposed;
+      candidateProbabilities = choiceProbabilities(payload.answers.candidate.probabilities, eligible.map(c => c.id));
+      familyProbabilities = choiceProbabilities(payload.answers.family.probabilities, taskFamily.options);
       if (candidateConfidence < p.min_confidence) {
         confidenceStatus = "low";
         if (p.low_confidence_fallback === "frontier") selected = undefined;
@@ -423,6 +497,7 @@ async function resolveDirect(ai: RoutingAi, input: unknown, p: ThreadRoutingPoli
     audit: { policy: p, preferences, preference_sources: sources,
       eligible_candidates: eligible.map(c => c.id), candidate_choice: selected.id, proposed_candidate: proposedCandidate,
       candidate_confidence: candidateConfidence, classifier_confidence: confidence,
+      candidate_probabilities: candidateProbabilities, family_probabilities: familyProbabilities,
       confidence_status: confidenceStatus, fallback_basis: fallbackBasis, provider_telemetry: providerTelemetry },
   };
 }

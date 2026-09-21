@@ -6,7 +6,7 @@ const preferenceObservations = JSON.parse(readFileSync(new NodeURL("./fixtures/t
 };
 import { describe, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { resolveThreadRoute, routingPolicySchema, ThreadRoutePin, ROUTING_CANDIDATES, OSS_MODEL, FRONTIER_MODEL } from "../src/thread-model-routing";
+import { resolveThreadRoute, routingPolicySchema, ThreadRoutePin, ROUTING_CANDIDATES, OSS_MODEL, FRONTIER_MODEL, projectThreadRouteDiagnostics, taskFamily } from "../src/thread-model-routing";
 import { initializeManagedAgentSettingsSchema } from "../src/agent-settings-schema";
 import { parseAgentCreateBody, validateAgentSettings } from "../src/agent-settings";
 import { parseConfiguration } from "../src/agent-configuration";
@@ -471,4 +471,82 @@ it("reuses an old v2 pinned route without applying v3 defaults or rerouting", as
   expect(create).not.toHaveBeenCalled();
   expect(commit).not.toHaveBeenCalled();
   expect(old.policy_version).toBe("jev-direct-v2");
+});
+
+
+describe("public Jev route diagnostics", () => {
+  const economy = `${OSS_MODEL}:low`, frontier = `${FRONTIER_MODEL}:high`;
+  const candidates = [economy, frontier];
+  const candidateProbabilities = { [economy]: .87, [frontier]: .13 };
+  const familyProbabilities = Object.fromEntries(taskFamily.options.map(f => [f, f === "terminal" ? 1 : 0]));
+  const payload = () => ({ answers: {
+    candidate: { choice: economy, confidence: .8, probabilities: candidateProbabilities },
+    family: { choice: "terminal", confidence: .94, probabilities: familyProbabilities },
+  }, usage: { echoed: "private input" }, audit: "private input" });
+  const routeFor = (result: unknown, patch = {}) => resolveThreadRoute({ run: async () => result },
+    "private input", routingPolicySchema.parse({ candidates, preferences: { text: "private preference" }, ...patch }));
+
+  it.each([false, true])("preserves actual probabilities separately from confidence (wrapped=%s)", async wrapped => {
+    const result = payload();
+    const route = await routeFor(wrapped ? { state: "Completed", result } : result);
+    expect(projectThreadRouteDiagnostics(route)).toEqual({
+      source: "typesafe/jev", signal_kind: "choice_probabilities_and_confidence_not_task_success",
+      eligible_candidates: candidates, chosen_candidate: economy, proposed_candidate: economy,
+      candidate_confidence: .8, family_confidence: .94,
+      candidate_probabilities: candidateProbabilities, family_probabilities: familyProbabilities,
+      min_confidence: .75, confidence_status: "accepted", fallback_basis: "none",
+    });
+    expect(JSON.stringify(projectThreadRouteDiagnostics(route))).not.toContain("private");
+  });
+
+  it.each([undefined, null, {}, [1, 0], { [economy]: 1 },
+    { [economy]: .8, "private input": .2 }, { ...candidateProbabilities, "private input": 0 },
+    { [economy]: "0.87", [frontier]: .13 }, { [economy]: NaN, [frontier]: .13 },
+    { [economy]: Infinity, [frontier]: 0 }, { [economy]: -.1, [frontier]: 1.1 },
+    { [economy]: .2, [frontier]: .2 },
+  ])("omits absent or malformed distributions without inventing probabilities %#", async probabilities => {
+    const result = payload();
+    const route = await routeFor({ ...result, answers: { ...result.answers,
+      candidate: { ...result.answers.candidate, probabilities } } });
+    expect(route.selection).toBe("prior");
+    expect(projectThreadRouteDiagnostics(route)).toMatchObject({ candidate_confidence: .8,
+      candidate_probabilities: null, family_probabilities: familyProbabilities });
+  });
+
+  it.each(["proposed", "frontier"])("reports low confidence and %s fallback without changing probabilities", async low_confidence_fallback => {
+    const result = payload(); result.answers.candidate.confidence = .2;
+    const route = await routeFor(result, { low_confidence_fallback });
+    expect(projectThreadRouteDiagnostics(route)).toMatchObject({ proposed_candidate: economy,
+      chosen_candidate: low_confidence_fallback === "proposed" ? economy : frontier,
+      candidate_confidence: .2, family_confidence: .94, min_confidence: .75,
+      confidence_status: "low", fallback_basis: low_confidence_fallback === "proposed" ? "valid_proposal" : "eligible_frontier",
+      candidate_probabilities: candidateProbabilities, family_probabilities: familyProbabilities });
+  });
+
+  it.each(["candidate", "family"])("never projects echoed invalid %s choices", async field => {
+    const result = payload(); result.answers[field as "candidate" | "family"].choice = "private input";
+    const route = await routeFor(result);
+    expect(projectThreadRouteDiagnostics(route)).toMatchObject({ proposed_candidate: null, chosen_candidate: frontier,
+      candidate_confidence: null, family_confidence: null, candidate_probabilities: null, family_probabilities: null,
+      confidence_status: "unavailable_or_invalid", fallback_basis: "eligible_frontier" });
+    expect(JSON.stringify(projectThreadRouteDiagnostics(route))).not.toContain("private");
+  });
+
+  it("checks family keys, eligible candidate keys and bounds again at the public projection", async () => {
+    const route = await routeFor(payload());
+    route.audit!.family_probabilities = { "private input": 1 };
+    expect(projectThreadRouteDiagnostics(route)?.family_probabilities).toBeNull();
+    route.audit!.candidate_probabilities = { [economy]: 2, [frontier]: -1 };
+    expect(projectThreadRouteDiagnostics(route)?.candidate_probabilities).toBeNull();
+    route.audit!.eligible_candidates.push("private input");
+    expect(projectThreadRouteDiagnostics(route)).toBeUndefined();
+  });
+
+  it("omits the optional projection for older pins without diagnostics", async () => {
+    const route = await routeFor(payload());
+    delete route.audit!.confidence_status;
+    expect(projectThreadRouteDiagnostics(route)).toBeUndefined();
+    delete route.audit;
+    expect(projectThreadRouteDiagnostics(route)).toBeUndefined();
+  });
 });
