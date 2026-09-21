@@ -15,7 +15,7 @@ it("thread repro: a hand replacement refreshes locally and replays the same effe
     const socket = response.webSocket!;
     socket.accept();
     const ready = nextFrame(socket);
-    socket.send(JSON.stringify({ type: "catalog", attachment_id: "repro-machine", tools: [machineEntry()],
+    socket.send(JSON.stringify({ type: "catalog", capabilities: ["turn_metadata"], attachment_id: "repro-machine", tools: [machineEntry()],
       machines: [{ id: "repro-machine", name: "Repro machine", workspace: "/app", capabilities: ["shell"] }] }));
     await expect(ready).resolves.toEqual({ type: "ready" });
     return socket;

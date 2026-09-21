@@ -88,10 +88,11 @@ class InstallerTests(unittest.TestCase):
                 installer.atomic(linked, b"replacement")
             self.assertEqual(path.read_bytes(), b"synthetic-secret")
 
-    def test_service_waits_for_application_readiness_and_keeps_credentials_out_of_argv(self):
-        service = installer.unit("hand --workspace /srv/nanocodex/workspace").decode()
-        self.assertIn("Type=notify\n", service)
-        self.assertIn("NotifyAccess=main\n", service)
+    def test_service_runs_foreground_daemon_and_keeps_credentials_out_of_argv(self):
+        service = installer.unit().decode()
+        self.assertIn("ExecStart=/opt/nanocodex/current/nanocodex2 hand\n", service)
+        self.assertIn("Type=simple\n", service)
+        self.assertIn("Restart=on-failure\n", service)
         self.assertIn("EnvironmentFile=/opt/nanocodex/account.env\n", service)
         self.assertNotIn("NANOCODEX_API_KEY=", service)
 

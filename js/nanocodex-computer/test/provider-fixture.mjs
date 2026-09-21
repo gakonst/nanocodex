@@ -4,7 +4,7 @@ export const catalog = [
   { name: "js", description: "Synthetic MCP transport fixture", inputSchema: { type: "object", additionalProperties: true } },
   { name: "js_reset", description: "Synthetic provider reset", inputSchema: { type: "object", additionalProperties: true } },
 ];
-export function provider({ blockMethod, requestLog } = {}) {
+export function provider({ blockMethod, requestLog, callLog, startupWait = 0 } = {}) {
   const script = `
     let marker;
     const send = value => process.stdout.write(JSON.stringify({jsonrpc:'2.0',...value})+'\\n');
@@ -12,11 +12,13 @@ export function provider({ blockMethod, requestLog } = {}) {
       const request = JSON.parse(line);
       if (${JSON.stringify(requestLog)} !== undefined) require("node:fs").appendFileSync(${JSON.stringify(requestLog)}, request.method + "\\n");
       if (request.id === undefined || request.method === ${JSON.stringify(blockMethod)}) return;
+      if (request.method === 'initialize') await new Promise(resolve => setTimeout(resolve, ${JSON.stringify(startupWait)}));
       let result;
       if (request.method === 'initialize') result = {protocolVersion:'2025-06-18',capabilities:{tools:{}}};
       else if (request.method === 'tools/list') result = {tools:${JSON.stringify(catalog)}};
       else if (request.method === 'tools/call') {
         const args = request.params.arguments;
+        if (${JSON.stringify(callLog)} !== undefined) require("node:fs").appendFileSync(${JSON.stringify(callLog)}, JSON.stringify(request.params) + "\\n");
         if (request.params.name === 'js_reset') marker = undefined;
         if (args.set !== undefined) marker = args.set;
         if (args.crash) process.exit(0);

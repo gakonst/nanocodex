@@ -101,6 +101,14 @@ const ASTRA_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
     cache_write_input: 50_000,
     output: 150_000,
 };
+// https://developers.cloudflare.com/workers-ai/models/glm-5.3/
+// Workers AI publishes no separate cache-write or priority surcharge.
+const GLM53_STANDARD: TokenRates = TokenRates {
+    input: 1_400,
+    cached_input: 260,
+    cache_write_input: 1_400,
+    output: 4_400,
+};
 const LONG_CONTEXT_THRESHOLD: u64 = 272_000;
 
 #[derive(Clone, Copy)]
@@ -116,6 +124,7 @@ impl TokenRates {
         let fast = !matches!(service_tier, ServiceTier::Standard);
         let long = input_tokens > LONG_CONTEXT_THRESHOLD;
         match (model, fast, long) {
+            (Model::Glm53, _, _) => GLM53_STANDARD,
             (Model::Sol, false, false) => SOL_STANDARD,
             (Model::Sol, true, false) => SOL_PRIORITY,
             (Model::Sol, false, true) => SOL_LONG_CONTEXT_STANDARD,
@@ -164,7 +173,7 @@ impl ServiceTier {
     #[must_use]
     pub const fn for_model(model: Model, fast_mode: bool) -> Self {
         match (model, fast_mode) {
-            (_, false) => Self::Standard,
+            (Model::Glm53, _) | (_, false) => Self::Standard,
             (Model::Astra, true) => Self::Fast,
             (_, true) => Self::Priority,
         }
@@ -347,6 +356,35 @@ mod tests {
         Model,
         responses::{InputTokenDetails, OutputTokenDetails, Usage},
     };
+
+    #[test]
+    fn glm53_rates_are_independent_of_priority_and_context() {
+        for tier in [
+            ServiceTier::Standard,
+            ServiceTier::Priority,
+            ServiceTier::Fast,
+        ] {
+            let cost = estimate_for_model(
+                &Usage {
+                    input_tokens: 1_000_000,
+                    input_tokens_details: Some(InputTokenDetails {
+                        cached_tokens: 250_000,
+                        cache_write_tokens: 0,
+                    }),
+                    output_tokens: 1_000_000,
+                    output_tokens_details: None,
+                    total_tokens: 2_000_000,
+                },
+                Model::Glm53,
+                tier,
+            );
+            assert_eq!(cost.amount().decimal(), "5.515");
+        }
+        assert_eq!(
+            ServiceTier::for_model(Model::Glm53, true),
+            ServiceTier::Standard
+        );
+    }
 
     #[test]
     fn standard_rates_price_each_input_class_once() {

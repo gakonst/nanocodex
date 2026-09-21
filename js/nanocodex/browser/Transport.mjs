@@ -25,12 +25,12 @@ export function chatGpt(options) {
 
 export function hostManaged(options = {}) {
   const websocketUrl = options.websocketUrl
-    ?? (options.createWebSocket ? undefined : defaultHostManagedWebSocketUrl());
+    ?? (options.stateless === true || options.createWebSocket ? undefined : defaultHostManagedWebSocketUrl());
   return createResponsesTransport({
     hostAuth: true,
     hostManagedProtocol: true,
     ...connection({ ...options, websocketUrl }),
-    websocketPreconnect: options.websocketPreconnect ?? true,
+    websocketPreconnect: options.stateless === true ? false : options.websocketPreconnect ?? true,
   });
 }
 
@@ -53,6 +53,7 @@ function connection(options = {}) {
   return {
     WebSocketImpl: options.WebSocketImpl,
     apiBaseUrl: options.apiBaseUrl,
+    stateless: options.stateless,
     createWebSocket: options.createWebSocket,
     createResponse: options.createResponse,
     websocketUrl: options.websocketUrl,

@@ -41,8 +41,8 @@ pub mod backend {
 #[cfg_attr(docsrs, doc(cfg(feature = "openai")))]
 pub use agent::{AgentHandle, ExecutionEnvironment, NanocodexBuilder};
 pub use agent::{
-    AgentSessionContext, BuilderBackend, Nanocodex, PromptRequest, PromptRoute, SpawnOptions, Turn,
-    TurnControl, TurnResult,
+    AgentSessionContext, BuilderBackend, ChildRuntimeSnapshot, Nanocodex, PromptRequest,
+    PromptRoute, SpawnOptions, Turn, TurnControl, TurnResult,
 };
 #[cfg(feature = "openai")]
 pub use error::CompactionRecovery;

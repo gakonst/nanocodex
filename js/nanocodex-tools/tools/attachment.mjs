@@ -87,11 +87,14 @@ function createClient(endpoint, transport, options, admission, machines, attachm
     machines,
     attachmentId,
     calls: new Map(),
-    receipts: new Map(),
+    receipts: new Set(),
+    active: new Set(),
     heartbeat: undefined,
     handshakeTimer: undefined,
     drainTimer: undefined,
     reconnectTimer: undefined,
+    retryDelay: options.reconnectDelayMs ?? 250,
+    connectedAt: 0,
     pendingNonce: undefined,
     catalogSent: false,
     readyReceived: false,
@@ -202,15 +205,23 @@ function createClient(endpoint, transport, options, admission, machines, attachm
         catch (error) { transportFailure(socket, error); }
       });
     } catch (error) {
+      if (error instanceof AttachmentRejectedError) state.stopped = true;
       if (!state.stopped && state.readySettled && options.reconnect !== false) {
-        state.reconnectTimer = setTimeout(connectGeneration, options.reconnectDelayMs ?? 250);
+        scheduleReconnect();
       } else if (!state.readySettled) {
         state.readySettled = true;
         releaseAdmission();
         rejectReady(error);
       }
-      if (state.stopped || options.reconnect === false) resolveClosed();
+      if (state.stopped || options.reconnect === false) { abortGeneration(state, error); releaseAdmission(); resolveClosed(); }
     }
+  }
+
+  function scheduleReconnect() {
+    if (state.connectedAt && Date.now() - state.connectedAt >= 30_000) state.retryDelay = options.reconnectDelayMs ?? 250;
+    state.connectedAt = 0;
+    state.reconnectTimer = setTimeout(connectGeneration, Math.min(5_000, state.retryDelay) * (0.75 + Math.random() / 4));
+    state.retryDelay = Math.min(5_000, state.retryDelay * 2);
   }
 
   function publishCatalog(socket) {
@@ -233,6 +244,7 @@ function createClient(endpoint, transport, options, admission, machines, attachm
         if (!state.catalogSent || state.readyReceived) throw new Error("ready received outside the catalog handshake");
         state.readyReceived = true;
         state.connected = true;
+        state.connectedAt = Date.now();
         clearTimeout(state.handshakeTimer);
         state.handshakeTimer = undefined;
         startHeartbeat(socket);
@@ -267,29 +279,25 @@ function createClient(endpoint, transport, options, admission, machines, attachm
 
   async function handleCall(frame, socket) {
     const callId = frame.call_id;
-    const identity = callIdentity(frame);
-    const receipt = state.receipts.get(callId);
-    if (receipt) {
-      if (receipt.identity !== undefined && receipt.identity !== identity) throw new Error("completed call ID was reused with different immutable fields");
-      send(socket, receipt.frame);
-      return;
-    }
-    const active = state.calls.get(callId);
-    if (active) {
-      if (active.identity !== identity) throw new Error("active call ID was reused with different immutable fields");
+    if (state.calls.has(callId) || state.receipts.has(callId)) throw new Error("duplicate call on socket");
+    if (state.calls.size + state.receipts.size >= 64) throw new Error("attachment receipt capacity exceeded");
+    if (state.active.size >= 32) {
+      retainAndSend(callId, { status: "unavailable", message: "attachment is busy" }, socket);
       return;
     }
     if (frame.deadline_at <= Date.now()) {
-      retainAndSend(callId, identity, { status: "unavailable", message: "tool attachment call deadline elapsed before dispatch" }, socket);
+      retainAndSend(callId, { status: "unavailable", message: "tool attachment call deadline elapsed before dispatch" }, socket);
       return;
     }
     const controller = new AbortController();
-    const call = { controller, identity };
+    const call = { controller };
+    state.active.add(call);
     state.calls.set(callId, call);
     let deadline;
+    const deadlineAt = frame.deadline_at;
     const deadlinePromise = new Promise((resolve) => {
       const arm = () => {
-        const remaining = frame.deadline_at - Date.now();
+        const remaining = deadlineAt - Date.now();
         if (remaining <= 0) {
           controller.abort(new Error("tool attachment call deadline elapsed"));
           resolve({ deadline: true });
@@ -303,13 +311,16 @@ function createClient(endpoint, transport, options, admission, machines, attachm
     let value;
     try {
       value = await Promise.race([
-        admission.invoke(frame.name, frame.input, {
+        Promise.resolve().then(() => admission.invoke(frame.name, frame.input, {
           sessionId: frame.session_id,
           ...(frame.turn_id === undefined ? {} : { turnId: frame.turn_id }),
           parentCallId: "",
           callId,
           model: frame.model,
           signal: controller.signal,
+        })).finally(() => {
+          state.active.delete(call);
+          if (state.stopped) releaseAdmission();
         }),
         deadlinePromise,
       ]);
@@ -333,38 +344,29 @@ function createClient(endpoint, transport, options, admission, machines, attachm
       }
     }
     if (state.socket !== socket) return;
-    retainAndSend(callId, identity, outcome, socket);
+    retainAndSend(callId, outcome, socket);
     maybeFinishDrain(socket);
   }
 
   function handleCancel(frame, socket) {
     const callId = frame.call_id;
-    const retained = state.receipts.get(callId);
-    if (retained) {
-      send(socket, retained.frame);
-      return;
-    }
     const call = state.calls.get(callId);
-    if (call) {
-      state.calls.delete(callId);
-      call.controller.abort(new Error("tool attachment call was cancelled"));
-    }
-    retainAndSend(callId, call?.identity, call
-      ? { status: "ambiguous", message: "tool execution was cancelled after dispatch" }
-      : { status: "cancelled", message: "tool attachment call was cancelled before dispatch" }, socket);
+    if (!call) return;
+    state.calls.delete(callId);
+    call.controller.abort(new Error("tool attachment call was cancelled"));
+    retainAndSend(callId, { status: "ambiguous", message: "tool execution was cancelled after dispatch" }, socket);
     maybeFinishDrain(socket);
   }
 
   function handleAck(frame, socket) {
-    const receipt = state.receipts.get(frame.call_id);
-    if (!receipt) throw new Error("ack did not match a retained terminal result");
+    if (!state.receipts.has(frame.call_id)) throw new Error("ack did not match a retained terminal result");
     state.receipts.delete(frame.call_id);
     maybeFinishDrain(socket);
   }
 
-  function retainAndSend(callId, identity, outcome, socket) {
+  function retainAndSend(callId, outcome, socket) {
     const result = { type: "result", call_id: callId, outcome };
-    state.receipts.set(callId, { identity, frame: result });
+    state.receipts.add(callId);
     send(socket, result);
   }
 
@@ -423,9 +425,10 @@ function createClient(endpoint, transport, options, admission, machines, attachm
     state.catalogSent = false;
     state.readyReceived = false;
     clearTimers(state);
-    abortGeneration(state, new Error("tool attachment disconnected"));
+    state.calls.clear(); state.receipts.clear();
+    if (state.stopped || options.reconnect === false) abortGeneration(state, new Error("tool attachment stopped"));
     if (!state.stopped && state.readySettled && options.reconnect !== false) {
-      state.reconnectTimer = setTimeout(connectGeneration, options.reconnectDelayMs ?? 250);
+      scheduleReconnect();
     } else if (!state.readySettled) {
       state.readySettled = true;
       releaseAdmission();
@@ -437,7 +440,7 @@ function createClient(endpoint, transport, options, admission, machines, attachm
   }
 
   function releaseAdmission() {
-    if (state.admissionReleased) return;
+    if (state.admissionReleased || state.active.size) return;
     state.admissionReleased = true;
     admission.release();
   }
@@ -519,11 +522,16 @@ function bindSocket(socket, handlers) {
   throw new TypeError("attachment WebSocket must support addEventListener() or on()");
 }
 function send(socket, frame) {
-  try { socket.send(JSON.stringify(frame)); }
+  try {
+    const encoded = JSON.stringify(frame);
+    if (utf8ByteLength(encoded) > 2 * 1024 * 1024 || (socket.bufferedAmount ?? 0) > 2 * 1024 * 1024) throw new Error("attachment output capacity exceeded");
+    socket.send(encoded);
+  }
   catch (error) { throw new AttachmentTransportError(error); }
 }
 function parseFrame(encoded) {
   if (typeof encoded !== "string") throw new TypeError("tool attachments require text frames");
+  if (utf8ByteLength(encoded) > 2 * 1024 * 1024) throw new Error("attachment frame capacity exceeded");
   const frame = JSON.parse(encoded);
   if (!frame || typeof frame !== "object" || Array.isArray(frame)) throw new TypeError("tool attachment frame must be an object");
   const keys = DO_KEYS[frame.type];
@@ -550,7 +558,7 @@ function clearTimers(state) {
   state.pendingNonce = undefined;
 }
 function abortGeneration(state, reason) {
-  for (const call of state.calls.values()) call.controller.abort(reason);
+  for (const call of state.active) call.controller.abort(reason);
   state.calls.clear(); state.receipts.clear(); state.pendingNonce = undefined;
 }
 function positiveInteger(value, name) { if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${name} must be a positive safe integer`); return value; }
@@ -560,7 +568,6 @@ function exactKeys(value, allowed) { for (const key of Object.keys(value)) if (!
 function snapshot(value) { return value === undefined ? null : JSON.parse(JSON.stringify(value)); }
 function decode(value) { if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return new TextDecoder().decode(value); return String(value); }
 function errorMessage(error) { return error && (error.stack || error.message) || String(error); }
-function callIdentity(frame) { return JSON.stringify([frame.session_id, frame.turn_id ?? null, frame.call_id, frame.model, frame.name, frame.input, frame.output_token_budget, frame.output_byte_budget, frame.deadline_at]); }
 function attachmentEndpoint(target) {
   const raw = typeof target === "object" && !(target instanceof URL) ? target.endpoint : target;
   let url; try { url = new URL(raw); } catch { throw new TypeError("tool attachment target must be a valid WebSocket URL"); }

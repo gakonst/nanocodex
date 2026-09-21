@@ -10,7 +10,9 @@ use std::{
 use nanocodex_managed::{ManagedClient, ManagedError};
 use nanocodex_tools::{
     Tools, WorkspaceTools,
-    attachment::{AttachmentEvent, AttachmentMachine, AttachmentMetadata, AttachmentTarget},
+    attachment::{
+        AttachmentError, AttachmentEvent, AttachmentMachine, AttachmentMetadata, AttachmentTarget,
+    },
 };
 use serde::{Deserialize, Serialize};
 
@@ -36,7 +38,7 @@ pub(super) struct NativeState {
     _lock: NativeStateLock,
 }
 
-struct NativeStateLock(File);
+pub(super) struct NativeStateLock(pub(super) File);
 
 impl Drop for NativeStateLock {
     fn drop(&mut self) {
@@ -193,7 +195,9 @@ pub(super) async fn serve_hand(command: super::Hand) -> Result<(), ManagedError>
         && command.machine_name.is_none()
         && command.vm_provider.is_none()
     {
-        return super::device_hand::serve(super::device_hand::DeviceHand::default()).await;
+        let mut device = super::device_hand::DeviceHand::default();
+        device.daemon = true;
+        return super::device_hand::serve(device).await;
     }
     let client = super::client_from_environment(None)?;
     serve(
@@ -306,7 +310,14 @@ pub(super) async fn run_observed(
                 result?;
                 return attachment.detach().await.map_err(configuration);
             }
-            result = closed.closed() => return result.map_err(configuration),
+            result = closed.closed() => return result.map_err(|error| {
+                let status = match &error {
+                    AttachmentError::Authentication(_) => reqwest::StatusCode::UNAUTHORIZED,
+                    AttachmentError::Fenced(_) => reqwest::StatusCode::FORBIDDEN,
+                    _ => return configuration(error),
+                };
+                ManagedError::Http { status, code: "hand_attachment_access".into(), message: error.to_string() }
+            }),
             Some(event) = events.recv() => {
               observe(&event);
               match event {

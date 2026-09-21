@@ -109,7 +109,7 @@ test("provider metadata preserves stable turns across calls and never substitute
 });
 
 
-test("host deadlines do not reinterpret timeouts on other provider tools", async t => {
+test("adapter does not reinterpret timeouts on any provider tool", async t => {
   const attachment = await connectComputerTools(provider().options);
   t.after(attachment.close);
   const input = { timeout_ms: 1, providerOption: "unchanged" };

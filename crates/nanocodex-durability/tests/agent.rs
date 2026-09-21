@@ -4505,3 +4505,100 @@ async fn exhausted_compaction_receipt_replays_after_terminal_write_failure_and_c
 async fn compaction_misalignment_receipt_stops_session_after_cold_reopen() -> Result<()> {
     assert_exhausted_compaction_cold_reopen(true, true).await
 }
+
+#[tokio::test]
+async fn restored_nested_children_replay_and_continue_under_their_retained_durable_states()
+-> Result<()> {
+    let store = MemoryStore::new()?;
+    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let workspace = temporary_workspace("durability-child-restore")?;
+    let root_id = test_session_id();
+    let mut snapshots: Option<(
+        nanocodex_agent::ChildRuntimeSnapshot,
+        nanocodex_agent::ChildRuntimeSnapshot,
+    )> = None;
+    for generation in 0..3 {
+        let openai = OpenAi::builder("test-key")
+            .service({
+                let generations = Arc::clone(&generations);
+                move || DurableReplayService {
+                    generations: Arc::clone(&generations),
+                }
+            })
+            .build()?;
+        let state = DurableSession::open(store.clone(), "restore-parent").await?;
+        let (parent, parent_events) = Nanocodex::builder(openai)
+            .workspace(&workspace)
+            .session_id(root_id)
+            .durability(state)
+            .await?
+            .build()?;
+        let ((child, child_events), (grandchild, grandchild_events)) = if generation > 0 {
+            let (child_snapshot, grandchild_snapshot) = snapshots.take().unwrap();
+            let child_id = child_snapshot.session_id.clone();
+            let grandchild_id = grandchild_snapshot.session_id.clone();
+            let expected_child = serde_json::to_value(&child_snapshot)?;
+            let expected_grandchild = serde_json::to_value(&grandchild_snapshot)?;
+            let child = parent.restore_child(child_snapshot, None).await?;
+            let grandchild = child.0.restore_child(grandchild_snapshot, None).await?;
+            assert_eq!(child.0.session_id(), child_id);
+            assert_eq!(grandchild.0.session_id(), grandchild_id);
+            assert_eq!(
+                serde_json::to_value(child.0.child_snapshot().await?)?,
+                expected_child
+            );
+            assert_eq!(
+                serde_json::to_value(grandchild.0.child_snapshot().await?)?,
+                expected_grandchild
+            );
+            (child, grandchild)
+        } else {
+            let child = parent.spawn().await?;
+            let grandchild = child.0.spawn().await?;
+            (child, grandchild)
+        };
+        if generation != 1 {
+            for agent in [&child, &grandchild] {
+                let result = agent
+                    .prompt(PromptRequest::new("retained work").request_id("first"))
+                    .await?
+                    .result()
+                    .await?;
+                assert_eq!(result.final_message(), "durably replayed");
+            }
+            assert_eq!(
+                generations.load(Ordering::SeqCst),
+                2,
+                "restored receipts must replay without inference"
+            );
+        }
+        if generation == 2 {
+            for agent in [&child, &grandchild] {
+                agent
+                    .prompt(PromptRequest::new("continue").request_id("second"))
+                    .await?
+                    .result()
+                    .await?;
+            }
+            assert_eq!(generations.load(Ordering::SeqCst), 4);
+        } else {
+            snapshots = Some((
+                child.child_snapshot().await?,
+                grandchild.child_snapshot().await?,
+            ));
+        }
+        grandchild.shutdown().await?;
+        child.shutdown().await?;
+        parent.shutdown().await?;
+        drop((
+            grandchild,
+            grandchild_events,
+            child,
+            child_events,
+            parent,
+            parent_events,
+        ));
+    }
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}

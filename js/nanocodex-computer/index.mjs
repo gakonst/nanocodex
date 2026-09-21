@@ -9,6 +9,7 @@ import { toolResult } from "nanocodex-tools/runtime/code-runtime";
 
 const runSetup = promisify(execFile);
 const preparations = new Map();
+const interruptedGuidance = "Upstream/native input may still be running and effects are uncertain; do not replay uncertain input. Call cua_repl.js_reset, then inspect the surface before continuing. Reset does not prove earlier input stopped.";
 const supportsManagedComputer = () => ["darwin", "win32"].includes(process.platform);
 const managedRoot = () => join(process.env.NANOCODEX_DIR || join(process.env.HOME || process.env.USERPROFILE || homedir(), ".nanocodex"), "runtimes", "openai-cua");
 function managedProvider() {
@@ -82,8 +83,7 @@ export async function connectComputerTools(options) {
   options = managedOptions(options);
   const providerProcess = new ComputerProcess(options.executable, options.args ?? [], options.environment ?? {});
   try {
-    await providerProcess.initialize();
-    const definitions = await providerProcess.discover();
+    const definitions = await providerProcess.start();
     return createComputerTools({ ...options, definitions });
   } finally { providerProcess.close(); }
 }
@@ -109,35 +109,36 @@ export function createComputerTools(options) {
     if (disposed) throw new Error("CUA attachment is closed");
     if (!sessions.has(id)) {
       sessions.set(id, {
-        lifetime: new AbortController(), process: undefined,
+        lifetime: new AbortController(), process: undefined, interrupted: false,
         tail: Promise.resolve(),
       });
     }
     const session = sessions.get(id);
-    const deadline = new AbortController();
-    const timeoutMs = Number.isSafeInteger(input?.timeout_ms) && input.timeout_ms > 0
-      ? Math.min(input.timeout_ms, 2_147_483_647) : 30_000;
-    const timer = name === "js" || name === "js_reset"
-      ? setTimeout(() => deadline.abort(new Error(`CUA ${name} timed out after ${timeoutMs} ms`)), timeoutMs)
-      : undefined;
-    timer?.unref();
-    const signal = AbortSignal.any([session.lifetime.signal, deadline.signal, ...(context.signal ? [context.signal] : [])]);
+    // Tool arguments (including timeout_ms) belong exclusively to the provider.
+    // Queueing and transport must not consume or duplicate its execution budget.
+    const signal = AbortSignal.any([session.lifetime.signal, ...(context.signal ? [context.signal] : [])]);
+    let dispatched = false;
+    const cancellationReason = () => dispatched
+      ? new Error(`CUA call cancelled after dispatch; native effects may continue and completion is unknown. ${interruptedGuidance}`, { cause: signal.reason })
+      : signal.reason;
     const run = async () => {
       signal.throwIfAborted();
       if (disposed) throw new Error("CUA attachment is closed");
       if (sessions.get(id) !== session) throw new Error("CUA conversation was released");
-      const abort = () => { session.process?.close(signal.reason); session.process = undefined; };
+      if (session.interrupted && name !== "js_reset") throw new Error(`CUA session interrupted. ${interruptedGuidance}`);
+      const abort = () => { session.process?.close(cancellationReason()); session.process = undefined; };
       signal.addEventListener("abort", abort, { once: true });
       try {
         if (!session.process) {
           signal.throwIfAborted();
           if (disposed) throw new Error("CUA attachment is closed");
           session.process = new ComputerProcess(executable, args, environment);
-          await session.process.initialize();
-          const discovered = await session.process.discover();
+          const discovered = await session.process.start();
           const matches = canonical(discovered) === canonical(catalog);
           if (!matches) throw new Error("CUA provider catalog changed; reconnect the attachment before invoking it");
         }
+        signal.throwIfAborted();
+        dispatched = true;
         const result = await session.process.rpc("tools/call", {
           name, arguments: input,
           _meta: { "x-codex-turn-metadata": {
@@ -148,9 +149,15 @@ export function createComputerTools(options) {
         });
         signal.throwIfAborted();
         const content = outputContent(result);
+        if (name === "js_reset" && result.isError !== true) session.interrupted = false;
         return toolResult(content, result, { value: result, success: result.isError !== true, metadata: result._meta });
       } catch (error) {
-        session.process?.close(); session.process = undefined; throw error;
+        session.process?.close(); session.process = undefined;
+        if (dispatched) {
+          session.interrupted = true;
+          throw new Error(`CUA call interrupted after dispatch. ${interruptedGuidance}`, { cause: error });
+        }
+        throw error;
       } finally {
         signal.removeEventListener("abort", abort);
       }
@@ -161,7 +168,7 @@ export function createComputerTools(options) {
     session.tail = result.catch(() => {});
     // A queued cancellation reaches the caller immediately. The queued run
     // still checks the signal and session identity before touching its process.
-    return interruptible(result, signal).finally(() => clearTimeout(timer));
+    return interruptible(result, signal, cancellationReason);
   };
   const allTools = catalog.map(tool => namedTool(`mcp__cua_repl__${tool.name}`, {
       description: tool.description ?? "", parameters: tool.inputSchema,
@@ -178,9 +185,9 @@ export function createComputerTools(options) {
   });
 }
 
-function interruptible(result, signal) {
+function interruptible(result, signal, cancellationReason) {
   return new Promise((resolve, reject) => {
-    const abort = () => reject(signal.reason);
+    const abort = () => reject(cancellationReason());
     if (signal.aborted) abort();
     else signal.addEventListener("abort", abort, { once: true });
     result.then(resolve, reject).finally(() => signal.removeEventListener("abort", abort));
@@ -216,6 +223,15 @@ class ComputerProcess {
   }
   async serverRequest(request) {
     await this.send({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "Method not found" } });
+  }
+  async start() {
+    // Bound only provider startup/catalog discovery, never tools/call or queue wait.
+    const timer = setTimeout(() => this.close(new Error("CUA provider startup/discovery timed out after 120000 ms")), 120_000);
+    timer.unref();
+    try {
+      await this.initialize();
+      return await this.discover();
+    } finally { clearTimeout(timer); }
   }
   async initialize() {
     await this.rpc("initialize", { protocolVersion: "2025-06-18", capabilities: {}, clientInfo: { name: "nanocodex-computer", version: "0.1.0" } });

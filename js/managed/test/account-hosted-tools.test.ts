@@ -143,7 +143,7 @@ describe("account Hosted Tools provider", () => {
       socket.accept();
       const ready = nextFrame(socket);
       socket.send(JSON.stringify({
-        type: "catalog", attachment_id: "desktop-vm", tools: [machineEntry()],
+        type: "catalog", capabilities: ["turn_metadata"], attachment_id: "desktop-vm", tools: [machineEntry()],
         machines: [{ id: "desktop-vm", name: "Desktop VM", workspace: "/app", capabilities: ["shell"] }],
       }));
       await expect(ready).resolves.toEqual({ type: "ready" });
@@ -252,11 +252,9 @@ describe("account Hosted Tools provider", () => {
       const context = { sessionId: "agent", callId: "possibly-admitted" };
       const tool = provider.machineTool("laptop", "exec_command")!;
       const failure = tool.handler({ cmd: "touch receipt" }, context);
-      await expect(failure).rejects.toMatchObject({ code: "host_interrupted" });
+      await expect(failure).resolves.toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
       if (mode === "truncated" || mode === "invalid") {
-        await expect(failure).rejects.toThrow("response could not be decoded");
-      } else if (mode === "transport") {
-        await expect(failure).rejects.toMatchObject({ cause: transportError });
+        await expect(failure).resolves.toMatchObject({ output: expect.stringContaining("response could not be decoded") });
       }
       expect(calls).toHaveLength(1);
       await expect(tool.handler({ cmd: "touch receipt" }, context)).resolves.toMatchObject({ output: "retained receipt" });
@@ -264,6 +262,48 @@ describe("account Hosted Tools provider", () => {
       expect(calls[1]).toEqual(calls[0]);
     },
   );
+
+  it("settles a broken Hand locally while another tool in the same agent continues", async () => {
+    const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([[ACCOUNT_A, async request => {
+      if (new URL(request.url).pathname === "/snapshot") return Response.json(snapshot);
+      throw new Error("fixture network disconnected");
+    }]])), ACCOUNT_A, () => true);
+    await provider.refresh();
+    const broken = provider.machineTool("laptop", "exec_command")!;
+    const router = new ToolRouter([toolMapSource("fixture", {
+      broken: { description: "Broken Hand", parameters: { type: "object" },
+        handler: (input: unknown, context: Parameters<typeof broken.handler>[1]) => broken.handler(input, context), supportsParallelToolCalls: true },
+      healthy: { description: "Independent work", parameters: { type: "object" },
+        handler: () => "still running", supportsParallelToolCalls: true },
+    })]);
+    const controller = new AbortController();
+    const context = { sessionId: "agent", model: "fixture", signal: controller.signal };
+    const [failed, healthy] = await Promise.all([
+      router.execute("broken", {}, { ...context, callId: "broken" }),
+      router.execute("healthy", {}, { ...context, callId: "healthy" }),
+    ]);
+    expect(failed).toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
+    expect(healthy).toBe("still running");
+    expect(controller.signal.aborted).toBe(false);
+  });
+
+  it("contains a failed routing refresh without an invocation resend", async () => {
+    let reads = 0;
+    let sends = 0;
+    const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([[ACCOUNT_A, async request => {
+      if (new URL(request.url).pathname === "/snapshot") {
+        if (++reads > 1) throw new Error("discovery unavailable");
+        return Response.json(snapshot);
+      }
+      sends++;
+      return new Response(null, { status: 409 });
+    }]])), ACCOUNT_A, () => true);
+    await provider.refresh();
+    await expect(provider.machineTool("laptop", "exec_command")!.handler({}, {
+      sessionId: "agent", callId: "one-call",
+    })).resolves.toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
+    expect(sends).toBe(1);
+  });
 
   it("bounds stale-route recovery even when the replacement route is rejected", async () => {
     const calls: Record<string, unknown>[] = [];
@@ -281,7 +321,7 @@ describe("account Hosted Tools provider", () => {
     await provider.refresh();
     await expect(provider.machineTool("laptop", "exec_command")!.handler(
       { cmd: "fixture-effect" }, { sessionId: "agent", callId: "stable-effect" },
-    )).rejects.toMatchObject({ code: "host_interrupted" });
+    )).resolves.toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
     expect(discoveries).toBe(2);
     expect(calls).toHaveLength(2);
     expect(calls[1]).toEqual({ ...calls[0], route_token: "route-2" });
@@ -301,7 +341,7 @@ describe("account Hosted Tools provider", () => {
       socket.accept();
       const ready = nextFrame(socket);
       socket.send(JSON.stringify({
-        type: "catalog", attachment_id: "fixture-phone",
+        type: "catalog", capabilities: ["turn_metadata"], attachment_id: "fixture-phone",
         machines: [{ id: "fixture-phone", name: "Fixture iPhone", workspace: "/app", capabilities: ["contacts"] }],
         tools: [{
           provider: "machine", remote_name: "search_contacts", parallel_safe: true, timeout_ms: 10_000,
@@ -425,7 +465,7 @@ describe("account Hosted Tools provider", () => {
       socket.accept();
       const ready = nextFrame(socket);
       socket.send(JSON.stringify({
-        type: "catalog",
+        type: "catalog", capabilities: ["turn_metadata"],
         attachment_id: id,
         tools: [machineEntry()],
         machines: [{
@@ -492,8 +532,7 @@ describe("account Hosted Tools provider", () => {
     socket.accept();
     const ready = nextFrame(socket);
     socket.send(JSON.stringify({
-      type: "catalog",
-      capabilities: ["turn_metadata"],
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: snapshot.tools.map(({ definition, route_token: _routeToken, ...entry }) => ({
         ...entry,
         definition: { ...definition, defer_loading: undefined },
@@ -564,8 +603,7 @@ describe("account Hosted Tools provider", () => {
     successor.accept();
     const successorReady = nextFrame(successor);
     successor.send(JSON.stringify({
-      type: "catalog",
-      capabilities: ["turn_metadata"],
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: snapshot.tools.map(({ definition, route_token: _routeToken, ...entry }) => ({
         ...entry,
         definition: { ...definition, defer_loading: undefined },
@@ -728,7 +766,7 @@ describe("account Hosted Tools provider", () => {
     const tool = provider.resolve("fixture__lookup")!;
 
     const stale = await tool.handler({}, { sessionId: "agent-a", callId: "call-stale" });
-    expect(stale).toMatchObject({ success: false, structuredResult: { status: "unavailable" } });
+    expect(stale).toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
     mode = "truncated";
     const truncated = await tool.handler({}, { sessionId: "agent-a", callId: "call-truncated" });
     expect(truncated).toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });

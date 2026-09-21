@@ -69,16 +69,18 @@ and input. VNC is not required. Wayland remains the Linux compositor/input backe
 
 ## Agent control and human takeover
 
-Agents use `computer({workdir:"/omarchy-desktop", action:"observe"})` for a Hand's
-live screen, then send click, type, key, scroll, or drag actions. Alternatively,
-`select_computer` pins the Hand and returns its available interfaces; subsequent
-`computer` calls can omit `workdir`. This works without a native CUA companion,
-including Wayland and screen-only publishers. `environment` advertises `computer`
-and `screen` capabilities. Native `cua_repl` remains available on Hands that
-publish that runtime. Selection never substitutes another desktop or connection
-after a disconnect; select again to capture a replacement publication.
-Computer discovery refreshes before a new computer-tool cell captures its routes,
-so reconnecting publishers are not hidden by a cached startup inventory.
+Agents use a Hand's attached `cua_repl` provider through Code Mode. Call
+`tools.mcp__cua_repl__js({workdir:"/laptop"})` to discover its contract, then add
+the provider arguments alongside `workdir` on each invocation. Nanocodex strips
+only `workdir` and forwards the remaining arguments unchanged. There is no
+`select_computer` or global desktop selection. Calls to different Hands can run
+concurrently with `Promise.all`; JS and reset calls to the same Hand are ordered.
+A cell pins each captured Hand connection, so reconnecting does not retarget an
+admitted call. A new cell discovers replacement connections.
+
+A screen publication alone does not provide CUA. `environment` advertises
+`computer` and `screen` capabilities for viewers, while CUA requires its own
+attached provider. Screen-only Hands therefore report CUA unavailable.
 
 Each surface also advertises its account-owned `screen_*` tool through
 `tool_search`, including individual windows when no unique desktop exists. Code Mode callers

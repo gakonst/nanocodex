@@ -40,6 +40,10 @@ export function connectDeviceHand({ binary, env, signal, onState, spawnProcess =
       if (stopping) continue;
       try {
         const state = JSON.parse(line);
+        if (state.status === "error") {
+          rejectReady(new Error(state.error || "Computer Hand stopped."));
+          onState(state); void close(); continue;
+        }
         if (!["connecting", "connected"].includes(state.status)) continue;
         onState(state);
         if (state.status === "connected") { clearTimeout(timer); settleReady(); }

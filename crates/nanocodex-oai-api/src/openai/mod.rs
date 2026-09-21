@@ -145,6 +145,14 @@ impl<F> OpenAiBuilder<F> {
     #[must_use]
     pub const fn model(mut self, model: Model) -> Self {
         self.config.model = model;
+        // Workers AI is a stateless chat binding behind the host Responses adapter.
+        // Preserve the agent loop while selecting its existing full-replay HTTP path.
+        if matches!(model, Model::Glm53) {
+            self.config.responses_transport = ResponsesTransport::Https;
+            self.config.responses_history = ResponsesHistory::FullReplay;
+            self.config.store_responses = false;
+            self.config.websocket_warmup = false;
+        }
         if !self.config.thinking_explicit {
             self.config.thinking = model.default_thinking();
         }
@@ -566,12 +574,20 @@ fn validate(config: &ModelConfig) -> Result<(), OpenAiError> {
     config.auth.validate()?;
     if !config.model.supports_thinking(config.thinking) {
         return Err(OpenAiError::InvalidConfiguration {
-            detail: "GPT-6 Astra requires low, medium, high, xhigh, or max reasoning effort",
+            detail: (if config.model == Model::Glm53 {
+                "GLM-5.3 requires low, medium, or high reasoning effort"
+            } else {
+                "GPT-6 Astra requires low, medium, high, xhigh, or max reasoning effort"
+            }),
         });
     }
     if !config.model.supports_reasoning_mode(config.reasoning_mode) {
         return Err(OpenAiError::InvalidConfiguration {
-            detail: "GPT-6 Astra does not support pro reasoning mode",
+            detail: (if config.model == Model::Glm53 {
+                "GLM-5.3 does not support pro reasoning mode"
+            } else {
+                "GPT-6 Astra does not support pro reasoning mode"
+            }),
         });
     }
     if config.context_window_tokens == 0 {
@@ -691,6 +707,22 @@ mod tests {
             apply_mode_defaults(&mut config, mode);
             assert!(!config.store_responses);
         }
+    }
+
+    #[test]
+    fn glm53_selects_stateless_https_without_websocket_probe() {
+        let client = OpenAi::builder("test-key")
+            .model(Model::Glm53)
+            .service(|| NeverCalled)
+            .build()
+            .unwrap();
+        assert_eq!(client.config.responses_transport, ResponsesTransport::Https);
+        assert_eq!(
+            client.config.responses_history,
+            ResponsesHistory::FullReplay
+        );
+        assert!(!client.config.store_responses);
+        assert!(!client.config.websocket_warmup);
     }
 
     #[test]

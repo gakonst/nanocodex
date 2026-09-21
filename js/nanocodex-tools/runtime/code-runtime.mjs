@@ -562,12 +562,13 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         && (typeof hostContextRef !== "string" || hostContextRef.length === 0)) {
         throw new TypeError("subagent host context ref must be a non-empty string when supplied");
       }
+      const bindingContext = subagentSessions?.bindingDescriptor?.(sessionId, context, hostContextRef) ?? context;
       const descriptor = Object.freeze({
-        agentId: context.agentId,
-        parentAgentId: context.parentAgentId,
-        sessionId: context.sessionId,
-        role: context.role,
-        task: context.task,
+        agentId: bindingContext.agentId,
+        parentAgentId: bindingContext.parentAgentId,
+        sessionId: bindingContext.sessionId,
+        role: bindingContext.role,
+        task: bindingContext.task,
       });
       const existing = subagentBindingsBySession.get(sessionId);
       if (sameSubagentBinding(existing, descriptor, hostContextRef)) return;

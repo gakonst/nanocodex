@@ -92,6 +92,25 @@ impl AgentHandle {
         request_spawn_with_host_context(&commands, &self.shutdown, options, host_context).await
     }
 
+    /// Reconstructs a child with its exact identity and history, inheriting host capabilities.
+    #[doc(hidden)]
+    pub async fn restore_child(
+        &self,
+        snapshot: ChildRuntimeSnapshot,
+        host_context: Option<Arc<str>>,
+    ) -> Result<(Nanocodex, AgentEvents)> {
+        let commands = self.commands()?;
+        request_command(&commands, &self.shutdown, |result| Command::Spawn {
+            options: SpawnOptions::new()
+                .model(snapshot.model)
+                .thinking(snapshot.thinking),
+            restore: Some(snapshot),
+            host_context,
+            result,
+        })
+        .await
+    }
+
     /// Starts several clean agents in the order requested.
     ///
     /// Every child receives the containing driver's private configuration,
@@ -457,6 +476,22 @@ impl Nanocodex {
         self.backend.context().await
     }
 
+    /// Restores a child driver with persisted identity and current host capabilities.
+    #[doc(hidden)]
+    pub async fn restore_child(
+        &self,
+        snapshot: ChildRuntimeSnapshot,
+        host_context: Option<Arc<str>>,
+    ) -> Result<(Self, AgentEvents)> {
+        self.backend.restore_child(snapshot, host_context).await
+    }
+
+    /// Captures a reconstructable child driver boundary without exposing host credentials.
+    #[doc(hidden)]
+    pub async fn child_snapshot(&self) -> Result<ChildRuntimeSnapshot> {
+        self.backend.child_snapshot().await
+    }
+
     /// Starts a clean sibling agent with the same private configuration,
     /// workspace policy, service factory, and tools factory.
     ///
@@ -539,6 +574,7 @@ async fn request_spawn_with_host_context(
     host_context: Option<Arc<str>>,
 ) -> Result<(Nanocodex, AgentEvents)> {
     request_command(commands, shutdown, |result| Command::Spawn {
+        restore: None,
         options,
         host_context,
         result,

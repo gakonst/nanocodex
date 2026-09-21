@@ -31,6 +31,10 @@ while IFS= read -r call; do
     case "$call" in
         *'"code":"wait"'*) IFS= read -r never; exit 0 ;;
         *'"code":"slow"'*) sleep 0.3; count=$((count + 1)) ;;
+        *'"code":"fail-reset"'*)
+            printf '{{"jsonrpc":"2.0","id":%s,"result":{{"content":[],"isError":true}}}}\n' "$next"
+            next=$((next + 1))
+            continue ;;
         *'"name":"js_reset"'*) count=0 ;;
         *) count=$((count + 1)) ;;
     esac
@@ -112,7 +116,7 @@ async fn conversations_retain_independent_upstream_processes_and_reset() {
 }
 
 #[tokio::test]
-async fn cancellation_stops_only_its_process_and_requires_explicit_reset() {
+async fn caller_cancellation_discards_only_its_transport_and_requires_successful_reset() {
     let computer = ComputerTools::connect(config()).await.unwrap();
     computer
         .js()
@@ -135,12 +139,42 @@ async fn cancellation_stops_only_its_process_and_requires_explicit_reset() {
     tokio::time::sleep(Duration::from_millis(50)).await;
     task.abort();
     let _ = task.await;
+    let error = computer
+        .js()
+        .execute(input(json!({})), context("cancelled"))
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(error.contains("cua_repl.js_reset"), "{error}");
+    assert!(error.contains("effects are uncertain"), "{error}");
     assert!(
-        computer
-            .js()
-            .execute(input(json!({})), context("cancelled"))
-            .await
-            .is_err()
+        error.contains("Reset does not prove earlier input stopped"),
+        "{error}"
+    );
+    // The peer retains its original realm across cancellation of the first.
+    let peer = computer
+        .js()
+        .execute(input(json!({})), context("other"))
+        .await
+        .unwrap();
+    assert_eq!(peer.structured_result()["structuredContent"]["count"], 2);
+    let failed_reset = computer
+        .reset()
+        .execute(input(json!({"code":"fail-reset"})), context("cancelled"))
+        .await
+        .unwrap();
+    assert!(!failed_reset.success);
+    let still_interrupted = computer
+        .js()
+        .execute(input(json!({})), context("cancelled"))
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(
+        still_interrupted.contains("cua_repl.js_reset"),
+        "{still_interrupted}"
     );
     computer
         .reset()
@@ -277,81 +311,247 @@ async fn rejects_repeated_cursors_and_duplicate_tool_names() {
 }
 
 #[tokio::test]
-async fn requested_deadline_cancels_blocked_provider_and_requires_reset() {
+async fn slow_provider_results_outlive_small_numeric_provider_budgets() {
     let computer = ComputerTools::connect(config()).await.unwrap();
-    computer
-        .js()
-        .execute(input(json!({})), context("deadline"))
+    for name in ["js", "js_reset", "future_tool"] {
+        let arguments = json!({"code":"slow", "timeout_ms":1});
+        let started = std::time::Instant::now();
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            computer
+                .tool(name)
+                .unwrap()
+                .execute(input(arguments.clone()), context(name)),
+        )
         .await
+        .expect("synthetic provider did not finish")
         .unwrap();
-    let result = tokio::time::timeout(
-        Duration::from_secs(3),
-        computer.js().execute(
-            input(json!({"code":"wait", "timeout_ms":100})),
-            context("deadline"),
-        ),
-    )
-    .await
-    .expect("host ignored the requested deadline");
-    assert!(
-        result
-            .err()
-            .unwrap()
-            .to_string()
-            .contains("100 ms deadline")
-    );
-    assert!(
-        computer
+        assert!(started.elapsed() >= Duration::from_millis(300));
+        assert_eq!(
+            result.structured_result()["structuredContent"]["call"]["params"]["arguments"],
+            arguments
+        );
+        // A successful late result leaves the original realm available.
+        let continued = computer
             .js()
-            .execute(input(json!({})), context("deadline"))
+            .execute(input(json!({})), context(name))
             .await
-            .is_err()
-    );
-    assert!(
-        computer
-            .js()
-            .execute(input(json!({})), context("other"))
-            .await
-            .unwrap()
-            .success
-    );
-    computer
-        .reset()
-        .execute(input(json!({})), context("deadline"))
-        .await
-        .unwrap();
-    assert!(
-        computer
-            .js()
-            .execute(input(json!({})), context("deadline"))
-            .await
-            .unwrap()
-            .success
-    );
+            .unwrap();
+        assert_eq!(
+            continued.structured_result()["structuredContent"]["count"],
+            2
+        );
+    }
 }
 
 #[tokio::test]
-async fn queued_deadline_does_not_execute_or_discard_the_active_scope() {
+async fn provider_startup_does_not_consume_the_provider_argument_budget() {
+    let mut delayed = config();
+    delayed.args[1] = format!("sleep 0.3\n{}", delayed.args[1].to_str().unwrap()).into();
+    let computer = ComputerTools::connect(delayed).await.unwrap();
+    // This new conversation starts another provider after discovery completes.
+    let started = std::time::Instant::now();
+    let arguments = json!({"timeout_ms":1});
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        computer
+            .js()
+            .execute(input(arguments.clone()), context("startup")),
+    )
+    .await
+    .expect("synthetic provider did not start")
+    .unwrap();
+    assert!(started.elapsed() >= Duration::from_millis(300));
+    assert_eq!(
+        result.structured_result()["structuredContent"]["call"]["params"]["arguments"],
+        arguments
+    );
+    assert_eq!(result.structured_result()["structuredContent"]["count"], 1);
+}
+
+#[tokio::test]
+async fn queued_time_does_not_consume_the_provider_argument_budget() {
     let computer = ComputerTools::connect(config()).await.unwrap();
     let js = computer.js();
     js.execute(input(json!({})), context("queue"))
         .await
         .unwrap();
-    let (active, queued) = tokio::join!(
-        js.execute(input(json!({"code":"slow"})), context("queue")),
-        js.execute(input(json!({"timeout_ms":50})), context("queue")),
-    );
+    let arguments = json!({"timeout_ms":1});
+    let (active, queued) = tokio::time::timeout(Duration::from_secs(3), async {
+        tokio::join!(
+            js.execute(input(json!({"code":"slow"})), context("queue")),
+            js.execute(input(arguments.clone()), context("queue")),
+        )
+    })
+    .await
+    .expect("synthetic queue did not drain");
     assert_eq!(
         active.unwrap().structured_result()["structuredContent"]["count"],
         2
     );
-    assert!(queued.err().unwrap().to_string().contains("50 ms deadline"));
+    let queued = queued.unwrap();
+    assert_eq!(queued.structured_result()["structuredContent"]["count"], 3);
+    assert_eq!(
+        queued.structured_result()["structuredContent"]["call"]["params"]["arguments"],
+        arguments
+    );
     let continued = js
         .execute(input(json!({})), context("queue"))
         .await
         .unwrap();
     assert_eq!(
         continued.structured_result()["structuredContent"]["count"],
-        3
+        4
     );
+}
+
+// Files provide a handshake with the real subprocess while Tokio's clock is
+// paused. Waiting by yielding keeps virtual time from auto-advancing before the
+// process actually reaches the phase under test.
+struct StartupFixture {
+    directory: std::path::PathBuf,
+}
+impl StartupFixture {
+    fn new() -> Self {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory =
+            std::env::temp_dir().join(format!("nanocodex-startup-{}-{unique}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        Self { directory }
+    }
+    fn config(&self) -> ComputerConfig {
+        let mut config = config();
+        config.environment.insert(
+            "NANOCODEX_FIXTURE_DIRECTORY".into(),
+            self.directory.clone().into_os_string(),
+        );
+        let script = config.args[1]
+            .to_str()
+            .unwrap()
+            .replacen(
+                "IFS= read -r initialize",
+                r#"IFS= read -r initialize
+if [ -e "$NANOCODEX_FIXTURE_DIRECTORY/stall" ]; then
+    printf initialize > "$NANOCODEX_FIXTURE_DIRECTORY/phase"
+    while [ ! -e "$NANOCODEX_FIXTURE_DIRECTORY/release" ]; do sleep 0.01; done
+fi"#,
+                1,
+            )
+            .replace(
+                "IFS= read -r list\n",
+                r#"IFS= read -r list
+if [ -e "$NANOCODEX_FIXTURE_DIRECTORY/stall" ]; then
+    printf catalog > "$NANOCODEX_FIXTURE_DIRECTORY/phase"
+    IFS= read -r never
+    exit 0
+fi
+"#,
+            );
+        config.args[1] = script.into();
+        config
+    }
+    fn stall(&self) {
+        std::fs::write(self.directory.join("stall"), b"").unwrap();
+    }
+    async fn wait_for_phase(&self, expected: &str) {
+        let started = std::time::Instant::now();
+        loop {
+            if std::fs::read_to_string(self.directory.join("phase"))
+                .ok()
+                .as_deref()
+                == Some(expected)
+            {
+                break;
+            }
+            assert!(
+                started.elapsed() < Duration::from_secs(3),
+                "fixture did not reach {expected}"
+            );
+            tokio::task::yield_now().await;
+        }
+    }
+}
+impl Drop for StartupFixture {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.directory);
+    }
+}
+
+#[tokio::test]
+async fn trusted_startup_deadline_is_cumulative_across_initialize_and_catalog() {
+    let fixture = StartupFixture::new();
+    fixture.stall();
+    let config = fixture.config();
+    tokio::time::pause();
+    let task = tokio::spawn(async move { ComputerTools::connect(config).await });
+    fixture.wait_for_phase("initialize").await;
+    tokio::time::advance(Duration::from_secs(70)).await;
+    assert!(!task.is_finished());
+    std::fs::write(fixture.directory.join("release"), b"").unwrap();
+    fixture.wait_for_phase("catalog").await;
+    tokio::time::advance(Duration::from_secs(49)).await;
+    assert!(!task.is_finished());
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let error = match task.await.unwrap() {
+        Ok(_) => panic!("blocked catalog should hit the cumulative startup deadline"),
+        Err(error) => error.to_string(),
+    };
+    assert!(
+        error.contains("startup timed out after 120 seconds"),
+        "{error}"
+    );
+}
+
+#[tokio::test]
+async fn conversation_startup_deadline_ignores_provider_budget_and_requires_reset() {
+    let fixture = StartupFixture::new();
+    let computer = ComputerTools::connect(fixture.config()).await.unwrap();
+    fixture.stall();
+    tokio::time::pause();
+    let js = computer.js();
+    let task = tokio::spawn(async move {
+        js.execute(
+            input(json!({"timeout_ms":900000})),
+            context("startup-expiry"),
+        )
+        .await
+    });
+    fixture.wait_for_phase("initialize").await;
+    tokio::time::advance(Duration::from_secs(119)).await;
+    assert!(!task.is_finished());
+    tokio::time::advance(Duration::from_secs(1)).await;
+    let error = task.await.unwrap().err().unwrap().to_string();
+    assert!(
+        error.contains("startup timed out after 120 seconds"),
+        "{error}"
+    );
+    let interrupted = computer
+        .js()
+        .execute(input(json!({})), context("startup-expiry"))
+        .await
+        .err()
+        .unwrap()
+        .to_string();
+    assert!(interrupted.contains("cua_repl.js_reset"), "{interrupted}");
+    assert!(
+        interrupted.contains("effects are uncertain"),
+        "{interrupted}"
+    );
+    // Explicit reset can start a new transport once startup is responsive.
+    tokio::time::resume();
+    std::fs::remove_file(fixture.directory.join("stall")).unwrap();
+    computer
+        .reset()
+        .execute(input(json!({})), context("startup-expiry"))
+        .await
+        .unwrap();
+    let result = computer
+        .js()
+        .execute(input(json!({})), context("startup-expiry"))
+        .await
+        .unwrap();
+    assert_eq!(result.structured_result()["structuredContent"]["count"], 1);
 }
