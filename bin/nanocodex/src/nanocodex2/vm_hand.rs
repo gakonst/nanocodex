@@ -5,7 +5,6 @@ use std::{
 };
 
 use fs2::FileExt as _;
-use nanocodex_browser::{Browser, BrowserExecuteTool};
 use nanocodex_managed::ManagedError;
 use nanocodex_tools::{
     Tools,
@@ -50,7 +49,6 @@ pub(crate) struct VmHand {
     workspace: HandWorkspace,
     tools: Tools,
     machine: AttachmentMachine,
-    browser: Option<Browser>,
     _root_lock: Option<File>,
     _lower_lock: Option<File>,
     desktop: Option<VmDesktop>,
@@ -177,33 +175,10 @@ impl VmHand {
             (HandWorkspace::Vm(workspace), root_lock)
         };
         tracing::info!(target: "nanocodex2", stage = "vm.start.guest_ready", elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
-        let browser = if config.browser {
-            let mut builder = Browser::builder();
-            if let Some(executable) = &config.browser_executable {
-                builder = builder.executable(executable);
-            }
-            match builder.build() {
-                Ok(browser) => Some(browser),
-                Err(error) => {
-                    let message = format!("failed to configure Hand browser: {error}");
-                    return match workspace.shutdown().await {
-                        Ok(()) => Err(configuration(message)),
-                        Err(shutdown) => Err(configuration(format!(
-                            "{message}; Hand shutdown also failed: {shutdown}"
-                        ))),
-                    };
-                }
-            }
-        } else {
-            None
-        };
-        let mut tools = match workspace.attachment_tools_builder().await {
+        let tools = match workspace.attachment_tools_builder().await {
             Ok(tools) => tools,
             Err(error) => {
                 let message = format!("failed to discover Hand upstream Sky tools: {error}");
-                if let Some(browser) = &browser {
-                    let _ = browser.close().await;
-                }
                 return match workspace.shutdown().await {
                     Ok(()) => Err(configuration(message)),
                     Err(shutdown) => Err(configuration(format!(
@@ -212,16 +187,10 @@ impl VmHand {
                 };
             }
         };
-        if let Some(browser) = &browser {
-            tools = tools.tool(BrowserExecuteTool::from_browser(browser.clone()));
-        }
         let tools = match tools.build() {
             Ok(tools) => tools,
             Err(error) => {
                 let message = format!("failed to prepare Hand tools: {error}");
-                if let Some(browser) = &browser {
-                    let _ = browser.close().await;
-                }
                 return match workspace.shutdown().await {
                     Ok(()) => Err(configuration(message)),
                     Err(shutdown) => Err(configuration(format!(
@@ -234,7 +203,6 @@ impl VmHand {
             workspace,
             tools,
             machine,
-            browser,
             _root_lock: root_lock,
             _lower_lock: lower_lock,
             desktop: None,
@@ -511,15 +479,8 @@ impl VmHand {
             }
         }
         drop(self.tools);
-        let browser = match self.browser.take() {
-            Some(browser) => browser
-                .close()
-                .await
-                .map_err(|error| configuration(format!("failed to close Hand browser: {error}"))),
-            None => Ok(()),
-        };
         let started_at = Instant::now();
-        let workspace = loop {
+        loop {
             match self.workspace.shutdown().await {
                 Ok(()) => break Ok(()),
                 Err(error)
@@ -533,16 +494,15 @@ impl VmHand {
                     )));
                 }
             }
-        };
-        match (browser, workspace) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Err(browser), Err(workspace)) => Err(configuration(format!("{browser}; {workspace}"))),
         }
     }
 }
 
 fn validate_common_config(config: &VmHandConfig) -> Result<(), ManagedError> {
+    super::native_hand::reject_browser_options(
+        config.browser,
+        config.browser_executable.as_deref(),
+    )?;
     if config.docker.is_some() && config.vm_gpu {
         return Err(configuration(
             "--gpu is supported only with --vm; Docker Hands use software rendering",
@@ -627,9 +587,6 @@ fn attachment_machine(config: &VmHandConfig) -> Result<AttachmentMachine, Manage
         .map_or(!config.vm_no_network, |docker| docker.internet)
     {
         capabilities.push("network".to_owned());
-    }
-    if config.browser {
-        capabilities.extend(["browser".to_owned(), "browser-egress".to_owned()]);
     }
     capabilities.sort_unstable();
     AttachmentMachine::new(
@@ -757,6 +714,18 @@ mod tests {
                 .iter()
                 .any(|value| value == "vm" || value == "network")
         );
+        let mut legacy_browser = config.clone();
+        legacy_browser.browser = true;
+        assert!(
+            validate_common_config(&legacy_browser)
+                .unwrap_err()
+                .to_string()
+                .contains("CUA")
+        );
+        let machine = serde_json::to_value(attachment_machine(&legacy_browser).unwrap()).unwrap();
+        let capabilities = machine["capabilities"].as_array().unwrap();
+        assert!(!capabilities.contains(&serde_json::json!("browser")));
+        assert!(!capabilities.contains(&serde_json::json!("browser-egress")));
         let mut internet = config;
         internet.docker.as_mut().unwrap().internet = true;
         let machine = serde_json::to_value(attachment_machine(&internet).unwrap()).unwrap();

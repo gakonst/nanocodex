@@ -33,11 +33,10 @@ export const HOSTED_MACHINE_TOOL_NAMES = Object.freeze([
   "mcp__cua_repl__js_reset",
 ] as const);
 const MACHINE_TOOL_NAMES: ReadonlySet<string> = new Set(HOSTED_MACHINE_TOOL_NAMES);
-// Placement overlays deliberately retain their canonical cloud name. The
-// owning ToolRouter admits them only when the callable contract is identical,
-// then prefers the live attachment with the cloud tool as a pre-dispatch-only
-// fallback. Every other machine-local tool remains namespaced by machine ID.
-const ATTACHED_OVERLAY_TOOL_NAMES: ReadonlySet<string> = new Set(["browser_execute"]);
+// Older attachments and persisted catalogs must not restore hosted browser tools.
+function disabledBrowserTool(name: string): boolean {
+  return name === "browser_execute" || name.startsWith("browser_vault_");
+}
 const encoder = new TextEncoder();
 
 /**
@@ -687,6 +686,8 @@ export class HostedToolsBrokerCore {
     socket: HostedToolsSocket,
     frame: Extract<HostedToolsHostFrame, { type: "catalog" }>,
   ): Promise<void> {
+    // Keep exec and CUA available when an older Hand still advertises browser tools.
+    frame = { ...frame, tools: frame.tools.filter((entry) => !disabledBrowserTool(entry.definition.name)) };
     const initial = this.#attachment(socket);
     if (!initial || initial.leaseId || initial.generation !== undefined || initial.active) {
       throw new HostedToolsProtocolError("catalog_immutable", "one immutable catalog is allowed per socket");
@@ -787,11 +788,10 @@ export class HostedToolsBrokerCore {
         const extra = frame.tools.find((entry) => (
           !MACHINE_TOOL_NAMES.has(entry.definition.name)
           && !entry.definition.name.startsWith("mcp__cua_repl__")
-          && !ATTACHED_OVERLAY_TOOL_NAMES.has(entry.definition.name)
         ));
         if (extra !== undefined) {
           throw new Error(
-            "leased tool attachments may publish only canonical machine primitives or placement overlays",
+            "leased tool attachments may publish only canonical machine primitives",
           );
         }
       }
@@ -1432,6 +1432,7 @@ export class HostedToolsBrokerCore {
         continue;
       }
       for (const entry of entries) {
+        if (disabledBrowserTool(entry.definition.name)) continue;
         const machine = attachment?.machines?.[0] ?? savedMachines[0];
         bindings.push(Object.freeze({
           routeId: state.route_id,
@@ -1619,7 +1620,7 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 }
 
 function exposedEntry(entry: HostedToolCatalogEntry, machine: HostedMachine | undefined): HostedToolCatalogEntry {
-  if (machine === undefined || ATTACHED_OVERLAY_TOOL_NAMES.has(entry.definition.name)) return entry;
+  if (machine === undefined) return entry;
   const routeName = `user:${machine.id}:${entry.definition.name}`;
   const candidate = `user_${machine.id}_${entry.definition.name}`;
   const safeCandidate = candidate.replace(/[^A-Za-z0-9_-]/g, "_");

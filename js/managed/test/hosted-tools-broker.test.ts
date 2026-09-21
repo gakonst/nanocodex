@@ -173,55 +173,38 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(fixture.broker.machines()).toEqual([]);
   });
 
-  it("publishes the browser placement overlay under the exact cloud tool name", async () => {
+  for (const name of ["browser_execute", "browser_vault_fill", "browser_vault_snapshot", "browser_vault_request_takeover"]) {
+    it(`filters disabled hosted browser tool ${name}`, async () => {
+      const fixture = createFixture();
+      const host = fixture.socket();
+      await fixture.broker.message(host.webSocket, JSON.stringify({ type: "catalog", tools: [entry(name)] }));
+      expect(host.sent).toEqual([{ type: "ready" }]);
+      expect(host.closed).toBeUndefined();
+      expect(fixture.broker.provider().definitions()).toEqual([]);
+      expect(fixture.broker.provider().resolve(name)).toBeUndefined();
+    });
+  }
+
+  it("filters browser tools restored from persisted catalogs while retaining ordinary tools", async () => {
     const fixture = createFixture();
     const host = fixture.socket();
-    const validator = vi.fn(() => true as const);
-    fixture.broker.provider().setCatalogValidator(validator);
-    await fixture.broker.message(host.webSocket, JSON.stringify({
-      type: "catalog",
-      attachment_id: "desktop",
-      tools: [machineEntry("exec_command"), browserExecuteEntry()],
-      machines: [{
-        id: "desktop",
-        name: "Residential browser",
-        workspace: "/workspace",
-        capabilities: ["browser", "browser-egress", "filesystem"],
-      }],
-    }));
-
-    expect(host.sent).toEqual([{ type: "ready" }]);
-    expect(fixture.broker.provider().definitions()).toEqual([
-      expect.objectContaining({
-        name: "browser_execute",
-        defer_loading: true,
-        parameters: {
-          type: "object",
-          properties: { code: { type: "string" } },
-          required: ["code"],
-          additionalProperties: false,
-        },
-      }),
-    ]);
-    expect(fixture.broker.provider().resolve("browser_execute")).toMatchObject({
-      name: "browser_execute",
-      provider: "machine",
-      remoteName: "browser_execute",
+    await catalog(fixture.broker, host);
+    fixture.persistence.replaceHost({ ...fixture.persistence.current,
+      catalog_json: JSON.stringify([entry(), entry("browser_execute"), entry("browser_vault_fill")]),
     });
-    expect(fixture.broker.provider().resolve("user_desktop_browser_execute")).toBeUndefined();
-    expect(validator).toHaveBeenCalledWith([
-      expect.objectContaining({ definition: expect.objectContaining({ name: "browser_execute" }) }),
-    ]);
+    expect(fixture.broker.provider().definitions().map(tool => tool.name)).toEqual(["fixture__lookup"]);
+    expect(fixture.broker.provider().resolve("browser_execute")).toBeUndefined();
+    expect(fixture.broker.provider().resolve("browser_vault_fill")).toBeUndefined();
   });
 
-  it("allows the browser placement overlay on a leased Hand but rejects arbitrary extras", async () => {
+  it("keeps exec and CUA from old leased Hands while filtering browser tools and rejecting arbitrary extras", async () => {
     const route = "vm-host:browser:1";
     const fixture = createFixture();
     const allowed = fixture.socket(undefined, undefined, undefined, "leased-vm", NOW + 10, route);
     await fixture.broker.message(allowed.webSocket, JSON.stringify({
       type: "catalog",
       attachment_id: "leased-vm",
-      tools: [machineEntry("exec_command"), browserExecuteEntry()],
+      tools: [machineEntry("exec_command"), browserExecuteEntry(), entry("mcp__cua_repl__js")],
       machines: [{
         id: "leased-vm",
         name: "Leased browser Hand",
@@ -230,7 +213,13 @@ describe("HostedToolsBroker socket-owned protocol", () => {
       }],
     }));
     expect(allowed.sent).toEqual([{ type: "ready" }]);
-    expect(fixture.broker.provider().resolve("browser_execute")).toBeDefined();
+    expect(allowed.closed).toBeUndefined();
+    expect(fixture.broker.machineTool("leased-vm", "exec_command")).toBeDefined();
+    expect(fixture.broker.machineTool("leased-vm", "mcp__cua_repl__js")).toBeDefined();
+    expect(fixture.broker.provider().resolve("browser_execute")).toBeUndefined();
+    expect(fixture.broker.provider().resolve("user_leased-vm_browser_execute")).toBeUndefined();
+    expect(fixture.broker.provider().definitions().some(tool => tool.name.includes("browser_execute"))).toBe(false);
+    expect(fixture.persistence.states().some(state => state.catalog_json?.includes("browser_execute"))).toBe(false);
 
     const rejected = fixture.socket(
       undefined, undefined, undefined, "other-vm", NOW + 10, "vm-host:browser:2",

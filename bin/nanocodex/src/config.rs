@@ -365,7 +365,8 @@ impl AgentArgs {
         } else {
             None
         };
-        let configured_browser = self.browser.configure(&session.workspace)?;
+        // Browser interaction is supplied by CUA, including for the direct CLI.
+        let configured_browser = None;
         let mpp_enabled = self.mpp.is_enabled();
         if mpp_enabled && !matches!(responses_transport, ResponsesTransport::Https) {
             return Err(eyre!(
@@ -442,9 +443,6 @@ impl AgentArgs {
                 tools = tools.process_environment(mpp_adapter.tool_environment());
             }
             tools = tools.remote_http_client(mpp_adapter.tool_http_client()?);
-        }
-        if let Some(browser) = &configured_browser {
-            tools = tools.provider(browser.tool());
         }
         if configured_vm.is_none()
             && let Some(config) = nanocodex_computer::ComputerConfig::discover_or_install()

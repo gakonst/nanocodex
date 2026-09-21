@@ -43,9 +43,6 @@
       "entrypoint": "ChiefOfStaffEgress"
     }
   ],
-  "browser": {
-    "binding": "BROWSER"
-  },
   "images": { "binding": "NANOCODEX_ATTACHMENT_IMAGES" },
   "worker_loaders": [
     {
@@ -182,8 +179,7 @@
     "AGENT_IDLE_TIMEOUT_MS": "30000",
     "MANAGED_AGENT_DIRECT_CREDENTIALS": "true",
     "NANOCODEX_SANDBOX_DESKTOPS": "true",
-    "NANOCODEX_HAND_IMAGE": "ghcr.io/gakonst/nanocodex-hand@sha256:cf44994c9ca68dd69962cb52cf8e9af572550763780d57483bfcaa05e2ab337b",
-    "MANAGED_BROWSER_PROVIDER": "cloudflare"
+    "NANOCODEX_HAND_IMAGE": "ghcr.io/gakonst/nanocodex-hand@sha256:cf44994c9ca68dd69962cb52cf8e9af572550763780d57483bfcaa05e2ab337b"
   },
   "env": {
     "development": {
@@ -198,10 +194,6 @@
           "remote": false
         }
       ],
-      "browser": {
-        "binding": "BROWSER",
-        "remote": true
-      },
       "worker_loaders": [
         { "binding": "LOADER" }
       ],
@@ -246,7 +238,6 @@
         "AGENT_IDLE_TIMEOUT_MS": "1000",
         "MANAGED_AGENT_DIRECT_CREDENTIALS": "true",
         "ENVIRONMENT": "development",
-        "MANAGED_BROWSER_PROVIDER": "cloudflare",
         "NANOCODEX_ADMIN_TOKEN": "nanocodex-local-room-signing-key",
         "NANOCODEX_MOCK_TWILIO_VERIFY_CODE": "123456",
         "NANOCODEX_OTP_HMAC_KEY": "nanocodex-local-sms-otp-hmac-key-v1-only",

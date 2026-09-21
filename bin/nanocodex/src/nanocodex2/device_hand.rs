@@ -211,11 +211,10 @@ async fn directory(origin: &str, key: &str) -> Result<PathBuf, ManagedError> {
 fn open(directory: &Path) -> Result<NativeState, ManagedError> {
     let workspace = home()?.join("Nanocodex");
     fs::create_dir_all(&workspace).map_err(error)?;
-    NativeState::open_with_browser(
+    NativeState::open(
         &workspace,
         directory,
         super::host::bounded_display_name(whoami::devicename()),
-        false,
     )
 }
 fn identity(directory: &Path) -> Result<Value, ManagedError> {
@@ -373,7 +372,6 @@ async fn share(
             let result = super::native_hand::run_observed(
                 client.account_attachment_target()?,
                 &state,
-                None,
                 async {
                     cancel.cancelled().await;
                     Ok(())

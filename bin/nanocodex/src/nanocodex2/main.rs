@@ -279,11 +279,11 @@ struct Hand {
     #[arg(long, conflicts_with_all = ["rootfs", "docker"], help_heading = "Identity")]
     vm_provider: Option<String>,
 
-    /// Route managed browser work through this host alongside the VM or container Hand.
+    /// Legacy option (disabled); use the Hand's CUA tools for browser interactions.
     #[arg(long, help_heading = "Browser")]
     browser: bool,
 
-    /// Exact Chrome or Chromium executable used by this Hand's private browser.
+    /// Legacy browser executable option (disabled); use the Hand's CUA tools.
     #[arg(
         long,
         value_name = "PATH",

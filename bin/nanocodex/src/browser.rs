@@ -48,17 +48,13 @@ enum CookieSource {
     State(BrowserStorageState),
 }
 
-/// Local browser configuration for normal agent sessions.
+/// Legacy browser configuration retained for explicit browser utilities.
 #[derive(Args)]
 pub(crate) struct BrowserArgs {
-    /// Select the private browser exposed to Code Mode as `tools.browser`.
+    /// Legacy browser selection; ignored by agent sessions, which use CUA.
     ///
-    /// By default, Nanocodex uses a dedicated automation browser on macOS. On
-    /// other platforms it prefers Brave and falls back to another installed
-    /// Chromium-family browser. Pass `brave` to deliberately use the standard
-    /// Brave application with a private profile, `chromium` to use normal
-    /// private browser discovery, or `none` to disable browser tools. Bare
-    /// `--browser` selects private browser discovery.
+    /// These settings remain available to explicit browser utilities. They do
+    /// not enable browser tools or import cookies into an agent session.
     #[arg(
         long,
         env = "NANOCODEX_BROWSER",
