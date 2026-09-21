@@ -58,11 +58,14 @@ enum ImageAttachmentContent {
         return "/brain/attachments/" + id.lowercased() + "/original." + suffix
     }
     static func original(_ attachment: MessageAttachment) -> [JSON] {
-        let header: JSON = .object(["id": .string(attachment.id), "name": .string(attachment.name),
+        var fields: [String: JSON] = ["id": .string(attachment.id), "name": .string(attachment.name),
             "path": .string(attachment.originalPath),
-            "preview_path": .string("/brain/attachments/" + attachment.id.lowercased() + "/preview.jpg"), "media_type": .string(attachment.mediaType), "size": .number(Double(attachment.byteCount))])
+            "preview_path": .string((attachment.handID == nil ? "/brain/attachments/" : "/workspace/attachments/") + attachment.id.lowercased() + "/preview.jpg"), "media_type": .string(attachment.mediaType), "size": .number(Double(attachment.byteCount))]
+        if let handID = attachment.handID { fields["hand_id"] = .string(handID) }
+        let header = JSON.object(fields)
         let encoded = (try? VideoAttachmentContent.encoder.encode(header)).map { String(decoding: $0, as: UTF8.self) } ?? ""
-        return [.object(["type": .string("text"), "text": .string(prefix + encoded + "\nUse view_image on path to inspect this image; large originals are resized for inspection without loading them into the brain. preview_path is a model-viewable JPEG fallback, oriented and bounded to 2048 pixels and 2 MiB. The original at path preserves the full resolution and original bytes for tasks that need them. A JPEG at preview_path is available for quick previews or formats unsupported by the image tool.")])]
+        let location = attachment.handID.map { "This image is local to the phone Hand with id \($0). Discover that Hand’s view_image tool and pass path (or preview_path); these paths are relative to that phone, whose connection must be available. Use image(result.content[1]) to display its returned image. " } ?? ""
+        return [.object(["type": .string("text"), "text": .string(prefix + encoded + "\n" + location + "Use view_image on path to inspect this image; large originals are resized for inspection without loading them into the brain. preview_path is a model-viewable JPEG fallback, oriented and bounded to 2048 pixels and 2 MiB. The original at path preserves the full resolution and original bytes for tasks that need them. A JPEG at preview_path is available for quick previews or formats unsupported by the image tool.")])]
     }
     static func project(_ content: [JSON]) -> (images: [MessageAttachment], remaining: [JSON]) {
         var images: [MessageAttachment] = [], remaining: [JSON] = []
@@ -73,7 +76,8 @@ enum ImageAttachmentContent {
                let header = try? JSONDecoder().decode(JSON.self, from: Data(line.utf8)),
                case .number(let size) = header["size"], let count = Int(exactly: size), count > 0,
                let attachment = try? MessageAttachment(id: header["id"].string, name: header["name"].string,
-                    mediaType: header["media_type"].string, byteCount: count),
+                    mediaType: header["media_type"].string, byteCount: count,
+                    handID: header["hand_id"] == .null ? nil : header["hand_id"].string),
                header["path"].string == attachment.originalPath {
                 images.append(attachment)
             } else { remaining.append(part) }

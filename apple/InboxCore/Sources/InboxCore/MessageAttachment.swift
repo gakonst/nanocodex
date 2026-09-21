@@ -13,13 +13,16 @@ public struct MessageAttachment: Identifiable, Codable, Equatable, Sendable {
     public let mediaType: String
     public let byteCount: Int
     public let video: VideoAttachmentInfo?
+    /// The owning phone Hand for an original retained locally instead of uploaded.
+    public let handID: String?
     public var isVideo: Bool { video != nil }
     public var promptByteCount: Int { video?.promptByteCount ?? ((try? JSONEncoder().encode(ImageAttachmentContent.original(self)).count) ?? 0) }
     public var originalPath: String {
-        isVideo ? VideoAttachmentContent.path(id: id, mediaType: mediaType) : ImageAttachmentContent.path(id: id, mediaType: mediaType)
+        if handID != nil { return "/workspace/attachments/" + id.lowercased() + "/original." + (mediaType == "image/jpeg" ? "jpg" : String(mediaType.dropFirst(6))) }
+        return isVideo ? VideoAttachmentContent.path(id: id, mediaType: mediaType) : ImageAttachmentContent.path(id: id, mediaType: mediaType)
     }
 
-    public init(id: String = UUID().uuidString, name: String, mediaType: String = "image/jpeg", byteCount: Int, video: VideoAttachmentInfo? = nil) throws {
+    public init(id: String = UUID().uuidString, name: String, mediaType: String = "image/jpeg", byteCount: Int, video: VideoAttachmentInfo? = nil, handID: String? = nil) throws {
         guard Self.validID(id), !name.isEmpty,
               !name.contains("/"), !name.contains("\\"), name != ".", name != "..",
               !name.unicodeScalars.contains(where: CharacterSet.controlCharacters.contains),
@@ -27,15 +30,17 @@ public struct MessageAttachment: Identifiable, Codable, Equatable, Sendable {
                : ["video/mp4", "video/quicktime"].contains(mediaType) && byteCount > 0) else {
             throw AttachmentError.invalidReference
         }
+        guard handID == nil || (video == nil && handID!.range(of: #"^[A-Za-z0-9][A-Za-z0-9._:-]{0,122}$"#, options: .regularExpression) != nil) else { throw AttachmentError.invalidReference }
         try video?.validate()
-        self.id = id; self.name = name; self.mediaType = mediaType; self.byteCount = byteCount; self.video = video
+        self.id = id; self.name = name; self.mediaType = mediaType; self.byteCount = byteCount; self.video = video; self.handID = handID
     }
 
     public init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
         try self.init(id: values.decode(String.self, forKey: .id), name: values.decode(String.self, forKey: .name),
                       mediaType: values.decode(String.self, forKey: .mediaType), byteCount: values.decode(Int.self, forKey: .byteCount),
-                      video: values.decodeIfPresent(VideoAttachmentInfo.self, forKey: .video))
+                      video: values.decodeIfPresent(VideoAttachmentInfo.self, forKey: .video),
+                      handID: values.decodeIfPresent(String.self, forKey: .handID))
     }
 
     static func validID(_ id: String) -> Bool {
@@ -67,13 +72,14 @@ public struct PreparedAttachment: Sendable {
 }
 
 public enum AttachmentError: Error, LocalizedError, Equatable, Sendable {
-    case unsupportedImage, invalidReference, invalidScope, unavailable
+    case unsupportedImage, invalidReference, invalidScope, unavailable, localImageUnavailable
     public var errorDescription: String? {
         switch self {
         case .unsupportedImage: return "Choose a supported image, such as a JPEG, PNG, or HEIC photo."
         case .invalidReference: return "This attachment is invalid. Remove it and add it again."
         case .invalidScope: return "Sign in before attaching media."
         case .unavailable: return "This attachment is no longer available. Remove it and add it again."
+        case .localImageUnavailable: return "Open this image on the iPhone that sent it. Its original is stored there."
         }
     }
 }

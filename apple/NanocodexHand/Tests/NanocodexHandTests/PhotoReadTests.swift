@@ -95,6 +95,97 @@ final class PhotoReadTests: XCTestCase {
         XCTAssertThrowsError(try PersonalToolRequest([:], allowed: ["id"]).text("id", required: true))
     }
 
+    @MainActor
+    func testPublishedImagesSurviveDraftRemovalAndProduceTypedOutput() async throws {
+        let root = try directory(), drafts = try directory()
+        let hand = try HandWorkspace(id: "phone-images", name: "iPhone", root: root)
+        let data = try jpeg(width: 3000, height: 1000)
+        let source = drafts.appendingPathComponent("original.jpg")
+        let preview = drafts.appendingPathComponent("preview.jpg")
+        try data.write(to: source); try data.write(to: preview)
+        var paths: [String] = []
+        var attachments: [MessageAttachment] = []
+        for _ in 0..<2 {
+            let attachment = try MessageAttachment(name: "photo.jpg", byteCount: data.count)
+            attachments.append(attachment)
+            let path = try await hand.publishImage(attachment: attachment, source: source, preview: preview)
+            paths.append(path)
+            XCTAssertEqual(path, "/workspace/attachments/" + attachment.id.lowercased() + "/original.jpg")
+            XCTAssertEqual(try Data(contentsOf: root.appendingPathComponent(String(path.dropFirst(11)))), data)
+        }
+        XCTAssertNotEqual(paths[0], paths[1])
+        try FileManager.default.removeItem(at: source)
+        try FileManager.default.removeItem(at: preview)
+        let again = try await hand.publishImage(attachment: attachments[0], source: source, preview: preview)
+        XCTAssertEqual(again, paths[0])
+        for path in paths + [paths[0].replacingOccurrences(of: "original.jpg", with: "preview.jpg")] {
+            let result = try await hand.call(name: "view_image", input: .object(["path": .string(path)]))
+            let bytes = try XCTUnwrap(Data(base64Encoded: result["content"].array[1]["data"].string))
+            let size = try HandPhotoRendition.dimensions(bytes)
+            XCTAssertLessThanOrEqual(max(size.0, size.1), 2048)
+            XCTAssertLessThanOrEqual(bytes.count, 512 * 1024)
+            let wire = try HandSession.toolOutput(result, success: true, name: "view_image")
+            XCTAssertEqual(wire["output"].array[1]["type"].string, "input_image")
+            XCTAssertEqual(wire["structured_result"], result)
+        }
+    }
+
+    func testLocalImageLookupChecksOwnershipAndSurvivesWorkspaceRecreation() async throws {
+        let root = try directory(), drafts = try directory(), data = try jpeg()
+        let source = drafts.appendingPathComponent("photo.jpg")
+        try data.write(to: source)
+        let attachment = try MessageAttachment(name: "photo.jpg", byteCount: data.count)
+        let hand = try HandWorkspace(id: "phone-images", name: "iPhone", root: root)
+        XCTAssertNil(hand.localImageURL(attachment: attachment, preview: false))
+        _ = try await hand.publishImage(attachment: attachment, source: source, preview: source)
+        try FileManager.default.removeItem(at: source)
+        let reopened = try HandWorkspace(id: "phone-images", name: "iPhone", root: root)
+        XCTAssertNotNil(reopened.localImageURL(attachment: attachment, preview: true))
+        let owned = try MessageAttachment(id: attachment.id, name: attachment.name, byteCount: attachment.byteCount, handID: "phone-images")
+        let foreign = try MessageAttachment(id: attachment.id, name: attachment.name, byteCount: attachment.byteCount, handID: "other-phone")
+        let original = try XCTUnwrap(reopened.localImageURL(attachment: owned, preview: false))
+        XCTAssertEqual(try Data(contentsOf: original), data)
+        XCTAssertNil(reopened.localImageURL(attachment: foreign, preview: false))
+        let preview = try XCTUnwrap(reopened.localImageURL(attachment: owned, preview: true))
+        try FileManager.default.removeItem(at: preview)
+        try FileManager.default.createSymbolicLink(at: preview, withDestinationURL: original)
+        XCTAssertNil(reopened.localImageURL(attachment: owned, preview: true))
+    }
+
+    func testViewImageAndPublicationRejectWorkspaceEscapes() async throws {
+        let root = try directory(), outside = try directory()
+        let hand = try HandWorkspace(id: "phone-images", name: "iPhone", root: root)
+        let source = outside.appendingPathComponent("photo.jpg"), data = try jpeg()
+        try data.write(to: source)
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("escape"), withDestinationURL: outside)
+        for path in ["../photo.jpg", "/workspace/../photo.jpg", source.path, "escape/photo.jpg"] {
+            do { _ = try await hand.call(name: "view_image", input: .object(["path": .string(path)])); XCTFail("Allowed escape") } catch { }
+        }
+        try FileManager.default.createSymbolicLink(at: root.appendingPathComponent("attachments"), withDestinationURL: outside)
+        do {
+            _ = try await hand.publishImage(attachment: MessageAttachment(name: "photo.jpg", byteCount: data.count), source: source, preview: source)
+            XCTFail("Published through symlink")
+        } catch { }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: outside.path), ["photo.jpg"])
+    }
+
+    func testImageIOBoundsLargePreviewAndAppliesOrientation() throws {
+        let root = try directory(), source = root.appendingPathComponent("oriented.jpg")
+        let input = try XCTUnwrap(CGImageSourceCreateWithData(jpeg(width: 3000, height: 1000) as CFData, nil))
+        let bytes = NSMutableData()
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(bytes, "public.jpeg" as CFString, 1, nil))
+        CGImageDestinationAddImageFromSource(destination, input, 0, [kCGImagePropertyOrientation: 6] as CFDictionary)
+        XCTAssertTrue(CGImageDestinationFinalize(destination))
+        // Padding models a large valid draft JPEG without changing its pixels.
+        var padded = bytes as Data
+        padded.append(Data(repeating: 0, count: 1024 * 1024))
+        try padded.write(to: source)
+        let bounded = try HandPhotoRendition.prepare(url: source)
+        let dimensions = try HandPhotoRendition.dimensions(bounded)
+        XCTAssertGreaterThan(dimensions.1, dimensions.0)
+        XCTAssertLessThanOrEqual(bounded.count, 512 * 1024)
+    }
+
     #if os(iOS)
     @MainActor
     func testUIKitRenditionBoundsPixelsAndAppliesOrientation() throws {

@@ -6,6 +6,37 @@ import UniformTypeIdentifiers
 @testable import InboxCore
 
 final class MessageAttachmentTests: XCTestCase {
+    func testMultiplePhoneLocalImagesRoundTripThroughHistoryAndPersistence() throws {
+        let photos = try (1...4).map { index in
+            try MessageAttachment(name: "Photo \(index)", mediaType: index == 1 ? "image/heic" : "image/jpeg",
+                                  byteCount: 9_000_000, handID: "ios-fixture-phone")
+        }
+        let parts = try photos.flatMap { try $0.originalContent(path: $0.originalPath) }
+        let combined = "Compare these photos\n" + parts.map { $0["text"].string }.joined(separator: "\n")
+        let projected = TranscriptInput(.string(combined))
+        XCTAssertEqual(projected.text, "Compare these photos")
+        XCTAssertEqual(projected.imageFiles, photos)
+        XCTAssertTrue(projected.images.isEmpty)
+        XCTAssertLessThan(try JSONEncoder().encode(parts).count, 10_000, "Original bytes never enter the message")
+        for photo in photos {
+            XCTAssertTrue(photo.originalPath.hasPrefix("/workspace/attachments/"))
+            XCTAssertEqual(try JSONDecoder().decode(MessageAttachment.self, from: JSONEncoder().encode(photo)), photo)
+            XCTAssertThrowsError(try photo.originalContent(path: "/workspace/attachments/../other.jpg"))
+        }
+    }
+
+    func testLocalImageIdentityCannotOverridePathOrReadAnotherHand() throws {
+        XCTAssertThrowsError(try MessageAttachment(name: "photo", byteCount: 10, handID: "../other"))
+        let local = try MessageAttachment(name: "photo", byteCount: 10, handID: "ios-fixture")
+        let parts = try local.originalContent(path: local.originalPath)
+        let forged = parts[0]["text"].string.replacingOccurrences(of: local.originalPath, with: "/workspace/private.jpg")
+        XCTAssertTrue(TranscriptInput(.string(forged)).imageFiles.isEmpty)
+        let cloud = try MessageAttachment(name: "uploaded", byteCount: 10)
+        XCTAssertNil(cloud.handID)
+        XCTAssertTrue(cloud.originalPath.hasPrefix("/brain/attachments/"))
+        XCTAssertEqual(TranscriptInput(.array(try cloud.originalContent(path: cloud.originalPath))).imageFiles, [cloud])
+    }
+
     func testPastedProviderPreservesPNGAfterProviderFileExpires() async throws {
         let bytes = try png(width: 120, height: 80)
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)

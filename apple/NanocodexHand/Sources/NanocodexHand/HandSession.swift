@@ -33,6 +33,16 @@ public final class HandSession {
         session = URLSession(configuration: config, delegate: HandNoRedirects(), delegateQueue: nil)
     }
 
+    public var workspaceID: String { workspace.id }
+
+    public func localImageURL(attachment: MessageAttachment, preview: Bool) -> URL? {
+        workspace.localImageURL(attachment: attachment, preview: preview)
+    }
+
+    public func publishImage(attachment: MessageAttachment, source: URL, preview: URL) async throws -> String {
+        try await workspace.publishImage(attachment: attachment, source: source, preview: preview)
+    }
+
     public func start() {
         guard loop == nil, !closed else { return }
         let epoch = generation
@@ -149,7 +159,7 @@ public final class HandSession {
     /// structured result used by Code Mode. A JSON/base64 string is not an image.
     static func toolOutput(_ value: JSON, success: Bool, name: String) throws -> JSON {
         let body: JSON
-        if success, name == "read_photo" {
+        if success, ["read_photo", "view_image"].contains(name) {
             let content = value["content"].array
             guard content.count == 2, content[0]["type"].string == "text",
                   content[1]["type"].string == "image", content[1]["mimeType"].string == "image/jpeg" else {

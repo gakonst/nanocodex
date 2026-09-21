@@ -500,14 +500,16 @@ final class InboxModel: ObservableObject {
         return AttachmentTarget(agentID: id, generation: generation, scope: scope)
     }
     func attachmentURL(_ attachment: MessageAttachment) -> URL? {
-        attachmentURLs[attachment.id]
+        attachmentURLs[attachment.id] ?? deviceHand?.localImageURL(attachment: attachment, preview: true)
     }
     func attachmentOriginalURL(_ attachment: MessageAttachment) -> URL? {
+        if let local = deviceHand?.localImageURL(attachment: attachment, preview: false) { return local }
         guard let store = try? AttachmentStore(scope: scope) else { return nil }
         return try? store.url(for: attachment)
     }
     func attachmentMovieURL(_ attachment: MessageAttachment) -> URL? { attachmentMovieURLs[attachment.id] }
     func downloadAttachment(_ attachment: MessageAttachment, agentID: String) async throws -> URL {
+        if attachment.handID != nil { throw AttachmentError.localImageUnavailable }
         guard let client else { throw APIError.invalidCredential }
         let epoch = generation
         let url = try await client.downloadAttachment(agentID: agentID, attachment: attachment)
@@ -528,6 +530,13 @@ final class InboxModel: ObservableObject {
         return url
     }
     func attachmentPreview(_ attachment: MessageAttachment, agentID: String) async throws -> Data {
+        if let local = attachmentURL(attachment) {
+            let epoch = generation
+            let data = try await Task.detached(priority: .userInitiated) { try Data(contentsOf: local) }.value
+            guard epoch == generation, !Task.isCancelled else { throw CancellationError() }
+            return data
+        }
+        if attachment.handID != nil { throw AttachmentError.localImageUnavailable }
         guard let client else { throw APIError.invalidCredential }
         let epoch = generation
         let data = try await client.attachmentPreview(agentID: agentID, attachmentID: attachment.id)
@@ -2337,11 +2346,30 @@ final class InboxModel: ObservableObject {
             if let attachments = message.attachments, !attachments.isEmpty {
                 let store = try AttachmentStore(scope: scope)
                 guard let client else { throw APIError.invalidCredential }
-                // Verify saved drafts before uploading, including legacy drafts.
+                guard generation == epoch,
+                      let pendingIndex = pending.firstIndex(where: { $0.id == message.id }),
+                      pending[pendingIndex].phase != .cancelling else { throw CancellationError() }
+                let usePhone = pending[pendingIndex].resolveAttachmentTransport(phoneEnabled: deviceHandEnabled)
+                persist()
+                await preferences.flush()
+                guard generation == epoch, !Task.isCancelled else { throw CancellationError() }
+                var retained = attachments
+                // Verify saved drafts before publishing or uploading, including legacy drafts.
                 _ = try await Task.detached(priority: .userInitiated) { try store.content(for: attachments) }.value
-                for attachment in attachments {
+                for (index, attachment) in attachments.enumerated() {
                     let source = try store.url(for: attachment)
                     let preview = attachment.isVideo ? nil : (try store.previewURL(for: attachment))
+                    if attachment.handID != nil || (!attachment.isVideo && usePhone) {
+                        guard let hand = deviceHand, let preview,
+                              attachment.handID == nil || attachment.handID == hand.workspaceID else { throw AttachmentError.unavailable }
+                        let path = try await hand.publishImage(attachment: attachment, source: source, preview: preview)
+                        guard generation == epoch, !Task.isCancelled else { throw CancellationError() }
+                        let local = try MessageAttachment(id: attachment.id, name: attachment.name,
+                            mediaType: attachment.mediaType, byteCount: attachment.byteCount, handID: hand.workspaceID)
+                        command.images += try local.originalContent(path: path)
+                        retained[index] = local
+                        continue
+                    }
                     let path = try await client.uploadAttachment(agentID: message.agentID, attachment: attachment, source: source, preview: preview) { [weak self] in
                         await MainActor.run {
                             guard let self else { return true }
@@ -2349,6 +2377,15 @@ final class InboxModel: ObservableObject {
                         }
                     }
                     command.images += try attachment.originalContent(path: path)
+                }
+                guard generation == epoch, !Task.isCancelled else { throw CancellationError() }
+                if let index = pending.firstIndex(where: { $0.id == message.id }) {
+                    guard pending[index].phase != .cancelling else { throw CancellationError() }
+                    // Keep the same device/path identity for retries and optimistic thumbnails.
+                    pending[index].attachments = retained
+                    persist()
+                    await preferences.flush()
+                    guard generation == epoch, !Task.isCancelled else { throw CancellationError() }
                 }
             }
             return command

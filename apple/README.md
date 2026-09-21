@@ -31,11 +31,14 @@ Roster and state checks continue for background work; transcripts load when open
 The composer grows up to six lines, then scrolls; its expand button opens a larger
 editor sharing the same draft and attachments.
 Paste a copied screenshot or photo into either editor to attach it without opening
-the picker. Image providers enter the same account-scoped draft and original-file
-upload flow as Photos and Files; they do not replace your typed message. Plain
-text continues to use native text editing. Selected originals and inspection
-previews upload through the existing authenticated R2 multipart endpoints before
-the message is submitted, so later inspection does not require the phone online.
+the picker. Image providers enter the same account-scoped draft flow as Photos and Files;
+they do not replace your typed message. Plain text continues to use native text
+editing. With the phone Hand enabled, sending images retains their originals and
+previews in its account-scoped workspace and sends small path references. The
+agent uses that phone’s `view_image` tool to inspect them; the phone must be
+connected. Composer and history thumbnails read the retained local previews,
+including after draft cleanup and relaunch. Videos and images sent with the Hand
+disabled continue to use authenticated cloud uploads.
 
 
 The current conversation stays mounted while the session drawer opens. The drawer

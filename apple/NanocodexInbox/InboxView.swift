@@ -941,10 +941,18 @@ private struct AgentComposerView: View {
             } message: { Text("Enable Camera in Settings to take a photo for your message.") }
             #endif
             .photosPicker(isPresented: $showPhotos, selection: $selectedPhotos, maxSelectionCount: nil, matching: .any(of: [.images, .videos]), preferredItemEncoding: .current)
-            .onChange(of: selectedPhotos) { _, items in
-                guard !items.isEmpty, let target = photoTarget else { return }
-                model.importAttachmentPhotos(items, target: target)
+            .task(id: showPhotos ? [] : selectedPhotos) {
+                // Selection can arrive in several updates. Keep the picker binding
+                // intact until dismissal, then import the complete batch once.
+                guard !showPhotos, !selectedPhotos.isEmpty else { return }
+                await Task.yield()
+                // A final selection update restarts this task, including when
+                // the presentation binding changes before the selection binding.
+                guard !Task.isCancelled, !showPhotos,
+                      !selectedPhotos.isEmpty, let target = photoTarget else { return }
+                let items = selectedPhotos
                 selectedPhotos = []; photoTarget = nil
+                model.importAttachmentPhotos(items, target: target)
             }
             .fileImporter(isPresented: $showFiles, allowedContentTypes: [.image, .movie], allowsMultipleSelection: true) { result in
                 guard let target = fileTarget else { return }
@@ -1168,18 +1176,33 @@ private struct OriginalImageAttachmentView: View {
     @State private var preview: Data?
     @State private var visible = false
     @State private var error: String?
+    @State private var selection: URL?
+    private var localPreview: URL? {
+        model.attachmentURL(attachment) ?? model.attachmentOriginalURL(attachment)
+    }
+    private var thumbnail: some View {
+        AttachmentImageView(source: localPreview.map(AttachmentImageSource.file) ?? preview.map(AttachmentImageSource.data), contentMode: .fit)
+            .frame(maxWidth: 240).frame(height: 180)
+            .accessibilityLabel("Open " + attachment.name).accessibilityIdentifier("message-image")
+    }
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
-            ChatMediaPreview(title: attachment.name, load: { [try await model.downloadAttachment(attachment, agentID: agentID)] }) {
-                AttachmentImageView(source: preview.map(AttachmentImageSource.data), contentMode: .fit)
-                    .frame(maxWidth: 240).frame(height: 180)
-                    .accessibilityLabel("Open " + attachment.name).accessibilityIdentifier("message-image")
+            if let original = model.attachmentOriginalURL(attachment) {
+                // ChatMediaPreview owns and deletes disposable downloads. The
+                // phone's retained original must survive preview dismissal.
+                Button { selection = original } label: { thumbnail }
+                    .buttonStyle(.plain)
+                    .nativeMediaPreview($selection, in: [original], title: attachment.name)
+            } else {
+                ChatMediaPreview(title: attachment.name, load: { [try await model.downloadAttachment(attachment, agentID: agentID)] }) {
+                    thumbnail
+                }
             }
             if let error { Text(error).font(.caption).foregroundStyle(.secondary) }
         }
         .onScrollVisibilityChange(threshold: 0.01) { visible = $0 }
         .task(id: visible ? attachment.id : nil) {
-            guard visible, preview == nil else { return }
+            guard visible, preview == nil, localPreview == nil else { return }
             do {
                 let data = try await model.attachmentPreview(attachment, agentID: agentID)
                 guard !Task.isCancelled else { return }
@@ -1208,6 +1231,7 @@ private struct AttachmentImageView: View {
         }
         .background(Ink.surface).clipShape(RoundedRectangle(cornerRadius: 12))
         .accessibilityElement(children: .ignore).accessibilityLabel("Attached image")
+        .accessibilityValue(thumbnail == nil ? "Loading image" : "Image loaded")
         .onScrollVisibilityChange(threshold: 0.01) { visible = $0 }
         .task(id: visible ? source : nil) {
             thumbnail = nil

@@ -163,8 +163,50 @@ enum DemoContent {
         ])
     }
 
+    #if DEBUG
+    /// Keep these originals across relaunches so preview cleanup cannot be
+    /// hidden by regenerating fixture files. Each test uses a unique profile.
+    private static func localPhotoRows() -> [TranscriptRow] {
+        do {
+            let scope = "demo." + (ProcessInfo.processInfo.environment["NANOCODEX_DEMO_PROFILE"] ?? "default")
+            let store = try AttachmentStore(scope: scope)
+            let seededKey = "local-photo-fixture." + scope
+            let seeded = UserDefaults.standard.bool(forKey: seededKey)
+            var content: [JSON] = [.object(["type": .string("text"), "text": .string("Compare these two phone photos.")])]
+            for index in 1...2 {
+                let context = CGContext(data: nil, width: 280, height: 150, bitsPerComponent: 8, bytesPerRow: 0,
+                    space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue)!
+                context.setFillColor(CGColor(red: index == 1 ? 0.85 : 0.1, green: 0.25, blue: index == 1 ? 0.1 : 0.85, alpha: 1))
+                context.fill(CGRect(x: 0, y: 0, width: 280, height: 150))
+                let png = NSMutableData()
+                let destination = CGImageDestinationCreateWithData(png, "public.png" as CFString, 1, nil)!
+                CGImageDestinationAddImage(destination, context.makeImage()!, nil)
+                CGImageDestinationFinalize(destination)
+                let prepared = try AttachmentPreparation.prepare(data: png as Data, name: "Phone photo \(index).png", mediaType: "image/png")
+                let attachment = try MessageAttachment(id: "00000000-0000-4000-8000-00000000000\(index)",
+                    name: prepared.attachment.name, mediaType: prepared.attachment.mediaType, byteCount: prepared.attachment.byteCount,
+                    handID: "fixture-phone")
+                if !seeded {
+                    try store.save(PreparedAttachment(attachment: attachment, source: prepared.source, preview: prepared.preview))
+                }
+                content += try attachment.originalContent(path: attachment.originalPath)
+            }
+            UserDefaults.standard.set(true, forKey: seededKey)
+            let projected = TranscriptInput(.array(content))
+            var row = TranscriptRow(id: "local-phone-photos", role: "You", text: projected.text)
+            row.imageFiles = projected.imageFiles
+            return [row]
+        } catch {
+            return [.init(id: "local-photo-fixture-error", role: "Agent", text: "Local photo fixture failed: " + error.localizedDescription)]
+        }
+    }
+    #endif
+
     static func rows(_ id: String) -> [TranscriptRow] {
         guard let card = cards().first(where: { $0.id == id }) else { return [] }
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_LOCAL_PHOTOS"] == "1" { return localPhotoRows() }
+        #endif
         if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_GENERATED_OUTPUTS"] == "1" { return generatedOutputRows() }
         if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_RENDER_PROFILE"] == "1" {
             return (1...80).map { index in

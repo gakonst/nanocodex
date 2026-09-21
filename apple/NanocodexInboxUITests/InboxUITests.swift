@@ -2262,6 +2262,35 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(composer(app).value as? String, "Keep the latest reply in view")
     }
 
+    func testMultipleLocalPhotoHistoryThumbnailsSurvivePreviewAndRelaunch() {
+        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString, "NANOCODEX_DEMO_LOCAL_PHOTOS": "1"])
+        func verifyPhotos() {
+            let conversation = app.scrollViews["conversation"]
+            XCTAssertTrue(conversation.waitForExistence(timeout: 10))
+            let photos = conversation.descendants(matching: .any).matching(identifier: "message-image")
+            XCTAssertEqual(photos.count, 2, "Project both phone path references into separate thumbnails")
+            for index in 1...2 {
+                let photo = photos.matching(NSPredicate(format: "label == %@", "Open Phone photo \(index).png")).firstMatch
+                for _ in 0..<4 { if photo.isHittable { break }; conversation.swipeDown() }
+                let loaded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Image loaded"), object: photo)
+                XCTAssertEqual(XCTWaiter.wait(for: [loaded], timeout: 10), .completed, "Decode photo \(index) from its retained local original")
+                photo.tap()
+                let done = app.buttons["Done"]
+                XCTAssertTrue(done.waitForExistence(timeout: 10))
+                done.tap()
+                XCTAssertTrue(conversation.waitForExistence(timeout: 5))
+            }
+            XCTAssertFalse(conversation.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "[Image attachment]")).firstMatch.exists)
+        }
+        verifyPhotos()
+        verifyPhotos()
+        capture(app, "local-photos-before-relaunch")
+        app.terminate()
+        app.launch()
+        verifyPhotos()
+        capture(app, "local-photos-after-relaunch")
+    }
+
     func testNativeMediaPreviewZoomPlaybackAndDraftRestoration() throws {
         let clip = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "VideoAudioCheck", withExtension: "mp4"))
         let app = launch(["NANOCODEX_DEMO_GENERATED_OUTPUTS": "1", "NANOCODEX_DEMO_VIDEO_BASE64": try Data(contentsOf: clip).base64EncodedString()])

@@ -11,6 +11,35 @@ enum HandPhotoRendition {
     // https://developers.cloudflare.com/durable-objects/platform/limits/
     static let maxBytes = 512 * 1024
 
+    /// Decode at inspection size and apply EXIF orientation without loading full originals.
+    static func prepare(url: URL) throws -> Data {
+        guard url.isFileURL,
+              try url.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile == true,
+              let source = CGImageSourceCreateWithURL(url as CFURL, [kCGImageSourceShouldCache: false] as CFDictionary),
+              CGImageSourceGetCount(source) > 0 else { throw HandFailure.invalidFile }
+        var dimension = maxPixels
+        while dimension >= 256 {
+            try Task.checkCancellation()
+            guard let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
+                kCGImageSourceCreateThumbnailFromImageAlways: true,
+                kCGImageSourceCreateThumbnailWithTransform: true,
+                kCGImageSourceThumbnailMaxPixelSize: dimension,
+                kCGImageSourceShouldCacheImmediately: true
+            ] as CFDictionary) else { throw HandFailure.invalidFile }
+            let bytes = NSMutableData()
+            guard let destination = CGImageDestinationCreateWithData(bytes, "public.jpeg" as CFString, 1, nil) else { throw HandFailure.invalidFile }
+            CGImageDestinationAddImage(destination, image, [kCGImageDestinationLossyCompressionQuality: 0.85] as CFDictionary)
+            guard CGImageDestinationFinalize(destination) else { throw HandFailure.invalidFile }
+            if bytes.length <= maxBytes {
+                let data = bytes as Data
+                _ = try dimensions(data)
+                return data
+            }
+            dimension = dimension * 3 / 4
+        }
+        throw HandFailure.contextAccess("The image could not be rendered within the image size limit.")
+    }
+
     static func dimensions(_ data: Data) throws -> (Int, Int) {
         guard !data.isEmpty, data.count <= maxBytes,
               let image = CGImageSourceCreateWithData(data as CFData, [kCGImageSourceShouldCache: false] as CFDictionary),
