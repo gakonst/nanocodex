@@ -30,7 +30,6 @@ test("attachment publishes one exact catalog and exchanges ready, call, result, 
   await waitFor(() => socket.frames().length === 1);
   assert.deepEqual(socket.frames()[0], {
     type: "catalog",
-    capabilities: ["turn_metadata"],
     tools: [{
       provider: "javascript",
       remote_name: "echo",
@@ -108,7 +107,6 @@ test("Tools publishes its non-secret user-machine snapshot with each attachment"
   await waitFor(() => socket.frames().length === 1);
   assert.deepEqual(socket.frames()[0], {
     type: "catalog",
-    capabilities: ["turn_metadata"],
     tools: [],
     attachment_id: "laptop",
     machines: [{
@@ -190,16 +188,11 @@ test("in-flight cancellation uses an ordinary ambiguous result and receipt ack p
   await fixture.tools.close();
 });
 
-test("pre-dispatch cancellation is idempotent and remains authoritative", async () => {
-  let calls = 0;
-  const fixture = await readyAttachment({ handler: () => { calls++; return "unexpected"; } });
-  fixture.socket.receive({ type: "cancel", call_id: "call:1" });
-  await waitFor(() => fixture.socket.frames().some(({ type }) => type === "result"));
-  fixture.socket.receive(callFrame({}));
-  await waitFor(() => fixture.socket.frames().filter(({ type }) => type === "result").length === 2);
-  assert.equal(calls, 0);
-  assert.equal(lastFrame(fixture.socket, "result").outcome.status, "cancelled");
-  fixture.socket.receive({ type: "ack", call_id: "call:1" });
+test("cancellation for an unknown call is ignored", async () => {
+  const fixture = await readyAttachment({ handler: () => "done" });
+  fixture.socket.receive({ type: "cancel", call_id: "unknown" });
+  await tick();
+  assert.equal(fixture.socket.frames().some(({ type }) => type === "result"), false);
   await drain(fixture.client, fixture.socket);
   await fixture.tools.close();
 });
@@ -326,7 +319,7 @@ test("connector close does not wait for provider settlement", async () => {
   await router.reset();
 });
 
-test("duplicate calls are idempotent and changed immutable identity rejects the socket", async () => {
+test("duplicate calls reject the socket without executing twice", async () => {
   let finish;
   let calls = 0;
   const fixture = await readyAttachment({ handler: () => { calls++; return new Promise((resolve) => { finish = resolve; }); } });
@@ -335,9 +328,8 @@ test("duplicate calls are idempotent and changed immutable identity rejects the 
   fixture.socket.receive(first);
   await tick();
   assert.equal(calls, 1);
-  fixture.socket.receive({ ...first, input: { id: 2 } });
   await waitFor(() => fixture.socket.closed?.code === 1008);
-  assert.match(fixture.socket.closed.reason, /different immutable fields/);
+  assert.match(fixture.socket.closed.reason, /duplicate call/);
   finish?.("late");
   await fixture.tools.close();
 });
@@ -452,11 +444,16 @@ test("result send failure is a reconnectable transport close, not a policy rejec
   await fixture.tools.close();
 });
 
-test("a replaced socket owns a fresh immutable catalog and ignores stale callbacks", async () => {
+test("a replacement socket preserves running work and receives no old results", async () => {
   const first = new FakeSocket();
   const second = new FakeSocket();
   const sockets = [first, second];
-  const tools = await createTools({ tools: { echo: { handler: () => "ok" } } });
+  let finish, signal;
+  let calls = 0;
+  const tools = await createTools({ tools: { echo: { handler: (_input, context) => {
+    calls++; signal = context.signal;
+    return new Promise(resolve => { finish = resolve; });
+  } } } });
   const connector = createAttachment(tools, reverseTarget(async () => sockets.shift()), {
     attachmentId: "stable-host",
     reconnectDelayMs: 1,
@@ -465,7 +462,10 @@ test("a replaced socket owns a fresh immutable catalog and ignores stale callbac
   await waitFor(() => first.frames().some(({ type }) => type === "catalog"));
   first.receive({ type: "ready" });
   const client = await connecting;
+  first.receive(callFrame({}));
+  await waitFor(() => finish);
   first.close(1012, "replace");
+  assert.equal(signal.aborted, false);
   await waitFor(() => second.frames().some(({ type }) => type === "catalog"));
   assert.equal(first.frames()[0].attachment_id, "stable-host");
   assert.deepEqual(second.frames()[0], first.frames()[0]);
@@ -475,6 +475,11 @@ test("a replaced socket owns a fresh immutable catalog and ignores stale callbac
   first.emit("error", { error: new Error("stale") });
   await tick();
   assert.equal(second.closed, undefined);
+  finish("old result");
+  await tick();
+  assert.equal(calls, 1);
+  assert.equal(first.frames().some(({ type }) => type === "result"), false);
+  assert.equal(second.frames().some(({ type }) => type === "result"), false);
   await drain(client, second);
   await tools.close();
 });

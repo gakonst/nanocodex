@@ -587,11 +587,8 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         } satisfies InvocationRequest),
         signal: context.signal,
       });
-    } catch (error) {
-      if (machineId !== undefined) throw Object.assign(new Error("Account hand transport interrupted", { cause: error }), {
-        code: "host_interrupted",
-      });
-      return failedToolResult("Account hand invocation outcome is unknown", "ambiguous");
+    } catch {
+      return failedToolResult("Hand connection failed after possible dispatch; execution outcome is unknown. The command was not resent.", "ambiguous");
     }
     const responseAt = performance.now();
     if (!response.ok) {
@@ -602,7 +599,10 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         // the original effect identity so the broker replays any prior receipt;
         // transport/decoding failures and server errors never trigger a retry.
         this.invalidate();
-        await this.refresh();
+        try { await this.refresh(); }
+        catch {
+          return failedToolResult("Hand route refresh failed; execution outcome is unknown. The command was not resent.", "ambiguous");
+        }
         // Personal/MCP tools use exposed names; shell tools use machine keys.
         const route = machineId === undefined
           ? this.#tools.get(name)
@@ -611,12 +611,9 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
           return this.#invoke(name, route.routeToken, input, context, machineId, false);
         }
       }
-      if (machineId !== undefined && (preAdmission || response.status >= 500)) {
-        // Local routing recovery was unavailable or exhausted. The Rust owner
-        // retains this effect and its identity for subsequent receipt recovery.
-        throw Object.assign(new Error("Account hand is not ready"), { code: "host_interrupted" });
-      }
-      return failedToolResult("Account hand is unavailable", "unavailable", preAdmission);
+      // HTTP status alone cannot exclude an earlier dispatch of this call ID.
+      // Preserve uncertainty locally instead of interrupting the agent runtime.
+      return failedToolResult(`Hand request failed (HTTP ${response.status}); execution outcome is unknown. The command was not resent after possible dispatch.`, "ambiguous");
     }
     let result: InvocationResult;
     try {
@@ -626,11 +623,8 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         || !Object.hasOwn(result, "metadata") || !Object.hasOwn(result, "value")) {
         throw new Error("invalid account hand result");
       }
-    } catch (error) {
-      if (machineId !== undefined) throw Object.assign(new Error("Account hand response could not be decoded; invocation outcome is unknown", { cause: error }), {
-        code: "host_interrupted",
-      });
-      return failedToolResult("Account hand invocation outcome is unknown", "ambiguous");
+    } catch {
+      return failedToolResult("Hand response could not be decoded; execution outcome is unknown. The command was not resent.", "ambiguous");
     }
     if (machineId !== undefined && result.pre_admission_unavailable === true) {
       // The broker checked its call ledger: this invocation was never admitted.

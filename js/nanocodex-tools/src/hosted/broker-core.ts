@@ -102,7 +102,6 @@ type HostedToolsSocketAttachment = {
   leaseId?: string;
   generation?: number;
   active?: true;
-  turnMetadata?: true;
   draining?: true;
   machines?: readonly HostedMachine[];
 };
@@ -302,7 +301,7 @@ export class HostedToolsBrokerCore {
     this.#now = options.now ?? Date.now;
     this.#onCallTiming = options.onCallTiming;
     this.#randomUUID = options.randomUUID ?? (() => crypto.randomUUID());
-    this.#maxInFlight = options.maxInFlight ?? Number.MAX_SAFE_INTEGER;
+    this.#maxInFlight = options.maxInFlight ?? 32;
     if (!Number.isSafeInteger(this.#maxInFlight) || this.#maxInFlight < 1) {
       throw new TypeError("maxInFlight must be a positive safe integer");
     }
@@ -890,7 +889,6 @@ export class HostedToolsBrokerCore {
       {
         ...candidate,
         active: true,
-        ...(frame.capabilities?.includes("turn_metadata") ? { turnMetadata: true as const } : {}),
         ...(frame.machines === undefined ? {} : { machines: frame.machines }),
       } satisfies HostedToolsSocketAttachment,
     );
@@ -1487,13 +1485,6 @@ export class HostedToolsBrokerCore {
   }
 
   #send(socket: HostedToolsSocket, frame: HostedToolsManagedFrame): void {
-    // Retain full identity in the ledger, but preserve the legacy wire shape
-    // until this exact socket generation advertises metadata support.
-    if (frame.type === "call" && this.#attachment(socket)?.turnMetadata !== true) {
-      const { turn_id: _turnId, ...legacy } = frame;
-      socket.send(JSON.stringify(legacy));
-      return;
-    }
     socket.send(JSON.stringify(frame));
   }
 
