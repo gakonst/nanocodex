@@ -307,9 +307,9 @@ impl<F> NanocodexBuilder<F> {
 
     /// Builds a policy for a restored child under its retained session ID.
     ///
-    /// The optional snapshot is the exact retained conversation boundary (absent
-    /// before the first turn). Stateful adapters must verify it against their
-    /// fenced storage before admitting work; a fresh-spawn policy is insufficient.
+    /// The optional snapshot is the directory's retained conversation boundary.
+    /// The policy's `restore_snapshot` hook resolves it against fenced storage
+    /// before the driver is constructed; a fresh-spawn policy is insufficient.
     #[doc(hidden)]
     #[must_use]
     pub fn restored_execution_policy_factory<P>(mut self, factory: P) -> Self

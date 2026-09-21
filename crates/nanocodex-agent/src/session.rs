@@ -238,6 +238,12 @@ impl SessionSnapshot {
         self.version
     }
 
+    /// Stable lineage identity retained by this conversation boundary.
+    #[must_use]
+    pub fn lineage_id(&self) -> &str {
+        &self.lineage_id
+    }
+
     /// Returns the absolute workspace retained by this session boundary.
     #[must_use]
     pub fn workspace(&self) -> &str {

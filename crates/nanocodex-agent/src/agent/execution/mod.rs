@@ -100,6 +100,15 @@ pub struct ExecutionOutput {
 /// without becoming a dependency of `nanocodex-agent`.
 #[cfg(not(target_family = "wasm"))]
 pub trait ExecutionPolicy: Send + Sync {
+    /// Resolves a retained child boundary before constructing its driver. Stateful
+    /// policies may replace a stale directory snapshot with their fenced checkpoint.
+    fn restore_snapshot<'a>(
+        &'a self,
+        snapshot: Option<SessionSnapshot>,
+    ) -> ExecutionFuture<'a, Result<Option<SessionSnapshot>>> {
+        Box::pin(async move { Ok(snapshot) })
+    }
+
     /// Resolves a failed attempt against the authoritative operation state.
     /// A pending operation must return a retry/reopen disposition, even when
     /// its original failure was not a transport or storage error.
@@ -278,6 +287,15 @@ pub trait ExecutionPolicy: Send + Sync {
 /// guarantees on every target.
 #[cfg(target_family = "wasm")]
 pub trait ExecutionPolicy: Send + Sync {
+    /// Resolves a retained child boundary before constructing its driver. Stateful
+    /// policies may replace a stale directory snapshot with their fenced checkpoint.
+    fn restore_snapshot<'a>(
+        &'a self,
+        snapshot: Option<SessionSnapshot>,
+    ) -> ExecutionFuture<'a, Result<Option<SessionSnapshot>>> {
+        Box::pin(async move { Ok(snapshot) })
+    }
+
     /// Resolves a failed attempt against the authoritative operation state.
     /// Pending work must remain recoverable regardless of the original error.
     fn recover_failure<'a>(
@@ -510,6 +528,22 @@ impl ExecutionConfig {
             spawned_policy: self.spawned_policy.as_ref().map(Arc::clone),
             restored_policy: self.restored_policy.as_ref().map(Arc::clone),
         })
+    }
+
+    pub(crate) async fn resolve_restored_thread(
+        mut self,
+        session_id: &str,
+        snapshot: Option<SessionSnapshot>,
+    ) -> Result<(Self, Option<SessionSnapshot>)> {
+        let snapshot = if let Some(recipe) = &self.policy {
+            let policy = recipe.instantiate(session_id)?;
+            let snapshot = policy.restore_snapshot(snapshot).await?;
+            self.policy = Some(ExecutionPolicyRecipe::Shared(policy));
+            snapshot
+        } else {
+            snapshot
+        };
+        Ok((self, snapshot))
     }
 
     // The WASM platform configuration is const, while native rollout cloning is not.

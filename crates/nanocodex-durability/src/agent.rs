@@ -104,12 +104,12 @@ enum DurableExecutionOwner {
     Lazy {
         states: DurableSession,
         state_id: String,
-        owner: OnceCell<DurableOwner>,
+        owner: OnceCell<(DurableOwner, Option<SessionSnapshot>)>,
         checkpoint: ChildCheckpoint,
     },
 }
 
-// An absent restored snapshot is meaningful: storage must also have no checkpoint.
+// Admission without restore resolution still requires an exact checkpoint match.
 enum ChildCheckpoint {
     Fresh,
     Restore(Option<Box<SessionSnapshot>>),
@@ -178,67 +178,123 @@ impl DurableExecution {
                 state_id,
                 owner,
                 checkpoint: expected,
-            } => {
-                owner
-                    .get_or_try_init(|| async {
-                        let state = states
-                            .open_agent_state(state_id.clone())
+            } => owner
+                .get_or_try_init(|| async {
+                    let state = states
+                        .open_agent_state(state_id.clone())
+                        .await
+                        .map_err(agent_error)?;
+                    let (owner, checkpoint) = state.acquire_agent().await.map_err(agent_error)?;
+                    let mut restored_snapshot = None;
+                    match (expected, checkpoint) {
+                        (ChildCheckpoint::Fresh, Some(_)) => {
+                            return Err(NanocodexError::InvalidExecutionPolicy(
+                                "a fresh spawned agent found an existing durability checkpoint"
+                                    .to_owned(),
+                            ));
+                        }
+                        (ChildCheckpoint::Restore(Some(expected)), Some(checkpoint)) => {
+                            let (restored, keys) = crate::context::load_snapshot_with_keys(
+                                (&owner).into(),
+                                checkpoint.decode().map_err(agent_error)?,
+                            )
                             .await
                             .map_err(agent_error)?;
-                        let (owner, checkpoint) =
-                            state.acquire_agent().await.map_err(agent_error)?;
-                        match (expected, checkpoint) {
-                            (ChildCheckpoint::Fresh, Some(_)) => {
-                                return Err(NanocodexError::InvalidExecutionPolicy(
-                                    "a fresh spawned agent found an existing durability checkpoint"
-                                        .to_owned(),
-                                ));
-                            }
-                            (ChildCheckpoint::Restore(Some(expected)), Some(checkpoint)) => {
-                                let (restored, keys) = crate::context::load_snapshot_with_keys(
-                                    (&owner).into(),
-                                    checkpoint.decode().map_err(agent_error)?,
-                                )
-                                .await
-                                .map_err(agent_error)?;
-                                let encode = |snapshot: &SessionSnapshot| {
-                                    serde_json::to_value(snapshot).map_err(|error| {
-                                        NanocodexError::InvalidSessionSnapshot(error.to_string())
-                                    })
-                                };
-                                if encode(expected)? != encode(&restored)? {
-                                    return Err(NanocodexError::InvalidSessionSnapshot(
+                            let encode = |snapshot: &SessionSnapshot| {
+                                serde_json::to_value(snapshot).map_err(|error| {
+                                    NanocodexError::InvalidSessionSnapshot(error.to_string())
+                                })
+                            };
+                            if encode(expected)? != encode(&restored)? {
+                                return Err(NanocodexError::InvalidSessionSnapshot(
                                     "restored child snapshot does not match the durability state"
                                         .into(),
                                 ));
-                                }
-                                self.remember(keys)?;
                             }
-                            (ChildCheckpoint::Restore(Some(_)), None)
-                            | (ChildCheckpoint::Restore(None), Some(_)) => {
-                                return Err(NanocodexError::InvalidSessionSnapshot(
+                            self.remember(keys)?;
+                            restored_snapshot = Some(restored);
+                        }
+                        (ChildCheckpoint::Restore(Some(_)), None)
+                        | (ChildCheckpoint::Restore(None), Some(_)) => {
+                            return Err(NanocodexError::InvalidSessionSnapshot(
                                 "restored child snapshot and durability checkpoint presence differ"
                                     .into(),
                             ));
-                            }
-                            (ChildCheckpoint::Fresh | ChildCheckpoint::Restore(None), None) => {}
                         }
-                        Ok(owner)
-                    })
-                    .await
-            }
+                        (ChildCheckpoint::Fresh | ChildCheckpoint::Restore(None), None) => {}
+                    }
+                    Ok((owner, restored_snapshot))
+                })
+                .await
+                .map(|(owner, _)| owner),
         }
     }
 
     fn initialized_owner(&self) -> Option<&DurableOwner> {
         match &self.owner {
             DurableExecutionOwner::Ready(owner) => Some(owner),
-            DurableExecutionOwner::Lazy { owner, .. } => owner.get(),
+            DurableExecutionOwner::Lazy { owner, .. } => owner.get().map(|(owner, _)| owner),
         }
     }
 }
 
 impl ExecutionPolicy for DurableExecution {
+    fn restore_snapshot<'a>(
+        &'a self,
+        snapshot: Option<SessionSnapshot>,
+    ) -> ExecutionFuture<'a, AgentResult<Option<SessionSnapshot>>> {
+        Box::pin(async move {
+            let DurableExecutionOwner::Lazy {
+                states,
+                state_id,
+                owner,
+                checkpoint: ChildCheckpoint::Restore(_),
+            } = &self.owner
+            else {
+                return Err(NanocodexError::InvalidExecutionPolicy(
+                    "only restored children can resolve a durability checkpoint".into(),
+                ));
+            };
+            let validate_identity = |snapshot: &SessionSnapshot| -> AgentResult<()> {
+                if snapshot.lineage_id() != state_id {
+                    return Err(NanocodexError::InvalidSessionSnapshot(
+                        "restored child snapshot belongs to a different session".into(),
+                    ));
+                }
+                Ok(())
+            };
+            if let Some(snapshot) = &snapshot {
+                validate_identity(snapshot)?;
+            }
+            let (_, snapshot) = owner
+                .get_or_try_init(|| async {
+                    let state = states
+                        .open_agent_state(state_id.clone())
+                        .await
+                        .map_err(agent_error)?;
+                    let (owner, checkpoint) = state.acquire_agent().await.map_err(agent_error)?;
+                    // The directory and child state are separate writes. Only the
+                    // checkpoint acquired with this owner can determine safe history.
+                    let snapshot = if let Some(checkpoint) = checkpoint {
+                        let (snapshot, keys) = crate::context::load_snapshot_with_keys(
+                            (&owner).into(),
+                            checkpoint.decode().map_err(agent_error)?,
+                        )
+                        .await
+                        .map_err(agent_error)?;
+                        validate_identity(&snapshot)?;
+                        self.remember(keys)?;
+                        Some(snapshot)
+                    } else {
+                        None
+                    };
+                    Ok::<_, NanocodexError>((owner, snapshot))
+                })
+                .await?;
+            Ok(snapshot.clone())
+        })
+    }
+
     fn recover_failure<'a>(
         &'a self,
         operation_id: String,
@@ -748,6 +804,67 @@ mod tests {
             .unwrap();
         assert!(restored.initialized_owner().is_some());
         restored.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn restored_child_resolves_directory_ahead_of_uncommitted_state() {
+        let states = DurableSession::open(crate::MemoryStore::new().unwrap(), "parent")
+            .await
+            .unwrap();
+        let snapshot = child_checkpoint("child");
+        let restored =
+            DurableExecution::lazy_restore(states, "child".into(), Some(snapshot.clone()));
+        assert!(
+            restored
+                .restore_snapshot(Some(snapshot))
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(restored.initialized_owner().is_some());
+        restored.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn restored_child_resolution_fences_old_owner_and_rejects_foreign_identity() {
+        let states = DurableSession::open(crate::MemoryStore::new().unwrap(), "parent")
+            .await
+            .unwrap();
+        let old = DurableExecution::lazy(states.clone(), "child".into());
+        let snapshot = child_checkpoint("child");
+        old.commit_checkpoint(snapshot.clone()).await.unwrap();
+        let restored = DurableExecution::lazy_restore(states.clone(), "child".into(), None);
+        let actual = restored.restore_snapshot(None).await.unwrap().unwrap();
+        assert_eq!(
+            serde_json::to_value(actual).unwrap(),
+            serde_json::to_value(&snapshot).unwrap()
+        );
+        assert!(!restored.context_records.lock().unwrap().is_empty());
+        let stale = old.commit_checkpoint(snapshot.clone()).await.unwrap_err();
+        assert_eq!(
+            stale.execution_policy_disposition(),
+            Some(ExecutionPolicyDisposition::Reopen)
+        );
+        restored.commit_checkpoint(snapshot).await.unwrap();
+        restored.shutdown().await.unwrap();
+
+        let foreign = child_checkpoint("foreign");
+        let restored =
+            DurableExecution::lazy_restore(states.clone(), "child".into(), Some(foreign.clone()));
+        assert!(matches!(
+            restored.restore_snapshot(Some(foreign.clone())).await,
+            Err(NanocodexError::InvalidSessionSnapshot(_))
+        ));
+        assert!(restored.initialized_owner().is_none());
+        let bad_state = DurableExecution::lazy(states.clone(), "wrong".into());
+        bad_state.commit_checkpoint(foreign).await.unwrap();
+        bad_state.shutdown().await.unwrap();
+        let restored = DurableExecution::lazy_restore(states, "wrong".into(), None);
+        assert!(matches!(
+            restored.restore_snapshot(None).await,
+            Err(NanocodexError::InvalidSessionSnapshot(_))
+        ));
+        assert!(restored.initialized_owner().is_none());
     }
 
     #[tokio::test]

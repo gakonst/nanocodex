@@ -1419,11 +1419,11 @@ impl Registry {
                         })?,
                         None => root,
                     };
-                    let needs_assignment = runtime.conversation.is_none();
                     let (agent, events) = parent
                         .restore_child(runtime, host_context.clone())
                         .await
                         .map_err(std::io::Error::other)?;
+                    let needs_assignment = restored_child_needs_assignment(&agent).await?;
                     parents.insert(descriptor.id, agent.clone());
                     let (start, ready) = oneshot::channel();
                     let event_task = forward_events(
@@ -1980,11 +1980,11 @@ impl Registry {
                     std::io::Error::other("subagent parent runtime is unavailable for restoration")
                 })?;
             let contract = OutputContract::compile(&schema)?;
-            let needs_assignment = snapshot.conversation.is_none();
             let (agent, events) = parent
                 .restore_child(snapshot, host_context)
                 .await
                 .map_err(std::io::Error::other)?;
+            let needs_assignment = restored_child_needs_assignment(&agent).await?;
             let (start, ready) = oneshot::channel();
             let event_task = forward_events(
                 root.clone(),
@@ -2624,6 +2624,20 @@ pub fn channel(
         registry: Arc::clone(&registry),
     };
     (registry, control, receiver)
+}
+
+// Backend futures are isolate-local on WASM; expose a Send receipt to tool callers.
+async fn restored_child_needs_assignment(agent: &Nanocodex) -> std::io::Result<bool> {
+    let agent = agent.clone();
+    platform::spawn(async move {
+        agent
+            .child_snapshot()
+            .await
+            .map(|snapshot| snapshot.conversation.is_none())
+    })
+    .await
+    .map_err(|error| std::io::Error::other(error.to_string()))?
+    .map_err(std::io::Error::other)
 }
 
 #[cfg(test)]

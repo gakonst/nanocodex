@@ -28,7 +28,7 @@ impl<S> BranchSpawner<S> {
         Ok(self.with_execution(self.execution.for_new_thread(operation)?))
     }
 
-    fn with_execution(&self, execution: ExecutionConfig) -> Self {
+    pub(super) fn with_execution(&self, execution: ExecutionConfig) -> Self {
         Self {
             config: Arc::clone(&self.config),
             tools: self.tools.clone(),
@@ -138,9 +138,9 @@ where
         )
     }
 
-    pub(super) fn restore_child(
+    pub(super) async fn restore_child(
         &self,
-        snapshot: ChildRuntimeSnapshot,
+        mut snapshot: ChildRuntimeSnapshot,
         workspace: Option<Arc<str>>,
         parent_session_id: &str,
         host_context: Option<Arc<str>>,
@@ -151,10 +151,15 @@ where
         })?;
         // Restore under the retained child's identity and checkpoint, never
         // under a fresh-spawn recipe or the parent's execution owner.
-        let mut spawner = self.with_execution(
-            self.execution
-                .for_restored_thread(snapshot.conversation.as_ref())?,
-        );
+        let execution = self
+            .execution
+            .for_restored_thread(snapshot.conversation.as_ref())?;
+        let (execution, conversation) = execution
+            .resolve_restored_thread(&snapshot.session_id, snapshot.conversation.take())
+            .await?;
+        snapshot.conversation = conversation;
+        snapshot.validate()?;
+        let mut spawner = self.with_execution(execution);
         spawner.restored_snapshot = snapshot.conversation.clone();
         spawner.depth = self.depth.saturating_add(1);
         spawner.context_source = spawner.context_config.build();

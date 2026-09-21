@@ -368,12 +368,21 @@ pub(super) fn handle_idle_command<S>(
             host_context,
             result,
         } => {
+            if let Some(snapshot) = restore {
+                let spawner = spawner.with_execution(spawner.execution.clone());
+                let session_id = session_id.to_owned();
+                // Storage recovery must not block the parent's command loop.
+                let _ = spawn_driver(async move {
+                    let outcome = spawner
+                        .restore_child(snapshot, workspace, &session_id, host_context)
+                        .await;
+                    drop(result.send(outcome));
+                });
+                return;
+            }
             let model = options.model.unwrap_or(defaults.model);
             let thinking = options.thinking.unwrap_or(defaults.thinking);
             let outcome = validate_model_thinking(model, thinking).and_then(|()| {
-                if let Some(snapshot) = restore {
-                    return spawner.restore_child(snapshot, workspace, session_id, host_context);
-                }
                 spawner.spawn_clean(
                     workspace,
                     session_id,

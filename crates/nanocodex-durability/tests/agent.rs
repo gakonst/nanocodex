@@ -4602,3 +4602,129 @@ async fn restored_nested_children_replay_and_continue_under_their_retained_durab
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
+
+#[tokio::test]
+async fn restored_child_uses_fenced_history_when_directory_checkpoint_lags() -> Result<()> {
+    let store = MemoryStore::new()?;
+    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let workspace = temporary_workspace("durability-stale-child-directory")?;
+    let openai = OpenAi::builder("test-key")
+        .service({
+            let generations = Arc::clone(&generations);
+            move || DurableReplayService {
+                generations: Arc::clone(&generations),
+            }
+        })
+        .build()?;
+    let state = DurableSession::open(store.clone(), "stale-directory-parent").await?;
+    let (parent, _events) = Nanocodex::builder(openai)
+        .workspace(&workspace)
+        .durability(state)
+        .await?
+        .build()?;
+    let (mut child, _events) = parent.spawn().await?;
+    for generation in 0..2 {
+        // A directory write can precede the child's independently committed turn.
+        let stale = child.child_snapshot().await?;
+        assert_eq!(stale.conversation.is_some(), generation > 0);
+        let request_id = format!("turn-{generation}");
+        child
+            .prompt(PromptRequest::new("retained work").request_id(&request_id))
+            .await?
+            .result()
+            .await?;
+        let expected = child.child_snapshot().await?;
+        child.shutdown().await?;
+        let (restored, _events) = parent.restore_child(stale, None).await?;
+        restored
+            .prompt(PromptRequest::new("retained work").request_id(&request_id))
+            .await?
+            .result()
+            .await?;
+        assert!(
+            serde_json::to_value(restored.child_snapshot().await?)?
+                == serde_json::to_value(expected)?,
+            "restoration must retain the latest committed history"
+        );
+        assert_eq!(
+            generations.load(Ordering::SeqCst),
+            generation + 1,
+            "recovery must retain receipts without repeating inference"
+        );
+        child = restored;
+    }
+    child.shutdown().await?;
+    parent.shutdown().await?;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn interrupted_child_restores_from_directory_saved_before_its_first_turn() -> Result<()> {
+    let store = MemoryStore::new()?;
+    let started = Arc::new(AtomicBool::new(false));
+    let workspace = temporary_workspace("durability-interrupted-child-directory")?;
+    let openai = OpenAi::builder("test-key")
+        .service({
+            let started = Arc::clone(&started);
+            move || PendingGenerationService {
+                started: Arc::clone(&started),
+            }
+        })
+        .build()?;
+    let state = DurableSession::open(store, "interrupted-directory-parent").await?;
+    let (parent, _events) = Nanocodex::builder(openai)
+        .workspace(&workspace)
+        .durability(state)
+        .await?
+        .build()?;
+    let (child, _events) = parent.spawn().await?;
+    let stale = child.child_snapshot().await?;
+    assert!(stale.conversation.is_none());
+    let active = child
+        .prompt(PromptRequest::new("interrupt me").request_id("first"))
+        .await?;
+    while !started.load(Ordering::Acquire) {
+        tokio::task::yield_now().await;
+    }
+    active.control().cancel().await?;
+    assert!(matches!(
+        active.result().await,
+        Err(NanocodexError::TurnCancelled)
+    ));
+    let expected = child.child_snapshot().await?;
+    assert!(expected.conversation.is_some());
+    child.shutdown().await?;
+    started.store(false, Ordering::Release);
+
+    let (restored, _events) = parent.restore_child(stale, None).await?;
+    let replay = restored
+        .prompt(PromptRequest::new("interrupt me").request_id("first"))
+        .await?
+        .result()
+        .await;
+    assert!(matches!(replay, Err(NanocodexError::TurnCancelled)));
+    assert!(
+        !started.load(Ordering::Acquire),
+        "cancelled receipts must replay without inference"
+    );
+    assert!(
+        serde_json::to_value(restored.child_snapshot().await?)? == serde_json::to_value(expected)?,
+        "restore must preserve the interrupted turn's durable boundary"
+    );
+    let next = restored
+        .prompt(PromptRequest::new("continue").request_id("second"))
+        .await?;
+    while !started.load(Ordering::Acquire) {
+        tokio::task::yield_now().await;
+    }
+    next.control().cancel().await?;
+    assert!(matches!(
+        next.result().await,
+        Err(NanocodexError::TurnCancelled)
+    ));
+    restored.shutdown().await?;
+    parent.shutdown().await?;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
