@@ -25,6 +25,7 @@ const approval = {
 
 async function syntheticProvider() {
   let callId;
+  let calls = 0;
   const send = message => process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
   for await (const line of readline.createInterface({ input: process.stdin })) {
     const message = JSON.parse(line);
@@ -38,9 +39,17 @@ async function syntheticProvider() {
         capabilities: { tools: {} }, serverInfo: { name: 'synthetic-cua', version: '1' } } });
     } else if (message.method === 'tools/list') {
       send({ id: message.id, result: { tools: [{ name: 'js',
-        description: 'Synthetic empty-form approval fixture; performs no computer use.',
+        description: 'Synthetic approval and delayed-result fixture; performs no computer use.',
         inputSchema: { type: 'object', properties: {} } }] } });
     } else if (message.method === 'tools/call') {
+      calls++;
+      if (message.params.arguments?.fixture_delay_ms) {
+        await new Promise(resolve => setTimeout(resolve, message.params.arguments.fixture_delay_ms));
+        send({ id: message.id, result: { content: [{ type: 'text', text: JSON.stringify({
+          arguments: message.params.arguments, calls,
+        }) }] } });
+        continue;
+      }
       callId = message.id;
       send({ id: 'synthetic-approval', method: 'elicitation/create', params: approval });
     } else if (message.method === 'ping') {
@@ -51,7 +60,7 @@ async function syntheticProvider() {
   }
 }
 
-async function upstream(t, binary, sandbox) {
+async function upstream(t, binary, sandbox, toolArguments = {}) {
   assert.ok(path.isAbsolute(binary), 'NANOCODEX_TEST_CODEX_BIN must be an absolute binary path');
   const directory = await mkdtemp(path.join(tmpdir(), 'nanocodex-headless-upstream-'));
   let stop;
@@ -140,13 +149,13 @@ async function upstream(t, binary, sandbox) {
   assert.equal(thread.approvalPolicy, 'never');
   assert.equal(thread.sandbox.type, sandbox === 'danger-full-access' ? 'dangerFullAccess' : 'readOnly');
   const result = await request('mcpServer/tool/call', {
-    threadId: thread.thread.id, server: 'cua_repl', tool: 'js', arguments: {},
+    threadId: thread.thread.id, server: 'cua_repl', tool: 'js', arguments: toolArguments,
   });
   assert.notEqual(result.isError, true, 'Synthetic tool must complete');
   const response = JSON.parse(result.content.find(item => item.type === 'text').text);
-  assert.equal(response.error, null, 'Official runtime must resolve the form normally');
+  if (!toolArguments.fixture_delay_ms) assert.equal(response.error, null, 'Official runtime must resolve the form normally');
   assert.deepEqual(requests, [], 'Official runtime must not emit client input requests');
-  return response.decision;
+  return response;
 }
 
 if (process.argv.includes(fixtureFlag)) {
@@ -155,13 +164,19 @@ if (process.argv.includes(fixtureFlag)) {
   const binary = process.env.NANOCODEX_TEST_CODEX_BIN;
   const options = { timeout: 60000, skip: !binary && 'Set NANOCODEX_TEST_CODEX_BIN to opt in to the official-runtime test' };
   test('official headless full-access + never resolves CUA empty form without client approval', options, async t => {
-    const decision = await upstream(t, binary, 'danger-full-access');
+    const { decision } = await upstream(t, binary, 'danger-full-access');
     assert.equal(decision.action, 'accept');
     assert.deepEqual(decision.content, {});
   });
   test('official headless read-only + never does not accept CUA empty form', options, async t => {
-    const decision = await upstream(t, binary, 'read-only');
+    const { decision } = await upstream(t, binary, 'read-only');
     assert.equal(decision.action, 'decline');
     assert.ok(decision.content == null);
   });
+  test('official direct tool call forwards a small timeout_ms and awaits the delayed synthetic provider', options, async t => {
+    const args = { fixture_delay_ms: 250, timeout_ms: 1, nested: { unchanged: true } };
+    const response = await upstream(t, binary, 'danger-full-access', args);
+    assert.deepEqual(response, { arguments: args, calls: 1 });
+  });
+
 }

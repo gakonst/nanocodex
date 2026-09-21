@@ -221,7 +221,7 @@ test('queued cancellation does not disconnect active work; remote disconnect fai
   assert.equal(host.messages.filter(x => x.value.method === 'mcpServer/tool/call').length, 1);
 });
 
-test('upstream errors retain data; timeout and EOF close only owned transport', options, async t => {
+test('upstream errors retain data; EOF closes only owned transport', options, async t => {
   let held;
   const received = new Promise(resolve => held = resolve);
   const host = await fixture(t, (value, io) => {
@@ -237,7 +237,11 @@ test('upstream errors retain data; timeout and EOF close only owned transport', 
   peer.send(2, 'tools/call', { name: 'js', arguments: { error: true } });
   assert.deepEqual((await peer.response(2)).error, { code: -32042, message: 'synthetic upstream error', data: { preserved: true } });
   peer.send(3, 'tools/call', { name: 'js', arguments: {} }); await received;
-  assert.match((await peer.response(3)).error.message, /timed out/);
+  peer.input.end();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.ok(app.closed);
+  assert.equal(app.pending.size, 0);
+  assert.equal(host.messages.filter(x => x.value.method === 'mcpServer/tool/call').length, 2);
   const other = client(t, host.url);
   const otherPeer = mcp(t, other);
   otherPeer.send(1, 'initialize', {}); await otherPeer.response(1);
@@ -343,73 +347,54 @@ function timedClient(t, heldMethod = 'mcpServer/tool/call') {
 }
 const flush = () => new Promise(resolve => setImmediate(resolve));
 
-test('js and reset preserve their arguments and upstream errors after the connection timeout', options, async t => {
-  for (const name of ['js', 'js_reset']) await t.test(name, async t => {
-    const { app, messages } = timedClient(t);
-    const args = { code: 'synthetic', timeout_ms: 180000, nested: { unchanged: true } };
-    const call = app.call({ name, arguments: args });
-    const error = { code: -32042, message: 'synthetic native helper timeout', data: { preserved: true } };
-    const rejected = assert.rejects(call, e => { assert.deepEqual(e.rpcError, error); return true; });
-    await flush();
-    const sent = messages.find(x => x.method === 'mcpServer/tool/call');
-    assert.deepEqual(sent.params.arguments, args);
-    t.mock.timers.tick(120001);
-    assert.equal(app.closed, undefined);
-    // The response grace also allows a provider deadline error to arrive just
-    // after the requested execution budget, without losing its error data.
-    t.mock.timers.tick(60000);
-    assert.equal(app.closed, undefined);
-    app.receive(JSON.stringify({ id: sent.id, error }));
-    await rejected;
-    t.mock.timers.tick(1000);
-    assert.equal(app.closed, undefined);
-    assert.equal(app.pending.size, 0);
-    assert.equal(app.config.timeoutMs, 120000);
-    assert.equal(messages.filter(x => x.method === 'mcpServer/tool/call').length, 1);
-  });
-});
-
-test('stalled tools have a bounded deadline including response grace and are never replayed', options, async t => {
-  for (const [budget, deadline] of [[119500, 120500], [180000, 181000], [2147483647, 2147483647], [Number.MAX_SAFE_INTEGER, 2147483647]]) {
-    await t.test(String(budget), async t => {
-      const { app, messages } = timedClient(t);
-      const rejected = assert.rejects(app.call({ name: 'js', arguments: { timeout_ms: budget } }), /timed out.*not retried/);
-      await flush();
-      t.mock.timers.tick(deadline - 1);
-      assert.equal(app.closed, undefined);
-      t.mock.timers.tick(1);
-      await rejected;
-      assert.equal(app.pending.size, 0);
-      await assert.rejects(app.call({ name: 'js', arguments: { timeout_ms: budget } }), /timed out/);
-      assert.equal(messages.filter(x => x.method === 'mcpServer/tool/call').length, 1);
-    });
+test('forwarded tools await upstream success or error beyond wrapper and provider argument deadlines', options, async t => {
+  for (const name of ['js', 'js_reset', 'turn_ended']) {
+    for (const budget of [undefined, 1, 180000, 'provider-owned']) {
+      for (const outcome of ['result', 'error']) await t.test(`${name}/${budget}/${outcome}`, async t => {
+        const { app, messages } = timedClient(t);
+        const args = { code: 'synthetic', ...(budget === undefined ? {} : { timeout_ms: budget }), nested: { unchanged: true } };
+        let settled = false;
+        const call = app.call({ name, arguments: args }).finally(() => { settled = true; });
+        const error = { code: -32042, message: 'synthetic provider deadline', data: { preserved: true } };
+        const completed = outcome === 'error'
+          ? assert.rejects(call, e => { assert.deepEqual(e.rpcError, error); return true; })
+          : call.then(value => assert.deepEqual(value, result));
+        await flush();
+        const sent = messages.find(x => x.method === 'mcpServer/tool/call');
+        assert.deepEqual(sent.params.arguments, args);
+        // Exceed both the wrapper configuration and the former budget+grace.
+        // A silent upstream remains pending until it responds or the caller cancels.
+        t.mock.timers.tick(600000);
+        await flush();
+        assert.equal(settled, false);
+        assert.equal(app.closed, undefined);
+        app.receive(JSON.stringify({ id: sent.id, [outcome]: outcome === 'error' ? error : result }));
+        await completed;
+        t.mock.timers.tick(600000);
+        assert.equal(app.closed, undefined);
+        assert.equal(app.pending.size, 0);
+        assert.equal(messages.filter(x => x.method === 'mcpServer/tool/call').length, 1);
+      });
+    }
   }
 });
 
-test('missing, invalid, and small budgets retain the configured deadline', options, async t => {
-  for (const budget of [undefined, null, '180000', 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, 1000]) {
-    await t.test(String(budget), async t => {
-      const { app, messages } = timedClient(t);
-      const args = budget === undefined ? {} : { timeout_ms: budget };
-      const rejected = assert.rejects(app.call({ name: 'js', arguments: args }), /timed out/);
-      await flush();
-      assert.deepEqual(messages.find(x => x.method === 'mcpServer/tool/call').params.arguments, JSON.parse(JSON.stringify(args)));
-      t.mock.timers.tick(119999);
-      assert.equal(app.closed, undefined);
-      t.mock.timers.tick(1);
-      await rejected;
-    });
-  }
-});
-
-test('other provider tools cannot extend the transport timeout', options, async t => {
+test('caller cancellation after the wrapper deadline rejects active and queued work without replay', options, async t => {
   const { app, messages } = timedClient(t);
-  const args = { timeout_ms: 180000 };
-  const rejected = assert.rejects(app.call({ name: 'turn_ended', arguments: args }), /timed out/);
+  const peer = mcp(t, app);
+  peer.send(1, 'initialize', {}); await peer.response(1);
+  peer.send(2, 'tools/call', { name: 'js', arguments: { timeout_ms: 1 } });
   await flush();
-  assert.deepEqual(messages.find(x => x.method === 'mcpServer/tool/call').params.arguments, args);
-  t.mock.timers.tick(120000);
-  await rejected;
+  peer.send(3, 'tools/call', { name: 'js', arguments: { timeout_ms: 1 } });
+  t.mock.timers.tick(600000);
+  await flush();
+  assert.equal(peer.responses.some(value => value.id === 2 || value.id === 3), false);
+  peer.send(undefined, 'notifications/cancelled', { requestId: 2 });
+  assert.equal((await peer.response(2)).error.code, -32800);
+  assert.match((await peer.response(2)).error.message, /upstream\/native work may continue/);
+  assert.ok((await peer.response(3)).error);
+  assert.equal(messages.filter(x => x.method === 'mcpServer/tool/call').length, 1);
+  assert.equal(messages.some(x => /interrupt|archive|shutdown|reset/.test(x.method)), false);
 });
 
 test('tool budgets never override connection, initialization, discovery or thread startup timeouts', options, async t => {

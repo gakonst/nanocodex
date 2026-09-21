@@ -40,20 +40,25 @@ Trusted `args` and `environment` configure the child process. There are no
 companion launch flags, platform arguments, security configuration, private
 desktop routing, or protocol switches. The inherited child environment omits
 account/API credentials. The provider receives model arguments unchanged,
-including its own optional fields and timeouts. For `js` and `js_reset`, the host
-also enforces a deadline covering queue wait, process startup, and the provider
-call. A positive safe integer `timeout_ms` selects that deadline (clamped to
-2,147,483,647 ms to avoid timer overflow); all other values default to 30 seconds.
-The provider still owns reset behavior.
+including its own optional fields and timeouts. The provider exclusively owns
+execution deadlines and reset behavior. The adapter does not interpret
+`timeout_ms`, add a tool-call deadline, or charge queue wait against a provider
+execution budget. Managed installation retains its ten-minute bound; provider
+initialization and full catalog discovery have a separate 120-second bound that
+ends before any tool call is dispatched.
 
 Each conversation has its own process and ordered call queue. Independent
-conversations run concurrently. Caller cancellation stops the active process;
-queued cancellation rejects without running that call. Host deadline expiry uses
-the same cancellation path: active calls stop their process, while queued calls
-never run or stop another call's process. Session release and attachment close
-cancel their active and queued work. A later call after a transport failure or
-active deadline expiry starts a fresh provider process; the adapter does not
-require an invented reset command. It never retries a failed call automatically.
+conversations run concurrently. Caller cancellation stops the active transport;
+queued cancellation rejects without running that call or stopping active work.
+Session release and attachment close cancel their active and queued work. Closing
+the transport cannot guarantee that dispatched native work stopped or that its
+effects were rolled back; cancellation after dispatch reports uncertain
+completion. After a dispatched call is interrupted by cancellation or transport
+failure, that conversation requires an explicit `js_reset` before continuing.
+Reset starts a fresh provider transport and forwards the provider's reset call;
+it does not prove earlier native input stopped. Inspect the surface after reset
+and do not replay uncertain input. Queued cancellation does not require reset.
+The adapter never retries a failed call automatically.
 
 MCP results and metadata remain available unchanged as the tool result's `value`.
 Text, images, and audio are translated into model content; other MCP content is

@@ -5,8 +5,6 @@ import { pathToFileURL } from 'node:url';
 
 const MAX_FRAME = 32 * 1024 * 1024;
 const MAX_QUEUE = 128;
-const MAX_TIMER_MS = 2_147_483_647;
-const TOOL_RESPONSE_GRACE_MS = 1000;
 const own = (value, key) => Object.hasOwn(value, key);
 const failure = (message, code = -32000) => Object.assign(new Error(message), { code });
 
@@ -105,10 +103,12 @@ export class AppServer {
   }
 
   request(method, params, timeoutMs = this.config.timeoutMs) {
+    // Only internal forwarded-tool calls omit this timer. Provider arguments
+    // cannot change trusted connection, initialization or startup deadlines.
     if (this.closed) return Promise.reject(this.closed);
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.close(failure('App server request timed out; effects may be partial and the call was not retried.')), timeoutMs);
+      const timer = timeoutMs === null ? undefined : setTimeout(() => this.close(failure('App server request timed out; upstream/native work may continue, effects are uncertain and the call was not retried.')), timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       try { this.socket.send(JSON.stringify({ id, method, params })); }
       catch { this.close(failure('App server send failed; the call was not retried.')); }
@@ -163,25 +163,20 @@ export class AppServer {
         catch (error) { this.close(error); throw error; }
       }
     }
-    // The provider owns js execution deadlines. Leave room for its response,
-    // while retaining a bounded transport deadline for a stalled provider.
-    // Only valid execution budgets can extend this call; connection, discovery
-    // and thread startup always retain the trusted configuration timeout.
-    const budget = params.arguments?.timeout_ms;
-    const timeoutMs = ['js', 'js_reset'].includes(params.name)
-      && Number.isSafeInteger(budget) && budget > 0
-      ? Math.max(this.config.timeoutMs, Math.min(budget + TOOL_RESPONSE_GRACE_MS, MAX_TIMER_MS))
-      : this.config.timeoutMs;
+    // The official app server owns its configured MCP tool timeout. Provider
+    // arguments remain opaque; a second wall timer here could abandon native
+    // work before its result arrives. Caller cancellation still closes only
+    // this connection and does not prove upstream/native work stopped.
     // Mirror the official GUI's top-level thread routing fields. Authentic
     // nested turn metadata still identifies the caller and is never rewritten.
     return this.request('mcpServer/tool/call', {
       threadId: this.threadId, server: 'cua_repl', tool: params.name,
       ...(own(params, 'arguments') ? { arguments: params.arguments } : {}),
       _meta: { ...params._meta, thread_id: this.threadId, threadId: this.threadId },
-    }, timeoutMs);
+    }, null);
   }
 
-  close(error = failure('Bridge disconnected; effects may be partial and no calls were retried.')) {
+  close(error = failure('Bridge disconnected; upstream/native work may continue, effects are uncertain and no calls were retried.')) {
     if (this.closed) return;
     this.closed = error;
     clearTimeout(this.openTimer);
@@ -191,6 +186,7 @@ export class AppServer {
     this.pending.clear();
     // No thread/archive, turn/interrupt, provider reset, process kill or global
     // shutdown: other connections (including the official GUI) own their work.
+    // Closing this socket or later resetting cannot prove native input stopped.
     try { this.socket?.close(); } catch { /* Already disconnected. */ }
   }
 }
@@ -238,7 +234,7 @@ export function serveMcp(app, input = process.stdin, output = process.stdout) {
     if (!own(value, 'id')) {
       if (value.method === 'notifications/cancelled') {
         const id = value.params?.requestId;
-        const cancellation = failure('Request cancelled; effects may be partial and no call was retried.', -32800);
+        const cancellation = failure('Request cancelled; upstream/native work may continue, effects are uncertain and no call was retried.', -32800);
         if (active && active.id === id) app.close(cancellation);
         else {
           const index = queue.findIndex(request => request.id === id);

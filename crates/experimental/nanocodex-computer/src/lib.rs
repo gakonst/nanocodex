@@ -3,8 +3,9 @@
 //! Each conversation owns its JavaScript process. Conversations execute in
 //! parallel; calls within one persistent JavaScript scope remain ordered.
 //! Protocol and cancellation failures discard only the affected
-//! process. Model arguments cannot choose an executable, inherit credentials,
-//! or change trusted runtime configuration.
+//! transport process. This does not prove upstream/native input stopped; effects
+//! may be uncertain and input must not be replayed. Model arguments cannot choose
+//! an executable, inherit credentials, or change trusted runtime configuration.
 
 pub mod provision;
 
@@ -27,6 +28,8 @@ use tokio::{
     process::{Child, ChildStdin, ChildStdout, Command},
     sync::{mpsc, oneshot},
 };
+
+const PROVIDER_STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Trusted launch configuration, supplied by the embedding application.
 #[derive(Clone, Debug)]
@@ -121,6 +124,8 @@ pub struct ComputerTools {
 }
 impl ComputerTools {
     /// Discover every MCP tool before publishing its exact description and schema.
+    /// A trusted 120-second deadline bounds initialization and complete catalog
+    /// discovery together, independently of provider tool arguments.
     pub async fn connect(mut config: ComputerConfig) -> Result<Self, ToolError> {
         let process = Process::start(&config).await?;
         config.provider_catalog = Some(process.catalog.clone());
@@ -242,18 +247,10 @@ impl ComputerExecutor for LocalComputer {
         arguments: Value,
         context: ToolContext<'_>,
     ) -> ToolResult {
-        // Bound the entire caller wait, including queueing and provider startup.
-        // Dropping the receiver cancels the active provider process.
-        let timeout = matches!(name, "js" | "js_reset").then(|| {
-            Duration::from_millis(
-                arguments
-                    .get("timeout_ms")
-                    .and_then(Value::as_u64)
-                    .filter(|millis| *millis > 0)
-                    .unwrap_or(30_000)
-                    .min(2_147_483_647),
-            )
-        });
+        // Provider arguments (including timeout_ms) are opaque. Queueing and
+        // startup must not consume the provider's execution budget. Dropping
+        // this caller future still closes the receiver and discards only its
+        // owned transport; it cannot establish that native input has stopped.
         let session = context.session_id().to_owned();
         let (response, result) = oneshot::channel();
         self.dispatch
@@ -267,13 +264,7 @@ impl ComputerExecutor for LocalComputer {
                 response,
             })
             .map_err(|_| "CUA attachment is closed")?;
-        let result = match timeout {
-            Some(timeout) => tokio::time::timeout(timeout, result).await.map_err(|_| {
-                format!("CUA call exceeded its {} ms deadline. Call cua_repl.js_reset before continuing if execution had started.", timeout.as_millis())
-            })?,
-            None => result.await,
-        };
-        result.map_err(|_| "CUA attachment is closed")?
+        result.await.map_err(|_| "CUA attachment is closed")?
     }
 }
 
@@ -333,16 +324,17 @@ async fn run_session(
             mut response,
             ..
         } = request;
-        // A caller that expired while queued never owned the active scope.
+        // A caller cancelled while queued never owned the active scope.
         if response.is_closed() {
             continue;
         }
         if interrupted && name != "js_reset" {
-            let _ = response.send(Err("CUA session ended during cancellation or transport failure. Call cua_repl.js_reset, then select the surface again.".into()));
+            let _ = response.send(Err("CUA session interrupted by caller cancellation or transport failure. Upstream/native input may still be running and effects are uncertain; do not replay uncertain input. Call cua_repl.js_reset, then inspect the surface before continuing. Reset does not prove earlier input stopped.".into()));
             continue;
         }
-        // Taking ownership ensures cancellation drops and kills the process.
-        // The interrupted flag prevents continuation in a silently fresh scope.
+        // Taking ownership ensures cancellation drops only this transport process.
+        // Upstream/native work may outlive it. The interrupted flag requires
+        // explicit recovery instead of continuation in a silently fresh scope.
         let previous = process.take();
         let execution = async {
             let mut process = match previous {
@@ -365,7 +357,9 @@ async fn run_session(
         match outcome {
             Ok((owned, output)) => {
                 process = Some(owned);
-                interrupted = false;
+                if name == "js_reset" && output.success {
+                    interrupted = false;
+                }
                 if response.send(Ok(output)).is_err() {
                     // The caller disappeared at the completion boundary. Its
                     // state transition is ambiguous, so discard the process
@@ -391,6 +385,15 @@ struct Process {
 }
 impl Process {
     async fn start(config: &ComputerConfig) -> Result<Self, ToolError> {
+        // Startup has a trusted cumulative deadline; tool execution does not.
+        // Dropping this future discards its owned transport, not proof that any
+        // upstream/native work has stopped. No startup or input is replayed.
+        tokio::time::timeout(PROVIDER_STARTUP_TIMEOUT, Self::start_and_discover(config))
+            .await
+            .map_err(|_| "CUA provider startup timed out after 120 seconds during initialization or catalog discovery; owned transport discarded. Upstream/native work may continue.")?
+    }
+
+    async fn start_and_discover(config: &ComputerConfig) -> Result<Self, ToolError> {
         let mut command = Command::new(&config.executable);
         command.args(&config.args).env_clear();
         // Desktop connection and OS home variables only. Account/API tokens do
