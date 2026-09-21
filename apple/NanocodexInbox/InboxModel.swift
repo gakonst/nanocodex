@@ -3009,6 +3009,16 @@ final class InboxModel: ObservableObject {
         scope = "demo." + (ProcessInfo.processInfo.environment["NANOCODEX_DEMO_PROFILE"] ?? "default")
         closedConversationIDs = Set(UserDefaults.standard.stringArray(forKey: "inbox.closedTabs." + scope) ?? [])
         cards = DemoContent.cards()
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_COMPOSER_PHOTOS"] == "1",
+           let prepared = try? DemoContent.composerPhotoFixtures(), let store = try? AttachmentStore(scope: scope) {
+            for item in prepared {
+                try? store.save(item)
+                attachmentDrafts["inbox", default: []].append(item.attachment)
+                cacheAttachment(item.attachment, scope: scope)
+            }
+        }
+        #endif
         if let profile = ProcessInfo.processInfo.environment["NANOCODEX_DEMO_PROFILE"] {
             scope = "demo." + profile
             restorePending()
