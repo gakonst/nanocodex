@@ -370,7 +370,7 @@ test('js and reset preserve their arguments and upstream errors after the connec
 });
 
 test('stalled tools have a bounded deadline including response grace and are never replayed', options, async t => {
-  for (const [budget, deadline] of [[180000, 181000], [2147483647, 2147483647], [Number.MAX_SAFE_INTEGER, 2147483647]]) {
+  for (const [budget, deadline] of [[119500, 120500], [180000, 181000], [2147483647, 2147483647], [Number.MAX_SAFE_INTEGER, 2147483647]]) {
     await t.test(String(budget), async t => {
       const { app, messages } = timedClient(t);
       const rejected = assert.rejects(app.call({ name: 'js', arguments: { timeout_ms: budget } }), /timed out.*not retried/);
@@ -386,7 +386,7 @@ test('stalled tools have a bounded deadline including response grace and are nev
   }
 });
 
-test('missing, invalid, and shorter budgets retain the configured deadline', options, async t => {
+test('missing, invalid, and small budgets retain the configured deadline', options, async t => {
   for (const budget of [undefined, null, '180000', 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, 1000]) {
     await t.test(String(budget), async t => {
       const { app, messages } = timedClient(t);

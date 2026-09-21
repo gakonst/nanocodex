@@ -65,8 +65,9 @@ server owns that protocol with the provider.
 The bridge's connection and startup deadline does not shorten a longer requested
 `js` execution budget. Valid positive integer budgets extend only the tool-call
 transport deadline, with one second for the provider's response and a Node timer
-limit. Missing, invalid, or shorter budgets retain the configured transport
-deadline. The outer caller deadline still bounds queueing and execution; arguments
+limit. Missing or invalid budgets retain the configured transport deadline, as
+do budgets whose execution time plus response grace fits that deadline. The outer
+caller deadline still bounds queueing and execution; arguments
 are forwarded unchanged and no timed-out call is replayed.
 
 The transport's existing standalone GUI integration remains optional for operators
