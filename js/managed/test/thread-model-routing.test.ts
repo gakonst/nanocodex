@@ -499,6 +499,13 @@ describe("public Jev route diagnostics", () => {
     expect(JSON.stringify(projectThreadRouteDiagnostics(route))).not.toContain("private");
   });
 
+  it("preserves two-decimal rounded probabilities without renormalizing", async () => {
+    const result = payload();
+    result.answers.candidate.probabilities = { [economy]: .86, [frontier]: .13 };
+    const route = await routeFor(result);
+    expect(projectThreadRouteDiagnostics(route)?.candidate_probabilities).toEqual({ [economy]: .86, [frontier]: .13 });
+  });
+
   it.each([undefined, null, {}, [1, 0], { [economy]: 1 },
     { [economy]: .8, "private input": .2 }, { ...candidateProbabilities, "private input": 0 },
     { [economy]: "0.87", [frontier]: .13 }, { [economy]: NaN, [frontier]: .13 },

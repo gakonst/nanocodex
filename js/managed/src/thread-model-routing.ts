@@ -213,8 +213,9 @@ export type ThreadRoute = {
 
 const probability = z.number().min(0).max(1);
 /** Jev choice probabilities are separate from its confidence score. Require the
- * complete question's choice set and a normalized distribution; never fill gaps,
- * renormalize, or derive probabilities from confidence. Allow rounding error only.
+ * complete question's choice set and a distribution within rounding tolerance;
+ * never fill gaps, renormalize, or derive probabilities from confidence. Jev
+ * reports probabilities rounded to two decimals: allow 0.005 per choice.
  * https://developers.cloudflare.com/ai/models/typesafe/jev/
  */
 function choiceProbabilities(value: unknown, choices: readonly string[]): Record<string, number> | null {
@@ -222,7 +223,7 @@ function choiceProbabilities(value: unknown, choices: readonly string[]): Record
   if (!parsed.success) return null;
   const entries = Object.entries(parsed.data);
   if (entries.length !== choices.length || entries.some(([key]) => !choices.includes(key))
-    || Math.abs(entries.reduce((sum, [, value]) => sum + value, 0) - 1) > 0.001) return null;
+    || Math.abs(entries.reduce((sum, [, value]) => sum + value, 0) - 1) > Math.max(0.001, entries.length * 0.005 + 1e-9)) return null;
   return Object.fromEntries(choices.map(key => [key, parsed.data[key]!]));
 }
 

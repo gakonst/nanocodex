@@ -219,7 +219,7 @@ New routing decisions also include an optional `route.diagnostics` allowlist. Ol
 | `min_confidence`, `confidence_status` | Policy threshold and `accepted`, `low`, or `unavailable_or_invalid`. |
 | `fallback_basis` | `none`, `valid_proposal`, or `eligible_frontier`. A low-confidence valid proposal may be retained. |
 
-The two probability maps are independent distributions from [Jev's two choice questions](https://developers.cloudflare.com/ai/models/typesafe/jev/). They are included only when all expected choices have finite probabilities in [0,1] and the total is 1 within rounding tolerance. The server does not fill in missing choices, renormalize a distribution, or derive probabilities from confidence. The projection excludes prompt text, free-form explanations, raw usage, and the full policy/audit payload.
+The two probability maps are independent distributions from [Jev's two choice questions](https://developers.cloudflare.com/ai/models/typesafe/jev/). They are included only when all expected choices have finite probabilities in [0,1] and the total is 1 within two-decimal rounding tolerance (0.005 per choice). Rounded displayed probabilities may therefore sum slightly above or below 1. The server does not fill in missing choices, renormalize a distribution, or derive probabilities from confidence. The projection excludes prompt text, free-form explanations, raw usage, and the full policy/audit payload.
 
 
 ## Generate with the optional session extension
