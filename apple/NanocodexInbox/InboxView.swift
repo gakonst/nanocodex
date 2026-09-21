@@ -13,11 +13,20 @@ import UIKit
 import AVFoundation
 import os.signpost
 
+private struct ConversationComposerHeightKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 0
+}
+
 private struct ConversationNavigationActiveKey: EnvironmentKey {
     static let defaultValue = false
 }
 
 private extension EnvironmentValues {
+    var conversationComposerHeight: CGFloat {
+        get { self[ConversationComposerHeightKey.self] }
+        set { self[ConversationComposerHeightKey.self] = newValue }
+    }
+
     var conversationNavigationActive: Bool {
         get { self[ConversationNavigationActiveKey.self] }
         set { self[ConversationNavigationActiveKey.self] = newValue }
@@ -64,6 +73,7 @@ struct InboxView: View {
     @State private var screenViewerRevision = UUID()
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var composerFocused = false
+    @State private var composerHeight: CGFloat = 80
 
     var body: some View {
         NavigationStack {
@@ -289,6 +299,7 @@ struct InboxView: View {
             Group {
                     if let identity = model.focusedConversationIdentity {
                         ConversationView(model: model, identity: identity, readingPositions: readingPositions).id(identity)
+                            .environment(\.conversationComposerHeight, composerHeight)
                     } else { emptyState.frame(maxWidth: .infinity, maxHeight: .infinity) }
             }
             .frame(maxHeight: screenExpanded && screenThreads.contains(model.focusedConversationIdentity ?? "") ? 0 : .infinity)
@@ -301,20 +312,20 @@ struct InboxView: View {
                 ConnectionStatusView(status: model.threadLoading ? "" : model.connection, retry: { model.retryConnection() }, signIn: { showSettings = true })
                     .padding(.horizontal, 16)
             }
-            if let error = model.error {
-                HStack(alignment: .top) {
-                    Text(error).font(.caption).foregroundStyle(Ink.amber)
-                    Spacer(minLength: 4)
-                    Button { model.error = nil } label: { Image(systemName: "xmark") }
-                        .accessibilityLabel("Dismiss error")
-                }
-                .padding(12).background(Ink.card, in: RoundedRectangle(cornerRadius: 12)).padding(.horizontal, 12)
-            } else if let notice = model.notice, !composerFocused {
-                Text(notice).font(.caption).foregroundStyle(Ink.muted).accessibilityIdentifier("notice")
-            }
         }
-        .safeAreaInset(edge: .bottom, spacing: 0) {
+        .overlay(alignment: .bottom) {
             VStack(spacing: 0) {
+                if let error = model.error {
+                    HStack(alignment: .top) {
+                        Text(error).font(.caption).foregroundStyle(Ink.amber)
+                        Spacer(minLength: 4)
+                        Button { model.error = nil } label: { Image(systemName: "xmark") }
+                            .accessibilityLabel("Dismiss error")
+                    }
+                    .padding(12).background(Ink.card, in: RoundedRectangle(cornerRadius: 12)).padding(.horizontal, 12)
+                } else if let notice = model.notice, !composerFocused {
+                    Text(notice).font(.caption).foregroundStyle(Ink.muted).accessibilityIdentifier("notice")
+                }
                 if model.focused != nil {
                     AgentComposerView(model: model, focused: $composerFocused, onVoiceChat: {
                         composerFocused = false
@@ -322,10 +333,7 @@ struct InboxView: View {
                 }
             }
             .padding(.bottom, 4)
-            .background {
-                LinearGradient(colors: [Ink.background.opacity(0), Ink.background, Ink.background], startPoint: .top, endPoint: .bottom)
-                    .ignoresSafeArea(edges: .bottom)
-            }
+            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
         }
     }
 
@@ -1816,6 +1824,7 @@ private struct ConversationContentView: View {
         var previous: String?
         var next: String?
     }
+    @Environment(\.conversationComposerHeight) private var composerHeight
     @State private var userNavigationTargets = UserNavigationTargets()
     @State private var selectedUserMessage: String?
     @State private var pendingUserDirection: HistoryDirection?
@@ -1935,7 +1944,11 @@ private struct ConversationContentView: View {
         }
     }
     private var userMessages: [ConversationRenderedItem] {
-        revision.items.filter { $0.message?.role == "You" }
+        // A history mutation can retire a row before its render projection arrives.
+        let retained = revision.preparing ? Set(model.rows.map(\.id)) : nil
+        return revision.items.filter {
+            $0.message?.role == "You" && (retained?.contains($0.id) ?? true)
+        }
     }
     private func userTarget(_ direction: HistoryDirection) -> String? {
         let users = userMessages
@@ -1948,6 +1961,8 @@ private struct ConversationContentView: View {
     }
     private func jumpToUser(_ id: String, using scroll: ScrollViewProxy) {
         followsLatest = false
+        model.setHistoryAtLatest(false)
+        model.protectHistoryRows([id])
         historyDirection = nil
         historyRestore = nil
         selectedUserMessage = id
@@ -1955,10 +1970,17 @@ private struct ConversationContentView: View {
         pendingReadingRestore = .init(atLatest: false, rowID: id, offsetY: 0)
         readingPositions.values[identity] = pendingReadingRestore
         // Measured restoration retains the target through streaming and layout changes.
-        scroll.scrollTo(id, anchor: .top)
+        var transaction = Transaction(animation: nil)
+        transaction.disablesAnimations = true
+        withTransaction(transaction) { scroll.scrollTo(id, anchor: .top) }
     }
     private func navigateUser(_ direction: HistoryDirection, using scroll: ScrollViewProxy) {
+        // History insertion/restoration must finish before another explicit jump.
+        guard !model.loadingOlder, !model.loadingNewer else { return }
         if let id = userTarget(direction) { jumpToUser(id, using: scroll); return }
+        guard pendingUserDirection == nil, !revision.preparing,
+              !model.loadingOlder, !model.loadingNewer,
+              direction == .older ? model.hasOlder : model.hasNewer else { return }
         navigationKnownIDs = Set(revision.items.map(\.id))
         pendingUserDirection = direction
         pendingReadingRestore = nil
@@ -2008,31 +2030,29 @@ private struct ConversationContentView: View {
                         offsetY: revision.itemsByID[first.key]?.message == nil ? max(0, first.value.minY) : first.value.minY)
                 }
                 tools.collapseAll()
-            } label: { Image(systemName: "rectangle.compress.vertical").frame(width: 44, height: 44) }
+            } label: { Image(systemName: "rectangle.compress.vertical").frame(width: 44, height: 44).contentShape(Rectangle()) }
                 .accessibilityLabel("Collapse all tool calls")
                 .accessibilityIdentifier("collapse-all-tools")
             Divider().frame(height: 20)
             Button { navigateUser(.older, using: scroll) } label: {
-                Image(systemName: "arrow.up").frame(width: 44, height: 44)
+                Image(systemName: "arrow.up").frame(width: 44, height: 44).contentShape(Rectangle())
             }.accessibilityLabel("Previous user message").accessibilityIdentifier("previous-user-message")
-                .disabled(userTarget(.older) == nil && !model.hasOlder)
+                .disabled(userTarget(.older) == nil && (!model.hasOlder || revision.preparing || model.loadingOlder || model.loadingNewer || pendingUserDirection != nil))
             Button { navigateUser(.newer, using: scroll) } label: {
-                Image(systemName: "arrow.down").frame(width: 44, height: 44)
+                Image(systemName: "arrow.down").frame(width: 44, height: 44).contentShape(Rectangle())
             }.accessibilityLabel("Next user message").accessibilityIdentifier("next-user-message")
-                .disabled(userTarget(.newer) == nil && !model.hasNewer)
+                .disabled(userTarget(.newer) == nil && (!model.hasNewer || revision.preparing || model.loadingOlder || model.loadingNewer || pendingUserDirection != nil))
         }
         .buttonStyle(.plain)
-        .background(.regularMaterial, in: Capsule())
-        .overlay(Capsule().strokeBorder(Ink.border, lineWidth: 0.5))
-        .disabled(revision.loading || revision.preparing || model.loadingOlder || model.loadingNewer || pendingUserDirection != nil)
+        .disabled(revision.loading || model.loadingOlder || model.loadingNewer)
         .padding(.horizontal, 20).padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .trailing)
     }
     var body: some View {
         ScrollViewReader { scroll in
-            VStack(spacing: 0) {
-            // Measure only the transcript viewport: scrollTo anchors exclude
-            // the thread controls below it when restoring a reading offset.
+            ZStack(alignment: .bottom) {
+            // The transcript fills the viewport and scrolls beneath the controls
+            // and composer. Content margins keep the final message reachable.
             GeometryReader { viewport in
             let boundaryItemID = historyBoundaryItemID
             ZStack(alignment: .top) {
@@ -2118,6 +2138,8 @@ private struct ConversationContentView: View {
             // Keep layout from snapping to the bottom before animated following runs.
             .defaultScrollAnchor(.top, for: .sizeChanges)
             .defaultScrollAnchor(readingPositions.values[identity]?.atLatest == false ? .top : .bottom, for: .initialOffset)
+            .contentMargins(.bottom, composerHeight + 52, for: .scrollContent)
+            .contentMargins(.bottom, composerHeight + 52, for: .scrollIndicators)
             .scrollDismissesKeyboard(.interactively)
             .scrollBounceBehavior(.always, axes: .vertical)
             .coordinateSpace(name: "conversation-viewport")
@@ -2126,7 +2148,9 @@ private struct ConversationContentView: View {
                 let users = userMessages
                 let targets = UserNavigationTargets(
                     previous: users.last { (frames[$0.id]?.minY ?? .infinity) < -1 }?.id,
-                    next: users.first { (frames[$0.id]?.minY ?? -.infinity) > 1 }?.id)
+                    // At the top boundary the first row retains the stack's padding.
+                    // Treat it as current rather than making Next jump to itself.
+                    next: users.first { (frames[$0.id]?.minY ?? -.infinity) > verticalPadding + 1 }?.id)
                 if userNavigationTargets != targets { userNavigationTargets = targets }
                 if !navigationActive, !isInteractingTranscript, let target = pendingReadingRestore, let id = target.rowID, let parent = frames[id] {
                     let frame = target.childID.flatMap { frames[$0] } ?? parent
@@ -2157,7 +2181,7 @@ private struct ConversationContentView: View {
                     nearTop: geometry.contentOffset.y + geometry.contentInsets.top <= 240,
                     approachingTop: geometry.contentOffset.y + geometry.contentInsets.top <= max(800, geometry.containerSize.height * 2),
                     atLatest: geometry.contentSize.height - geometry.contentOffset.y
-                        - geometry.containerSize.height <= verticalPadding + 1,
+                        - geometry.containerSize.height + geometry.contentInsets.bottom <= verticalPadding + 1,
                     isMeasured: geometry.containerSize.height > 0)
             } action: { _, position in
                 historyContent = position
@@ -2165,7 +2189,7 @@ private struct ConversationContentView: View {
                 saveReadingPosition(in: viewport)
             }
             .onScrollPhaseChange { previous, phase in
-                if phase == .tracking { scrollsTowardLatest = false; selectedUserMessage = nil; pendingUserDirection = nil }
+                if phase == .tracking { scrollsTowardLatest = false }
                 isInteractingTranscript = phase == .interacting
                 isScrollGestureActive = phase == .tracking || phase == .interacting || phase == .decelerating
                 // Horizontal drawer gestures can enter a scroll phase without
@@ -2181,7 +2205,9 @@ private struct ConversationContentView: View {
                     followLatest(using: scroll)
                 }
             }
-            .onScrollGeometryChange(for: CGFloat.self) { $0.contentSize.height } action: { _, _ in
+            .onScrollGeometryChange(for: CGSize.self) {
+                CGSize(width: $0.contentInsets.bottom, height: $0.contentSize.height)
+            } action: { _, _ in
                 // Rendered height also changes within a streaming row, without
                 // adding a new row ID. Follow after that layout has arrived.
                 followLatest(using: scroll)
@@ -2231,6 +2257,8 @@ private struct ConversationContentView: View {
                 // Its inserted height is not a reversal of the reader's swipe.
                 guard isInteractingTranscript, !navigationActive, abs(previous - offset) > 0.5, !historyRequestInFlight else { return }
                 followsLatest = false
+                selectedUserMessage = nil
+                pendingUserDirection = nil
                 pendingReadingRestore = nil
                 scrollsTowardLatest = offset > previous
                 historyDirection = scrollsTowardLatest ? .newer : .older
@@ -2265,13 +2293,11 @@ private struct ConversationContentView: View {
                         Label("Latest messages", systemImage: "arrow.down")
                             .labelStyle(.iconOnly)
                             .frame(width: 42, height: 42)
-                            .background(.regularMaterial, in: Circle())
-                            .overlay(Circle().strokeBorder(Ink.border, lineWidth: 0.5))
                             .contentShape(Circle())
                     }
                     .buttonStyle(.plain)
                     .frame(width: 42, height: 42)
-                    .padding(.bottom, 8)
+                    .padding(.bottom, composerHeight + 60)
                     .disabled(model.loadingNewer || model.loadingOlder)
                     .accessibilityLabel("Latest messages")
                     .accessibilityHint("Scroll to the latest message and follow new responses")
@@ -2296,6 +2322,7 @@ private struct ConversationContentView: View {
             }
             }
             threadControls(using: scroll)
+                .padding(.bottom, composerHeight)
             }
             .onChange(of: revision.rows.first?.id, initial: true) { _, _ in
                 if !hasInitialPosition, !revision.rows.isEmpty {

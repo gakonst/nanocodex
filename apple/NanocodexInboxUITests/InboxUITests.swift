@@ -2669,6 +2669,59 @@ final class InboxUITests: XCTestCase {
         XCTAssertFalse(app.buttons["next-user-message"].isEnabled)
     }
 
+    func testConversationArrowNavigationResponsiveness() {
+        let app = launch(["NANOCODEX_DEMO_CODE_MODE_BATCH": "1", "NANOCODEX_DEMO_THREAD_CONTROLS": "1",
+                          "NANOCODEX_DEMO_PROFILE": UUID().uuidString])
+        selectInbox(app)
+        let previous = app.buttons["previous-user-message"]
+        let next = app.buttons["next-user-message"]
+        XCTAssertTrue(previous.waitForExistence(timeout: 10))
+        previous.tap()
+        if previous.isEnabled { previous.tap() }
+        XCTAssertFalse(previous.isEnabled)
+        let options = XCTMeasureOptions()
+        options.iterationCount = 5
+        var metrics: [XCTMetric] = [XCTClockMetric(), XCTCPUMetric(application: app)]
+        if #available(iOS 26.0, *) { metrics.append(XCTHitchMetric(application: app)) }
+        measure(metrics: metrics, options: options) {
+            next.tap()
+            XCTAssertFalse(next.isEnabled)
+            previous.tap()
+            XCTAssertFalse(previous.isEnabled)
+        }
+        capture(app, "transparent-controls-first-message")
+        next.tap()
+        capture(app, "transparent-controls-next-message")
+    }
+
+    func testLiveConversationArrowNavigation() throws {
+        guard ProcessInfo.processInfo.environment["NANOCODEX_INBOX_LIVE"] == "1" else {
+            throw XCTSkip("Requires a signed-in test device with existing conversation history.")
+        }
+        let app = XCUIApplication()
+        app.launch()
+        XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 30))
+        let conversation = app.scrollViews["conversation"]
+        XCTAssertTrue(conversation.waitForExistence(timeout: 20))
+        let previous = app.buttons["previous-user-message"]
+        let next = app.buttons["next-user-message"]
+        let ready = XCTNSPredicateExpectation(predicate: NSPredicate(format: "enabled == true"), object: previous)
+        XCTAssertEqual(XCTWaiter.wait(for: [ready], timeout: 20), .completed)
+        let draft = composer(app).value as? String
+        let options = XCTMeasureOptions()
+        options.iterationCount = 3
+        var metrics: [XCTMetric] = [XCTClockMetric(), XCTCPUMetric(application: app)]
+        if #available(iOS 26.0, *) { metrics.append(XCTHitchMetric(application: app)) }
+        // Read-only: navigate existing messages without sending or changing drafts.
+        measure(metrics: metrics, options: options) {
+            previous.tap()
+            XCTAssertTrue(next.waitForExistence(timeout: 2))
+            if next.isEnabled { next.tap() }
+            XCTAssertTrue(previous.isEnabled)
+        }
+        XCTAssertEqual(composer(app).value as? String, draft)
+    }
+
     func testThreadControlsCollapseAndNavigateUserMessages() {
         let app = launch(["NANOCODEX_DEMO_CODE_MODE_BATCH": "1", "NANOCODEX_DEMO_THREAD_CONTROLS": "1",
                           "NANOCODEX_DEMO_PROFILE": UUID().uuidString])
