@@ -580,11 +580,10 @@ async fn reconnect_preserves_running_calls_capacity_and_socket_local_results() {
             while finished < count {
                 if let AttachmentEvent::CallCompleted { call_id, outcome } =
                     events.recv().await.unwrap()
+                    && call_id.starts_with("old-")
                 {
-                    if call_id.starts_with("old-") {
-                        assert_eq!(outcome, AttachmentCallOutcome::Completed);
-                        finished += 1;
-                    }
+                    assert_eq!(outcome, AttachmentCallOutcome::Completed);
+                    finished += 1;
                 }
             }
             // Old completions do not wake the replacement socket.
