@@ -52,7 +52,7 @@ available as the structured result. Provider errors retain their failure status.
 
 Nanocodex does not advertise host elicitation, display consent forms, or retain
 permission decisions. Unhandled provider-to-client requests receive the standard
-MCP method-not-found error; provider errors are returned to the caller unchanged.
+MCP method-not-found error; provider failures remain errors.
 OpenAI's provider and operating-system permission requirements remain in effect.
 
 Run the transport and provisioning tests without an installed provider:
