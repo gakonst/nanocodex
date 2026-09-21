@@ -69,14 +69,12 @@ test("real CLI and desktop leases share one authenticated host across account ke
   const base = { ...process.env, HOME: home, USERPROFILE: home, NANOCODEX_COMPUTER: "off", NANOCODEX_MANAGED_URL: `http://127.0.0.1:${server.address().port}`, NANOCODEX_DESKTOP_DATA: home };
   const env = char => ({ ...base, NANOCODEX_API_KEY: `ncx_live_${char.repeat(12)}_${char.repeat(43)}` });
   const connections = [];
-  let publisher;
+  let publisher, publisherExited;
   t.after(async () => {
     step("closing client leases in teardown");
     for (const connection of connections) await connection.close();
-    if (publisher?.exitCode === null) {
-      const exited = once(publisher, "exit");
-      publisher.kill("SIGINT"); await exited;
-    }
+    if (publisher?.exitCode === null && publisher.signalCode === null) publisher.kill("SIGINT");
+    if (publisherExited) await publisherExited;
     for (const socket of sockets.clients) socket.terminate();
     sockets.close(); server.closeAllConnections(); await new Promise(resolve => server.close(resolve));
     step("removing temporary home");
@@ -95,6 +93,9 @@ test("real CLI and desktop leases share one authenticated host across account ke
   assert.equal(catalogs, 0, "An observer must not start a publisher");
   step("starting the OS-owned publisher entry point");
   publisher = spawnProcess(binary, ["hand"], { env: env("a"), stdio: ["ignore", "pipe", "pipe"] });
+  // Register before shutdown: Windows kill reports signalCode, leaving exitCode null.
+  // Reusing this promise also handles an exit that precedes the later await.
+  publisherExited = once(publisher, "exit");
   await once(publisher.stdout, "data"); // The listener is bound before lifecycle output.
   const duplicate = spawnProcess(binary, ["hand"], { env: env("c"), stdio: ["ignore", "ignore", "pipe"] });
   let rejection = "";
@@ -132,9 +133,9 @@ test("real CLI and desktop leases share one authenticated host across account ke
   const closed = once(current, "close");
   publisher.kill("SIGINT");
   await Promise.race([closed, delay(10_000, undefined, { ref: false }).then(() => { throw new Error("Publisher ignored service shutdown"); })]);
+  await publisherExited;
   step("describing identity after disconnect");
   assert.equal((await describeDeviceHand(binary, env("a"), { spawnProcess })).id, firstId.id);
-  if (publisher.exitCode === null) await once(publisher, "exit");
   rejected = true;
   for (const key of ["a", "d"]) { // Cached owner reaches WebSocket 401; unknown owner reaches /v1/me 403.
     const denied = spawnProcess(binary, ["hand"], { env: env(key), stdio: "ignore" });
