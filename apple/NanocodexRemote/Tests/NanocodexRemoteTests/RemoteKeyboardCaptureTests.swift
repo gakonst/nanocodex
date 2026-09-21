@@ -176,8 +176,8 @@ final class RemoteKeyboardCaptureTests: XCTestCase {
         }
     }
 
-    @MainActor private func connect(_ viewer: RemoteViewer, socket: Socket, service: RemoteService, acquire: Bool = true) async throws {
-        let catalog = #"{"id":"screen","machine_id":"test","machine_name":"Test","name":"Screen","kind":"vm","width":3,"height":2,"controllable":true,"generation":"surface","transport":"frames-v1"}"#
+    @MainActor private func connect(_ viewer: RemoteViewer, socket: Socket, service: RemoteService, acquire: Bool = true, kind: String = "vm") async throws {
+        let catalog = #"{"id":"screen","machine_id":"test","machine_name":"Test","name":"Screen","kind":"\#(kind)","width":3,"height":2,"controllable":true,"generation":"surface","transport":"frames-v1"}"#
         let hand = try JSONDecoder().decode(RemoteHand.self, from: Data(catalog.utf8))
         viewer.makeSignaling = { _ in socket }
         await viewer.connect(service: service, hand: hand)
@@ -199,10 +199,70 @@ final class RemoteKeyboardCaptureTests: XCTestCase {
         socket.messages.removeAll()
     }
 
-    @MainActor private func key(_ code: UInt16, down: Bool, flags: NSEvent.ModifierFlags) throws -> NSEvent {
+    @MainActor private func key(_ code: UInt16, down: Bool, flags: NSEvent.ModifierFlags, repeat repeating: Bool = false, characters: String = "") throws -> NSEvent {
         try XCTUnwrap(NSEvent.keyEvent(with: down ? .keyDown : .keyUp, location: .zero, modifierFlags: flags,
-            timestamp: 0, windowNumber: 0, context: nil, characters: "", charactersIgnoringModifiers: "",
-            isARepeat: false, keyCode: code))
+            timestamp: 0, windowNumber: 0, context: nil, characters: characters, charactersIgnoringModifiers: characters,
+            isARepeat: repeating, keyCode: code))
+    }
+
+
+    @MainActor func testHeldKeysRepeatAsOrderedEdgesAndPhysicalReleaseEndsThem() async throws {
+        let viewer = RemoteViewer(), socket = Socket()
+        let service = try RemoteService(origin: URL(string: "https://remote.invalid")!) { _ in XCTFail("Unexpected HTTP") }
+        let canvas = MacRemoteCanvas(viewer: viewer); canvas.immersive = true
+        defer { canvas.detach(); viewer.close(); service.close() }
+        try await connect(viewer, socket: socket, service: service)
+        // Backspace, forward Delete, Left, A, Space, Return; Shift stays held.
+        for (code, usage): (UInt16, UInt16) in [(51, 42), (117, 76), (123, 80), (0, 4), (49, 44), (36, 40)] {
+            socket.messages.removeAll()
+            canvas.keyDown(with: try key(code, down: true, flags: .shift))
+            canvas.keyDown(with: try key(code, down: true, flags: .shift)) // duplicate dispatch
+            for _ in 0..<3 { canvas.keyDown(with: try key(code, down: true, flags: .shift, repeat: true)) }
+            canvas.keyUp(with: try key(code, down: false, flags: .shift))
+            canvas.keyDown(with: try key(code, down: true, flags: .shift, repeat: true)) // stale repeat
+            canvas.keyUp(with: try key(code, down: false, flags: .shift))
+            let edges = socket.inputs.filter { $0.key == usage }
+            XCTAssertEqual(edges.map(\.down), [true, false, true, false, true, false, true, false])
+            XCTAssertFalse(socket.inputs.contains { $0.key == 225 && $0.down == false })
+            let sequences = socket.inputs.map(\.sequence)
+            XCTAssertEqual(sequences, sequences.sorted())
+            XCTAssertEqual(Set(sequences).count, sequences.count)
+            for input in socket.inputs { XCTAssertNoThrow(try input.validate()) }
+        }
+        XCTAssertTrue(viewer.controlling)
+    }
+
+    @MainActor func testNonimmersiveDesktopBackspaceUsesRepeatingHIDEdges() async throws {
+        let viewer = RemoteViewer(), socket = Socket()
+        let service = try RemoteService(origin: URL(string: "https://remote.invalid")!) { _ in XCTFail("Unexpected HTTP") }
+        let canvas = MacRemoteCanvas(viewer: viewer)
+        defer { canvas.detach(); viewer.close(); service.close() }
+        try await connect(viewer, socket: socket, service: service, kind: "desktop")
+        canvas.keyDown(with: try key(51, down: true, flags: [], characters: "\u{7f}"))
+        canvas.keyDown(with: try key(51, down: true, flags: [], repeat: true, characters: "\u{7f}"))
+        canvas.keyUp(with: try key(51, down: false, flags: [], characters: "\u{7f}"))
+        XCTAssertEqual(socket.inputs.map(\.kind), [.key, .key, .key, .key])
+        XCTAssertEqual(socket.inputs.map(\.key), [42, 42, 42, 42])
+        XCTAssertEqual(socket.inputs.map(\.down), [true, false, true, false])
+    }
+
+    @MainActor func testFocusCleanupRejectsLateRepeatAndAllowsFreshPress() async throws {
+        let viewer = RemoteViewer(), socket = Socket()
+        let service = try RemoteService(origin: URL(string: "https://remote.invalid")!) { _ in XCTFail("Unexpected HTTP") }
+        let canvas = MacRemoteCanvas(viewer: viewer); canvas.immersive = true
+        defer { canvas.detach(); viewer.close(); service.close() }
+        try await connect(viewer, socket: socket, service: service)
+        canvas.keyDown(with: try key(51, down: true, flags: []))
+        canvas.keyDown(with: try key(51, down: true, flags: [], repeat: true))
+        XCTAssertTrue(canvas.resignFirstResponder())
+        XCTAssertEqual(socket.inputs.last?.kind, .releaseAll)
+        socket.messages.removeAll()
+        canvas.keyDown(with: try key(51, down: true, flags: [], repeat: true))
+        canvas.keyUp(with: try key(51, down: false, flags: []))
+        XCTAssertTrue(socket.inputs.isEmpty)
+        canvas.keyDown(with: try key(51, down: true, flags: []))
+        canvas.keyUp(with: try key(51, down: false, flags: []))
+        XCTAssertEqual(socket.inputs.map(\.down), [true, false])
     }
 
     @MainActor func testCanvasForwardsCommandTabWithAlreadyHeldModifierAndReleasesOnExit() async throws {

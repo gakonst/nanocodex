@@ -261,10 +261,21 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient, RTCVideoViewDeleg
         }
         synchronizeModifiers(event)
         if !immersive, viewer?.hand?.kind != .vm, event.modifierFlags.intersection([.command, .control]).isEmpty,
-           let characters = event.characters, characters.unicodeScalars.allSatisfy({ $0.value >= 32 && $0.value < 0xF700 }) {
+           let characters = event.characters, !characters.isEmpty,
+           characters.unicodeScalars.allSatisfy({ $0.value >= 32 && $0.value != 127 && $0.value < 0xF700 }) {
             interpretKeyEvents([event])
         } else if let key = RemoteKey.macToHID[event.keyCode] {
-            pressed.insert(key); viewer?.input(kind: .key, down: true, key: key)
+            if event.isARepeat {
+                // The wire carries key states, not a repeat flag. Hosts can
+                // ignore another down for a held key, so repeat with an ordered
+                // up/down pair while keeping it held until the physical key-up.
+                // A repeat arriving after focus cleanup must not relatch a key.
+                guard pressed.contains(key) else { return }
+                viewer?.input(kind: .key, down: false, key: key)
+            } else {
+                guard pressed.insert(key).inserted else { return }
+            }
+            viewer?.input(kind: .key, down: true, key: key)
         }
     }
     public override func keyUp(with event: NSEvent) {
