@@ -1,6 +1,6 @@
 # Hands
 
-`nanocodex2 hand` is the headless machine runner. Install it once as an OS boot service; the CLI and app only observe it.
+`nanocodex2 hand` is the headless machine runner. Install it once as an OS boot service; the CLI and app observe it. On macOS and systemd Linux, the CLI checks the installed service and requests a noninteractive start when needed. It never invokes sudo, restarts a running publisher, or creates an app-owned daemon. If installation, start permission, or the account-scoped connection is unavailable, the CLI prints an actionable warning and continues remote work. `NANOCODEX_DISABLE_HAND=1` skips the local Hand check.
 
 ```text
 OS -> Hand daemon <--- outbound WebSocket ---> AccountHostedTools <- agent
