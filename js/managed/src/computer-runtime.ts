@@ -1,6 +1,7 @@
 import { networkAllows, type NetworkPolicy } from "./agent-configuration";
 import {
   createComputerRuntime,
+  createMediaCommands,
   createWorkspaceFilesystem,
   type ComputerRuntime,
   type ShellFetch,
@@ -10,6 +11,7 @@ import {
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ToolContext } from "nanocodex";
 
+import { createMediaExecutor } from "./media-runtime";
 import { createCloudflareSshCommand } from "./cloudflare-ssh";
 import {
   handleManagedEgress,
@@ -37,6 +39,7 @@ export async function createManagedComputerRuntime(options: Readonly<{
     context?: ToolContext,
   ) => ManagedEgressConnectorAccess;
   egress: Fetcher;
+  mediaLoader?: WorkerLoader;
   sshIdentityAllowed?: (reference: string, context?: ToolContext) => boolean;
   vaultAllowed?: (context?: ToolContext) => boolean;
   subject?: string;
@@ -69,18 +72,24 @@ export async function createManagedComputerRuntime(options: Readonly<{
       networkMode: options.subject === undefined
         ? "public-http-only"
         : "connector-http-gateway",
-      commands: ({ filesystem: mountedFilesystem }) => options.networkPolicy && options.networkPolicy.access !== "enabled" ? [] : [{
-        name: "ssh",
-        load: async () => createCloudflareSshCommand({
-          egress: options.egress,
+      commands: ({ filesystem: mountedFilesystem }) => [
+        ...(options.mediaLoader ? createMediaCommands({
           filesystem: mountedFilesystem,
-          ...(options.sshPassword === undefined ? {} : { resolvePassword: options.sshPassword }),
-          ...(options.sshIdentityAllowed === undefined
-            ? {}
-            : { sshIdentityAllowed: (reference: string) => options.sshIdentityAllowed!(reference, calls.getStore()) }),
-          ...(options.subject === undefined ? {} : { subject: options.subject }),
-        }),
-      }],
+          execute: createMediaExecutor(options.mediaLoader),
+        }) : []),
+        ...(options.networkPolicy && options.networkPolicy.access !== "enabled" ? [] : [{
+          name: "ssh",
+          load: async () => createCloudflareSshCommand({
+            egress: options.egress,
+            filesystem: mountedFilesystem,
+            ...(options.sshPassword === undefined ? {} : { resolvePassword: options.sshPassword }),
+            ...(options.sshIdentityAllowed === undefined
+              ? {}
+              : { sshIdentityAllowed: (reference: string) => options.sshIdentityAllowed!(reference, calls.getStore()) }),
+            ...(options.subject === undefined ? {} : { subject: options.subject }),
+          }),
+        }]),
+      ],
     });
     return Object.freeze({
       ...runtime,

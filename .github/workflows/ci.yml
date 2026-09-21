@@ -496,6 +496,7 @@ jobs:
           pnpm --filter @nanocodex/x-api run test
           pnpm exec turbo run build --filter nanocodex-connect-protocol
           pnpm --filter nanocodex-managed-service run prepare:code-evaluator
+          pnpm --filter nanocodex-managed-service run test:media
           pnpm --filter nanocodex-managed-service exec vitest run test/account-info.test.ts test/agent-run.test.ts test/default-mcp.test.ts test/startup-context.test.ts
       - name: Test connector SDK compatibility
         run: |

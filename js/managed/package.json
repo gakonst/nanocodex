@@ -16,7 +16,8 @@
     "test": "vitest run",
     "typecheck": "tsc --noEmit",
     "phone:bridge": "node scripts/phone-bridge.mjs",
-    "test:phone": "vitest run test/phone-tool.test.ts test/twilio-voice.test.ts test/phone-container.test.ts && node --test scripts/phone-bridge.test.mjs scripts/phone-delegation.test.mjs"
+    "test:phone": "vitest run test/phone-tool.test.ts test/twilio-voice.test.ts test/phone-container.test.ts && node --test scripts/phone-bridge.test.mjs scripts/phone-delegation.test.mjs",
+    "test:media": "node --test scripts/media/runtime.test.mjs"
   },
   "dependencies": {
     "nanocodex-computer": "workspace:*",
@@ -42,6 +43,8 @@
     "@cloudflare/vitest-pool-workers": "^0.19.0",
     "@cloudflare/workers-types": "^5.20260730.1",
     "@types/node": "^22.20.1",
+    "esbuild": "0.28.1",
+    "miniflare": "4.20260730.0",
     "typescript": "5.9.3",
     "vitest": "^4.0.18",
     "wrangler": "4.127.1",
