@@ -1510,9 +1510,13 @@ async fn serve_tool_host(mut socket: WebSocket, state: TestState, disconnect_aft
             .keys()
             .map(String::as_str)
             .collect::<std::collections::BTreeSet<_>>(),
-        ["type", "tools", "machines", "attachment_id"]
+        ["type", "tools", "machines", "attachment_id", "capabilities"]
             .into_iter()
             .collect(),
+    );
+    assert_eq!(
+        catalog["capabilities"],
+        serde_json::json!(["turn_metadata"])
     );
     let names = catalog["tools"]
         .as_array()
