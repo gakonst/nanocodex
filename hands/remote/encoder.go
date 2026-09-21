@@ -20,6 +20,7 @@ import (
 const encoderHelperEnv = "NANOCODEX_SCREEN_ENCODER_HELPER"
 
 func runScreenEncoder() error {
+	prepareScreenEncoderPipe(os.Stdin)
 	ffmpeg, err := exec.LookPath("ffmpeg")
 	if err != nil {
 		return err
