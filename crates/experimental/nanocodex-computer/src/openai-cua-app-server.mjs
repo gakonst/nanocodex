@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Opt-in transport only: the running official app server and GUI own CUA.
+// Transport only: the official app server owns CUA and permission decisions.
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
@@ -70,15 +70,29 @@ export class AppServer {
   }
 
   receive(data) {
+    if (this.closed) return;
     let value;
     try {
       if (typeof data !== 'string' || Buffer.byteLength(data) > MAX_FRAME) throw new Error();
       value = JSON.parse(data);
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
     } catch { this.close(failure('Invalid app server message.')); return; }
-    // Requests can be broadcast to the GUI too. Never race its response, forward
-    // approval requests to MCP, or answer them (even with a method-not-found).
-    if (own(value, 'method')) return;
+    // A headless bridge has no interactive responder. The official server first
+    // applies its existing permission policy; only unresolved requests reach us.
+    // Decline those for our own CUA thread, never manufacture an acceptance or
+    // answer another client's broadcast request. GUI-backed callers keep owning
+    // their responses when this transport is explicitly used alongside a GUI.
+    if (own(value, 'method')) {
+      if (this.config.headless && this.threadId
+          && value.method === 'mcpServer/elicitation/request'
+          && (typeof value.id === 'string' || Number.isSafeInteger(value.id))
+          && value.params?.threadId === this.threadId
+          && value.params?.serverName === 'cua_repl') {
+        try { this.socket.send(JSON.stringify({ id: value.id, result: { action: 'decline', content: null, _meta: null } })); }
+        catch { this.close(failure('App server send failed; the call was not retried.')); }
+      }
+      return;
+    }
     const pending = this.pending.get(value.id);
     if (!pending) return;
     this.pending.delete(value.id);
@@ -128,12 +142,12 @@ export class AppServer {
     if (!params || !this.tools.some(tool => tool.name === params.name)) throw failure('Unknown cua_repl tool.', -32602);
     if (params._meta != null && (typeof params._meta !== 'object' || Array.isArray(params._meta))) throw failure('Tool _meta must be an object.', -32602);
     if (!this.threadId) {
-      const result = await this.request('thread/start', { ephemeral: false, historyMode: 'paginated', cwd: process.cwd() });
+      const result = await this.request('thread/start', { ephemeral: this.config.headless === true, historyMode: 'paginated', cwd: process.cwd() });
       if (typeof result.thread?.id !== 'string' || !result.thread.id) throw failure('App server did not return a thread ID.');
       this.threadId = result.thread.id;
-      // Empty threads have no source rollout for GUI resume. This supported
-      // history append materializes one without invoking a model or user turn.
-      try {
+      // Only a GUI-backed bridge needs a rollout to resume. Headless threads
+      // remain ephemeral and need no injected history or synthetic model turn.
+      if (!this.config.headless) try {
         await this.request('thread/inject_items', {
           threadId: this.threadId,
           items: [{ type: 'message', role: 'developer', content: [{ type: 'input_text', text:

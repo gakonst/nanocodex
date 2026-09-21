@@ -18,8 +18,8 @@ nanocodex2 computer setup --refresh # check/download the current upstream releas
 
 Direct binary/source installs provision the runtime on first CUA use. Installation
 does not sign in to an account. On macOS, CUA starts an isolated official app server
-and desktop GUI, waits for the supported GUI readiness event, and delegates
-application access and approvals to that host. Build 9922 is currently supported;
+without the desktop GUI and delegates application access and confirmation
+handling to the existing upstream permission policy. Nanocodex adds no prompts. Build 9922 is currently supported;
 setup rejects other builds before publication. Official sign-in and OS permissions
 still apply. See [managed macOS host](official-app-server-bridge.md).
 
@@ -33,8 +33,8 @@ restart. Calls already admitted to the old connection are never retargeted.
 If native app access reports `nodeRepl.createElicitation is unavailable because
 the MCP client does not support form elicitation`, check the **active process
 chain**, not just `provider.json`. The managed path is Hand → native host →
-official Codex app server → CUA provider, with the official GUI handling approval
-requests. A provider launched directly by an older Hand bypasses that path. The
+official Codex app server → CUA provider. The server handles confirmations under
+its effective permission policy without starting the desktop GUI. A provider launched directly by an older Hand bypasses that path. The
 outer Nanocodex adapter intentionally advertises no elicitation capability;
 adding it there does not establish a working permission UI.
 
@@ -121,9 +121,9 @@ to the official OpenAI runtime. Nanocodex does not display consent forms, rememb
 application permissions, or expose an embedding callback that makes approval
 decisions. Installing a provider does not grant consent.
 
-The adapters advertise no MCP elicitation capability. On macOS, the managed bridge
-leaves app-server requests for the official GUI to handle; it never races the GUI
-with a reply. Direct provider-to-adapter requests use the following MCP behavior. Unsupported provider
+The adapters advertise no MCP elicitation capability. On macOS, the official app server handles provider confirmations using its
+existing permission policy. The managed bridge declines unresolved interactive
+requests for its own thread without showing a prompt or launching the GUI. Direct provider-to-adapter requests use the following MCP behavior. Unsupported provider
 requests, including `elicitation/create` and `openai/elicitation/create`, receive
 a JSON-RPC method-not-found error (`-32601`), never an approval response. Operations
 that require this host capability can therefore fail; discovery or a successful

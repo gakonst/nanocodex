@@ -278,3 +278,40 @@ test('failed materialization cannot reuse a partially initialized thread or repl
   assert.equal(host.messages.filter(x => x.value.method === 'thread/inject_items').length, 1);
   assert.equal(host.messages.some(x => x.value.method === 'mcpServer/tool/call'), false);
 });
+
+test('headless calls use ephemeral threads without opening a GUI or changing permission policy', options, async t => {
+  const host = await fixture(t, (value, io) => {
+    defaults(value, io);
+    if (value.method === 'mcpServer/tool/call') io.reply(result);
+  });
+  const app = client(t, host.url, { headless: true });
+  app.openGui = () => { throw new Error('must not launch a GUI'); };
+  assert.deepEqual(await app.call({ name: 'js', arguments: { code: 'synthetic-code' } }), result);
+  const sent = host.messages.map(x => x.value);
+  assert.deepEqual(sent.find(x => x.method === 'thread/start').params,
+    { ephemeral: true, historyMode: 'paginated', cwd: process.cwd() });
+  assert.equal(sent.some(x => x.method === 'thread/inject_items'), false);
+  assert.equal(sent.some(x => /turn\/start|config\/.+write/.test(x.method)), false);
+});
+
+test('headless mode declines unresolved own elicitation and leaves other threads and servers alone', options, async t => {
+  let replyToCall;
+  const host = await fixture(t, (value, io) => {
+    defaults(value, io);
+    if (value.method === 'mcpServer/tool/call') {
+      replyToCall = io.reply;
+      io.send({ id: 'other-thread', method: 'mcpServer/elicitation/request', params: { threadId: 'peer-thread', serverName: 'cua_repl' } });
+      io.send({ id: 'other-server', method: 'mcpServer/elicitation/request', params: { threadId: 'synthetic-thread', serverName: 'peer-server' } });
+      io.send({ id: 'unknown', method: 'unknown/request', params: { threadId: 'synthetic-thread', serverName: 'cua_repl' } });
+      io.send({ id: 'own-form', method: 'mcpServer/elicitation/request', params: { threadId: 'synthetic-thread', serverName: 'cua_repl', mode: 'form', message: 'Synthetic prompt', requestedSchema: { type: 'object', properties: {} } } });
+    }
+    if (value.id === 'own-form' && !value.method) {
+      assert.deepEqual(value.result, { action: 'decline', content: null, _meta: null });
+      replyToCall({ content: [{ type: 'text', text: 'Computer Use was not approved' }], isError: true });
+    }
+  });
+  const app = client(t, host.url, { headless: true });
+  assert.equal((await app.call({ name: 'js', arguments: { code: 'synthetic-code' } })).isError, true);
+  const responses = host.messages.map(x => x.value).filter(x => !x.method && x.result);
+  assert.deepEqual(responses.map(x => x.id), ['own-form']);
+});

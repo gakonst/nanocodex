@@ -24,7 +24,7 @@ in PATH, Cargo directories, source builds, or adjacent installations. Unsupporte
 platforms return no provider unless an explicit MCP executable is configured.
 The managed receipt supplies its exact arguments and environment on both platforms.
 Mac setup selects immutable host assets separately from the signed bundle. CUA
-then starts the official app server and isolated GUI automatically; see the
+then starts the official app server without launching the desktop GUI; see the
 [managed Mac host](../../docs/computer/official-app-server-bridge.md).
 
 `connectComputerTools` discovers the full paginated MCP catalog before exposing
