@@ -1625,13 +1625,16 @@ private final class ConversationReadingPositions {
 }
 
 @Observable private final class ConversationToolExpansion {
-    var collapsedAll = false
+    private var allExpanded: Bool?
     var expanded: [String: Bool] = [:]
+    func isExpanded(_ id: String, initiallyExpanded: Bool = false) -> Bool {
+        expanded[id] ?? allExpanded ?? initiallyExpanded
+    }
     func binding(_ id: String, initiallyExpanded: Bool = false) -> Binding<Bool> {
-        Binding(get: { self.expanded[id] ?? (initiallyExpanded && !self.collapsedAll) },
+        Binding(get: { self.isExpanded(id, initiallyExpanded: initiallyExpanded) },
                 set: { self.expanded[id] = $0 })
     }
-    func collapseAll() { collapsedAll = true; expanded.removeAll() }
+    func setAllExpanded(_ value: Bool) { allExpanded = value; expanded.removeAll() }
 }
 
 private struct ConversationRenderedItem: Identifiable, Equatable, Sendable {
@@ -2020,6 +2023,15 @@ private struct ConversationContentView: View {
             fetchUserHistory(direction)
         } else { pendingUserDirection = nil }
     }
+    private var hasExpandedTools: Bool {
+        revision.items.contains { item in
+            guard let content = item.content else { return false }
+            if content.isCodeModeBatch {
+                return tools.isExpanded(content.id, initiallyExpanded: true)
+            }
+            return content.activity.contains { tools.isExpanded($0.id) }
+        }
+    }
     private func threadControls(using scroll: ScrollViewProxy) -> some View {
         HStack(spacing: 8) {
             Button {
@@ -2029,13 +2041,13 @@ private struct ConversationContentView: View {
                     pendingReadingRestore = .init(atLatest: false, rowID: first.key,
                         offsetY: revision.itemsByID[first.key]?.message == nil ? max(0, first.value.minY) : first.value.minY)
                 }
-                tools.collapseAll()
-            } label: { Image(systemName: "rectangle.compress.vertical").frame(width: 44, height: 44)
+                tools.setAllExpanded(!hasExpandedTools)
+            } label: { Image(systemName: hasExpandedTools ? "rectangle.compress.vertical" : "rectangle.expand.vertical").frame(width: 44, height: 44)
                     .background(.regularMaterial, in: Circle())
                     .overlay(Circle().strokeBorder(Ink.border, lineWidth: 0.5))
                     .contentShape(Rectangle()) }
-                .accessibilityLabel("Collapse all tool calls")
-                .accessibilityIdentifier("collapse-all-tools")
+                .accessibilityLabel(hasExpandedTools ? "Collapse all tool calls" : "Expand all tool calls")
+                .accessibilityIdentifier("toggle-all-tools")
             Button { navigateUser(.older, using: scroll) } label: {
                 Image(systemName: "arrow.up").frame(width: 44, height: 44)
                     .background(.regularMaterial, in: Circle())
