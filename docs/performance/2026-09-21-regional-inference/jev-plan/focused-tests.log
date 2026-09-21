@@ -1,0 +1,13 @@
+✔ calibration uses only pairs0-2, same frozen data, three regional and nine global samples (1.794666ms)
+✔ actual resolver accepts same dataset and selects origin-matched or global only (6.625375ms)
+✔ caller cannot inject origin, prompt, candidate or calibration (0.147375ms)
+✔ durable reservation survives recreation and caps each fixed case once (13.590875ms)
+✔ Worker calls actual resolver and timing, retains low-confidence fallback, rejects spoof and duplicate (4.10475ms)
+ℹ tests 5
+ℹ suites 0
+ℹ pass 5
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 435.113458
