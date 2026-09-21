@@ -62,6 +62,13 @@ loss close only that connection. A new MCP process gets a fresh thread. The oute
 Nanocodex MCP adapter does not need to advertise elicitation: the official app
 server owns that protocol with the provider.
 
+The bridge's connection and startup deadline does not shorten a longer requested
+`js` execution budget. Valid positive integer budgets extend only the tool-call
+transport deadline, with one second for the provider's response and a Node timer
+limit. Missing, invalid, or shorter budgets retain the configured transport
+deadline. The outer caller deadline still bounds queueing and execution; arguments
+are forwarded unchanged and no timed-out call is replayed.
+
 The transport's existing standalone GUI integration remains optional for operators
 who explicitly connect it to an existing official server and set
 `NANOCODEX_CUA_APP_SERVER_OPEN_GUI=1`. The managed default does not use that path.

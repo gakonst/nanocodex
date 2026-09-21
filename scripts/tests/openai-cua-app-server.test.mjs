@@ -315,3 +315,115 @@ test('headless mode declines unresolved own elicitation and leaves other threads
   const responses = host.messages.map(x => x.value).filter(x => !x.method && x.result);
   assert.deepEqual(responses.map(x => x.id), ['own-form']);
 });
+
+// Virtual time exercises minute/hour budgets without wall-clock sleeps. The
+// synthetic socket still runs connect, discovery, thread creation and routing.
+function timedClient(t, heldMethod = 'mcpServer/tool/call') {
+  const messages = [];
+  class Socket extends EventTarget {
+    constructor() {
+      super();
+      if (heldMethod !== 'open') queueMicrotask(() => this.dispatchEvent(new Event('open')));
+    }
+    send(data) {
+      const value = JSON.parse(data);
+      messages.push(value);
+      if (value.method === heldMethod) return;
+      const reply = result => this.dispatchEvent(new MessageEvent('message', { data: JSON.stringify({ id: value.id, result }) }));
+      if (value.method === 'mcpServerStatus/list') {
+        reply({ data: [{ name: 'cua_repl', tools: { ...Object.fromEntries(tools.map(tool => [tool.name, tool])), js_reset: { name: 'js_reset', inputSchema: {} } } }] });
+      } else defaults(value, { reply });
+    }
+    close() {}
+  }
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const app = new AppServer({ url: 'ws://127.0.0.1:1234', timeoutMs: 120000, openGui: false }, { WebSocketImpl: Socket, onThread: () => {} });
+  t.after(() => app.close());
+  return { app, messages };
+}
+const flush = () => new Promise(resolve => setImmediate(resolve));
+
+test('js and reset preserve their arguments and upstream errors after the connection timeout', options, async t => {
+  for (const name of ['js', 'js_reset']) await t.test(name, async t => {
+    const { app, messages } = timedClient(t);
+    const args = { code: 'synthetic', timeout_ms: 180000, nested: { unchanged: true } };
+    const call = app.call({ name, arguments: args });
+    const error = { code: -32042, message: 'synthetic native helper timeout', data: { preserved: true } };
+    const rejected = assert.rejects(call, e => { assert.deepEqual(e.rpcError, error); return true; });
+    await flush();
+    const sent = messages.find(x => x.method === 'mcpServer/tool/call');
+    assert.deepEqual(sent.params.arguments, args);
+    t.mock.timers.tick(120001);
+    assert.equal(app.closed, undefined);
+    // The response grace also allows a provider deadline error to arrive just
+    // after the requested execution budget, without losing its error data.
+    t.mock.timers.tick(60000);
+    assert.equal(app.closed, undefined);
+    app.receive(JSON.stringify({ id: sent.id, error }));
+    await rejected;
+    t.mock.timers.tick(1000);
+    assert.equal(app.closed, undefined);
+    assert.equal(app.pending.size, 0);
+    assert.equal(app.config.timeoutMs, 120000);
+    assert.equal(messages.filter(x => x.method === 'mcpServer/tool/call').length, 1);
+  });
+});
+
+test('stalled tools have a bounded deadline including response grace and are never replayed', options, async t => {
+  for (const [budget, deadline] of [[180000, 181000], [2147483647, 2147483647], [Number.MAX_SAFE_INTEGER, 2147483647]]) {
+    await t.test(String(budget), async t => {
+      const { app, messages } = timedClient(t);
+      const rejected = assert.rejects(app.call({ name: 'js', arguments: { timeout_ms: budget } }), /timed out.*not retried/);
+      await flush();
+      t.mock.timers.tick(deadline - 1);
+      assert.equal(app.closed, undefined);
+      t.mock.timers.tick(1);
+      await rejected;
+      assert.equal(app.pending.size, 0);
+      await assert.rejects(app.call({ name: 'js', arguments: { timeout_ms: budget } }), /timed out/);
+      assert.equal(messages.filter(x => x.method === 'mcpServer/tool/call').length, 1);
+    });
+  }
+});
+
+test('missing, invalid, and shorter budgets retain the configured deadline', options, async t => {
+  for (const budget of [undefined, null, '180000', 0, -1, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1, 1000]) {
+    await t.test(String(budget), async t => {
+      const { app, messages } = timedClient(t);
+      const args = budget === undefined ? {} : { timeout_ms: budget };
+      const rejected = assert.rejects(app.call({ name: 'js', arguments: args }), /timed out/);
+      await flush();
+      assert.deepEqual(messages.find(x => x.method === 'mcpServer/tool/call').params.arguments, JSON.parse(JSON.stringify(args)));
+      t.mock.timers.tick(119999);
+      assert.equal(app.closed, undefined);
+      t.mock.timers.tick(1);
+      await rejected;
+    });
+  }
+});
+
+test('other provider tools cannot extend the transport timeout', options, async t => {
+  const { app, messages } = timedClient(t);
+  const args = { timeout_ms: 180000 };
+  const rejected = assert.rejects(app.call({ name: 'turn_ended', arguments: args }), /timed out/);
+  await flush();
+  assert.deepEqual(messages.find(x => x.method === 'mcpServer/tool/call').params.arguments, args);
+  t.mock.timers.tick(120000);
+  await rejected;
+});
+
+test('tool budgets never override connection, initialization, discovery or thread startup timeouts', options, async t => {
+  for (const heldMethod of ['open', 'initialize', 'mcpServerStatus/list', 'thread/start', 'thread/inject_items']) {
+    await t.test(heldMethod, async t => {
+      const { app, messages } = timedClient(t, heldMethod);
+      const rejected = assert.rejects(app.call({ name: 'js', arguments: { timeout_ms: 180000 } }), /timed out/);
+      await flush();
+      t.mock.timers.tick(119999);
+      assert.equal(app.closed, undefined);
+      t.mock.timers.tick(1);
+      await rejected;
+      assert.equal(messages.some(x => x.method === 'mcpServer/tool/call'), false);
+      assert.equal(app.config.timeoutMs, 120000);
+    });
+  }
+});

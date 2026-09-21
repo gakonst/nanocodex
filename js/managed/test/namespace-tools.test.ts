@@ -73,6 +73,7 @@ describe("cwd-root namespace execution", () => {
     const selection = await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/native" }, context());
     expect(selection).toMatchObject({
       browser_selection: expect.stringContaining("'brave', not 'Brave Browser'"),
+      native_app_recovery: expect.stringContaining("Do not replay input actions"),
       definitions: [
       { name: CUA_JS_NAME, description, parameters: providerParameters, output_schema: { type: "object" },
         _meta: { provider: { retained: true } }, annotations: { readOnlyHint: false } },

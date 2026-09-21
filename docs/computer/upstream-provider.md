@@ -54,6 +54,27 @@ multiple browser instances or profiles could match, use the provider's browser
 inventory to select the requested instance before creating a tab. Never guess a
 numeric ID or retry a failed creation against another browser automatically.
 
+## Native app recovery
+
+On macOS, the pinned provider's `cua.getApp` launches an app in the background
+and includes an initial accessibility observation. It accepts an app name, path,
+or bundle ID, not a native window ID. A running process alone does not guarantee
+a responsive or usable app window.
+
+If that initial observation stalls, reset the CUA session when the timeout asks
+for it. Use supported CUA to open the intended app normally from an observed
+launcher, such as its item in Finder, then select it again. In live Slack testing,
+opening the installed app through Finder recovered a stalled initial snapshot;
+subsequent background observations, search, channel navigation, and a fresh CUA
+session succeeded without opening ChatGPT. This is a verified recovery, not proof
+of the upstream stall's root cause or a reason to replay input automatically.
+
+After a transient menu or window closes, `cgWindowNotFound` can refer to that
+vanished window. Select the same app again and inspect its fresh state before
+acting. This recovered Finder's desktop target in live testing. For window-based
+input, use an actual app window. These recovery notes accompany workdir-only
+discovery separately from the unchanged provider tool definitions.
+
 ## Distribution
 
 On macOS, setup uses the official architecture-specific desktop DMG URLs from
