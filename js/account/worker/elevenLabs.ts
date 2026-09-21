@@ -48,7 +48,7 @@ export class ElevenLabsAccount {
   readonly #vault: CredentialVault;
   readonly #fetch: Fetch;
   readonly #fallbackKey: string | undefined;
-  constructor(state: DurableObjectState, env: ElevenLabsEnv, providerFetch: Fetch = fetch) {
+  constructor(state: DurableObjectState, env: ElevenLabsEnv, providerFetch: Fetch = request => fetch(request)) {
     this.#storage = state.storage;
     this.#vault = new CredentialVault(env, `elevenlabs/${state.id.toString()}`);
     this.#fetch = providerFetch;
@@ -174,7 +174,7 @@ export class ElevenLabsAccount {
   #provider(path: string, apiKey: string, request: Request, init: RequestInit = {}): Promise<Response> {
     const headers = new Headers(init.headers);
     headers.set("xi-api-key", apiKey);
-    return this.#fetch(new Request(`${API}${path}`, { ...init, headers, redirect: "error", signal: request.signal }));
+    return this.#fetch(new Request(`${API}${path}`, { ...init, headers, redirect: "manual", signal: request.signal }));
   }
 }
 

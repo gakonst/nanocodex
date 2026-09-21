@@ -190,3 +190,38 @@ test("forged account headers cannot select the deployment owner or reach the obj
   assert.equal(response?.status, 409);
   assert.equal(calls, 0);
 });
+
+
+test("default provider fetch preserves the Workers global receiver", async () => {
+  const originalFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async function (this: unknown, input: RequestInfo | URL) {
+    assert.equal(this, undefined);
+    assert.equal(new Request(input).headers.get("xi-api-key"), "fixture-secret");
+    calls++;
+    return Response.json({ voices: [] });
+  };
+  try {
+    const object = new ElevenLabsAccount({ id: { toString: () => "fixture" }, storage: { get: async () => undefined } } as unknown as DurableObjectState, {
+      ...env, ELEVENLABS_API_KEY: "fixture-secret", ELEVENLABS_ACCOUNT_ID: "fixture",
+      ELEVENLABS_ACCOUNTS: { idFromName: () => "fixture" } as unknown as DurableObjectNamespace,
+    });
+    const response = await object.fetch(new Request("https://elevenlabs.internal/voices"));
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { voices: [], has_more: false, next_page_token: null });
+    assert.equal(calls, 1);
+  } finally { globalThis.fetch = originalFetch; }
+});
+
+
+test("provider redirects are not followed or exposed", async () => {
+  const f = fixture(async request => {
+    assert.equal(request.redirect, "manual");
+    return new Response(null, { status: 302, headers: { location: "https://other.test/private" } });
+  });
+  const response = await f.call("/", "PUT", { api_key: "fixture-secret" });
+  assert.equal(response.status, 502);
+  assert.equal(response.headers.get("location"), null);
+  assert.deepEqual(await response.json(), { error: "elevenlabs_unavailable" });
+  assert.equal(f.data.has("credential"), false);
+});
