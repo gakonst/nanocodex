@@ -607,12 +607,24 @@ runtime includes the bounded OpenAI/Codex-compatible web-search boundary, and
 JavaScript hosts can use the matching `web()` factory. Applications decide
 which network tool to install and where credentials live.
 
-Nanocodex agents use the selected Hand's `cua_repl` MCP provider for browser
-interaction. Call `select_computer` with the Hand workdir, read the returned
-provider contract, and use its browser/computer APIs. Reuse that provider's
-session when continuity matters. A published screen alone does not provide CUA;
-when no suitable provider is attached, attach a supported computer or report the
-missing capability. Do not fall back to a separate CDP or browser automation tool.
+Nanocodex agents use a Hand's `cua_repl` MCP provider for browser interaction.
+Route each CUA call with `workdir`, just like a shell call. First call
+`tools.mcp__cua_repl__js({workdir: "/desktop"})` to read the provider contract;
+then pass its arguments alongside `workdir`. The host consumes `workdir` and
+forwards every other argument unchanged. There is no `select_computer` tool or
+global target. Different Hands can run concurrently in one Code Mode cell:
+
+```js
+await Promise.all([
+  tools.mcp__cua_repl__js({ workdir: "/desktop", code: desktopCode }),
+  tools.mcp__cua_repl__js({ workdir: "/vm", code: vmCode }),
+]);
+```
+
+Read each provider's contract first; `code` above assumes that provider's schema.
+JS and reset calls to the same Hand are ordered. Each cell pins its captured Hand
+connections, as shell routing does. A published screen alone does not provide
+CUA; attach a supported computer or report the missing capability.
 
 The managed cloud runtime and native/VM Hands do not expose `browser_execute`
 or the managed `browser_vault_*` tools. Secure Vault intake remains available,

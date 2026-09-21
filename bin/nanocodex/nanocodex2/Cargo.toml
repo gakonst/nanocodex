@@ -27,7 +27,6 @@ futures-util.workspace = true
 image.workspace = true
 nanocodex = { path = "../../../crates/nanocodex", version = "0.6.4", default-features = false }
 nanocodex-agent = { path = "../../../crates/nanocodex-agent", version = "0.6.4", default-features = false }
-nanocodex-browser.workspace = true
 nanocodex-managed = { path = "../../../crates/nanocodex-managed", version = "0.6.4", default-features = false, features = ["tools", "voice"] }
 nanocodex-voice-native.workspace = true
 nanocodex-voice-protocol.workspace = true

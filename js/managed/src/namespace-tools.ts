@@ -90,7 +90,7 @@ export function createNamespaceExecutionRuntime(
   }) satisfies MountedHand;
   const cells = new Map<string, CellBinding>();
   const sessions = new Map<number, ProcessBinding>();
-  const computers = new Map<string, MountedHand>();
+  const computerQueues = new Map<string, Promise<unknown>>();
 
   const cell = (context: ToolContext, filter?: NamespaceCaptureFilter): CellBinding => {
     // Direct tools have an empty parentCallId. Pin those to their own call,
@@ -104,7 +104,6 @@ export function createNamespaceExecutionRuntime(
   };
 
   const releaseSession = (ownerSessionId: string): void => {
-    computers.delete(ownerSessionId);
     const cellPrefix = `${ownerSessionId}\u0000`;
     for (const key of cells.keys()) {
       if (key.startsWith(cellPrefix)) cells.delete(key);
@@ -116,64 +115,79 @@ export function createNamespaceExecutionRuntime(
   const dispose = (): void => {
     cells.clear();
     sessions.clear();
-    computers.clear();
   };
 
-  const computer = (context: ToolContext): MountedHand => {
-    const retained = computers.get(context.sessionId);
-    if (retained) return retained;
-    const available = [...cell(context).hands.values()].filter(hand => hand.cua && hand.cuaReset);
-    if (available.length !== 1) {
-      throw new Error(available.length === 0
-        ? "No CUA provider is attached to this conversation; a screen publisher alone does not implement cua_repl"
-        : "Multiple computers are attached. Call select_computer with an explicit Hand workdir first.");
+  const computerParameters = {
+    type: "object",
+    properties: {
+      workdir: { type: "string", description: "Hand workdir from environment or mount. Its root routes this CUA call, like exec_command; it is not forwarded to the provider." },
+    },
+    required: ["workdir"],
+    additionalProperties: true,
+  };
+  const computerCall = async (name: string, input: unknown, context: ToolContext): Promise<unknown> => {
+    const value = record(input);
+    const workdir = optionalString(value.workdir, "workdir");
+    if (!workdir) throw new Error('CUA requires an explicit Hand workdir, like exec_command. First call mcp__cua_repl__js({workdir: "/<hand>"}) to read that provider’s contract, then add its arguments to each call.');
+    const binding = cell(context);
+    const route = routeNamespaceCwd(binding.scope, canonicalCwd(binding, workdir), "namespace.discover");
+    const hand = binding.hands.get(route.mount.mountId);
+    if (!hand?.cua || !hand.cuaReset) {
+      throw new Error(`namespace mount ${route.mount.root} has no CUA runtime; screen-only Hands are unsupported by cua_repl. Use environment to find a Hand with an attached CUA provider.`);
     }
-    throw new Error("Call select_computer first to read the attached CUA provider contract");
+    const providerInput = without(value, "workdir");
+    // JS with only a workdir discovers the actual provider API without executing
+    // anything. Reset with only a workdir still invokes the provider's empty reset.
+    if (name === CUA_JS_NAME && Object.keys(providerInput).length === 0) {
+      const definitions = [hand.cua, hand.cuaReset].map((tool, index) => {
+        const toolName = index === 0 ? CUA_JS_NAME : CUA_RESET_NAME;
+        const definition = tool.definition;
+        if (!definition || typeof definition.description !== "string"
+          || !definition.parameters || typeof definition.parameters !== "object") {
+          throw new Error(`Hand ${hand.root} has no discovered ${toolName} contract; reconnect its CUA provider`);
+        }
+        return { ...definition, name: toolName };
+      });
+      return { workdir: hand.root, machine_id: hand.machineId,
+        tools: [CUA_JS_NAME, CUA_RESET_NAME], definitions,
+        routing: "Add the Hand workdir to each provider call. Nanocodex consumes workdir for routing and forwards all other arguments unchanged. Use Promise.all for different Hands; JS and reset on the same Hand are ordered." };
+    }
+    const tool = name === CUA_JS_NAME ? hand.cua : hand.cuaReset;
+    // The router allows concurrency across Hands. Each session/Hand has one
+    // queue shared by JS and reset, independent of every other Hand's queue.
+    const key = `${context.sessionId}\u0000${hand.mountId}`;
+    const previous = computerQueues.get(key) ?? Promise.resolve();
+    const pending = previous.catch(() => {}).then(() => {
+      context.signal.throwIfAborted();
+      return tool.handler(providerInput, context);
+    });
+    computerQueues.set(key, pending);
+    const cleanup = () => { if (computerQueues.get(key) === pending) computerQueues.delete(key); };
+    // Cancellation releases the caller promptly, but the queue entry remains
+    // until its predecessor settles so later calls cannot overtake active work.
+    void pending.then(cleanup, cleanup);
+    return await new Promise((resolve, reject) => {
+      const abort = () => reject(context.signal.reason ?? new Error("CUA call cancelled"));
+      if (context.signal.aborted) { abort(); return; }
+      context.signal.addEventListener("abort", abort, { once: true });
+      void pending.then(resolve, reject).finally(() => context.signal.removeEventListener("abort", abort));
+    });
   };
 
   const tools: ToolMap = {
-    select_computer: {
-      description: "Select the Hand for subsequent cua_repl.js and cua_repl.js_reset calls. Requires an attached CUA provider; a screen publisher alone is not a CUA provider. Use a workdir returned by mount or environment. Call this before the first CUA call to read the provider descriptions and schemas. Connections remain pinned until you select again. /brain has no desktop.",
-      parameters: { type: "object", properties: { workdir: { type: "string", description: "Mounted Hand root selecting the computer." } }, required: ["workdir"], additionalProperties: false },
-      handler: async (input, context) => {
-        const value = record(input);
-        const workdir = optionalString(value.workdir, "workdir");
-        if (!workdir || Object.keys(value).some(key => key !== "workdir")) throw new Error("select_computer requires only an explicit Hand workdir");
-        const binding = cell(context);
-        const route = routeNamespaceCwd(binding.scope, canonicalCwd(binding, workdir), "namespace.discover");
-        const hand = binding.hands.get(route.mount.mountId);
-        if (!hand?.cua || !hand.cuaReset) throw new Error(`namespace mount ${route.mount.root} has no CUA runtime; screen-only Hands are unsupported by cua_repl`);
-        const definitions = [hand.cua, hand.cuaReset].map((tool, index) => {
-          const name = index === 0 ? CUA_JS_NAME : CUA_RESET_NAME;
-          const definition = tool.definition;
-          if (!definition || typeof definition.description !== "string"
-            || !definition.parameters || typeof definition.parameters !== "object") {
-            throw new Error(`Hand ${hand.root} has no discovered ${name} contract; reconnect its CUA provider`);
-          }
-          return { ...definition, name };
-        });
-        computers.set(context.sessionId, hand);
-        return { workdir: hand.root, machine_id: hand.machineId,
-          tools: [CUA_JS_NAME, CUA_RESET_NAME], definitions };
-      }, releaseSession, dispose,
-    },
     [CUA_JS_NAME]: {
-      description: "Execute JavaScript with the selected Hand’s CUA MCP provider. Before the first call, use select_computer and follow its returned provider description exactly. Available JavaScript APIs belong to that provider.",
-      parameters: { type: "object", additionalProperties: true },
-      handler: async (input, context) => {
-        const hand = computer(context);
-        if (!hand.cua) throw new Error(`Hand ${hand.root} has no cua_repl provider`);
-        return hand.cua.handler(input, context);
-      }, releaseSession, dispose,
+      description: "Use a Hand's CUA MCP provider. Set workdir on every call, just like exec_command. First call with only {workdir} to read that provider's descriptions and schemas without executing code; then add its exact arguments alongside workdir. Nanocodex strips only workdir before forwarding. Use Promise.all for different workdirs in Code Mode; JS and reset calls to the same Hand are ordered. Each cell pins its Hand connections; there is no global computer selection. /brain and screen-only Hands have no CUA provider.",
+      parameters: computerParameters,
+      supportsParallelToolCalls: true,
+      handler: (input, context) => computerCall(CUA_JS_NAME, input, context),
+      releaseSession, dispose,
     },
     [CUA_RESET_NAME]: {
-      description: "Invoke js_reset on the selected Hand’s CUA MCP provider. Call select_computer first and follow the exact reset description it returns.",
-      parameters: { type: "object", additionalProperties: true },
-      handler: async (input, context) => {
-        const hand = computer(context);
-        if (!hand.cuaReset) throw new Error(`Hand ${hand.root} has no cua_repl provider to reset`);
-        return hand.cuaReset.handler(input, context);
-      }, releaseSession, dispose,
+      description: "Reset the CUA provider on the Hand selected by this call's workdir. Read its reset contract using mcp__cua_repl__js({workdir}) first. Pass provider reset arguments alongside workdir; only workdir is consumed by Nanocodex. A workdir-only reset forwards {}. JS and reset calls to the same Hand are ordered; other Hands run independently.",
+      parameters: computerParameters,
+      supportsParallelToolCalls: true,
+      handler: (input, context) => computerCall(CUA_RESET_NAME, input, context),
+      releaseSession, dispose,
     },
     exec_command: {
       description: "Run a command in durable /brain using bounded Just Bash by default. Use an explicit hand workdir returned by mount or environment only for native binaries, builds, or process sessions. A hand mount already represents its advertised workspace: if /laptop maps to /Users/me/repo, use /laptop for that workspace or /laptop/src for its src directory, never /laptop/Users/me/repo. No execution hand is attached by default.",

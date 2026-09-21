@@ -672,7 +672,7 @@ impl RegistryState {
         }
         let harness = target.harness.clone().ok_or_else(|| {
             std::io::Error::other(format!(
-                "agent {to} is not resident and cannot receive messages"
+                "agent {to} is not resident and cannot receive messages. Call list_agents with include_completed=true and select a recipient with can_message=true, or spawn a replacement agent. Do not retry this recipient while can_message=false."
             ))
         })?;
         self.next_access = self.next_access.wrapping_add(1);
@@ -3647,6 +3647,21 @@ mod tests {
                 output: json!({ "report": "ready" }),
             };
         }
+
+        let error = registry
+            .prepare_message(
+                "parent-session",
+                child.id,
+                MessagePriority::Deferred,
+                MessagePurpose::Coordinate,
+                None,
+                "continue".to_owned(),
+            )
+            .err()
+            .expect("nonresident agents cannot receive messages");
+        assert!(error.to_string().contains("list_agents"));
+        assert!(error.to_string().contains("can_message=true"));
+        assert!(error.to_string().contains("spawn a replacement"));
 
         let directory = registry.directory("parent-session", true, false);
 

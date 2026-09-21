@@ -22,9 +22,9 @@ It gives each case a checkbox and names the concrete execution environment.
 - **Connected device:** select its exact advertised mount when the user requests
   that device, or the task requires a capability available there. A connected
   Mac is not a suitable substitute for a Cloudflare hand's `/brain` access.
-- **Browser interaction:** select a Hand with a CUA MCP provider using
-  `select_computer`, then follow its returned browser/computer contract. Reuse
-  its session for continuity. A screen publication alone is insufficient; if
+- **Browser interaction:** call `mcp__cua_repl__js` with only a Hand's `workdir`
+  to read its provider contract, then add provider arguments alongside `workdir`
+  on every CUA call. Different Hands may run concurrently in Code Mode. A screen publication alone is insufficient; if
   CUA is unavailable, attach a supported computer or report the limitation.
   Managed `browser_execute` and `browser_vault_*` tools are disabled.
 - **Specialized hand:** select an advertised GPU, desktop application, CAD

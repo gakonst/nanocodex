@@ -1,3 +1,6 @@
+import { managedCodeEvaluator } from "../src/code-evaluator";
+// @ts-expect-error JavaScript-only Code Mode runtime.
+import { createCodeRuntime } from "nanocodex-tools/runtime/code-runtime";
 import { createManagedNamespaceTools } from "../src/index";
 import { describe, expect, it, vi } from "vitest";
 import type { ToolMap } from "nanocodex";
@@ -44,10 +47,11 @@ describe("cwd-root namespace execution", () => {
       () => undefined, undefined, () => ({ handler: screen }),
     );
     expect(runtime.tools).not.toHaveProperty("computer");
-    await expect(runtime.tools.select_computer!.handler({ workdir: "/screen" }, context()))
+    expect(runtime.tools).not.toHaveProperty("select_computer");
+    await expect(runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/screen" }, context()))
       .rejects.toThrow("screen-only Hands are unsupported");
-    await expect(runtime.tools[CUA_JS_NAME]!.handler({ code: "await cua.getState()" }, context()))
-      .rejects.toThrow("No CUA provider");
+    await expect(runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/screen", code: "await cua.getState()" }, context()))
+      .rejects.toThrow("no CUA runtime");
     expect(screen).not.toHaveBeenCalled();
   });
 
@@ -65,8 +69,8 @@ describe("cwd-root namespace execution", () => {
       } : undefined,
     );
     await expect(runtime.tools[CUA_JS_NAME]!.handler({ code: "1" }, context()))
-      .rejects.toThrow("select_computer first");
-    const selection = await runtime.tools.select_computer!.handler({ workdir: "/native" }, context());
+      .rejects.toThrow("explicit Hand workdir");
+    const selection = await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/native" }, context());
     expect(selection).toMatchObject({ definitions: [
       { name: CUA_JS_NAME, description, parameters: providerParameters, output_schema: { type: "object" },
         _meta: { provider: { retained: true } }, annotations: { readOnlyHint: false } },
@@ -74,7 +78,7 @@ describe("cwd-root namespace execution", () => {
     ] });
     expect(runtime.tools[CUA_JS_NAME]!.description).not.toContain("cua.getApp");
     supported = false;
-    const changed = await runtime.tools.select_computer!.handler({ workdir: "/native" }, context({ parentCallId: "new" }));
+    const changed = await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/native" }, context({ parentCallId: "new" }));
     expect(changed).toMatchObject({ definitions: [{ parameters: { type: "object", properties: { invented: { type: "string" } } } }, { parameters: { type: "object", properties: { invented: { type: "string" } } } }] });
     expect(handler).not.toHaveBeenCalled();
   });
@@ -96,45 +100,101 @@ describe("cwd-root namespace execution", () => {
     ]);
     expect(() => ambiguous.capture(context())).toThrow("ambiguous");
   });
-  it("routes CUA to the explicitly selected Hand and pins its admitted connection", async () => {
-    const original = vi.fn(async () => ({ content: [{ type: "text", text: "original" }] }));
-    const replacement = vi.fn(async () => ({ content: [{ type: "text", text: "replacement" }] }));
+  it("routes each CUA call by workdir and pins connections for the admitted cell", async () => {
+    const original = vi.fn(async () => ({ content: [] }));
+    const replacement = vi.fn(async () => ({ content: [] }));
     let current = original;
     const runtime = createNamespaceExecutionRuntime(
-      () => [{ id: "vm", root: "/vm", workspace: "/workspace" }],
+      () => [{ id: "vm", root: "/vm", aliases: ["/old-vm"], workspace: "/workspace" }],
       (_id, name) => name === CUA_JS_NAME || name === CUA_RESET_NAME ? cuaTool(name, current) : undefined,
     );
     runtime.capture(context());
     current = replacement;
-    expect(runtime.tools[CUA_JS_NAME]!.parameters).toEqual({ type: "object", additionalProperties: true });
-    expect(runtime.tools[CUA_RESET_NAME]!.parameters).toEqual({ type: "object", additionalProperties: true });
-    await runtime.tools.select_computer!.handler({ workdir: "/vm" }, context());
-    await runtime.tools[CUA_JS_NAME]!.handler({ code: "await cua.getState();" }, context({ parentCallId: "next-cell" }));
-    expect(original).toHaveBeenCalledWith({ code: "await cua.getState();" }, expect.objectContaining({ sessionId: "root-session" }));
-    expect(replacement).not.toHaveBeenCalled();
-    await runtime.tools[CUA_RESET_NAME]!.handler({}, context({ parentCallId: "reset-cell" }));
+    expect(runtime.tools[CUA_JS_NAME]!.parameters).toMatchObject({ required: ["workdir"], additionalProperties: true });
+    await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/old-vm/src", code: "provider-code", timeout_ms: 5000 }, context());
+    expect(original).toHaveBeenLastCalledWith({ code: "provider-code", timeout_ms: 5000 }, expect.anything());
+    await runtime.tools[CUA_RESET_NAME]!.handler({ workdir: "/vm" }, context());
     expect(original).toHaveBeenLastCalledWith({}, expect.anything());
-    await runtime.tools[CUA_JS_NAME]!.handler({ provider_argument: "custom", code: "1" }, context());
-    expect(original).toHaveBeenLastCalledWith({ provider_argument: "custom", code: "1" }, expect.anything());
-    await expect(runtime.tools.select_computer!.handler({ workdir: "/brain" }, context())).rejects.toThrow("no CUA runtime");
-    await runtime.tools[CUA_JS_NAME]!.releaseSession?.("root-session");
-    await runtime.tools.select_computer!.handler({ workdir: "/vm" }, context({ parentCallId: "new-session-cell" }));
-    await runtime.tools[CUA_JS_NAME]!.handler({ code: "1" }, context({ parentCallId: "new-session-cell" }));
-    expect(replacement).toHaveBeenCalledTimes(1);
+    expect(replacement).not.toHaveBeenCalled();
+    await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/vm", code: "next" }, context({ parentCallId: "next-cell" }));
+    expect(replacement).toHaveBeenCalledWith({ code: "next" }, expect.anything());
+    await expect(runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/brain" }, context())).rejects.toThrow("no CUA runtime");
+    await expect(runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/missing", code: "1" }, context())).rejects.toThrow();
   });
-  it("requires a selection for multiple computers and isolates conversations", async () => {
+
+  it("needs no inherited selection and never guesses a Hand", async () => {
     const first = vi.fn();
     const second = vi.fn();
     const runtime = createNamespaceExecutionRuntime(
       () => [{ id: "one", workspace: "/workspace" }, { id: "two", workspace: "/workspace" }],
       (id, name) => name === CUA_JS_NAME || name === CUA_RESET_NAME ? cuaTool(name, id === "one" ? first : second) : undefined,
     );
-    await expect(runtime.tools[CUA_JS_NAME]!.handler({ code: "1" }, context())).rejects.toThrow("Multiple computers");
-    await runtime.tools.select_computer!.handler({ workdir: "/two" }, context());
-    await runtime.tools[CUA_JS_NAME]!.handler({ code: "1" }, context());
-    expect(second).toHaveBeenCalledTimes(1);
-    expect(first).not.toHaveBeenCalled();
-    await expect(runtime.tools[CUA_JS_NAME]!.handler({ code: "1" }, context({ sessionId: "other" }))).rejects.toThrow("Multiple computers");
+    await expect(runtime.tools[CUA_JS_NAME]!.handler({ code: "1" }, context())).rejects.toThrow("explicit Hand workdir");
+    await expect(runtime.tools[CUA_RESET_NAME]!.handler({}, context())).rejects.toThrow("explicit Hand workdir");
+    await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/two", code: "parent" }, context());
+    await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/one", code: "child" }, context({ sessionId: "child" }));
+    expect(first).toHaveBeenCalledWith({ code: "child" }, expect.objectContaining({ sessionId: "child" }));
+    expect(second).toHaveBeenCalledWith({ code: "parent" }, expect.objectContaining({ sessionId: "root-session" }));
+  });
+
+  it("runs two Hands concurrently through QuickJS Code Mode and orders JS/reset per Hand", async () => {
+    const events: string[] = [];
+    let active = 0;
+    let peak = 0;
+    let release!: () => void;
+    const bothStarted = new Promise<void>(resolve => { release = resolve; });
+    const timer = setTimeout(() => release(), 2000);
+    const runtime = createNamespaceExecutionRuntime(
+      () => [{ id: "one", aliases: ["/alias-one"], workspace: "/workspace" }, { id: "two", workspace: "/workspace" }],
+      (id, name) => name === CUA_JS_NAME || name === CUA_RESET_NAME ? cuaTool(name, async input => {
+        expect(input).not.toHaveProperty("workdir");
+        if (name === CUA_RESET_NAME) { events.push(`${id}:reset`); return {}; }
+        events.push(`${id}:start`);
+        active++; peak = Math.max(peak, active);
+        if (active === 2) release();
+        await bothStarted;
+        active--; events.push(`${id}:end`);
+        return { content: [{ type: "text", text: id }] };
+      }) : undefined,
+    );
+    const code = createCodeRuntime(runtime.tools, { evaluate: await managedCodeEvaluator() });
+    try {
+      const result = JSON.parse(await code.executeCode(`
+        await Promise.all([
+          tools.mcp__cua_repl__js({workdir: "/one", code: "one"}),
+          tools.mcp__cua_repl__js({workdir: "/two", code: "two"}),
+          tools.mcp__cua_repl__js_reset({workdir: "/alias-one"}),
+        ]);
+      `, "parallel-session", "parallel-cell"));
+      expect(result.success, result.output).toBe(true);
+      expect(peak).toBe(2);
+      expect(events.indexOf("one:reset")).toBeGreaterThan(events.indexOf("one:end"));
+      expect(result.nested_calls.map((call: any) => call.input.workdir)).toEqual(["/one", "/two", "/alias-one"]);
+    } finally { clearTimeout(timer); code.reset(); }
+  });
+
+  it("does not dispatch cancelled queued calls or poison later calls on that Hand", async () => {
+    let release!: () => void;
+    const blocker = new Promise<void>(resolve => { release = resolve; });
+    const execute = vi.fn().mockImplementationOnce(() => blocker).mockResolvedValue({});
+    const runtime = createNamespaceExecutionRuntime(
+      () => [{ id: "one", workspace: "/workspace" }],
+      (_id, name) => name === CUA_JS_NAME || name === CUA_RESET_NAME ? cuaTool(name, execute) : undefined,
+    );
+    const first = runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/one", code: "first" }, context());
+    const abort = new AbortController();
+    const queued = runtime.tools[CUA_RESET_NAME]!.handler({ workdir: "/one" }, { ...context(), signal: abort.signal });
+    const rejected = expect(queued).rejects.toThrow();
+    abort.abort();
+    // The cancelled caller must settle before the unrelated active call ends.
+    await rejected;
+    const last = runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/one", code: "last" }, context());
+    await Promise.resolve();
+    expect(execute).toHaveBeenCalledTimes(1);
+    release();
+    await first; await last;
+    expect(execute).toHaveBeenCalledTimes(2);
+    expect(execute).toHaveBeenLastCalledWith({ code: "last" }, expect.anything());
   });
   it("starts with no executable hand and fails closed at the brain cwd", async () => {
     const tools = createRuntimeNamespaceExecutionTools(() => []);
@@ -660,9 +720,8 @@ describe("independent VM readiness at cell capture", () => {
 
   it("keeps pinned CUA provider arguments opaque", async () => {
     const f = fixture();
-    await f.tool("select_computer").handler({ workdir: "/native" }, context());
-    const input = { code: "provider-owned", workdir: "/offline" };
-    await f.tool(CUA_JS_NAME).handler(input, context({ parentCallId: "cua-cell" }));
+    const input = { code: "provider-owned", timeout_ms: 4000 };
+    await f.tool(CUA_JS_NAME).handler({ ...input, workdir: "/native" }, context({ parentCallId: "cua-cell" }));
     expect(f.cua).toHaveBeenCalledWith(input, expect.anything());
   });
 
