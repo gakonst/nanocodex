@@ -307,12 +307,21 @@ async fn detach_cancels_execution_and_waits_until_results_are_acknowledged() {
         .tool(BlockingTool)
         .build()
         .unwrap();
-    let (attachment, _) = tools
+    let (attachment, mut events) = tools
         .attach(AttachmentTarget::new(endpoint, "bearer").unwrap())
         .connect()
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(10)).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = events.recv().await {
+            if matches!(event, AttachmentEvent::CallStarted { .. }) {
+                return;
+            }
+        }
+        panic!("attachment closed before admitting the call");
+    })
+    .await
+    .expect("call admission");
     attachment.detach().await.unwrap();
     server.await.unwrap();
 }
