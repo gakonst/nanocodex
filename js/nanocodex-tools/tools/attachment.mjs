@@ -293,7 +293,7 @@ function createClient(endpoint, transport, options, admission, machines, attachm
     state.active.add(call);
     state.calls.set(callId, call);
     let deadline;
-    const deadlineAt = Math.min(frame.deadline_at, Date.now() + 300_000);
+    const deadlineAt = frame.deadline_at;
     const deadlinePromise = new Promise((resolve) => {
       const arm = () => {
         const remaining = deadlineAt - Date.now();

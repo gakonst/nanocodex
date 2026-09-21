@@ -14,7 +14,7 @@ The broker durably claims each call before sending it once. The daemon owns exec
 - Result recorded: return that result.
 - Connection lost after dispatch: outcome unknown, reported as a local tool failure.
 
-The publisher lock protects the host identity. Closing the last client leaves the daemon running. The OS service manager owns startup, restart, and shutdown. Active calls are bounded across reconnects. Rejected credentials stop the daemon; log in again and restart the service.
+The publisher lock protects the host identity. Closing the last client leaves the daemon running. The OS service manager owns startup, restart, and shutdown. Active calls are bounded across reconnects. Lease expiry reconnects, and the daemon leaves a live VM factory running through connection outages. Rejected credentials stop the daemon; log in again and restart the service.
 
 ## Install
 
@@ -25,6 +25,8 @@ sudo python3 scripts/install-hand-service.py --user "$USER" --binary /path/to/na
 ```
 
 The installer creates one machine-wide launchd service on macOS or systemd service on Linux, running as that non-root user. It uses the user's saved account login and existing `vm.json` configuration. It neither copies credentials into the service definition nor requires a terminal or app to stay open. Host tools work without a GUI; desktop capture needs the platform's GUI session and permissions.
+
+For a custom login, pass `--managed-url https://your-server` and `--account-file /absolute/path/to/nanocodex-account.json` to the installer. These select the existing login without copying its secret.
 
 Use `sudo systemctl stop/start nanocodex-hand` on Linux. On macOS, use `sudo launchctl bootout system/com.nanocodex.hand` to stop and `sudo launchctl bootstrap system /Library/LaunchDaemons/com.nanocodex.hand.plist` to start. Remove/disable the OS service to prevent future boot startup. Windows service installation is not provided by this helper.
 

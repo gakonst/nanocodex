@@ -14,12 +14,17 @@ ROOT = Path('/opt/nanocodex/hand')
 LABEL = 'com.nanocodex.hand'
 
 
-def service(system, user, home):
+def service(system, user, home, managed_url=None, account_file=None):
     command = [str(ROOT / 'nanocodex2'), 'hand']
+    environment = {'HOME': home}
+    if managed_url:
+        environment['NANOCODEX_MANAGED_URL'] = managed_url
+    if account_file:
+        environment['NANOCODEX_ACCOUNT_FILE'] = account_file
     if system == 'darwin':
         return Path('/Library/LaunchDaemons') / f'{LABEL}.plist', plistlib.dumps({
             'Label': LABEL, 'ProgramArguments': command, 'UserName': user,
-            'EnvironmentVariables': {'HOME': home, 'PATH': '/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'},
+            'EnvironmentVariables': {**environment, 'PATH': '/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin'},
             'RunAtLoad': True, 'KeepAlive': {'SuccessfulExit': False}, 'ThrottleInterval': 10,
             'StandardOutPath': str(ROOT / 'daemon.log'), 'StandardErrorPath': str(ROOT / 'daemon.log'),
         })
@@ -35,7 +40,7 @@ StartLimitIntervalSec=0
 [Service]
 Type=simple
 User={user}
-Environment={quote('HOME=' + home)}
+Environment={' '.join(quote(key + '=' + value) for key, value in environment.items())}
 ExecStart={' '.join(map(quote, command))}
 Restart=on-failure
 RestartSec=10
@@ -52,13 +57,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--binary', type=Path, required=True)
     parser.add_argument('--user', required=True, help='Account owner who has run nanocodex2 login')
+    parser.add_argument('--managed-url', default=os.getenv('NANOCODEX_MANAGED_URL'))
+    parser.add_argument('--account-file', default=os.getenv('NANOCODEX_ACCOUNT_FILE') or (
+        str(Path(os.environ['CODEX_HOME']) / 'nanocodex-account.json') if os.getenv('CODEX_HOME') else None))
     args = parser.parse_args()
     if os.geteuid() != 0:
         parser.error('Run with sudo to install a machine boot service')
     user = pwd.getpwnam(args.user)
     if user.pw_uid == 0:
         parser.error('The Hand must run as a non-root account owner')
-    target, content = service(sys.platform, user.pw_name, user.pw_dir)
+    target, content = service(sys.platform, user.pw_name, user.pw_dir, args.managed_url, args.account_file)
     config = {'user': user.pw_name, 'home': user.pw_dir}
     manifest = ROOT / 'owner.json'
     for directory in [ROOT, *ROOT.parents]:

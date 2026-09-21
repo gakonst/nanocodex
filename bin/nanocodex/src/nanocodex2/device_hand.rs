@@ -151,7 +151,8 @@ fn log_file(directory: &Path, name: &str) -> Result<fs::File, ManagedError> {
         return Err(error("Hand logs must be regular files"));
     }
     let mut options = OpenOptions::new();
-    options.create(true).append(true);
+    // Windows file locking requires read or write access beyond append-only.
+    options.create(true).read(true).append(true);
     #[cfg(unix)]
     {
         use std::os::unix::fs::OpenOptionsExt;
@@ -690,20 +691,18 @@ async fn supervise_factory(
             .spawn();
         if let Ok(mut child) = child {
             let mut lines = BufReader::new(child.stderr.take().unwrap()).lines();
-            let mut ready = false;
-            let mut deadline = tokio::time::Instant::now() + Duration::from_secs(90);
             let mut log = log_file(directory, "vm.log").ok();
+            // A live factory owns reconnects, including its initial connection.
             loop {
                 tokio::select! {
                     () = cancel.cancelled() => break,
-                    () = tokio::time::sleep_until(deadline), if !ready => break,
                     line = lines.next_line() => match line {
                         Ok(Some(line)) => {
                             if let Some(log) = &mut log { let _ = writeln!(log, "{}", line.replace(key, "[redacted]")); }
                             if let Ok(entry) = serde_json::from_str::<Value>(&line) {
                                 match entry["fields"]["stage"].as_str() {
-                                    Some("vm.host.ready") => { ready = true; update("connected"); },
-                                    Some("vm.host.reconnecting") => { if ready { deadline = tokio::time::Instant::now() + Duration::from_secs(90); } ready = false; update("connecting"); },
+                                    Some("vm.host.ready") => update("connected"),
+                                    Some("vm.host.reconnecting") => update("connecting"),
                                     _ => {},
                                 }
                             }
@@ -785,6 +784,22 @@ mod tests {
                 root
             ]
         );
+    }
+
+    #[test]
+    fn publisher_lock_is_exclusive_and_released_on_drop() {
+        let temp = tempfile::tempdir().unwrap();
+        let publisher = super::super::native_hand::NativeStateLock(
+            log_file(temp.path(), "hand-daemon.lock").unwrap(),
+        );
+        publisher.0.try_lock().unwrap();
+        let contender = log_file(temp.path(), "hand-daemon.lock").unwrap();
+        assert!(matches!(
+            contender.try_lock(),
+            Err(fs::TryLockError::WouldBlock)
+        ));
+        drop(publisher);
+        contender.try_lock().unwrap();
     }
 
     #[test]

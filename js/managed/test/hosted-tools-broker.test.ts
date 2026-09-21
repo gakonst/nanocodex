@@ -238,7 +238,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
 
     fixture.persistence.routes.get(firstRoute)!.lease_expires_at = NOW - 1;
     fixture.broker.expire();
-    expect(host.closed).toMatchObject({ code: 1008 });
+    expect(host.closed).toMatchObject({ code: 1012 });
 
     const successor = fixture.socket(
       undefined, undefined, undefined, "leased-vm", NOW + 20, successorRoute,
@@ -670,7 +670,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     fixture.broker.expire();
 
     expect(fixture.broker.machines().map((machine) => machine.id)).toEqual(["machine-a", "machine-b"]);
-    expect(routeA.closed).toMatchObject({ code: 1008 });
+    expect(routeA.closed).toMatchObject({ code: 1012 });
     expect(routeB.closed).toBeUndefined();
     expect(fixture.broker.provider().definitions().map((definition) => definition.name))
       .toEqual(["user_machine-a_alpha", "user_machine-b_beta"]);
@@ -775,7 +775,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     fixture.broker.expire();
 
     expect(fixture.broker.machines().map(({ id }) => id)).toEqual(["laptop"]);
-    expect(host.closed).toMatchObject({ code: 1008 });
+    expect(host.closed).toMatchObject({ code: 1012 });
   });
 
   it("rejects machine metadata from Connect-grant hosts", async () => {
@@ -881,6 +881,15 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect((outcome as Record<PropertyKey, unknown>)[HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE]).toBe(true);
     expect(host.sent.some((frame) => frame.type === "call")).toBe(false);
     expect(fixture.persistence.callBySource("session:1", "source:1")).toBeUndefined();
+  });
+
+  it("allows reconnect after a broker send failure", async () => {
+    const fixture = createFixture();
+    const host = fixture.socket();
+    host.onSend = () => { throw new Error("send failed"); };
+    await catalog(fixture.broker, host);
+    expect(host.closed).toMatchObject({ code: 1011 });
+    expect(fixture.broker.provider().definitions()).toEqual([]);
   });
 
   it("keeps the active catalog when a replacement candidate fails parity validation", async () => {

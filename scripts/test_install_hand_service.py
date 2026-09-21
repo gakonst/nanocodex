@@ -19,6 +19,18 @@ class BootService(unittest.TestCase):
         self.assertEqual(job['ProgramArguments'][1:], ['hand'])
         self.assertNotIn('NANOCODEX_API_KEY', job['EnvironmentVariables'])
 
+    def test_custom_login_selection_on_both_platforms(self):
+        origin, account = 'https://fixture.example', '/home/Fixture User/account%2.json'
+        for system in ['darwin', 'linux']:
+            _, data = installer.service(system, 'fixture', '/home/fixture', origin, account)
+            if system == 'darwin':
+                environment = plistlib.loads(data)['EnvironmentVariables']
+                self.assertEqual(environment['NANOCODEX_MANAGED_URL'], origin)
+                self.assertEqual(environment['NANOCODEX_ACCOUNT_FILE'], account)
+            else:
+                self.assertIn('"NANOCODEX_MANAGED_URL=' + origin + '"', data.decode())
+                self.assertIn('"NANOCODEX_ACCOUNT_FILE=' + account.replace('%', '%%') + '"', data.decode())
+
     def test_linux_machine_boot_target_and_literal_home(self):
         path, data = installer.service('linux', 'fixture', '/home/fixture%name')
         unit = data.decode()

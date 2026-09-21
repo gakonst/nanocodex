@@ -525,7 +525,6 @@ where
     let mut draining = false;
 
     let end = loop {
-        active.retain(|call| !call.task.is_finished());
         if detaching && draining && in_flight.is_empty() && receipts.is_empty() {
             break ConnectionEnd::Detached;
         }
@@ -593,6 +592,7 @@ where
                         );
                         let tool_timeout = runtime.timeout_ms(&name).unwrap_or(0);
                         let parallel_safe = runtime.parallel_safe(&name);
+                        active.retain(|call| !call.task.is_finished());
                         let reason = if tool_timeout == 0 {
                             Some("tool is not in the pinned catalog")
                         } else if deadline_at <= now_ms() {

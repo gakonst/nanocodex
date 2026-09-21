@@ -334,7 +334,7 @@ test("duplicate calls reject the socket without executing twice", async () => {
   await fixture.tools.close();
 });
 
-test("expired, invalid, and oversized post-dispatch outcomes preserve semantics", async () => {
+test("admitted deadlines, invalid, and oversized post-dispatch outcomes preserve semantics", async (t) => {
   let calls = 0;
   const expired = await readyAttachment({ handler: () => { calls++; return "unexpected"; } });
   expired.socket.receive({ ...callFrame({}), deadline_at: Date.now() - 1 });
@@ -360,6 +360,27 @@ test("expired, invalid, and oversized post-dispatch outcomes preserve semantics"
   oversized.socket.receive({ type: "ack", call_id: "call:1" });
   await drain(oversized.client, oversized.socket);
   await oversized.tools.close();
+
+  let signal;
+  const long = await readyAttachment({ timeoutMs: 900_000, handler: (_input, context) => {
+    signal = context.signal;
+    return new Promise((_resolve, reject) => signal.addEventListener("abort", () => reject(signal.reason), { once: true }));
+  } });
+  t.after(async () => { long.socket.close(1000, "test finished"); await long.tools.close(); });
+  t.mock.timers.enable({ apis: ["Date", "setTimeout"], now: 1_000_000 });
+  long.socket.receive({ ...callFrame({}), deadline_at: Date.now() + 600_000 });
+  await waitFor(() => signal);
+  t.mock.timers.tick(300_000);
+  await tick();
+  assert.equal(signal.aborted, false);
+  assert.equal(lastFrame(long.socket, "result"), undefined);
+  t.mock.timers.tick(300_000);
+  await waitFor(() => lastFrame(long.socket, "result"));
+  assert.equal(signal.aborted, true);
+  assert.equal(lastFrame(long.socket, "result").outcome.status, "ambiguous");
+  long.socket.receive({ type: "ack", call_id: "call:1" });
+  await drain(long.client, long.socket);
+  await long.tools.close();
 });
 
 test("heartbeat uses exact ping and pong nonce frames", async () => {

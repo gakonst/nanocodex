@@ -562,6 +562,8 @@ async fn reconnect_preserves_running_calls_capacity_and_socket_local_results() {
             assert_eq!(busy["outcome"]["status"], "unavailable");
             send_json(&mut second, json!({"type":"ack","call_id":"busy"})).await;
 
+            // Let the replacement loop wait with the old calls still active.
+            tokio::time::sleep(Duration::from_millis(25)).await;
             release.add_permits(count);
             let mut finished = 0;
             while finished < count {
@@ -574,6 +576,8 @@ async fn reconnect_preserves_running_calls_capacity_and_socket_local_results() {
                     }
                 }
             }
+            // Old completions do not wake the replacement socket.
+            tokio::time::sleep(Duration::from_millis(25)).await;
             // Reusing an ID belongs to this socket; no old result may precede it.
             send_json(&mut second, call("old-0", "echo")).await;
             let result = recv_json(&mut second).await;

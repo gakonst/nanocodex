@@ -553,7 +553,8 @@ export class HostedToolsBrokerCore {
       const protocol = error instanceof HostedToolsProtocolError
         ? error
         : new HostedToolsProtocolError("broker_failure", errorMessage(error));
-      this.#fence(socket, `${protocol.code}: ${protocol.message}`);
+      this.#fence(socket, `${protocol.code}: ${protocol.message}`,
+        protocol.code === "broker_failure" || protocol.code === "lease_validation_unavailable" ? 1011 : 1008);
     }
   }
 
@@ -574,7 +575,7 @@ export class HostedToolsBrokerCore {
     for (const state of this.#persistence.states()) {
       if (!state.lease_id || state.lease_expires_at > this.#now()) continue;
       const socket = this.#socketForState(state);
-      if (socket) this.#fence(socket, "Hosted Tools lease expired");
+      if (socket) this.#fence(socket, "Hosted Tools lease expired", 1012);
       else this.#retireState(state, "Hosted Tools lease expired");
     }
   }
@@ -729,7 +730,7 @@ export class HostedToolsBrokerCore {
     }
     if (state.lease_id && state.lease_expires_at <= this.#now()) {
       const expiredSocket = this.#socketForState(state);
-      if (expiredSocket) this.#fence(expiredSocket, "Hosted Tools lease expired");
+      if (expiredSocket) this.#fence(expiredSocket, "Hosted Tools lease expired", 1012);
       else this.#retireState(state, "Hosted Tools lease expired");
       state = this.#persistence.state(routeId) ?? emptyState(routeId);
     }
@@ -1283,7 +1284,7 @@ export class HostedToolsBrokerCore {
         && state.generation === pending.generation
         && state.lease_expires_at <= now) {
         const socket = this.#socketForState(state);
-        if (socket) this.#fence(socket, "Hosted Tools lease expired during a call");
+        if (socket) this.#fence(socket, "Hosted Tools lease expired during a call", 1012);
         else this.#retireState(state, "Hosted Tools lease expired during a call");
         return;
       }
@@ -1379,7 +1380,7 @@ export class HostedToolsBrokerCore {
   #liveRoutingSocketForState(state: HostedToolsStateRow): HostedToolsSocket | undefined {
     if (state.lease_id && state.lease_expires_at <= this.#now()) {
       const socket = this.#socketForState(state);
-      if (socket) this.#fence(socket, "Hosted Tools lease expired");
+      if (socket) this.#fence(socket, "Hosted Tools lease expired", 1012);
       else this.#retireState(state, "Hosted Tools lease expired");
       return undefined;
     }
