@@ -130,8 +130,9 @@ entries in `MEMORY.md` and `USER.md`, preserving unrelated manual curation.
 
 Revision checks and durable source/curation fences reject stale proposals after
 concurrent edits or deletion. Provenance and preimages support audit; deleting a
-source invalidates dependent generated entries and retained preimages. Recalled
-material and consolidation reports never become new reinforcement evidence.
+source invalidates dependent generated entries and retained preimages. Explicit
+recall markers and consolidation reports are excluded from automatic promotion,
+and identical evidence is deduplicated.
 `DREAMS.md` records bounded outcomes without being fed back into retrieval.
 Model attempts and retry leases are bounded and persist across eviction.
 Extraction permits 48 inference attempts per owner per UTC day. Consolidation

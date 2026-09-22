@@ -20,7 +20,7 @@ export function scopeMemoryFiles(storage: DurableObjectStorage, owner: string, l
       ...(await legacy.list()).map(memory => `legacy/${memory.key.id}-v${memory.key.version}.md`),
     ],
     readFile: async path => {
-      if (path === 'MEMORY.md' || path === 'USER.md' || path.startsWith('memory/')) return markdown.readFile(owner, path);
+      if (path === 'MEMORY.md' || path === 'USER.md' || path === 'DREAMS.md' || path.startsWith('memory/')) return markdown.readFile(owner, path);
       const match = /^legacy\/(\d+)-v(\d+)\.md$/.exec(path);
       if (match) {
         const content = legacy.read(Number(match[1]), Number(match[2]));
@@ -41,4 +41,12 @@ export function scopeMemoryFiles(storage: DurableObjectStorage, owner: string, l
     }),
   };
 }
-export const scopeFileMemories = (storage: DurableObjectStorage, owner: string, legacy: LegacyMemories) => fileMemoriesBackend(scopeMemoryFiles(storage, owner, legacy));
+export function scopeFileMemories(storage: DurableObjectStorage, owner: string, legacy: LegacyMemories): ReturnType<typeof fileMemoriesBackend> {
+  const files = scopeMemoryFiles(storage, owner, legacy);
+  const backend = fileMemoriesBackend(files);
+  // The audit remains explicitly readable/listable, but never becomes recall evidence.
+  const recall = fileMemoriesBackend({ ...files,
+    listFiles: async () => (await files.listFiles()).filter(path => path !== 'DREAMS.md'),
+  });
+  return { ...backend, search: recall.search! };
+}

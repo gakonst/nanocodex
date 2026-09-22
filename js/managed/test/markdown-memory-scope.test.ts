@@ -61,6 +61,11 @@ it('projects canonical documents through the existing file API without changing 
   });
   expect(await (await legacy('files', {})).json()).toContain('MEMORY.md');
   expect(await (await legacy('file', { path: 'MEMORY.md' })).json()).toBe('canonical-jade');
+  await call(where, 'write', { operation: 'put', path: 'DREAMS.md', expected_revision: 0, content: 'journal-canary' });
+  expect(await (await legacy('files', {})).json()).toContain('DREAMS.md');
+  expect(await (await legacy('read', { path: 'DREAMS.md' })).json()).toMatchObject({ content: 'journal-canary' });
+  expect(await (await legacy('search', { queries: ['journal-canary', 'canonical-jade'] })).json())
+    .toMatchObject({ matches: [{ path: 'MEMORY.md', content: 'canonical-jade' }] });
   await call(where, 'write', { operation: 'delete', path: 'MEMORY.md', expected_revision: 1 });
   expect(await (await legacy('files', {})).json()).not.toContain('MEMORY.md');
 });
