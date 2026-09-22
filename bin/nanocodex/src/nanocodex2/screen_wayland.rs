@@ -3,10 +3,12 @@
 use super::{
     screen_gamepad::Controller,
     screen_publisher::ScreenBackend,
-    screen_video::{Capture, Task, VideoSource},
+    screen_video::{Capture, VideoSource},
     screen_wayland_input::{Input, record},
 };
+use futures_util::stream;
 use nanocodex_managed::ManagedError;
+use nanocodex_remote::capture::EncodedPacket;
 use serde_json::{Value, json};
 use std::{
     process::Stdio,
@@ -35,7 +37,7 @@ struct InputPipe {
 struct State {
     input: Mutex<InputPipe>,
     gamepad: Controller,
-    frames: broadcast::Sender<Arc<Vec<u8>>>,
+    frames: broadcast::Sender<EncodedPacket>,
     alive: AtomicBool,
 }
 pub(crate) struct Platform {
@@ -108,7 +110,7 @@ impl Platform {
                 result=frames::read(reader,|frame| {
                     running.alive.store(true,Ordering::Release);
                     ready.send_replace(true);
-                    let _=running.frames.send(Arc::new(frame));
+                    let _=running.frames.send(frame.into());
                 })=>{if let Err(e)=result {eprintln!("Wayland video forwarding failed: {e}");}},
                 _=child.wait()=>{},
             }
@@ -166,49 +168,37 @@ impl Platform {
                 if !state.alive.load(Ordering::Acquire) {
                     return Err("Wayland capture stopped".into());
                 }
-                let mut frames = state.frames.subscribe();
-                let (reader, mut writer) = tokio::io::duplex(256 * 1024);
-                let owner = Task(tokio::spawn(async move {
-                    if writer.write_all(b"NCH264F1").await.is_err() {
-                        return;
-                    }
-                    let mut need_keyframe = true;
-                    loop {
-                        if !state.alive.load(Ordering::Acquire) {
-                            break;
-                        }
-                        let received =
-                            match tokio::time::timeout(Duration::from_secs(1), frames.recv()).await
-                            {
-                                Ok(v) => v,
-                                Err(_) => continue,
+                let frames = state.frames.subscribe();
+                let packets = stream::try_unfold(
+                    (state, frames, true),
+                    |(state, mut frames, mut need_keyframe)| async move {
+                        loop {
+                            if !state.alive.load(Ordering::Acquire) {
+                                return Ok(None);
+                            }
+                            let received =
+                                match tokio::time::timeout(Duration::from_secs(1), frames.recv())
+                                    .await
+                                {
+                                    Ok(value) => value,
+                                    Err(_) => continue,
+                                };
+                            let frame = match received {
+                                Ok(frame) => frame,
+                                Err(broadcast::error::RecvError::Lagged(_)) => {
+                                    need_keyframe = true;
+                                    continue;
+                                }
+                                Err(_) => return Ok(None),
                             };
-                        let frame = match received {
-                            Ok(v) => v,
-                            Err(broadcast::error::RecvError::Lagged(_)) => {
-                                need_keyframe = true;
+                            if need_keyframe && !frames::keyframe(&frame) {
                                 continue;
                             }
-                            Err(_) => break,
-                        };
-                        if need_keyframe && !frames::keyframe(&frame) {
-                            continue;
+                            return Ok(Some((frame, (state, frames, false))));
                         }
-                        need_keyframe = false;
-                        if writer
-                            .write_all(&(frame.len() as u32).to_be_bytes())
-                            .await
-                            .is_err()
-                            || writer.write_all(&frame).await.is_err()
-                        {
-                            break;
-                        }
-                    }
-                }));
-                Ok(Capture {
-                    reader: Box::new(reader),
-                    owner,
-                })
+                    },
+                );
+                Ok(Capture::packets(packets, None))
             })
         })
     }
@@ -343,6 +333,64 @@ async fn snapshot() -> Result<Value> {
 mod tests {
     use super::*;
     #[tokio::test]
+    async fn packet_subscription_preserves_dependencies_and_recovers_lag_at_idr() {
+        use futures_util::TryStreamExt;
+        use nanocodex_remote::capture::CaptureData;
+        let (sender, _) = broadcast::channel(2);
+        let state = Arc::new(State {
+            input: Mutex::new(InputPipe {
+                pipe: None,
+                sequence: 0,
+            }),
+            gamepad: Controller::configured(),
+            frames: sender,
+            alive: AtomicBool::new(true),
+        });
+        let (stop, _) = watch::channel(false);
+        let platform = Platform {
+            state: state.clone(),
+            stop,
+            worker: None,
+        };
+        let capture = platform.video()().await.unwrap();
+        let CaptureData::Packets(mut packets) = capture.data else {
+            panic!("expected packets")
+        };
+        let idr = EncodedPacket::from_static(b"\0\0\x01\x65first");
+        let delta = EncodedPacket::from_static(b"\0\0\x01\x41delta");
+        state.frames.send(delta.clone()).unwrap();
+        state.frames.send(idr.clone()).unwrap();
+        let first = packets.try_next().await.unwrap().unwrap();
+        assert_eq!(
+            first.as_ptr(),
+            idr.as_ptr(),
+            "payload must stay shared without a copy"
+        );
+        for suffix in [b'1', b'2'] {
+            let frame: EncodedPacket = vec![0, 0, 1, 0x41, suffix].into();
+            state.frames.send(frame).unwrap();
+        }
+        for suffix in [b'1', b'2'] {
+            assert_eq!(
+                packets.try_next().await.unwrap().unwrap().last(),
+                Some(&suffix)
+            );
+        }
+        for _ in 0..4 {
+            state.frames.send(delta.clone()).unwrap();
+        }
+        let next_idr = EncodedPacket::from_static(b"\0\0\x01\x65recovery");
+        state.frames.send(next_idr.clone()).unwrap();
+        assert_eq!(packets.try_next().await.unwrap().unwrap(), next_idr);
+        state.frames.send(delta.clone()).unwrap();
+        assert_eq!(packets.try_next().await.unwrap().unwrap(), delta);
+        state.alive.store(false, Ordering::Release);
+        assert!(packets.try_next().await.unwrap().is_none());
+        drop(packets);
+        assert_eq!(state.frames.receiver_count(), 0);
+    }
+
+    #[tokio::test]
     async fn real_pipe_lifecycle_forwards_capture_serializes_input_and_releases() {
         // No compositor/device dependency: exercise the real process pipes and
         // CaptureSource/backend API using a synthetic Waymote process.
@@ -379,17 +427,17 @@ while True:
         let backend = platform.backend();
         let capabilities = backend(json!({"action":"capabilities"})).await.unwrap();
         assert_eq!(capabilities["relativePointer"], true);
-        let mut capture = platform.video()().await.unwrap();
-        let mut bytes = [0; 17];
-        tokio::time::timeout(
-            Duration::from_secs(1),
-            capture.reader.read_exact(&mut bytes),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert_eq!(&bytes[..8], b"NCH264F1");
-        assert_eq!(&bytes[8..], b"\0\0\0\x05\0\0\0\x01\x65");
+        let capture = platform.video()().await.unwrap();
+        let nanocodex_remote::capture::CaptureData::Packets(mut packets) = capture.data else {
+            panic!("Wayland capture must preserve packets directly");
+        };
+        use futures_util::TryStreamExt;
+        let packet = tokio::time::timeout(Duration::from_secs(1), packets.try_next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(packet.as_ref(), b"\0\0\0\x01\x65");
         backend(json!({"action":"input","input":{"kind":"key","key":4,"down":true}}))
             .await
             .unwrap();

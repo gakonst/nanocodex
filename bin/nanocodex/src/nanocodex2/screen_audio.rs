@@ -117,9 +117,9 @@ async fn native_capture() -> Result<Capture> {
     let thread = tokio::task::spawn_blocking(move || {
         nanocodex_hand::capture_audio(Writer { pipe, runtime }, stop)
     });
-    Ok(Capture {
-        reader: Box::new(reader),
-        owner: Task(tokio::spawn(async move {
+    Ok(Capture::bytes(
+        reader,
+        Task(tokio::spawn(async move {
             let _stop = guard;
             match thread.await {
                 Ok(Ok(())) => {}
@@ -127,7 +127,7 @@ async fn native_capture() -> Result<Capture> {
                 Err(error) => tracing::warn!(%error, "desktop audio worker stopped"),
             }
         })),
-    })
+    ))
 }
 
 #[cfg(test)]

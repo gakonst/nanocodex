@@ -20,7 +20,8 @@ pub struct Audio {
 }
 impl Audio {
     pub async fn start(source: &VideoSource) -> Result<Self> {
-        let mut capture = tokio::time::timeout(Duration::from_secs(3), source()).await??;
+        let capture = tokio::time::timeout(Duration::from_secs(3), source()).await??;
+        let (mut reader, owner) = capture.into_bytes()?;
         let mut encoder = Encoder::new(Channels::Stereo, SampleRate::Hz48000, Application::Audio)
             .map_err(|e| std::io::Error::other(e.message()))?;
         encoder
@@ -42,18 +43,15 @@ impl Audio {
         let writer = track.clone();
         let (ready, waiting) = tokio::sync::oneshot::channel();
         let task = Task(tokio::spawn(async move {
-            let _owner = capture.owner;
+            let _owner = owner;
             let mut ready = Some(ready);
             let mut bytes = [0u8; FRAME_SAMPLES * 2];
             let mut pcm = [0f32; FRAME_SAMPLES];
             let mut encoded = [0u8; 4000];
             let result: Result<()> = async {
                 loop {
-                    tokio::time::timeout(
-                        Duration::from_secs(5),
-                        capture.reader.read_exact(&mut bytes),
-                    )
-                    .await??;
+                    tokio::time::timeout(Duration::from_secs(5), reader.read_exact(&mut bytes))
+                        .await??;
                     for (sample, pair) in pcm.iter_mut().zip(bytes.chunks_exact(2)) {
                         *sample = f32::from(i16::from_le_bytes([pair[0], pair[1]])) / 32768.0;
                     }
@@ -106,15 +104,15 @@ mod tests {
             Box::pin(async move {
                 use tokio::io::AsyncWriteExt;
                 let (reader, mut writer) = tokio::io::duplex(FRAME_SAMPLES * 2);
-                Ok(Capture {
-                    reader: Box::new(reader),
-                    owner: Task(tokio::spawn(async move {
+                Ok(Capture::bytes(
+                    reader,
+                    Task(tokio::spawn(async move {
                         let _stopped = Stopped(stopped);
                         while writer.write_all(&[0u8; FRAME_SAMPLES * 2]).await.is_ok() {
                             tokio::time::sleep(Duration::from_millis(20)).await;
                         }
                     })),
-                })
+                ))
             })
         });
         let audio = Audio::start(&source).await.unwrap();

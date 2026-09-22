@@ -136,7 +136,9 @@ export class RemoteBrowserSession {
   private frameDeadline?: ReturnType<typeof setTimeout>;
   private framePending = 0;
   private frameQueued = 0;
-  private frameDecodeQueue: { bytes: Uint8Array<ArrayBuffer>; width: unknown; height: unknown }[] = [];
+  // JPEGs are independent pictures: retain only the newest waiting image.
+  // frameQueued still counts every received credit until a current image paints.
+  private nextFrame?: { bytes: Uint8Array<ArrayBuffer>; width: unknown; height: unknown };
   private frameDecoding = false;
   private get frameWindow(): number {
     const size = this.hand.frame_window;
@@ -223,12 +225,16 @@ export class RemoteBrowserSession {
             if ("jitterBufferTarget" in lowDelay) lowDelay.jitterBufferTarget = 0;
             else if ("playoutDelayHint" in lowDelay) lowDelay.playoutDelayHint = 0;
           } catch { /* Unsupported setters must not prevent media playback. */ }
-          const stream = this.video.srcObject instanceof MediaStream ? this.video.srcObject : new MediaStream();
+          const attached = this.video.srcObject instanceof MediaStream;
+          const stream = attached ? this.video.srcObject as MediaStream : new MediaStream();
+          if (stream.getTracks().includes(track)) return;
           for (const previous of stream.getTracks()) {
             if (previous.kind === track.kind) { stream.removeTrack(previous); previous.stop(); }
           }
           stream.addTrack(track);
-          this.video.srcObject = stream;
+          // Updating tracks in the attached stream preserves the browser's
+          // decoder/playout pipeline; assigning srcObject again reloads media.
+          if (!attached) this.video.srcObject = stream;
           if (track.kind === "video") { this.videoTrackId = track.id; this.watchFirstFrame(epoch); }
           this.update({ audioAvailable: stream.getAudioTracks().length > 0 });
           track.onended = () => {
@@ -276,13 +282,13 @@ export class RemoteBrowserSession {
           // Authorization is independent of asynchronous ICE negotiation or
           // frame decoding. A received renewal must not expire in that queue.
           if (message.type === "renewed") { this.authorized(epoch); return; }
-          if (++queuedMessages > 128) throw new RemoteError("Too many remote signals.", true);
+          if (!frames && ++queuedMessages > 128) throw new RemoteError("Too many remote signals.", true);
           if (frames && message.type === "frame") {
             if (this.frameQueued >= this.framePending) throw new RemoteError("Unexpected remote frame.", true);
             this.frameQueued++;
           } else if (frames && encoder.encode(data).length > 8192) throw new RemoteError("Invalid remote signal.", true);
         } catch { this.fail(new RemoteError("Invalid remote signal.", true)); return; }
-        signalQueue = signalQueue.then(async () => {
+        const receive = (): void | Promise<void> => {
           if (!this.current(epoch)) return;
           if (message.type === "ready") {
             if (this.renewTimer || typeof message.connection_id !== "string" || message.connection_id.length > 128) throw new RemoteError("Invalid remote lease.", true);
@@ -307,54 +313,65 @@ export class RemoteBrowserSession {
           }
           else if (message.type === "pong") return; // Liveness is not lease authorization.
           else if (frames && message.type === "frame") {
-            // Validate in wire order, but never hold control/lease processing
-            // behind image decoding. Credits include queued and decoding frames.
+            // Validate even superseded images before admitting them. Retiring
+            // their credits waits for rendering, so decoding bounds the producer.
             if (!this.renewTimer) throw new RemoteError("Unexpected remote frame.", true);
             const bytes = frameBytes(message);
-            this.frameDecodeQueue.push({ bytes, width: message.width, height: message.height });
+            this.nextFrame = { bytes, width: message.width, height: message.height };
             void this.decodeFrames(epoch);
           }
           else if (frames && message.type === "control") this.receiveControl(message.data, epoch);
-          else if (!frames && message.type === "signal") {
-            await peerReady;
+          else if (!frames && message.type === "signal") return negotiate(message.signal);
+          else throw new RemoteError("Invalid remote signal.", true);
+        };
+        const negotiate = async (offer: any): Promise<void> => {
+          await peerReady;
+          if (!this.current(epoch)) return;
+          if (!peer) throw new RemoteError("Could not initialize this screen.");
+          if (!offer || typeof offer !== "object") throw new RemoteError("Invalid remote offer.", true);
+          if (offer.type === "candidate") {
+            if (candidates.length >= 128) throw new RemoteError("Too many remote candidates.", true);
+            if (peer.remoteDescription) await peer.addIceCandidate(offer);
+            else candidates.push(offer);
+          } else if (offer.type === "offer" && typeof offer.sdp === "string" && encoder.encode(offer.sdp).length <= 65_536) {
+            // Initial credentials are already fresh; only subsequent offers
+            // (host ICE restarts) need another authenticated TURN request.
+            if (peer.remoteDescription) {
+              const ice = await request("/ice", "POST", undefined, signal);
+              if (!this.current(epoch)) return;
+              peer.setConfiguration({ ...peer.getConfiguration(), iceServers: ice.iceServers });
+            }
+            await peer.setRemoteDescription({ type: "offer", sdp: offer.sdp });
             if (!this.current(epoch)) return;
-            if (!peer) throw new RemoteError("Could not initialize this screen.");
-            const offer = message.signal;
-            if (!offer || typeof offer !== "object") throw new RemoteError("Invalid remote offer.", true);
-            if (offer.type === "candidate") {
-              if (candidates.length >= 128) throw new RemoteError("Too many remote candidates.", true);
-              if (peer.remoteDescription) await peer.addIceCandidate(offer);
-              else candidates.push(offer);
-            } else if (offer.type === "offer" && typeof offer.sdp === "string" && encoder.encode(offer.sdp).length <= 65_536) {
-              // Initial credentials are already fresh; only subsequent offers
-              // (host ICE restarts) need another authenticated TURN request.
-              if (peer.remoteDescription) {
-                const ice = await request("/ice", "POST", undefined, signal);
-                if (!this.current(epoch)) return;
-                peer.setConfiguration({ ...peer.getConfiguration(), iceServers: ice.iceServers });
-              }
-              await peer.setRemoteDescription({ type: "offer", sdp: offer.sdp });
+            // Reserve return audio without requesting permission or capturing.
+            // The offer limits the negotiated direction (sendonly hosts cannot
+            // receive a microphone even though our preferred direction is duplex).
+            const transceiver = peer.getTransceivers().find(value => value.receiver.track.kind === "audio" && value.direction !== "stopped");
+            if (this.microphoneTransceiver && this.microphoneTransceiver !== transceiver) this.stopMicrophone(true);
+            this.microphoneTransceiver = transceiver;
+            if (transceiver) transceiver.direction = "sendrecv";
+            const answer = await peer.createAnswer();
+            if (!this.current(epoch)) return;
+            await peer.setLocalDescription(answer);
+            if (this.current(epoch)) {
+              if (!this.microphoneCanSend()) this.stopMicrophone(true);
+              this.update({ microphoneAvailable: this.microphoneAvailable() });
+              this.signal({ type: "answer", sdp: peer.localDescription!.sdp });
+            }
+            // The remote description is installed, so early ICE candidates can
+            // follow the answer. A slow addIceCandidate must not delay the
+            // publisher's answer; retain candidate order on this same queue.
+            for (const candidate of candidates.splice(0)) {
               if (!this.current(epoch)) return;
-              for (const candidate of candidates.splice(0)) await peer.addIceCandidate(candidate);
-              if (!this.current(epoch)) return;
-              // Reserve return audio without requesting permission or capturing.
-              // The offer limits the negotiated direction (sendonly hosts cannot
-              // receive a microphone even though our preferred direction is duplex).
-              const transceiver = peer.getTransceivers().find(value => value.receiver.track.kind === "audio" && value.direction !== "stopped");
-              if (this.microphoneTransceiver && this.microphoneTransceiver !== transceiver) this.stopMicrophone(true);
-              this.microphoneTransceiver = transceiver;
-              if (transceiver) transceiver.direction = "sendrecv";
-              const answer = await peer.createAnswer();
-              if (!this.current(epoch)) return;
-              await peer.setLocalDescription(answer);
-              if (this.current(epoch)) {
-                if (!this.microphoneCanSend()) this.stopMicrophone(true);
-                this.update({ microphoneAvailable: this.microphoneAvailable() });
-                this.signal({ type: "answer", sdp: peer.localDescription!.sdp });
-              }
-            } else throw new RemoteError("Invalid remote offer.", true);
-          } else throw new RemoteError("Invalid remote signal.", true);
-        }).catch(error => { if (this.current(epoch)) this.fail(error instanceof SyntaxError ? new RemoteError("Invalid remote signal.", true) : error); }).finally(() => { queuedMessages--; });
+              await peer.addIceCandidate(candidate);
+            }
+          } else throw new RemoteError("Invalid remote offer.", true);
+        };
+        const failed = (error: unknown) => { if (this.current(epoch)) this.fail(error instanceof SyntaxError ? new RemoteError("Invalid remote signal.", true) : error); };
+        // Only WebRTC negotiation is asynchronous and needs wire-order queuing.
+        // JPEG and control messages can be handled immediately on receipt.
+        if (frames) { try { receive(); } catch (error) { failed(error); } }
+        else signalQueue = signalQueue.then(receive).catch(failed).finally(() => { queuedMessages--; });
       };
       this.authorized(epoch);
       await peerReady;
@@ -545,14 +562,24 @@ export class RemoteBrowserSession {
     };
     if (typeof this.video.requestVideoFrameCallback === "function") this.firstFrameCallback = this.video.requestVideoFrameCallback(displayed);
     else {
-      // Older browsers expose decoded readiness, not compositor presentation.
-      this.firstFrameListener = displayed;
-      this.video.addEventListener("loadeddata", displayed, { once: true });
+      // An audio-first stream may already have fired loadeddata. Its first
+      // decoded video updates dimensions, so also observe resize without
+      // reattaching the stream just to trigger another load event.
+      const decoded = () => {
+        if (this.video.readyState >= 2 && this.video.videoWidth > 0 && this.video.videoHeight > 0) displayed();
+      };
+      this.firstFrameListener = decoded;
+      this.video.addEventListener("loadeddata", decoded);
+      this.video.addEventListener("resize", decoded);
+      decoded();
     }
   }
   private cancelFirstFrame(): void {
     if (this.firstFrameCallback !== undefined) this.video.cancelVideoFrameCallback(this.firstFrameCallback);
-    if (this.firstFrameListener) this.video.removeEventListener("loadeddata", this.firstFrameListener);
+    if (this.firstFrameListener) {
+      this.video.removeEventListener("loadeddata", this.firstFrameListener);
+      this.video.removeEventListener("resize", this.firstFrameListener);
+    }
     this.firstFrameCallback = undefined; this.firstFrameListener = undefined;
   }
 
@@ -639,7 +666,7 @@ export class RemoteBrowserSession {
     this.abort.abort();
     clearTimeout(this.watchdog); clearTimeout(this.connectingTimer); clearTimeout(this.retryTimer);
     clearTimeout(this.frameTimer); clearTimeout(this.frameDeadline); this.framePending = 0; this.frameQueued = 0;
-    this.frameDecodeQueue = []; this.frameDecoding = false;
+    this.nextFrame = undefined; this.frameDecoding = false;
     clearInterval(this.renewTimer); clearInterval(this.controlTimer);
     clearTimeout(this.renewRetryTimer); clearTimeout(this.disconnectTimer);
     this.renewRetryTimer = this.disconnectTimer = undefined; this.renewing = false;
@@ -723,8 +750,9 @@ export class RemoteBrowserSession {
     if (this.frameDecoding || !this.current(epoch)) return;
     this.frameDecoding = true;
     try {
-      while (this.current(epoch) && this.frameDecodeQueue.length) {
-        await this.renderFrame(this.frameDecodeQueue.shift()!, epoch);
+      while (this.current(epoch) && this.nextFrame) {
+        const frame = this.nextFrame; this.nextFrame = undefined;
+        await this.renderFrame(frame, epoch);
       }
     } catch (error) { if (this.current(epoch)) this.fail(error); }
     finally { if (this.current(epoch)) this.frameDecoding = false; }
@@ -737,22 +765,30 @@ export class RemoteBrowserSession {
       bitmap = await createImageBitmap(new Blob([bytes], { type: "image/jpeg" }));
       if (!this.current(epoch)) return;
       if (bitmap.width !== value.width || bitmap.height !== value.height) throw new RemoteError("Invalid remote frame.", true);
+      // A newer JPEG arrived during decode. Close this bitmap and decode that
+      // image instead of painting stale pixels. Keep all credits withheld until
+      // a current image paints: even continuous arrivals exhaust the window,
+      // allowing the decoder to catch up without starving presentation.
+      if (this.nextFrame) return;
       const context = this.canvas.getContext("2d");
       if (!context) throw new RemoteError("This browser cannot display this screen.", true);
       if (this.canvas.width !== bitmap.width) this.canvas.width = bitmap.width;
       if (this.canvas.height !== bitmap.height) this.canvas.height = bitmap.height;
       context.drawImage(bitmap, 0, 0);
+      clearTimeout(this.frameDeadline); this.frameDeadline = undefined;
+      this.framePending -= this.frameQueued; this.frameQueued = 0;
       if (this.firstFrameMs === undefined) {
         this.firstFrameMs = Math.max(0, performance.now() - this.startedAt);
         this.update({ mediaReady: true, ...(this.statsEnabled ? { stats: { firstFrameMs: this.firstFrameMs } } : {}) });
       }
-      clearTimeout(this.frameDeadline); this.frameDeadline = undefined; this.framePending--;
+      if (!this.current(epoch)) return;
       this.ready(true);
+      if (!this.current(epoch)) return;
       if (this.frameWindow > 1) this.requestFrame(epoch);
       else this.frameTimer = setTimeout(() => this.requestFrame(epoch), Math.ceil(Math.max(0, 1000 / 30 - (performance.now() - this.frameRequestedAt))));
     } catch (error) {
       throw error instanceof RemoteError ? error : new RemoteError("Invalid remote frame.", true);
-    } finally { bitmap?.close(); if (this.current(epoch)) this.frameQueued--; }
+    } finally { bitmap?.close(); }
   }
   private channel(channel: RTCDataChannel, epoch: number): void {
     if (channel.label === "remote-control-v1" && !this.reliable && channel.ordered && channel.maxRetransmits === null && channel.maxPacketLifeTime === null) this.reliable = channel;

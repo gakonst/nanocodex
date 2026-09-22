@@ -156,8 +156,11 @@ public final class RemoteViewer: ObservableObject {
     private var frameDeadline: Task<Void, Never>?
     // Pending counts occupied credits, including received/decoding frames.
     private var framePending = 0
+    // Received credits stay occupied until decode/publication completes, even
+    // when an older waiting JPEG is replaced. This bounds network admission as
+    // well as decoding: one active image and one newest independent JPEG.
     private var frameReceived = 0
-    private var frameQueue: [RemoteMessage] = []
+    private var queuedFrame: RemoteMessage?
     private var frameDecodeTask: Task<Void, Never>?
     var frameDecoder = RemoteFrameDecoder()
     private var frameRequestedAt: TimeInterval = 0
@@ -570,7 +573,7 @@ public final class RemoteViewer: ObservableObject {
         signalQueue?.cancel(); signalQueue = nil
         connectionDeadline?.cancel(); connectionDeadline = nil
         frameTask?.cancel(); frameTask = nil; frameDeadline?.cancel(); frameDeadline = nil; framePending = 0; frame = nil
-        frameReceived = 0; frameQueue.removeAll()
+        frameReceived = 0; queuedFrame = nil
         // Retain the cancelled task until its synchronous decoder returns.
         // New epochs may enqueue, but cannot create another decode task yet.
         frameDecodeTask?.cancel()
@@ -673,7 +676,7 @@ public final class RemoteViewer: ObservableObject {
                 case "broadcast_result": receiveBroadcast(message)
                 case "frame":
                     guard framePending > frameReceived else { throw RemoteError.invalidMessage }
-                    frameReceived += 1; frameQueue.append(message)
+                    frameReceived += 1; queuedFrame = message
                     startFrameDecode()
                 case "control":
                     guard case .control(let control) = message.data else { throw RemoteError.invalidMessage }
@@ -690,7 +693,7 @@ public final class RemoteViewer: ObservableObject {
     }
 
     private func startFrameDecode() {
-        guard frameDecodeTask == nil, !frameQueue.isEmpty else { return }
+        guard frameDecodeTask == nil, queuedFrame != nil else { return }
         let attempt = epoch
         frameDecodeTask = Task { [weak self] in
             guard let self else { return }
@@ -699,12 +702,19 @@ public final class RemoteViewer: ObservableObject {
                 // A new epoch may have queued frames while ImageIO finished.
                 startFrameDecode()
             }
-            while epoch == attempt, !Task.isCancelled, !frameQueue.isEmpty {
-                let message = frameQueue.removeFirst()
+            while epoch == attempt, !Task.isCancelled, let message = queuedFrame {
+                // JPEGs are independent. Retire the whole received batch after
+                // its newest image is published; never apply this to H.264.
+                let credits = frameReceived
+                queuedFrame = nil
                 do {
                     let image = try await frameDecoder.decode(message)
                     guard epoch == attempt, !Task.isCancelled else { return }
-                    frameReceived -= 1; framePending -= 1
+                    // A newer admitted JPEG supersedes this result. Hold its
+                    // credits too, so slow decoding cannot request endlessly
+                    // without presenting; the window must eventually drain.
+                    guard queuedFrame == nil else { continue }
+                    frameReceived -= credits; framePending -= credits
                     frame = image
                     // Frame subscribers may synchronously suspend the viewer.
                     guard epoch == attempt, !Task.isCancelled else { return }

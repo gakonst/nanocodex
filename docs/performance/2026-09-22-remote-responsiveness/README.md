@@ -1,6 +1,6 @@
 # Remote screen responsiveness
 
-This change covers the web, iOS, and macOS viewers and their shared signaling service.
+This change covers the web, iOS, and macOS viewers and their shared signaling service. The [architecture follow-up](../2026-09-22-stream-architecture.md) removes internal frame pipes and JPEG queues and records newer 60 FPS fixture validation.
 
 ## Connection setup
 

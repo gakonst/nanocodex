@@ -29,8 +29,8 @@ provide both. VM allocations keep their own workspaces and identities.
 | Native Linux Hand | `hand --workspace PATH` publishes an explicit workspace and native tools over an outbound account connection | File/process roundtrip, socket reconnect, process restart with retained identity |
 | SSH Linux server | Vault-bound SSH for native commands; `server_hand` installs a dedicated desktop container | Reachable SSH target, Docker access, enrollment, video/input, reconnect |
 | Browser viewer | Screens in Connect and agent terminals | Discovery, video/input, tab background/resume, host restart |
-| iPhone viewer/host | Shared native viewer; hosting uses a paired Mac bridge | Physical-device journey; currently paused |
-| Windows host | Planned | No native Windows host is claimed |
+| iPhone viewer/host | Shared native viewer; hosting uses a paired Mac bridge | Physical-device viewer and paired-host journey; simulator builds alone do not establish this |
+| Windows host | Native Rust Hand; GDI/FFmpeg H.264 WebRTC, native JPEG fallback when encoder startup fails | Interactive-session capture/input, reconnect, bundled encoder and fallback on a physical Windows host |
 | Service connections | Account credential broker with per-agent and per-connection grants | Connected inventory and a read-only request to each granted service |
 
 Mac-hosted factory VMs in this implementation are Linux guests. Linux server
@@ -52,8 +52,14 @@ and input. VNC is not required. Wayland remains the Linux compositor/input backe
   input, paired-phone capture/input, and the sharing UI. Apple apps consume this
   package without importing one another's source. One capture source serves all
   viewers of a surface; each peer owns its own track and encoder.
-- `hands/remote` is the Go companion. On Linux it bridges Waymote capture/input to
-  Pion WebRTC. On macOS it owns a paired-device tunnel and signed Xcode runner.
+- `crates/nanocodex-remote` owns the shared Rust publisher used by native CLI,
+  VM, Docker, and current Linux Hand images. Platform adapters provide encoded
+  H.264 packets or external byte streams, plus optional speaker PCM. WebRTC
+  forwards those encoded packets without decoding and encoding them again.
+- `hands/remote` remains the Go companion for deployed Wayland/Pion hosts and
+  the Mac app's paired-device tunnel and signed Xcode runner. Current Linux
+  images install the Rust publisher under the same `nanocodex-remote` executable
+  name; the filename alone does not establish which implementation is running.
 - The managed Worker and existing account Durable Object own account
   authorization, discovery, signaling, and short-lived Cloudflare TURN
   credentials. Video/input use the direct peer connection, with TURN as the

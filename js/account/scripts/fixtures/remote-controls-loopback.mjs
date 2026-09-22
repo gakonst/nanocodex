@@ -1,8 +1,9 @@
 // Install into an isolated page with Playwright addInitScript. The viewer uses
 // real RTCPeerConnection/MediaStream/getUserMedia. Only the account signaling
 // socket and synthetic publisher are supplied by this localhost-only fixture.
-export function installRemoteControlsLoopback() {
-  window.loopback = { captures: [], captureRequests: 0, microphoneRequests: [], channels: [], errors: [] };
+export function installRemoteControlsLoopback({ frameRate = 5, animated = false } = {}) {
+  if (!Number.isInteger(frameRate) || frameRate < 1 || frameRate > 120) throw new Error('Frame rate must be an integer from 1 to 120');
+  window.loopback = { captures: [], captureRequests: 0, microphoneRequests: [], channels: [], errors: [], sourceFrames: 0, sourceFrameRate: frameRate };
   const capture = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
   navigator.mediaDevices.getUserMedia = async constraints => {
     window.loopback.captureRequests++;
@@ -41,9 +42,25 @@ export function installRemoteControlsLoopback() {
       this.peer.addTransceiver(audioTrack, { direction: 'sendrecv', streams: [destination.stream] });
       const canvas = document.createElement('canvas'); canvas.width = 960; canvas.height = 540;
       const context = canvas.getContext('2d');
-      context.fillStyle = '#192d3c'; context.fillRect(0, 0, 960, 540);
-      const video = canvas.captureStream(5); this.peer.addTrack(video.getVideoTracks()[0], video);
-      this.frameTimer = setInterval(() => context.fillRect(0, 0, 960, 540), 100);
+      const draw = () => {
+        context.fillStyle = '#192d3c'; context.fillRect(0, 0, 960, 540);
+        window.loopback.sourceFrames++;
+        if (animated) {
+          const elapsed = performance.now();
+          context.fillStyle = '#e9f1fa'; context.font = '24px monospace';
+          context.fillText('Synthetic desktop · ' + frameRate + ' FPS target', 32, 52);
+          context.fillText('Frame ' + window.loopback.sourceFrames + ' · ' + elapsed.toFixed(0) + ' ms', 32, 90);
+          context.fillStyle = '#6cd8c0';
+          context.fillRect((elapsed / 5) % 800, 160, 160, 160);
+          context.fillStyle = '#ffca72';
+          context.fillRect(32, 400, (elapsed / 10) % 896, 16);
+        }
+      };
+      draw();
+      this.video = canvas.captureStream(frameRate); this.peer.addTrack(this.video.getVideoTracks()[0], this.video);
+      // Preserve the inexpensive static 5 FPS smoke source unless explicitly
+      // opted into animation by the manual performance fixture.
+      this.frameTimer = setInterval(draw, animated ? 1000 / frameRate : 100);
       this.peer.ontrack = ({ track }) => {
         if (track.kind !== 'audio') return;
         window.loopback.returnTrack = track;
@@ -80,7 +97,8 @@ export function installRemoteControlsLoopback() {
       }).catch(error => { window.loopback.errors.push(String(error)); });
     }
     close() {
-      this.readyState = 3; clearInterval(this.frameTimer); this.peer.close(); void this.audio.close();
+      this.readyState = 3; clearInterval(this.frameTimer); this.video.getTracks().forEach(track => track.stop());
+      this.peer.close(); void this.audio.close();
       if (window.loopback.returnSink) {
         window.loopback.returnSink.srcObject = null; window.loopback.returnSink.remove();
       }

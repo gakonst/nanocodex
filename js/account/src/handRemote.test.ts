@@ -133,14 +133,16 @@ function fixture(t: TestContext, hand: RemoteHand = screen) {
   const frames = new Map<number, () => void>();
   let nextFrame = 0;
   const video = Object.assign(new EventTarget(), {
-    muted: true, srcObject: null as unknown, play: async () => {},
+    muted: true, srcObject: null as unknown, readyState: 0, videoWidth: 0, videoHeight: 0, play: async () => {},
     requestVideoFrameCallback(callback: () => void) { const id = ++nextFrame; frames.set(id, callback); return id; },
     cancelVideoFrameCallback(id: number) { frames.delete(id); },
   });
-  const session = new RemoteBrowserSession(hand, video as HTMLVideoElement, () => {}, canvas as unknown as HTMLCanvasElement);
+  let changed = (_state: RemoteBrowserSession["state"]) => {};
+  const session = new RemoteBrowserSession(hand, video as HTMLVideoElement, state => changed(state), canvas as unknown as HTMLCanvasElement);
   t.after(() => session.close());
   return {
     peers, sockets, requests, session, video, canvas, drawn, decoded, captures, frames,
+    setChanged(value: typeof changed) { changed = value; },
     setCapture(value: typeof capture) { capture = value; },
     setDecode(value: typeof decode) { decode = value; },
     setIceResponse(value: typeof iceResponse) { iceResponse = value; },
@@ -165,11 +167,39 @@ test("WebRTC opens its viewer socket during ICE lookup and answers the initial o
   ice.resolve(Response.json({ iceServers: [{ urls: "stun:first.example" }] }));
   await connecting; await flush();
   assert.deepEqual(f.peers[0]!.config.iceServers, [{ urls: "stun:first.example" }]);
-  assert.deepEqual(f.peers[0]!.calls, ["offer", "candidate", "answer"]);
+  assert.deepEqual(f.peers[0]!.calls, ["offer", "answer", "candidate"]);
   assert.deepEqual(f.peers[0]!.appliedCandidates, [candidate]);
   assert.equal(f.requests.filter(r => r.path.endsWith("/ice")).length, 1);
   assert.deepEqual(f.sockets[0]!.sent, [{ type: "signal", signal: { type: "answer", sdp: "answer" } }]);
 });
+
+for (const retire of [false, true]) {
+  test(`WebRTC sends its answer before 32 early candidates drain${retire ? " and fences retirement mid-drain" : " in order"}`, async t => {
+    const f = fixture(t); await f.session.connect();
+    const peer = f.peers[0]!, gate = deferred<void>();
+    const candidates = Array.from({ length: 32 }, (_, index) => ({
+      type: "candidate", candidate: "candidate:" + index, sdpMid: "0", sdpMLineIndex: 0,
+    }));
+    for (const candidate of candidates) { f.sockets[0]!.message({ type: "signal", signal: candidate }); await flush(); }
+    let attempts = 0;
+    const add = peer.addIceCandidate.bind(peer);
+    t.mock.method(peer, "addIceCandidate", async (candidate: unknown) => { attempts++; await gate.promise; await add(candidate); });
+    f.sockets[0]!.message({ type: "signal", signal: { type: "offer", sdp: "initial" } }); await flush();
+    assert.equal(attempts, 1);
+    assert.deepEqual(peer.appliedCandidates, []);
+    assert.deepEqual(f.sockets[0]!.sent, [{ type: "signal", signal: { type: "answer", sdp: "answer" } }],
+      "answer must be sent while the first queued addIceCandidate is still blocked");
+    if (retire) { f.session.suspend(); f.session.resume(); await flush(); }
+    gate.resolve();
+    for (let i = 0; i < candidates.length; i++) await flush();
+    assert.deepEqual(peer.appliedCandidates, retire ? candidates.slice(0, 1) : candidates);
+    assert.equal(attempts, retire ? 1 : 32);
+    if (retire) {
+      assert.deepEqual(f.peers[1]!.appliedCandidates, []);
+      assert.deepEqual(f.sockets[1]!.sent, []);
+    }
+  });
+}
 
 test("WebRTC refreshes credentials before answering a later ICE restart offer", async t => {
   const f = fixture(t);
@@ -533,29 +563,108 @@ test("a stalled frame stream clears the picture and retries without falling back
   assert.ok(f.requests.every(request => !request.path.endsWith("/ice")));
 });
 
-test("windowed frames replenish after rendering without a relay round-trip pause and bound decoding", async t => {
+test("windowed JPEG bursts decode only the active and newest image and return every consumed credit after painting", async t => {
   const f = fixture(t, { ...frameHand, frame_window: 6 });
   await f.session.connect();
-  f.sockets[0]!.message({ type: "ready", connection_id: "window-viewer" }); await flush();
+  f.sockets[0]!.message({ type: "ready", connection_id: "window-viewer" });
   assert.equal(f.sockets[0]!.url.searchParams.get("frame_window"), "6");
   assert.equal(f.sockets[0]!.sent.length, 0);
   const decodes: ((bitmap: { width: number; height: number; close(): void }) => void)[] = [];
+  let closed = 0;
   f.setDecode(() => new Promise(resolve => { decodes.push(resolve); }));
-  for (let i = 0; i < 6; i++) f.sockets[0]!.message(frame());
-  await flush();
+  for (let i = 0; i < 6; i++) f.sockets[0]!.message(frame(640 + i));
   assert.equal(f.session.state.connected, false);
   assert.equal(decodes.length, 1, "decode one image at a time");
-  assert.equal(f.sockets[0]!.sent.length, 0, "a slow renderer grants no new credits");
-  for (let i = 0; i < 6; i++) {
-    decodes[i]!({ width: 640, height: 360, close() {} }); await flush();
-    assert.deepEqual(f.sockets[0]!.sent.at(-1), { type: "frame_request", count: 1 });
-  }
-  assert.equal(f.drawn.length, 6);
-  assert.equal(f.sockets[0]!.sent.length, 6);
+  assert.equal(f.sockets[0]!.sent.length, 0, "coalescing must not grant new credits");
+  decodes[0]!({ width: 640, height: 360, close() { closed++; } }); await flush();
+  assert.equal(decodes.length, 2);
+  assert.equal(f.drawn.length, 0, "a decoded image superseded during decode must never paint");
+  assert.equal(f.session.state.mediaReady, false);
+  assert.equal(f.sockets[0]!.sent.length, 0, "skipping a stale bitmap must not grant new credits");
+  assert.equal(Buffer.from(await f.decoded[1]!.arrayBuffer()).toString("base64"), frame(645).jpeg);
+  decodes[1]!({ width: 645, height: 360, close() { closed++; } }); await flush();
+  assert.equal(closed, 2, "both stale and presented bitmaps must close exactly once");
+  assert.deepEqual(f.drawn.map(bitmap => bitmap.width), [645]);
+  assert.deepEqual([f.canvas.width, f.canvas.height], [645, 360]);
+  assert.deepEqual(f.sockets[0]!.sent, [{ type: "frame_request", count: 6 }]);
   assert.equal(f.session.state.connected, true);
   f.session.suspend();
   await f.tick(1000);
-  assert.equal(f.sockets[0]!.sent.filter(m => m.type === "frame_request").length, 6);
+  assert.equal(f.sockets[0]!.sent.length, 1);
+});
+
+for (const frame_window of [2, 3, 6]) {
+  test(`window ${frame_window} stops arrivals from starving presentation and grants credits only when current`, async t => {
+    const f = fixture(t, { ...frameHand, frame_window });
+    await f.session.connect(); f.sockets[0]!.message({ type: "ready", connection_id: "viewer" });
+    const decodes: ((bitmap: { width: number; height: number; close(): void }) => void)[] = [];
+    f.setDecode(() => new Promise(resolve => { decodes.push(resolve); }));
+    f.sockets[0]!.message(frame(640));
+    let closed = 0;
+    for (let i = 0; i < frame_window - 1; i++) {
+      f.sockets[0]!.message(frame(641 + i));
+      decodes[i]!({ width: 640 + i, height: 360, close() { closed++; } }); await flush();
+      assert.equal(f.drawn.length, 0);
+      assert.equal(f.sockets[0]!.sent.length, 0, "supersession cannot replenish an unbounded stream");
+    }
+    decodes.at(-1)!({ width: 639 + frame_window, height: 360, close() { closed++; } }); await flush();
+    assert.equal(closed, frame_window);
+    assert.deepEqual(f.drawn.map(bitmap => bitmap.width), [639 + frame_window]);
+    assert.deepEqual(f.sockets[0]!.sent, [{ type: "frame_request", count: frame_window }]);
+  });
+}
+
+test("a partial JPEG window returns only consumed credits and preserves unused credits across batches", async t => {
+  const f = fixture(t, { ...frameHand, frame_window: 6 });
+  await f.session.connect(); f.sockets[0]!.message({ type: "ready", connection_id: "viewer" });
+  const decodes: ((bitmap: { width: number; height: number; close(): void }) => void)[] = [];
+  f.setDecode(() => new Promise(resolve => { decodes.push(resolve); }));
+  for (let i = 0; i < 3; i++) f.sockets[0]!.message(frame());
+  decodes[0]!({ width: 640, height: 360, close() {} }); await flush();
+  decodes[1]!({ width: 640, height: 360, close() {} }); await flush();
+  assert.deepEqual(f.sockets[0]!.sent, [{ type: "frame_request", count: 3 }]);
+  for (let i = 0; i < 6; i++) { f.sockets[0]!.message(frame()); await flush(); }
+  assert.equal(f.sockets[0]!.readyState, 1, "three unused plus three returned credits admit six images");
+  assert.equal(decodes.length, 3);
+  f.sockets[0]!.message(frame());
+  assert.equal(f.sockets[0]!.readyState, 3, "coalesced frames still consume credits and the seventh is rejected");
+  decodes[2]!({ width: 640, height: 360, close() {} }); await flush();
+  assert.equal(f.drawn.length, 1);
+  assert.equal(f.sockets[0]!.sent.length, 1, "teardown never returns retired credits again");
+});
+
+test("coalesced JPEGs do not extend a stalled decoder's deadline", async t => {
+  const f = fixture(t, { ...frameHand, frame_window: 6 });
+  await f.session.connect(); f.sockets[0]!.message({ type: "ready", connection_id: "viewer" });
+  const pending = deferred<{ width: number; height: number; close(): void }>();
+  f.setDecode(() => pending.promise);
+  f.sockets[0]!.message(frame());
+  await f.tick(9000);
+  for (let i = 0; i < 5; i++) f.sockets[0]!.message(frame());
+  await f.tick(1000);
+  assert.equal(f.sockets[0]!.readyState, 3);
+  assert.equal(f.session.state.connecting, true);
+  let closed = 0;
+  pending.resolve({ width: 640, height: 360, close() { closed++; } }); await flush();
+  assert.equal(closed, 1); assert.equal(f.decoded.length, 1); assert.equal(f.drawn.length, 0);
+  assert.equal(f.sockets[0]!.sent.length, 0);
+});
+
+test("a frame received synchronously during readiness notification retains its own credit until painted", async t => {
+  const f = fixture(t, { ...frameHand, frame_window: 6 });
+  await f.session.connect(); f.sockets[0]!.message({ type: "ready", connection_id: "viewer" });
+  const next = deferred<{ width: number; height: number; close(): void }>();
+  f.setChanged(state => {
+    if (!state.mediaReady) return;
+    f.setChanged(() => {}); f.setDecode(() => next.promise);
+    f.sockets[0]!.message(frame(641));
+  });
+  f.sockets[0]!.message(frame()); await flush();
+  assert.deepEqual(f.drawn.map(bitmap => bitmap.width), [640]);
+  assert.deepEqual(f.sockets[0]!.sent, [{ type: "frame_request", count: 1 }]);
+  next.resolve({ width: 641, height: 360, close() {} }); await flush();
+  assert.deepEqual(f.drawn.map(bitmap => bitmap.width), [640, 641]);
+  assert.deepEqual(f.sockets[0]!.sent, [{ type: "frame_request", count: 1 }, { type: "frame_request", count: 1 }]);
 });
 
 test("windowed frames reject an unsolicited seventh image while decoding is blocked", async t => {
@@ -707,6 +816,35 @@ test("audio and video tracks share a stream in either arrival order", async t =>
   f.session.close(); assert.equal(f.session.state.audioAvailable, false);
 });
 
+for (const order of [["video", "audio"], ["audio", "video"]]) {
+  test(`WebRTC ${order.join(" then ")} attaches once and updates tracks without reloading playback`, async t => {
+    const f = fixture(t); await f.session.connect();
+    let source: unknown = null, assignments = 0;
+    Object.defineProperty(f.video, "srcObject", {
+      get() { return source; }, set(value: unknown) { source = value; assignments++; },
+    });
+    const tracks = order.map(kind => ({ kind, stops: 0, stop() { this.stops++; } }));
+    for (const track of tracks) f.peers[0]!.ontrack!({ track });
+    const stream = f.video.srcObject as MediaStream;
+    assert.equal(assignments, 1, "adding audio or video must not reset srcObject");
+    for (const track of tracks) f.peers[0]!.ontrack!({ track });
+    assert.equal(assignments, 1);
+    assert.deepEqual(tracks.map(track => track.stops), [0, 0], "duplicate track delivery must not stop active tracks");
+    assert.deepEqual(stream.getTracks(), tracks);
+    const replacement = { kind: order[0], stops: 0, stop() { this.stops++; } };
+    f.peers[0]!.ontrack!({ track: replacement });
+    assert.equal(assignments, 1);
+    assert.equal(tracks[0]!.stops, 1);
+    assert.deepEqual(stream.getTracks(), [tracks[1], replacement]);
+    assert.equal(f.session.state.audioAvailable, true);
+    f.session.suspend();
+    assert.equal(f.video.srcObject, null); assert.equal(assignments, 2);
+    f.session.resume(); await flush();
+    f.peers[1]!.ontrack!({ track: { kind: "video", stop() {} } });
+    assert.notEqual(f.video.srcObject, stream, "a new peer needs a fresh playback stream");
+  });
+}
+
 test("blocked sound falls back to muted video without reconnecting", async t => {
   const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
   let attempts = 0;
@@ -830,9 +968,9 @@ for (const frame_window of [1, 6]) {
     f.sockets[0]!.message(frame()); await flush();
     assert.equal(f.decoded.length, 2);
     f.session.takeControl();
-    f.sockets[0]!.message({ type: "control", data: { type: "granted", generation: "lease" } }); await flush();
-    assert.equal(f.session.state.controlling, true, "grant cannot wait for bitmap completion");
-    f.sockets[0]!.message({ type: "control", data: { type: "revoked", generation: "lease" } }); await flush();
+    f.sockets[0]!.message({ type: "control", data: { type: "granted", generation: "lease" } });
+    assert.equal(f.session.state.controlling, true, "grant cannot wait for bitmap completion or a message queue");
+    f.sockets[0]!.message({ type: "control", data: { type: "revoked", generation: "lease" } });
     assert.equal(f.session.state.controlling, false, "revocation cannot wait for bitmap completion");
     const sent = f.sockets[0]!.sent.length;
     f.session.input({ kind: "text", text: "after revoke" });
@@ -908,9 +1046,9 @@ test("retired decoder completion cannot drain or change a reconnect's pending fr
   assert.equal(f.decoded.length, 2, "old completion cannot clear the new decoder's busy flag");
   f.setDecode(async () => ({ width: 642, height: 360, close() {} }));
   fresh.resolve({ width: 641, height: 360, close() {} }); await flush();
-  assert.deepEqual(f.drawn.map(bitmap => bitmap.width), [641, 642]);
+  assert.deepEqual(f.drawn.map(bitmap => bitmap.width), [642]);
   assert.equal(f.session.state.connected, true);
-  assert.deepEqual(f.sockets[1]!.sent, [{ type: "frame_request", count: 1 }, { type: "frame_request", count: 1 }]);
+  assert.deepEqual(f.sockets[1]!.sent, [{ type: "frame_request", count: 2 }]);
 });
 
 async function microphoneFixture(t: TestContext, direction = "sendrecv", capability: unknown = true) {
@@ -1286,11 +1424,32 @@ test("older browsers measure first decoded readiness and clean up their event li
   await f.session.connect(); f.peers[0]!.open();
   f.session.setStatsEnabled(true); await flush();
   f.peers[0]!.ontrack?.({ track: { kind: "video", id: "picture", stop() {} } });
-  await f.tick(120); f.video.dispatchEvent(new Event("loadeddata"));
+  await f.tick(120);
+  f.video.readyState = 2; f.video.videoWidth = 640; f.video.videoHeight = 360;
+  f.video.dispatchEvent(new Event("loadeddata"));
   assert.equal(f.session.state.stats?.firstFrameMs, 120);
   await f.tick(10); f.video.dispatchEvent(new Event("loadeddata"));
   assert.equal(f.session.state.stats?.firstFrameMs, 120);
   f.session.close(); f.video.dispatchEvent(new Event("loadeddata")); assert.equal(f.session.state.stats, undefined);
+});
+
+test("older browsers detect video added to an already loaded audio stream without reattaching", async t => {
+  const f = fixture(t);
+  Reflect.deleteProperty(f.video, "requestVideoFrameCallback"); Reflect.deleteProperty(f.video, "cancelVideoFrameCallback");
+  await f.session.connect(); f.session.setStatsEnabled(true);
+  const peer = f.peers[0]!;
+  peer.ontrack!({ track: { kind: "audio", stop() {} } });
+  f.video.readyState = 2; f.video.dispatchEvent(new Event("loadeddata"));
+  const stream = f.video.srcObject;
+  peer.ontrack!({ track: { kind: "video", stop() {} } });
+  assert.equal(f.video.srcObject, stream); assert.equal(f.session.state.mediaReady, false);
+  await f.tick(120); f.video.videoWidth = 640; f.video.videoHeight = 360;
+  f.video.dispatchEvent(new Event("resize"));
+  assert.equal(f.session.state.mediaReady, true); assert.equal(f.session.state.stats?.firstFrameMs, 120);
+  await f.tick(30); f.video.dispatchEvent(new Event("resize"));
+  assert.equal(f.session.state.stats?.firstFrameMs, 120);
+  f.session.close(); f.video.dispatchEvent(new Event("resize"));
+  assert.equal(f.session.state.mediaReady, false); assert.equal(f.session.state.stats, undefined);
 });
 
 test("a matching revocation discards pending motion but a stale revocation preserves the current lease", async t => {

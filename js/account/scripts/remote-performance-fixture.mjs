@@ -1,8 +1,8 @@
 // Manual CUA/browser smoke fixture for the production Screen and real WebRTC.
 // Run from the repository: node js/account/scripts/remote-performance-fixture.mjs
 // Account signaling is synthetic and localhost-only. No credentials or physical
-// capture devices are used. The existing publisher deliberately targets 5 FPS;
-// this is a correctness fixture, not a maximum-throughput benchmark.
+// capture devices are used. The animated source targets 60 FPS by default;
+// add ?fps=30 (1–120) to compare rates. Loopback excludes real capture/network costs.
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { installRemoteControlsLoopback } from './fixtures/remote-controls-loopback.mjs';
@@ -13,7 +13,9 @@ const hand = { id: 'synthetic-screen', name: 'Synthetic desktop', kind: 'desktop
 const bundle = await build({
   stdin: { contents: `import React from 'react'; import {createRoot} from 'react-dom/client';
     import {Screen} from './src/RemoteScreens';
-    (${installRemoteControlsLoopback.toString()})();
+    const frameRate = Number(new URLSearchParams(location.search).get('fps') ?? 60);
+    (${installRemoteControlsLoopback.toString()})({ frameRate, animated: true });
+    document.getElementById('fixture-title').textContent = 'Real WebRTC loopback · animated ' + frameRate + ' FPS target';
     const Socket = window.WebSocket;
     window.WebSocket = class extends Socket {
       send(raw) {
@@ -28,6 +30,7 @@ const bundle = await build({
       const events = window.loopback?.channels ?? [];
       document.getElementById('input-status').textContent = 'Host received ' + events.filter(e=>e.kind).length +
         ' input events. Last event: ' + (events.at(-1)?.kind ?? events.at(-1)?.type ?? 'none') +
+        '. Source frames: ' + (window.loopback?.sourceFrames ?? 0) +
         '. Errors: ' + (window.loopback?.errors.join('; ') || 'none');
     }, 250);`, resolveDir: new URL('..', import.meta.url).pathname, loader: 'tsx' },
   bundle: true, write: false, outfile: 'app.js', jsx: 'automatic',
@@ -44,7 +47,7 @@ const server = createServer((req, res) => {
     res.end(JSON.stringify(req.url.endsWith('/ice') ? { iceServers: [] } : req.url.endsWith('/screens') ? { surfaces: [hand] } : {}));
   } else {
     res.setHeader('Content-Type', 'text/html');
-    res.end('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Remote performance fixture</title><link rel="stylesheet" href="/app.css"><style>body{margin:16px;font:14px system-ui;background:#e8eaee}*{box-sizing:border-box}.remote-screens{height:calc(100dvh - 110px);max-height:none}h1{font-size:16px;margin:0 0 8px}p{margin:8px 0}</style><h1>Real WebRTC loopback · synthetic 5 FPS source</h1><div id="root"></div><p id="input-status" aria-live="polite">Waiting for the synthetic host</p><script src="/app.js"></script></html>');
+    res.end('<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Remote performance fixture</title><link rel="stylesheet" href="/app.css"><style>body{margin:16px;font:14px system-ui;background:#e8eaee}*{box-sizing:border-box}.remote-screens{height:calc(100dvh - 110px);max-height:none}h1{font-size:16px;margin:0 0 8px}p{margin:8px 0}</style><h1 id="fixture-title">Real WebRTC loopback · animated 60 FPS target</h1><div id="root"></div><p id="input-status" aria-live="polite">Waiting for the synthetic host</p><script src="/app.js"></script></html>');
   }
 });
 server.listen(0, '127.0.0.1', () => console.log(`Remote performance fixture: http://127.0.0.1:${server.address().port}`));

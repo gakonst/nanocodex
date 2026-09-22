@@ -1,6 +1,7 @@
 //! Independent native RTMP encoder. URLs never enter diagnostics or status.
 use super::screen_video::{Capture, Task, VideoSource};
-use futures_util::future::BoxFuture;
+use futures_util::{TryStreamExt, future::BoxFuture};
+use nanocodex_remote::video::packet_stream;
 use serde_json::{Value, json};
 use std::{
     process::{Command, Stdio},
@@ -8,7 +9,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, BufReader},
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
     sync::watch,
 };
 type Result<T> = std::result::Result<T, Box<dyn std::error::Error + Send + Sync>>;
@@ -280,16 +281,17 @@ async fn run(
 ) -> Result<()> {
     let mut video_task = None;
     let command = if let Some(raw) = raw {
-        let (mut capture, width, height) =
+        let (capture, width, height) =
             tokio::time::timeout(Duration::from_secs(8), raw()).await??;
+        let (mut reader, owner) = capture.into_bytes()?;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         let address = format!("tcp://{}", listener.local_addr()?);
         video_task = Some(Task(tokio::spawn(async move {
-            let _owner = capture.owner;
+            let _owner = owner;
             if let Ok(Ok((mut stream, _))) =
                 tokio::time::timeout(Duration::from_secs(15), listener.accept()).await
             {
-                let _ = tokio::io::copy(&mut capture.reader, &mut stream).await;
+                let _ = tokio::io::copy(&mut reader, &mut stream).await;
             }
         })));
         let mut command = Command::new("ffmpeg");
@@ -313,8 +315,8 @@ async fn run(
     } else if let Some(source) = source {
         tokio::time::timeout(Duration::from_secs(8), source()).await??
     } else {
-        // VM guest --desktop-video emits Annex B, independently of preview peers.
-        let mut capture = tokio::time::timeout(
+        // Encoded capture is independent of preview peers; its wire transport may be framed.
+        let capture = tokio::time::timeout(
             Duration::from_secs(8),
             encoded.ok_or("capture unavailable")?(),
         )
@@ -326,7 +328,14 @@ async fn run(
             if let Ok(Ok((mut stream, _))) =
                 tokio::time::timeout(Duration::from_secs(15), listener.accept()).await
             {
-                let _ = tokio::io::copy(&mut capture.reader, &mut stream).await;
+                // This is an actual FFmpeg process boundary: concatenate Annex B
+                // packets here, without rebuilding the internal framing protocol.
+                let mut packets = packet_stream(capture.data);
+                while let Ok(Some(packet)) = packets.try_next().await {
+                    if stream.write_all(&packet).await.is_err() {
+                        break;
+                    }
+                }
             }
         })));
         let mut command = Command::new("ffmpeg");
@@ -351,15 +360,16 @@ async fn run(
     };
     let mut audio_task = None;
     let mut address = None;
-    if let Some(mut capture) = capture {
+    if let Some(capture) = capture {
+        let (mut reader, owner) = capture.into_bytes()?;
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
         address = Some(format!("tcp://{}", listener.local_addr()?));
         audio_task = Some(Task(tokio::spawn(async move {
-            let _owner = capture.owner;
+            let _owner = owner;
             if let Ok(Ok((mut stream, _))) =
                 tokio::time::timeout(Duration::from_secs(15), listener.accept()).await
             {
-                let _ = tokio::io::copy(&mut capture.reader, &mut stream).await;
+                let _ = tokio::io::copy(&mut reader, &mut stream).await;
             }
         })));
     }
