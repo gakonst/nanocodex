@@ -108,10 +108,10 @@ describe("routing is independent of provider telemetry", () => {
     expect(noisy.audit).not.toHaveProperty("provider_telemetry");
     expect(JSON.stringify(ai.run.mock.calls)).not.toMatch(/private-key|private-prompt|generationTtft|workerColo|clientIngressColo/);
     const input = ai.run.mock.calls[0][1] as { state: string; questions: { candidate: { criteria: object } } };
-    expect(Object.keys(input.questions.candidate.criteria)).toHaveLength(67);
+    expect(Object.keys(input.questions.candidate.criteria)).toHaveLength(43);
     expect(Buffer.byteLength(JSON.stringify(input))).toBeLessThan(16_000);
     const state = JSON.parse(input.state);
-    expect(Object.keys(state.model_profiles)).toHaveLength(7);
+    expect(Object.keys(state.model_profiles)).toHaveLength(6);
     expect(Object.keys(state.effort_profiles)).toHaveLength(3);
     expect(state).toHaveProperty("eval_evidence");
     expect(state).not.toHaveProperty("candidates");

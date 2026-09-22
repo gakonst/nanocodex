@@ -41,6 +41,16 @@ Nanocodex owns its execution tools, subagent lifecycle, and static model policy.
 Upstream's dynamic catalog, Node REPL approval system, and model migration UI
 are outside these contracts.
 
+## Gateway transports
+
+The SDK gateway adapter accepts all six Sol/Luna reasoning efforts. Cloudflare
+Responses preserves explicit standard/Pro mode; Chat Completions gateways reject
+Pro instead of silently dropping it. Sol/Luna tool calling through Chat
+Completions requires `none` effort. Managed tool-capable routing therefore offers
+Sol and Luna only through native ChatGPT and Cloudflare Responses; explicit SDK
+Chat adapters remain available with the compatible effort. Retired GPT-5.6 IDs
+remain rejected.
+
 ## Costs and service tier
 
 Standard requests explicitly select `service_tier: "default"`; fast mode is

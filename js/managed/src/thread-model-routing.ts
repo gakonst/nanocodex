@@ -57,8 +57,10 @@ function catalogPriceHint(backend: z.infer<typeof backendSchema>, model: typeof 
 export const ROUTING_CANDIDATES = [OSS_MODEL, ...frontierModel.options, ...gatewayModel.options].flatMap(model => {
   const nativeBackend = model === OSS_MODEL ? "workers_ai" as const : "chatgpt" as const;
   const gatewayOnly = gatewayModel.safeParse(model).success;
+  // Managed agents advertise tools; Sol/Luna Chat gateways require effort none,
+  // which is outside the managed reasoning policy. Keep their Responses routes.
   const gateways = model === "gpt-6-sol" || model === "gpt-6-luna"
-    ? ["openrouter" as const] : ["openrouter" as const, "vercel" as const];
+    ? [] : ["openrouter" as const, "vercel" as const];
   return [...(gatewayOnly ? [] : [nativeBackend]), ...gateways,
     ...(model === OSS_MODEL || gatewayOnly ? [] : ["cloudflare" as const])].flatMap(backend => {
     const provider_model = model === "kimi-k3" ? "moonshotai/kimi-k3" : model === "mimo-v2.6-pro" ? "xiaomi/mimo-v2.6-pro" : backend === "openrouter" ? (model === OSS_MODEL ? "z-ai/glm-5.3" : `openai/${model}`)

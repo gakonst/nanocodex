@@ -4,22 +4,22 @@ import { configuredProbeTargets, probeDailyLimit, probeSlotAllocation, PROBE_INT
 describe("deployment probe schedule", () => {
   it("covers every configured API model and effort without a global subscription identity", () => {
     const targets = configuredProbeTargets({ AI: { run: async () => ({}) }, OPENROUTER_API_KEY: "fixture-openrouter", AI_GATEWAY_API_KEY: "fixture-vercel" });
-    expect(targets).toHaveLength(43);
-    expect(new Set(targets.map(t => JSON.stringify([t.backend, t.model, t.effort]))).size).toBe(43);
+    expect(targets).toHaveLength(25);
+    expect(new Set(targets.map(t => JSON.stringify([t.backend, t.model, t.effort]))).size).toBe(25);
     expect(targets.filter(t => t.backend === "workers_ai")).toHaveLength(3);
-    expect(targets.filter(t => t.backend === "openrouter")).toHaveLength(20);
-    expect(targets.filter(t => t.backend === "vercel")).toHaveLength(20);
+    expect(targets.filter(t => t.backend === "openrouter")).toHaveLength(11);
+    expect(targets.filter(t => t.backend === "vercel")).toHaveLength(11);
     expect(configuredProbeTargets({})).toEqual([]);
     expect(configuredProbeTargets({ OPENROUTER_API_KEY: " " })).toEqual([]);
     expect(PROBE_SCHEDULE).toBe("*/30 * * * *");
     expect(probeDailyLimit({})).toBe(1600); // Rotating allocation preserves the budget as the catalog grows.
   });
-  it("adds twelve frontier probes only with the explicit gate and binding", () => {
+  it("adds nine frontier probes only with the explicit gate and binding", () => {
     const env = { AI: { run: async () => ({}) }, OPENROUTER_API_KEY: "fixture-openrouter", AI_GATEWAY_API_KEY: "fixture-vercel", NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true" };
     const targets = configuredProbeTargets(env);
-    expect(targets).toHaveLength(55);
-    expect(new Set(targets.map(t => JSON.stringify([t.backend,t.model,t.effort]))).size).toBe(55);
-    expect(targets.filter(t => t.backend === "cloudflare")).toHaveLength(12);
+    expect(targets).toHaveLength(34);
+    expect(new Set(targets.map(t => JSON.stringify([t.backend,t.model,t.effort]))).size).toBe(34);
+    expect(targets.filter(t => t.backend === "cloudflare")).toHaveLength(9);
     expect(targets.filter(t => t.backend === "cloudflare").every(t => t.model.startsWith("openai/") && !t.key && !t.accountId)).toBe(true);
     expect(configuredProbeTargets({...env,AI:undefined}).some(t => t.backend === "cloudflare")).toBe(false);
     for (const value of [undefined,"false","TRUE","1"]) expect(configuredProbeTargets({...env,NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED:value}).some(t => t.backend === "cloudflare")).toBe(false);
@@ -28,7 +28,7 @@ describe("deployment probe schedule", () => {
     const env = { NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true", CLOUDFLARE_AI_API_TOKEN: "fixture-cloudflare-token",
       NANOCODEX_CLOUDFLARE_ACCOUNT_ID: "0123456789abcdef0123456789abcdef" };
     const targets = configuredProbeTargets(env);
-    expect(targets).toHaveLength(12);
+    expect(targets).toHaveLength(9);
     expect(targets.every(t => t.backend === "cloudflare" && t.model.startsWith("openai/")
       && t.key === env.CLOUDFLARE_AI_API_TOKEN && t.accountId === env.NANOCODEX_CLOUDFLARE_ACCOUNT_ID)).toBe(true);
     expect(configuredProbeTargets({ ...env, AI: { run: async () => ({}) } }).filter(t => t.backend === "cloudflare")).toEqual(targets);
