@@ -110,6 +110,28 @@ describe('managed before-compaction preservation', () => {
     });
   });
 
+  it('keeps a repeated final preference after the correction it supersedes', async () => {
+    await withStorage(async storage => {
+      const f = fixture(storage);
+      const messages: BeforeCompactionRequest['messages'] = [
+        { role: 'user', text: 'Use blue for the project.' },
+        { role: 'user', text: 'Actually, use red for the project.' },
+        { role: 'user', text: 'Use blue for the project.' },
+      ];
+      const original = structuredClone(messages);
+      await preserveManagedMemory(f.options, { ...f.request, messages });
+      const [, init] = f.fetch.mock.calls[0]!;
+      const sent = JSON.parse(init!.body as string);
+      expect(sent.messages).toEqual([messages[1], messages[2]].map(message => ({
+        id: hash(`${message.role}\0${message.text}`), ...message,
+      })));
+      expect(messages).toEqual(original);
+      // Stable source IDs keep retries of this same boundary idempotent.
+      await preserveManagedMemory(f.options, { ...f.request, messages });
+      expect(f.fetch.mock.calls[1]![1]!.body).toBe(init!.body);
+    });
+  });
+
   it('waits for the durable receipt body before releasing the compaction barrier', async () => {
     await withStorage(async storage => {
       const f = fixture(storage);

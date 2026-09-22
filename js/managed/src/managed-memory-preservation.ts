@@ -44,10 +44,12 @@ export async function preserveManagedMemory(options: ManagedMemoryPreservationOp
     return { receiptId: `memory-skip:${hash(request.boundaryId)}` };
   }
   const target = memoryTarget(options.organizationId, options.teamId, options.ownerId, 'personal');
-  const messages = [...new Map(request.messages.map(message => {
+  // Keep each message at its last occurrence: A -> B -> A must end with A,
+  // otherwise extraction can mistake the superseded B decision for the latest.
+  const messages = [...new Map(request.messages.toReversed().map(message => {
     const id = hash(`${message.role}\0${message.text}`);
     return [id, { id, role: message.role, text: message.text }] as const;
-  })).values()];
+  })).values()].reverse();
   const response = await options.memories.getByName(target.name).fetch('https://memory.internal/markdown-memory/flush', {
     method: 'POST', signal: request.signal,
     headers: {
