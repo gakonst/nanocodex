@@ -301,8 +301,10 @@ impl Setup {
 
 impl Hand {
     pub(crate) async fn run(self) -> Result<()> {
-        let _service_lock = if matches!(&self.command, HandCommand::Add(_) | HandCommand::Setup(_) | HandCommand::Status)
-        {
+        let _service_lock = if matches!(
+            &self.command,
+            HandCommand::Add(_) | HandCommand::Setup(_) | HandCommand::Status
+        ) {
             None
         } else {
             Some(crate::update::lock_service_operation()?)

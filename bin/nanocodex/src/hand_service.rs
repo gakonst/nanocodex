@@ -588,7 +588,10 @@ pub(crate) struct ServiceUpdate {
     // Hold them through handover so old clients cannot steal service ownership.
     _legacy_guards: Vec<fs::File>,
 }
-pub(crate) async fn prepare_update(candidate: &Path, start_stopped: bool) -> Result<Option<ServiceUpdate>> {
+pub(crate) async fn prepare_update(
+    candidate: &Path,
+    start_stopped: bool,
+) -> Result<Option<ServiceUpdate>> {
     if !cfg!(target_os = "macos") {
         return Ok(None);
     }
@@ -714,6 +717,7 @@ pub(crate) async fn recover() -> Result<()> {
         candidate: PathBuf::new(),
         previous,
         was_loaded,
+        start_stopped: false,
         backup,
         _legacy_guards: guards,
     };
