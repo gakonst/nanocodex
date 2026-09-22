@@ -32,7 +32,7 @@ if destination.exists():
     parser.error('Use a new destination; running host installations are immutable')
 source_dir = Path(__file__).resolve().parents[1] / 'crates/experimental/nanocodex-computer/src'
 destination.mkdir(mode=0o700, parents=True)
-for name in ('linux_sky_host.mjs', 'linux_sky_proxy.mjs', 'linux_sky_worker.mjs', 'linux_sky_text.mjs'):
+for name in ('linux_sky_host.mjs', 'linux_sky_proxy.mjs', 'linux_sky_worker.mjs'):
     target = destination / name
     shutil.copyfile(source_dir / name, target)
     target.chmod(0o600)
