@@ -65,6 +65,7 @@ public actor HandWorkspace {
             + (HandPersonalTools.available ? ["contacts", "photos", "location"] : [])
         return .object([
             "type": .string("catalog"), "attachment_id": .string(id),
+            "capabilities": .array([.string("turn_metadata")]),
             "machines": .array([.object(["id": .string(id), "name": .string(name), "workspace": .string("/workspace"), "capabilities": .array((["native", "filesystem", platform == "ios" ? "background_limited" : "background"] + optionalCapabilities).map(JSON.string))])]),
             "tools": .array([
                 tool("device_info", "Read this Hand's device, workspace, and availability. It connects automatically unless disabled; iOS background execution is limited and not guaranteed.", properties: [:], required: []),

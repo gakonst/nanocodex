@@ -39,6 +39,8 @@ final class HandTests: XCTestCase {
     func testCatalogAdvertisesOnlyImplementedDeviceTools() throws {
         let hand = try HandWorkspace(id: "phone-one", name: "iPhone", root: directory())
         XCTAssertEqual(hand.catalog["attachment_id"].string, "phone-one")
+        // The broker rejects registration before ready without this negotiation.
+        XCTAssertEqual(hand.catalog["capabilities"], .array([.string("turn_metadata")]))
         XCTAssertEqual(hand.catalog["machines"].array.first?["workspace"].string, "/workspace")
         XCTAssertEqual(Set(hand.catalog["tools"].array.map { $0["definition"]["name"].string }), Set(["device_info", "list_files", "read_file", "write_file", "view_image"]).union(HandPersonalTools.available ? HandPersonalTools.names : []))
     }
@@ -122,7 +124,7 @@ final class HandTests: XCTestCase {
         let session = try HandSession(credential: credential, workspace: workspace)
         defer { session.close() }
         func call(_ id: String, content: String, deadline: Double) -> JSON {
-            .object(["type": .string("call"), "call_id": .string(id), "session_id": .string("session"), "model": .string("test"), "name": .string("write_file"), "input": .object(["path": .string("receipt.txt"), "content": .string(content)]), "deadline_at": .number(deadline), "output_byte_budget": .number(16_384), "output_token_budget": .number(4096)])
+            .object(["type": .string("call"), "call_id": .string(id), "session_id": .string("session"), "turn_id": .string("turn-one"), "model": .string("test"), "name": .string("write_file"), "input": .object(["path": .string("receipt.txt"), "content": .string(content)]), "deadline_at": .number(deadline), "output_byte_budget": .number(16_384), "output_token_budget": .number(4096)])
         }
         let deadline = Date().timeIntervalSince1970 * 1000 + 10_000
         let frame = call("one", content: "first", deadline: deadline)
@@ -132,6 +134,9 @@ final class HandTests: XCTestCase {
         XCTAssertEqual(replay, first)
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("receipt.txt"), encoding: .utf8), "changed locally")
         do { _ = try await session.invoke(call("one", content: "different", deadline: deadline)); XCTFail("Conflicting reuse accepted") } catch { }
+        guard case .object(var otherTurn) = frame else { return XCTFail() }
+        otherTurn["turn_id"] = .string("turn-two")
+        do { _ = try await session.invoke(.object(otherTurn)); XCTFail("Receipt reused across turns") } catch { }
         let expired = try await session.invoke(call("two", content: "late", deadline: 1))
         XCTAssertEqual(expired["outcome"]["status"].string, "unavailable")
         XCTAssertEqual(try String(contentsOf: root.appendingPathComponent("receipt.txt"), encoding: .utf8), "changed locally")
