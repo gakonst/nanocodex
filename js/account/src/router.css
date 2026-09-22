@@ -749,3 +749,104 @@
 .atlas-signal svg line {
   vector-effect: non-scaling-stroke;
 }
+
+.atlas-thinking-matrix {
+  min-width: 850px;
+}
+.atlas-thinking-matrix thead th:last-child {
+  width: 290px;
+  vertical-align: middle;
+  padding: 8px 12px;
+}
+.atlas-thinking-matrix .atlas-thinking-chart {
+  padding: 5px 8px;
+}
+.atlas-thinking-chart svg {
+  display: block;
+  width: 100%;
+  overflow: visible;
+}
+.atlas-thinking-chart svg line,
+.atlas-thinking-chart svg path {
+  vector-effect: non-scaling-stroke;
+}
+.atlas-thinking-mark {
+  cursor: pointer;
+}
+.atlas-thinking-mark:hover rect {
+  opacity: 0.12;
+}
+.atlas-thinking-matrix .atlas-thinking-readings {
+  padding: 5px 8px;
+}
+.atlas-thinking-readings button {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 0;
+  padding: 0 5px;
+  font: inherit;
+  font-size: 10px;
+  background: transparent;
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.atlas-thinking-readings button[aria-pressed="true"],
+.atlas-thinking-readings button:hover:not(:disabled) {
+  background: color-mix(in srgb, currentColor 6%, transparent);
+}
+.atlas-thinking-readings button:disabled {
+  cursor: default;
+}
+.atlas-thinking-readings b {
+  font-weight: 550;
+}
+.atlas-thinking-readings small {
+  font-size: 9px;
+  margin-left: auto;
+  opacity: 0.7;
+}
+.atlas-thinking-readings em {
+  color: #d16b6b;
+  font-style: normal;
+}
+.atlas-thinking-level {
+  display: inline-flex;
+  gap: 7px;
+  min-width: 65px;
+  font-weight: 550;
+}
+.atlas-thinking-level small {
+  color: var(--text);
+  font-weight: 400;
+}
+.atlas-thinking-readings .atlas-reading-failed {
+  background: color-mix(in srgb, #d16b6b 9%, transparent);
+}
+.atlas-unknown {
+  opacity: 0.45;
+}
+.atlas-thinking-axis {
+  position: relative;
+  height: 23px;
+}
+.atlas-thinking-axis span {
+  position: absolute;
+  top: 7px;
+  font-size: 9px;
+  white-space: nowrap;
+  opacity: 0.65;
+}
+.atlas-thinking-legend > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.atlas-thinking-legend i {
+  height: 7px;
+  width: 7px;
+  display: inline-block;
+  border-radius: 50%;
+}
