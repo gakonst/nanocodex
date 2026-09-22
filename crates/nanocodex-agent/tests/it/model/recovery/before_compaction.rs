@@ -451,6 +451,15 @@ impl ExecutionPolicy for Journal {
                     .unwrap()
                     .push(serde_json::from_str(&input_json).unwrap());
             }
+            if kind == "compaction" {
+                assert!(
+                    self.receipts
+                        .lock()
+                        .unwrap()
+                        .contains_key("before-compaction-0"),
+                    "compaction is admitted only after a persisted preservation receipt"
+                );
+            }
             if kind == "compaction" && self.attempt.load(Ordering::SeqCst) == 1 {
                 return Err(NanocodexError::InvalidExecutionPolicy(
                     "lost process after receipt".into(),
@@ -512,12 +521,25 @@ async fn before_compaction_boundary_is_stable_and_durable_receipt_replays_after_
     let workspace = tempfile::tempdir()?;
     let evidence = Arc::new(Evidence::default());
     let journal = Arc::new(Journal::default());
+    let (seed, events) = Nanocodex::builder(provider(&evidence, Trigger::Manual)?)
+        .session_id(test_session_id())
+        .workspace(workspace.path())
+        .build()?;
+    drop(events);
+    let completed = seed
+        .prompt("durable source before restart")
+        .await?
+        .result()
+        .await?;
+    let snapshot = completed.snapshot().expect("completed source snapshot");
+    seed.shutdown().await?;
     for attempt in 0..3 {
         journal.attempt.store(attempt, Ordering::SeqCst);
         let (agent, events) = Nanocodex::builder(provider(&evidence, Trigger::Manual)?)
             .session_id(test_session_id())
             .workspace(workspace.path())
             .execution_policy(journal.clone())
+            .resume(snapshot.clone())
             .before_compaction(Preserve(evidence.clone()))
             .build()?;
         drop(events);
@@ -537,6 +559,13 @@ async fn before_compaction_boundary_is_stable_and_durable_receipt_replays_after_
     assert_eq!(inputs.len(), 3);
     assert_eq!(inputs[0], inputs[1]);
     assert_eq!(inputs[1], inputs[2]);
+    assert_eq!(
+        inputs[0]["messages"],
+        json!([
+            {"role": "user", "text": "durable source before restart"},
+            {"role": "assistant", "text": "source answer 0"},
+        ])
+    );
     assert_eq!(
         inputs[0]["boundaryId"],
         format!("{TEST_SESSION_ID}:stable-compaction-operation:before-compaction-0")
