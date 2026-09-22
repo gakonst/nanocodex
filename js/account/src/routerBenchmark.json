@@ -1,0 +1,305 @@
+{
+  "date": "2026-09-21",
+  "model": "gpt-5.6-luna",
+  "effort": "low",
+  "source": "https://github.com/gakonst/nanocodex/blob/e4dc946bd430ea0cc8fbb62ebdb63d3a8c0c9eb9/docs/performance/2026-09-21-regional-inference/README.md",
+  "cells": [
+    {
+      "colo": "IAD",
+      "provider": "cloudflare",
+      "baseline": 1700,
+      "streaming": 1873,
+      "baselineCount": 5,
+      "streamingCount": 5
+    },
+    {
+      "colo": "LHR",
+      "provider": "cloudflare",
+      "baseline": 2112,
+      "streaming": 1526,
+      "baselineCount": 5,
+      "streamingCount": 5
+    },
+    {
+      "colo": "NRT",
+      "provider": "cloudflare",
+      "baseline": 1953,
+      "streaming": 1812,
+      "baselineCount": 5,
+      "streamingCount": 5
+    },
+    {
+      "colo": "IAD",
+      "provider": "openrouter",
+      "baseline": 1290,
+      "streaming": 1277,
+      "baselineCount": 5,
+      "streamingCount": 5
+    },
+    {
+      "colo": "LHR",
+      "provider": "openrouter",
+      "baseline": 1661,
+      "streaming": 1896,
+      "baselineCount": 5,
+      "streamingCount": 5
+    },
+    {
+      "colo": "NRT",
+      "provider": "openrouter",
+      "baseline": 1748,
+      "streaming": 1203,
+      "baselineCount": 5,
+      "streamingCount": 5
+    },
+    {
+      "colo": "IAD",
+      "provider": "vercel",
+      "baseline": 2045,
+      "streaming": 1483,
+      "baselineCount": 5,
+      "streamingCount": 5
+    },
+    {
+      "colo": "LHR",
+      "provider": "vercel",
+      "baseline": 1951,
+      "streaming": 1453,
+      "baselineCount": 5,
+      "streamingCount": 5
+    },
+    {
+      "colo": "NRT",
+      "provider": "vercel",
+      "baseline": 1757,
+      "streaming": 1206,
+      "baselineCount": 5,
+      "streamingCount": 5
+    }
+  ],
+  "jev": {
+    "cases": 18,
+    "bindingFailures": 9,
+    "lowConfidence": 8,
+    "accepted": 1,
+    "completed": 18,
+    "rows": [
+      {
+        "arm": "global",
+        "binding_ok": false,
+        "confidence_status": "unavailable_or_invalid",
+        "confidence": null,
+        "probabilities": null,
+        "selected": "openrouter:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 3919,
+        "placement": "remote-IAD"
+      },
+      {
+        "arm": "global",
+        "binding_ok": false,
+        "confidence_status": "unavailable_or_invalid",
+        "confidence": null,
+        "probabilities": null,
+        "selected": "openrouter:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 4415,
+        "placement": "remote-"
+      },
+      {
+        "arm": "regional",
+        "binding_ok": false,
+        "confidence_status": "unavailable_or_invalid",
+        "confidence": null,
+        "probabilities": null,
+        "selected": "openrouter:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 3036,
+        "placement": "remote-LHR"
+      },
+      {
+        "arm": "regional",
+        "binding_ok": false,
+        "confidence_status": "unavailable_or_invalid",
+        "confidence": null,
+        "probabilities": null,
+        "selected": "openrouter:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 3195,
+        "placement": "remote-IAD"
+      },
+      {
+        "arm": "global",
+        "binding_ok": false,
+        "confidence_status": "unavailable_or_invalid",
+        "confidence": null,
+        "probabilities": null,
+        "selected": "openrouter:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 2770,
+        "placement": "remote-LHR"
+      },
+      {
+        "arm": "regional",
+        "binding_ok": false,
+        "confidence_status": "unavailable_or_invalid",
+        "confidence": null,
+        "probabilities": null,
+        "selected": "openrouter:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 3962,
+        "placement": "remote-NRT"
+      },
+      {
+        "arm": "regional",
+        "binding_ok": false,
+        "confidence_status": "unavailable_or_invalid",
+        "confidence": null,
+        "probabilities": null,
+        "selected": "openrouter:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 3033,
+        "placement": "remote-IAD"
+      },
+      {
+        "arm": "regional",
+        "binding_ok": false,
+        "confidence_status": "unavailable_or_invalid",
+        "confidence": null,
+        "probabilities": null,
+        "selected": "openrouter:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 3847,
+        "placement": "remote-NRT"
+      },
+      {
+        "arm": "global",
+        "binding_ok": false,
+        "confidence_status": "unavailable_or_invalid",
+        "confidence": null,
+        "probabilities": null,
+        "selected": "openrouter:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 3630,
+        "placement": "remote-LHR"
+      },
+      {
+        "arm": "global",
+        "binding_ok": true,
+        "confidence_status": "low",
+        "confidence": 0.32,
+        "probabilities": {
+          "openrouter:openai/gpt-5.6-luna:low": 0.55,
+          "vercel:openai/gpt-5.6-luna:low": 0.41,
+          "cloudflare:openai/gpt-5.6-luna:low": 0.04
+        },
+        "selected": "openrouter:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 3930,
+        "placement": "remote-IAD"
+      },
+      {
+        "arm": "global",
+        "binding_ok": true,
+        "confidence_status": "low",
+        "confidence": 0.29,
+        "probabilities": {
+          "openrouter:openai/gpt-5.6-luna:low": 0.46,
+          "vercel:openai/gpt-5.6-luna:low": 0.53,
+          "cloudflare:openai/gpt-5.6-luna:low": 0.01
+        },
+        "selected": "vercel:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 234,
+        "placement": "remote-NRT"
+      },
+      {
+        "arm": "regional",
+        "binding_ok": true,
+        "confidence_status": "low",
+        "confidence": 0.35,
+        "probabilities": {
+          "openrouter:openai/gpt-5.6-luna:low": 0.57,
+          "vercel:openai/gpt-5.6-luna:low": 0.01,
+          "cloudflare:openai/gpt-5.6-luna:low": 0.42
+        },
+        "selected": "openrouter:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 324,
+        "placement": "remote-LHR"
+      },
+      {
+        "arm": "global",
+        "binding_ok": true,
+        "confidence_status": "low",
+        "confidence": 0.36,
+        "probabilities": {
+          "openrouter:openai/gpt-5.6-luna:low": 0.57,
+          "vercel:openai/gpt-5.6-luna:low": 0.42,
+          "cloudflare:openai/gpt-5.6-luna:low": 0.01
+        },
+        "selected": "openrouter:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 299,
+        "placement": "remote-"
+      },
+      {
+        "arm": "global",
+        "binding_ok": true,
+        "confidence_status": "low",
+        "confidence": 0.47,
+        "probabilities": {
+          "openrouter:openai/gpt-5.6-luna:low": 0.65,
+          "vercel:openai/gpt-5.6-luna:low": 0.34,
+          "cloudflare:openai/gpt-5.6-luna:low": 0.01
+        },
+        "selected": "openrouter:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 204,
+        "placement": "remote-"
+      },
+      {
+        "arm": "regional",
+        "binding_ok": true,
+        "confidence_status": "low",
+        "confidence": 0.26,
+        "probabilities": {
+          "openrouter:openai/gpt-5.6-luna:low": 0.48,
+          "vercel:openai/gpt-5.6-luna:low": 0.01,
+          "cloudflare:openai/gpt-5.6-luna:low": 0.51
+        },
+        "selected": "cloudflare:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 296,
+        "placement": "remote-LHR"
+      },
+      {
+        "arm": "regional",
+        "binding_ok": true,
+        "confidence_status": "low",
+        "confidence": 0.54,
+        "probabilities": {
+          "openrouter:openai/gpt-5.6-luna:low": 0.7,
+          "vercel:openai/gpt-5.6-luna:low": 0.3,
+          "cloudflare:openai/gpt-5.6-luna:low": 0
+        },
+        "selected": "openrouter:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 379,
+        "placement": "remote-IAD"
+      },
+      {
+        "arm": "regional",
+        "binding_ok": true,
+        "confidence_status": "accepted",
+        "confidence": 0.95,
+        "probabilities": {
+          "openrouter:openai/gpt-5.6-luna:low": 0.97,
+          "vercel:openai/gpt-5.6-luna:low": 0.03,
+          "cloudflare:openai/gpt-5.6-luna:low": 0
+        },
+        "selected": "openrouter:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 271,
+        "placement": "remote-NRT"
+      },
+      {
+        "arm": "global",
+        "binding_ok": true,
+        "confidence_status": "low",
+        "confidence": 0.38,
+        "probabilities": {
+          "openrouter:openai/gpt-5.6-luna:low": 0.59,
+          "vercel:openai/gpt-5.6-luna:low": 0.4,
+          "cloudflare:openai/gpt-5.6-luna:low": 0.01
+        },
+        "selected": "openrouter:openai/gpt-5.6-luna:low",
+        "outer_router_ms": 914,
+        "placement": "remote-LHR"
+      }
+    ]
+  }
+}

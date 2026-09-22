@@ -12,7 +12,7 @@ pub(crate) const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::
 #[serde(tag = "type", rename_all = "snake_case")]
 pub(crate) enum ExecutorFrame<'a> {
     Catalog {
-        capabilities: &'a [&'a str],
+        capabilities: [&'static str; 1],
         tools: &'a Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         machines: Option<&'a [AttachmentMachine]>,

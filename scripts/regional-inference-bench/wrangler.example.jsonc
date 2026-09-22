@@ -1,0 +1,19 @@
+{
+  // Copy to an operator-private config and give each region a unique temporary name.
+  "name": "nanocodex-bench-us-temporary",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-09-21",
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "workers_dev": true,
+  "placement": {"region": "aws:us-east-1"},
+  "observability": {"enabled": false},
+  "vars": {
+    "PLACEMENT_REGION": "aws:us-east-1",
+    "TARGET_URL": "https://nanocodex.gakonst.workers.dev/v1/responses",
+    "ALLOWED_MODELS": "auto,cloudflare:openai/gpt-5.6-luna:low",
+    // Deliberately expired until the coordinator authorizes a run.
+    "EXPIRES_AT": "2026-09-21T00:00:00Z"
+  }
+  // Provision BENCH_TOKEN and INFERENCE_KEY through Wrangler secret bindings.
+  // Never put either credential in this config, CLI arguments, or benchmark output.
+}

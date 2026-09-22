@@ -6,3 +6,6 @@ export { UserAccount, Organization } from "../src/account-auth";
 
 export { CodemodeRuntime } from "@cloudflare/codemode";
 export { ProviderProbeCoordinator } from "./provider-probe-worker";
+
+export { InferenceKey, InferenceAccount } from "../src/inference-keys";
+export { InferenceSession } from "../src/inference-session";

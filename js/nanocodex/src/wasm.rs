@@ -219,6 +219,19 @@ extern "C" {
         host_context_ref: Option<&str>,
     ) -> Result<(), JsValue>;
 
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = canCheckpointSubagents)]
+    fn host_can_checkpoint_subagents(
+        host_definition_id: u32,
+        root_session_id: &str,
+    ) -> Result<bool, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = checkpointSubagents)]
+    fn host_checkpoint_subagents(
+        host_definition_id: u32,
+        root_session_id: &str,
+        encoded: &str,
+    ) -> Result<(), JsValue>;
+
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = releaseSubagentSession)]
     fn host_release_subagent_session(
         host_definition_id: u32,
@@ -1571,6 +1584,23 @@ impl WasmNanocodex {
     #[must_use]
     pub fn session_id(&self) -> String {
         self.inner.session_id().to_string()
+    }
+
+    /// Validates a persisted checkpoint without restoring children or opening resources.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed, oversized, or invalid checkpoints for this root session.
+    #[wasm_bindgen(js_name = validateSubagentCheckpoint)]
+    pub fn validate_subagent_checkpoint(&self, encoded: &str) -> Result<(), JsValue> {
+        if encoded.len() > MAX_SUBAGENT_CHECKPOINT_BYTES {
+            return Err(js_error("subagent checkpoint exceeds size limit"));
+        }
+        let checkpoint: SubagentCheckpoint = serde_json::from_str(encoded)
+            .map_err(|error| js_error(format!("invalid subagent checkpoint: {error}")))?;
+        checkpoint
+            .validate(self.inner.session_id())
+            .map_err(js_error)
     }
 
     /// Restores persisted logical children after the JavaScript owner acquires
@@ -3333,12 +3363,23 @@ fn forward_subagent_updates(
     parents: Arc<Mutex<HashMap<String, AgentHandle>>>,
     unloaded_roots: Rc<RefCell<HashSet<String>>>,
 ) {
+    let pending_checkpoints = Rc::new(RefCell::new(HashSet::<String>::new()));
+    let dirty_checkpoints = Rc::new(RefCell::new(HashSet::<String>::new()));
     spawn_local(async move {
         while let Some(scoped) = updates.recv().await {
             let root_session_id = scoped.root_session_id;
             if unloaded_roots.borrow().contains(&root_session_id) {
                 continue;
             }
+            let save_boundary = match &scoped.update {
+                SubagentUpdate::Added(_) | SubagentUpdate::Status { .. } => true,
+                SubagentUpdate::Event { event, .. } => matches!(
+                    event.kind,
+                    nanocodex::oai::events::AgentEventKind::ModelCallCompleted
+                        | nanocodex::oai::events::AgentEventKind::ModelCompactionCompleted
+                ),
+                _ => false,
+            };
             match scoped.update {
                 SubagentUpdate::Added(descriptor) => {
                     let Some(registry) = registry.upgrade() else {
@@ -3389,6 +3430,65 @@ fn forward_subagent_updates(
                     }
                 }
                 SubagentUpdate::Status { .. } | SubagentUpdate::Message(_) => {}
+            }
+            if save_boundary
+                && !unloaded_roots.borrow().contains(&root_session_id)
+                && host_can_checkpoint_subagents(host_definition_id, &root_session_id)
+                    .unwrap_or(false)
+            {
+                dirty_checkpoints
+                    .borrow_mut()
+                    .insert(root_session_id.clone());
+                if pending_checkpoints
+                    .borrow_mut()
+                    .insert(root_session_id.clone())
+                {
+                    let registry = registry.clone();
+                    let unloaded = unloaded_roots.clone();
+                    let pending = pending_checkpoints.clone();
+                    let dirty = dirty_checkpoints.clone();
+                    // Persistence must not block event forwarding or host release.
+                    // One writer per root coalesces notifications while capturing.
+                    spawn_local(async move {
+                        while dirty.borrow_mut().remove(&root_session_id) {
+                            if unloaded.borrow().contains(&root_session_id)
+                                || !host_can_checkpoint_subagents(
+                                    host_definition_id,
+                                    &root_session_id,
+                                )
+                                .unwrap_or(false)
+                            {
+                                break;
+                            }
+                            let Some(registry) = registry.upgrade() else {
+                                break;
+                            };
+                            match registry.live_checkpoint(&root_session_id).await {
+                                Ok(checkpoint) => {
+                                    if !unloaded.borrow().contains(&root_session_id)
+                                        && let Ok(encoded) = serde_json::to_string(&checkpoint)
+                                        && let Err(error) = host_checkpoint_subagents(
+                                            host_definition_id,
+                                            &root_session_id,
+                                            &encoded,
+                                        )
+                                    {
+                                        report_subagent_host_error(
+                                            "saving a child boundary",
+                                            &error,
+                                        );
+                                    }
+                                }
+                                Err(error) => report_subagent_host_error(
+                                    "capturing a child boundary",
+                                    &js_error(error),
+                                ),
+                            }
+                        }
+                        pending.borrow_mut().remove(&root_session_id);
+                        dirty.borrow_mut().remove(&root_session_id);
+                    });
+                }
             }
         }
         let session_ids = sessions

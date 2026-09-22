@@ -571,6 +571,19 @@ const hostBridge = Object.freeze({
     }
     hostSessions.set(sessionId, host);
   },
+  canCheckpointSubagents(hostDefinitionId, rootSessionId) {
+    const host = definitionHosts.get(hostDefinitionId);
+    const reservation = cloudflareHostReservations.get(host);
+    return !!(host && reservation?.committed && reservation.sessionId === rootSessionId
+      && mayReleaseCloudflareSubagentSession(reservation));
+  },
+  checkpointSubagents(hostDefinitionId, rootSessionId, encoded) {
+    const host = definitionHosts.get(hostDefinitionId);
+    const reservation = cloudflareHostReservations.get(host);
+    if (!host || !reservation?.committed || reservation.sessionId !== rootSessionId
+      || !mayReleaseCloudflareSubagentSession(reservation)) return;
+    host.checkpointSubagents?.(encoded);
+  },
   releaseSubagentSession(hostDefinitionId, rootSessionId, sessionId) {
     let host;
     if (sessionId !== undefined) {
@@ -899,13 +912,16 @@ export function activateCloudflareAgentSession(reservation) {
 }
 
 /** Internal Cloudflare seam: publishes a reconstructed owner after adapter setup succeeds. */
-export function commitCloudflareAgentSession(reservation) {
+export function commitCloudflareAgentSession(reservation, beforeCommit) {
   if (!cloudflareAgentSessions.has(reservation)
     || reservation.released
     || !reservation.adopted
     || activeAgentSessions.get(reservation.sessionId) !== reservation) {
     throw new Error("Cloudflare Agent session reservation is not ready to commit");
   }
+  // A synchronous durable transition must succeed before rollback authority is
+  // relinquished. No other generation can interleave validation and publication.
+  beforeCommit?.();
   reservation.committed = true;
   reservation.predecessor = undefined;
   reservation.predecessorHost = undefined;

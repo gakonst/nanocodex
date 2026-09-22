@@ -184,8 +184,30 @@ export async function create(options = {}) {
           activateCloudflareAgentSession(cloudflareReservation);
           const restoredSubagents = subagentSessions?.restore?.() ?? [];
           const checkpoint = subagentSessions?.restoreCheckpoint?.();
+          let reusableCheckpoint = checkpoint;
           if (checkpoint !== undefined) {
-            validateRestoredChildBindings(checkpoint, raw.sessionId, restoredSubagents);
+            const complete = validateRestoredChildBindings(checkpoint, raw.sessionId, restoredSubagents, subagentSessions);
+            raw.validateSubagentCheckpoint(checkpoint);
+            if (!complete) {
+              // Preserve valid saved children. Only bindings without a runtime
+              // boundary are archival; one missing child must not disable siblings.
+              const merged = JSON.parse(checkpoint);
+              const saved = new Set(merged.children.map((child) => child.descriptor.session_id));
+              for (const binding of restoredSubagents) {
+                if (saved.has(binding.sessionId)) continue;
+                const id = Number(binding.agentId);
+                merged.children.push({
+                  descriptor: { id, session_id: binding.sessionId, role: binding.role,
+                    task: binding.task, parent: binding.parentAgentId == null ? null : Number(binding.parentAgentId) },
+                  runtime: null, output_schema: true, next_turn_token: 0,
+                  status: { state: "interrupted" }, last_output: null,
+                  host_context: subagentSessions?.hostContextRef?.(binding.sessionId) ?? null,
+                });
+                merged.next_agent_id = Math.max(merged.next_agent_id, id + 1);
+              }
+              reusableCheckpoint = JSON.stringify(merged);
+              raw.validateSubagentCheckpoint(reusableCheckpoint);
+            }
           }
           if (restoredSubagents.length > 0 || checkpoint !== undefined) {
             const restoredHostContextRefs = Object.fromEntries(
@@ -195,7 +217,7 @@ export async function create(options = {}) {
               }),
             );
             await raw.restoreSubagents(
-              checkpoint ?? JSON.stringify(restoredSubagents),
+              reusableCheckpoint ?? JSON.stringify(restoredSubagents),
               JSON.stringify(restoredHostContextRefs),
             );
           }
@@ -307,10 +329,10 @@ function releaseHost(host) {
   void host.release().catch(reportError);
 }
 
-function validateRestoredChildBindings(encoded, rootSessionId, bindings) {
+function validateRestoredChildBindings(encoded, rootSessionId, bindings, sessions) {
   const checkpoint = JSON.parse(encoded);
   if (checkpoint.version !== 1 || checkpoint.root_session_id !== rootSessionId
-    || !Array.isArray(checkpoint.children) || checkpoint.children.length !== bindings.length) {
+    || !Array.isArray(checkpoint.children) || checkpoint.children.length > bindings.length) {
     throw new Error("Durable child checkpoint does not match its session bindings");
   }
   const retained = new Map(bindings.map((binding) => [binding.sessionId, binding]));
@@ -321,6 +343,10 @@ function validateRestoredChildBindings(encoded, rootSessionId, bindings) {
       || (descriptor.parent == null ? null : String(descriptor.parent)) !== (binding.parentAgentId ?? null)) {
       throw new Error("Durable child checkpoint identity differs from its session binding");
     }
+    if ((child.host_context ?? null) !== (sessions.hostContextRef?.(binding.sessionId) ?? null)) {
+      throw new Error("child checkpoint host context differs from its retained binding");
+    }
     retained.delete(descriptor.session_id);
   }
+  return retained.size === 0;
 }

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// Opt-in transport only: the running official app server and GUI own CUA.
+// Transport only: the official app server owns CUA and permission decisions.
 import { spawn } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
@@ -70,15 +70,29 @@ export class AppServer {
   }
 
   receive(data) {
+    if (this.closed) return;
     let value;
     try {
       if (typeof data !== 'string' || Buffer.byteLength(data) > MAX_FRAME) throw new Error();
       value = JSON.parse(data);
       if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error();
     } catch { this.close(failure('Invalid app server message.')); return; }
-    // Requests can be broadcast to the GUI too. Never race its response, forward
-    // approval requests to MCP, or answer them (even with a method-not-found).
-    if (own(value, 'method')) return;
+    // A headless bridge has no interactive responder. The official server first
+    // applies its existing permission policy; only unresolved requests reach us.
+    // Decline those for our own CUA thread, never manufacture an acceptance or
+    // answer another client's broadcast request. GUI-backed callers keep owning
+    // their responses when this transport is explicitly used alongside a GUI.
+    if (own(value, 'method')) {
+      if (this.config.headless && this.threadId
+          && value.method === 'mcpServer/elicitation/request'
+          && (typeof value.id === 'string' || Number.isSafeInteger(value.id))
+          && value.params?.threadId === this.threadId
+          && value.params?.serverName === 'cua_repl') {
+        try { this.socket.send(JSON.stringify({ id: value.id, result: { action: 'decline', content: null, _meta: null } })); }
+        catch { this.close(failure('App server send failed; the call was not retried.')); }
+      }
+      return;
+    }
     const pending = this.pending.get(value.id);
     if (!pending) return;
     this.pending.delete(value.id);
@@ -88,11 +102,13 @@ export class AppServer {
     else pending.reject(failure('Invalid app server response.'));
   }
 
-  request(method, params) {
+  request(method, params, timeoutMs = this.config.timeoutMs) {
+    // Only internal forwarded-tool calls omit this timer. Provider arguments
+    // cannot change trusted connection, initialization or startup deadlines.
     if (this.closed) return Promise.reject(this.closed);
     const id = ++this.nextId;
     return new Promise((resolve, reject) => {
-      const timer = setTimeout(() => this.close(failure('App server request timed out; effects may be partial and the call was not retried.')), this.config.timeoutMs);
+      const timer = timeoutMs === null ? undefined : setTimeout(() => this.close(failure('App server request timed out; upstream/native work may continue, effects are uncertain and the call was not retried.')), timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
       try { this.socket.send(JSON.stringify({ id, method, params })); }
       catch { this.close(failure('App server send failed; the call was not retried.')); }
@@ -128,12 +144,12 @@ export class AppServer {
     if (!params || !this.tools.some(tool => tool.name === params.name)) throw failure('Unknown cua_repl tool.', -32602);
     if (params._meta != null && (typeof params._meta !== 'object' || Array.isArray(params._meta))) throw failure('Tool _meta must be an object.', -32602);
     if (!this.threadId) {
-      const result = await this.request('thread/start', { ephemeral: false, historyMode: 'paginated', cwd: process.cwd() });
+      const result = await this.request('thread/start', { ephemeral: this.config.headless === true, historyMode: 'paginated', cwd: process.cwd() });
       if (typeof result.thread?.id !== 'string' || !result.thread.id) throw failure('App server did not return a thread ID.');
       this.threadId = result.thread.id;
-      // Empty threads have no source rollout for GUI resume. This supported
-      // history append materializes one without invoking a model or user turn.
-      try {
+      // Only a GUI-backed bridge needs a rollout to resume. Headless threads
+      // remain ephemeral and need no injected history or synthetic model turn.
+      if (!this.config.headless) try {
         await this.request('thread/inject_items', {
           threadId: this.threadId,
           items: [{ type: 'message', role: 'developer', content: [{ type: 'input_text', text:
@@ -147,16 +163,20 @@ export class AppServer {
         catch (error) { this.close(error); throw error; }
       }
     }
+    // The official app server owns its configured MCP tool timeout. Provider
+    // arguments remain opaque; a second wall timer here could abandon native
+    // work before its result arrives. Caller cancellation still closes only
+    // this connection and does not prove upstream/native work stopped.
     // Mirror the official GUI's top-level thread routing fields. Authentic
     // nested turn metadata still identifies the caller and is never rewritten.
     return this.request('mcpServer/tool/call', {
       threadId: this.threadId, server: 'cua_repl', tool: params.name,
       ...(own(params, 'arguments') ? { arguments: params.arguments } : {}),
       _meta: { ...params._meta, thread_id: this.threadId, threadId: this.threadId },
-    });
+    }, null);
   }
 
-  close(error = failure('Bridge disconnected; effects may be partial and no calls were retried.')) {
+  close(error = failure('Bridge disconnected; upstream/native work may continue, effects are uncertain and no calls were retried.')) {
     if (this.closed) return;
     this.closed = error;
     clearTimeout(this.openTimer);
@@ -166,6 +186,7 @@ export class AppServer {
     this.pending.clear();
     // No thread/archive, turn/interrupt, provider reset, process kill or global
     // shutdown: other connections (including the official GUI) own their work.
+    // Closing this socket or later resetting cannot prove native input stopped.
     try { this.socket?.close(); } catch { /* Already disconnected. */ }
   }
 }
@@ -213,7 +234,7 @@ export function serveMcp(app, input = process.stdin, output = process.stdout) {
     if (!own(value, 'id')) {
       if (value.method === 'notifications/cancelled') {
         const id = value.params?.requestId;
-        const cancellation = failure('Request cancelled; effects may be partial and no call was retried.', -32800);
+        const cancellation = failure('Request cancelled; upstream/native work may continue, effects are uncertain and no call was retried.', -32800);
         if (active && active.id === id) app.close(cancellation);
         else {
           const index = queue.findIndex(request => request.id === id);

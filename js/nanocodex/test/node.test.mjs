@@ -476,6 +476,9 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     const childReader = messageReader(childSocket);
     const childWarmup = await childReader.next();
     assert.equal(childWarmup.input[0].tools.some((tool) => tool.name === "send_agent_message"), true);
+    const submitSchema = childWarmup.input[0].tools.find((tool) => tool.name === "submit_result").parameters;
+    assert.deepEqual(submitSchema.required, ["output"]);
+    assert.equal(Object.hasOwn(submitSchema.properties, "turn_token"), false);
     assert.match(childWarmup.input[0].tools[0].description, /rootOnly/);
     assert.doesNotMatch(childWarmup.input[0].tools[0].description, /decoyOnly/);
     sendWarmup(childSocket, "child-warmup");
@@ -508,10 +511,10 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
       type: "function_call",
       call_id: "call-submit",
       name: "submit_result",
-      arguments: JSON.stringify({ turn_token: 1, output: { report: "portable" } }),
+      arguments: JSON.stringify({ output: { report: "portable" } }),
     }]);
     const childSubmitted = await childReader.next();
-    assert.deepEqual(JSON.parse(childSubmitted.input[0].output), { accepted: true });
+    assert.deepEqual(JSON.parse(childSubmitted.input[0].output), { accepted: true, status: "accepted" });
     sendFinal(childSocket, "child-final", "submitted");
 
     const rootWaited = await rootReader.next();
@@ -648,12 +651,11 @@ test("Node host invokes canonical subagent handlers without a root model turn", 
       call_id: "direct-submit-call",
       name: "submit_result",
       arguments: JSON.stringify({
-        turn_token: 1,
         output: { answer: "thread-memory" },
       }),
     }]);
     const submitted = await bounded(childReader.next(), "submit_result output");
-    assert.deepEqual(JSON.parse(submitted.input[0].output), { accepted: true });
+    assert.deepEqual(JSON.parse(submitted.input[0].output), { accepted: true, status: "accepted" });
     sendFinal(childSocket, "direct-final", "submitted");
 
     const waited = await bounded(Subagents.wait(agent, {
@@ -695,12 +697,11 @@ test("Node host invokes canonical subagent handlers without a root model turn", 
       call_id: "direct-message-submit-call",
       name: "submit_result",
       arguments: JSON.stringify({
-        turn_token: 2,
         output: { answer: "thread-memory-confirmed" },
       }),
     }]);
     const messageSubmitted = await bounded(childReader.next(), "message submit_result output");
-    assert.deepEqual(JSON.parse(messageSubmitted.input[0].output), { accepted: true });
+    assert.deepEqual(JSON.parse(messageSubmitted.input[0].output), { accepted: true, status: "accepted" });
     sendFinal(childSocket, "direct-message-final", "submitted");
     const messageWait = await bounded(Subagents.wait(agent, {
       agentIds: [started.agent_id],

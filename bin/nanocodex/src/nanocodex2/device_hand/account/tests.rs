@@ -62,8 +62,12 @@ async fn permanent_failures_are_classified_without_response_body_or_credentials(
         .await;
         let error = identify(&client(), &origin, "SECRET_KEY")
             .await
-            .unwrap_err()
-            .to_string();
+            .unwrap_err();
+        assert_eq!(
+            matches!(&error, ManagedError::Http { status: code, .. } if code.as_u16() == status),
+            matches!(status, 401 | 403)
+        );
+        let error = error.to_string();
         assert!(error.contains(message), "{error}");
         assert!(error.contains(&format!("status={status}")));
         assert!(error.contains("request_id=test-123"));

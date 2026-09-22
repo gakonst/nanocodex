@@ -276,6 +276,9 @@ pub struct Prompt {
     /// Synthetic text-only conversation supplied before this turn.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     transcript: Vec<PromptMessage>,
+    /// Runtime-owned revision; never part of model-visible prompt content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    instruction_revision: Option<u64>,
 }
 
 impl Prompt {
@@ -285,6 +288,7 @@ impl Prompt {
         Self {
             instruction: PromptInput::Text(instruction.into()),
             transcript: Vec::new(),
+            instruction_revision: None,
         }
     }
 
@@ -294,7 +298,21 @@ impl Prompt {
         Self {
             instruction: PromptInput::Content(input.into_iter().collect()),
             transcript: Vec::new(),
+            instruction_revision: None,
         }
+    }
+
+    /// Attaches the trusted runtime instruction revision to this input.
+    #[must_use]
+    pub const fn with_instruction_revision(mut self, revision: u64) -> Self {
+        self.instruction_revision = Some(revision);
+        self
+    }
+
+    /// Returns the runtime-owned instruction revision, outside model-visible text.
+    #[must_use]
+    pub const fn instruction_revision(&self) -> Option<u64> {
+        self.instruction_revision
     }
 
     /// Prepends an explicit text-only conversation to this turn.
@@ -837,5 +855,22 @@ mod tests {
         }))
         .unwrap_err();
         assert!(error.to_string().contains("unknown field `workspace`"));
+    }
+}
+
+#[cfg(test)]
+mod instruction_revision_tests {
+    use super::Prompt;
+
+    #[test]
+    fn instruction_revision_round_trips_as_private_metadata() {
+        let prompt = Prompt::new("hello").with_instruction_revision(17);
+        assert_eq!(prompt.text_bytes(), 5);
+        let encoded = serde_json::to_value(&prompt).unwrap();
+        assert_eq!(encoded["instruction"], "hello");
+        let restored: Prompt = serde_json::from_value(encoded).unwrap();
+        assert_eq!(restored.instruction_revision(), Some(17));
+        let legacy: Prompt = serde_json::from_str(r#"{"instruction":"hello"}"#).unwrap();
+        assert_eq!(legacy.instruction_revision(), None);
     }
 }

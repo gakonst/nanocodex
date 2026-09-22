@@ -83,6 +83,12 @@ function toolTitle(tool: ToolActivity, family: string, input: unknown, output: u
     const role = recordString(output, "role") ?? recordString(input, "role");
     if (role) return `${tool.status === "completed" ? "Spawned" : "Spawn"} ${compact(role)}`;
   }
+  if (family === "submit_result") {
+    const status = recordString(output, "status");
+    if (status === "accepted" || status === "superseded") return `${humanize(status)} subagent result`;
+    if (field(output, "accepted") === true) return "Accepted subagent result";
+    return "Submit subagent result";
+  }
   if (family === "wait_agent") return `Waiting on ${subagentTarget(input, output, true)}`;
   if (family === "send_agent_message") return `Message ${subagentTarget(input, output)}`;
   if (family === "interrupt_agent") return `Interrupt ${subagentTarget(input, output)}`;
@@ -267,6 +273,7 @@ function executionSummaryParts(output: JsonRecord): string[] {
 }
 
 function summarizeSubagentOutput(family: string, output: JsonRecord): string | undefined {
+  if (family === "submit_result" && output.status === "superseded") return "Continue with updated instructions";
   if (family === "spawn_agent") {
     const parts: string[] = [];
     const id = numberField(output, "agent_id");

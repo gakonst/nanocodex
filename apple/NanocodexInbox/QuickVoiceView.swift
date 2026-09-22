@@ -192,15 +192,29 @@ final class LockedAudioRecorder: NSObject, AVAudioRecorderDelegate {
             fail("Another recording is in progress."); return
         }
         QuickVoiceRecorder.audioOwner = self
+        let storage = FileManager.default.temporaryDirectory.appendingPathComponent("locked-voice", isDirectory: true)
+        let protection: [FileAttributeKey: Any] = [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]
+        // Protect the directory as well as the file: AVAudioRecorder prepares its own
+        // output and may replace a precreated file. Its output must inherit a class
+        // that can also be reopened for transcription after Send while locked.
         // Reap only this feature's orphan files after an interrupted process.
+        var stage = "storageDirectory"
         do {
+            try FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true, attributes: protection)
+            try FileManager.default.setAttributes(protection, ofItemAtPath: storage.path)
+            stage = "cleanup"
+            for url in try FileManager.default.contentsOfDirectory(at: storage, includingPropertiesForKeys: nil)
+                where url.pathExtension == "m4a" {
+                try FileManager.default.removeItem(at: url)
+            }
+            // Also remove recordings left by versions that used the temporary root.
             for url in try FileManager.default.contentsOfDirectory(at: FileManager.default.temporaryDirectory,
                 includingPropertiesForKeys: nil) where url.lastPathComponent.hasPrefix("locked-voice-") && url.pathExtension == "m4a" {
                 try FileManager.default.removeItem(at: url)
             }
         } catch {
-            report(error, stage: "cleanup")
-            fail("Previous recording cleanup failed."); return
+            report(error, stage: stage)
+            fail("Recording storage unavailable."); return
         }
         guard QuickVoiceRecorder.permissionsGranted else {
             fail("Microphone or speech permission unavailable."); return
@@ -208,16 +222,14 @@ final class LockedAudioRecorder: NSObject, AVAudioRecorderDelegate {
         recognizer = SFSpeechRecognizer(locale: Locale(identifier: locale))
         do {
             let session = AVAudioSession.sharedInstance()
+            stage = "sessionCategory"
             try session.setCategory(.record, mode: .measurement)
+            stage = "sessionActivation"
             try session.setActive(true)
             sessionActive = true
-            let url = FileManager.default.temporaryDirectory.appendingPathComponent("locked-voice-\(UUID().uuidString).m4a")
+            let url = storage.appendingPathComponent("locked-voice-\(UUID().uuidString).m4a")
             file = url
-            // Captured audio remains accessible to this app while the phone is locked.
-            guard FileManager.default.createFile(atPath: url.path, contents: nil,
-                attributes: [.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]) else {
-                throw CocoaError(.fileWriteUnknown)
-            }
+            stage = "recorderInitialization"
             let audio = try AVAudioRecorder(url: url, settings: [
                 AVFormatIDKey: kAudioFormatMPEG4AAC,
                 AVSampleRateKey: 44100,
@@ -226,11 +238,17 @@ final class LockedAudioRecorder: NSObject, AVAudioRecorderDelegate {
             ])
             audio.delegate = self
             recorder = audio
+            stage = "recorderPreparation"
+            guard audio.prepareToRecord() else { throw CocoaError(.fileWriteUnknown) }
+            // Apply to the actual prepared output, not a placeholder it can replace.
+            stage = "outputProtection"
+            try FileManager.default.setAttributes(protection, ofItemAtPath: url.path)
+            stage = "record"
             guard audio.record() else { throw CocoaError(.fileWriteUnknown) }
             recording = true
             onStatus?("listening")
         } catch {
-            report(error, stage: "record")
+            report(error, stage: stage)
             fail("Microphone could not start.")
         }
     }
@@ -315,6 +333,7 @@ final class LockedAudioRecorder: NSObject, AVAudioRecorderDelegate {
     nonisolated func audioRecorderEncodeErrorDidOccur(_ recorder: AVAudioRecorder, error: Error?) {
         Task { @MainActor [weak self] in
             guard let self, self.recorder === recorder else { return }
+            if let error { self.report(error, stage: "encode") }
             self.fail("Audio recording failed.")
         }
     }

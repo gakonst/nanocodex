@@ -9,6 +9,7 @@ use super::{
     platform::{self, Task, TaskError},
     runtime::{DelegationChange, Registry, completion_instructions},
 };
+use nanocodex_agent::input::Prompt;
 use nanocodex_agent::{
     ChildRuntimeSnapshot, Nanocodex, NanocodexError, Result as AgentResult, TurnControl, TurnResult,
 };
@@ -86,6 +87,7 @@ struct Harness {
     pending_deferred: VecDeque<AgentMessage>,
     pending_urgent: VecDeque<AgentMessage>,
     output_schema: String,
+    restored_assignment: Option<String>,
     capacity: Capacity,
     capacity_revision: watch::Receiver<u64>,
     registry: Weak<Registry>,
@@ -192,6 +194,7 @@ pub(super) fn spawn(
     capacity: Capacity,
     registry: Weak<Registry>,
     output_schema: String,
+    restored_assignment: Option<String>,
 ) -> (HarnessHandle, Task<()>) {
     let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
     let (deferred, deferred_receiver) = mpsc::channel(DEFERRED_CAPACITY);
@@ -214,6 +217,7 @@ pub(super) fn spawn(
             pending_deferred: VecDeque::new(),
             pending_urgent: VecDeque::new(),
             output_schema,
+            restored_assignment,
             capacity,
             capacity_revision,
             registry,
@@ -342,14 +346,14 @@ impl Harness {
             let prompt = format!(
                 "{}\n\n{}",
                 command.message.prompt(),
-                completion_instructions(&self.output_schema, steer.token())
+                completion_instructions(&self.output_schema)
             );
             let result = self
                 .active
                 .as_ref()
                 .expect("steering requires an active turn")
                 .control
-                .steer(prompt)
+                .steer(Prompt::new(prompt).with_instruction_revision(steer.revision()))
                 .await;
             if let Some(registry) = self.registry.upgrade() {
                 registry
@@ -557,7 +561,7 @@ impl Harness {
             .agent
             .as_ref()
             .ok_or_else(|| std::io::Error::other(format!("agent {} is closed", self.id)))?;
-        let Some(turn_token) = registry
+        let Some(instruction_revision) = registry
             .harness_turn_started(&self.root_session_id, self.id)
             .await
         else {
@@ -566,11 +570,21 @@ impl Harness {
                 self.id
             )));
         };
+        // A first turn interrupted before a committed model boundary still
+        // needs its assignment. Include it in the next admitted prompt, without
+        // writing a standalone checkpoint during durable reconstruction.
+        let prompt = match &self.restored_assignment {
+            Some(assignment) => format!("{assignment}\n\n{prompt}"),
+            None => prompt,
+        };
         let prompt = format!(
             "{prompt}\n\n{}",
-            completion_instructions(&self.output_schema, turn_token)
+            completion_instructions(&self.output_schema)
         );
-        let turn = match agent.prompt(prompt).await {
+        let turn = match agent
+            .prompt(Prompt::new(prompt).with_instruction_revision(instruction_revision))
+            .await
+        {
             Ok(turn) => turn,
             Err(error) => {
                 let error = format!("could not start agent {}: {error}", self.id);
@@ -580,6 +594,7 @@ impl Harness {
                 return Err(std::io::Error::other(error));
             }
         };
+        self.restored_assignment = None;
         let control = turn.control();
         let result = platform::spawn(turn);
         self.active = Some(ActiveTurn {

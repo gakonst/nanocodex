@@ -50,12 +50,12 @@ private struct ChatMarkdownContent: View, Equatable {
             ForEach(blocks) { block in
                 switch block.kind {
                 case .code(let language): code(block.text, language: language)
-                case .table(let rows): table(rows)
+                case .table(let rows): ChatMarkdownTable(rows: rows, textSize: textSize)
                 case .text(let heading, let marker, let quote):
                     HStack(alignment: .top, spacing: 10) {
                         if quote { Rectangle().fill(.secondary.opacity(0.3)).frame(width: 3) }
                         if let marker { Text(marker).foregroundStyle(.secondary).frame(minWidth: 14, alignment: .trailing) }
-                        Text(inline(block.text))
+                        Text(ChatMarkdownInline.style(block.text, textSize: textSize))
                             .font(.system(size: heading > 0 ? textSize + (heading == 1 ? 8 : heading == 2 ? 4 : 2) : textSize, weight: heading > 0 ? .semibold : .regular))
                             .lineSpacing(compact ? 3 : 5)
                             .foregroundStyle(quote ? Color.secondary : .primary)
@@ -70,15 +70,6 @@ private struct ChatMarkdownContent: View, Equatable {
         }
         .font(.system(size: textSize))
         .frame(maxWidth: compact ? nil : .infinity, alignment: .leading)
-    }
-
-    private func inline(_ value: AttributedString) -> AttributedString {
-        var styled = value
-        for run in value.runs where run.inlinePresentationIntent?.contains(.code) == true {
-            styled[run.range].font = .system(size: textSize - 2, design: .monospaced)
-            styled[run.range].backgroundColor = Color.primary.opacity(0.06)
-        }
-        return styled
     }
 
     private func code(_ value: AttributedString, language: String) -> some View {
@@ -101,22 +92,65 @@ private struct ChatMarkdownContent: View, Equatable {
         .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(Color.primary.opacity(0.06)))
     }
 
-    private func table(_ rows: [[AttributedString]]) -> some View {
-        ScrollView(.horizontal) {
-            Grid(alignment: .leading, horizontalSpacing: 0, verticalSpacing: 0) {
-                ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, cells in
-                    GridRow {
-                        ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
-                            Text(inline(cell)).font(.system(size: textSize, weight: rowIndex == 0 ? .semibold : .regular))
-                                .textSelection(.enabled).padding(.horizontal, 14).padding(.vertical, 10)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(rowIndex == 0 ? ChatPalette.userBubble : .clear)
-                                .overlay(alignment: .bottom) { Divider().opacity(0.5) }
-                        }
+}
+
+/// Link appearance must not inherit the inbox's monochrome control tint.
+/// Keep the URL attribute intact so Text retains its native link interaction.
+enum ChatMarkdownInline {
+    static func style(_ value: AttributedString, textSize: CGFloat) -> AttributedString {
+        var styled = value
+        for run in value.runs {
+            if run.inlinePresentationIntent?.contains(.code) == true {
+                styled[run.range].font = .system(size: textSize - 2, design: .monospaced)
+                styled[run.range].backgroundColor = Color.primary.opacity(0.06)
+            }
+            if run.link != nil {
+                styled[run.range].foregroundColor = .blue
+                styled[run.range].underlineStyle = .single
+            }
+        }
+        return styled
+    }
+}
+
+struct ChatMarkdownTable: View {
+    let rows: [[AttributedString]]
+    let textSize: CGFloat
+
+    var body: some View {
+        ViewThatFits(in: .horizontal) {
+            grid
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Scroll horizontally for more columns", systemImage: "arrow.left.and.right")
+                    .font(.caption).foregroundStyle(.secondary)
+                ScrollView(.horizontal) { grid }
+                    .scrollIndicators(.visible)
+            }
+        }
+        .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var grid: some View {
+        Grid(alignment: .topLeading, horizontalSpacing: 0, verticalSpacing: 0) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { rowIndex, cells in
+                GridRow {
+                    ForEach(Array(cells.enumerated()), id: \.offset) { _, cell in
+                        Text(ChatMarkdownInline.style(cell, textSize: textSize))
+                            .font(.system(size: textSize, weight: rowIndex == 0 ? .semibold : .regular))
+                            // Bound the content width even inside a horizontal ScrollView.
+                            // Scaling with the font keeps columns readable at larger text sizes.
+                            .frame(width: textSize * 8, alignment: .leading)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .textSelection(.enabled)
+                            .padding(.horizontal, 14).padding(.vertical, 10)
+                            .frame(maxHeight: .infinity, alignment: .topLeading)
+                            .background(rowIndex == 0 ? ChatPalette.userBubble : .clear)
+                            .overlay(alignment: .bottom) { Divider().opacity(0.5) }
                     }
                 }
             }
-        }.clipShape(RoundedRectangle(cornerRadius: 10))
+        }
+        .fixedSize(horizontal: true, vertical: false)
     }
 }
 

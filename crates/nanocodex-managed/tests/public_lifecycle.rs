@@ -390,9 +390,9 @@ async fn public_managed_lifecycle_threads_attachment_metadata() {
             lock(&fixture.inner.catalogs)[0],
             json!({
                 "type": "catalog",
-                "capabilities": ["turn_metadata"],
                 "tools": [],
                 "attachment_id": "machine-public-1",
+                "capabilities": ["turn_metadata"],
                 "machines": [{
                     "id": "machine-public-1",
                     "name": "Public lifecycle host",

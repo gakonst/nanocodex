@@ -674,7 +674,13 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         &command,
         None | Some(Command::Attach(_) | Command::Run(_) | Command::Voice(_))
     ) {
-        Some(device_hand::BackgroundHand::start(&client)?)
+        match device_hand::BackgroundHand::start(&client).await {
+            Ok(device) => Some(device),
+            Err(error) => {
+                eprintln!("Warning: local computer Hand unavailable: {error}");
+                None
+            }
+        }
     } else {
         None
     };

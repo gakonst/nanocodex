@@ -17,8 +17,10 @@ export type WorkersAiResponsesTransport = Readonly<{
   createResponse(endpoint: string, sessionId: string, request: BrowserHttpRequest): Promise<Response>;
 }>;
 /**
- * Buffered, stateless Responses SSE over the GLM-5.3 Workers AI binding.
+ * Incremental (stream:true) or buffered, stateless Responses SSE over the GLM-5.3 Workers AI binding.
  * Requires full text history; opaque compaction and unsupported modalities fail explicitly.
+ * x-nanocodex-inference-buffering reports streaming or buffered (including binding fallback).
+ * Text/reasoning stream incrementally; tool events follow terminal tool validation.
  * Structured output formats and malformed or truncated tool calls fail explicitly.
  * Custom grammars are supplied as instructions, not enforced by the provider.
  * Cancellation stops waiting; the binding does not expose cancellation of inference.

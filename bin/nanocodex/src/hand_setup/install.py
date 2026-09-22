@@ -84,27 +84,26 @@ def download(url, checksum, cache):
     return target
 
 
-def unit(command, factory=False):
+def unit(factory=False):
     return f"""[Unit]
-Description=Nanocodex {'VM factory' if factory else 'Linux Hand'}
+Description=Nanocodex host Hand
 Wants=network-online.target
 After=network-online.target
 StartLimitIntervalSec=0
 
 [Service]
-Type=notify
-NotifyAccess=main
+Type=simple
 User=nanocodex
 Group=nanocodex
 {'SupplementaryGroups=kvm' if factory else ''}
 WorkingDirectory=/srv/nanocodex/workspace
 EnvironmentFile=/opt/nanocodex/account.env
 Environment=HOME=/srv/nanocodex
+Environment=NANOCODEX_DESKTOP_DATA=/srv/nanocodex/desktop
 Environment=PATH=/usr/local/bin:/usr/bin:/bin
-ExecStart=/opt/nanocodex/current/nanocodex2 {command}
+ExecStart=/opt/nanocodex/current/nanocodex2 hand
 Restart=on-failure
 RestartSec=5
-TimeoutStartSec=120
 TimeoutStopSec=90
 KillMode=mixed
 UMask=0077
@@ -162,6 +161,8 @@ def main(stage, config):
     for directory in [ROOT, STATE]:
         if directory.is_symlink():
             raise RuntimeError(f"Refusing symlinked install directory: {directory}")
+    if Path("/etc/systemd/system/nanocodex-factory.service").exists():
+        raise RuntimeError("Remove the old separate factory service before installing the single Hand daemon")
     factory = config["factory_name"]
     if not re.fullmatch(r"[a-z0-9](?:[a-z0-9._-]{0,61}[a-z0-9])?", factory):
         raise RuntimeError("Invalid factory name")
@@ -207,7 +208,7 @@ def main(stage, config):
     STATE.mkdir(exist_ok=True)
     os.chown(STATE, user.pw_uid, user.pw_gid)
     os.chmod(STATE, 0o700)
-    for child in ["workspace", "native-state", "factory-state", "cache"]:
+    for child in ["workspace", "desktop", "cache"]:
         path = STATE / child
         if path.is_symlink():
             raise RuntimeError(f"Refusing symlinked state directory: {path}")
@@ -267,33 +268,41 @@ def main(stage, config):
     replacement.unlink(missing_ok=True)
     replacement.symlink_to(release)
     os.replace(replacement, current)
-    native_command = f"hand --workspace /srv/nanocodex/workspace --state-dir /srv/nanocodex/native-state --machine-name {factory} --log-format json"
-    if not config["native_only"]:
-        native_command += f" --vm-provider {factory}"
-    units = {"nanocodex-hand.service": unit(native_command)}
-    if not config["native_only"]:
-        command = f"host --scope user --factory-name {factory} --state-dir /srv/nanocodex/factory-state --vm-template {config['template']} --vm-guest-runtime /opt/nanocodex/current/nanocodex-vm-guest --vm-firmware /opt/nanocodex/firmware --vm-cache /srv/nanocodex/cache --vm-workspace /workspace --max-vms {int(config['max_vms'])} --vm-cpus {int(config['vm_cpus'])} --vm-memory-mib {int(config['vm_memory_mib'])} --log-format json"
-        units["nanocodex-factory.service"] = unit(command, factory=True)
+    desktop = STATE / "desktop"
+    desktop.mkdir(exist_ok=True, mode=0o700)
+    os.chown(desktop, user.pw_uid, user.pw_gid)
+    vm = {} if config["native_only"] else {
+        "factoryName": factory, "desktopRootfs": config["template"],
+        "guestRuntime": str(ROOT / "current/nanocodex-vm-guest"),
+        "firmware": str(ROOT / "firmware"), "maxVms": config["max_vms"],
+        "vmCpus": config["vm_cpus"], "vmMemoryMiB": config["vm_memory_mib"],
+    }
+    vm_changed = atomic(desktop / "vm.json", (json.dumps(vm) + "\n").encode())
+    # Resolve the same shared machine identity that the daemon will publish.
+    identity = json.loads(run("runuser", "-u", "nanocodex", "--",
+        str(current / "nanocodex2"), "__device-hand", "--describe",
+        env=dict(os.environ, HOME=str(STATE), NANOCODEX_API_KEY=config["credential"],
+            NANOCODEX_MANAGED_URL=config["origin"]), capture_output=True, timeout=30).stdout)
+    units = {"nanocodex-hand.service": unit(factory=not config["native_only"])}
     changed = {name: atomic(Path("/etc/systemd/system") / name, contents) for name, contents in units.items()}
     run("systemctl", "daemon-reload")
     for name in units:
         run("systemctl", "enable", name)
-        run("systemctl", "restart" if binary_changed or secret_changed or changed[name] else "start", name)
-    identity = json.loads((STATE / "native-state" / "identity.json").read_text())
+        run("systemctl", "restart" if binary_changed or secret_changed or vm_changed or changed[name] else "start", name)
     print("Checking the account Hand and screen catalog…", flush=True)
     deadline = time.monotonic() + 45
     while time.monotonic() < deadline:
         hands = account_get(config, "/v1/account/hands").get("data", [])
         screens = account_get(config, "/v1/account/hands/screens").get("surfaces", [])
-        hand = next((hand for hand in hands if hand["id"] == identity["machine_id"]), None)
-        if hand and any(screen.get("machine_id") == identity["machine_id"] for screen in screens):
+        hand = next((hand for hand in hands if hand["id"] == identity["id"]), None)
+        if hand and any(screen.get("machine_id") == identity["id"] for screen in screens):
             break
         time.sleep(1)
     else:
         raise RuntimeError("Services started but the Hand and desktop did not appear in the account catalog")
-    public["machine_id"] = identity["machine_id"]
+    public["machine_id"] = identity["id"]
     atomic(previous_path, (json.dumps(public, indent=2) + "\n").encode())
-    print(json.dumps({"status": "ready", "machine_id": identity["machine_id"], "workspace": hand["workspace"],
+    print(json.dumps({"status": "ready", "machine_id": identity["id"], "workspace": hand["workspace"],
         "factory": None if config["native_only"] else factory, "max_vms": 0 if config["native_only"] else config["max_vms"],
         "vm_cpus": config["vm_cpus"], "vm_memory_mib": config["vm_memory_mib"], "revision": revision}))
 

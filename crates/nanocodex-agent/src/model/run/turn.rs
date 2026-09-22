@@ -249,6 +249,7 @@ where
         execution_steps: Option<ExecutionSteps>,
     ) -> Result<ModelTurnOutcome> {
         self.execution_steps = execution_steps;
+        self.instruction_revision = task.instruction_revision();
         self.thinking = thinking;
         self.fast_mode = fast_mode;
         self.started_at = Instant::now();
@@ -988,6 +989,9 @@ where
                     content = content.as_str(),
                     "turn content"
                 );
+            }
+            if let Some(revision) = steer.prompt.instruction_revision() {
+                self.instruction_revision = Some(revision);
             }
             let instruction_bytes = steer.prompt.text_bytes();
             let user_content = prepare_user_input(&steer.prompt.instruction).await;

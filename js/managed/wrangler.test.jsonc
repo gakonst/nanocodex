@@ -19,6 +19,9 @@
   ],
   "durable_objects": {
     "bindings": [
+      { "name": "NANOCODEX_INFERENCE_KEYS", "class_name": "InferenceKey" },
+      { "name": "NANOCODEX_INFERENCE_ACCOUNTS", "class_name": "InferenceAccount" },
+      { "name": "NANOCODEX_INFERENCE_SESSIONS", "class_name": "InferenceSession" },
       { "name": "NANOCODEX_PROVIDER_PROBE_COORDINATOR", "class_name": "ProviderProbeCoordinator" },
       {
         "name": "NANOCODEX_MEMORY",
@@ -47,6 +50,7 @@
     ]
   },
   "migrations": [
+    { "tag": "inference-v1", "new_sqlite_classes": ["InferenceKey", "InferenceAccount", "InferenceSession"] },
     { "tag": "provider-probe-test-v1", "new_sqlite_classes": ["ProviderProbeCoordinator"] },
     {
       "tag": "memory-scope-v1",

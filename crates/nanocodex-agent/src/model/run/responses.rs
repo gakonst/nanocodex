@@ -294,6 +294,7 @@ pub(super) fn owned_code_context(
     turn_id: &str,
     model: Model,
     host_context: Option<&str>,
+    instruction_revision: Option<u64>,
 ) -> Result<Option<OwnedToolContext>> {
     if call.name != "exec" {
         return Ok(None);
@@ -309,6 +310,7 @@ pub(super) fn owned_code_context(
             history,
             DEFAULT_TOOL_OUTPUT_TOKENS,
         )
+        .with_instruction_revision(instruction_revision)
         .with_host_context(host_context.map(Arc::from))
         .with_turn_id(Some(Arc::from(turn_id))),
     ))

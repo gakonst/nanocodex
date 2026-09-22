@@ -112,7 +112,7 @@ test("truncated completions are terminal incomplete, never successful", async ()
 });
 
 test("provider errors and malformed tools fail explicitly", async () => {
-  await assert.rejects(fixture(async () => { throw new Error("overloaded"); })({ input: "hi" }), /overloaded/);
+  await assert.rejects(fixture(async () => { throw new Error("overloaded"); })({ input: "hi" }), /provider request failed/);
   await assert.rejects(fixture(async () => ({}))({ input: "hi" }), /invalid chat completion/);
   await assert.rejects(fixture(async () => completion({ tool_calls: [{ function: { name: "unknown", arguments: "{}" } }] }, "tool_calls"))({ input: "hi" }), /unknown tool alias/);
   await assert.rejects(fixture(async () => completion({ tool_calls: [{ function: { name: "tool_0", arguments: "{}" } }] }, "tool_calls"))({ tools: [custom], input: "hi" }), /string input/);
@@ -215,4 +215,30 @@ test("rejects duplicate history IDs and interleaved tool batches before inferenc
   await assert.rejects(invoke({ input: [call("a"), call("b"), output("a"), call("c"), output("b"), output("c")] }), /all outputs/);
   await assert.rejects(invoke({ input: "hi", text: { format: { type: "json_schema" } } }), /structured output/);
   await assert.rejects(invoke({ input: "hi", tool_choice: "invalid" }), /tool_choice/);
+});
+
+test("binding failures are redacted before a response exists", async () => {
+  for (const stream of [false, true]) {
+    for (const run of [
+      () => { throw new Error("synthetic-provider-secret"); },
+      async () => { throw new Error("synthetic-provider-secret", { cause: "synthetic-request-secret" }); },
+    ]) {
+      await assert.rejects(fixture(run)({ input: "hi", stream }), error => {
+        assert.equal(error.message, "Workers AI Responses: provider request failed");
+        assert.equal(error.cause, undefined);
+        assert.doesNotMatch(error.stack, /synthetic-(provider|request)-secret/);
+        return true;
+      });
+    }
+  }
+});
+
+test("buffered binding results enforce the single-call contract even for stream requests", async () => {
+  for (const stream of [false, true]) {
+    const invoke = fixture(async () => completion({ tool_calls: ["one", "two"].map(id => ({
+      id, type: "function", function: { name: "tool_0", arguments: "{}" },
+    })) }, "tool_calls"));
+    await assert.rejects(invoke({ input: "hi", stream, parallel_tool_calls: false,
+      tools: [{ type: "function", name: "read" }] }), /single-call contract/);
+  }
 });
