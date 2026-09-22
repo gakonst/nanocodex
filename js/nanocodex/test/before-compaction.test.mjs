@@ -182,3 +182,33 @@ for (const [name, createHost] of [["Node", createNodeHost], ["browser/Cloudflare
     await assert.rejects(host.beforeCompaction(request()), /disposed/);
   });
 }
+
+for (const interrupt of ["cancel", "dispose"]) {
+  test(`beforeCompaction ${interrupt} before callback dispatch prevents host effects`, async () => {
+    let calls = 0;
+    const hook = createBeforeCompaction(async () => {
+      calls++;
+      return { receiptId: "must-not-commit" };
+    });
+    const pending = hook.preserve(request());
+    const rejected = assert.rejects(pending, /preservation cancelled/);
+    hook[interrupt]("boundary-fixture");
+    await rejected;
+    assert.equal(calls, 0, "an already interrupted boundary cannot invoke the host callback");
+    hook.dispose();
+  });
+}
+
+test("beforeCompaction cancellation after fulfillment still prevents receipt delivery", async () => {
+  let input;
+  const hook = createBeforeCompaction(value => {
+    input = value;
+    // The first microtask runs before Promise.race settles. The nested one
+    // interrupts after settlement but before preserve's await continuation.
+    queueMicrotask(() => queueMicrotask(() => hook.cancel(value.boundaryId)));
+    return { receiptId: "committed-during-cancellation" };
+  });
+  await assert.rejects(hook.preserve(request()), /preservation cancelled/);
+  assert.equal(input.signal.aborted, true);
+  hook.dispose();
+});
