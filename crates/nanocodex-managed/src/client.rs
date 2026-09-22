@@ -16,10 +16,11 @@ use nanocodex_oai_api::{Model, ReasoningMode, Thinking};
 
 use crate::{
     AgentList, AgentReceipt, AgentSettings, AgentSettingsPatch, AgentSettingsResponse, AgentState,
-    AutoRoutingStatus, SteerReceipt, SteerReceiptState, EventCursor, EventHistoryPage, FindSessionsRequest, FindSessionsResponse,
+    AutoRoutingStatus, EventCursor, EventHistoryPage, FindSessionsRequest, FindSessionsResponse,
     ManagedApiKey, ManagedError, ManagedEventStream, MemoryKey, MemoryListResponse, MemoryRecord,
-    PromptInput, ReadSessionBody, ReadSessionRequest, ReadSessionResponse, RoutingStatus, SteerReceipt, SteerReceiptState,
-    SteerWithdrawal, TurnAction, TurnSteer, TurnSubmission, TurnView,
+    PromptInput, ReadSessionBody, ReadSessionRequest, ReadSessionResponse, RoutingStatus,
+    SteerReceipt, SteerReceiptState, SteerWithdrawal, TurnAction, TurnSteer, TurnSubmission,
+    TurnView,
 };
 
 const MAX_HISTORY_PAGE: u16 = 256;

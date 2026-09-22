@@ -224,6 +224,7 @@ mod tests {
     fn execution_accounting_basis_roundtrips_and_defaults_for_legacy_records() {
         let saved = CurrentExecution {
             phase: ExecutionPhase::Generate,
+            instruction_revision: None,
             workspace: ".".into(),
             canonical_context: ResponseItem::message(
                 MessageRole::User,
