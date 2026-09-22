@@ -3,6 +3,7 @@
 
 //! Async child-agent sessions, turns, and lifecycle orchestration.
 
+use super::diagnostics::{CompletionError, CompletionErrorCode};
 use super::{
     capacity::{Capacity, TurnCapacity},
     harness::{self, HarnessHandle},
@@ -17,8 +18,11 @@ use super::{
 };
 use futures_util::future::join_all;
 use jsonschema::Validator;
-use nanocodex_agent::{AgentEvents, Nanocodex, NanocodexError, Result as AgentResult, TurnResult};
-use serde::Serialize;
+use nanocodex_agent::{
+    AgentEvents, AgentHandle, ChildRuntimeSnapshot, Nanocodex, NanocodexError,
+    Result as AgentResult, TurnResult,
+};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -40,8 +44,10 @@ pub(super) struct ChildSession {
     pub(super) status: AgentStatus,
     pub(super) active: bool,
     pub(super) output_validator: Validator,
-    pub(super) next_turn_token: u64,
-    pub(super) active_turn_token: Option<u64>,
+    pub(super) output_schema: Value,
+    pub(super) stored_runtime: Option<ChildRuntimeSnapshot>,
+    pub(super) next_instruction_revision: u64,
+    pub(super) active_instruction_revision: Option<u64>,
     pub(super) steering: bool,
     pub(super) submitted_output: Option<Value>,
     pub(super) last_output: Option<Value>,
@@ -64,17 +70,147 @@ impl OutputContract {
     }
 }
 
-pub(super) fn completion_instructions(schema: &str, turn_token: u64) -> String {
+pub(super) fn completion_instructions(schema: &str) -> String {
     format!(
-        "Your contractual result is not prose. Before finishing, call `submit_result` exactly \
-         once with `{{ turn_token: {turn_token}, output: ... }}` and a JSON value matching the \
-         output schema below. The tool may be exposed directly or through Code Mode as \
-         `tools.submit_result`. If validation rejects the value, correct it and retry. A turn \
-         that ends without an accepted result fails.\n\nOutput schema:\n{schema}"
+        "Before finishing, call `submit_result` with `{{ output: ... }}` and a JSON value \
+         matching the output schema below. Pass objects and arrays directly as JSON values. Use the callable entry in your actual tool catalog; \
+         do not assume a Code Mode binding exists unless that catalog exposes it. \
+         If validation rejects the value, correct it and retry. If the result is superseded, \
+         incorporate the pending instructions and submit an updated result without repeating \
+         completed task side effects. Finish after acceptance. A turn that ends without an \
+         accepted result fails.\n\nOutput schema:\n{schema}"
     )
 }
 
+/// Supersession is normal coordination, not a failed child or tool execution.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum SubmissionOutcome {
+    Accepted { decoded_json_text: bool },
+    Superseded,
+}
+
+/// Bounded, versioned durable child state. No live host capabilities are serialized.
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubagentCheckpoint {
+    pub version: u32,
+    pub root_session_id: String,
+    pub next_agent_id: u64,
+    pub children: Vec<ChildCheckpoint>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ChildCheckpoint {
+    pub descriptor: AgentDescriptor,
+    pub runtime: Option<ChildRuntimeSnapshot>,
+    pub output_schema: Value,
+    pub next_turn_token: u64,
+    pub status: AgentStatus,
+    pub last_output: Option<Value>,
+    pub host_context: Option<String>,
+}
+
+const MAX_CHECKPOINT_CHILDREN: usize = 1024;
+pub const MAX_SUBAGENT_CHECKPOINT_BYTES: usize = 16 * 1024 * 1024;
+
+impl SubagentCheckpoint {
+    /// Validates the complete document before any driver or host resource is opened.
+    pub fn validate(&self, root_session_id: &str) -> std::io::Result<()> {
+        if self.version != 1 || self.root_session_id != root_session_id {
+            return Err(std::io::Error::other(
+                "unsupported subagent checkpoint version or root identity",
+            ));
+        }
+        if self.children.len() > MAX_CHECKPOINT_CHILDREN
+            || serde_json::to_vec(self)
+                .map_err(std::io::Error::other)?
+                .len()
+                > MAX_SUBAGENT_CHECKPOINT_BYTES
+        {
+            return Err(std::io::Error::other("subagent checkpoint exceeds limits"));
+        }
+        let mut topology = RegistryState::default();
+        topology.restore(
+            root_session_id,
+            self.children
+                .iter()
+                .map(|child| child.descriptor.clone())
+                .collect(),
+        )?;
+        topology
+            .scope_mut(root_session_id)
+            .topology
+            .restore_next_agent_id(self.next_agent_id)?;
+        for child in &self.children {
+            if child.next_turn_token == u64::MAX
+                || child
+                    .host_context
+                    .as_ref()
+                    .is_some_and(|context| context.is_empty() || context.len() > 4096)
+            {
+                return Err(std::io::Error::other("invalid child token or host context"));
+            }
+            match &child.runtime {
+                Some(runtime) => {
+                    if runtime.session_id != child.descriptor.session_id {
+                        return Err(std::io::Error::other(
+                            "child checkpoint session identity mismatch",
+                        ));
+                    }
+                    runtime.validate().map_err(std::io::Error::other)?;
+                }
+                // Legacy descriptor-only children are archival, never reusable.
+                None if matches!(child.status, AgentStatus::Closed | AgentStatus::Interrupted) => {}
+                None => {
+                    return Err(std::io::Error::other(
+                        "reusable child is missing its runtime checkpoint",
+                    ));
+                }
+            }
+            if child.runtime.is_some()
+                && !matches!(child.status, AgentStatus::Closed | AgentStatus::Closing)
+                && let Some(parent) = child.descriptor.parent
+                && self.children.iter().any(|candidate| {
+                    candidate.descriptor.id == parent && candidate.runtime.is_none()
+                })
+            {
+                return Err(std::io::Error::other(
+                    "reusable child has a parent without a runtime checkpoint",
+                ));
+            }
+            let contract = OutputContract::compile(&child.output_schema)?;
+            if let Some(output) = &child.last_output
+                && !contract.validator.is_valid(output)
+            {
+                return Err(std::io::Error::other(
+                    "checkpoint last result violates child output schema",
+                ));
+            }
+            if let AgentStatus::Completed { output } = &child.status
+                && !contract.validator.is_valid(output)
+            {
+                return Err(std::io::Error::other(
+                    "checkpoint completed result violates child output schema",
+                ));
+            }
+            if let Some(parent) = child.descriptor.parent
+                && self.children.iter().any(|candidate| {
+                    candidate.descriptor.id == parent
+                        && matches!(candidate.status, AgentStatus::Closed | AgentStatus::Closing)
+                })
+                && !matches!(child.status, AgentStatus::Closed | AgentStatus::Closing)
+            {
+                return Err(std::io::Error::other("reusable child has a closed parent"));
+            }
+        }
+        Ok(())
+    }
+}
+
 pub struct Registry {
+    session_handles: std::sync::RwLock<HashMap<String, AgentHandle>>,
+    spawn_router: std::sync::RwLock<Option<Arc<dyn crate::SpawnRouter>>>,
     id: SubagentRuntimeId,
     state: tokio::sync::Mutex<RegistryState>,
     pub(super) updates: mpsc::UnboundedSender<ScopedAgentUpdate>,
@@ -202,8 +338,8 @@ pub(super) struct DelegationChange {
 
 pub(super) struct TurnSteer {
     id: AgentId,
-    previous_token: u64,
-    token: u64,
+    previous_revision: u64,
+    revision: u64,
 }
 
 struct ResidentEviction {
@@ -212,8 +348,8 @@ struct ResidentEviction {
 }
 
 impl TurnSteer {
-    pub(super) const fn token(&self) -> u64 {
-        self.token
+    pub(super) const fn revision(&self) -> u64 {
+        self.revision
     }
 }
 
@@ -226,56 +362,69 @@ impl RegistryState {
     fn submit_result(
         &mut self,
         session_id: &str,
-        turn_token: u64,
+        instruction_revision: Option<u64>,
         output: Value,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<SubmissionOutcome> {
         let root_session_id = self.root_session_id(session_id).to_owned();
-        let scope = self
-            .scopes
-            .get_mut(&root_session_id)
-            .ok_or_else(|| std::io::Error::other("submit_result is only available to subagents"))?;
+        let scope = self.scopes.get_mut(&root_session_id).ok_or_else(|| {
+            CompletionError::new(
+                CompletionErrorCode::NotChild,
+                false,
+                "submit_result is only available to subagents",
+                "Return root answers as assistant text.",
+            )
+        })?;
         let id = scope
             .topology
             .agent_for_session(session_id)
-            .ok_or_else(|| std::io::Error::other("submit_result is only available to subagents"))?;
+            .ok_or_else(|| {
+                CompletionError::new(
+                    CompletionErrorCode::NotChild,
+                    false,
+                    "submit_result is only available to subagents",
+                    "Return root answers as assistant text.",
+                )
+            })?;
         let session = scope
             .sessions
             .get_mut(&id)
             .ok_or_else(|| std::io::Error::other("subagent session disappeared"))?;
         if !session.active {
-            return Err(std::io::Error::other(
+            return Err(CompletionError::new(
+                CompletionErrorCode::InactiveTurn,
+                false,
                 "submit_result is only available during an active subagent turn",
-            ));
+                "Start a new assigned turn before submitting.",
+            )
+            .into());
         }
-        if session.steering {
-            return Err(std::io::Error::other(
-                "the subagent turn is being steered; retry submit_result",
-            ));
-        }
-        if session.active_turn_token != Some(turn_token) {
-            return Err(std::io::Error::other(
-                "submit_result used a stale or unknown turn_token",
-            ));
+        let Some(instruction_revision) = instruction_revision else {
+            return Err(CompletionError::new(
+                CompletionErrorCode::MissingInstructionRevision,
+                false,
+                "submit_result requires runtime-owned instruction context",
+                "The execution host must preserve the originating model response context.",
+            )
+            .into());
+        };
+        // Compare the immutable origin of this call, never the live revision at
+        // dispatch. Steering admission and acceptance share this registry lock.
+        if session.steering || session.active_instruction_revision != Some(instruction_revision) {
+            return Ok(SubmissionOutcome::Superseded);
         }
         if session.submitted_output.is_some() {
-            return Err(std::io::Error::other(
+            return Err(CompletionError::new(
+                CompletionErrorCode::AlreadyAccepted,
+                false,
                 "submit_result already accepted one result for this turn",
-            ));
+                "Finish this turn; do not submit again.",
+            )
+            .into());
         }
-        let errors = session
-            .output_validator
-            .iter_errors(&output)
-            .take(4)
-            .map(|error| error.to_string())
-            .collect::<Vec<_>>();
-        if !errors.is_empty() {
-            return Err(std::io::Error::other(format!(
-                "submitted output does not match the required schema: {}",
-                errors.join("; ")
-            )));
-        }
+        let (output, decoded_json_text) =
+            validate_submitted_output(&session.output_validator, output)?;
         session.submitted_output = Some(output);
-        Ok(())
+        Ok(SubmissionOutcome::Accepted { decoded_json_text })
     }
 
     fn begin_turn_steer(&mut self, root_session_id: &str, id: AgentId) -> Option<TurnSteer> {
@@ -287,15 +436,15 @@ impl RegistryState {
         if !session.active || session.steering || session.submitted_output.is_some() {
             return None;
         }
-        let previous_token = session.active_turn_token?;
-        let token = session.next_turn_token.checked_add(1)?;
-        session.next_turn_token = token;
-        session.active_turn_token = Some(token);
+        let previous_revision = session.active_instruction_revision?;
+        let revision = session.next_instruction_revision.checked_add(1)?;
+        session.next_instruction_revision = revision;
+        session.active_instruction_revision = Some(revision);
         session.steering = true;
         Some(TurnSteer {
             id,
-            previous_token,
-            token,
+            previous_revision,
+            revision,
         })
     }
 
@@ -307,11 +456,11 @@ impl RegistryState {
         else {
             return;
         };
-        if session.active_turn_token != Some(steer.token) {
+        if session.active_instruction_revision != Some(steer.revision) {
             return;
         }
         if !committed {
-            session.active_turn_token = Some(steer.previous_token);
+            session.active_instruction_revision = Some(steer.previous_revision);
         }
         session.steering = false;
     }
@@ -573,7 +722,7 @@ impl RegistryState {
                     return None;
                 }
                 let can_message = caller != Some(id)
-                    && session.harness.is_some()
+                    && (session.harness.is_some() || session.stored_runtime.is_some())
                     && !matches!(
                         session.status,
                         AgentStatus::Pending | AgentStatus::Closing | AgentStatus::Closed
@@ -637,7 +786,7 @@ impl RegistryState {
         }
         let harness = target.harness.clone().ok_or_else(|| {
             std::io::Error::other(format!(
-                "agent {to} is not resident and cannot receive messages"
+                "agent {to} has no saved runtime history and cannot resume from its retained descriptor. Call list_agents with include_completed=true and select a recipient with can_message=true, or spawn a replacement agent. Do not retry this recipient while can_message=false."
             ))
         })?;
         self.next_access = self.next_access.wrapping_add(1);
@@ -977,10 +1126,12 @@ impl Registry {
         let (revision, _) = watch::channel(0);
         Self {
             id: SubagentRuntimeId::next(),
+            spawn_router: std::sync::RwLock::new(None),
             state: tokio::sync::Mutex::new(RegistryState::default()),
             updates,
             revision,
             capacity: Capacity::new(max_concurrency),
+            session_handles: std::sync::RwLock::new(HashMap::new()),
             max_resident: AtomicUsize::new(crate::DEFAULT_MAX_RESIDENT_SUBAGENTS),
             residency_lock: tokio::sync::Mutex::new(()),
             message_lock: tokio::sync::Mutex::new(()),
@@ -1000,6 +1151,21 @@ impl Registry {
 
     pub(super) fn reserve_turns(&self, count: usize) -> std::io::Result<Vec<TurnCapacity>> {
         self.capacity.reserve_many(count)
+    }
+
+    /// Installs a host routing policy before accepting child spawns.
+    pub fn set_spawn_router(&self, router: Arc<dyn crate::SpawnRouter>) {
+        *self
+            .spawn_router
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(router);
+    }
+
+    pub(super) fn spawn_router(&self) -> Option<Arc<dyn crate::SpawnRouter>> {
+        self.spawn_router
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone()
     }
 
     pub fn set_max_concurrency(&self, limit: usize) {
@@ -1082,6 +1248,269 @@ impl Registry {
         Ok(())
     }
 
+    /// Captures the latest safe driver boundaries. Active turns restore as interrupted.
+    pub async fn checkpoint(&self, root_session_id: &str) -> std::io::Result<SubagentCheckpoint> {
+        self.capture_checkpoint(root_session_id, true).await
+    }
+
+    /// Captures committed driver history without cancelling ongoing child work.
+    pub async fn live_checkpoint(
+        &self,
+        root_session_id: &str,
+    ) -> std::io::Result<SubagentCheckpoint> {
+        self.capture_checkpoint(root_session_id, false).await
+    }
+
+    async fn capture_checkpoint(
+        &self,
+        root_session_id: &str,
+        interrupt: bool,
+    ) -> std::io::Result<SubagentCheckpoint> {
+        let _residency_guard = self.residency_lock.lock().await;
+        let _message_guard = self.message_lock.lock().await;
+        if self.state.lock().await.root_session_id(root_session_id) != root_session_id {
+            return Err(std::io::Error::other(
+                "only a root can checkpoint its subagent scope",
+            ));
+        }
+        // Joining cancellation commits the safe history boundary before we read
+        // status/results. This also rejects mailbox work that cannot survive unload.
+        while interrupt {
+            let (root, ids, harnesses) = self
+                .state
+                .lock()
+                .await
+                .request_interrupt_all(root_session_id);
+            if ids.is_empty() {
+                break;
+            }
+            self.interrupt_harnesses(&root, &ids, harnesses, Instant::now() + AGENT_STOP_TIMEOUT)
+                .await?;
+            let state = self.state.lock().await;
+            if state
+                .scopes
+                .get(root_session_id)
+                .is_none_or(|scope| scope.sessions.values().all(|session| !session.active))
+            {
+                break;
+            }
+        }
+        let runtimes = {
+            let state = self.state.lock().await;
+            if state.root_session_id(root_session_id) != root_session_id {
+                return Err(std::io::Error::other(
+                    "only a root can checkpoint its subagent scope",
+                ));
+            }
+            state
+                .scopes
+                .get(root_session_id)
+                .map(|scope| {
+                    scope
+                        .sessions
+                        .iter()
+                        .filter(|(_, session)| {
+                            !matches!(session.status, AgentStatus::Closed | AgentStatus::Closing)
+                        })
+                        .map(|(id, session)| {
+                            (*id, session.harness.clone(), session.stored_runtime.clone())
+                        })
+                        .collect::<Vec<_>>()
+                })
+                .unwrap_or_default()
+        };
+        let mut children = Vec::with_capacity(runtimes.len());
+        for (id, harness, stored) in runtimes {
+            let (runtime, state) = loop {
+                let before = {
+                    let state = self.state.lock().await;
+                    let session = &state.scopes[root_session_id].sessions[&id];
+                    (session.status.clone(), session.next_instruction_revision)
+                };
+                let runtime = match &harness {
+                    Some(harness) => Some(harness.snapshot().await?),
+                    None => stored.clone(),
+                };
+                let state = self.state.lock().await;
+                let session = &state.scopes[root_session_id].sessions[&id];
+                if before == (session.status.clone(), session.next_instruction_revision) {
+                    break (runtime, state);
+                }
+            };
+            let session = &state.scopes[root_session_id].sessions[&id];
+            if matches!(session.status, AgentStatus::Closed | AgentStatus::Closing) {
+                continue;
+            }
+            children.push(ChildCheckpoint {
+                descriptor: session.descriptor.clone(),
+                runtime,
+                output_schema: session.output_schema.clone(),
+                next_turn_token: session.next_instruction_revision,
+                status: match &session.status {
+                    AgentStatus::Pending | AgentStatus::Running => AgentStatus::Interrupted,
+                    AgentStatus::Closing => AgentStatus::Closed,
+                    status => status.clone(),
+                },
+                last_output: session.last_output.clone(),
+                host_context: session.host_context.as_deref().map(str::to_owned),
+            });
+        }
+        children.sort_by_key(|child| child.descriptor.id);
+        let next_agent_id = self
+            .state
+            .lock()
+            .await
+            .scopes
+            .get(root_session_id)
+            .map_or(1, |scope| scope.topology.next_agent_id());
+        let checkpoint = SubagentCheckpoint {
+            version: 1,
+            root_session_id: root_session_id.to_owned(),
+            next_agent_id,
+            children,
+        };
+        checkpoint.validate(root_session_id)?;
+        Ok(checkpoint)
+    }
+
+    /// Rebuilds real drivers in parent-first order using this host's parent capabilities.
+    pub async fn restore_checkpoint(
+        self: &Arc<Self>,
+        root: &Nanocodex,
+        checkpoint: SubagentCheckpoint,
+    ) -> std::io::Result<()> {
+        let root_session_id = root.session_id();
+        checkpoint.validate(root_session_id)?;
+        let _residency_guard = self.residency_lock.lock().await;
+        let _message_guard = self.message_lock.lock().await;
+        if self.state.lock().await.scopes.contains_key(root_session_id) {
+            return Err(std::io::Error::other("subagent scope already exists"));
+        }
+        let ordered = self.state.lock().await.restore(
+            root_session_id,
+            checkpoint
+                .children
+                .iter()
+                .map(|child| child.descriptor.clone())
+                .collect(),
+        )?;
+        self.state
+            .lock()
+            .await
+            .scope_mut(root_session_id)
+            .topology
+            .restore_next_agent_id(checkpoint.next_agent_id)?;
+        let mut children = checkpoint
+            .children
+            .into_iter()
+            .map(|child| (child.descriptor.id, child))
+            .collect::<HashMap<_, _>>();
+        let mut parents: HashMap<AgentId, Nanocodex> = HashMap::new();
+        let mut gates = Vec::new();
+        let result: std::io::Result<()> = async {
+            for descriptor in &ordered {
+                let child = children
+                    .remove(&descriptor.id)
+                    .expect("validated child checkpoint");
+                let contract = OutputContract::compile(&child.output_schema)?;
+                let closed = matches!(child.status, AgentStatus::Closed | AgentStatus::Closing);
+                let host_context = child.host_context.map(Arc::<str>::from);
+                let resources = if let Some(runtime) = child.runtime.clone().filter(|_| !closed) {
+                    let parent = match descriptor.parent {
+                        Some(id) => parents.get(&id).ok_or_else(|| {
+                            std::io::Error::other("restored parent runtime is unavailable")
+                        })?,
+                        None => root,
+                    };
+                    let needs_assignment = runtime.conversation.is_none();
+                    let (agent, events) = parent
+                        .restore_child(runtime, host_context.clone())
+                        .await
+                        .map_err(std::io::Error::other)?;
+                    parents.insert(descriptor.id, agent.clone());
+                    let (start, ready) = oneshot::channel();
+                    let event_task = forward_events(
+                        root_session_id.to_owned(),
+                        descriptor.id,
+                        events,
+                        ready,
+                        Arc::downgrade(self),
+                        self.updates.clone(),
+                    );
+                    let (harness, task) = harness::spawn(
+                        root_session_id.to_owned(),
+                        descriptor.id,
+                        agent,
+                        self.capacity.clone(),
+                        Arc::downgrade(self),
+                        contract.schema,
+                        needs_assignment
+                            .then(|| super::model::agent_prompt(descriptor.id, &descriptor.task)),
+                    );
+                    gates.push(start);
+                    Some((harness, task, event_task))
+                } else {
+                    None
+                };
+                let mut state = self.state.lock().await;
+                let session = state
+                    .scopes
+                    .get_mut(root_session_id)
+                    .expect("restored scope")
+                    .sessions
+                    .get_mut(&descriptor.id)
+                    .expect("restored child");
+                session.host_context = host_context;
+                session.output_validator = contract.validator;
+                session.output_schema = child.output_schema;
+                session.stored_runtime = child.runtime;
+                session.next_instruction_revision = child.next_turn_token;
+                session.last_output = child.last_output;
+                session.status = match child.status {
+                    AgentStatus::Pending | AgentStatus::Running => AgentStatus::Interrupted,
+                    AgentStatus::Closing => AgentStatus::Closed,
+                    status => status,
+                };
+                session.evicted = !closed && resources.is_none();
+                if let Some((harness, task, event_task)) = resources {
+                    session.harness = Some(harness);
+                    session.harness_task = Some(task);
+                    session.event_task = Some(event_task);
+                }
+            }
+            Ok(())
+        }
+        .await;
+        if let Err(error) = result {
+            // No Added notifications or event streams escape a partial reconstruction.
+            drop(gates);
+            for (_, agent) in parents {
+                drop(agent.shutdown().await);
+            }
+            let mut state = self.state.lock().await;
+            state.scopes.remove(root_session_id);
+            state
+                .root_by_session
+                .retain(|_, root_id| root_id != root_session_id);
+            return Err(error);
+        }
+        for descriptor in ordered {
+            let id = descriptor.id;
+            let status = self.state.lock().await.scopes[root_session_id].sessions[&id]
+                .status
+                .clone();
+            if !matches!(status, AgentStatus::Closed) {
+                self.send(root_session_id, AgentUpdate::Added(descriptor));
+            }
+            self.send(root_session_id, AgentUpdate::Status { id, status });
+        }
+        for gate in gates {
+            let _ = gate.send(());
+        }
+        self.changed();
+        Ok(())
+    }
+
     /// Returns embedding-private context for one retained child session.
     #[doc(hidden)]
     pub async fn host_context(&self, root_session_id: &str, id: AgentId) -> Option<Arc<str>> {
@@ -1124,13 +1553,13 @@ impl Registry {
     pub(super) async fn submit_result(
         &self,
         session_id: &str,
-        turn_token: u64,
+        instruction_revision: Option<u64>,
         output: Value,
-    ) -> std::io::Result<()> {
+    ) -> std::io::Result<SubmissionOutcome> {
         self.state
             .lock()
             .await
-            .submit_result(session_id, turn_token, output)
+            .submit_result(session_id, instruction_revision, output)
     }
 
     pub(super) async fn begin_turn_steer(
@@ -1174,7 +1603,8 @@ impl Registry {
             agent,
             self.capacity.clone(),
             Arc::downgrade(self),
-            schema,
+            schema.clone(),
+            None,
         );
         state.insert(
             root_session_id,
@@ -1189,8 +1619,10 @@ impl Registry {
                 status: AgentStatus::Pending,
                 active: false,
                 output_validator: validator,
-                next_turn_token: 0,
-                active_turn_token: None,
+                output_schema: serde_json::from_str(&schema).expect("compiled schema is JSON"),
+                stored_runtime: None,
+                next_instruction_revision: 0,
+                active_instruction_revision: None,
                 steering: false,
                 submitted_output: None,
                 last_output: None,
@@ -1223,7 +1655,7 @@ impl Registry {
         root_session_id: &str,
         id: AgentId,
     ) -> Option<u64> {
-        let token = {
+        let revision = {
             let mut state = self.state.lock().await;
             let last_used = state.next_access();
             let session = state
@@ -1233,18 +1665,18 @@ impl Registry {
             if !session.status.can_start_turn() || session.active {
                 None
             } else {
-                let token = session.next_turn_token.checked_add(1)?;
-                session.next_turn_token = token;
-                session.active_turn_token = Some(token);
+                let revision = session.next_instruction_revision.checked_add(1)?;
+                session.next_instruction_revision = revision;
+                session.active_instruction_revision = Some(revision);
                 session.active = true;
                 session.steering = false;
                 session.submitted_output = None;
                 session.last_used = last_used;
                 session.status = AgentStatus::Running;
-                Some(token)
+                Some(revision)
             }
         };
-        if token.is_some() {
+        if revision.is_some() {
             self.send(
                 root_session_id,
                 AgentUpdate::Status {
@@ -1254,7 +1686,7 @@ impl Registry {
             );
             self.changed();
         }
-        token
+        revision
     }
 
     pub(super) async fn harness_turn_start_failed(
@@ -1273,7 +1705,7 @@ impl Registry {
                 return;
             };
             session.active = false;
-            session.active_turn_token = None;
+            session.active_instruction_revision = None;
             session.steering = false;
             session.submitted_output = None;
             if !matches!(session.status, AgentStatus::Closing | AgentStatus::Closed) {
@@ -1304,9 +1736,14 @@ impl Registry {
                 return;
             }
             session.active = false;
-            session.active_turn_token = None;
+            session.active_instruction_revision = None;
             session.steering = false;
             let submitted_output = session.submitted_output.take();
+            // Acceptance belongs to this turn even if cancellation/close wins settlement.
+            // Keep its evidence, without claiming the interrupted execution completed.
+            if let Some(output) = &submitted_output {
+                session.last_output = Some(output.clone());
+            }
             if matches!(session.status, AgentStatus::Closing | AgentStatus::Closed) {
                 session.status.clone()
             } else {
@@ -1345,9 +1782,55 @@ impl Registry {
             let Some(ResidentEviction { id, harness }) = eviction else {
                 return;
             };
+            match harness.snapshot().await {
+                Ok(snapshot) => {
+                    if let Some(session) = self
+                        .state
+                        .lock()
+                        .await
+                        .scopes
+                        .get_mut(root_session_id)
+                        .and_then(|scope| scope.sessions.get_mut(&id))
+                    {
+                        session.stored_runtime = Some(snapshot);
+                    }
+                }
+                Err(_) => {
+                    if let Some(session) = self
+                        .state
+                        .lock()
+                        .await
+                        .scopes
+                        .get_mut(root_session_id)
+                        .and_then(|scope| scope.sessions.get_mut(&id))
+                    {
+                        session.harness = Some(harness);
+                        session.evicted = false;
+                    }
+                    return;
+                }
+            }
             self.changed();
             if harness.close().await.is_err() {
                 self.harness_closed(root_session_id, id).await;
+            }
+            // Drain the old generation before another delivery may restore this
+            // ID. Its late runtime_closed callback must never close the new driver.
+            let tasks = {
+                let mut state = self.state.lock().await;
+                let session = state
+                    .scopes
+                    .get_mut(root_session_id)
+                    .and_then(|scope| scope.sessions.get_mut(&id));
+                session.map(|session| (session.harness_task.take(), session.event_task.take()))
+            };
+            if let Some((harness_task, event_task)) = tasks {
+                if let Some(task) = harness_task {
+                    let _ = task.await;
+                }
+                if let Some(task) = event_task {
+                    let _ = task.await;
+                }
             }
         }
     }
@@ -1367,7 +1850,7 @@ impl Registry {
             } else {
                 session.harness = None;
                 session.active = false;
-                session.active_turn_token = None;
+                session.active_instruction_revision = None;
                 session.steering = false;
                 session.submitted_output = None;
                 if session.evicted && !matches!(session.status, AgentStatus::Closing) {
@@ -1420,8 +1903,129 @@ impl Registry {
             .directory(session_id, include_completed, include_self)
     }
 
+    /// Keep weak factory capabilities, never a second owner of a child driver.
+    pub(crate) fn register_handle(&self, handle: AgentHandle) {
+        self.session_handles
+            .write()
+            .expect("session handles poisoned")
+            .insert(handle.session_id().to_owned(), handle);
+    }
+
+    // Caller holds residency_lock and message_lock, fencing eviction, close and
+    // competing deliveries until the exact child is rehydrated and admitted.
+    async fn rehydrate(
+        self: &Arc<Self>,
+        session_id: &str,
+        to: AgentId,
+        purpose: MessagePurpose,
+    ) -> std::io::Result<()> {
+        let (root, mut missing) = {
+            let state = self.state.lock().await;
+            let root = state.root_session_id(session_id).to_owned();
+            let scope = state
+                .scopes
+                .get(&root)
+                .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {to}")))?;
+            if scope.topology.agent_for_session(session_id) == Some(to) {
+                return Err(std::io::Error::other("agents cannot message themselves"));
+            }
+            if purpose == MessagePurpose::Delegate {
+                scope.topology.authorize(session_id, to)?;
+            }
+            let mut id = to;
+            let mut missing = Vec::new();
+            loop {
+                let session = scope
+                    .sessions
+                    .get(&id)
+                    .ok_or_else(|| std::io::Error::other(format!("unknown agent_id {id}")))?;
+                if matches!(
+                    session.status,
+                    AgentStatus::Pending | AgentStatus::Closing | AgentStatus::Closed
+                ) || session.harness.is_some()
+                {
+                    break;
+                }
+                let Some(snapshot) = session.stored_runtime.clone() else {
+                    break;
+                };
+                let parent_session = session
+                    .descriptor
+                    .parent
+                    .and_then(|parent| scope.sessions.get(&parent))
+                    .map_or_else(
+                        || root.clone(),
+                        |parent| parent.descriptor.session_id.clone(),
+                    );
+                missing.push((
+                    id,
+                    parent_session,
+                    snapshot,
+                    session.host_context.clone(),
+                    session.output_schema.clone(),
+                    session.descriptor.task.clone(),
+                ));
+                match session.descriptor.parent {
+                    Some(parent) => id = parent,
+                    None => break,
+                }
+            }
+            (root, missing)
+        };
+        while let Some((id, parent_session, snapshot, host_context, schema, task)) = missing.pop() {
+            let parent = self
+                .session_handles
+                .read()
+                .expect("session handles poisoned")
+                .get(&parent_session)
+                .cloned()
+                .ok_or_else(|| {
+                    std::io::Error::other("subagent parent runtime is unavailable for restoration")
+                })?;
+            let contract = OutputContract::compile(&schema)?;
+            let needs_assignment = snapshot.conversation.is_none();
+            let (agent, events) = parent
+                .restore_child(snapshot, host_context)
+                .await
+                .map_err(std::io::Error::other)?;
+            let (start, ready) = oneshot::channel();
+            let event_task = forward_events(
+                root.clone(),
+                id,
+                events,
+                ready,
+                Arc::downgrade(self),
+                self.updates.clone(),
+            );
+            let (harness, task) = harness::spawn(
+                root.clone(),
+                id,
+                agent,
+                self.capacity.clone(),
+                Arc::downgrade(self),
+                contract.schema,
+                needs_assignment.then(|| super::model::agent_prompt(id, &task)),
+            );
+            let mut state = self.state.lock().await;
+            let session = state
+                .scopes
+                .get_mut(&root)
+                .expect("locked scope")
+                .sessions
+                .get_mut(&id)
+                .expect("retained child");
+            session.harness = Some(harness);
+            session.harness_task = Some(task);
+            session.event_task = Some(event_task);
+            session.evicted = false;
+            drop(state);
+            let _ = start.send(());
+        }
+        Ok(())
+    }
+
     pub async fn send_message(
-        &self,
+        self: &Arc<Self>,
         session_id: &str,
         to: AgentId,
         priority: MessagePriority,
@@ -1429,7 +2033,9 @@ impl Registry {
         in_reply_to: Option<MessageId>,
         body: String,
     ) -> std::io::Result<MessageReceipt> {
+        let _residency_guard = self.residency_lock.lock().await;
         let _message_guard = self.message_lock.lock().await;
+        self.rehydrate(session_id, to, purpose).await?;
         let prepared = self.state.lock().await.prepare_message(
             session_id,
             to,
@@ -1835,11 +2441,53 @@ impl Registry {
 fn complete_session(session: &mut ChildSession, output: Option<Value>) -> AgentStatus {
     let Some(output) = output else {
         return AgentStatus::Failed {
-            error: "subagent turn ended without a valid submit_result call".to_owned(),
+            error: CompletionError::new(
+                CompletionErrorCode::MissingResult,
+                false,
+                "subagent turn ended without a valid submit_result call",
+                "Inspect child evidence before assigning recovery. A plain final answer is not an accepted result; do not replay task side effects.",
+            ).to_string(),
         };
     };
     session.last_output = Some(output.clone());
     AgentStatus::Completed { output }
+}
+
+/// Preserve valid JSON values; tolerate one encoded container only when the
+/// decoded value independently satisfies the exact child contract.
+fn validate_submitted_output(
+    validator: &Validator,
+    output: Value,
+) -> Result<(Value, bool), CompletionError> {
+    if validator.is_valid(&output) {
+        return Ok((output, false));
+    }
+    const MAX_ENCODED_OUTPUT_BYTES: usize = 1_048_576;
+    if let Value::String(text) = &output
+        && text.len() <= MAX_ENCODED_OUTPUT_BYTES
+        && let Ok(decoded) = serde_json::from_str::<Value>(text)
+        && matches!(decoded, Value::Object(_) | Value::Array(_))
+        && validator.is_valid(&decoded)
+    {
+        return Ok((decoded, true));
+    }
+    let errors = validator
+        .iter_errors(&output)
+        .take(4)
+        .map(|error| {
+            format!(
+                "instance {}: schema {}",
+                error.instance_path(),
+                error.schema_path()
+            )
+        })
+        .collect::<Vec<_>>();
+    Err(CompletionError::new(
+        CompletionErrorCode::SchemaValidation,
+        true,
+        "submitted output does not match the required schema",
+        "Correct output using the required schema and retry submit_result within this turn; do not repeat task side effects.",
+    ).with_details(errors))
 }
 
 fn restored_tombstone(descriptor: AgentDescriptor, host_context: Option<Arc<str>>) -> ChildSession {
@@ -1853,8 +2501,10 @@ fn restored_tombstone(descriptor: AgentDescriptor, host_context: Option<Arc<str>
         active: false,
         output_validator: jsonschema::validator_for(&Value::Bool(false))
             .expect("the false JSON Schema is valid"),
-        next_turn_token: 0,
-        active_turn_token: None,
+        output_schema: Value::Bool(false),
+        stored_runtime: None,
+        next_instruction_revision: 0,
+        active_instruction_revision: None,
         steering: false,
         submitted_output: None,
         last_output: None,
@@ -2038,6 +2688,164 @@ mod tests {
         Nanocodex::builder(openai).build().unwrap()
     }
 
+    struct TestSpawnRouter {
+        resolutions: std::sync::atomic::AtomicUsize,
+        bindings: std::sync::atomic::AtomicUsize,
+        reject_resolution: bool,
+        reject_binding: usize,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::SpawnRouter for TestSpawnRouter {
+        async fn resolve(
+            &self,
+            _parent: &str,
+            _role: &str,
+            _task: &str,
+            _options: nanocodex_agent::SpawnOptions,
+            _context: Option<&str>,
+        ) -> std::io::Result<crate::SpawnRoute> {
+            self.resolutions
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            if self.reject_resolution {
+                return Err(std::io::Error::other("routing authorization denied"));
+            }
+            Ok(crate::SpawnRoute {
+                options: nanocodex_agent::SpawnOptions::new()
+                    .model(nanocodex_agent::Model::Sol)
+                    .thinking(nanocodex_agent::Thinking::High),
+                reference: "prepared-route".to_owned(),
+            })
+        }
+
+        fn bind(
+            &self,
+            _parent: &str,
+            _child: &str,
+            _reference: &str,
+            _context: Option<&str>,
+        ) -> std::io::Result<()> {
+            let count = self
+                .bindings
+                .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+                + 1;
+            if count == self.reject_binding {
+                return Err(std::io::Error::other("durable pin failed"));
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn routed_spawn_failures_never_start_a_child_or_publish_it() {
+        use crate::tools::{AgentTask, start_agent_with, start_agents};
+        use nanocodex_agent::{Model, SpawnOptions};
+        use std::sync::atomic::Ordering;
+
+        // Authorization, explicit override conflicts, single pin failures, and
+        // a late batch pin failure must all happen before any model work starts.
+        for (batch, reject_resolution, reject_binding, explicit_override, expected_children) in [
+            (false, true, 0, false, 0),
+            (false, false, 0, true, 0),
+            (false, false, 1, false, 1),
+            (true, true, 0, false, 0),
+            (true, false, 2, false, 2),
+        ] {
+            let called = Arc::new(Notify::new());
+            let service_called = Arc::clone(&called);
+            let openai = OpenAi::builder("test-key")
+                .service(move || PendingService {
+                    called: Arc::clone(&service_called),
+                })
+                .build()
+                .unwrap();
+            let (handles, mut received_handles) = mpsc::unbounded_channel();
+            let (parent, _events) = Nanocodex::builder(openai)
+                .tools_factory(move |handle| {
+                    handles.send(handle).unwrap();
+                    nanocodex_tools::Tools::builder().without_defaults().build()
+                })
+                .build()
+                .unwrap();
+            let parent_handle = received_handles.recv().await.unwrap();
+            let (updates, mut receiver) = mpsc::unbounded_channel();
+            let registry = Arc::new(Registry::new(updates, 2));
+            let router = Arc::new(TestSpawnRouter {
+                resolutions: 0.into(),
+                bindings: 0.into(),
+                reject_resolution,
+                reject_binding,
+            });
+            registry.set_spawn_router(router.clone());
+            let task = || AgentTask {
+                role: "worker".to_owned(),
+                task: "work".to_owned(),
+                output_schema: json!({ "type": "object" }),
+            };
+            let error = if batch {
+                start_agents(
+                    &parent_handle,
+                    &registry,
+                    parent.session_id(),
+                    vec![task(), task()],
+                )
+                .await
+                .err()
+                .unwrap()
+            } else {
+                let options = if explicit_override {
+                    SpawnOptions::new().model(Model::Astra)
+                } else {
+                    SpawnOptions::new()
+                };
+                start_agent_with(
+                    &parent_handle,
+                    &registry,
+                    parent.session_id(),
+                    task(),
+                    options,
+                )
+                .await
+                .err()
+                .unwrap()
+            };
+            let expected_error = if reject_resolution {
+                "authorization denied"
+            } else if explicit_override {
+                "explicit override"
+            } else {
+                "durable pin failed"
+            };
+            assert!(error.to_string().contains(expected_error), "{error}");
+            assert!(
+                registry
+                    .directory(parent.session_id(), true, false)
+                    .await
+                    .is_empty()
+            );
+            assert!(receiver.try_recv().is_err());
+            assert!(
+                timeout(Duration::from_millis(20), called.notified())
+                    .await
+                    .is_err()
+            );
+            for _ in 0..expected_children {
+                let child = received_handles.try_recv().unwrap();
+                assert!(
+                    child.spawn().await.is_err(),
+                    "failed child must be shut down"
+                );
+            }
+            assert!(received_handles.try_recv().is_err());
+            assert_eq!(router.bindings.load(Ordering::SeqCst), expected_children);
+            assert!(
+                registry.reserve_turns(2).is_ok(),
+                "failed spawn must release capacity"
+            );
+            parent.shutdown().await.unwrap();
+        }
+    }
+
     fn test_contract() -> OutputContract {
         OutputContract {
             validator: jsonschema::validator_for(&json!({})).unwrap(),
@@ -2054,11 +2862,13 @@ mod tests {
         });
 
         let contract = OutputContract::compile(&schema).unwrap();
-        let instructions = completion_instructions(&contract.schema, 7);
+        let instructions = completion_instructions(&contract.schema);
 
-        assert!(instructions.contains("tools.submit_result"));
-        assert!(instructions.contains("turn_token: 7"));
-        assert!(instructions.contains("exactly once"));
+        assert!(instructions.contains("actual tool catalog"));
+        assert!(instructions.contains("unless that catalog exposes it"));
+        assert!(!instructions.contains("turn_token"));
+        assert!(instructions.contains("Finish after acceptance"));
+        assert!(instructions.contains("Pass objects and arrays directly as JSON values"));
         assert!(instructions.contains("\"report\""));
         assert!(contract.validator.is_valid(&json!({ "report": "done" })));
     }
@@ -2534,8 +3344,10 @@ mod tests {
             status: AgentStatus::Pending,
             active: false,
             output_validator: test_contract().validator,
-            next_turn_token: 0,
-            active_turn_token: None,
+            output_schema: serde_json::from_str(&test_contract().schema).unwrap(),
+            stored_runtime: None,
+            next_instruction_revision: 0,
+            active_instruction_revision: None,
             steering: false,
             submitted_output: None,
             last_output: None,
@@ -2550,8 +3362,8 @@ mod tests {
         let reservation = registry.reserve("main", None).unwrap();
         let mut session = test_session(reservation.id, "child-session", None);
         session.active = true;
-        session.next_turn_token = 1;
-        session.active_turn_token = Some(1);
+        session.next_instruction_revision = 1;
+        session.active_instruction_revision = Some(1);
         session.status = AgentStatus::Running;
         session.output_validator = jsonschema::validator_for(&json!({
             "type": "object",
@@ -2569,14 +3381,27 @@ mod tests {
             )
             .unwrap();
 
-        let invalid = registry.submit_result("child-session", 1, json!({ "answer": "42" }));
-        assert!(invalid.unwrap_err().to_string().contains("required schema"));
+        let invalid = registry.submit_result("child-session", Some(1), json!({ "answer": "42" }));
+        let invalid = invalid.unwrap_err();
+        let diagnostic = invalid
+            .get_ref()
+            .unwrap()
+            .downcast_ref::<super::CompletionError>()
+            .unwrap();
+        assert_eq!(
+            diagnostic.code,
+            super::CompletionErrorCode::SchemaValidation
+        );
+        assert!(diagnostic.recoverable);
+        assert_eq!(diagnostic.current_turn_token, None);
+        assert!(diagnostic.details[0].contains("/answer"));
+        assert!(!diagnostic.details[0].contains("42"));
         registry
-            .submit_result("child-session", 1, json!({ "answer": 42 }))
+            .submit_result("child-session", Some(1), json!("{\"answer\":42}"))
             .unwrap();
         assert!(
             registry
-                .submit_result("child-session", 1, json!({ "answer": 43 }))
+                .submit_result("child-session", Some(1), json!({ "answer": 43 }))
                 .unwrap_err()
                 .to_string()
                 .contains("already accepted")
@@ -2602,10 +3427,58 @@ mod tests {
     }
 
     #[test]
+    fn encoded_container_results_obey_the_exact_contract_without_changing_valid_strings() {
+        let object = jsonschema::validator_for(&json!({
+            "type": "object", "properties": { "answer": { "type": "integer" } },
+            "required": ["answer"], "additionalProperties": false
+        }))
+        .unwrap();
+        assert_eq!(
+            super::validate_submitted_output(&object, json!("{\"answer\":42}")).unwrap(),
+            (json!({ "answer": 42 }), true)
+        );
+        assert_eq!(
+            super::validate_submitted_output(&object, json!({ "answer": 42 })).unwrap(),
+            (json!({ "answer": 42 }), false)
+        );
+        for invalid in [
+            json!("{\"answer\":\"42\"}"),
+            json!("{\"answer\":42,\"extra\":1}"),
+            json!("not JSON"),
+            json!("42"),
+            json!("\"{\\\"answer\\\":42}\""),
+            json!(format!("{}{{\"answer\":42}}", " ".repeat(1_048_576))),
+        ] {
+            let error = super::validate_submitted_output(&object, invalid).unwrap_err();
+            assert_eq!(error.code, super::CompletionErrorCode::SchemaValidation);
+            assert!(error.recoverable);
+            assert!(!error.details.is_empty());
+            assert!(!error.to_string().contains("42"));
+            assert!(!error.to_string().contains("not JSON"));
+        }
+        let array = jsonschema::validator_for(&json!({"type":"array", "items":{"type":"integer"}}))
+            .unwrap();
+        assert_eq!(
+            super::validate_submitted_output(&array, json!("[1,2]")).unwrap(),
+            (json!([1, 2]), true)
+        );
+        let string =
+            jsonschema::validator_for(&json!({"anyOf":[{"type":"string"},{"type":"object"}]}))
+                .unwrap();
+        let encoded = json!("{\"answer\":42}");
+        assert_eq!(
+            super::validate_submitted_output(&string, encoded.clone()).unwrap(),
+            (encoded, false)
+        );
+        let number = jsonschema::validator_for(&json!({"type":"number"})).unwrap();
+        assert!(super::validate_submitted_output(&number, json!("42")).is_err());
+    }
+
+    #[test]
     fn root_cannot_submit_a_subagent_result() {
         let mut registry = RegistryState::default();
 
-        let error = registry.submit_result("main", 1, json!({ "report": "no" }));
+        let error = registry.submit_result("main", Some(1), json!({ "report": "no" }));
 
         assert!(
             error
@@ -2621,7 +3494,15 @@ mod tests {
 
         let status = complete_session(&mut session, None);
 
-        assert!(matches!(status, AgentStatus::Failed { error } if error.contains("submit_result")));
+        let AgentStatus::Failed { error } = status else {
+            panic!("missing result must fail")
+        };
+        assert!(error.contains("without a valid submit_result call"));
+        assert!(error.contains("do not replay task side effects"));
+        assert!(
+            !error.starts_with('{'),
+            "failure cards must not display JSON envelopes"
+        );
         assert_eq!(session.last_output, None);
     }
 
@@ -2631,8 +3512,8 @@ mod tests {
         let reservation = registry.reserve("main", None).unwrap();
         let mut session = test_session(reservation.id, "child-session", None);
         session.active = true;
-        session.next_turn_token = 1;
-        session.active_turn_token = Some(1);
+        session.next_instruction_revision = 1;
+        session.active_instruction_revision = Some(1);
         session.status = AgentStatus::Running;
         registry
             .insert(
@@ -2653,48 +3534,182 @@ mod tests {
             .unwrap();
         session.active = false;
         session.active = true;
-        session.next_turn_token = 2;
-        session.active_turn_token = Some(2);
+        session.next_instruction_revision = 2;
+        session.active_instruction_revision = Some(2);
         session.status = AgentStatus::Running;
 
-        assert!(
+        assert_eq!(
             registry
-                .submit_result("child-session", 1, stale_output)
-                .is_err()
+                .submit_result("child-session", Some(1), stale_output)
+                .unwrap(),
+            super::SubmissionOutcome::Superseded
         );
     }
 
     #[tokio::test]
-    async fn steering_rotates_the_token_and_stops_after_submission() {
+    async fn steering_supersedes_inflight_results_until_latest_instructions_are_consumed() {
         let mut registry = RegistryState::default();
         let reservation = registry.reserve("main", None).unwrap();
-        let mut session = test_session(reservation.id, "child-session", None);
+        let id = reservation.id;
+        let mut session = test_session(id, "child-session", None);
         session.active = true;
-        session.next_turn_token = 1;
-        session.active_turn_token = Some(1);
+        session.next_instruction_revision = 1;
+        session.active_instruction_revision = Some(1);
         session.status = AgentStatus::Running;
         registry
             .insert(
                 reservation.root_session_id,
-                reservation.id,
-                session.descriptor.session_id.clone(),
+                id,
+                "child-session".into(),
                 session,
             )
             .unwrap();
 
-        let steer = registry.begin_turn_steer("main", reservation.id).unwrap();
-        assert_eq!(steer.token(), 2);
-        registry.finish_turn_steer("main", steer, true);
-        assert!(
+        let first = registry.begin_turn_steer("main", id).unwrap();
+        assert_eq!(first.revision(), 2);
+        assert_eq!(
             registry
-                .submit_result("child-session", 1, json!({ "report": "stale" }))
-                .is_err()
+                .submit_result("child-session", Some(1), json!({"report":"in flight"}))
+                .unwrap(),
+            super::SubmissionOutcome::Superseded
         );
-        registry
-            .submit_result("child-session", 2, json!({ "report": "current" }))
-            .unwrap();
+        registry.finish_turn_steer("main", first, true);
+        let second = registry.begin_turn_steer("main", id).unwrap();
+        registry.finish_turn_steer("main", second, true);
+        for revision in [1, 2] {
+            assert_eq!(
+                registry
+                    .submit_result(
+                        "child-session",
+                        Some(revision),
+                        json!({"report":"outdated"})
+                    )
+                    .unwrap(),
+                super::SubmissionOutcome::Superseded
+            );
+            assert!(
+                registry.scopes["main"].sessions[&id]
+                    .submitted_output
+                    .is_none()
+            );
+        }
+        assert_eq!(
+            registry.scopes["main"].sessions[&id].status,
+            AgentStatus::Running
+        );
+        assert_eq!(
+            registry
+                .submit_result(
+                    "child-session",
+                    Some(3),
+                    json!({"report":"all instructions incorporated"})
+                )
+                .unwrap(),
+            super::SubmissionOutcome::Accepted {
+                decoded_json_text: false
+            }
+        );
+        // Acceptance wins the same lock: subsequent steering must queue another turn.
+        assert!(registry.begin_turn_steer("main", id).is_none());
+    }
 
-        assert!(registry.begin_turn_steer("main", reservation.id).is_none());
+    #[tokio::test]
+    async fn failed_steering_restores_revision_and_missing_context_cannot_submit() {
+        let mut registry = RegistryState::default();
+        let reservation = registry.reserve("main", None).unwrap();
+        let id = reservation.id;
+        let mut session = test_session(id, "child-session", None);
+        session.active = true;
+        session.next_instruction_revision = 1;
+        session.active_instruction_revision = Some(1);
+        registry
+            .insert(
+                reservation.root_session_id,
+                id,
+                "child-session".into(),
+                session,
+            )
+            .unwrap();
+        let steer = registry.begin_turn_steer("main", id).unwrap();
+        registry.finish_turn_steer("main", steer, false);
+        let error = registry
+            .submit_result("child-session", None, json!({"report":"unattributed"}))
+            .unwrap_err();
+        assert!(
+            error
+                .to_string()
+                .contains("runtime-owned instruction context")
+        );
+        assert!(
+            registry.scopes["main"].sessions[&id]
+                .submitted_output
+                .is_none()
+        );
+        assert_eq!(
+            registry
+                .submit_result(
+                    "child-session",
+                    Some(1),
+                    json!({"report":"original instructions"})
+                )
+                .unwrap(),
+            super::SubmissionOutcome::Accepted {
+                decoded_json_text: false
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn accepted_result_survives_cancelled_settlement_without_completing_execution() {
+        let (registry, _control, _updates) = super::channel(32);
+        let reservation = registry.reserve("main").await.unwrap();
+        let id = reservation.id;
+        let mut session = test_session(id, "child-session", None);
+        session.active = true;
+        session.active_instruction_revision = Some(1);
+        session.next_instruction_revision = 1;
+        session.status = AgentStatus::Running;
+        registry
+            .state
+            .lock()
+            .await
+            .insert("main".into(), id, "child-session".into(), session)
+            .unwrap();
+        registry
+            .submit_result("child-session", Some(1), json!({"report": "accepted"}))
+            .await
+            .unwrap();
+        registry
+            .harness_turn_finished(
+                "main",
+                id,
+                Err(nanocodex_agent::NanocodexError::TurnCancelled),
+            )
+            .await;
+        {
+            let state = registry.state.lock().await;
+            let session = &state.scopes["main"].sessions[&id];
+            assert_eq!(session.status, AgentStatus::Interrupted);
+            assert_eq!(
+                session.summary().last_output,
+                Some(json!({"report": "accepted"}))
+            );
+            assert_eq!(session.active_instruction_revision, None);
+            assert_eq!(session.submitted_output, None);
+        }
+        assert_eq!(registry.harness_turn_started("main", id).await, Some(2));
+        assert_eq!(
+            registry
+                .submit_result("child-session", Some(1), json!({"report": "old"}))
+                .await
+                .unwrap(),
+            super::SubmissionOutcome::Superseded
+        );
+        assert!(
+            registry.state.lock().await.scopes["main"].sessions[&id]
+                .submitted_output
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -2817,7 +3832,7 @@ mod tests {
             .find(|entry| entry.agent_id == interrupted)
             .expect("evicted agent should remain in the directory");
         assert_eq!(entry.status, AgentStatus::Interrupted);
-        assert!(!entry.can_message);
+        assert!(entry.can_message);
         assert!(entry.can_manage);
         let (summaries, timed_out) = registry
             .wait("main", &[interrupted], Duration::from_millis(1))
@@ -3510,6 +4525,21 @@ mod tests {
             };
         }
 
+        let error = registry
+            .prepare_message(
+                "parent-session",
+                child.id,
+                MessagePriority::Deferred,
+                MessagePurpose::Coordinate,
+                None,
+                "continue".to_owned(),
+            )
+            .err()
+            .expect("nonresident agents cannot receive messages");
+        assert!(error.to_string().contains("list_agents"));
+        assert!(error.to_string().contains("can_message=true"));
+        assert!(error.to_string().contains("spawn a replacement"));
+
         let directory = registry.directory("parent-session", true, false);
 
         assert_eq!(
@@ -3603,5 +4633,490 @@ mod tests {
 
         assert!(registry.summaries("fork", &[main.id]).is_err());
         assert!(registry.reserve("fork", Some(main.id)).is_err());
+    }
+
+    fn checkpoint_fixture() -> super::SubagentCheckpoint {
+        super::SubagentCheckpoint {
+            version: 1,
+            root_session_id: "root".to_owned(),
+            next_agent_id: 9,
+            children: vec![super::ChildCheckpoint {
+                descriptor: AgentDescriptor {
+                    id: AgentId::new(7),
+                    session_id: "018f1f9a-7b3c-7a17-8000-000000000107".to_owned(),
+                    role: "reviewer".to_owned(),
+                    task: "review persisted history".to_owned(),
+                    parent: None,
+                },
+                runtime: Some(nanocodex_agent::ChildRuntimeSnapshot {
+                    session_id: "018f1f9a-7b3c-7a17-8000-000000000107".to_owned(),
+                    model: nanocodex_agent::Model::Sol,
+                    thinking: nanocodex_agent::Thinking::High,
+                    fast_mode: false,
+                    conversation: None,
+                }),
+                output_schema: json!({"type":"object", "properties":{"answer":{"type":"integer"}},
+                    "required":["answer"], "additionalProperties":false}),
+                next_turn_token: 3,
+                status: AgentStatus::Completed {
+                    output: json!({"answer":42}),
+                },
+                last_output: Some(json!({"answer":42})),
+                host_context: Some("opaque-test-context".to_owned()),
+            }],
+        }
+    }
+
+    #[test]
+    fn checkpoint_rejects_invalid_version_identity_topology_contract_and_counters() {
+        let valid = checkpoint_fixture();
+        valid.validate("root").unwrap();
+        let encoded = serde_json::to_string(&valid).unwrap();
+        let roundtrip: super::SubagentCheckpoint = serde_json::from_str(&encoded).unwrap();
+        roundtrip.validate("root").unwrap();
+        assert!(valid.validate("other-root").is_err());
+        let mut bad = valid.clone();
+        bad.version = 2;
+        assert!(bad.validate("root").is_err());
+        let mut bad = valid.clone();
+        bad.children[0].runtime.as_mut().unwrap().session_id = "different".to_owned();
+        assert!(bad.validate("root").is_err());
+        let mut bad = valid.clone();
+        bad.children[0].descriptor.parent = Some(AgentId::new(7));
+        assert!(bad.validate("root").is_err());
+        let mut bad = valid.clone();
+        bad.children.push(bad.children[0].clone());
+        assert!(bad.validate("root").is_err());
+        let mut bad = valid.clone();
+        bad.children[0].runtime = None;
+        assert!(bad.validate("root").is_err());
+        let mut bad = valid.clone();
+        bad.children[0].last_output = Some(json!({"answer":"invalid"}));
+        assert!(bad.validate("root").is_err());
+        let mut bad = valid.clone();
+        bad.children[0].status = AgentStatus::Completed {
+            output: json!({"answer":42,"extra":true}),
+        };
+        assert!(bad.validate("root").is_err());
+        let mut bad = valid.clone();
+        bad.children[0].next_turn_token = u64::MAX;
+        assert!(bad.validate("root").is_err());
+        let mut bad = valid.clone();
+        bad.next_agent_id = 7;
+        assert!(bad.validate("root").is_err());
+        let mut bad = valid.clone();
+        bad.next_agent_id = u64::MAX;
+        assert!(bad.validate("root").is_err());
+        let mut bad = valid;
+        bad.children = vec![bad.children[0].clone(); super::MAX_CHECKPOINT_CHILDREN + 1];
+        assert!(
+            bad.validate("root")
+                .unwrap_err()
+                .to_string()
+                .contains("limits")
+        );
+    }
+
+    #[test]
+    fn checkpoint_archives_only_interrupted_children_and_rejects_reusable_descendants() {
+        let mut checkpoint = checkpoint_fixture();
+        checkpoint.children[0].runtime = None;
+        checkpoint.children[0].status = AgentStatus::Interrupted;
+        checkpoint.validate("root").unwrap();
+        for status in [
+            AgentStatus::Pending,
+            AgentStatus::Running,
+            AgentStatus::Closing,
+        ] {
+            checkpoint.children[0].status = status;
+            assert!(checkpoint.validate("root").is_err());
+        }
+        checkpoint.children[0].status = AgentStatus::Interrupted;
+        let mut descendant = checkpoint_fixture().children.remove(0);
+        descendant.descriptor.id = AgentId::new(8);
+        descendant.descriptor.parent = Some(AgentId::new(7));
+        descendant.descriptor.session_id = "018f1f9a-7b3c-7a17-8000-000000000108".to_owned();
+        descendant.runtime.as_mut().unwrap().session_id = descendant.descriptor.session_id.clone();
+        checkpoint.children.push(descendant);
+        assert!(
+            checkpoint
+                .validate("root")
+                .unwrap_err()
+                .to_string()
+                .contains("parent without a runtime")
+        );
+        checkpoint.children[1].runtime = None;
+        checkpoint.children[1].status = AgentStatus::Interrupted;
+        checkpoint.validate("root").unwrap();
+    }
+
+    #[tokio::test]
+    async fn checkpoint_roundtrips_legacy_archives_without_making_them_messageable() {
+        let (root, _events) = pending_agent(Arc::new(Notify::new()));
+        let root_id = root.session_id();
+        let (original, _, _updates) = super::channel(2);
+        let parent = checkpoint_fixture().children.remove(0).descriptor;
+        let mut child = parent.clone();
+        child.id = AgentId::new(8);
+        child.parent = Some(parent.id);
+        child.session_id = "018f1f9a-7b3c-7a17-8000-000000000108".to_owned();
+        original
+            .restore_with_host_contexts(
+                root_id,
+                vec![child.clone(), parent.clone()],
+                HashMap::from([
+                    (parent.session_id.clone(), Some(Arc::from("parent-context"))),
+                    (child.session_id.clone(), Some(Arc::from("child-context"))),
+                ]),
+            )
+            .await
+            .unwrap();
+        let checkpoint = original.checkpoint(root_id).await.unwrap();
+        assert!(
+            checkpoint
+                .children
+                .iter()
+                .all(|child| child.runtime.is_none() && child.status == AgentStatus::Interrupted)
+        );
+        let encoded = serde_json::to_string(&checkpoint).unwrap();
+        let (restored, _, _updates) = super::channel(2);
+        restored
+            .restore_checkpoint(&root, serde_json::from_str(&encoded).unwrap())
+            .await
+            .unwrap();
+        let directory = restored.directory(root_id, true, false).await;
+        assert_eq!(directory.len(), 2);
+        assert!(directory.iter().all(|child| !child.can_message));
+        {
+            let state = restored.state.lock().await;
+            assert!(
+                state.scopes[root_id]
+                    .sessions
+                    .values()
+                    .all(|session| session.evicted
+                        && session.harness.is_none()
+                        && session.stored_runtime.is_none())
+            );
+        }
+        assert!(
+            restored
+                .send_message(
+                    root_id,
+                    child.id,
+                    MessagePriority::Deferred,
+                    MessagePurpose::Coordinate,
+                    None,
+                    "Continue".to_owned()
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            serde_json::to_value(restored.checkpoint(root_id).await.unwrap()).unwrap(),
+            serde_json::to_value(checkpoint).unwrap()
+        );
+        root.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn checkpoint_preserves_empty_scope_id_high_watermark_and_rejects_duplicate_restore() {
+        let (root, _events) = pending_agent(Arc::new(Notify::new()));
+        let (registry, _, _updates) = super::channel(1);
+        let empty = registry.checkpoint(root.session_id()).await.unwrap();
+        assert!(empty.children.is_empty());
+        assert_eq!(empty.next_agent_id, 1);
+        let mut empty = empty;
+        empty.next_agent_id = 13;
+        registry
+            .restore_checkpoint(&root, empty.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            registry.reserve(root.session_id()).await.unwrap().id,
+            AgentId::new(13)
+        );
+        assert_eq!(
+            registry
+                .checkpoint(root.session_id())
+                .await
+                .unwrap()
+                .next_agent_id,
+            14
+        );
+        assert!(registry.restore_checkpoint(&root, empty).await.is_err());
+        root.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn messaging_rehydrates_evicted_ancestors_once_and_keeps_live_work_running() {
+        let (registry, _, _updates) = super::channel(4);
+        let registrations = Arc::new(std::sync::Mutex::new(HashMap::<String, usize>::new()));
+        let factory_registry = registry.clone();
+        let counts = registrations.clone();
+        let called = Arc::new(Notify::new());
+        let service_called = called.clone();
+        let openai = OpenAi::builder("test-key")
+            .service(move || PendingService {
+                called: service_called.clone(),
+            })
+            .build()
+            .unwrap();
+        let (root, _events) = Nanocodex::builder(openai)
+            .tools_factory(move |handle| {
+                *counts
+                    .lock()
+                    .unwrap()
+                    .entry(handle.session_id().to_owned())
+                    .or_default() += 1;
+                factory_registry.register_handle(handle);
+                nanocodex_tools::Tools::builder().without_defaults().build()
+            })
+            .build()
+            .unwrap();
+        let root_id = root.session_id();
+        let reservation = registry.reserve(root_id).await.unwrap();
+        let (parent, events) = root.spawn().await.unwrap();
+        let (child, child_events) = parent.spawn().await.unwrap();
+        child
+            .append_developer_message("retain amber history across eviction")
+            .await
+            .unwrap();
+        let parent_session =
+            insert_runtime_session(&registry, &reservation, None, parent, events).await;
+        mark_reusable(&registry, root_id, reservation.id).await;
+        let child_reservation = registry.reserve(&parent_session).await.unwrap();
+        let child_session = insert_runtime_session(
+            &registry,
+            &child_reservation,
+            Some(reservation.id),
+            child,
+            child_events,
+        )
+        .await;
+        mark_reusable(&registry, root_id, child_reservation.id).await;
+        let sibling = registry.reserve(root_id).await.unwrap();
+        let (agent, events) = root.spawn().await.unwrap();
+        let sibling_session =
+            insert_runtime_session(&registry, &sibling, None, agent, events).await;
+        mark_reusable(&registry, root_id, sibling.id).await;
+        registry.set_max_resident(1);
+        registry.enforce_resident_limit(root_id).await;
+        {
+            let state = registry.state.lock().await;
+            assert!(
+                state.scopes[root_id].sessions[&reservation.id]
+                    .harness
+                    .is_none()
+            );
+            assert!(
+                state.scopes[root_id].sessions[&child_reservation.id]
+                    .harness
+                    .is_none()
+            );
+        }
+        assert!(
+            registry
+                .send_message(
+                    &sibling_session,
+                    child_reservation.id,
+                    MessagePriority::Deferred,
+                    MessagePurpose::Delegate,
+                    None,
+                    "unauthorized".into()
+                )
+                .await
+                .is_err()
+        );
+        assert_eq!(registrations.lock().unwrap()[&child_session], 1);
+        let send = || {
+            registry.send_message(
+                root_id,
+                child_reservation.id,
+                MessagePriority::Deferred,
+                MessagePurpose::Coordinate,
+                None,
+                "continue with retained history".into(),
+            )
+        };
+        let (first, second) = tokio::join!(send(), send());
+        first.unwrap();
+        second.unwrap();
+        assert_eq!(registrations.lock().unwrap()[&parent_session], 2);
+        assert_eq!(registrations.lock().unwrap()[&child_session], 2);
+        timeout(Duration::from_secs(2), called.notified())
+            .await
+            .unwrap();
+        let checkpoint = registry.live_checkpoint(root_id).await.unwrap();
+        assert!(
+            serde_json::to_string(&checkpoint)
+                .unwrap()
+                .contains("retain amber history")
+        );
+        assert!(
+            registry.state.lock().await.scopes[root_id].sessions[&child_reservation.id].active,
+            "live persistence must not interrupt running children or discard their mailbox"
+        );
+        registry.close(root_id, reservation.id).await.unwrap();
+        assert!(
+            send().await.is_err(),
+            "explicitly closed children cannot be revived"
+        );
+        assert_eq!(registrations.lock().unwrap()[&child_session], 2);
+        registry.close_all(root_id).await.unwrap();
+        root.shutdown().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn checkpoint_restores_evicted_nested_runtime_history_schema_tokens_and_host_context() {
+        let called = Arc::new(Notify::new());
+        let (root, _events) = pending_agent(Arc::clone(&called));
+        let root_id = root.session_id();
+        let (original, _, _updates) = super::channel(2);
+        let parent_reservation = original.reserve(root_id).await.unwrap();
+        let (parent, parent_events) = pending_agent(Arc::new(Notify::new()));
+        parent
+            .append_developer_message("Preserved parent marker cobalt.")
+            .await
+            .unwrap();
+        let parent_session =
+            insert_runtime_session(&original, &parent_reservation, None, parent, parent_events)
+                .await;
+        mark_reusable(&original, root_id, parent_reservation.id).await;
+        let child_reservation = original.reserve(&parent_session).await.unwrap();
+        let (child, child_events) = pending_agent(Arc::new(Notify::new()));
+        child.set_model(nanocodex_agent::Model::Sol).await.unwrap();
+        child
+            .set_thinking(nanocodex_agent::Thinking::High)
+            .await
+            .unwrap();
+        child
+            .append_developer_message("Preserved descendant marker amber.")
+            .await
+            .unwrap();
+        let child_session = insert_runtime_session(
+            &original,
+            &child_reservation,
+            Some(parent_reservation.id),
+            child,
+            child_events,
+        )
+        .await;
+        let contract = checkpoint_fixture().children.remove(0).output_schema;
+        {
+            let mut state = original.state.lock().await;
+            let child = state
+                .scopes
+                .get_mut(root_id)
+                .unwrap()
+                .sessions
+                .get_mut(&child_reservation.id)
+                .unwrap();
+            child.status = AgentStatus::Completed {
+                output: json!({"answer":42}),
+            };
+            child.last_output = Some(json!({"answer":42}));
+            child.next_instruction_revision = 7;
+            child.output_schema = contract.clone();
+            child.output_validator = OutputContract::compile(&contract).unwrap().validator;
+            child.host_context = Some(Arc::from("opaque-test-context"));
+        }
+        original.set_max_resident(1);
+        original.enforce_resident_limit(root_id).await;
+        assert!(
+            original.state.lock().await.scopes[root_id].sessions[&child_reservation.id]
+                .harness
+                .is_none()
+        );
+        let mut checkpoint = original.checkpoint(root_id).await.unwrap();
+        assert!(
+            serde_json::to_string(&checkpoint)
+                .unwrap()
+                .contains("Preserved descendant marker amber.")
+        );
+        assert_eq!(
+            checkpoint.children[1].runtime.as_ref().unwrap().model,
+            nanocodex_agent::Model::Sol
+        );
+        assert_eq!(
+            checkpoint.children[1].runtime.as_ref().unwrap().thinking,
+            nanocodex_agent::Thinking::High
+        );
+        // Parent-first reconstruction must not depend on serialized array order.
+        checkpoint.children.reverse();
+        original.close_all(root_id).await.unwrap();
+        let (restored, _, _updates) = super::channel(2);
+        restored
+            .restore_checkpoint(&root, checkpoint)
+            .await
+            .unwrap();
+        let directory = restored.directory(root_id, true, false).await;
+        assert_eq!(directory.len(), 2);
+        assert!(directory.iter().all(|child| child.can_message));
+        assert_eq!(
+            restored
+                .host_context(root_id, child_reservation.id)
+                .await
+                .as_deref(),
+            Some("opaque-test-context")
+        );
+        let again = restored.checkpoint(root_id).await.unwrap();
+        assert!(
+            serde_json::to_string(&again)
+                .unwrap()
+                .contains("Preserved descendant marker amber.")
+        );
+        assert_eq!(again.children[1].descriptor.session_id, child_session);
+        assert_eq!(again.children[1].next_turn_token, 7);
+        let receipt = restored
+            .send_message(
+                root_id,
+                child_reservation.id,
+                MessagePriority::Deferred,
+                MessagePurpose::Coordinate,
+                None,
+                "Continue from the retained marker.".to_owned(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt.disposition, MessageDisposition::Started);
+        timeout(Duration::from_secs(5), called.notified())
+            .await
+            .unwrap();
+        assert_eq!(
+            restored
+                .submit_result(&child_session, Some(7), json!({"answer":43}))
+                .await
+                .unwrap(),
+            super::SubmissionOutcome::Superseded
+        );
+        assert!(
+            restored
+                .submit_result(&child_session, Some(8), json!({"answer":43,"extra":true}))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            restored
+                .submit_result(&child_session, Some(8), json!({"answer":43}))
+                .await
+                .unwrap(),
+            super::SubmissionOutcome::Accepted {
+                decoded_json_text: false
+            }
+        );
+        let interrupted = restored.checkpoint(root_id).await.unwrap();
+        let child = &interrupted.children[1];
+        assert_eq!(child.next_turn_token, 8);
+        assert_eq!(child.status, AgentStatus::Interrupted);
+        // Checkpoint cancellation preserves the latest accepted result as evidence.
+        assert_eq!(child.last_output, Some(json!({"answer":43})));
+        assert!(
+            !restored.state.lock().await.scopes[root_id].sessions[&child_reservation.id].active
+        );
+        restored.close_all(root_id).await.unwrap();
+        let closed = restored.checkpoint(root_id).await.unwrap();
+        assert!(closed.children.is_empty());
+        assert_eq!(closed.next_agent_id, 3);
+        root.shutdown().await.unwrap();
     }
 }

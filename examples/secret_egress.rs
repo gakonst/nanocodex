@@ -160,7 +160,7 @@ async fn run_in_vm(arguments: &[OsString], proxy: &EgressProxy) -> Result<(), An
         builder = builder.firmware_directory(loader_path);
     }
     let workspace = builder.launch().await?;
-    run_agent(workspace.tools_builder().build()?).await?;
+    run_agent(workspace.tools_builder().await?.build()?).await?;
     workspace.shutdown().await?;
     drop(private_root);
     Ok(())

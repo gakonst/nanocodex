@@ -5,8 +5,12 @@ use super::*;
 #[derive(Deserialize, Serialize)]
 struct CurrentExecution {
     phase: ExecutionPhase,
+    #[serde(default)]
+    instruction_revision: Option<u64>,
     workspace: String,
     canonical_context: ResponseItem,
+    #[serde(default)]
+    client_authored: std::collections::BTreeSet<String>,
     context_baseline: ContextBaseline,
     context_usage: Option<Usage>,
     server_reasoning_included: bool,
@@ -75,6 +79,7 @@ where
         config.store_responses = saved.store_responses;
         config.context_window_tokens = saved.context_window_tokens;
         self.force_compaction = saved.force_compaction;
+        self.instruction_revision = saved.instruction_revision;
         session.factory = session
             .factory
             .with_request_content(
@@ -93,6 +98,10 @@ where
         } else {
             ConversationState::resume(saved.canonical_context, history)?
         };
+        session
+            .conversation
+            .managed
+            .restore_client_authored(saved.client_authored);
         session
             .conversation
             .update_token_info(saved.context_usage.as_ref());
@@ -169,8 +178,10 @@ where
         let steps = self.execution_steps.as_ref().expect("durable execution");
         let saved = CurrentExecution {
             phase,
+            instruction_revision: self.instruction_revision,
             workspace: session.workspace.clone(),
             canonical_context: (*session.conversation.canonical_context).clone(),
+            client_authored: session.conversation.managed.client_authored().clone(),
             context_baseline: session.context.baseline(),
             context_usage: session.conversation.managed.context_usage().0.cloned(),
             server_reasoning_included: session.conversation.managed.context_usage().1,

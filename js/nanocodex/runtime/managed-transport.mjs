@@ -50,6 +50,7 @@ export async function createManagedAgent(options) {
   const managed = setup.identity.kind === "create"
     ? await ManagedAgent.create(setup.client)
     : ManagedAgent.open(setup.identity.id, setup.client);
+  void managed.prepare().catch(() => {});
   const managedState = await managed.state();
   if (managedState.agent_id !== managed.id
       || typeof managedState.session_id !== "string"

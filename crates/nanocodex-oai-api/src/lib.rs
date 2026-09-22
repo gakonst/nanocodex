@@ -90,7 +90,9 @@ pub(crate) use transport::{ResponsesError, ResponsesHistory, ResponsesTransport,
 #[cfg(feature = "client")]
 pub(crate) use tower::{attempt, middleware, service, service_error, stream};
 #[cfg(all(feature = "client", not(target_family = "wasm")))]
-pub(crate) use transport::{connector, http};
+pub(crate) use transport::connector;
+#[cfg(feature = "client")]
+pub(crate) use transport::http;
 #[cfg(feature = "client")]
 pub(crate) use transport::{socket, telemetry};
 
@@ -145,7 +147,7 @@ pub mod __private {
 /// The default Responses model used by this SDK.
 pub const MODEL: &str = Model::Astra.as_str();
 
-/// Supported OpenAI coding models.
+/// Supported coding models.
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
@@ -159,6 +161,9 @@ pub enum Model {
     /// GPT-6 Astra.
     #[default]
     Astra,
+    /// Z.ai GLM-5.3 served by Cloudflare Workers AI.
+    #[serde(rename = "glm-5.3")]
+    Glm53,
 }
 
 impl Model {
@@ -169,7 +174,7 @@ impl Model {
     #[must_use]
     pub const fn default_thinking(self) -> Thinking {
         match self {
-            Self::Sol | Self::Astra => Thinking::Low,
+            Self::Sol | Self::Astra | Self::Glm53 => Thinking::Low,
             Self::Terra | Self::Luna => Thinking::Medium,
         }
     }
@@ -181,25 +186,35 @@ impl Model {
             Self::Terra => "gpt-5.6-terra",
             Self::Luna => "gpt-5.6-luna",
             Self::Astra => "gpt-6-astra",
+            Self::Glm53 => "@cf/zai-org/glm-5.3",
         }
     }
 
     /// Returns whether the model accepts the requested reasoning effort.
     #[must_use]
     pub const fn supports_thinking(self, thinking: Thinking) -> bool {
-        !matches!((self, thinking), (Self::Astra, Thinking::None))
+        match self {
+            Self::Glm53 => matches!(thinking, Thinking::Low | Thinking::Medium | Thinking::High),
+            _ => !matches!((self, thinking), (Self::Astra, Thinking::None)),
+        }
     }
 
     /// Returns whether the model accepts the requested reasoning execution mode.
     #[must_use]
     pub const fn supports_reasoning_mode(self, mode: ReasoningMode) -> bool {
-        !matches!((self, mode), (Self::Astra, ReasoningMode::Pro))
+        !matches!(
+            (self, mode),
+            (Self::Astra | Self::Glm53, ReasoningMode::Pro)
+        )
     }
 
     /// Largest Codex-compatible prompt context for this model.
     #[must_use]
     pub const fn max_context_window_tokens(self) -> u64 {
-        MAX_CONTEXT_WINDOW_TOKENS
+        match self {
+            Self::Glm53 => 1_310_720,
+            _ => MAX_CONTEXT_WINDOW_TOKENS,
+        }
     }
 }
 
@@ -218,8 +233,9 @@ impl FromStr for Model {
             "gpt-5.6-terra" | "terra" => Ok(Self::Terra),
             "gpt-5.6-luna" | "luna" => Ok(Self::Luna),
             "gpt-6-astra" | "astra" => Ok(Self::Astra),
+            "@cf/zai-org/glm-5.3" | "glm-5.3" | "glm53" => Ok(Self::Glm53),
             _ => Err(format!(
-                "invalid model {value:?}; expected gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, or gpt-6-astra"
+                "invalid model {value:?}; expected gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-6-astra, or @cf/zai-org/glm-5.3"
             )),
         }
     }
@@ -263,6 +279,9 @@ pub struct Prompt {
     /// Synthetic text-only conversation supplied before this turn.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     transcript: Vec<PromptMessage>,
+    /// Runtime-owned revision; never part of model-visible prompt content.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    instruction_revision: Option<u64>,
 }
 
 impl Prompt {
@@ -272,6 +291,7 @@ impl Prompt {
         Self {
             instruction: PromptInput::Text(instruction.into()),
             transcript: Vec::new(),
+            instruction_revision: None,
         }
     }
 
@@ -281,7 +301,21 @@ impl Prompt {
         Self {
             instruction: PromptInput::Content(input.into_iter().collect()),
             transcript: Vec::new(),
+            instruction_revision: None,
         }
+    }
+
+    /// Attaches the trusted runtime instruction revision to this input.
+    #[must_use]
+    pub const fn with_instruction_revision(mut self, revision: u64) -> Self {
+        self.instruction_revision = Some(revision);
+        self
+    }
+
+    /// Returns the runtime-owned instruction revision, outside model-visible text.
+    #[must_use]
+    pub const fn instruction_revision(&self) -> Option<u64> {
+        self.instruction_revision
     }
 
     /// Prepends an explicit text-only conversation to this turn.
@@ -702,6 +736,27 @@ mod tests {
     };
 
     #[test]
+    fn glm53_has_distinct_identity_and_policy() {
+        for name in ["glm53", "glm-5.3", "@cf/zai-org/glm-5.3"] {
+            assert_eq!(name.parse(), Ok(Model::Glm53));
+        }
+        assert_eq!(Model::Glm53.as_str(), "@cf/zai-org/glm-5.3");
+        assert_eq!(
+            serde_json::to_value(Model::Glm53).unwrap(),
+            json!("glm-5.3")
+        );
+        assert_eq!(Model::Glm53.default_thinking(), Thinking::Low);
+        assert_eq!(Model::Glm53.max_context_window_tokens(), 1_310_720);
+        for effort in [Thinking::Low, Thinking::Medium, Thinking::High] {
+            assert!(Model::Glm53.supports_thinking(effort));
+        }
+        for effort in [Thinking::None, Thinking::Xhigh, Thinking::Max] {
+            assert!(!Model::Glm53.supports_thinking(effort));
+        }
+        assert!(!Model::Glm53.supports_reasoning_mode(ReasoningMode::Pro));
+    }
+
+    #[test]
     fn model_parses_short_and_api_names() {
         assert_eq!("sol".parse(), Ok(Model::Sol));
         assert_eq!("gpt-5.6-sol".parse(), Ok(Model::Sol));
@@ -813,5 +868,22 @@ mod tests {
         }))
         .unwrap_err();
         assert!(error.to_string().contains("unknown field `workspace`"));
+    }
+}
+
+#[cfg(test)]
+mod instruction_revision_tests {
+    use super::Prompt;
+
+    #[test]
+    fn instruction_revision_round_trips_as_private_metadata() {
+        let prompt = Prompt::new("hello").with_instruction_revision(17);
+        assert_eq!(prompt.text_bytes(), 5);
+        let encoded = serde_json::to_value(&prompt).unwrap();
+        assert_eq!(encoded["instruction"], "hello");
+        let restored: Prompt = serde_json::from_value(encoded).unwrap();
+        assert_eq!(restored.instruction_revision(), Some(17));
+        let legacy: Prompt = serde_json::from_str(r#"{"instruction":"hello"}"#).unwrap();
+        assert_eq!(legacy.instruction_revision(), None);
     }
 }

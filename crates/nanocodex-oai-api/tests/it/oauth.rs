@@ -365,3 +365,38 @@ fn compaction_item(item_id: &str, encrypted_content: &str) -> Value {
         }
     })
 }
+
+#[tokio::test]
+async fn compaction_requires_exactly_one_streamed_summary_even_when_completion_conflicts()
+-> Result<()> {
+    for done_count in [0, 1, 2] {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let api_base_url = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            let compact = read_http_json(&listener).await?;
+            let mut events = (0..done_count)
+                .map(|index| compaction_item(&format!("cmp-{index}"), "streamed-summary"))
+                .collect::<Vec<_>>();
+            events.push(completed_response("resp-compact", vec![json!({
+                "type": "compaction", "id": "cmp-envelope", "encrypted_content": "completion-summary"
+            })]));
+            send_http_events(compact.stream, events).await
+        });
+        let openai = OpenAi::builder("test-key")
+            .transport(ResponsesTransport::Https)
+            .api_base_url(api_base_url)
+            .build()?;
+        let mut session = openai.instructions("Preserve instructions").build()?;
+        let result = session.turn().compact().await;
+        if done_count == 1 {
+            result?;
+            let history = serde_json::to_string(&session.history().collect::<Vec<_>>())?;
+            assert!(history.contains("streamed-summary"));
+            assert!(!history.contains("completion-summary"));
+        } else {
+            assert!(result.is_err(), "accepted {done_count} streamed summaries");
+        }
+        timeout(std::time::Duration::from_secs(5), server).await???;
+    }
+    Ok(())
+}

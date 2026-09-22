@@ -1,6 +1,7 @@
 #if os(iOS)
 import SwiftUI
 import UIKit
+import UniformTypeIdentifiers
 
 /// A growing native editor. UIKit owns selection, scrolling and keeping the caret visible.
 public struct ChatComposerEditor: UIViewRepresentable {
@@ -8,12 +9,17 @@ public struct ChatComposerEditor: UIViewRepresentable {
     @Binding private var focused: Bool
     @Binding private var overflowing: Bool
     private let visibleLines: Int
+    private let expandsToFill: Bool
+    private let onPasteImages: (([NSItemProvider]) -> Void)?
 
-    public init(text: Binding<String>, focused: Binding<Bool>, overflowing: Binding<Bool>, visibleLines: Int = 5) {
+    public init(text: Binding<String>, focused: Binding<Bool>, overflowing: Binding<Bool>, visibleLines: Int = 5, expandsToFill: Bool = false,
+                onPasteImages: (([NSItemProvider]) -> Void)? = nil) {
         _text = text
         _focused = focused
         _overflowing = overflowing
         self.visibleLines = max(1, visibleLines)
+        self.expandsToFill = expandsToFill
+        self.onPasteImages = onPasteImages
     }
 
     public func makeCoordinator() -> Coordinator { Coordinator(self) }
@@ -21,6 +27,7 @@ public struct ChatComposerEditor: UIViewRepresentable {
     public func makeUIView(context: Context) -> UITextView {
         let view = ComposerTextView()
         view.visibleLines = visibleLines
+        view.onPasteImages = onPasteImages
         view.onOverflow = { [weak coordinator = context.coordinator] in coordinator?.reportOverflow($0) }
         view.backgroundColor = .clear
         view.font = .preferredFont(forTextStyle: .body)
@@ -37,6 +44,7 @@ public struct ChatComposerEditor: UIViewRepresentable {
     public func updateUIView(_ view: UITextView, context: Context) {
         context.coordinator.parent = self
         (view as? ComposerTextView)?.visibleLines = visibleLines
+        (view as? ComposerTextView)?.onPasteImages = onPasteImages
         // Reassigning text on every streamed response resets native selection and scrolling.
         if view.text != text { view.text = text }
         if focused != view.isFirstResponder {
@@ -46,7 +54,7 @@ public struct ChatComposerEditor: UIViewRepresentable {
     }
 
     public func sizeThatFits(_ proposal: ProposedViewSize, uiView: UITextView, context: Context) -> CGSize? {
-        guard let width = proposal.width, width > 0 else { return nil }
+        guard !expandsToFill, let width = proposal.width, width > 0 else { return nil }
         let lineHeight = (uiView.font ?? .preferredFont(forTextStyle: .body)).lineHeight
         let insets = uiView.textContainerInset.top + uiView.textContainerInset.bottom
         let maximumHeight = (uiView as? ComposerTextView)?.lineMetrics().height ?? (ceil(lineHeight) * CGFloat(visibleLines) + insets)
@@ -76,9 +84,31 @@ public struct ChatComposerEditor: UIViewRepresentable {
     }
 }
 
-private final class ComposerTextView: UITextView {
+final class ComposerTextView: UITextView {
     var visibleLines = 5
     var onOverflow: ((Bool) -> Void)?
+    var onPasteImages: (([NSItemProvider]) -> Void)?
+
+    override func canPerformAction(_ action: Selector, withSender sender: Any?) -> Bool {
+        // Query only availability while building the edit menu. Read image
+        // providers only after the user invokes Paste.
+        if action == #selector(paste(_:)), onPasteImages != nil, UIPasteboard.general.hasImages { return true }
+        return super.canPerformAction(action, withSender: sender)
+    }
+
+    override func paste(_ sender: Any?) {
+        if onPasteImages != nil, handleImagePaste(UIPasteboard.general.itemProviders) { return }
+        super.paste(sender)
+    }
+
+    @discardableResult
+    func handleImagePaste(_ providers: [NSItemProvider]) -> Bool {
+        guard let onPasteImages else { return false }
+        let images = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) }
+        guard !images.isEmpty else { return false }
+        onPasteImages(images)
+        return true
+    }
 
     func lineMetrics() -> (height: CGFloat, overflow: Bool) {
         var lines = 0

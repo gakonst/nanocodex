@@ -31,6 +31,7 @@ where
             workspace,
             canonical_context,
             history,
+            client_authored,
             context_baseline,
             checkpoint,
         } = snapshot.into_resume()?;
@@ -55,6 +56,7 @@ where
                     provider_session_id: Arc::clone(&lineage_id),
                     canonical_context,
                     history,
+                    client_authored,
                     prompt_cache_key: Arc::clone(&restored_cache_key),
                     context_baseline,
                 }))
@@ -115,6 +117,7 @@ where
             context_source,
             depth: 0,
             execution: codex.execution,
+            restored_snapshot: None,
             host_context: None,
             service_factory,
         },
@@ -283,7 +286,12 @@ pub(super) fn validate_model_thinking(model: Model, thinking: Thinking) -> Resul
         Ok(())
     } else {
         Err(NanocodexError::InvalidRequest(
-            "GPT-6 Astra requires low, medium, high, xhigh, or max reasoning effort".to_owned(),
+            (if model == Model::Glm53 {
+                "GLM-5.3 requires low, medium, or high reasoning effort"
+            } else {
+                "GPT-6 Astra requires low, medium, high, xhigh, or max reasoning effort"
+            })
+            .to_owned(),
         ))
     }
 }
@@ -296,7 +304,12 @@ pub(super) fn validate_model_reasoning_mode(
         Ok(())
     } else {
         Err(NanocodexError::InvalidRequest(
-            "GPT-6 Astra does not support pro reasoning mode".to_owned(),
+            (if model == Model::Glm53 {
+                "GLM-5.3 does not support pro reasoning mode"
+            } else {
+                "GPT-6 Astra does not support pro reasoning mode"
+            })
+            .to_owned(),
         ))
     }
 }

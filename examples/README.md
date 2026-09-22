@@ -31,6 +31,10 @@ All language consumers live at this repository boundary:
 - exe.dev: `exe-dev/` proves both a private retained session inside a persistent
   VM and an external Nanocodex session using an exe.dev VM as a caller-owned tool.
 
+- WoW: [`wow/`](wow/README.md) is an independent Python companion and Lua addon,
+  with an optional local bridge and explicit in-game setup. It consumes the
+  account API and remains separate from the remote streaming publisher.
+
 From the repository root:
 
 ```sh

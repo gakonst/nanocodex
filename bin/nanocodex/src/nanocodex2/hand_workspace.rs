@@ -48,10 +48,12 @@ impl HandWorkspace {
         }
     }
 
-    pub(crate) fn attachment_tools_builder(&self) -> ToolsBuilder {
+    pub(crate) async fn attachment_tools_builder(
+        &self,
+    ) -> Result<ToolsBuilder, nanocodex_tools::contract::ToolError> {
         match self {
-            Self::Vm(workspace) => workspace.attachment_tools_builder(),
-            Self::Docker(workspace) => workspace.attachment_tools_builder(),
+            Self::Vm(workspace) => workspace.attachment_tools_builder().await,
+            Self::Docker(workspace) => workspace.attachment_tools_builder().await,
         }
     }
 

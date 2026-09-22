@@ -1,0 +1,798 @@
+{
+  "requests": [
+    {
+      "path": "/v1/agents",
+      "method": "POST",
+      "at": 1789601665484,
+      "status": 201,
+      "headers_ms": 1252.5557079999999,
+      "request_id": "c149f34d-1971-467f-bd46-32c5f732e826",
+      "server_timing": "managed_auth;dur=202.0;desc=\"live\"",
+      "complete_ms": 1252.812292
+    },
+    {
+      "path": "/v1/agents/efb5c3d8-45da-8327-866c-2295e970e67c/turns",
+      "method": "POST",
+      "at": 1789601667727,
+      "status": 202,
+      "headers_ms": 90.24745800000028,
+      "request_id": "8737dfca-8acf-4d53-88e4-1571203c3a6f",
+      "server_timing": "managed_auth;dur=0.0;desc=\"access\"",
+      "complete_ms": 91.32875000000013
+    },
+    {
+      "path": "/v1/agents/efb5c3d8-45da-8327-866c-2295e970e67c/events/history?after=0&limit=256",
+      "method": "GET",
+      "at": 1789601674008,
+      "status": 200,
+      "headers_ms": 154.08100000000013,
+      "request_id": "c938b00c-33d4-42a6-ba37-d0b9b07525fd",
+      "server_timing": "managed_auth;dur=0.0;desc=\"access\"",
+      "complete_ms": 154.55333299999984
+    },
+    {
+      "method": "GET",
+      "path": "/v1/agents/efb5c3d8-45da-8327-866c-2295e970e67c/events",
+      "status": 200,
+      "headers_ms": 244.75974999999926,
+      "first_frame_ms": 244.90141699999913
+    },
+    {
+      "path": "/v1/agents/efb5c3d8-45da-8327-866c-2295e970e67c/turns",
+      "method": "POST",
+      "at": 1789601675375,
+      "status": 202,
+      "headers_ms": 152.91449999999895,
+      "request_id": "8f165705-fc23-4d3b-add6-38189a17d0b1",
+      "server_timing": "managed_auth;dur=0.0;desc=\"access\"",
+      "complete_ms": 153.00904099999934
+    },
+    {
+      "path": "/v1/agents/efb5c3d8-45da-8327-866c-2295e970e67c/turns/audit-cancel-e1c54f9e-af5d-4bc6-90af-a9a2249b55a8/cancel",
+      "method": "POST",
+      "at": 1789601675908,
+      "status": 202,
+      "headers_ms": 195.13637500000004,
+      "request_id": "ed677b6a-e60f-4bff-bb15-bcb36faf4514",
+      "server_timing": "managed_auth;dur=0.0;desc=\"access\"",
+      "complete_ms": 195.22504200000003
+    },
+    {
+      "path": "/v1/agents/efb5c3d8-45da-8327-866c-2295e970e67c",
+      "method": "DELETE",
+      "at": 1789601676105,
+      "status": 204,
+      "headers_ms": 2213.987416,
+      "request_id": "222f6ad5-81fe-46f4-b50d-564b340c695e",
+      "server_timing": "managed_auth;dur=0.0;desc=\"access\"",
+      "complete_ms": 2214.001708
+    },
+    {
+      "path": "/v1/agents",
+      "method": "POST",
+      "at": 1789601678320,
+      "status": 201,
+      "headers_ms": 1351.301209000001,
+      "request_id": "8f6d58f1-7be9-4b90-8542-e1a58f06341b",
+      "server_timing": "managed_auth;dur=0.0;desc=\"access\"",
+      "complete_ms": 1352.0697500000006
+    },
+    {
+      "path": "/v1/agents/3ef1a10f-b0dd-851a-9344-c46b34875775/turns",
+      "method": "POST",
+      "at": 1789601680683,
+      "status": 202,
+      "headers_ms": 150.76841599999898,
+      "request_id": "23ad3730-fb09-4480-93be-e6cd5dc26cf6",
+      "server_timing": "managed_auth;dur=0.0;desc=\"access\"",
+      "complete_ms": 150.85999999999876
+    },
+    {
+      "path": "/v1/agents/3ef1a10f-b0dd-851a-9344-c46b34875775/events/history?after=0&limit=256",
+      "method": "GET",
+      "at": 1789601685729,
+      "status": 200,
+      "headers_ms": 391.52687499999956,
+      "request_id": "45bf4d46-3d75-49b3-99f6-ce5d4e4d5d91",
+      "server_timing": "managed_auth;dur=0.0;desc=\"access\"",
+      "complete_ms": 391.8161250000012
+    },
+    {
+      "method": "GET",
+      "path": "/v1/agents/3ef1a10f-b0dd-851a-9344-c46b34875775/events",
+      "status": 200,
+      "headers_ms": 275.9545419999995,
+      "first_frame_ms": 276.012917
+    },
+    {
+      "path": "/v1/agents/3ef1a10f-b0dd-851a-9344-c46b34875775/turns",
+      "method": "POST",
+      "at": 1789601687431,
+      "status": 202,
+      "headers_ms": 163.07933400000184,
+      "request_id": "f9bd4333-cacd-4a3c-bb0e-d296b48857e1",
+      "server_timing": "managed_auth;dur=0.0;desc=\"access\"",
+      "complete_ms": 163.31725000000006
+    },
+    {
+      "path": "/v1/agents/3ef1a10f-b0dd-851a-9344-c46b34875775/turns/audit-cancel-3b48fea1-9357-4b3c-8cd3-30f82a437012/cancel",
+      "method": "POST",
+      "at": 1789601688019,
+      "status": 202,
+      "headers_ms": 213.22191600000224,
+      "request_id": "8351da72-7cc8-4337-8d89-a78d8995dc64",
+      "server_timing": "managed_auth;dur=0.0;desc=\"access\"",
+      "complete_ms": 213.70483299999978
+    },
+    {
+      "path": "/v1/agents/3ef1a10f-b0dd-851a-9344-c46b34875775",
+      "method": "DELETE",
+      "at": 1789601688237,
+      "status": 204,
+      "headers_ms": 2574.6990000000005,
+      "request_id": "83a97e57-71c9-4c23-b65b-95bee3f9d3f5",
+      "server_timing": "managed_auth;dur=0.0;desc=\"access\"",
+      "complete_ms": 2574.7107910000013
+    }
+  ],
+  "runs": [
+    {
+      "kind": "create_then_prompt",
+      "id": "efb5c3d8-45da-8327-866c-2295e970e67c",
+      "turn_id": "audit-extra-ef1b5194-621a-489c-80dc-2172502428d9",
+      "began": 690.319083,
+      "complete_ms": 8522.625667,
+      "first_text_ms": 8062.9465,
+      "terminal": "turn_completed",
+      "ws_ready_ms": 984.3547919999999,
+      "events": [
+        {
+          "cursor": "1",
+          "created_at": 1789601666377,
+          "turn_id": null,
+          "type": "agent_created",
+          "agent_id": "efb5c3d8-45da-8327-866c-2295e970e67c",
+          "capabilities": {
+            "durable_turns": true,
+            "resumable_events": true,
+            "live_steer": true,
+            "live_cancel": true,
+            "workspace": "cloudflare-computer",
+            "execution_environments": true,
+            "execution_namespace": "cwd-root-v1",
+            "native_cross_mounts": false
+          }
+        },
+        {
+          "cursor": "2",
+          "created_at": 1789601667755,
+          "turn_id": "audit-extra-ef1b5194-621a-489c-80dc-2172502428d9",
+          "type": "turn_accepted",
+          "id": "audit-extra-ef1b5194-621a-489c-80dc-2172502428d9",
+          "input": "Return exactly 42. Do not call any tools.",
+          "replayed": false
+        },
+        {
+          "cursor": "3",
+          "created_at": 1789601668238,
+          "turn_id": "audit-extra-ef1b5194-621a-489c-80dc-2172502428d9",
+          "type": "event",
+          "event": {
+            "protocol_version": 1,
+            "request_id": "01a0ac92-5c7f-70ff-bc7c-b2afa2cfb111",
+            "seq": 1,
+            "type": "run.started",
+            "payload": {
+              "mode": "openai_model",
+              "model": "gpt-6-astra",
+              "reasoning_mode": "standard",
+              "effort": "low",
+              "transport": "responses_websocket_v2",
+              "orchestration": "local_code_mode",
+              "websocket_url": "[omitted]",
+              "workspace": ".",
+              "instruction_bytes": 41
+            }
+          }
+        },
+        {
+          "cursor": "4",
+          "created_at": 1789601668238,
+          "turn_id": "audit-extra-ef1b5194-621a-489c-80dc-2172502428d9",
+          "type": "event",
+          "event": {
+            "protocol_version": 1,
+            "request_id": "01a0ac92-5c7f-70ff-bc7c-b2afa2cfb111",
+            "seq": 2,
+            "type": "model.call.started",
+            "payload": {
+              "call_index": 1,
+              "model": "gpt-6-astra",
+              "reasoning_mode": "standard",
+              "effort": "low"
+            }
+          }
+        },
+        {
+          "cursor": "5",
+          "created_at": 1789601673504,
+          "turn_id": "audit-extra-ef1b5194-621a-489c-80dc-2172502428d9",
+          "type": "event",
+          "event": {
+            "protocol_version": 1,
+            "request_id": "01a0ac92-5c7f-70ff-bc7c-b2afa2cfb111",
+            "seq": 14,
+            "type": "assistant.delta",
+            "payload": {
+              "model_call_index": 1,
+              "item_id": "msg_08b1684e666227e5016aab278961ac87d2ab65a06d75c442f9",
+              "phase": "final_answer",
+              "text": "42"
+            }
+          }
+        },
+        {
+          "cursor": "6",
+          "created_at": 1789601673632,
+          "turn_id": "audit-extra-ef1b5194-621a-489c-80dc-2172502428d9",
+          "type": "event",
+          "event": {
+            "protocol_version": 1,
+            "request_id": "01a0ac92-5c7f-70ff-bc7c-b2afa2cfb111",
+            "seq": 18,
+            "type": "assistant.message",
+            "payload": {
+              "model_call_index": 1,
+              "item_id": "msg_08b1684e666227e5016aab278961ac87d2ab65a06d75c442f9",
+              "phase": "final_answer",
+              "text": "42"
+            }
+          }
+        },
+        {
+          "cursor": "7",
+          "created_at": 1789601673712,
+          "turn_id": "audit-extra-ef1b5194-621a-489c-80dc-2172502428d9",
+          "type": "event",
+          "event": {
+            "protocol_version": 1,
+            "request_id": "01a0ac92-5c7f-70ff-bc7c-b2afa2cfb111",
+            "seq": 21,
+            "type": "model.call.completed",
+            "payload": {
+              "call_index": 1,
+              "model": "gpt-6-astra",
+              "response_id": "resp_08b1684e666227e5016aab278628b087d2a5bf84e9d7398ac4",
+              "attempt": 1,
+              "connection_generation": 1,
+              "status": "completed",
+              "duration_ns": 5474000000,
+              "time_to_first_event_ns": 1886000000,
+              "time_to_first_output_ns": 5244000000,
+              "tool_calls": 0,
+              "usage": {
+                "input_tokens": 18707,
+                "input_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0
+                },
+                "output_tokens": 5,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 18712
+              }
+            }
+          }
+        },
+        {
+          "cursor": "8",
+          "created_at": 1789601673712,
+          "turn_id": "audit-extra-ef1b5194-621a-489c-80dc-2172502428d9",
+          "type": "event",
+          "event": {
+            "protocol_version": 1,
+            "request_id": "01a0ac92-5c7f-70ff-bc7c-b2afa2cfb111",
+            "seq": 22,
+            "type": "run.completed",
+            "payload": {
+              "status": "completed",
+              "model": "gpt-6-astra",
+              "reasoning_mode": "standard",
+              "effort": "low",
+              "transport": "responses_websocket_v2",
+              "orchestration": "local_code_mode",
+              "duration_ms": 5474,
+              "duration_ns": 5474000000,
+              "model_calls": 1,
+              "steers": 0,
+              "compactions": 0,
+              "tool_calls": 0,
+              "connection_attempts": 1,
+              "websocket_reconnects": 0,
+              "response_attempts": 1,
+              "response_retries": 0,
+              "connection_duration_ns": 1252000000,
+              "retry_backoff_duration_ns": 0,
+              "model_duration_ns": 5474000000,
+              "compaction_duration_ns": 0,
+              "warmup_duration_ns": 0,
+              "tool_work_duration_ns": 0,
+              "tool_wall_duration_ns": 0,
+              "usage": {
+                "input_tokens": 18707,
+                "cached_input_tokens": 0,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 5,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 18712
+              },
+              "warmup_usage": {
+                "input_tokens": 0,
+                "cached_input_tokens": 0,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 0
+              },
+              "last_response_id": "resp_08b1684e666227e5016aab278628b087d2a5bf84e9d7398ac4",
+              "estimated_cost": {
+                "usd": "0.18732",
+                "input_usd": "0.18707",
+                "cached_input_usd": "0",
+                "cache_write_input_usd": "0",
+                "output_usd": "0.00025",
+                "service_tier": "standard"
+              },
+              "cost_usd": 0.18732,
+              "cost_status": "estimated_from_usage"
+            }
+          }
+        },
+        {
+          "cursor": "9",
+          "created_at": 1789601673903,
+          "turn_id": "audit-extra-ef1b5194-621a-489c-80dc-2172502428d9",
+          "type": "turn_completed",
+          "id": "audit-extra-ef1b5194-621a-489c-80dc-2172502428d9",
+          "final_message": "42",
+          "usage": {
+            "input_tokens": 18707,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 5,
+            "reasoning_output_tokens": 0,
+            "total_tokens": 18712,
+            "estimated_cost": {
+              "usd": "0.18732",
+              "input_usd": "0.18707",
+              "cached_input_usd": "0",
+              "cache_write_input_usd": "0",
+              "output_usd": "0.00025",
+              "service_tier": "standard"
+            },
+            "cost_status": "estimated_from_usage"
+          },
+          "citations": []
+        }
+      ]
+    },
+    {
+      "kind": "websocket_reconnect_replay",
+      "id": "efb5c3d8-45da-8327-866c-2295e970e67c",
+      "turn_id": "audit-extra-ef1b5194-621a-489c-80dc-2172502428d9",
+      "ready_ms": 944.5507089999992,
+      "terminal_replayed_ms": 945.2960000000003,
+      "terminal": "turn_completed"
+    },
+    {
+      "kind": "cancel_running_turn",
+      "id": "efb5c3d8-45da-8327-866c-2295e970e67c",
+      "turn_id": "audit-cancel-e1c54f9e-af5d-4bc6-90af-a9a2249b55a8",
+      "terminal": "turn_cancelled",
+      "complete_ms": 190.92674999999872
+    },
+    {
+      "kind": "create_then_prompt",
+      "id": "3ef1a10f-b0dd-851a-9344-c46b34875775",
+      "turn_id": "audit-extra-5b3e14a9-3199-44a8-a5d0-a3fa91cb62b4",
+      "began": 13526.717291,
+      "complete_ms": 7399.663791999999,
+      "first_text_ms": 7005.072709,
+      "terminal": "turn_completed",
+      "ws_ready_ms": 1008.0806670000002,
+      "events": [
+        {
+          "cursor": "1",
+          "created_at": 1789601679305,
+          "turn_id": null,
+          "type": "agent_created",
+          "agent_id": "3ef1a10f-b0dd-851a-9344-c46b34875775",
+          "capabilities": {
+            "durable_turns": true,
+            "resumable_events": true,
+            "live_steer": true,
+            "live_cancel": true,
+            "workspace": "cloudflare-computer",
+            "execution_environments": true,
+            "execution_namespace": "cwd-root-v1",
+            "native_cross_mounts": false
+          }
+        },
+        {
+          "cursor": "2",
+          "created_at": 1789601680767,
+          "turn_id": "audit-extra-5b3e14a9-3199-44a8-a5d0-a3fa91cb62b4",
+          "type": "turn_accepted",
+          "id": "audit-extra-5b3e14a9-3199-44a8-a5d0-a3fa91cb62b4",
+          "input": "Return exactly 42. Do not call any tools.",
+          "replayed": false
+        },
+        {
+          "cursor": "3",
+          "created_at": 1789601681340,
+          "turn_id": "audit-extra-5b3e14a9-3199-44a8-a5d0-a3fa91cb62b4",
+          "type": "event",
+          "event": {
+            "protocol_version": 1,
+            "request_id": "01a0ac92-8fb0-7c80-93c6-9313b88dda3f",
+            "seq": 1,
+            "type": "run.started",
+            "payload": {
+              "mode": "openai_model",
+              "model": "gpt-6-astra",
+              "reasoning_mode": "standard",
+              "effort": "low",
+              "transport": "responses_websocket_v2",
+              "orchestration": "local_code_mode",
+              "websocket_url": "[omitted]",
+              "workspace": ".",
+              "instruction_bytes": 41
+            }
+          }
+        },
+        {
+          "cursor": "4",
+          "created_at": 1789601681340,
+          "turn_id": "audit-extra-5b3e14a9-3199-44a8-a5d0-a3fa91cb62b4",
+          "type": "event",
+          "event": {
+            "protocol_version": 1,
+            "request_id": "01a0ac92-8fb0-7c80-93c6-9313b88dda3f",
+            "seq": 2,
+            "type": "model.call.started",
+            "payload": {
+              "call_index": 1,
+              "model": "gpt-6-astra",
+              "reasoning_mode": "standard",
+              "effort": "low"
+            }
+          }
+        },
+        {
+          "cursor": "5",
+          "created_at": 1789601685173,
+          "turn_id": "audit-extra-5b3e14a9-3199-44a8-a5d0-a3fa91cb62b4",
+          "type": "event",
+          "event": {
+            "protocol_version": 1,
+            "request_id": "01a0ac92-8fb0-7c80-93c6-9313b88dda3f",
+            "seq": 14,
+            "type": "assistant.delta",
+            "payload": {
+              "model_call_index": 1,
+              "item_id": "msg_0d94d234d0b1d592016aab2795147087d2b5b2465f970f1849",
+              "phase": "final_answer",
+              "text": "42"
+            }
+          }
+        },
+        {
+          "cursor": "6",
+          "created_at": 1789601685274,
+          "turn_id": "audit-extra-5b3e14a9-3199-44a8-a5d0-a3fa91cb62b4",
+          "type": "event",
+          "event": {
+            "protocol_version": 1,
+            "request_id": "01a0ac92-8fb0-7c80-93c6-9313b88dda3f",
+            "seq": 18,
+            "type": "assistant.message",
+            "payload": {
+              "model_call_index": 1,
+              "item_id": "msg_0d94d234d0b1d592016aab2795147087d2b5b2465f970f1849",
+              "phase": "final_answer",
+              "text": "42"
+            }
+          }
+        },
+        {
+          "cursor": "7",
+          "created_at": 1789601685347,
+          "turn_id": "audit-extra-5b3e14a9-3199-44a8-a5d0-a3fa91cb62b4",
+          "type": "event",
+          "event": {
+            "protocol_version": 1,
+            "request_id": "01a0ac92-8fb0-7c80-93c6-9313b88dda3f",
+            "seq": 21,
+            "type": "model.call.completed",
+            "payload": {
+              "call_index": 1,
+              "model": "gpt-6-astra",
+              "response_id": "resp_0d94d234d0b1d592016aab279389c887d2ae72dce0ef75e3a6",
+              "attempt": 1,
+              "connection_generation": 1,
+              "status": "completed",
+              "duration_ns": 4007000000,
+              "time_to_first_event_ns": 2169000000,
+              "time_to_first_output_ns": 3814000000,
+              "tool_calls": 0,
+              "usage": {
+                "input_tokens": 18707,
+                "input_tokens_details": {
+                  "cached_tokens": 0,
+                  "cache_write_tokens": 0
+                },
+                "output_tokens": 5,
+                "output_tokens_details": {
+                  "reasoning_tokens": 0
+                },
+                "total_tokens": 18712
+              }
+            }
+          }
+        },
+        {
+          "cursor": "8",
+          "created_at": 1789601685347,
+          "turn_id": "audit-extra-5b3e14a9-3199-44a8-a5d0-a3fa91cb62b4",
+          "type": "event",
+          "event": {
+            "protocol_version": 1,
+            "request_id": "01a0ac92-8fb0-7c80-93c6-9313b88dda3f",
+            "seq": 22,
+            "type": "run.completed",
+            "payload": {
+              "status": "completed",
+              "model": "gpt-6-astra",
+              "reasoning_mode": "standard",
+              "effort": "low",
+              "transport": "responses_websocket_v2",
+              "orchestration": "local_code_mode",
+              "duration_ms": 4007,
+              "duration_ns": 4007000000,
+              "model_calls": 1,
+              "steers": 0,
+              "compactions": 0,
+              "tool_calls": 0,
+              "connection_attempts": 1,
+              "websocket_reconnects": 0,
+              "response_attempts": 1,
+              "response_retries": 0,
+              "connection_duration_ns": 1521000000,
+              "retry_backoff_duration_ns": 0,
+              "model_duration_ns": 4007000000,
+              "compaction_duration_ns": 0,
+              "warmup_duration_ns": 0,
+              "tool_work_duration_ns": 0,
+              "tool_wall_duration_ns": 0,
+              "usage": {
+                "input_tokens": 18707,
+                "cached_input_tokens": 0,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 5,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 18712
+              },
+              "warmup_usage": {
+                "input_tokens": 0,
+                "cached_input_tokens": 0,
+                "cache_write_input_tokens": 0,
+                "output_tokens": 0,
+                "reasoning_output_tokens": 0,
+                "total_tokens": 0
+              },
+              "last_response_id": "resp_0d94d234d0b1d592016aab279389c887d2ae72dce0ef75e3a6",
+              "estimated_cost": {
+                "usd": "0.18732",
+                "input_usd": "0.18707",
+                "cached_input_usd": "0",
+                "cache_write_input_usd": "0",
+                "output_usd": "0.00025",
+                "service_tier": "standard"
+              },
+              "cost_usd": 0.18732,
+              "cost_status": "estimated_from_usage"
+            }
+          }
+        },
+        {
+          "cursor": "9",
+          "created_at": 1789601685593,
+          "turn_id": "audit-extra-5b3e14a9-3199-44a8-a5d0-a3fa91cb62b4",
+          "type": "turn_completed",
+          "id": "audit-extra-5b3e14a9-3199-44a8-a5d0-a3fa91cb62b4",
+          "final_message": "42",
+          "usage": {
+            "input_tokens": 18707,
+            "cached_input_tokens": 0,
+            "cache_write_input_tokens": 0,
+            "output_tokens": 5,
+            "reasoning_output_tokens": 0,
+            "total_tokens": 18712,
+            "estimated_cost": {
+              "usd": "0.18732",
+              "input_usd": "0.18707",
+              "cached_input_usd": "0",
+              "cache_write_input_usd": "0",
+              "output_usd": "0.00025",
+              "service_tier": "standard"
+            },
+            "cost_status": "estimated_from_usage"
+          },
+          "citations": []
+        }
+      ]
+    },
+    {
+      "kind": "websocket_reconnect_replay",
+      "id": "3ef1a10f-b0dd-851a-9344-c46b34875775",
+      "turn_id": "audit-extra-5b3e14a9-3199-44a8-a5d0-a3fa91cb62b4",
+      "ready_ms": 1010.8487090000017,
+      "terminal_replayed_ms": 1012.3309579999986,
+      "terminal": "turn_completed"
+    },
+    {
+      "kind": "cancel_running_turn",
+      "id": "3ef1a10f-b0dd-851a-9344-c46b34875775",
+      "turn_id": "audit-cancel-3b48fea1-9357-4b3c-8cd3-30f82a437012",
+      "terminal": "turn_cancelled",
+      "complete_ms": 208.66283300000214
+    }
+  ],
+  "resources": [
+    {
+      "id": "efb5c3d8-45da-8327-866c-2295e970e67c",
+      "deleted": true
+    },
+    {
+      "id": "3ef1a10f-b0dd-851a-9344-c46b34875775",
+      "deleted": true
+    }
+  ],
+  "versions_start": {
+    "nanocodex-durable-agent": {
+      "id": "52011c4c-236b-439f-9cea-64ccad4c90cf",
+      "source": "wrangler",
+      "strategy": "percentage",
+      "author_email": "gakonst@protonmail.com",
+      "annotations": {
+        "workers/message": "Shared bounded access verification and VM pool ...",
+        "workers/triggered_by": "upload"
+      },
+      "versions": [
+        {
+          "version_id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece",
+          "percentage": 100
+        }
+      ],
+      "created_on": "2026-09-16T23:12:21.035886Z"
+    },
+    "nanocodex-egress": {
+      "id": "2beb3de4-47bd-4e2a-b92f-75c3ad8c5575",
+      "source": "wrangler",
+      "strategy": "percentage",
+      "annotations": {
+        "workers/message": "GitHub Actions production 972a6967dda761d637601603f200162de88508bf",
+        "workers/triggered_by": "deployment"
+      },
+      "versions": [
+        {
+          "version_id": "d8f1b3e5-2ae9-439b-a587-cd39224eeb92",
+          "percentage": 100
+        }
+      ],
+      "created_on": "2026-09-16T22:34:36.799972Z"
+    },
+    "nanocodex": {
+      "id": "3964a202-fcc0-4ae2-892a-a07810367c33",
+      "source": "wrangler",
+      "strategy": "percentage",
+      "author_email": "gakonst@protonmail.com",
+      "annotations": {
+        "workers/message": "Locally verified viewer authority c0d049f68",
+        "workers/triggered_by": "upload"
+      },
+      "versions": [
+        {
+          "version_id": "83d1e7ce-0db2-4637-9de8-8e9fd5f6968f",
+          "percentage": 100
+        }
+      ],
+      "created_on": "2026-09-16T23:12:54.493965Z"
+    },
+    "nanocodex-connect-api": {
+      "id": "316cefe1-f0ae-48ba-8263-e0c80c7af949",
+      "source": "wrangler",
+      "strategy": "percentage",
+      "annotations": {
+        "workers/message": "GitHub Actions production 972a6967dda761d637601603f200162de88508bf",
+        "workers/triggered_by": "deployment"
+      },
+      "versions": [
+        {
+          "version_id": "d7ab1bb1-a22e-4038-87ac-043743d33b82",
+          "percentage": 100
+        }
+      ],
+      "created_on": "2026-09-16T22:35:01.116132Z"
+    }
+  },
+  "versions_end": {
+    "nanocodex-durable-agent": {
+      "id": "52011c4c-236b-439f-9cea-64ccad4c90cf",
+      "source": "wrangler",
+      "strategy": "percentage",
+      "author_email": "gakonst@protonmail.com",
+      "annotations": {
+        "workers/message": "Shared bounded access verification and VM pool ...",
+        "workers/triggered_by": "upload"
+      },
+      "versions": [
+        {
+          "version_id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece",
+          "percentage": 100
+        }
+      ],
+      "created_on": "2026-09-16T23:12:21.035886Z"
+    },
+    "nanocodex-egress": {
+      "id": "2beb3de4-47bd-4e2a-b92f-75c3ad8c5575",
+      "source": "wrangler",
+      "strategy": "percentage",
+      "annotations": {
+        "workers/message": "GitHub Actions production 972a6967dda761d637601603f200162de88508bf",
+        "workers/triggered_by": "deployment"
+      },
+      "versions": [
+        {
+          "version_id": "d8f1b3e5-2ae9-439b-a587-cd39224eeb92",
+          "percentage": 100
+        }
+      ],
+      "created_on": "2026-09-16T22:34:36.799972Z"
+    },
+    "nanocodex": {
+      "id": "3964a202-fcc0-4ae2-892a-a07810367c33",
+      "source": "wrangler",
+      "strategy": "percentage",
+      "author_email": "gakonst@protonmail.com",
+      "annotations": {
+        "workers/message": "Locally verified viewer authority c0d049f68",
+        "workers/triggered_by": "upload"
+      },
+      "versions": [
+        {
+          "version_id": "83d1e7ce-0db2-4637-9de8-8e9fd5f6968f",
+          "percentage": 100
+        }
+      ],
+      "created_on": "2026-09-16T23:12:54.493965Z"
+    },
+    "nanocodex-connect-api": {
+      "id": "316cefe1-f0ae-48ba-8263-e0c80c7af949",
+      "source": "wrangler",
+      "strategy": "percentage",
+      "annotations": {
+        "workers/message": "GitHub Actions production 972a6967dda761d637601603f200162de88508bf",
+        "workers/triggered_by": "deployment"
+      },
+      "versions": [
+        {
+          "version_id": "d7ab1bb1-a22e-4038-87ac-043743d33b82",
+          "percentage": 100
+        }
+      ],
+      "created_on": "2026-09-16T22:35:01.116132Z"
+    }
+  }
+}

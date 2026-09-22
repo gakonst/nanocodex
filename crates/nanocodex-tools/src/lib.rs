@@ -31,7 +31,8 @@ mod code_mode_spec;
 #[cfg(feature = "native")]
 pub mod embedded;
 #[cfg(all(not(target_family = "wasm"), feature = "native"))]
-#[cfg_attr(docsrs, doc(cfg(not(target_family = "wasm"))))]
+pub mod extensions;
+#[cfg(feature = "native")]
 pub mod image;
 #[cfg(all(not(target_family = "wasm"), feature = "native"))]
 mod image_generation;
@@ -90,13 +91,6 @@ pub mod code_mode {
         CodeModeCell, CodeModeExecution, CodeModeNotification, CodeModeObserver, CodeModeUpdate,
         NestedToolCall,
     };
-}
-
-#[cfg(all(target_family = "wasm", feature = "native"))]
-/// Image input and output preparation for the embedded WASM runtime.
-pub mod image {
-    pub use crate::embedded::{prepare_output_images, prepare_user_input};
-    pub use nanocodex_oai_api::ImageDetail;
 }
 
 #[cfg(all(target_family = "wasm", feature = "native"))]

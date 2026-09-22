@@ -2,6 +2,101 @@ import XCTest
 @testable import InboxCore
 
 final class ToolPresentationTests: XCTestCase {
+    func testComputerScreenProvenanceIsExactAndSurvivesCompletion() throws {
+        var direct = ToolPresentation(name: "functions.computer", arguments: .null)
+        XCTAssertTrue(direct.isComputerScreenOutput)
+        let metadata: JSON = .object(["tool_name": .string("screen")])
+        var result = ToolPresentation(name: "user_example", arguments: .null)
+        result.finish(.null, metadata: metadata)
+        direct.applyCompletion(result, metadata: metadata)
+        XCTAssertTrue(direct.isComputerScreenOutput)
+        XCTAssertTrue(try JSONDecoder().decode(ToolPresentation.self, from: JSONEncoder().encode(direct)).isComputerScreenOutput)
+        for name in ["mcp__cua_repl__js", "browser_execute", "view_image", "exec"] {
+            XCTAssertFalse(ToolPresentation(name: name, arguments: .null).isComputerScreenOutput)
+        }
+        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(direct)) as? [String: Any])
+        object.removeValue(forKey: "generatedIsComputerScreen")
+        XCTAssertFalse(try JSONDecoder().decode(ToolPresentation.self, from: JSONSerialization.data(withJSONObject: object)).isComputerScreenOutput)
+    }
+
+    func testNestedComputerAndOuterCodeModeKeepSeparateProvenanceInEitherCompletionOrder() throws {
+        func event(_ cursor: Int, _ type: String, _ call: String, _ tool: String, metadata: JSON = .null, result: JSON = .null) throws -> AgentEvent {
+            try AgentEvent(.object(["cursor": .string(String(cursor)), "type": .string("event"), "turn_id": .string("synthetic-turn"),
+                "event": .object(["type": .string(type), "payload": .object([
+                    "call_id": .string(call), "tool": .string(tool), "metadata": metadata,
+                    "arguments": .object(["code": .string("image(await tools.computer({action: 'observe'}));")]),
+                    "result": result
+                ])])]))
+        }
+        let image: JSON = .object(["type": .string("input_image"), "image_url": .string("data:image/png;base64,AQIDBA==")])
+        for nestedFirst in [false, true] {
+            let screenMetadata: JSON = .object(["tool_name": .string("screen")])
+            let calls = [try event(1, "tool.call", "outer", "functions.exec"),
+                         try event(2, "tool.call", "nested", "user_synthetic", metadata: screenMetadata)]
+            let nested = try event(nestedFirst ? 3 : 4, "tool.result", "nested", "user_synthetic", metadata: screenMetadata,
+                                   result: .object(["image_url": .string("data:image/png;base64,AQIDBA==")]))
+            let outer = try event(nestedFirst ? 4 : 3, "tool.result", "outer", "functions.exec", result: .array([image]))
+            let rows = transcript(calls + (nestedFirst ? [nested, outer] : [outer, nested]))
+            let tools = rows.compactMap(\.tool)
+            XCTAssertEqual(tools.count, 2)
+            XCTAssertEqual(tools.filter(\.isComputerScreenOutput).count, 1)
+            XCTAssertFalse(try XCTUnwrap(tools.first { $0.title == "Run code" }).isComputerScreenOutput)
+            XCTAssertTrue(tools.allSatisfy { $0.generatedResults?.contains { $0.contains("AQIDBA==") } == true })
+        }
+    }
+
+    func testNativeScreenshotAttributionRequiresStandaloneCapture() {
+        XCTAssertTrue(ToolPresentation(name: "browser_screenshot", arguments: .null).isComputerScreenOutput)
+        for code in ["await cua.getScreenshot();", "await nodeRepl.emitImage(await app.getScreenshot({emit:false}));"] {
+            let arguments: JSON = .object(["code": .string(code)])
+            XCTAssertTrue(ToolPresentation(name: "mcp__cua_repl__js", arguments: arguments).isComputerScreenOutput)
+            XCTAssertFalse(ToolPresentation(name: "exec", arguments: arguments).isComputerScreenOutput)
+            XCTAssertFalse(ToolPresentation(name: "browser_execute", arguments: arguments).isComputerScreenOutput)
+        }
+        for code in ["await nodeRepl.emitImage(chart);", "await app.getScreenshot(); await nodeRepl.emitImage(chart);",
+                     "// await cua.getScreenshot();", "const hint = 'await cua.getScreenshot();';"] {
+            XCTAssertFalse(ToolPresentation(name: "mcp__cua_repl__js", arguments: .object(["code": .string(code)])).isComputerScreenOutput)
+        }
+    }
+
+    func testDelegationSummaryIncludesRolePromptAndCompletedIdentity() {
+        var tool = ToolPresentation(name: "functions.spawn_agent", arguments: .object([
+            "role": .string("UI reviewer"), "task": .string("Review\n the   settings screen")
+        ]))
+        XCTAssertEqual(tool.subject, "UI reviewer · Review the settings screen")
+        var result = ToolPresentation(name: "spawn_agent", arguments: .null)
+        result.finish(.object(["agent_id": .number(42)]))
+        tool.applyCompletion(result, metadata: .null)
+        XCTAssertEqual(tool.subject, "Agent 42 · UI reviewer · Review the settings screen")
+        XCTAssertTrue(tool.input.contains { $0.label == "Task" && $0.value == "Review\n the   settings screen" })
+    }
+
+    func testAgentMessageSummaryIsBoundedAndRetainsFullDetails() throws {
+        let message = "Check\n  the preview " + String(repeating: "🧑🏽‍💻", count: 200)
+        let tool = ToolPresentation(name: "send_agent_message", arguments: .object([
+            "agent_id": .number(42), "message": .string(message)
+        ]))
+        XCTAssertTrue(tool.subject.hasPrefix("Agent 42 · Check the preview "))
+        XCTAssertEqual(tool.subject.count, 140)
+        XCTAssertTrue(tool.subject.hasSuffix("…"))
+        XCTAssertTrue(tool.input.contains { $0.label == "Message" && $0.value == message })
+        let restored = try JSONDecoder().decode(ToolPresentation.self, from: JSONEncoder().encode(tool))
+        XCTAssertEqual(restored, tool)
+    }
+
+    func testAgentTargetsHandleUnknownAndMultipleIDsWithoutJSON() {
+        XCTAssertEqual(ToolPresentation(name: "send_agent_message", arguments: .object([
+            "message": .string("Continue"), "agent_id": .object(["unexpected": .string("payload")])
+        ])).subject, "Agent · Continue")
+        XCTAssertEqual(ToolPresentation(name: "wait_agent", arguments: .object([
+            "agent_ids": .array((1...6).map { .number(Double($0)) })
+        ])).subject, "Agent 1, Agent 2, Agent 3, Agent 4 +2 more")
+        XCTAssertEqual(ToolPresentation(name: "close_agent", arguments: .string("{\"agent_id\":42}")).subject, "Agent 42")
+        XCTAssertEqual(ToolPresentation(name: "send_agent_message", arguments: .object([
+            "agent_id": .number(42), "role": .string("Reviewer"), "message": .string("Inspect tests")
+        ])).subject, "Agent 42 · Reviewer · Inspect tests")
+    }
+
     func testRecoveryReplayKeepsOneCommandAndItsOriginalStartTime() throws {
         func event(_ cursor: String, _ time: Double, _ type: String, _ payload: JSON) throws -> AgentEvent {
             try AgentEvent(.object(["cursor": .string(cursor), "created_at": .number(time), "type": .string("event"), "turn_id": .string("t"), "event": .object(["type": .string(type), "payload": payload])]))
@@ -16,7 +111,7 @@ final class ToolPresentationTests: XCTestCase {
             event("6", 57000, "tool.call", poll),
             event("7", 58000, "tool.result", .object(["call_id": .string("p"), "tool": .string("write_stdin"), "status": .string("failed"), "structured_result": .string("unknown or stale namespace process session")]))
         ])
-        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.count, 2)
         XCTAssertEqual(rows[0].tool?.status, "Failed")
         XCTAssertTrue(rows[0].tool!.output.contains { $0.label == "Output" && $0.value == "START\nunknown or stale namespace process session" })
         XCTAssertTrue(rows[0].tool!.output.contains { $0.label == "Elapsed (seconds)" && $0.value == "57" })
@@ -36,7 +131,10 @@ final class ToolPresentationTests: XCTestCase {
         XCTAssertEqual(running[0].tool?.status, "Running")
         XCTAssertFalse(running[0].tool!.output.contains { $0.label == "Elapsed (seconds)" || $0.label == "Wall time seconds" })
         let finished = transcript(events)
-        XCTAssertEqual(finished.count, 1)
+        XCTAssertEqual(finished.count, 2)
+        XCTAssertEqual(finished[1].id, "t::tool:poll")
+        XCTAssertEqual(finished[1].tool?.status, "Completed")
+        XCTAssertTrue(finished[1].tool!.output.contains { $0.label == "Output" && $0.value == "13 tests passed" })
         XCTAssertEqual(finished[0].tool?.status, "Completed")
         XCTAssertTrue(finished[0].tool!.output.contains { $0.label == "Elapsed (seconds)" && $0.value == "112.089" })
         XCTAssertFalse(finished[0].tool!.output.contains { $0.label == "Wall time seconds" })
@@ -52,15 +150,17 @@ final class ToolPresentationTests: XCTestCase {
             event("3", "tool.call", .object(["call_id": .string("poll"), "tool": .string("write_stdin"), "arguments": .object(["session_id": .number(42)])]), turn: "next"),
         ]
         let running = transcript(start)
-        XCTAssertEqual(running.count, 1)
+        XCTAssertEqual(running.count, 2)
         XCTAssertTrue(running[0].running)
         XCTAssertEqual(running[0].tool?.status, "Running")
         let pending = try event("4", "tool.result", .object(["call_id": .string("poll"), "tool": .string("write_stdin"), "status": .string("completed"), "structured_result": .object(["session_id": .number(42), "output": .string("Compiling second\n")])]), turn: "next")
         XCTAssertEqual(transcript(start + [pending])[0].tool?.status, "Running")
+        XCTAssertEqual(transcript(start + [pending])[1].tool?.status, "Completed")
+        XCTAssertFalse(transcript(start + [pending])[1].running)
         for code in [0.0, 101.0] {
             let finished = try event("4", "tool.result", .object(["call_id": .string("poll"), "tool": .string("write_stdin"), "status": .string("completed"), "structured_result": .object(["exit_code": .number(code), "output": .string("Final result\n")])]), turn: "next")
             let rows = transcript(start + [finished])
-            XCTAssertEqual(rows.count, 1)
+            XCTAssertEqual(rows.count, 2)
             XCTAssertFalse(rows[0].running)
             XCTAssertEqual(rows[0].tool?.status, code == 0 ? "Completed" : "Failed")
             XCTAssertTrue(rows[0].tool!.output.contains { $0.label == "Output" && $0.value == "Compiling first\nFinal result\n" })
@@ -80,7 +180,7 @@ final class ToolPresentationTests: XCTestCase {
             event("4", "tool.result", .object(["call_id": .string("p"), "tool": .string("write_stdin"), "structured_result": .object(["exit_code": .number(0), "output": .string(final)])])),
         ]
         let rows = transcript(events)
-        XCTAssertEqual(rows.count, 1)
+        XCTAssertEqual(rows.count, 2)
         XCTAssertEqual(rows.first?.tool?.output.first { $0.label == "Output" }?.value, original + final)
     }
 

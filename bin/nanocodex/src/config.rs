@@ -365,7 +365,8 @@ impl AgentArgs {
         } else {
             None
         };
-        let configured_browser = self.browser.configure(&session.workspace)?;
+        // Browser interaction is supplied by CUA, including for the direct CLI.
+        let configured_browser = None;
         let mpp_enabled = self.mpp.is_enabled();
         if mpp_enabled && !matches!(responses_transport, ResponsesTransport::Https) {
             return Err(eyre!(
@@ -419,11 +420,12 @@ impl AgentArgs {
             None
         };
         let configured_vm = vm.start(vm_egress).await?;
-        let mut tools = configured_vm
-            .as_ref()
-            .map_or_else(Tools::builder, ConfiguredVm::tools_builder)
-            .web_search(web_search)
-            .image_generation(self.image_generation);
+        let mut tools = match configured_vm.as_ref() {
+            Some(vm) => vm.tools_builder().await?,
+            None => Tools::builder(),
+        }
+        .web_search(web_search)
+        .image_generation(self.image_generation);
         let managed_mcp = if self.mcp.loads_managed() {
             load_managed_mcp_credential(&codex_home).await?
         } else {
@@ -442,14 +444,17 @@ impl AgentArgs {
             }
             tools = tools.remote_http_client(mpp_adapter.tool_http_client()?);
         }
-        if let Some(browser) = &configured_browser {
-            tools = tools.provider(browser.tool());
-        }
         if configured_vm.is_none()
-            && let Some(config) = nanocodex_computer::ComputerConfig::discover()
+            && let Some(config) = nanocodex_computer::ComputerConfig::discover_or_install()
+                .await
+                .map_err(|error| eyre!(error))?
         {
-            let computer = nanocodex_computer::ComputerTools::local(config);
-            tools = tools.add(computer.js()).add(computer.reset());
+            let computer = nanocodex_computer::ComputerTools::connect(config)
+                .await
+                .map_err(|error| eyre!(error.to_string()))?;
+            for tool in computer.tools() {
+                tools = tools.add(tool);
+            }
         }
         if let Some(managed_memory) = &managed_memory {
             tools = managed_memory.install(tools);

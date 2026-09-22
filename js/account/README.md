@@ -68,6 +68,13 @@ repository and thread Git data, evaluation reads, and credential-backed model
 operations. Provider credentials stay behind Worker bindings and are not part
 of browser configuration.
 
+Screen viewer upgrades with a valid two-minute access snapshot can reach the
+existing account screen broker directly. This requires the same
+`NANOCODEX_ACCESS_SECRET` as the managed Worker; keep it server-side and rotate
+both copies together for explicit snapshot invalidation. Missing or invalid
+snapshots retain the managed route. See [short-lived request access](../managed/README.md#short-lived-request-access)
+for expiry, recovery and renewal behavior.
+
 The deployment may sponsor exactly three prompts in the signed-in Home demo
 from one operator-connected ChatGPT account. The per-account allowance is
 reserved atomically at egress. That fallback is restricted to the ephemeral

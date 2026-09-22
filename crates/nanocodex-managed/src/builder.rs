@@ -221,49 +221,52 @@ impl Service<ManagedRequest> for ManagedService {
                 ManagedRequest::State { agent_id } => {
                     client.state(&agent_id).await.map(ManagedResponse::State)
                 }
-                ManagedRequest::Events { agent_id, cursor } => match transport {
-                    ManagedTransport::Http => {
-                        // Reading retained state must not wait for the live
-                        // stream to become available. The driver reconnects
-                        // from this cursor while the caller renders history.
-                        let events = client.events(&agent_id, cursor)?;
-                        Ok(ManagedResponse::Events(ManagedEvents::new(events)))
-                    }
-                    ManagedTransport::WebSocket => {
-                        {
-                            let mut socket = socket.lock().await;
-                            if let Some(live) =
-                                socket.as_mut().filter(|live| live.agent_id == agent_id)
+                ManagedRequest::Events { agent_id, cursor } => {
+                    client.prepare_active_conversation(&agent_id);
+                    match transport {
+                        ManagedTransport::Http => {
+                            // Reading retained state must not wait for the live
+                            // stream to become available. The driver reconnects
+                            // from this cursor while the caller renders history.
+                            let events = client.events(&agent_id, cursor)?;
+                            Ok(ManagedResponse::Events(ManagedEvents::new(events)))
+                        }
+                        ManagedTransport::WebSocket => {
                             {
-                                let events = live.events.as_ref().ok_or_else(|| {
-                                    ManagedError::Configuration(
-                                        "managed create WebSocket events were already consumed"
-                                            .to_owned(),
-                                    )
-                                })?;
-                                if events.cursor().as_str() != cursor.as_str() {
-                                    return Err(ManagedError::Configuration(
+                                let mut socket = socket.lock().await;
+                                if let Some(live) =
+                                    socket.as_mut().filter(|live| live.agent_id == agent_id)
+                                {
+                                    let events = live.events.as_ref().ok_or_else(|| {
+                                        ManagedError::Configuration(
+                                            "managed create WebSocket events were already consumed"
+                                                .to_owned(),
+                                        )
+                                    })?;
+                                    if events.cursor().as_str() != cursor.as_str() {
+                                        return Err(ManagedError::Configuration(
                                         "managed create WebSocket cursor does not match ready state"
                                             .to_owned(),
                                     ));
+                                    }
+                                    let events = live.events.take().expect(
+                                        "managed create WebSocket events were just observed",
+                                    );
+                                    return Ok(ManagedResponse::Events(ManagedEvents::new(events)));
                                 }
-                                let events = live
-                                    .events
-                                    .take()
-                                    .expect("managed create WebSocket events were just observed");
-                                return Ok(ManagedResponse::Events(ManagedEvents::new(events)));
                             }
+                            let (live, events) =
+                                ManagedSocket::open(client.clone(), agent_id.clone(), cursor)
+                                    .await?;
+                            *socket.lock().await = Some(ManagedLiveSocket {
+                                agent_id,
+                                socket: live,
+                                events: None,
+                            });
+                            Ok(ManagedResponse::Events(ManagedEvents::new(events)))
                         }
-                        let (live, events) =
-                            ManagedSocket::open(client.clone(), agent_id.clone(), cursor).await?;
-                        *socket.lock().await = Some(ManagedLiveSocket {
-                            agent_id,
-                            socket: live,
-                            events: None,
-                        });
-                        Ok(ManagedResponse::Events(ManagedEvents::new(events)))
                     }
-                },
+                }
                 ManagedRequest::Submit {
                     agent_id,
                     turn_id,

@@ -23,10 +23,17 @@ type BrokerBinding = Readonly<{
 export type VaultEntry =
   | Readonly<{
       id: string;
+      kind: "api_key";
+      name: string;
+      created_at: number;
+    }>
+  | Readonly<{
+      id: string;
       kind: "login";
       name: string;
       created_at: number;
       username: string;
+      browser_origin?: string;
     }>
   | Readonly<{
       id: string;
@@ -58,6 +65,8 @@ export type VaultEntry =
 export type AccountMachine = Readonly<HostedMachine & {
   /** Logical namespace root. Native host workspace paths are never projected. */
   mount: string;
+  /** Retained identity paths accepted by native execution for older prompts. */
+  aliases?: readonly string[];
   /** Current attachment presence for user hands; absent when not known. */
   online?: boolean;
   /** Exact mount provider advertised by this computer; allocation checks live capacity. */
@@ -90,7 +99,7 @@ export type AccountInfo = Readonly<{
 }>;
 
 export type AccountInfoOptions = Readonly<{
-  /** Admission-scoped live catalog; never retained between turns. */
+  /** A live or bounded owner/authority-scoped discovery snapshot. */
   catalog?: Promise<unknown>;
   allowedConnectors?: readonly ConnectorCapabilityId[];
   allowedConnections?: ConnectorConnectionSelection;
@@ -304,10 +313,16 @@ function vaultEntry(value: unknown): VaultEntry | undefined {
     name: value.name,
     created_at: value.created_at as number,
   };
+  if (value.kind === "api_key"
+    && exactKeys(value, ["id", "kind", "name", "created_at"])) {
+    return { ...common, kind: "api_key" };
+  }
   if (value.kind === "login"
-    && exactKeys(value, ["id", "kind", "name", "created_at", "username"])
+    && exactKeys(value, ["id", "kind", "name", "created_at", "username", ...(value.browser_origin === undefined ? [] : ["browser_origin"])])
     && vaultText(value.username, 512)) {
-    return { ...common, kind: "login", username: value.username };
+    if (value.browser_origin !== undefined && !safeBrowserOrigin(value.browser_origin)) return undefined;
+    return { ...common, kind: "login", username: value.username,
+      ...(typeof value.browser_origin === "string" ? { browser_origin: value.browser_origin } : {}) };
   }
   if (value.kind === "card"
     && exactKeys(value, ["id", "kind", "name", "created_at", "last4"])
@@ -359,4 +374,9 @@ function vaultText(value: unknown, maxBytes: number): value is string {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function safeBrowserOrigin(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 2048) return false;
+  try { const url = new URL(value); return url.protocol === "https:" && url.origin === value; } catch { return false; }
 }

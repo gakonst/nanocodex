@@ -80,6 +80,23 @@ Worker, Durable Object, or application proxy that owns rotating credentials.
 Authentication modes are constructors rather than a union of mutually
 exclusive fields on `Agent.create`.
 
+### Personal memories and caller context
+
+Managed agents can keep user preferences separate from team knowledge:
+
+```js
+import { Agent } from "nanocodex/managed";
+
+await Agent.memory({ operation: "scan", query: "my preferences" }, { scope: "personal" });
+await Agent.memory({ operation: "put", content: "I prefer concise replies." }, { scope: "personal" });
+```
+
+The default scope remains `team`. Personal memories belong to the authenticated
+user within their organization, across teams; use the same scope when reading,
+replacing, or deleting a memory. Managed clients also accept descriptive
+`requestOrigin: { client: "desktop", hand: "user:HAND_ID", cwd: "/HAND_ID" }`.
+Caller context is included once at startup and never grants execution authority.
+
 ### Compose and place tools
 
 `createTools` owns one deterministic tool recipe. Custom functions, a portable
@@ -158,8 +175,11 @@ workspace or MCP configuration to an Agent that already receives them through
 `Tools`.
 
 Browser consumers can attach Codex's ChatGPT Realtime voice lifecycle to the
-same retained Agent. The resource owns microphone, speaker, WebRTC, sideband,
+same retained Agent. The resource owns microphone, speaker, WebRTC control,
 and delegation cleanup; stopping voice does not cancel an active coding turn.
+Managed and Connect voice use the WebRTC data channel for live events and
+commands. Speech and captions can flow while durable startup completes;
+delegated work still waits for admission. Local Agents retain the sideband path.
 Snapshots update each speaker's transcript row as speech arrives, using a stable
 `id` and `isPartial` flag. Completion replaces that row. `transcript.delta` events
 carry the current partial text; `transcript` events retain completed-turn semantics.
@@ -214,15 +234,22 @@ subscription adapter (which treats all roles as context), and
 `appendContext(voice, text)` adds background commentary without
 requesting speech. Context and speech are split into provider-sized messages.
 These commands retain frames until sent and preserve them
-across a sideband reconnect. They are also methods on the resource and on
-`useVoice` from `nanocodex-react`. These settings use ChatGPT subscription voice;
-custom voices and Platform audio configuration are not accepted.
+across reconnects when using the sideband transport. They are also methods on
+the resource and on
+`useVoice` from `nanocodex-react`. Choose `outputProvider: "elevenlabs"` and `elevenLabsVoiceId` to synthesize
+spoken output with an ElevenLabs account voice, including an instant clone.
+The account voice settings panel connects the API key, lists voices, and uploads
+cloning samples after explicit consent. Keys are encrypted on the server and
+never included in saved voice settings. ChatGPT still owns live input and agent
+handoffs; `voice` continues to select its built-in voice. The default output
+provider is `openai`. Platform audio configuration is not accepted.
 
 `Voice.create(...)` remains the equivalent namespaced resource constructor, and
 `Voice.voices` is the exact ChatGPT V3 voice catalog. The constructor accepts a
 normal browser Agent, an account-owned managed Agent, or a grant-scoped
-`ConnectAgent`. Authentication stays in the owning host routes; Connect uses a
-fresh one-use sideband ticket, and the browser binding never receives ChatGPT
+`ConnectAgent`. Authentication stays in the owning host routes. An explicit
+`sidebandUrl` override selects the sideband transport; Connect uses a fresh
+one-use ticket for that path. The browser binding never receives ChatGPT
 credentials or places its reusable grant bearer in a WebSocket URL.
 
 ### Durable Cloudflare Agent
@@ -280,10 +307,15 @@ Cloudflare Agents default to direct tool mode because Workers prohibit dynamic
 `eval`/`new Function`. Caller-defined tools therefore work without a code
 evaluator. Select `toolMode: "code"` only when also supplying an evaluator that
 is explicitly compatible with the deployed Worker runtime. Runtime-owned
-Subagents are installed by default, including on a durable root. Clean children
-persist independent execution state under their own agent session IDs. The
-Rust task-tree registry remains in memory and is closed with the live root, so
-tree-local IDs and topology are not reconstructed from those agent states. Use
+Subagents are installed by default, including on a durable root. Child identities,
+topology, and committed runtime boundaries are checkpointed during execution and
+on clean owner shutdown. Startup retains the last safe checkpoint until a newer
+one replaces it. After owner loss, saved children retain their history, result
+schema, and routing; active turns restore as interrupted and are not automatically
+replayed. Messaging an evicted child reloads the same child and any evicted
+ancestors. Incomplete legacy checkpoints preserve reusable children; only bindings
+without saved runtime history remain non-messageable archives. Closed children
+cannot be resurrected, and superseded owners cannot overwrite checkpoints. Use
 `Subagents.create({ maxConcurrency })` in `tools` to set an explicit finite
 concurrency limit. Active subagent turns are unlimited by default.
 
@@ -326,6 +358,11 @@ Task-tree orchestration is an optional extension over the core agent. Both
 native and WASM consumers run the same Rust implementation and receive the
 same seven tools: `spawn_agent`, `submit_result`, `send_agent_message`,
 `list_agents`, `wait_agent`, `interrupt_agent`, and `close_agent`.
+
+Children call `submit_result({output})`; the runtime supplies the trusted
+instruction revision. The response is `{accepted: true, status: "accepted"}` or
+`{accepted: false, status: "superseded"}`. Superseded submissions are normal
+continuations: incorporate the updated instructions and submit again.
 
 Inside a caller-owned Worker or server isolate, host capabilities stay as
 ordinary functions without crossing another compatibility protocol:
@@ -500,7 +537,7 @@ use the individual factories in server-side Cloudflare Workers. Vite integration
 is provided separately by `nanocodex-vite`.
 
 The browser composition includes native `browseX` public X browsing, advertised
-by `accountInfo().apis` without an X connector. The embedding app serves
+by `environment().apis` without an X connector. The embedding app serves
 `/api/tools/x/browse` and `/api/tools/x/convert`; Nanocodex's account app forwards
 these requests to the private X Worker.
 
@@ -1133,7 +1170,7 @@ package manager or build step:
 
 ```html
 <script type="module">
-  import { Agent, Transport } from "https://cdn.jsdelivr.net/npm/nanocodex@0.6.1/host/index.mjs";
+  import { Agent, Transport } from "https://cdn.jsdelivr.net/npm/nanocodex@0.6.4/host/index.mjs";
   const agent = await Agent.create({
     transport: Transport.hostManaged({
       websocketUrl: "/api/responses",

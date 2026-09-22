@@ -358,6 +358,8 @@ struct PendingState {
 struct PendingResponse {
     span: Span,
     response: oneshot::Sender<Result<(SessionResponse, usize), String>>,
+    stdout: Option<mpsc::Sender<Vec<u8>>>,
+    stream_failed: Option<oneshot::Sender<()>>,
 }
 
 #[derive(Default)]
@@ -1241,24 +1243,44 @@ impl VmToolSessionHandle {
     /// Returns an error when the session is closed, the command fails to
     /// start, exceeds its deadline, or returns an invalid response.
     pub async fn command(&self, command: VmCommand) -> Result<VmCommandOutput, VmToolSessionError> {
+        self.command_inner(command, None).await
+    }
+
+    /// Stream stdout in bounded chunks over the existing private guest channel.
+    /// Dropping this future cancels the guest process; a slow receiver fails the
+    /// stream rather than buffering indefinitely or blocking unrelated input.
+    pub async fn stream_command(
+        &self,
+        command: VmCommand,
+        stdout: mpsc::Sender<Vec<u8>>,
+    ) -> Result<VmCommandOutput, VmToolSessionError> {
+        self.command_inner(command, Some(stdout)).await
+    }
+
+    async fn command_inner(
+        &self,
+        command: VmCommand,
+        stdout: Option<mpsc::Sender<Vec<u8>>>,
+    ) -> Result<VmCommandOutput, VmToolSessionError> {
         let command_timeout = command.timeout;
         let max_output_bytes = command.max_output_bytes;
         let timeout_millis = u64::try_from(command_timeout.as_millis()).unwrap_or(u64::MAX);
+        let request = SessionRequest::Execute(ExecuteRequest {
+            id: 0,
+            stream_stdout: stdout.is_some(),
+            program: command.program,
+            arguments: command.arguments,
+            current_directory: command.current_directory,
+            environment: command.environment,
+            timeout_millis,
+            max_output_bytes,
+            stdout_mirror: command.stdout_mirror,
+            stderr_mirror: command.stderr_mirror,
+        });
         let response = self
-            .control_request(|id| {
-                SessionRequest::Execute(ExecuteRequest {
-                    id,
-                    program: command.program,
-                    arguments: command.arguments,
-                    current_directory: command.current_directory,
-                    environment: command.environment,
-                    timeout_millis,
-                    max_output_bytes,
-                    stdout_mirror: command.stdout_mirror,
-                    stderr_mirror: command.stderr_mirror,
-                })
-            })
-            .await?;
+            .send_request_stream(request, &Span::current(), false, stdout)
+            .await?
+            .0;
         let SessionResponse::Execute(ExecuteResponse {
             exit_code,
             stdout,
@@ -1323,9 +1345,20 @@ impl VmToolSessionHandle {
 
     async fn send_request(
         &self,
+        request: SessionRequest,
+        span: &Span,
+        allow_closing: bool,
+    ) -> Result<(SessionResponse, usize), VmToolSessionError> {
+        self.send_request_stream(request, span, allow_closing, None)
+            .await
+    }
+
+    async fn send_request_stream(
+        &self,
         mut request: SessionRequest,
         span: &Span,
         allow_closing: bool,
+        stdout: Option<mpsc::Sender<Vec<u8>>>,
     ) -> Result<(SessionResponse, usize), VmToolSessionError> {
         if self.inner.closing.load(Ordering::Acquire) && !allow_closing {
             return Err(self.closed_error());
@@ -1374,6 +1407,7 @@ impl VmToolSessionHandle {
         record_vm_content(span, "tool.request", &encoded);
 
         let (sender, receiver) = oneshot::channel();
+        let (stream_failed, failure) = oneshot::channel();
         {
             let mut pending = lock_unpoisoned(&self.inner.pending);
             if let Some(error) = &pending.closed {
@@ -1384,6 +1418,8 @@ impl VmToolSessionHandle {
                 PendingResponse {
                     span: span.clone(),
                     response: sender,
+                    stdout,
+                    stream_failed: Some(stream_failed),
                 },
             );
         }
@@ -1406,7 +1442,12 @@ impl VmToolSessionHandle {
             .map_err(|_| self.closed_error())?;
         guard.queued = true;
         span.record("rpc.queue.duration_ns", elapsed_ns(queued_at));
-        let response = receiver.await.map_err(|_| self.closed_error())?;
+        let response = tokio::select! {
+            response = receiver => response.map_err(|_| self.closed_error())?,
+            _ = async { if failure.await.is_err() { std::future::pending::<()>().await; } } => {
+                return Err(VmToolSessionError::Protocol("guest stdout stream overflow or unexpected data"));
+            }
+        };
         guard.armed = false;
         response.map_err(VmToolSessionError::Router)
     }
@@ -1725,6 +1766,23 @@ async fn route_responses(output: ChildStdout, inner: Weak<VmToolSessionInner>) {
             return;
         };
         let id = response.id();
+        if let SessionResponse::Output(chunk) = response {
+            let mut pending = lock_unpoisoned(&inner.pending);
+            if let Some(request) = pending.requests.get_mut(&id) {
+                let accepted = chunk.data.len() <= 16 * 1024
+                    && request
+                        .stdout
+                        .as_ref()
+                        .is_some_and(|sink| sink.try_send(chunk.data).is_ok());
+                if !accepted {
+                    request.stdout = None;
+                    if let Some(failed) = request.stream_failed.take() {
+                        let _ = failed.send(());
+                    }
+                }
+            }
+            continue;
+        }
         let pending = lock_unpoisoned(&inner.pending).requests.remove(&id);
         if let Some(pending) = pending {
             record_vm_content(
@@ -1814,6 +1872,7 @@ async fn read_frame(
 const fn set_request_id(request: &mut SessionRequest, id: u64) {
     match request {
         SessionRequest::Ready(request) => request.id = id,
+        SessionRequest::ComputerCatalog(request) => request.id = id,
         SessionRequest::Tool(request) => request.id = id,
         SessionRequest::WriteFile(request) => request.id = id,
         SessionRequest::CreateDirectory(request) => request.id = id,
@@ -1907,22 +1966,38 @@ fn elapsed_ns(started_at: Instant) -> u64 {
 
 #[async_trait::async_trait]
 impl VmToolClient for VmToolSessionHandle {
+    async fn computer_catalog(
+        &self,
+    ) -> Result<Vec<nanocodex_computer::ProviderTool>, nanocodex_tools::contract::ToolError> {
+        let response = self
+            .control_request(|id| {
+                SessionRequest::ComputerCatalog(super::protocol::ComputerCatalogRequest { id })
+            })
+            .await?;
+        let SessionResponse::ComputerCatalog(response) = response else {
+            return Err(
+                VmToolSessionError::Protocol("expected a computer catalog response").into(),
+            );
+        };
+        if let Some(error) = response.error {
+            return Err(VmToolSessionError::Guest(error).into());
+        }
+        response
+            .tools
+            .ok_or_else(|| "Guest did not return an upstream Sky tool catalog".into())
+    }
+
     async fn computer(
         &self,
-        request: Option<nanocodex_computer::ComputerRequest>,
+        name: &str,
+        arguments: serde_json::Value,
         context: ToolContext<'_>,
     ) -> ToolResult {
-        use super::protocol::{ComputerToolKind, GuestTool};
-        let (kind, args) = match request {
-            Some(request) => {
-                request.validate()?;
-                (ComputerToolKind::Cua, serde_json::to_value(request)?)
-            }
-            None => (ComputerToolKind::CuaReset, serde_json::json!({})),
-        };
         self.request_inner(
-            GuestTool::Computer(kind),
-            ToolInput::Function(serde_json::value::to_raw_value(&args)?),
+            super::protocol::GuestTool::Computer {
+                name: name.to_owned(),
+            },
+            ToolInput::Function(serde_json::value::to_raw_value(&arguments)?),
             context,
             &tracing::Span::current(),
         )
@@ -2153,6 +2228,44 @@ mod tracing_tests {
         });
     }
 
+    #[tokio::test]
+    async fn computer_proxy_discovers_then_invokes_guest_provider_tool() {
+        use nanocodex_tools::Tool as _;
+        let catalog = r#"{"kind":"computer_catalog","payload":{"id":0,"tools":[{"name":"provider_extra","description":"Guest upstream documentation","inputSchema":{"type":"object","properties":{"custom":{"type":"string"}}}}],"error":null}}"#;
+        let output = r#"{"kind":"tool","payload":{"id":1,"execution":{"output":"guest-provider-output","success":true,"structured_result":null,"metadata":null,"process_trace":null},"error":null}}"#;
+        let script = format!(
+            "IFS= read -r catalog\n\
+             case \"$catalog\" in *'\"kind\":\"computer_catalog\"'*) ;; *) exit 91 ;; esac\n\
+             printf '%s\\n' '{catalog}'\n\
+             IFS= read -r call\n\
+             case \"$call\" in *'\"tool\":{{\"name\":\"provider_extra\"}}'*) ;; *) exit 92 ;; esac\n\
+             case \"$call\" in *'\"arguments\":{{\"custom\":\"opaque\"}}'*) ;; *) exit 93 ;; esac\n\
+             printf '%s\\n' '{output}'"
+        );
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.arg("-c").arg(script);
+        let session = VmToolSession::spawn(&mut command).unwrap();
+        let computer = session.tools().computer_tools().await.unwrap();
+        assert_eq!(
+            computer.catalog()[0].description.as_deref(),
+            Some("Guest upstream documentation")
+        );
+        let result = computer
+            .tool("provider_extra")
+            .unwrap()
+            .execute(
+                ToolInput::Function(to_raw_value(&json!({"custom":"opaque"})).unwrap()),
+                ToolContext::new("model", "session", "call", &[], 100),
+            )
+            .await
+            .unwrap();
+        assert!(result.success);
+        let ToolOutputBody::Text(text) = result.output else {
+            panic!("lost guest output")
+        };
+        assert_eq!(text, "guest-provider-output");
+    }
+
     #[test]
     fn managed_tool_process_termination_keeps_the_vm_session_open() {
         let _test_guard = TRACE_TEST_LOCK.lock().unwrap();
@@ -2199,9 +2312,9 @@ mod tracing_tests {
 
         runtime.block_on(async {
             let session = VmToolSession::spawn(&mut command).unwrap();
-            let tools = session
-                .tools()
-                .tools_builder()
+            let tools = nanocodex_tools::Tools::builder()
+                .workspace(false)
+                .tool(session.tools().exec_command_tool())
                 .web_search(false)
                 .image_generation(false)
                 .build()

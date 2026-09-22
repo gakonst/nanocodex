@@ -1,0 +1,347 @@
+{
+  "upstream": "36430b36881cf5c289cb48e671cfc9e8b542ae7b",
+  "configuration": "non-Windows; login/shell enabled; approval extension/environment_id disabled; original image detail enabled; unified image budget disabled",
+  "sources": {
+    "tools/src/json_schema.rs": "86cec68e6537dfacdfee6bb928cd67802ebbf4abfb70a47643e86bd30404ac56",
+    "core/src/tools/handlers/shell_spec.rs": "da7cffc9d6d82bc08b537fec6bddf3cd1906a05ba4ab193ecd50325ae3744e04",
+    "core/src/tools/handlers/plan_spec.rs": "ecbd36a78158967384269e1fb50f19991fd8f76c8d880cae536b5da105e0b197",
+    "core/src/tools/handlers/view_image_spec.rs": "a54cb2ee992c34f6993c993c8efd16d5b91aa49bff8c5737bb4ffb64e977d413",
+    "core/src/tools/code_mode/wait_spec.rs": "83f52d58d786d9365ed4ceb8b11902aeef3fddfaf0997ddf666a642fb8ad8617",
+    "code-mode-protocol/src/description.rs": "a85090f7b639db03dc336937490b3230e37203da5d780d5c20b0bf378276ee24",
+    "code-mode-protocol/src/json_schema_types.rs": "266228e4e33dc9fac2c32b60e5b7e3a7365ba9e769c5a650c327f848d40306b8"
+  },
+  "tools": {
+    "exec_command": {
+      "description": "Runs a command in a PTY, returning output or a session ID for ongoing interaction.",
+      "name": "exec_command",
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "chunk_id": {
+            "description": "Chunk identifier included when the response reports one.",
+            "type": "string"
+          },
+          "exit_code": {
+            "description": "Process exit code when the command finished during this call.",
+            "type": "number"
+          },
+          "original_token_count": {
+            "description": "Approximate token count before output truncation.",
+            "type": "number"
+          },
+          "output": {
+            "description": "Command output text, possibly truncated.",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Session identifier to pass to write_stdin when the process is still running.",
+            "type": "number"
+          },
+          "wall_time_seconds": {
+            "description": "Elapsed wall time spent waiting for output in seconds.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "wall_time_seconds",
+          "output"
+        ],
+        "type": "object"
+      },
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "cmd": {
+            "description": "Shell command to execute.",
+            "type": "string"
+          },
+          "justification": {
+            "description": "User-facing approval question for `require_escalated`; omit otherwise.",
+            "type": "string"
+          },
+          "login": {
+            "description": "True runs the shell with -l/-i semantics; false disables them. Defaults to true.",
+            "type": "boolean"
+          },
+          "max_output_tokens": {
+            "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.",
+            "type": "number"
+          },
+          "prefix_rule": {
+            "description": "Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"].",
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "sandbox_permissions": {
+            "description": "Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution.",
+            "enum": [
+              "use_default",
+              "require_escalated"
+            ],
+            "type": "string"
+          },
+          "shell": {
+            "description": "Shell binary to launch. Defaults to the user's default shell.",
+            "type": "string"
+          },
+          "tty": {
+            "description": "True allocates a PTY for the command; false or omitted uses plain pipes.",
+            "type": "boolean"
+          },
+          "workdir": {
+            "description": "Working directory for the command. Defaults to the turn cwd.",
+            "type": "string"
+          },
+          "yield_time_ms": {
+            "description": "Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "cmd"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    "write_stdin": {
+      "description": "Writes characters to an existing unified exec session and returns recent output.",
+      "name": "write_stdin",
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "chunk_id": {
+            "description": "Chunk identifier included when the response reports one.",
+            "type": "string"
+          },
+          "exit_code": {
+            "description": "Process exit code when the command finished during this call.",
+            "type": "number"
+          },
+          "original_token_count": {
+            "description": "Approximate token count before output truncation.",
+            "type": "number"
+          },
+          "output": {
+            "description": "Command output text, possibly truncated.",
+            "type": "string"
+          },
+          "session_id": {
+            "description": "Session identifier to pass to write_stdin when the process is still running.",
+            "type": "number"
+          },
+          "wall_time_seconds": {
+            "description": "Elapsed wall time spent waiting for output in seconds.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "wall_time_seconds",
+          "output"
+        ],
+        "type": "object"
+      },
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "chars": {
+            "description": "Bytes to write to stdin. Defaults to empty, which polls without writing.",
+            "type": "string"
+          },
+          "max_output_tokens": {
+            "description": "Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.",
+            "type": "number"
+          },
+          "session_id": {
+            "description": "Identifier of the running unified exec session.",
+            "type": "number"
+          },
+          "yield_time_ms": {
+            "description": "Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "session_id"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    "update_plan": {
+      "description": "Updates the task plan.\nProvide an optional explanation and a list of plan items, each with a step and status.\nAt most one step can be in_progress at a time.\n",
+      "name": "update_plan",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "explanation": {
+            "description": "Optional explanation for this plan update.",
+            "type": "string"
+          },
+          "plan": {
+            "description": "The list of steps",
+            "items": {
+              "additionalProperties": false,
+              "properties": {
+                "status": {
+                  "description": "Step status.",
+                  "enum": [
+                    "pending",
+                    "in_progress",
+                    "completed"
+                  ],
+                  "type": "string"
+                },
+                "step": {
+                  "description": "Task step text.",
+                  "type": "string"
+                }
+              },
+              "required": [
+                "step",
+                "status"
+              ],
+              "type": "object"
+            },
+            "type": "array"
+          }
+        },
+        "required": [
+          "plan"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    "view_image": {
+      "description": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.",
+      "name": "view_image",
+      "output_schema": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "description": "Image detail hint returned by view_image. Returns `high` for default resized behavior or `original` when original resolution is preserved.",
+            "enum": [
+              "high",
+              "original"
+            ],
+            "type": "string"
+          },
+          "image_url": {
+            "description": "Data URL for the loaded image.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "image_url",
+          "detail"
+        ],
+        "type": "object"
+      },
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "description": "Image detail level. Defaults to `high`; use `original` to preserve exact resolution.",
+            "enum": [
+              "high",
+              "original"
+            ],
+            "type": "string"
+          },
+          "path": {
+            "description": "Local filesystem path to an image file.",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    "wait": {
+      "description": "Waits on a yielded `exec` cell and returns new output or completion.\n- Use `wait` only after `exec` returns `Script running with cell ID ...`.\n- `cell_id` identifies the running `exec` cell to resume.\n- `yield_time_ms` controls how long to wait for more output before yielding again. Defaults to 10000 ms.\n- `max_tokens` limits how much new output this wait call returns. Defaults to 10000 tokens.\n- `terminate: true` stops the running cell; false or omitted waits for output.\n- `wait` returns only the new output since the last yield, or the final completion or termination result for that cell.\n- If the cell is still running, `wait` may yield again with the same `cell_id`.\n- If the cell has already finished, `wait` returns the completed result and closes the cell.",
+      "name": "wait",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "cell_id": {
+            "description": "Identifier of the running exec cell.",
+            "type": "string"
+          },
+          "max_tokens": {
+            "description": "Output token budget for this wait call. Defaults to 10000 tokens.",
+            "type": "number"
+          },
+          "terminate": {
+            "description": "True stops the running exec cell; false or omitted waits for output.",
+            "type": "boolean"
+          },
+          "yield_time_ms": {
+            "description": "Wait before yielding more output. Defaults to 10000 ms.",
+            "type": "number"
+          }
+        },
+        "required": [
+          "cell_id"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    },
+    "image_gen__imagegen": {
+      "description": "The `image_gen.imagegen` tool enables image generation from descriptions and editing of existing images based on specific instructions. Use it when:\n\n- The user requests an image based on a scene description, such as a diagram, portrait, comic, meme, or any other visual.\n- The user wants to modify an attached or previously generated image with specific changes, including adding or removing elements, altering colors, improving quality/resolution, or transforming the style (e.g., cartoon, oil painting).\n\nGuidelines:\n- imagegen needs a few minutes to finish. In code-mode, use the first-line @exec directive to give the initial call 120 seconds and the same yield for any waits that follow. Once it finishes, return the image with generatedImage(result).\n- Avoid printing the full result or its base64 image data with `text()` or `notify()`; print only small metadata when needed.\n- Omit both `referenced_image_paths` and `num_last_images_to_include` when generating a brand new image.\n- For edits, use `referenced_image_paths` when every target image has a local file path.\n- If you have not seen a local image yet, use `view_image` to inspect it before editing.\n- Use `num_last_images_to_include` only when at least one target image has no local file path.\n- Set `num_last_images_to_include` to the smallest number of recent conversation images that includes every target image, up to 5.\n- Never provide both `referenced_image_paths` and `num_last_images_to_include`.\n- If neither mechanism can include every target image, ask the user to attach the missing images again.\n- Directly generate the image without reconfirmation or clarification unless required images must be attached again.\n- Always use this tool for image editing unless the user explicitly requests otherwise. Do not use the `python` tool for image editing unless specifically instructed.\n",
+      "name": "image_gen__imagegen",
+      "parameters": {
+        "additionalProperties": false,
+        "properties": {
+          "num_last_images_to_include": {
+            "type": [
+              "integer",
+              "null"
+            ]
+          },
+          "prompt": {
+            "type": "string"
+          },
+          "referenced_image_paths": {
+            "items": {
+              "description": "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute.",
+              "type": "string"
+            },
+            "type": [
+              "array",
+              "null"
+            ]
+          }
+        },
+        "required": [
+          "prompt"
+        ],
+        "type": "object"
+      },
+      "strict": false,
+      "type": "function"
+    }
+  },
+  "wrappers": {
+    "exec_command": "Runs a command in a PTY, returning output or a session ID for ongoing interaction.\n\nexec tool declaration:\n```ts\ndeclare const tools: { exec_command(args: {\n  // Shell command to execute.\n  cmd: string;\n  // User-facing approval question for `require_escalated`; omit otherwise.\n  justification?: string;\n  // True runs the shell with -l/-i semantics; false disables them. Defaults to true.\n  login?: boolean;\n  // Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.\n  max_output_tokens?: number;\n  // Reusable approval prefix for `cmd`, only with `sandbox_permissions: \"require_escalated\"`; for example [\"git\", \"pull\"].\n  prefix_rule?: Array<string>;\n  // Per-command sandbox override. Defaults to `use_default`; use `require_escalated` for unsandboxed execution.\n  sandbox_permissions?: \"use_default\" | \"require_escalated\";\n  // Shell binary to launch. Defaults to the user's default shell.\n  shell?: string;\n  // True allocates a PTY for the command; false or omitted uses plain pipes.\n  tty?: boolean;\n  // Working directory for the command. Defaults to the turn cwd.\n  workdir?: string;\n  // Wait before yielding output. Defaults to 10000 ms; effective range is 250-30000 ms.\n  yield_time_ms?: number;\n}): Promise<{\n  // Chunk identifier included when the response reports one.\n  chunk_id?: string;\n  // Process exit code when the command finished during this call.\n  exit_code?: number;\n  // Approximate token count before output truncation.\n  original_token_count?: number;\n  // Command output text, possibly truncated.\n  output: string;\n  // Session identifier to pass to write_stdin when the process is still running.\n  session_id?: number;\n  // Elapsed wall time spent waiting for output in seconds.\n  wall_time_seconds: number;\n}>; };\n```",
+    "image_gen__imagegen": "The `image_gen.imagegen` tool enables image generation from descriptions and editing of existing images based on specific instructions. Use it when:\n\n- The user requests an image based on a scene description, such as a diagram, portrait, comic, meme, or any other visual.\n- The user wants to modify an attached or previously generated image with specific changes, including adding or removing elements, altering colors, improving quality/resolution, or transforming the style (e.g., cartoon, oil painting).\n\nGuidelines:\n- imagegen needs a few minutes to finish. In code-mode, use the first-line @exec directive to give the initial call 120 seconds and the same yield for any waits that follow. Once it finishes, return the image with generatedImage(result).\n- Avoid printing the full result or its base64 image data with `text()` or `notify()`; print only small metadata when needed.\n- Omit both `referenced_image_paths` and `num_last_images_to_include` when generating a brand new image.\n- For edits, use `referenced_image_paths` when every target image has a local file path.\n- If you have not seen a local image yet, use `view_image` to inspect it before editing.\n- Use `num_last_images_to_include` only when at least one target image has no local file path.\n- Set `num_last_images_to_include` to the smallest number of recent conversation images that includes every target image, up to 5.\n- Never provide both `referenced_image_paths` and `num_last_images_to_include`.\n- If neither mechanism can include every target image, ask the user to attach the missing images again.\n- Directly generate the image without reconfirmation or clarification unless required images must be attached again.\n- Always use this tool for image editing unless the user explicitly requests otherwise. Do not use the `python` tool for image editing unless specifically instructed.\n\n\nexec tool declaration:\n```ts\ndeclare const tools: { image_gen__imagegen(args: { num_last_images_to_include?: number | null; prompt: string; referenced_image_paths?: Array<string> | null; }): Promise<unknown>; };\n```",
+    "update_plan": "Updates the task plan.\nProvide an optional explanation and a list of plan items, each with a step and status.\nAt most one step can be in_progress at a time.\n\n\nexec tool declaration:\n```ts\ndeclare const tools: { update_plan(args: {\n  // Optional explanation for this plan update.\n  explanation?: string;\n  // The list of steps\n  plan: Array<{\n  // Step status.\n  status: \"pending\" | \"in_progress\" | \"completed\";\n  // Task step text.\n  step: string;\n}>;\n}): Promise<unknown>; };\n```",
+    "view_image": "View a local image file from the filesystem when visual inspection is needed. Use this for images already available on disk.\n\nexec tool declaration:\n```ts\ndeclare const tools: { view_image(args: {\n  // Image detail level. Defaults to `high`; use `original` to preserve exact resolution.\n  detail?: \"high\" | \"original\";\n  // Local filesystem path to an image file.\n  path: string;\n}): Promise<{\n  // Image detail hint returned by view_image. Returns `high` for default resized behavior or `original` when original resolution is preserved.\n  detail: \"high\" | \"original\";\n  // Data URL for the loaded image.\n  image_url: string;\n}>; };\n```",
+    "wait": "Waits on a yielded `exec` cell and returns new output or completion.\n- Use `wait` only after `exec` returns `Script running with cell ID ...`.\n- `cell_id` identifies the running `exec` cell to resume.\n- `yield_time_ms` controls how long to wait for more output before yielding again. Defaults to 10000 ms.\n- `max_tokens` limits how much new output this wait call returns. Defaults to 10000 tokens.\n- `terminate: true` stops the running cell; false or omitted waits for output.\n- `wait` returns only the new output since the last yield, or the final completion or termination result for that cell.\n- If the cell is still running, `wait` may yield again with the same `cell_id`.\n- If the cell has already finished, `wait` returns the completed result and closes the cell.\n\nexec tool declaration:\n```ts\ndeclare const tools: { wait(args: {\n  // Identifier of the running exec cell.\n  cell_id: string;\n  // Output token budget for this wait call. Defaults to 10000 tokens.\n  max_tokens?: number;\n  // True stops the running exec cell; false or omitted waits for output.\n  terminate?: boolean;\n  // Wait before yielding more output. Defaults to 10000 ms.\n  yield_time_ms?: number;\n}): Promise<unknown>; };\n```",
+    "write_stdin": "Writes characters to an existing unified exec session and returns recent output.\n\nexec tool declaration:\n```ts\ndeclare const tools: { write_stdin(args: {\n  // Bytes to write to stdin. Defaults to empty, which polls without writing.\n  chars?: string;\n  // Output token budget. Defaults to 10000 tokens; larger requests may be capped by policy.\n  max_output_tokens?: number;\n  // Identifier of the running unified exec session.\n  session_id: number;\n  // Wait before yielding output. Non-empty writes default to 250 ms and cap at 30000 ms; empty polls wait 5000-300000 ms by default.\n  yield_time_ms?: number;\n}): Promise<{\n  // Chunk identifier included when the response reports one.\n  chunk_id?: string;\n  // Process exit code when the command finished during this call.\n  exit_code?: number;\n  // Approximate token count before output truncation.\n  original_token_count?: number;\n  // Command output text, possibly truncated.\n  output: string;\n  // Session identifier to pass to write_stdin when the process is still running.\n  session_id?: number;\n  // Elapsed wall time spent waiting for output in seconds.\n  wall_time_seconds: number;\n}>; };\n```"
+  },
+  "exec_description": "Run JavaScript code to orchestrate/compose tool calls\n- Evaluates the provided JavaScript code in a fresh V8 isolate as an async module.\n- All nested tools are available on the global `tools` object, for example `await tools.exec_command(...)`. Tool names are exposed as normalized JavaScript identifiers, for example `await tools.mcp__ologs__get_profile(...)`.\n- Nested tool methods take either a string or an object as their input argument.\n- Nested tools return either an object or a string, based on the description.\n- Runs raw JavaScript -- no Node, no file system, no network access, no console.\n- Accepts raw JavaScript source text, not JSON, quoted strings, or markdown code fences.\n- You may optionally start the tool input with a first-line pragma like `// @exec: {\"yield_time_ms\": 10000, \"max_output_tokens\": 1000}`.\n- `yield_time_ms` asks `exec` to yield early if the script is still running. Defaults to 10000 ms.\n- `max_output_tokens` sets the token budget for direct `exec` results. Defaults to 10000 tokens.\n- When the JS code is fully evaluated, the isolate's lifetime ends and unawaited promises are silently discarded.\n\n- Global helpers:\n- `exit()`: Immediately ends the current script successfully (like an early return from the top level).\n- `text(value: string | number | boolean | undefined | null)`: Appends a text item. Non-string values are stringified with `JSON.stringify(...)` when possible.\n- `image(imageUrlOrItem: string | { image_url: string; detail?: \"auto\" | \"low\" | \"high\" | \"original\" | null } | ImageContent, detail?: \"auto\" | \"low\" | \"high\" | \"original\" | null)`: Appends an image item. `image_url` should be a base64-encoded `data:` URL. To forward an MCP tool image, pass an individual `ImageContent` block from `result.content`, for example `image(result.content[0])`. MCP image blocks may request detail with `_meta: { \"codex/imageDetail\": \"original\" }`. When provided, the second `detail` argument overrides any detail embedded in the first argument.\n- `audio(audioUrlOrItem: string | { audio_url: string } | AudioContent)`: Appends an audio item. `audio_url` should be a base64-encoded `data:` URL. To forward an MCP tool audio block, pass an individual `AudioContent` block from `result.content`, for example `audio(result.content[0])`.\n- `generatedImage(result: { image_url: string; output_hint?: string })`: Appends an image-generation result and its optional output hint. HTTP(S) URLs are not supported.\n- `store(key: string, value: any)`: stores a serializable value under a string key for later `exec` calls in the same session.\n- `load(key: string)`: returns the stored value for a string key, or `undefined` if it is missing.\n- `notify(value: string | number | boolean | undefined | null)`: immediately injects an extra `custom_tool_call_output` for the current `exec` call. Values are stringified like `text(...)`.\n- `setTimeout(callback: () => void, delayMs?: number)`: schedules a callback to run later and returns a timeout id. Pending timeouts do not keep `exec` alive by themselves; await an explicit promise if you need to wait for one.\n- `clearTimeout(timeoutId?: number)`: cancels a timeout created by `setTimeout`.\n- `ALL_TOOLS`: metadata for the enabled nested tools as `{ name, description }` entries.\n- `yield_control()`: yields the accumulated output to the model immediately while the script keeps running.",
+  "exec_grammar": "\nstart: pragma_source | plain_source\npragma_source: PRAGMA_LINE NEWLINE SOURCE\nplain_source: SOURCE\n\nPRAGMA_LINE: /[ \\t]*\\/\\/ @exec:[^\\r\\n]*/\nNEWLINE: /\\r?\\n/\nSOURCE: /[\\s\\S]+/\n",
+  "mcp_preamble": "type Role = \"user\" | \"assistant\";\ntype MetaObject = Record<string, unknown>;\ntype Annotations = {\n  audience?: Role[];\n  priority?: number;\n  lastModified?: string;\n};\ntype Icon = {\n  src: string;\n  mimeType?: string;\n  sizes?: string[];\n  theme?: \"light\" | \"dark\";\n};\ntype TextResourceContents = {\n  uri: string;\n  mimeType?: string;\n  _meta?: MetaObject;\n  text: string;\n};\ntype BlobResourceContents = {\n  uri: string;\n  mimeType?: string;\n  _meta?: MetaObject;\n  blob: string;\n};\ntype TextContent = {\n  type: \"text\";\n  text: string;\n  annotations?: Annotations;\n  _meta?: MetaObject;\n};\ntype ImageContent = {\n  type: \"image\";\n  data: string;\n  mimeType: string;\n  annotations?: Annotations;\n  _meta?: MetaObject;\n};\ntype AudioContent = {\n  type: \"audio\";\n  data: string;\n  mimeType: string;\n  annotations?: Annotations;\n  _meta?: MetaObject;\n};\ntype ResourceLink = {\n  icons?: Icon[];\n  name: string;\n  title?: string;\n  uri: string;\n  description?: string;\n  mimeType?: string;\n  annotations?: Annotations;\n  size?: number;\n  _meta?: MetaObject;\n  type: \"resource_link\";\n};\ntype EmbeddedResource = {\n  type: \"resource\";\n  resource: TextResourceContents | BlobResourceContents;\n  annotations?: Annotations;\n  _meta?: MetaObject;\n};\ntype ContentBlock =\n  | TextContent\n  | ImageContent\n  | AudioContent\n  | ResourceLink\n  | EmbeddedResource;\ntype CallToolResult<TStructured = { [key: string]: unknown }> = {\n  _meta?: MetaObject;\n  content: ContentBlock[];\n  isError?: boolean;\n  structuredContent?: TStructured;\n  [key: string]: unknown;\n};"
+}

@@ -18,9 +18,14 @@ final class RemoteFirstFrameProbe: NSObject, RTCVideoRenderer, @unchecked Sendab
 }
 
 struct RemoteControlMessage: Codable, Sendable {
-    enum Kind: String, Codable, Sendable { case acquire, granted, denied, renew, release, revoked }
+    enum Kind: String, Codable, Sendable { case acquire, granted, denied, renew, release, revoked, microphone }
     let type: Kind
     var generation: String?
+    var relativePointer: Bool?
+    var gamepad: Bool?
+    var microphone: Bool?
+    var enabled: Bool?
+    var requestID: String?
 }
 
 // Hosts acknowledge release with `revoked`, including older hosts that omit a
@@ -86,12 +91,39 @@ struct RemoteViewerControl {
     }
 }
 
+// Constant-size accumulation; split at the protocol boundary instead of clipping
+// displacement when several physical events arrive in one batch.
+private struct RemoteRelativeMotion {
+    private var x = 0.0
+    private var y = 0.0
+    mutating func append(x: Double, y: Double) { self.x += x; self.y += y }
+    mutating func next() -> (x: Double, y: Double)? {
+        guard x != 0 || y != 0 else { return nil }
+        let step = (x: min(4096, max(-4096, x)), y: min(4096, max(-4096, y)))
+        x -= step.x; y -= step.y
+        return step
+    }
+}
+
 @MainActor
 public final class RemoteViewer: ObservableObject {
     @Published public private(set) var status = "Disconnected"
     @Published public private(set) var track: RTCVideoTrack?
-    @Published public private(set) var frame: CGImage?
+    @RemoteFramePublication public private(set) var frame: CGImage? = nil
+    @Published public private(set) var supportsRelativePointer = false
+    @Published public private(set) var supportsGamepad = false
+    @Published public private(set) var supportsMicrophone = false
+    @Published public private(set) var microphoneEnabled = false
+    @Published public private(set) var microphonePending = false
+    @Published public private(set) var microphoneError: String?
+    @Published public private(set) var speakersEnabled = true
+    @Published public private(set) var supportsSpeakers = false
+    private var microphoneRequest: String?
+    private var microphoneTask: Task<Void, Never>?
+    private var microphoneDeadline: Task<Void, Never>?
     @Published public private(set) var controlling = false
+    @Published public var captureMouse = false
+    public var relativePointer: Bool { supportsRelativePointer }
     @Published public private(set) var connected = false
     @Published public private(set) var hand: RemoteHand?
     @Published public private(set) var connecting = false
@@ -109,6 +141,8 @@ public final class RemoteViewer: ObservableObject {
     private var control = RemoteViewerControl()
     private var generation: String? { control.generation }
     private var sequence: UInt64 = 0
+    private var relativeMotion = RemoteRelativeMotion()
+    private var relativeMotionTask: Task<Void, Never>?
     private var leaseRenewal: Task<Void, Never>?
     private var connectionDeadline: Task<Void, Never>?
     private var signalQueue: Task<Void, Never>?
@@ -117,7 +151,12 @@ public final class RemoteViewer: ObservableObject {
     private var channelsReady = false
     private var frameTask: Task<Void, Never>?
     private var frameDeadline: Task<Void, Never>?
+    // Pending counts occupied credits, including received/decoding frames.
     private var framePending = 0
+    private var frameReceived = 0
+    private var frameQueue: [RemoteMessage] = []
+    private var frameDecodeTask: Task<Void, Never>?
+    var frameDecoder = RemoteFrameDecoder()
     private var frameRequestedAt: TimeInterval = 0
     private var frameWindow: Int { min(6, max(1, hand?.frameWindow ?? 1)) }
     private let diagnosticsEnabled = ProcessInfo.processInfo.environment["NANOCODEX_REMOTE_DIAGNOSTICS"] == "1"
@@ -125,6 +164,40 @@ public final class RemoteViewer: ObservableObject {
     private var diagnosticEvents: [[String: String]] = []
     private var frameProbe: RemoteFirstFrameProbe?
     @Published private var diagnosticFirstFrame: [String: Int]?
+
+    @Published public private(set) var broadcastStatus = "idle"
+    @Published public private(set) var broadcastError: String?
+    private var broadcastRequest: String?
+    @Published public private(set) var broadcastWaiting = false
+    private var broadcastTimer: Task<Void, Never>?
+    public func broadcast(action: String, url: String? = nil, preset: String? = nil) {
+        guard hand?.broadcast == true else { broadcastError = "unsupported"; return }
+        guard !broadcastWaiting, ["start", "stop", "status"].contains(action) else { return }
+        guard broadcastStatus != "stopping" || action == "status" else { return }
+        broadcastTimer?.cancel(); broadcastError = nil
+        var message = RemoteMessage(type: "broadcast")
+        let request = UUID().uuidString; message.requestID = request; broadcastRequest = request; broadcastWaiting = true
+        message.action = action; message.url = url; message.preset = preset
+        signaling?.send(message)
+        broadcastTimer = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(12)) } catch { return }
+            guard let self, broadcastRequest == request else { return }
+            broadcastWaiting = false; broadcastError = "request_timeout"
+            scheduleBroadcastPoll()
+        }
+    }
+    private func scheduleBroadcastPoll() {
+        broadcastTimer?.cancel()
+        broadcastTimer = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            guard let self, hand != nil else { return }; broadcast(action: "status")
+        }
+    }
+    private func receiveBroadcast(_ message: RemoteMessage) {
+        guard message.requestID == broadcastRequest else { return }
+        broadcastStatus = message.agentStatus ?? "failed"; broadcastError = message.error
+        broadcastWaiting = false; scheduleBroadcastPoll()
+    }
 
     public init() { recoveryWindow = .seconds(90) }
     init(recoveryWindow: Duration) { self.recoveryWindow = recoveryWindow }
@@ -160,6 +233,14 @@ public final class RemoteViewer: ObservableObject {
         retries = 0; recoveryDeadline = nil; suspended = false
         diagnosticStarted = ProcessInfo.processInfo.systemUptime; diagnosticEvents = []
         await start(refresh: true)
+    }
+
+    /// Explicit Refresh retries an idle failed viewer, like the Reconnect button.
+    /// Catalog polling must not call this: authorization failures remain terminal
+    /// until the user requests another connection.
+    func refreshConnection() async {
+        guard !connected, !connecting, !suspended else { return }
+        await reconnect()
     }
 
     public func suspend() {
@@ -205,6 +286,7 @@ public final class RemoteViewer: ObservableObject {
             let peer = try RemotePeer(publishing: false, ice: [])
             let signaling = makeSignaling(service)
             self.peer = peer; self.signaling = signaling
+            peer.setSpeakersEnabled(speakersEnabled)
             // The authenticated socket and TURN request are independent. Open
             // both now, but do not process SDP until credentials are installed.
             let setup = Task { [weak self, weak peer] in
@@ -219,6 +301,15 @@ public final class RemoteViewer: ObservableObject {
                 guard let self, epoch == attempt else { return }
                 if signal.type != .candidate { recordConnectionEvent("send \(signal.type.rawValue)") }
                 signaling?.send(.init(type: "signal", signal: signal))
+            }
+            peer.onAudioAvailability = { [weak self] available in
+                guard let self, epoch == attempt else { return }; supportsSpeakers = available
+            }
+            peer.onMicrophoneStopped = { [weak self] in
+                guard let self, epoch == attempt else { return }
+                let wasRequested = microphoneRequest != nil || microphoneEnabled || microphonePending
+                stopMicrophone(notifyHost: true)
+                if wasRequested { microphoneError = "Microphone stopped because the audio device changed or was interrupted." }
             }
             peer.onVideoTrack = { [weak self] track in
                 guard let self, epoch == attempt else { return }
@@ -251,7 +342,8 @@ public final class RemoteViewer: ObservableObject {
             var queuedSignals = 0
             signaling.onMessage = { [weak self, weak peer] message in
                 guard let self, epoch == attempt else { return }
-                if message.type == "ready" { recordConnectionEvent("signaling ready") }
+                if message.type == "broadcast_result" { receiveBroadcast(message); return }
+                if message.type == "ready" { recordConnectionEvent("signaling ready"); if hand.broadcast == true { broadcast(action: "status") } }
                 guard let signal = message.signal, let peer else { return }
                 if signal.type != .candidate { recordConnectionEvent("receive \(signal.type.rawValue)") }
                 guard queuedSignals < 128 else { fail(RemoteError.invalidMessage); return }
@@ -294,31 +386,147 @@ public final class RemoteViewer: ObservableObject {
         }
     }
 
+    var microphoneSetupHint: String { "Select Nanocodex_Remote_Microphone in the remote app’s voice-input settings. This selection stays available while you mute and unmute." }
+
+    public func setSpeakersEnabled(_ enabled: Bool) {
+        speakersEnabled = enabled
+        peer?.setSpeakersEnabled(enabled)
+    }
+
+    /// Microphone capture starts only after an explicit click and a matching
+    /// acknowledgement from the current controlling host. It never resumes on reconnect.
+    public func setMicrophoneEnabled(_ enabled: Bool) {
+        guard enabled else { stopMicrophone(notifyHost: true); return }
+        guard connected, controlling, supportsMicrophone, let generation, peer != nil,
+              !microphoneEnabled, !microphonePending else { return }
+        let request = UUID().uuidString
+        microphoneRequest = request; microphonePending = true; microphoneError = nil
+        sendControl(.init(type: .microphone, generation: generation, enabled: true, requestID: request))
+        microphoneDeadline = Task { [weak self] in
+            do { try await Task.sleep(for: .seconds(5)) } catch { return }
+            guard let self, microphoneRequest == request else { return }
+            stopMicrophone(notifyHost: true)
+            microphoneError = "The remote microphone did not respond."
+        }
+    }
+
+    private func stopMicrophone(notifyHost: Bool) {
+        let wasRequested = microphoneRequest != nil || microphoneEnabled || microphonePending
+        microphoneRequest = nil
+        microphoneDeadline?.cancel(); microphoneDeadline = nil
+        microphoneTask?.cancel(); microphoneTask = nil
+        peer?.stopMicrophone()
+        microphoneEnabled = false; microphonePending = false; microphoneError = nil
+        // Cleanup must not recurse into detach when the channel is already closed.
+        if notifyHost, wasRequested, let generation, let peer,
+           let data = try? JSONEncoder().encode(RemoteControlMessage(type: .microphone,
+                generation: generation, enabled: false, requestID: UUID().uuidString)) {
+            try? peer.send(data)
+        }
+    }
+
+    private func receiveMicrophone(_ message: RemoteControlMessage) {
+        guard controlling, connected, supportsMicrophone, let generation,
+              message.generation == generation, let request = microphoneRequest,
+              message.requestID == request else { return }
+        guard let enabled = message.enabled else { fail(RemoteError.invalidMessage); return }
+        guard enabled, let peer else {
+            stopMicrophone(notifyHost: false)
+            microphoneError = "The remote microphone is unavailable."
+            return
+        }
+        guard microphonePending, microphoneTask == nil else { return }
+        microphoneDeadline?.cancel(); microphoneDeadline = nil
+        let attempt = epoch
+        microphoneTask = Task { [weak self, weak peer] in
+            guard let self, let peer else { return }
+            do {
+                try await peer.setMicrophoneEnabled(true)
+                guard !Task.isCancelled, epoch == attempt, self.generation == generation,
+                      microphoneRequest == request, controlling else { return }
+                microphoneEnabled = peer.microphoneEnabled
+                microphonePending = false; microphoneTask = nil
+            } catch {
+                guard epoch == attempt, microphoneRequest == request else { return }
+                stopMicrophone(notifyHost: true)
+                microphoneError = "Microphone access is unavailable. Check the app’s microphone permission."
+            }
+        }
+    }
+
     public func takeControl() {
         guard connected, hand?.controllable == true, !control.requested, !controlling else { return }
         if let request = control.acquire() { sendControl(request) }
     }
 
     public func releaseControl() {
+        stopMicrophone(notifyHost: true)
+        supportsMicrophone = false
+        flushRelativeMotion()
+        releaseGamepad()
         let release = control.release()
-        leaseRenewal?.cancel(); leaseRenewal = nil; controlling = false
+        leaseRenewal?.cancel(); leaseRenewal = nil; supportsRelativePointer = false; supportsGamepad = false; controlling = false; captureMouse = false
         if let release { sendControl(release) }
         if connected { status = "Watching" }
     }
 
+    public func gamepad(_ state: RemoteGamepadState) {
+        input(kind: .gamepad, gamepad: state)
+    }
+
     public func input(kind: RemoteInput.Kind, x: Double? = nil, y: Double? = nil, button: Int? = nil,
-                      down: Bool? = nil, key: UInt16? = nil, text: String? = nil, deltaX: Double? = nil, deltaY: Double? = nil) {
-        guard controlling, let generation else { return }
+                      down: Bool? = nil, key: UInt16? = nil, text: String? = nil, deltaX: Double? = nil, deltaY: Double? = nil, gamepad: RemoteGamepadState? = nil) {
+        guard controlling, connected, let generation, kind != .gamepad || supportsGamepad else { return }
+        guard relativePointer || (kind != .relativeMove && !([.button, .scroll].contains(kind) && x == nil)) else { return }
+        let event = RemoteInput(kind: kind, sequence: sequence + 1, generation: generation, x: x, y: y,
+            button: button, down: down, key: key, text: text, deltaX: deltaX, deltaY: deltaY, gamepad: gamepad)
+        do { try event.validate() } catch { fail(error); return }
+        if kind == .relativeMove, let deltaX, let deltaY {
+            relativeMotion.append(x: deltaX, y: deltaY)
+            guard relativeMotionTask == nil else { return }
+            // A fixed deadline from the first sample, never extended by later
+            // movement. Discrete input flushes sooner on the same reliable stream.
+            let deadline = ContinuousClock.now + .milliseconds(4), attempt = epoch
+            relativeMotionTask = Task { [weak self] in
+                do { try await ContinuousClock().sleep(until: deadline, tolerance: .zero) } catch { return }
+                guard let self, self.epoch == attempt, self.generation == generation else { return }
+                self.flushRelativeMotion()
+            }
+        } else {
+            flushRelativeMotion()
+            _ = sendInput(event)
+        }
+    }
+
+    @discardableResult private func sendInput(_ event: RemoteInput) -> Bool {
+        guard controlling, generation == event.generation else { return false }
         sequence += 1
-        let event = RemoteInput(kind: kind, sequence: sequence, generation: generation, x: x, y: y,
-            button: button, down: down, key: key, text: text, deltaX: deltaX, deltaY: deltaY)
+        let event = RemoteInput(kind: event.kind, sequence: sequence, generation: event.generation,
+            x: event.x, y: event.y, button: event.button, down: event.down, key: event.key,
+            text: event.text, deltaX: event.deltaX, deltaY: event.deltaY, gamepad: event.gamepad)
         do {
             try event.validate()
             if hand?.transport == .frames {
                 var message = RemoteMessage(type: "input"); message.data = .input(event); signaling?.send(message)
-            } else { try peer?.send(JSONEncoder().encode(event), motion: kind == .move) }
+            } else { try peer?.send(JSONEncoder().encode(event), motion: event.kind == .move) }
+            return true
+        } catch { fail(error); return false }
+    }
+
+    private func flushRelativeMotion() {
+        relativeMotionTask?.cancel(); relativeMotionTask = nil
+        var pending = relativeMotion
+        relativeMotion = RemoteRelativeMotion()
+        guard controlling, let generation else { return }
+        while let delta = pending.next() {
+            guard sendInput(RemoteInput(kind: .relativeMove, sequence: 1, generation: generation,
+                deltaX: delta.x, deltaY: delta.y)) else { return }
         }
-        catch { fail(error) }
+    }
+
+    private func cancelRelativeMotion() {
+        relativeMotionTask?.cancel(); relativeMotionTask = nil
+        relativeMotion = RemoteRelativeMotion()
     }
 
     public func close() {
@@ -326,7 +534,23 @@ public final class RemoteViewer: ObservableObject {
         detach(); hand = nil; service = nil; status = "Disconnected"
     }
 
+    // Best effort only: transport failure during cleanup must not recurse into detach.
+    private func releaseGamepad() {
+        guard controlling, supportsGamepad, let generation else { return }
+        sequence += 1
+        let event = RemoteInput(kind: .gamepad, sequence: sequence, generation: generation, gamepad: .init())
+        if hand?.transport == .frames {
+            var message = RemoteMessage(type: "input"); message.data = .input(event); signaling?.send(message)
+        } else if let data = try? JSONEncoder().encode(event) { try? peer?.send(data) }
+    }
+
     private func detach() {
+        stopMicrophone(notifyHost: false)
+        supportsMicrophone = false; supportsSpeakers = false
+        releaseGamepad()
+        cancelRelativeMotion()
+        broadcastTimer?.cancel(); broadcastTimer = nil; broadcastWaiting = false; broadcastRequest = nil
+        broadcastStatus = "idle"; broadcastError = nil
         epoch = UUID(); retryTask?.cancel(); retryTask = nil
         // Best effort release before closing transport; never replay control or
         // typed input when the next connection is established.
@@ -337,12 +561,16 @@ public final class RemoteViewer: ObservableObject {
                 signaling?.send(relay)
             } else if let data = try? JSONEncoder().encode(release) { try? peer?.send(data) }
         }
-        control = RemoteViewerControl(); controlling = false
+        control = RemoteViewerControl(); supportsRelativePointer = false; supportsGamepad = false; controlling = false; captureMouse = false
         leaseRenewal?.cancel(); leaseRenewal = nil
         connectionSetup?.cancel(); connectionSetup = nil
         signalQueue?.cancel(); signalQueue = nil
         connectionDeadline?.cancel(); connectionDeadline = nil
         frameTask?.cancel(); frameTask = nil; frameDeadline?.cancel(); frameDeadline = nil; framePending = 0; frame = nil
+        frameReceived = 0; frameQueue.removeAll()
+        // Retain the cancelled task until its synchronous decoder returns.
+        // New epochs may enqueue, but cannot create another decode task yet.
+        frameDecodeTask?.cancel()
         let peer = self.peer, signaling = self.signaling
         if let frameProbe { track?.remove(frameProbe) }
         frameProbe = nil; diagnosticFirstFrame = nil
@@ -385,6 +613,9 @@ public final class RemoteViewer: ObservableObject {
         }
     }
     private func sendControl(_ message: RemoteControlMessage) {
+        let attempt = epoch
+        flushRelativeMotion()
+        guard epoch == attempt else { return }
         if hand?.transport == .frames {
             var relay = RemoteMessage(type: "control"); relay.data = .control(message); signaling?.send(relay); return
         }
@@ -399,20 +630,15 @@ public final class RemoteViewer: ObservableObject {
             guard let self, epoch == attempt else { return }
             do {
                 switch message.type {
-                case "ready": armFrameDeadline(attempt: attempt); requestFrame(attempt: attempt)
+                case "ready":
+                    recordConnectionEvent("signaling ready")
+                    armFrameDeadline(attempt: attempt); requestFrame(attempt: attempt)
+                    if hand?.broadcast == true { broadcast(action: "status") }
+                case "broadcast_result": receiveBroadcast(message)
                 case "frame":
-                    guard framePending > 0 else { throw RemoteError.invalidMessage }
-                    frame = try RemoteFrame.decode(message); framePending -= 1
-                    frameDeadline?.cancel(); frameDeadline = nil
-                    transportReady = true; channelsReady = true; updateReady()
-                    if frameWindow > 1 { requestFrame(attempt: attempt) }
-                    else {
-                        let delay = max(0, 0.1 - (ProcessInfo.processInfo.systemUptime - frameRequestedAt))
-                        frameTask = Task { [weak self] in
-                            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
-                            guard let self, epoch == attempt else { return }; requestFrame(attempt: attempt)
-                        }
-                    }
+                    guard framePending > frameReceived else { throw RemoteError.invalidMessage }
+                    frameReceived += 1; frameQueue.append(message)
+                    startFrameDecode()
                 case "control":
                     guard case .control(let control) = message.data else { throw RemoteError.invalidMessage }
                     receiveControl(try JSONEncoder().encode(control))
@@ -425,6 +651,49 @@ public final class RemoteViewer: ObservableObject {
             guard let self, epoch == attempt else { return }; fail(error ?? RemoteError.closed)
         }
         try signaling.connect(hand: hand)
+    }
+
+    private func startFrameDecode() {
+        guard frameDecodeTask == nil, !frameQueue.isEmpty else { return }
+        let attempt = epoch
+        frameDecodeTask = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                frameDecodeTask = nil
+                // A new epoch may have queued frames while ImageIO finished.
+                startFrameDecode()
+            }
+            while epoch == attempt, !Task.isCancelled, !frameQueue.isEmpty {
+                let message = frameQueue.removeFirst()
+                do {
+                    let image = try await frameDecoder.decode(message)
+                    guard epoch == attempt, !Task.isCancelled else { return }
+                    frameReceived -= 1; framePending -= 1
+                    frame = image
+                    // Frame subscribers may synchronously suspend the viewer.
+                    guard epoch == attempt, !Task.isCancelled else { return }
+                    if diagnosticsEnabled, diagnosticFirstFrame == nil {
+                        diagnosticFirstFrame = ["elapsed_ms": Int((ProcessInfo.processInfo.systemUptime - diagnosticStarted) * 1000),
+                            "width": image.width, "height": image.height]
+                        recordConnectionEvent("first frame decoded")
+                    }
+                    frameDeadline?.cancel(); frameDeadline = nil
+                    transportReady = true; channelsReady = true; updateReady()
+                    if frameWindow > 1 { requestFrame(attempt: attempt) }
+                    else {
+                        let delay = max(0, 1.0 / 30.0 - (ProcessInfo.processInfo.systemUptime - frameRequestedAt))
+                        frameTask = Task { [weak self] in
+                            do { try await Task.sleep(for: .seconds(delay)) } catch { return }
+                            guard let self, epoch == attempt, !Task.isCancelled else { return }
+                            requestFrame(attempt: attempt)
+                        }
+                    }
+                } catch {
+                    guard epoch == attempt, !Task.isCancelled else { return }
+                    fail(error); return
+                }
+            }
+        }
     }
 
     private func requestFrame(attempt: UUID) {
@@ -445,9 +714,24 @@ public final class RemoteViewer: ObservableObject {
     }
     private func receiveControl(_ data: Data) {
         guard let message = try? JSONDecoder().decode(RemoteControlMessage.self, from: data) else { fail(RemoteError.invalidMessage); return }
+        if message.type == .microphone { receiveMicrophone(message); return }
         do {
             let previous = generation
             let reply = try control.receive(message)
+            // Only an accepted grant for the active lease can enable this.
+            // Ignored stale revocations must not alter a newer lease's capability.
+            if message.type == .granted, generation != nil {
+                supportsRelativePointer = message.relativePointer == true
+                supportsGamepad = message.gamepad == true
+                supportsMicrophone = message.microphone == true && peer != nil
+            } else if generation == nil {
+                supportsRelativePointer = false
+                supportsGamepad = false
+                supportsMicrophone = false
+            }
+            if generation != previous || !supportsMicrophone { stopMicrophone(notifyHost: false) }
+            if generation != previous || !supportsRelativePointer { cancelRelativeMotion() }
+            if !supportsRelativePointer { captureMouse = false }
             controlling = generation != nil
             if let generation, generation != previous {
                 sequence = 0; status = "You’re controlling"
@@ -460,6 +744,7 @@ public final class RemoteViewer: ObservableObject {
                     }
                 }
             } else if generation == nil {
+                captureMouse = false
                 leaseRenewal?.cancel(); leaseRenewal = nil
                 status = message.type == .denied && !control.requested ? "Another viewer is controlling this screen" : "Watching"
             }
@@ -521,6 +806,75 @@ public final class RemoteMacHost: ObservableObject {
         catch { await screen.stop(); throw error }
     }
     private struct Viewer { let peer: RemotePeer; var renewal: Task<Void, Never>? }
+    private var broadcaster: MacBroadcast?
+    private var broadcastTask: Task<Void, Never>?
+    private var broadcastEpoch = UUID()
+    private var broadcastState = "idle"
+    private var broadcastViewer: String?, broadcastRequest: String?
+    private var broadcastPreset: String?
+    private func sendBroadcastStatus() {
+        guard let viewer = broadcastViewer, let request = broadcastRequest else { return }
+        var message = RemoteMessage(type: "broadcast_result", viewerID: viewer)
+        message.requestID = request; message.agentStatus = broadcastState; message.preset = broadcastPreset
+        if broadcastState == "failed" { message.error = "broadcast_failed" }
+        signaling?.send(message)
+    }
+    private func handleBroadcast(_ message: RemoteMessage) {
+        guard let viewer = message.viewerID, let request = message.requestID,
+              message.surfaceID == surface?.id, viewers[viewer] != nil || preparations.contains(viewer) else { return }
+        broadcastViewer = viewer; broadcastRequest = request
+        if message.action == "status" { sendBroadcastStatus(); return }
+        if message.action == "stop" {
+            broadcastTask?.cancel(); broadcastTask = nil; broadcastEpoch = UUID()
+            let old = broadcaster
+            broadcastState = "stopping"; sendBroadcastStatus()
+            (capture as? PhoneScreen)?.setBroadcastFrameHandler(nil)
+            let attempt = broadcastEpoch
+            Task { [weak self] in
+                await old?.stop()
+                guard let self, broadcastEpoch == attempt else { return }
+                broadcaster = nil; broadcastState = "stopped"; broadcastPreset = nil; sendBroadcastStatus()
+            }; return
+        }
+        guard message.action == "start", let destination = message.url, let surface else { return }
+        guard broadcaster == nil else {
+            var result = RemoteMessage(type: "broadcast_result", viewerID: viewer)
+            result.requestID = request; result.agentStatus = broadcastState; result.preset = broadcastPreset; result.error = "busy"
+            signaling?.send(result); return
+        }
+        do {
+            let configuration = try RemoteBroadcastConfiguration(destination: destination, preset: message.preset)
+            let publisher = MacBroadcast(), attempt = UUID(); broadcastEpoch = attempt
+            broadcaster = publisher; broadcastPreset = configuration.preset; broadcastState = "starting"; sendBroadcastStatus()
+            publisher.onStatus = { [weak self] status in Task { @MainActor in
+                guard let self, self.broadcastEpoch == attempt else { return }
+                self.broadcastState = status
+                if status == "failed" {
+                    let old = self.broadcaster
+                    (self.capture as? PhoneScreen)?.setBroadcastFrameHandler(nil)
+                    await old?.stop()
+                    guard self.broadcastEpoch == attempt else { return }
+                    self.broadcaster = nil
+                }
+                self.sendBroadcastStatus()
+            } }
+            broadcastTask = Task { [weak self] in
+                guard let self else { return }
+                do {
+                    if surface.kind == .phone, let phone = capture as? PhoneScreen {
+                        guard let (width, height) = phone.broadcastSize() else { throw RemoteError.unavailable }
+                        try publisher.startPhone(width: width, height: height, configuration: configuration)
+                        phone.setBroadcastFrameHandler { [weak publisher] in publisher?.appendPhoneFrame($0) }
+                    } else { try await publisher.start(surfaceID: surface.id, configuration: configuration) }
+                    if broadcastEpoch != attempt || Task.isCancelled { await publisher.stop() }
+                } catch {
+                    await publisher.stop()
+                    guard broadcastEpoch == attempt else { return }
+                    broadcaster = nil; broadcastState = "failed"; sendBroadcastStatus()
+                }
+            }
+        } catch { broadcastState = "failed"; sendBroadcastStatus() }
+    }
     private var viewers: [String: Viewer] = [:]
     private var preparations = Set<String>()
     private var signaling: (any RemoteHostSignaling)?
@@ -712,8 +1066,11 @@ public final class RemoteMacHost: ObservableObject {
             signaling.onMessage = { [weak self, weak signaling] message in
                 guard let self, epoch == attempt else { return }
                 switch message.type {
-                case "ready": signaling?.send(.init(type: "catalog", machineID: machineID, machineName: name, surfaces: [surface]))
+                case "ready":
+                        let advertised = RemoteSurface(id: surface.id, name: surface.name, kind: surface.kind, width: surface.width, height: surface.height, controllable: surface.controllable, agentTools: surface.agentTools, broadcast: MacBroadcast.executable != nil)
+                        signaling?.send(.init(type: "catalog", machineID: machineID, machineName: name, surfaces: [advertised]))
                 case "published": publication = message.generation; sharing = true; reconnecting = false; recoveryAttempts = 0; status = "Screen available"
+                case "broadcast": handleBroadcast(message)
                 case "agent_call": handleAgent(message, attempt: attempt)
                 case "agent_cancel":
                     if agentRequestID == message.requestID { agentTask?.cancel(); if lease.owner?.hasPrefix("agent:") == true { revokeControl() } }
@@ -870,6 +1227,8 @@ public final class RemoteMacHost: ObservableObject {
         do {
             if let event = try? RemoteInput.decode(data) {
                 guard (event.kind == .move) == motion else { throw RemoteError.invalidMessage }
+                // Apple hosts do not advertise or implement virtual gamepad injection.
+                guard event.kind != .gamepad else { throw RemoteError.unavailable }
                 if try lease.accept(event, from: viewerID, now: now) { try input?.apply(event) }
                 return
             }
@@ -882,7 +1241,7 @@ public final class RemoteMacHost: ObservableObject {
                 if lease.owner != nil { try peer.send(JSONEncoder().encode(RemoteControlMessage(type: .denied))); return }
                 let generation = UUID().uuidString
                 input?.releaseAll(); try lease.acquire(owner: viewerID, generation: generation, now: now)
-                try peer.send(JSONEncoder().encode(RemoteControlMessage(type: .granted, generation: generation)))
+                try peer.send(JSONEncoder().encode(RemoteControlMessage(type: .granted, generation: generation, relativePointer: input is MacInput)))
             case .renew:
                 guard let generation = message.generation else { throw RemoteError.invalidMessage }
                 try lease.renew(owner: viewerID, generation: generation, now: now)
@@ -990,6 +1349,11 @@ public final class RemoteMacHost: ObservableObject {
     }
 
     private func detach() -> [any RemoteCapture] {
+        broadcastTask?.cancel(); broadcastTask = nil; broadcastEpoch = UUID()
+        let publisher = broadcaster; broadcaster = nil
+        (capture as? PhoneScreen)?.setBroadcastFrameHandler(nil)
+        broadcastState = "stopped"; broadcastPreset = nil; broadcastViewer = nil; broadcastRequest = nil
+        Task { await publisher?.stop() }
         // Clear intent before awaiting capture cleanup, so Stop or an account
         // change cannot be undone by a late authorization or capture completion.
         recoveryTask?.cancel(); recoveryTask = nil; recoveryAttempts = 0

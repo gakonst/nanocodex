@@ -13,7 +13,7 @@ export type CloudAccount =
   | "slack"
   | "x"
   | "spotify"
-  | "soundcloud"
+  | "soundcloud" | "link"
   | "chatgpt";
 
 /** Secret-free account identity returned by a connector status reader. */

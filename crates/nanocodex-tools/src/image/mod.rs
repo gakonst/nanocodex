@@ -18,7 +18,7 @@ pub use nanocodex_oai_api::ImageDetail;
 use nanocodex_oai_api::{PromptInput, UserInput, responses::ContentItem};
 use sha1::{Digest as _, Sha1};
 
-use super::{ToolOutputBody, ToolOutputContent};
+use crate::contract::{ToolOutputBody, ToolOutputContent};
 
 pub(super) const IMAGE_PROCESSING_ERROR_PLACEHOLDER: &str =
     "image content omitted because it could not be processed";
@@ -156,7 +156,11 @@ impl ImagePreparationError {
 /// Validates, normalizes, and bounds images returned by a tool.
 ///
 /// Unsupported or failed images become model-visible text placeholders. CPU
-/// image work runs on the blocking pool.
+/// image work runs on the blocking pool on native targets and inline on WASM.
+#[allow(
+    clippy::unused_async,
+    reason = "WASM prepares images inline without a blocking pool"
+)]
 pub async fn prepare_output_images(output: &mut ToolOutputBody) {
     let ToolOutputBody::Content(content) = output else {
         return;
@@ -168,6 +172,12 @@ pub async fn prepare_output_images(output: &mut ToolOutputBody) {
         return;
     }
     let content = std::mem::take(content);
+    #[cfg(target_family = "wasm")]
+    {
+        *output = ToolOutputBody::Content(prepare_content(content));
+        output.replace_invalid_image_envelopes();
+    }
+    #[cfg(not(target_family = "wasm"))]
     match tokio::task::spawn_blocking(move || prepare_content(content)).await {
         Ok(prepared) => {
             let ToolOutputBody::Content(output) = output else {
@@ -184,15 +194,77 @@ pub async fn prepare_output_images(output: &mut ToolOutputBody) {
     }
 }
 
+/// Prepares reconstructed history with the same decoder and limits as fresh images.
+/// Returns whether any image was replaced or normalized; item order is preserved.
+pub fn prepare_history_images(items: &mut [nanocodex_oai_api::responses::ResponseItem]) -> bool {
+    use nanocodex_oai_api::responses::{FunctionOutputBody, FunctionOutputContent, ResponseItem};
+    let mut changed = false;
+    for item in items {
+        match item {
+            ResponseItem::Message { content, .. } => {
+                for part in content {
+                    if let ContentItem::InputImage { image_url, detail } = part {
+                        let mut url = image_url.to_string();
+                        match prepare_image(&mut url, detail.unwrap_or(ImageDetail::Auto)) {
+                            Ok(()) => {
+                                changed |= url != image_url.as_ref();
+                                *image_url = url.into_boxed_str();
+                            }
+                            Err(error) => {
+                                *part = ContentItem::input_text(error.placeholder());
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+            ResponseItem::FunctionCallOutput { output, .. }
+            | ResponseItem::CustomToolCallOutput { output, .. } => {
+                let FunctionOutputBody::Content(content) = output else {
+                    continue;
+                };
+                for part in content {
+                    if let FunctionOutputContent::InputImage { image_url, detail } = part {
+                        let mut url = image_url.to_string();
+                        match prepare_image(&mut url, detail.unwrap_or(ImageDetail::Auto)) {
+                            Ok(()) => {
+                                changed |= url != image_url.as_ref();
+                                *image_url = url.into_boxed_str();
+                            }
+                            Err(error) => {
+                                *part = FunctionOutputContent::InputText {
+                                    text: error.placeholder().into(),
+                                };
+                                changed = true;
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    changed
+}
+
 /// Converts public prompt input into provider-ready typed content.
 ///
 /// Local or data-URL images are validated and resized according to their detail
 /// policy. Audio input is retained as an explicit placeholder until supported.
+#[allow(
+    clippy::unused_async,
+    reason = "WASM prepares images inline without a blocking pool"
+)]
 pub async fn prepare_user_input(input: &PromptInput) -> Vec<ContentItem> {
     let input = match input {
         PromptInput::Text(text) => vec![UserInput::Text { text: text.clone() }],
         PromptInput::Content(items) => items.clone(),
     };
+    #[cfg(target_family = "wasm")]
+    {
+        prepare_user_content(input)
+    }
+    #[cfg(not(target_family = "wasm"))]
     match tokio::task::spawn_blocking(move || prepare_user_content(input)).await {
         Ok(content) => content,
         Err(error) => {
@@ -202,20 +274,58 @@ pub async fn prepare_user_input(input: &PromptInput) -> Vec<ContentItem> {
     }
 }
 
+pub(crate) fn prepare_embedded_output_images(output: &mut ToolOutputBody) {
+    if let ToolOutputBody::Content(content) = output {
+        *content = prepare_content(std::mem::take(content));
+    }
+    output.replace_invalid_image_envelopes();
+}
+
+pub(crate) fn prepare_embedded_user_input(input: &PromptInput) -> Vec<ContentItem> {
+    let input = match input {
+        PromptInput::Text(text) => vec![UserInput::Text { text: text.clone() }],
+        PromptInput::Content(items) => items.clone(),
+    };
+    prepare_user_content_for_host(input, true)
+}
+
 fn prepare_user_content(input: Vec<UserInput>) -> Vec<ContentItem> {
+    prepare_user_content_for_host(input, cfg!(target_family = "wasm"))
+}
+
+fn prepare_user_content_for_host(input: Vec<UserInput>, embedded: bool) -> Vec<ContentItem> {
     let mut content = Vec::with_capacity(input.len());
+    #[cfg(not(target_family = "wasm"))]
     let mut image_index = 0;
     for item in input {
         match item {
             UserInput::Text { text } => content.push(input_text(text)),
             UserInput::Image { image_url, detail } => {
-                image_index += 1;
+                #[cfg(not(target_family = "wasm"))]
+                {
+                    image_index += 1;
+                }
                 content.push(prepare_user_image(
                     image_url,
                     detail.unwrap_or(ImageDetail::High),
                 ));
             }
+            #[cfg(target_family = "wasm")]
+            UserInput::LocalImage { path, .. } => {
+                content.push(input_text(format!(
+                    "Local image paths are unavailable in browser WASM: {}",
+                    path.display()
+                )));
+            }
+            #[cfg(not(target_family = "wasm"))]
             UserInput::LocalImage { path, detail } => {
+                if embedded {
+                    content.push(input_text(format!(
+                        "Local image paths are unavailable in browser WASM: {}",
+                        path.display()
+                    )));
+                    continue;
+                }
                 image_index += 1;
                 let detail = detail.unwrap_or(ImageDetail::High);
                 match std::fs::read(&path) {
@@ -239,11 +349,24 @@ fn prepare_user_content(input: Vec<UserInput>) -> Vec<ContentItem> {
                     ))),
                 }
             }
-            UserInput::Audio { .. } => {
-                content.push(input_text("Codex does not support audio input yet."));
+            UserInput::Audio { audio_url } => {
+                if embedded {
+                    content.push(ContentItem::InputAudio {
+                        audio_url: audio_url.into_boxed_str(),
+                    });
+                } else {
+                    content.push(input_text("Codex does not support audio input yet."));
+                }
             }
-            UserInput::LocalAudio { .. } => {
-                content.push(input_text("Codex does not support local audio input yet."));
+            UserInput::LocalAudio { path } => {
+                if embedded {
+                    content.push(input_text(format!(
+                        "Local audio paths are unavailable in browser WASM: {}",
+                        path.display()
+                    )));
+                } else {
+                    content.push(input_text("Codex does not support local audio input yet."));
+                }
             }
         }
     }
@@ -432,6 +555,7 @@ fn load_for_prompt_bytes(
     Ok(image)
 }
 
+#[cfg(not(target_family = "wasm"))]
 pub(super) fn load_for_prompt_data_url(
     path: &Path,
     file_bytes: Vec<u8>,
@@ -596,6 +720,29 @@ mod tests {
     use image::{DynamicImage, GenericImageView, ImageFormat, Rgba, RgbaImage};
 
     use super::*;
+
+    #[test]
+    fn replay_prepares_messages_and_both_tool_output_kinds() {
+        use nanocodex_oai_api::responses::ResponseItem;
+        let mut items: Vec<ResponseItem> = serde_json::from_value(serde_json::json!([
+            {"type":"message", "role":"user", "content":[
+                {"type":"input_text", "text":"retained"},
+                {"type":"input_image", "image_url":"data:image/png;base64,YQ==", "detail":"original"}]},
+            {"type":"function_call_output", "call_id":"function", "output":[
+                {"type":"input_image", "image_url":"data:image/png;base64,YQ=="}]},
+            {"type":"custom_tool_call_output", "call_id":"custom", "output":[
+                {"type":"input_image", "image_url":"data:image/png;base64,YQ=="}]}
+        ])).unwrap();
+        assert!(prepare_history_images(&mut items));
+        let encoded = serde_json::to_string(&items).unwrap();
+        assert!(!encoded.contains("input_image"));
+        assert!(encoded.contains("retained"));
+        assert_eq!(
+            encoded.matches(IMAGE_PROCESSING_ERROR_PLACEHOLDER).count(),
+            3
+        );
+        assert!(!prepare_history_images(&mut items));
+    }
 
     #[test]
     fn detail_policies_match_codex_patch_budgets() {

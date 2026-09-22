@@ -44,20 +44,44 @@ pub(crate) struct TranscriptEntry {
 
 #[derive(Clone, Debug)]
 pub(crate) enum EntryKind {
-    User { text: String },
-    Assistant { text: String, complete: bool },
-    Reasoning { text: String },
+    User {
+        text: String,
+    },
+    Assistant {
+        text: String,
+        complete: bool,
+        agent_id: Option<u64>,
+    },
+    Reasoning {
+        text: String,
+    },
     Tool(ToolEntry),
     DirectedMessage(DirectedMessageEntry),
-    ForkedFrom { session_id: String },
-    EffortChanged { to: ReasoningEffort },
-    FastModeChanged { enabled: bool },
+    ForkedFrom {
+        session_id: String,
+    },
+    EffortChanged {
+        to: ReasoningEffort,
+    },
+    FastModeChanged {
+        enabled: bool,
+    },
     ReflectionStarted,
-    Interrupted { count: usize },
-    ContextCompacted { duration_ns: u64 },
-    TurnCompleted { duration_ns: u64 },
-    ContextCompactionFailed { message: String },
-    Error { message: String },
+    Interrupted {
+        count: usize,
+    },
+    ContextCompacted {
+        duration_ns: u64,
+    },
+    TurnCompleted {
+        duration_ns: u64,
+    },
+    ContextCompactionFailed {
+        message: String,
+    },
+    Error {
+        message: String,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -161,7 +185,10 @@ impl ToolExecution {
                 };
             }
         }
-        if matches!(identity.family, "accountInfo" | "account_connectors") {
+        if matches!(
+            identity.family,
+            "environment" | "accountInfo" | "account_connectors"
+        ) {
             return Self::Account;
         }
         if identity.family == "runtimeInfo" {
@@ -304,6 +331,7 @@ fn split_machine_tool(name: &str) -> Option<(&str, &str)> {
         "wait_agent",
         "update_plan",
         "write_stdin",
+        "environment",
         "accountInfo",
         "runtimeInfo",
         "apply_patch",
@@ -407,6 +435,8 @@ fn find_string<'a>(value: &'a Value, keys: &[&str]) -> Option<&'a str> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum ToolState {
     Running,
+    // The shell RPC returned a session; current process completion is unknown.
+    Yielded,
     Succeeded,
     Failed,
 }

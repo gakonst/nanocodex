@@ -1,6 +1,6 @@
 use std::{
     cell::{Cell, RefCell},
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::PathBuf,
     rc::Rc,
     sync::{Arc, Mutex, Weak},
@@ -26,6 +26,7 @@ use nanocodex::{
         SubscriptionHttpResponse, SubscriptionStoreValue,
     },
     oai::responses::ResponseItem,
+    oai::transport::{ResponsesHistory, ResponsesTransport},
     tools::{
         ToolContext, ToolDefinition, ToolInput, ToolOutput,
         contract::ToolOutputWire,
@@ -43,9 +44,10 @@ use wasm_bindgen_futures::{JsFuture, spawn_local};
 
 use nanocodex_subagents::{
     AgentDescriptor, AgentDirectoryEntry, AgentId as SubagentId, AgentStatus as SubagentStatus,
-    AgentSummary, AgentTask, AgentUpdate as SubagentUpdate, MessageId as SubagentMessageId,
-    MessagePriority, MessagePurpose, Registry as SubagentRegistry, ScopedAgentUpdate,
-    SubagentControl, start_agent_with, start_agents_observed,
+    AgentSummary, AgentTask, AgentUpdate as SubagentUpdate, MAX_SUBAGENT_CHECKPOINT_BYTES,
+    MessageId as SubagentMessageId, MessagePriority, MessagePurpose, Registry as SubagentRegistry,
+    ScopedAgentUpdate, SubagentCheckpoint, SubagentControl, start_agent_with,
+    start_agents_observed,
 };
 use nanocodex_voice_protocol::{
     BrowserVoiceEffects, BrowserVoiceProtocol, REALTIME_END_INSTRUCTIONS,
@@ -107,6 +109,7 @@ extern "C" {
         session_id: &str,
         call_id: &str,
         model: &str,
+        turn_id: Option<&str>,
     ) -> Result<Promise, JsValue>;
 
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = waitCode)]
@@ -122,6 +125,7 @@ extern "C" {
         session_id: &str,
         call_id: &str,
         model: &str,
+        turn_id: Option<&str>,
     ) -> Result<Promise, JsValue>;
 
     #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = beginCodeTurn)]
@@ -200,6 +204,12 @@ extern "C" {
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = subscriptionRequest)]
     fn host_subscription_request(subscription_id: &str, request: &str) -> Result<Promise, JsValue>;
 
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = routeSubagent)]
+    fn host_route_subagent(host_definition_id: u32, request: &str) -> Result<Promise, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = bindSubagentRoute)]
+    fn host_bind_subagent_route(host_definition_id: u32, request: &str) -> Result<(), JsValue>;
+
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = bindSubagentSession)]
     fn host_bind_subagent_session(
         host_definition_id: u32,
@@ -209,12 +219,109 @@ extern "C" {
         host_context_ref: Option<&str>,
     ) -> Result<(), JsValue>;
 
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = canCheckpointSubagents)]
+    fn host_can_checkpoint_subagents(
+        host_definition_id: u32,
+        root_session_id: &str,
+    ) -> Result<bool, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = checkpointSubagents)]
+    fn host_checkpoint_subagents(
+        host_definition_id: u32,
+        root_session_id: &str,
+        encoded: &str,
+    ) -> Result<(), JsValue>;
+
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = releaseSubagentSession)]
     fn host_release_subagent_session(
         host_definition_id: u32,
         root_session_id: &str,
         session_id: &str,
     ) -> Result<(), JsValue>;
+}
+
+struct JavaScriptSpawnRouter {
+    host_definition_id: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct JavaScriptSpawnRoute {
+    model: String,
+    thinking: Thinking,
+    route_id: String,
+}
+
+#[async_trait::async_trait(?Send)]
+impl nanocodex_subagents::SpawnRouter for JavaScriptSpawnRouter {
+    async fn resolve(
+        &self,
+        parent_session_id: &str,
+        role: &str,
+        task: &str,
+        options: SpawnOptions,
+        host_context: Option<&str>,
+    ) -> std::io::Result<nanocodex_subagents::SpawnRoute> {
+        let mut request = serde_json::json!({ "parentSessionId": parent_session_id,
+            "role": role, "task": task });
+        if let Some(model) = options.selected_model() {
+            request["model"] = serde_json::to_value(model)?;
+        }
+        if let Some(thinking) = options.selected_thinking() {
+            request["thinking"] = serde_json::to_value(thinking)?;
+        }
+        if let Some(context) = host_context {
+            request["hostContextRef"] = context.into();
+        }
+        let promise = host_route_subagent(self.host_definition_id, &request.to_string())
+            .map_err(|_| std::io::Error::other("subagent routing host rejected request"))?;
+        let value = JsFuture::from(promise)
+            .await
+            .map_err(|_| std::io::Error::other("subagent routing failed or was not authorized"))?;
+        let route: JavaScriptSpawnRoute = serde_json::from_str(
+            &value
+                .as_string()
+                .ok_or_else(|| std::io::Error::other("invalid subagent route response"))?,
+        )?;
+        let model = route
+            .model
+            .parse::<Model>()
+            .map_err(std::io::Error::other)?;
+        if options
+            .selected_model()
+            .is_some_and(|requested| requested != model)
+            || options
+                .selected_thinking()
+                .is_some_and(|thinking| thinking != route.thinking)
+        {
+            return Err(std::io::Error::other(
+                "subagent route conflicts with explicit override",
+            ));
+        }
+        if route.route_id.trim().is_empty() {
+            return Err(std::io::Error::other("empty subagent route reference"));
+        }
+        Ok(nanocodex_subagents::SpawnRoute {
+            options: SpawnOptions::new().model(model).thinking(route.thinking),
+            reference: route.route_id,
+        })
+    }
+
+    fn bind(
+        &self,
+        parent_session_id: &str,
+        child_session_id: &str,
+        reference: &str,
+        host_context: Option<&str>,
+    ) -> std::io::Result<()> {
+        let mut request = serde_json::json!({ "parentSessionId": parent_session_id,
+            "sessionId": child_session_id, "routeId": reference });
+        if let Some(context) = host_context {
+            request["hostContextRef"] = context.into();
+        }
+        host_bind_subagent_route(self.host_definition_id, &request.to_string())
+            .map_err(|_| std::io::Error::other("subagent route binding failed"))
+    }
 }
 
 struct JavaScriptSubscriptionHost {
@@ -659,6 +766,7 @@ impl CodeModeHost for JavaScriptCodeModeHost {
                 context.session_id(),
                 context.call_id(),
                 context.model(),
+                context.turn_id(),
             )
             .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
             let value = JsFuture::from(promise)
@@ -710,6 +818,7 @@ async fn execute_javascript_code(
         context.session_id(),
         context.call_id(),
         context.model(),
+        context.turn_id(),
     )
     .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
     observe_javascript_code(execution, context, observer).await
@@ -720,6 +829,7 @@ async fn observe_javascript_code(
     context: ToolContext<'_>,
     mut observer: Option<&mut dyn CodeModeObserver>,
 ) -> Result<CodeModeExecution, CodeModeHostError> {
+    let mut notifications = Vec::new();
     loop {
         let update = host_next_code_update(context.session_id(), context.call_id())
             .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
@@ -765,6 +875,23 @@ async fn observe_javascript_code(
                     observer.update(CodeModeUpdate::NestedCallCompleted(&update.call));
                 }
             }
+            Some("notification") => {
+                #[derive(Deserialize)]
+                struct Notification {
+                    call_id: String,
+                    text: String,
+                }
+                let notification: Notification =
+                    serde_json::from_value(value).map_err(|error| {
+                        CodeModeHostError::new(format!(
+                            "JavaScript Code Mode host returned invalid notification: {error}"
+                        ))
+                    })?;
+                notifications.push(nanocodex::tools::embedded::CodeModeNotification {
+                    call_id: notification.call_id,
+                    text: notification.text,
+                });
+            }
             _ => {
                 return Err(CodeModeHostError::new(
                     "JavaScript Code Mode host returned an unknown nested update",
@@ -775,7 +902,9 @@ async fn observe_javascript_code(
     let value = JsFuture::from(execution)
         .await
         .map_err(|error| CodeModeHostError::new(host_error_message(&error)))?;
-    decode_code_execution(value)
+    let mut result = decode_code_execution(value)?;
+    result.notifications.extend(notifications);
+    Ok(result)
 }
 
 fn decode_code_execution(value: JsValue) -> Result<CodeModeExecution, CodeModeHostError> {
@@ -873,6 +1002,8 @@ struct WasmConfig {
     #[serde(default)]
     websocket_warmup: bool,
     #[serde(default)]
+    stateless_http: bool,
+    #[serde(default)]
     websocket_url: Option<String>,
     #[serde(default)]
     api_base_url: Option<String>,
@@ -896,6 +1027,8 @@ struct WasmConfig {
     terminal_receipt_retention: Option<usize>,
     #[serde(default)]
     subagents: Option<WasmSubagentsConfig>,
+    #[serde(default)]
+    subagent_routing: bool,
 }
 
 #[derive(Deserialize)]
@@ -1130,6 +1263,7 @@ struct WasmSubagents {
     parents: Arc<Mutex<HashMap<String, AgentHandle>>>,
     sessions: Rc<RefCell<HashMap<(String, SubagentId), String>>>,
     event_forwarders: Rc<Cell<usize>>,
+    unloaded_roots: Rc<RefCell<HashSet<String>>>,
 }
 
 struct WasmBatchParentCleanup {
@@ -1181,6 +1315,7 @@ impl WasmSubagents {
     ) -> Self {
         let sessions = Rc::new(RefCell::new(HashMap::new()));
         let event_forwarders = Rc::new(Cell::new(0));
+        let unloaded_roots = Rc::new(RefCell::new(HashSet::new()));
         forward_subagent_updates(
             host_definition_id,
             Arc::downgrade(&registry),
@@ -1188,6 +1323,7 @@ impl WasmSubagents {
             Rc::clone(&sessions),
             Rc::clone(&event_forwarders),
             Arc::clone(&parents),
+            Rc::clone(&unloaded_roots),
         );
         Self {
             host_definition_id,
@@ -1196,6 +1332,7 @@ impl WasmSubagents {
             parents,
             sessions,
             event_forwarders,
+            unloaded_roots,
         }
     }
 
@@ -1246,6 +1383,31 @@ impl WasmSubagents {
                     .and_then(|host_context| host_context.as_deref()),
             )?;
         }
+        Ok(())
+    }
+
+    async fn unload(&self, root_session_id: &str) -> std::io::Result<()> {
+        // Install the fence before closing: queued Closed updates and eventual
+        // update-stream teardown must never release durable descriptors/routes.
+        self.unloaded_roots
+            .borrow_mut()
+            .insert(root_session_id.to_owned());
+        self.control.close_all(root_session_id).await?;
+        let session_ids = {
+            let mut sessions = self.sessions.borrow_mut();
+            let keys = sessions
+                .keys()
+                .filter(|(root, _)| root == root_session_id)
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.into_iter()
+                .filter_map(|key| sessions.remove(&key))
+                .collect::<Vec<_>>()
+        };
+        for session_id in session_ids {
+            self.remove_parent(&session_id);
+        }
+        self.remove_parent(root_session_id);
         Ok(())
     }
 
@@ -1305,6 +1467,13 @@ impl WasmNanocodex {
             .reasoning_mode(reasoning_mode)
             .fast_mode(config.fast_mode)
             .websocket_warmup(config.websocket_warmup);
+        if config.stateless_http {
+            openai = openai
+                .transport(ResponsesTransport::Https)
+                .store(false)
+                .history(ResponsesHistory::FullReplay)
+                .websocket_warmup(false);
+        }
         if let Some(thinking) = config.thinking {
             openai = openai.thinking(thinking);
         }
@@ -1326,6 +1495,9 @@ impl WasmNanocodex {
         let (mut builder, subagents) = if let Some(subagents) = config.subagents {
             let (registry, control, updates) =
                 nanocodex_subagents::channel(subagents.max_concurrency);
+            if config.subagent_routing {
+                registry.set_spawn_router(Arc::new(JavaScriptSpawnRouter { host_definition_id }));
+            }
             let parents = Arc::new(Mutex::new(HashMap::new()));
             let tool_registry = Arc::clone(&registry);
             let tool_parents = Arc::clone(&parents);
@@ -1414,6 +1586,23 @@ impl WasmNanocodex {
         self.inner.session_id().to_string()
     }
 
+    /// Validates a persisted checkpoint without restoring children or opening resources.
+    ///
+    /// # Errors
+    ///
+    /// Rejects malformed, oversized, or invalid checkpoints for this root session.
+    #[wasm_bindgen(js_name = validateSubagentCheckpoint)]
+    pub fn validate_subagent_checkpoint(&self, encoded: &str) -> Result<(), JsValue> {
+        if encoded.len() > MAX_SUBAGENT_CHECKPOINT_BYTES {
+            return Err(js_error("subagent checkpoint exceeds size limit"));
+        }
+        let checkpoint: SubagentCheckpoint = serde_json::from_str(encoded)
+            .map_err(|error| js_error(format!("invalid subagent checkpoint: {error}")))?;
+        checkpoint
+            .validate(self.inner.session_id())
+            .map_err(js_error)
+    }
+
     /// Restores persisted logical children after the JavaScript owner acquires
     /// its durability generation and activates the replacement host.
     ///
@@ -1427,6 +1616,56 @@ impl WasmNanocodex {
         descriptors_json: &str,
         host_contexts_json: Option<String>,
     ) -> Result<(), JsValue> {
+        if descriptors_json.len() > MAX_SUBAGENT_CHECKPOINT_BYTES {
+            return Err(js_error("subagent checkpoint exceeds size limit"));
+        }
+        if descriptors_json.trim_start().starts_with('{') {
+            let checkpoint: SubagentCheckpoint = serde_json::from_str(descriptors_json)
+                .map_err(|error| js_error(format!("invalid subagent checkpoint: {error}")))?;
+            if self.subagents.is_none() && checkpoint.children.is_empty() {
+                checkpoint
+                    .validate(self.inner.session_id())
+                    .map_err(js_error)?;
+                return Ok(());
+            }
+            let subagents = self.subagents.as_ref().ok_or_else(|| {
+                js_error("this agent was not created with the subagent extension")
+            })?;
+            if let Some(encoded) = &host_contexts_json {
+                let contexts: HashMap<String, Option<String>> =
+                    serde_json::from_str(encoded).map_err(js_error)?;
+                if contexts.len() != checkpoint.children.len()
+                    || checkpoint.children.iter().any(|child| {
+                        contexts.get(&child.descriptor.session_id) != Some(&child.host_context)
+                    })
+                {
+                    return Err(js_error(
+                        "child checkpoint host context differs from its retained binding",
+                    ));
+                }
+            }
+            let children = checkpoint.children.clone();
+            subagents
+                .registry
+                .restore_checkpoint(&self.inner, checkpoint)
+                .await
+                .map_err(js_error)?;
+            for child in children {
+                if !matches!(
+                    child.status,
+                    SubagentStatus::Closed | SubagentStatus::Closing
+                ) {
+                    bind_subagent_session(
+                        subagents.host_definition_id,
+                        &subagents.sessions,
+                        self.inner.session_id(),
+                        &child.descriptor,
+                        child.host_context.as_deref(),
+                    )?;
+                }
+            }
+            return Ok(());
+        }
         let descriptors = serde_json::from_str::<Vec<WasmRestoredSubagent>>(descriptors_json)
             .map_err(|error| js_error(format!("invalid restored subagents: {error}")))?
             .into_iter()
@@ -1466,6 +1705,37 @@ impl WasmNanocodex {
         subagents
             .restore(self.inner.session_id(), descriptors, host_contexts)
             .await
+    }
+
+    /// Serializes safe child boundaries for storage under the owner's durability generation.
+    #[wasm_bindgen(js_name = checkpointSubagents)]
+    pub async fn checkpoint_subagents(&self) -> Result<String, JsValue> {
+        let checkpoint = match &self.subagents {
+            Some(subagents) => subagents
+                .registry
+                .checkpoint(self.inner.session_id())
+                .await
+                .map_err(js_error)?,
+            None => SubagentCheckpoint {
+                version: 1,
+                root_session_id: self.inner.session_id().to_owned(),
+                next_agent_id: 1,
+                children: Vec::new(),
+            },
+        };
+        serde_json::to_string(&checkpoint).map_err(js_error)
+    }
+
+    /// Unloads child drivers after their checkpoint has been durably stored by the owner.
+    #[wasm_bindgen(js_name = shutdownDurable)]
+    pub async fn shutdown_durable(&self) -> Result<(), JsValue> {
+        if let Some(subagents) = &self.subagents {
+            subagents
+                .unload(self.inner.session_id())
+                .await
+                .map_err(js_error)?;
+        }
+        self.inner.shutdown().await.map_err(js_error)
     }
 
     /// Enables or disables the optional JavaScript event crossing for this handle.
@@ -2974,7 +3244,13 @@ fn blocked_operation(error: &NanocodexError) -> Option<String> {
         {
             return Some(pending_id.clone());
         }
-        source = error.source();
+        // thiserror exposes the Arc as the source. Arc::source forwards to
+        // the inner error's source, skipping the concrete error we must inspect.
+        source = match error.downcast_ref::<NanocodexError>() {
+            Some(NanocodexError::ExecutionPolicy { source, .. }) => Some(source.as_ref()),
+            Some(NanocodexError::Shutdown(source)) => Some(source.as_ref()),
+            _ => error.source(),
+        };
     }
     None
 }
@@ -3085,10 +3361,25 @@ fn forward_subagent_updates(
     sessions: Rc<RefCell<HashMap<(String, SubagentId), String>>>,
     event_forwarders: Rc<Cell<usize>>,
     parents: Arc<Mutex<HashMap<String, AgentHandle>>>,
+    unloaded_roots: Rc<RefCell<HashSet<String>>>,
 ) {
+    let pending_checkpoints = Rc::new(RefCell::new(HashSet::<String>::new()));
+    let dirty_checkpoints = Rc::new(RefCell::new(HashSet::<String>::new()));
     spawn_local(async move {
         while let Some(scoped) = updates.recv().await {
             let root_session_id = scoped.root_session_id;
+            if unloaded_roots.borrow().contains(&root_session_id) {
+                continue;
+            }
+            let save_boundary = match &scoped.update {
+                SubagentUpdate::Added(_) | SubagentUpdate::Status { .. } => true,
+                SubagentUpdate::Event { event, .. } => matches!(
+                    event.kind,
+                    nanocodex::oai::events::AgentEventKind::ModelCallCompleted
+                        | nanocodex::oai::events::AgentEventKind::ModelCompactionCompleted
+                ),
+                _ => false,
+            };
             match scoped.update {
                 SubagentUpdate::Added(descriptor) => {
                     let Some(registry) = registry.upgrade() else {
@@ -3140,6 +3431,65 @@ fn forward_subagent_updates(
                 }
                 SubagentUpdate::Status { .. } | SubagentUpdate::Message(_) => {}
             }
+            if save_boundary
+                && !unloaded_roots.borrow().contains(&root_session_id)
+                && host_can_checkpoint_subagents(host_definition_id, &root_session_id)
+                    .unwrap_or(false)
+            {
+                dirty_checkpoints
+                    .borrow_mut()
+                    .insert(root_session_id.clone());
+                if pending_checkpoints
+                    .borrow_mut()
+                    .insert(root_session_id.clone())
+                {
+                    let registry = registry.clone();
+                    let unloaded = unloaded_roots.clone();
+                    let pending = pending_checkpoints.clone();
+                    let dirty = dirty_checkpoints.clone();
+                    // Persistence must not block event forwarding or host release.
+                    // One writer per root coalesces notifications while capturing.
+                    spawn_local(async move {
+                        while dirty.borrow_mut().remove(&root_session_id) {
+                            if unloaded.borrow().contains(&root_session_id)
+                                || !host_can_checkpoint_subagents(
+                                    host_definition_id,
+                                    &root_session_id,
+                                )
+                                .unwrap_or(false)
+                            {
+                                break;
+                            }
+                            let Some(registry) = registry.upgrade() else {
+                                break;
+                            };
+                            match registry.live_checkpoint(&root_session_id).await {
+                                Ok(checkpoint) => {
+                                    if !unloaded.borrow().contains(&root_session_id)
+                                        && let Ok(encoded) = serde_json::to_string(&checkpoint)
+                                        && let Err(error) = host_checkpoint_subagents(
+                                            host_definition_id,
+                                            &root_session_id,
+                                            &encoded,
+                                        )
+                                    {
+                                        report_subagent_host_error(
+                                            "saving a child boundary",
+                                            &error,
+                                        );
+                                    }
+                                }
+                                Err(error) => report_subagent_host_error(
+                                    "capturing a child boundary",
+                                    &js_error(error),
+                                ),
+                            }
+                        }
+                        pending.borrow_mut().remove(&root_session_id);
+                        dirty.borrow_mut().remove(&root_session_id);
+                    });
+                }
+            }
         }
         let session_ids = sessions
             .borrow_mut()
@@ -3148,6 +3498,9 @@ fn forward_subagent_updates(
             .collect::<Vec<_>>();
         for (root_session_id, session_id) in session_ids {
             remove_subagent_parent(&parents, &session_id);
+            if unloaded_roots.borrow().contains(&root_session_id) {
+                continue;
+            }
             if let Err(error) =
                 host_release_subagent_session(host_definition_id, &root_session_id, &session_id)
             {

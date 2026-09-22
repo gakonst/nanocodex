@@ -238,15 +238,24 @@ where
     let mut input = BufReader::new(input);
     let mut requests = JoinSet::<SessionResponse>::new();
     let mut active = HashMap::<u64, tokio::task::AbortHandle>::new();
+    let (chunks, mut output_chunks) = mpsc::channel::<super::protocol::OutputChunk>(8);
     let mut accepting = true;
     let mut shutdown = None;
 
     let result = async {
         while accepting || !requests.is_empty() {
             tokio::select! {
+                Some(chunk) = output_chunks.recv() => {
+                    if active.contains_key(&chunk.id) { write_response(&mut output, &SessionResponse::Output(chunk), max_frame_bytes).await?; }
+                }
                 joined = requests.join_next(), if !requests.is_empty() => {
                     match joined.ok_or(VmGuestError::Closed)? {
                         Ok(response) => {
+                            // All stdout readers finish before the terminal
+                            // response. Drain their queued chunks first.
+                            while let Ok(chunk) = output_chunks.try_recv() {
+                                if active.contains_key(&chunk.id) { write_response(&mut output, &SessionResponse::Output(chunk), max_frame_bytes).await?; }
+                            }
                             active.remove(&response.id());
                             write_response(&mut output, &response, max_frame_bytes).await?;
                         }
@@ -296,10 +305,13 @@ where
                             }
                             let runtime = Arc::clone(&runtime);
                             let memory = Arc::clone(&memory);
-                            let task =
-                                requests.spawn(async move {
-                                    execute_request(runtime, memory, request).await
-                                });
+                            let chunks = chunks.clone();
+                            let task = requests.spawn(async move {
+                                match request {
+                                    SessionRequest::Execute(request) if request.stream_stdout => SessionResponse::Execute(execute_command_stream(request, Some(chunks)).await),
+                                    request => execute_request(runtime, memory, request).await,
+                                }
+                            });
                             active.insert(id, task);
                         }
                     }
@@ -361,6 +373,17 @@ async fn execute_request(
             id: request.id,
             error: None,
         }),
+        SessionRequest::ComputerCatalog(request) => {
+            let (tools, error) = match memory.computer.catalog().await {
+                Ok(catalog) => (Some(catalog), None),
+                Err(error) => (None, Some(error.to_string())),
+            };
+            SessionResponse::ComputerCatalog(super::protocol::ComputerCatalogResponse {
+                id: request.id,
+                tools,
+                error,
+            })
+        }
         SessionRequest::Tool(request) => {
             let context = ToolContext::new(
                 &request.context.model,
@@ -370,7 +393,7 @@ async fn execute_request(
                 request.context.output_token_budget,
             );
             let execution = match request.tool {
-                super::protocol::GuestTool::Computer(kind) => {
+                super::protocol::GuestTool::Computer { name } => {
                     use nanocodex_tools::Tool as _;
                     let computer = match memory.computer.tools().await {
                         Ok(computer) => computer,
@@ -381,9 +404,11 @@ async fn execute_request(
                             ));
                         }
                     };
-                    let tool = match kind {
-                        super::protocol::ComputerToolKind::Cua => computer.js(),
-                        super::protocol::ComputerToolKind::CuaReset => computer.reset(),
+                    let Some(tool) = computer.tool(&name) else {
+                        return SessionResponse::Tool(ToolResponse::failed(
+                            request.id,
+                            format!("Upstream Sky provider does not publish tool {name}"),
+                        ));
                     };
                     match tool.execute(request.input.into(), context).await {
                         Ok(output) => output,
@@ -704,6 +729,12 @@ async fn read_file(request: ReadFileRequest) -> ReadFileResponse {
 }
 
 async fn execute_command(request: ExecuteRequest) -> ExecuteResponse {
+    execute_command_stream(request, None).await
+}
+async fn execute_command_stream(
+    request: ExecuteRequest,
+    chunks: Option<mpsc::Sender<super::protocol::OutputChunk>>,
+) -> ExecuteResponse {
     let stdout_mirror = match open_output_mirror(request.stdout_mirror.as_deref()).await {
         Ok(mirror) => mirror,
         Err(error) => return failed_execute_response(request.id, error),
@@ -732,6 +763,7 @@ async fn execute_command(request: ExecuteRequest) -> ExecuteResponse {
         request.max_output_bytes,
         stdout_mirror,
         stderr_mirror,
+        chunks.map(|chunks| (request.id, chunks)),
     )
     .await
     {
@@ -823,6 +855,7 @@ async fn command_output(
     max_output_bytes: usize,
     stdout_mirror: Option<File>,
     stderr_mirror: Option<File>,
+    chunks: Option<(u64, mpsc::Sender<super::protocol::OutputChunk>)>,
 ) -> std::io::Result<CommandOutcome> {
     let mut child = command.spawn()?;
     let process_group = child
@@ -846,6 +879,7 @@ async fn command_output(
         max_output_bytes,
         limit_sender.clone(),
         stdout_mirror,
+        chunks,
     ));
     let mut stderr = tokio::spawn(read_bounded(
         stderr,
@@ -853,6 +887,7 @@ async fn command_output(
         max_output_bytes,
         limit_sender,
         stderr_mirror,
+        None,
     ));
     let deadline = tokio::time::sleep(timeout);
     tokio::pin!(deadline);
@@ -931,6 +966,7 @@ async fn read_bounded(
     limit: usize,
     limit_sender: mpsc::Sender<()>,
     mut mirror: Option<File>,
+    chunks: Option<(u64, mpsc::Sender<super::protocol::OutputChunk>)>,
 ) -> std::io::Result<Vec<u8>> {
     let mut output = Vec::new();
     let mut buffer = [0_u8; 8 * 1024];
@@ -946,6 +982,23 @@ async fn read_bounded(
         if let Some(mirror) = &mut mirror {
             mirror.write_all(&buffer[..read]).await?;
             mirror.flush().await?;
+        }
+        if let Some((id, sink)) = &chunks {
+            if !matches!(
+                tokio::time::timeout(
+                    Duration::from_millis(250),
+                    sink.send(super::protocol::OutputChunk {
+                        id: *id,
+                        data: buffer[..read].to_vec()
+                    })
+                )
+                .await,
+                Ok(Ok(()))
+            ) {
+                let _ = limit_sender.try_send(());
+                return Err(std::io::Error::other("guest stdout stream backpressure"));
+            }
+            continue;
         }
         let offset = retained.fetch_add(read, Ordering::Relaxed);
         let allowed = limit.saturating_sub(offset).min(read);
@@ -1071,6 +1124,7 @@ mod tests {
             timeout_millis: 1_000,
             max_output_bytes: DEFAULT_OUTPUT_BYTES,
             stdout_mirror: None,
+            stream_stdout: false,
             stderr_mirror: None,
         })
         .await;
@@ -1099,6 +1153,7 @@ mod tests {
             timeout_millis: 5_000,
             max_output_bytes: 8,
             stdout_mirror: None,
+            stream_stdout: false,
             stderr_mirror: None,
         })
         .await;
@@ -1127,6 +1182,7 @@ mod tests {
             timeout_millis: 5_000,
             max_output_bytes: DEFAULT_OUTPUT_BYTES,
             stdout_mirror: Some(stdout.to_string_lossy().into_owned()),
+            stream_stdout: false,
             stderr_mirror: Some(stderr.to_string_lossy().into_owned()),
         }));
 
@@ -1172,6 +1228,96 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn streamed_stdout_preserves_tail_and_other_requests() {
+        let workspace = tempfile::tempdir().unwrap();
+        let (host, guest) = tokio::io::duplex(64 * 1024);
+        let (host_read, mut host_write) = tokio::io::split(host);
+        let (guest_read, guest_write) = tokio::io::split(guest);
+        let path = workspace.path().to_owned();
+        let task = tokio::spawn(async move { serve_test_io(&path, guest_read, guest_write).await });
+        for request in [
+            SessionRequest::Execute(ExecuteRequest {
+                id: 1,
+                program: "/bin/sh".into(),
+                arguments: vec![
+                    "-c".into(),
+                    "head -c 262144 /dev/zero; sleep 0.1; printf end".into(),
+                ],
+                current_directory: "/".into(),
+                environment: Vec::new(),
+                timeout_millis: 5000,
+                max_output_bytes: 16,
+                stdout_mirror: None,
+                stderr_mirror: None,
+                stream_stdout: true,
+            }),
+            SessionRequest::Ready(super::super::protocol::ReadyRequest { id: 2 }),
+        ] {
+            host_write
+                .write_all(&serde_json::to_vec(&request).unwrap())
+                .await
+                .unwrap();
+            host_write.write_all(b"\n").await.unwrap();
+        }
+        let mut reader = BufReader::new(host_read);
+        let mut bytes = Vec::new();
+        let mut ready = false;
+        tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                let line = super::read_frame(&mut reader).await.unwrap().unwrap();
+                match serde_json::from_slice::<SessionResponse>(&line).unwrap() {
+                    SessionResponse::Output(chunk) => {
+                        assert_eq!(chunk.id, 1);
+                        assert!(chunk.data.len() <= 16 * 1024);
+                        bytes.extend(chunk.data);
+                    }
+                    SessionResponse::Ready(_) => ready = true,
+                    SessionResponse::Execute(result) => {
+                        assert_eq!(result.exit_code, Some(0));
+                        assert_eq!(result.stdout, Some(Vec::new()));
+                        assert!(ready);
+                        break;
+                    }
+                    _ => panic!("unexpected response"),
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(bytes.len(), 262147);
+        assert_eq!(&bytes[262144..], b"end");
+        drop(host_write);
+        drop(reader);
+        task.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn streaming_backpressure_terminates_encoder() {
+        let (sink, _unread) = tokio::sync::mpsc::channel(1);
+        let result = tokio::time::timeout(
+            Duration::from_secs(3),
+            super::execute_command_stream(
+                ExecuteRequest {
+                    id: 1,
+                    program: "/bin/sh".into(),
+                    arguments: vec!["-c".into(), "head -c 16777216 /dev/zero".into()],
+                    current_directory: "/".into(),
+                    environment: Vec::new(),
+                    timeout_millis: 10000,
+                    max_output_bytes: 16,
+                    stdout_mirror: None,
+                    stderr_mirror: None,
+                    stream_stdout: true,
+                },
+                Some(sink),
+            ),
+        )
+        .await
+        .unwrap();
+        assert!(result.error.is_some() || result.output_limit_exceeded);
+    }
+
+    #[tokio::test]
     async fn independent_requests_execute_concurrently() {
         let workspace = tempfile::tempdir().unwrap();
         let marker = workspace.path().join("second-started");
@@ -1196,6 +1342,7 @@ mod tests {
                 timeout_millis: 5_000,
                 max_output_bytes: DEFAULT_OUTPUT_BYTES,
                 stdout_mirror: None,
+                stream_stdout: false,
                 stderr_mirror: None,
             }),
             SessionRequest::Execute(ExecuteRequest {
@@ -1207,6 +1354,7 @@ mod tests {
                 timeout_millis: 5_000,
                 max_output_bytes: DEFAULT_OUTPUT_BYTES,
                 stdout_mirror: None,
+                stream_stdout: false,
                 stderr_mirror: None,
             }),
         ] {
@@ -1263,6 +1411,7 @@ mod tests {
                 timeout_millis: 60_000,
                 max_output_bytes: DEFAULT_OUTPUT_BYTES,
                 stdout_mirror: None,
+                stream_stdout: false,
                 stderr_mirror: None,
             }),
             SessionRequest::Shutdown(ShutdownRequest { id: 1 }),
@@ -1308,6 +1457,7 @@ mod tests {
                 timeout_millis: 60_000,
                 max_output_bytes: DEFAULT_OUTPUT_BYTES,
                 stdout_mirror: None,
+                stream_stdout: false,
                 stderr_mirror: None,
             }),
             SessionRequest::Cancel(CancelRequest {
@@ -1323,6 +1473,7 @@ mod tests {
                 timeout_millis: 5_000,
                 max_output_bytes: DEFAULT_OUTPUT_BYTES,
                 stdout_mirror: None,
+                stream_stdout: false,
                 stderr_mirror: None,
             }),
         ] {
@@ -1424,6 +1575,15 @@ mod tests {
             "foreground command failed: {:?}",
             execution.output
         );
+        // A yielded exec response confirms a running session, not that its shell
+        // has reached the first command. Wait for the fixture's readiness signal.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while !pid_file.is_file() {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("foreground command must publish its PID before termination");
         let pid = fs::read_to_string(&pid_file)
             .unwrap()
             .parse::<i32>()
@@ -1747,6 +1907,7 @@ mod tests {
                 timeout_millis: 5_000,
                 max_output_bytes: DEFAULT_OUTPUT_BYTES,
                 stdout_mirror: None,
+                stream_stdout: false,
                 stderr_mirror: None,
             }),
         ] {

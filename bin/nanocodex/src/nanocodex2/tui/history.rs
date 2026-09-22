@@ -159,6 +159,9 @@ pub(super) fn live_managed_projection(
     let (record, prompt) = match event.data {
         ManagedEventData::TurnAccepted { input, .. } => {
             let text = prompt_input_text(&input);
+            if text.is_empty() {
+                return Ok(None);
+            }
             let record = TranscriptRecord::from_local(
                 *next_sequence,
                 timestamp,
@@ -268,6 +271,9 @@ pub(super) fn history_projection_with_sequences(
             match &event.data {
                 ManagedEventData::TurnAccepted { input, .. } => {
                     let text = prompt_input_text(input);
+                    if text.is_empty() {
+                        return Ok(None);
+                    }
                     let record = TranscriptRecord::from_local(
                         sequence,
                         timestamp,
@@ -410,7 +416,7 @@ fn project_agent_record(
 }
 
 fn prompt_input_text(input: &PromptInput) -> String {
-    match input {
+    let text = match input {
         PromptInput::Text(text) => text.clone(),
         PromptInput::Content(content) => content
             .iter()
@@ -418,6 +424,25 @@ fn prompt_input_text(input: &PromptInput) -> String {
                 PromptContent::Text { text } => text.as_str(),
                 PromptContent::Image { .. } => "[image attachment]",
                 PromptContent::Audio { .. } => "[audio attachment]",
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    };
+    if let Some(receipt) = super::vault::receipt_summary(&text) {
+        return receipt;
+    }
+    match nanocodex_voice_protocol::project_transcript(&text, false) {
+        None => text,
+        Some(entries) if entries.is_empty() => String::new(),
+        Some(entries) => entries
+            .into_iter()
+            .map(|entry| {
+                let speaker = if entry.role == "user" {
+                    "You"
+                } else {
+                    "Assistant"
+                };
+                format!("Voice · {speaker}: {}", entry.text)
             })
             .collect::<Vec<_>>()
             .join("\n"),
@@ -449,6 +474,91 @@ mod tests {
     use super::{HistoryPrefetch, HistoryWindow};
     use nanocodex_managed::{EventHistoryPage, ManagedEvent, ManagedEventData};
     use serde_json::json;
+
+    #[test]
+    fn vault_receipts_are_readable_in_live_and_replayed_prompt_history() {
+        let receipt = json!({"type":"vault_intake_receipt", "operation":"authorize_origin",
+            "status":"saved", "id":"abcdefghijklmnopqrstuv", "kind":"login",
+            "name":"Example", "browser_origin":"https://example.com", "password":"hidden-secret"});
+        let expected = "Website approved for Example\nhttps://example.com\nVault ID: abcdefghijklmnopqrstuv\nSaved to Vault. Password stayed in Vault.";
+        for input in [
+            json!(receipt.to_string()),
+            json!([{"type":"text", "text":receipt.to_string()}]),
+        ] {
+            let event: ManagedEvent =
+                serde_json::from_value(json!({"cursor":"1", "turn_id":"turn",
+                "type":"turn_accepted", "id":"turn", "input":input, "replayed":false}))
+                .unwrap();
+            let mut sequence = 1;
+            let (live_record, live_prompt) = super::live_managed_projection(
+                event.clone(),
+                "agent",
+                std::path::Path::new("/workspace"),
+                &mut sequence,
+            )
+            .unwrap()
+            .unwrap();
+            let (records, _, prompts) =
+                super::history_projection(vec![event], "agent", std::path::Path::new("/workspace"))
+                    .unwrap();
+            assert_eq!(live_prompt.unwrap().text, expected);
+            assert_eq!(prompts[0].text, expected);
+            for record in [&live_record, &records[0]] {
+                let payload: serde_json::Value = record.decode_payload().unwrap();
+                assert_eq!(payload["text"], expected);
+                assert!(!payload["text"].as_str().unwrap().contains("hidden-secret"));
+                assert!(
+                    !payload["text"]
+                        .as_str()
+                        .unwrap()
+                        .contains("vault_intake_receipt")
+                );
+                assert!(!payload["text"].as_str().unwrap().contains("\\n"));
+            }
+        }
+    }
+
+    #[test]
+    fn invalid_vault_receipt_history_is_safe_and_ordinary_json_is_preserved() {
+        let invalid =
+            json!({"type":"vault_intake_receipt", "status":"saved", "password":"hidden-secret"})
+                .to_string();
+        assert_eq!(
+            super::prompt_input_text(&nanocodex_managed::PromptInput::Text(invalid)),
+            "Vault receipt could not be verified."
+        );
+        let ordinary = json!({"type":"example", "text":"ordinary JSON"}).to_string();
+        assert_eq!(
+            super::prompt_input_text(&nanocodex_managed::PromptInput::Text(ordinary.clone())),
+            ordinary
+        );
+    }
+
+    #[test]
+    fn voice_history_projects_shared_transcript_without_internal_instructions() {
+        let text = nanocodex_voice_protocol::realtime_tail_delegation(&[
+            nanocodex_voice_protocol::TranscriptEntry::new("user", "check the desktop"),
+            nanocodex_voice_protocol::TranscriptEntry::new("assistant", "Linux"),
+        ])
+        .unwrap();
+        let display = super::prompt_input_text(&nanocodex_managed::PromptInput::Text(text));
+        assert_eq!(
+            display,
+            "Voice · You: check the desktop\nVoice · Assistant: Linux"
+        );
+        assert_eq!(
+            super::prompt_input_text(&nanocodex_managed::PromptInput::Text(
+                "ordinary <code>".into()
+            )),
+            "ordinary <code>"
+        );
+        assert_eq!(
+            super::prompt_input_text(&nanocodex_managed::PromptInput::Text(
+                "<realtime_conversation>internal</realtime_conversation>".into()
+            )),
+            ""
+        );
+    }
 
     #[test]
     fn durable_stop_projection_preserves_other_work_and_keeps_retries_active() {
@@ -567,7 +677,7 @@ mod tests {
         for record in records {
             model.apply(&record);
         }
-        assert!(model.entries().iter().any(|entry| matches!(&entry.kind, EntryKind::Assistant { text, complete: true } if text == "retained final answer")));
+        assert!(model.entries().iter().any(|entry| matches!(&entry.kind, EntryKind::Assistant { text, complete: true, agent_id: None } if text == "retained final answer")));
     }
 
     #[test]

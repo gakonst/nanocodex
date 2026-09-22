@@ -128,6 +128,15 @@ fn run(
                 .map_err(|_| mpsc::RecvTimeoutError::Disconnected)
         };
         let reply = match message {
+            Ok(
+                Message::BeginPcm { generation, .. }
+                | Message::WritePcm { generation, .. }
+                | Message::DrainPcm { generation }
+                | Message::CancelPcm { generation },
+            ) => Message::PcmState {
+                generation,
+                status: codex_realtime_webrtc::PcmStatus::Unsupported,
+            },
             Ok(Message::InspectAudio {}) => {
                 if answered && transport.as_ref().is_none_or(|peer| !*peer.ready.borrow()) {
                     return Err(io::Error::other("voice connection closed"));
@@ -218,6 +227,7 @@ fn run(
                 | Message::DevicesOpened {}
                 | Message::AudioControlsApplied {}
                 | Message::AudioState { .. }
+                | Message::PcmState { .. }
                 | Message::Closed {},
             ) => return Err(io::Error::other("invalid voice control sequence")),
         };

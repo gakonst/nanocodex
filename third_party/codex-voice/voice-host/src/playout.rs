@@ -44,7 +44,9 @@ impl Playout {
             )
             .build();
         let jitter = gst::ElementFactory::make("rtpjitterbuffer")
-            .property("latency", 60u32)
+            // Keep enough audio for short Wi-Fi/host scheduling bursts. The
+            // previous 60 ms budget discarded speech from 100 ms packet bursts.
+            .property("latency", 160u32)
             .property_from_str("mode", "slave")
             .property("drop-on-latency", true)
             .property("do-lost", true)

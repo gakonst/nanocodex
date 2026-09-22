@@ -3,6 +3,7 @@ import Foundation
 public struct AgentCard: Identifiable, Equatable, Sendable {
     public let id: String
     public var title: String
+    public var lastUserMessageAt: Double
     public var updatedAt: Double
     public var turnCount: Int
     /// False only when the service knows this conversation has no schedules.
@@ -19,6 +20,26 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
     /// Last history event actually projected into the card, excluding newer
     /// state snapshots whose events have not been read yet.
     public var appliedHistoryCursor: Cursor { previewCursor }
+    public var presentationStatus = ""
+    public var presentationActivity = ""
+    public var presentationUpdatedAt: Double = 0
+    public var presentationTurnID = ""
+    public var sidebarStatus: String {
+        if presentationUpdatedAt > (observedAt?.timeIntervalSince1970 ?? 0) * 1000, !presentationStatus.isEmpty { return presentationStatus }
+        return isRunning ? "Running" : status == "Checking" ? "Status unavailable" : status
+    }
+    public var sidebarActivity: String {
+        guard ["Running", "Stopping"].contains(sidebarStatus) else { return "" }
+        if !presentationActivity.isEmpty, activeTurns.contains(presentationTurnID) || !checked { return presentationActivity }
+        return activityDetail.isEmpty ? activitySummary : activityDetail
+    }
+    public mutating func applyPresentation(_ value: JSON) {
+        let labels = ["running": "Running", "stopping": "Stopping", "completed": "Ready", "cancelled": "Stopped", "failed": "Failed", "idle": "Idle"]
+        guard let label = labels[value["status"].string], value["updatedAt"].number >= presentationUpdatedAt else { return }
+        presentationStatus = label; presentationUpdatedAt = value["updatedAt"].number
+        presentationTurnID = value["activityTurnId"].string
+        presentationActivity = value["activeTurnIds"].array.map(\.string).contains(value["activityTurnId"].string) ? value["activity"].string : ""
+    }
     public var preview = ""
     /// Keep the visible exchange together while the focused transcript reloads.
     /// Retain at most the latest user message and reply, not every card's history.
@@ -30,9 +51,13 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
     public private(set) var activitySummary = "Working"
     public private(set) var activityDetail = ""
     public private(set) var outcomeSummary = ""
-    public init(id: String, title: String, updatedAt: Double = 0, turnCount: Int = 0, mayHaveScheduledJobs: Bool = true) {
+    public init(id: String, title: String, updatedAt: Double = 0, turnCount: Int = 0, mayHaveScheduledJobs: Bool = true, lastUserMessageAt: Double? = nil) {
         self.id = id; self.title = title; self.updatedAt = updatedAt; self.turnCount = turnCount
         self.mayHaveScheduledJobs = mayHaveScheduledJobs
+        self.lastUserMessageAt = lastUserMessageAt ?? updatedAt
+    }
+    public static func mostRecentlyMessagedFirst(_ lhs: Self, _ rhs: Self) -> Bool {
+        lhs.lastUserMessageAt != rhs.lastUserMessageAt ? lhs.lastUserMessageAt > rhs.lastUserMessageAt : lhs.id < rhs.id
     }
     /// Historical conversations follow server activity, with a stable tie break.
     public static func mostRecentFirst(_ lhs: Self, _ rhs: Self) -> Bool {

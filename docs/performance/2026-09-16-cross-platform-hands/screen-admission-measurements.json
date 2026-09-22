@@ -1,0 +1,1699 @@
+{
+  "methodology": "Actual URLSession upgrades and decoded video through public origin. Nested spans must not be added. Worker 0ms means no observed I/O wait at timer resolution, not zero CPU. Video selection-to-decode excludes catalog. Small sequential cohorts under heavy Mac load do not prove causal overall latency improvement.",
+  "host_socket_before": [
+    {
+      "fetch_to_request": 467.5250053405762,
+      "wait": 1034.9950790405273,
+      "reuse": false,
+      "dns": 50.999999046325684,
+      "tls": 221.000075340271,
+      "request": 0.3739595413208008,
+      "total": 1506.080985069275,
+      "status": 101,
+      "protocol": "http/1.1",
+      "tcp": 338.0000591278076
+    },
+    {
+      "fetch_to_request": 74.92005825042725,
+      "wait": 995.244026184082,
+      "status": 101,
+      "dns": 0,
+      "tls": 48.999905586242676,
+      "reuse": false,
+      "total": 1110.6960773468018,
+      "tcp": 72.99995422363281,
+      "protocol": "http/1.1",
+      "request": 0.07295608520507812
+    },
+    {
+      "fetch_to_request": 61.937928199768066,
+      "wait": 1016.7219638824463,
+      "status": 101,
+      "dns": 0,
+      "tls": 33.99991989135742,
+      "reuse": false,
+      "total": 1084.9019289016724,
+      "tcp": 59.999942779541016,
+      "protocol": "http/1.1",
+      "request": 0.050067901611328125
+    },
+    {
+      "fetch_to_request": 72.13103771209717,
+      "wait": 1209.2920541763306,
+      "status": 101,
+      "dns": 0,
+      "tls": 37.99998760223389,
+      "reuse": false,
+      "total": 1284.7039699554443,
+      "tcp": 59.00001525878906,
+      "protocol": "http/1.1",
+      "request": 0.04792213439941406
+    }
+  ],
+  "host_worker_before": [
+    {
+      "timestamp_ms": 1789594768819,
+      "worker_wall_ms": 375,
+      "worker_cpu_ms": 8,
+      "request": {
+        "type": "hand.request",
+        "request_id": "0dc997ad-662e-46bc-b719-528f390d639c",
+        "method": "GET",
+        "path": "/v1/account/hands/host",
+        "status": 101,
+        "timings_ms": {
+          "auth": 194,
+          "route": 173,
+          "total": 367
+        }
+      }
+    },
+    {
+      "timestamp_ms": 1789594771026,
+      "worker_wall_ms": 392,
+      "worker_cpu_ms": 7,
+      "request": {
+        "type": "hand.request",
+        "request_id": "db8c68ba-89ef-4853-9c73-b8764a115df0",
+        "method": "GET",
+        "path": "/v1/account/hands/host",
+        "status": 101,
+        "timings_ms": {
+          "auth": 203,
+          "route": 181,
+          "total": 384
+        }
+      }
+    },
+    {
+      "timestamp_ms": 1789594773158,
+      "worker_wall_ms": 372,
+      "worker_cpu_ms": 7,
+      "request": {
+        "type": "hand.request",
+        "request_id": "74a647bc-f045-4ac0-9bd7-635064f611bd",
+        "method": "GET",
+        "path": "/v1/account/hands/host",
+        "status": 101,
+        "timings_ms": {
+          "auth": 190,
+          "route": 174,
+          "total": 364
+        }
+      }
+    },
+    {
+      "timestamp_ms": 1789594775311,
+      "worker_wall_ms": 439,
+      "worker_cpu_ms": 10,
+      "request": {
+        "type": "hand.request",
+        "request_id": "62c59b39-6e0a-4689-aef9-847adf479e58",
+        "method": "GET",
+        "path": "/v1/account/hands/host",
+        "status": 101,
+        "timings_ms": {
+          "auth": 261,
+          "route": 170,
+          "total": 431
+        }
+      }
+    }
+  ],
+  "viewer_admission_before": [
+    {
+      "dns_ms": 0,
+      "fetch_to_request_ms": 45.928955078125,
+      "reuse": false,
+      "connect_ms": 44.99995708465576,
+      "tls_ms": 23.999929428100586,
+      "total_ms": 1434.4290494918823,
+      "server_timing": "",
+      "protocol": "http/1.1",
+      "wait_ms": 1381.2040090560913,
+      "sample": "viewer-0-live",
+      "request_ms": 0.5400180816650391,
+      "status": 101
+    },
+    {
+      "total_ms": 1225.1399755477905,
+      "request_ms": 0.0890493392944336,
+      "protocol": "http/1.1",
+      "dns_ms": 0,
+      "status": 101,
+      "reuse": false,
+      "wait_ms": 1139.0290260314941,
+      "fetch_to_request_ms": 79.68699932098389,
+      "server_timing": "",
+      "sample": "viewer-1-access",
+      "connect_ms": 77.99994945526123,
+      "tls_ms": 49.99995231628418
+    },
+    {
+      "request_ms": 0.049948692321777344,
+      "fetch_to_request_ms": 50.22406578063965,
+      "sample": "viewer-2-live",
+      "wait_ms": 1080.504059791565,
+      "protocol": "http/1.1",
+      "tls_ms": 32.99999237060547,
+      "total_ms": 1133.8059902191162,
+      "server_timing": "",
+      "reuse": false,
+      "status": 101,
+      "connect_ms": 49.00002479553223,
+      "dns_ms": 0
+    },
+    {
+      "reuse": false,
+      "wait_ms": 1215.7469987869263,
+      "total_ms": 1285.8530282974243,
+      "dns_ms": 0,
+      "fetch_to_request_ms": 65.52302837371826,
+      "server_timing": "",
+      "status": 101,
+      "connect_ms": 64.00001049041748,
+      "tls_ms": 42.999982833862305,
+      "request_ms": 0.050902366638183594,
+      "sample": "viewer-3-access",
+      "protocol": "http/1.1"
+    },
+    {
+      "request_ms": 0.049948692321777344,
+      "protocol": "http/1.1",
+      "reuse": false,
+      "wait_ms": 1002.0840167999268,
+      "status": 101,
+      "fetch_to_request_ms": 52.352070808410645,
+      "total_ms": 1069.4340467453003,
+      "dns_ms": 0,
+      "sample": "viewer-4-live",
+      "connect_ms": 49.99995231628418,
+      "tls_ms": 32.99999237060547,
+      "server_timing": ""
+    },
+    {
+      "request_ms": 0.06699562072753906,
+      "protocol": "http/1.1",
+      "reuse": false,
+      "wait_ms": 972.4010229110718,
+      "status": 101,
+      "fetch_to_request_ms": 57.203054428100586,
+      "total_ms": 1032.312035560608,
+      "dns_ms": 0,
+      "sample": "viewer-5-access",
+      "connect_ms": 54.000020027160645,
+      "tls_ms": 34.999966621398926,
+      "server_timing": ""
+    },
+    {
+      "request_ms": 0.03695487976074219,
+      "protocol": "http/1.1",
+      "reuse": false,
+      "wait_ms": 946.8621015548706,
+      "status": 101,
+      "fetch_to_request_ms": 52.1010160446167,
+      "total_ms": 1002.2580623626709,
+      "dns_ms": 1.999974250793457,
+      "sample": "viewer-6-live",
+      "connect_ms": 49.00002479553223,
+      "tls_ms": 26.000022888183594,
+      "server_timing": ""
+    },
+    {
+      "request_ms": 0.0400543212890625,
+      "protocol": "http/1.1",
+      "reuse": false,
+      "wait_ms": 1354.5429706573486,
+      "status": 101,
+      "fetch_to_request_ms": 128.36694717407227,
+      "total_ms": 1486.0459566116333,
+      "dns_ms": 0,
+      "sample": "viewer-7-access",
+      "connect_ms": 126.99997425079346,
+      "tls_ms": 105.00001907348633,
+      "server_timing": ""
+    }
+  ],
+  "mac_webrtc_before": {
+    "catalog_ms": 406.9635833147913,
+    "samples": [
+      {
+        "events": [
+          {
+            "elapsed_ms": "0",
+            "event": "connect"
+          },
+          {
+            "elapsed_ms": "317",
+            "event": "initial ICE ready"
+          },
+          {
+            "elapsed_ms": "623",
+            "event": "signaling ready"
+          },
+          {
+            "elapsed_ms": "848",
+            "event": "receive offer"
+          },
+          {
+            "elapsed_ms": "857",
+            "event": "send answer"
+          },
+          {
+            "elapsed_ms": "859",
+            "event": "peer state 1"
+          },
+          {
+            "elapsed_ms": "1058",
+            "event": "peer state 2"
+          },
+          {
+            "elapsed_ms": "1064",
+            "event": "channels ready"
+          }
+        ],
+        "first_frame": {
+          "elapsed_ms": 1487,
+          "height": 800,
+          "width": 1920
+        }
+      },
+      {
+        "events": [
+          {
+            "elapsed_ms": "0",
+            "event": "connect"
+          },
+          {
+            "elapsed_ms": "251",
+            "event": "initial ICE ready"
+          },
+          {
+            "elapsed_ms": "1192",
+            "event": "signaling ready"
+          },
+          {
+            "elapsed_ms": "1393",
+            "event": "receive offer"
+          },
+          {
+            "elapsed_ms": "1398",
+            "event": "send answer"
+          },
+          {
+            "elapsed_ms": "1399",
+            "event": "peer state 1"
+          },
+          {
+            "elapsed_ms": "1631",
+            "event": "peer state 2"
+          },
+          {
+            "elapsed_ms": "1632",
+            "event": "channels ready"
+          }
+        ],
+        "first_frame": {
+          "elapsed_ms": 1758,
+          "height": 800,
+          "width": 1920
+        }
+      },
+      {
+        "events": [
+          {
+            "elapsed_ms": "0",
+            "event": "connect"
+          },
+          {
+            "elapsed_ms": "222",
+            "event": "initial ICE ready"
+          },
+          {
+            "elapsed_ms": "1343",
+            "event": "signaling ready"
+          },
+          {
+            "elapsed_ms": "1757",
+            "event": "receive offer"
+          },
+          {
+            "elapsed_ms": "1761",
+            "event": "send answer"
+          },
+          {
+            "elapsed_ms": "1764",
+            "event": "peer state 1"
+          },
+          {
+            "elapsed_ms": "1965",
+            "event": "peer state 2"
+          },
+          {
+            "elapsed_ms": "1972",
+            "event": "channels ready"
+          }
+        ],
+        "first_frame": {
+          "elapsed_ms": 2109,
+          "height": 800,
+          "width": 1920
+        }
+      }
+    ]
+  },
+  "linux_native_frames_before": {
+    "catalog_ms": 759.1825416893698,
+    "samples": [
+      {
+        "events": [
+          {
+            "elapsed_ms": "0",
+            "event": "connect"
+          },
+          {
+            "elapsed_ms": "1084",
+            "event": "signaling ready"
+          },
+          {
+            "elapsed_ms": "1346",
+            "event": "first frame decoded"
+          }
+        ],
+        "first_frame": {
+          "elapsed_ms": 1346,
+          "height": 800,
+          "width": 1280
+        }
+      },
+      {
+        "events": [
+          {
+            "elapsed_ms": "0",
+            "event": "connect"
+          },
+          {
+            "elapsed_ms": "1236",
+            "event": "signaling ready"
+          },
+          {
+            "elapsed_ms": "1449",
+            "event": "first frame decoded"
+          }
+        ],
+        "first_frame": {
+          "elapsed_ms": 1449,
+          "height": 800,
+          "width": 1280
+        }
+      },
+      {
+        "events": [
+          {
+            "elapsed_ms": "0",
+            "event": "connect"
+          },
+          {
+            "elapsed_ms": "1174",
+            "event": "signaling ready"
+          },
+          {
+            "elapsed_ms": "1423",
+            "event": "first frame decoded"
+          }
+        ],
+        "first_frame": {
+          "elapsed_ms": 1423,
+          "height": 800,
+          "width": 1280
+        }
+      }
+    ]
+  },
+  "linux_vm_frames_before": {
+    "catalog_ms": 1166.230375005398,
+    "samples": [
+      {
+        "events": [
+          {
+            "elapsed_ms": "1",
+            "event": "connect"
+          },
+          {
+            "elapsed_ms": "1178",
+            "event": "signaling ready"
+          },
+          {
+            "elapsed_ms": "1616",
+            "event": "first frame decoded"
+          }
+        ],
+        "first_frame": {
+          "elapsed_ms": 1616,
+          "height": 800,
+          "width": 1280
+        }
+      },
+      {
+        "events": [
+          {
+            "elapsed_ms": "0",
+            "event": "connect"
+          },
+          {
+            "elapsed_ms": "1104",
+            "event": "signaling ready"
+          },
+          {
+            "elapsed_ms": "1516",
+            "event": "first frame decoded"
+          }
+        ],
+        "first_frame": {
+          "elapsed_ms": 1516,
+          "height": 800,
+          "width": 1280
+        }
+      },
+      {
+        "events": [
+          {
+            "elapsed_ms": "0",
+            "event": "connect"
+          },
+          {
+            "elapsed_ms": "1257",
+            "event": "signaling ready"
+          },
+          {
+            "elapsed_ms": "1530",
+            "event": "first frame decoded"
+          }
+        ],
+        "first_frame": {
+          "elapsed_ms": 1530,
+          "height": 800,
+          "width": 1280
+        }
+      }
+    ]
+  },
+  "intermediate": {
+    "provenance": "Active managed screen snapshot behavior was observed before dd307c9e was confirmed; exact intermediate deployment source was not established. Retained separately, excluded from final comparison.",
+    "admission": {
+      "run": {
+        "started_at": "2026-09-16T22:01:42.702653+00:00",
+        "load_average": [
+          88.70068359375,
+          108.67822265625,
+          111.6884765625
+        ],
+        "mode": "admission",
+        "label": "viewer-admission-after",
+        "finished_at": "2026-09-16T22:01:55.800187+00:00",
+        "exit_code": 0
+      },
+      "samples": [
+        {
+          "request_ms": 0.07891654968261719,
+          "protocol": "http/1.1",
+          "dns_ms": 0,
+          "connect_ms": 49.99995231628418,
+          "fetch_to_request_ms": 51.835060119628906,
+          "status": 101,
+          "reuse": false,
+          "sample": "viewer-0-live",
+          "wait_ms": 983.4179878234863,
+          "server_timing": "managed_auth;dur=206.0;desc=\"live\", hand_auth;dur=206.0, hand_route;dur=176.0, hand_total;dur=382.0",
+          "tls_ms": 28.999924659729004,
+          "total_ms": 1038.7760400772095,
+          "ready_ms": 1040.9680604934692
+        },
+        {
+          "protocol": "http/1.1",
+          "dns_ms": 0,
+          "request_ms": 0.0940561294555664,
+          "sample": "viewer-1-access",
+          "wait_ms": 1039.3249988555908,
+          "fetch_to_request_ms": 405.1400423049927,
+          "total_ms": 1451.1210918426514,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=173.0, hand_total;dur=173.0",
+          "reuse": false,
+          "connect_ms": 402.99999713897705,
+          "status": 101,
+          "tls_ms": 353.00004482269287,
+          "ready_ms": 1452.4470567703247
+        },
+        {
+          "protocol": "http/1.1",
+          "dns_ms": 0,
+          "request_ms": 0.052094459533691406,
+          "sample": "viewer-2-live",
+          "wait_ms": 1807.2019815444946,
+          "fetch_to_request_ms": 226.69494152069092,
+          "total_ms": 2038.6179685592651,
+          "server_timing": "managed_auth;dur=202.0;desc=\"live\", hand_auth;dur=202.0, hand_route;dur=188.0, hand_total;dur=390.0",
+          "reuse": false,
+          "connect_ms": 223.9999771118164,
+          "status": 101,
+          "tls_ms": 194.99993324279785,
+          "ready_ms": 2040.5570268630981
+        },
+        {
+          "request_ms": 0.0959634780883789,
+          "protocol": "http/1.1",
+          "dns_ms": 0,
+          "connect_ms": 47.00005054473877,
+          "fetch_to_request_ms": 48.545002937316895,
+          "status": 101,
+          "reuse": false,
+          "sample": "viewer-3-access",
+          "wait_ms": 951.9350528717041,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=184.0, hand_total;dur=184.0",
+          "tls_ms": 29.000043869018555,
+          "total_ms": 1005.1360130310059,
+          "ready_ms": 1007.396936416626
+        },
+        {
+          "protocol": "http/1.1",
+          "dns_ms": 0,
+          "wait_ms": 1363.8509511947632,
+          "tls_ms": 29.999971389770508,
+          "server_timing": "managed_auth;dur=198.0;desc=\"live\", hand_auth;dur=198.0, hand_route;dur=178.0, hand_total;dur=376.0",
+          "sample": "viewer-4-live",
+          "connect_ms": 42.999982833862305,
+          "reuse": false,
+          "fetch_to_request_ms": 44.940948486328125,
+          "request_ms": 0.13303756713867188,
+          "total_ms": 1411.8069410324097,
+          "status": 101,
+          "ready_ms": 1413.030982017517
+        },
+        {
+          "protocol": "http/1.1",
+          "dns_ms": 0,
+          "wait_ms": 913.2709503173828,
+          "tls_ms": 37.000060081481934,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=176.0, hand_total;dur=176.0",
+          "sample": "viewer-5-access",
+          "connect_ms": 54.000020027160645,
+          "reuse": false,
+          "fetch_to_request_ms": 56.79500102996826,
+          "request_ms": 0.10895729064941406,
+          "total_ms": 982.7920198440552,
+          "status": 101,
+          "ready_ms": 987.2159957885742
+        },
+        {
+          "protocol": "http/1.1",
+          "dns_ms": 1.000046730041504,
+          "wait_ms": 1052.4240732192993,
+          "tls_ms": 41.9999361038208,
+          "server_timing": "managed_auth;dur=203.0;desc=\"live\", hand_auth;dur=203.0, hand_route;dur=173.0, hand_total;dur=376.0",
+          "sample": "viewer-6-live",
+          "connect_ms": 62.99996376037598,
+          "reuse": false,
+          "fetch_to_request_ms": 64.69607353210449,
+          "request_ms": 0.04494190216064453,
+          "total_ms": 1121.1830377578735,
+          "status": 101,
+          "ready_ms": 1122.6930618286133
+        },
+        {
+          "protocol": "http/1.1",
+          "dns_ms": 0,
+          "wait_ms": 774.8719453811646,
+          "tls_ms": 108.99996757507324,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=176.0, hand_total;dur=176.0",
+          "sample": "viewer-7-access",
+          "connect_ms": 125,
+          "reuse": false,
+          "fetch_to_request_ms": 125.87308883666992,
+          "request_ms": 0.06401538848876953,
+          "total_ms": 904.8171043395996,
+          "status": 101,
+          "ready_ms": 906.4810276031494
+        }
+      ]
+    },
+    "mac_webrtc": {
+      "catalog_ms": 215.42000002227724,
+      "publication_ms": 2117.945833306294,
+      "samples": [
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "58",
+              "event": "initial ICE ready"
+            },
+            {
+              "elapsed_ms": "1113",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1322",
+              "event": "receive offer"
+            },
+            {
+              "elapsed_ms": "1343",
+              "event": "send answer"
+            },
+            {
+              "elapsed_ms": "1345",
+              "event": "peer state 1"
+            },
+            {
+              "elapsed_ms": "1566",
+              "event": "peer state 2"
+            },
+            {
+              "elapsed_ms": "1579",
+              "event": "channels ready"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 2203,
+            "height": 800,
+            "width": 1920
+          },
+          "host_startup": [
+            {
+              "elapsed_ms": 0.215750013012439,
+              "event": "host ICE ready",
+              "uptime_ms": 438793464.5631251
+            },
+            {
+              "elapsed_ms": 75.3885000012815,
+              "event": "host offer sent",
+              "uptime_ms": 438793539.736
+            },
+            {
+              "elapsed_ms": 528.3648333279416,
+              "event": "host connected",
+              "uptime_ms": 438793992.71225005
+            }
+          ],
+          "control_ms": 106.57070833258331
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "47",
+              "event": "initial ICE ready"
+            },
+            {
+              "elapsed_ms": "1446",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1644",
+              "event": "receive offer"
+            },
+            {
+              "elapsed_ms": "1761",
+              "event": "send answer"
+            },
+            {
+              "elapsed_ms": "1766",
+              "event": "peer state 1"
+            },
+            {
+              "elapsed_ms": "2000",
+              "event": "peer state 2"
+            },
+            {
+              "elapsed_ms": "2055",
+              "event": "channels ready"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 2471,
+            "height": 800,
+            "width": 1920
+          },
+          "host_startup": [
+            {
+              "elapsed_ms": 0.215750013012439,
+              "event": "host ICE ready",
+              "uptime_ms": 438793464.5631251
+            },
+            {
+              "elapsed_ms": 75.3885000012815,
+              "event": "host offer sent",
+              "uptime_ms": 438793539.736
+            },
+            {
+              "elapsed_ms": 528.3648333279416,
+              "event": "host connected",
+              "uptime_ms": 438793992.71225005
+            },
+            {
+              "elapsed_ms": 0.07204170105978847,
+              "event": "host ICE ready",
+              "uptime_ms": 438796361.96220833
+            },
+            {
+              "elapsed_ms": 5.301041703205556,
+              "event": "host offer sent",
+              "uptime_ms": 438796367.191125
+            },
+            {
+              "elapsed_ms": 557.7886666869745,
+              "event": "host connected",
+              "uptime_ms": 438796919.67875004
+            }
+          ],
+          "control_ms": 101.62491665687412
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "200",
+              "event": "initial ICE ready"
+            },
+            {
+              "elapsed_ms": "1030",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1375",
+              "event": "receive offer"
+            },
+            {
+              "elapsed_ms": "1400",
+              "event": "send answer"
+            },
+            {
+              "elapsed_ms": "1401",
+              "event": "peer state 1"
+            },
+            {
+              "elapsed_ms": "1605",
+              "event": "peer state 2"
+            },
+            {
+              "elapsed_ms": "1607",
+              "event": "channels ready"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1948,
+            "height": 800,
+            "width": 1920
+          },
+          "host_startup": [
+            {
+              "elapsed_ms": 0.215750013012439,
+              "event": "host ICE ready",
+              "uptime_ms": 438793464.5631251
+            },
+            {
+              "elapsed_ms": 75.3885000012815,
+              "event": "host offer sent",
+              "uptime_ms": 438793539.736
+            },
+            {
+              "elapsed_ms": 528.3648333279416,
+              "event": "host connected",
+              "uptime_ms": 438793992.71225005
+            },
+            {
+              "elapsed_ms": 0.07204170105978847,
+              "event": "host ICE ready",
+              "uptime_ms": 438796361.96220833
+            },
+            {
+              "elapsed_ms": 5.301041703205556,
+              "event": "host offer sent",
+              "uptime_ms": 438796367.191125
+            },
+            {
+              "elapsed_ms": 557.7886666869745,
+              "event": "host connected",
+              "uptime_ms": 438796919.67875004
+            },
+            {
+              "elapsed_ms": 0.07574999472126365,
+              "event": "host ICE ready",
+              "uptime_ms": 438798784.4110834
+            },
+            {
+              "elapsed_ms": 12.035458348691463,
+              "event": "host offer sent",
+              "uptime_ms": 438798796.37083334
+            },
+            {
+              "elapsed_ms": 584.6114999731071,
+              "event": "host connected",
+              "uptime_ms": 438799368.9468334
+            }
+          ],
+          "control_ms": 103.37162500945851
+        }
+      ],
+      "run": {
+        "started_at": "2026-09-16T22:02:04.379423+00:00",
+        "load_average": [
+          86.26171875,
+          106.89892578125,
+          110.98388671875
+        ],
+        "mode": "mac",
+        "label": "mac-after",
+        "finished_at": "2026-09-16T22:02:21.451757+00:00",
+        "exit_code": 0
+      }
+    },
+    "linux_native_frames": {
+      "catalog_ms": 647.8590833139606,
+      "samples": [
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "1050",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1261",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1261,
+            "height": 800,
+            "width": 1280
+          }
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "951",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1212",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1212,
+            "height": 800,
+            "width": 1280
+          }
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "989",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1265",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1265,
+            "height": 800,
+            "width": 1280
+          }
+        }
+      ],
+      "run": {
+        "started_at": "2026-09-16T22:02:21.587611+00:00",
+        "load_average": [
+          89.61328125,
+          106.24462890625,
+          110.6494140625
+        ],
+        "mode": "wan",
+        "label": "linux-wan-after",
+        "finished_at": "2026-09-16T22:02:39.358027+00:00",
+        "exit_code": 0
+      }
+    }
+  },
+  "final": {
+    "deployment": {
+      "managed": "dd307c9e-d2aa-4752-af53-ea1559716905",
+      "managed_source": "3b51b5fa",
+      "account": "c627a2a8-6dc6-475e-af81-22fecdc2bbb6",
+      "account_source": "8b4077a4e757bb1f66c3d7ca5e5e42d2872105f4"
+    },
+    "admission": {
+      "run": {
+        "started_at": "2026-09-16T22:07:49.744190+00:00",
+        "load_average": [
+          95.53076171875,
+          96.12939453125,
+          104.12646484375
+        ],
+        "mode": "admission",
+        "label": "viewer-admission-final",
+        "finished_at": "2026-09-16T22:08:02.636926+00:00",
+        "exit_code": 0
+      },
+      "samples": [
+        {
+          "server_timing": "managed_auth;dur=189.0;desc=\"live\", hand_auth;dur=189.0, hand_route;dur=177.0, hand_total;dur=366.0",
+          "status": 101,
+          "connect_ms": 233.0000400543213,
+          "request_id": "885e536b-f7b3-4278-9d1f-07cce974dbe6",
+          "protocol": "http/1.1",
+          "dns_ms": 0,
+          "reuse": false,
+          "sample": "viewer-0-live",
+          "fetch_to_request_ms": 236.23192310333252,
+          "total_ms": 1777.8339385986328,
+          "tls_ms": 136.00003719329834,
+          "request_ms": 0.0680685043334961,
+          "wait_ms": 1535.4390144348145,
+          "ready_ms": 1780.4080247879028,
+          "managed": {
+            "type": "hand.request",
+            "request_id": "885e536b-f7b3-4278-9d1f-07cce974dbe6",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "timings_ms": {
+              "auth": 189,
+              "route": 177,
+              "total": 366
+            }
+          },
+          "account_proxy": null
+        },
+        {
+          "status": 101,
+          "sample": "viewer-1-access",
+          "tls_ms": 59.00001525878906,
+          "protocol": "http/1.1",
+          "wait_ms": 982.25998878479,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=186.0, hand_total;dur=186.0",
+          "connect_ms": 80.99997043609619,
+          "reuse": false,
+          "total_ms": 1069.031000137329,
+          "request_id": "6a97e0ad-ce09-42b9-a5ae-61d339f5c299",
+          "request_ms": 0.0699758529663086,
+          "dns_ms": 1.000046730041504,
+          "fetch_to_request_ms": 84.02800559997559,
+          "ready_ms": 1072.9460716247559,
+          "managed": {
+            "type": "hand.request",
+            "request_id": "6a97e0ad-ce09-42b9-a5ae-61d339f5c299",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "timings_ms": {
+              "auth": 0,
+              "route": 186,
+              "total": 186
+            }
+          },
+          "account_proxy": {
+            "type": "hand.proxy",
+            "request_id": "6a97e0ad-ce09-42b9-a5ae-61d339f5c299",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "backend_ms": 752
+          },
+          "proxy_minus_managed_ms": 566,
+          "client_wait_minus_proxy_ms": 230.25998878479004
+        },
+        {
+          "status": 101,
+          "sample": "viewer-2-live",
+          "tls_ms": 42.999982833862305,
+          "protocol": "http/1.1",
+          "wait_ms": 984.5000505447388,
+          "server_timing": "managed_auth;dur=196.0;desc=\"live\", hand_auth;dur=196.0, hand_route;dur=182.0, hand_total;dur=378.0",
+          "connect_ms": 77.00002193450928,
+          "reuse": false,
+          "total_ms": 1066.506028175354,
+          "request_id": "398323b0-7570-4756-b2f7-d2f06276f02c",
+          "request_ms": 0.048995018005371094,
+          "dns_ms": 0,
+          "fetch_to_request_ms": 79.68401908874512,
+          "ready_ms": 1067.2879219055176,
+          "managed": {
+            "type": "hand.request",
+            "request_id": "398323b0-7570-4756-b2f7-d2f06276f02c",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "timings_ms": {
+              "auth": 196,
+              "route": 182,
+              "total": 378
+            }
+          },
+          "account_proxy": {
+            "type": "hand.proxy",
+            "request_id": "398323b0-7570-4756-b2f7-d2f06276f02c",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "backend_ms": 860
+          },
+          "proxy_minus_managed_ms": 482,
+          "client_wait_minus_proxy_ms": 124.50005054473877
+        },
+        {
+          "status": 101,
+          "sample": "viewer-3-access",
+          "tls_ms": 27.99999713897705,
+          "protocol": "http/1.1",
+          "wait_ms": 801.1399507522583,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=177.0, hand_total;dur=177.0",
+          "connect_ms": 44.00002956390381,
+          "reuse": false,
+          "total_ms": 850.3459692001343,
+          "request_id": "2e5f45eb-5c04-4ba2-9708-058112bb5d1d",
+          "request_ms": 0.06401538848876953,
+          "dns_ms": 0,
+          "fetch_to_request_ms": 45.16899585723877,
+          "ready_ms": 851.8720865249634,
+          "managed": {
+            "type": "hand.request",
+            "request_id": "2e5f45eb-5c04-4ba2-9708-058112bb5d1d",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "timings_ms": {
+              "auth": 0,
+              "route": 177,
+              "total": 177
+            }
+          },
+          "account_proxy": {
+            "type": "hand.proxy",
+            "request_id": "2e5f45eb-5c04-4ba2-9708-058112bb5d1d",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "backend_ms": 689
+          },
+          "proxy_minus_managed_ms": 512,
+          "client_wait_minus_proxy_ms": 112.1399507522583
+        },
+        {
+          "status": 101,
+          "sample": "viewer-4-live",
+          "tls_ms": 44.99995708465576,
+          "protocol": "http/1.1",
+          "wait_ms": 990.4301166534424,
+          "server_timing": "managed_auth;dur=196.0;desc=\"live\", hand_auth;dur=196.0, hand_route;dur=182.0, hand_total;dur=378.0",
+          "connect_ms": 74.00000095367432,
+          "reuse": false,
+          "total_ms": 1069.5708990097046,
+          "request_id": "6325258a-e7da-4d05-9048-92b50afbf52a",
+          "request_ms": 0.03898143768310547,
+          "dns_ms": 0,
+          "fetch_to_request_ms": 75.24991035461426,
+          "ready_ms": 1071.1220502853394,
+          "managed": {
+            "type": "hand.request",
+            "request_id": "6325258a-e7da-4d05-9048-92b50afbf52a",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "timings_ms": {
+              "auth": 196,
+              "route": 182,
+              "total": 378
+            }
+          },
+          "account_proxy": {
+            "type": "hand.proxy",
+            "request_id": "6325258a-e7da-4d05-9048-92b50afbf52a",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "backend_ms": 861
+          },
+          "proxy_minus_managed_ms": 483,
+          "client_wait_minus_proxy_ms": 129.43011665344238
+        },
+        {
+          "status": 101,
+          "sample": "viewer-5-access",
+          "tls_ms": 107.99992084503174,
+          "protocol": "http/1.1",
+          "wait_ms": 871.2430000305176,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=192.0, hand_total;dur=192.0",
+          "connect_ms": 123.9999532699585,
+          "reuse": false,
+          "total_ms": 1006.7800283432007,
+          "request_id": "31bb8e56-59d8-42d5-8052-bfe99b7024d6",
+          "request_ms": 0.054001808166503906,
+          "dns_ms": 0,
+          "fetch_to_request_ms": 126.87897682189941,
+          "ready_ms": 1009.3449354171753,
+          "managed": {
+            "type": "hand.request",
+            "request_id": "31bb8e56-59d8-42d5-8052-bfe99b7024d6",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "timings_ms": {
+              "auth": 0,
+              "route": 192,
+              "total": 192
+            }
+          },
+          "account_proxy": {
+            "type": "hand.proxy",
+            "request_id": "31bb8e56-59d8-42d5-8052-bfe99b7024d6",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "backend_ms": 755
+          },
+          "proxy_minus_managed_ms": 563,
+          "client_wait_minus_proxy_ms": 116.24300003051758
+        },
+        {
+          "status": 101,
+          "sample": "viewer-6-live",
+          "tls_ms": 36.00001335144043,
+          "protocol": "http/1.1",
+          "wait_ms": 1026.6929864883423,
+          "server_timing": "managed_auth;dur=191.0;desc=\"live\", hand_auth;dur=191.0, hand_route;dur=169.0, hand_total;dur=360.0",
+          "connect_ms": 98.00004959106445,
+          "reuse": false,
+          "total_ms": 1130.5409669876099,
+          "request_id": "a7c9d181-e26e-4165-a3f5-ec229ed4303b",
+          "request_ms": 0.048995018005371094,
+          "dns_ms": 0,
+          "fetch_to_request_ms": 100.2880334854126,
+          "ready_ms": 1132.5609683990479,
+          "managed": {
+            "type": "hand.request",
+            "request_id": "a7c9d181-e26e-4165-a3f5-ec229ed4303b",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "timings_ms": {
+              "auth": 191,
+              "route": 169,
+              "total": 360
+            }
+          },
+          "account_proxy": {
+            "type": "hand.proxy",
+            "request_id": "a7c9d181-e26e-4165-a3f5-ec229ed4303b",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "backend_ms": 915
+          },
+          "proxy_minus_managed_ms": 555,
+          "client_wait_minus_proxy_ms": 111.69298648834229
+        },
+        {
+          "status": 101,
+          "sample": "viewer-7-access",
+          "tls_ms": 31.999945640563965,
+          "protocol": "http/1.1",
+          "wait_ms": 1266.1880254745483,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=161.0, hand_total;dur=161.0",
+          "connect_ms": 54.9999475479126,
+          "reuse": false,
+          "total_ms": 1327.463984489441,
+          "request_id": "d3efcdc3-68b1-49d5-8c01-140200c6bd99",
+          "request_ms": 0.049948692321777344,
+          "dns_ms": 1.999974250793457,
+          "fetch_to_request_ms": 58.403968811035156,
+          "ready_ms": 1331.5770626068115,
+          "managed": {
+            "type": "hand.request",
+            "request_id": "d3efcdc3-68b1-49d5-8c01-140200c6bd99",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "timings_ms": {
+              "auth": 0,
+              "route": 161,
+              "total": 161
+            }
+          },
+          "account_proxy": {
+            "type": "hand.proxy",
+            "request_id": "d3efcdc3-68b1-49d5-8c01-140200c6bd99",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "backend_ms": 1083
+          },
+          "proxy_minus_managed_ms": 922,
+          "client_wait_minus_proxy_ms": 183.18802547454834
+        }
+      ]
+    },
+    "mac_webrtc": {
+      "catalog_ms": 222.42624999489635,
+      "publication_ms": 2190.668833325617,
+      "samples": [
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "60",
+              "event": "initial ICE ready"
+            },
+            {
+              "elapsed_ms": "950",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1290",
+              "event": "receive offer"
+            },
+            {
+              "elapsed_ms": "1302",
+              "event": "send answer"
+            },
+            {
+              "elapsed_ms": "1304",
+              "event": "peer state 1"
+            },
+            {
+              "elapsed_ms": "1500",
+              "event": "peer state 2"
+            },
+            {
+              "elapsed_ms": "1501",
+              "event": "channels ready"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1935,
+            "height": 800,
+            "width": 1920
+          },
+          "host_startup": [
+            {
+              "elapsed_ms": 0.39374997140839696,
+              "event": "host ICE ready",
+              "uptime_ms": 439172133.91487503
+            },
+            {
+              "elapsed_ms": 42.414291645400226,
+              "event": "host offer sent",
+              "uptime_ms": 439172175.93537503
+            },
+            {
+              "elapsed_ms": 550.1742082997225,
+              "event": "host connected",
+              "uptime_ms": 439172683.69533336
+            }
+          ],
+          "control_ms": 104.40320830093697
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "66",
+              "event": "initial ICE ready"
+            },
+            {
+              "elapsed_ms": "932",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1286",
+              "event": "receive offer"
+            },
+            {
+              "elapsed_ms": "1292",
+              "event": "send answer"
+            },
+            {
+              "elapsed_ms": "1293",
+              "event": "peer state 1"
+            },
+            {
+              "elapsed_ms": "1513",
+              "event": "peer state 2"
+            },
+            {
+              "elapsed_ms": "1517",
+              "event": "channels ready"
+            },
+            {
+              "elapsed_ms": "1520",
+              "event": "channels ready"
+            },
+            {
+              "elapsed_ms": "1522",
+              "event": "channels ready"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1728,
+            "height": 800,
+            "width": 1920
+          },
+          "host_startup": [
+            {
+              "elapsed_ms": 0.39374997140839696,
+              "event": "host ICE ready",
+              "uptime_ms": 439172133.91487503
+            },
+            {
+              "elapsed_ms": 42.414291645400226,
+              "event": "host offer sent",
+              "uptime_ms": 439172175.93537503
+            },
+            {
+              "elapsed_ms": 550.1742082997225,
+              "event": "host connected",
+              "uptime_ms": 439172683.69533336
+            },
+            {
+              "elapsed_ms": 0.07220834959298372,
+              "event": "host ICE ready",
+              "uptime_ms": 439174272.651
+            },
+            {
+              "elapsed_ms": 6.4258333295583725,
+              "event": "host offer sent",
+              "uptime_ms": 439174279.004625
+            },
+            {
+              "elapsed_ms": 581.9967083516531,
+              "event": "host connected",
+              "uptime_ms": 439174854.5755
+            }
+          ],
+          "control_ms": 161.39233333524317
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "332",
+              "event": "initial ICE ready"
+            },
+            {
+              "elapsed_ms": "958",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1377",
+              "event": "receive offer"
+            },
+            {
+              "elapsed_ms": "1389",
+              "event": "send answer"
+            },
+            {
+              "elapsed_ms": "1390",
+              "event": "peer state 1"
+            },
+            {
+              "elapsed_ms": "1622",
+              "event": "peer state 2"
+            },
+            {
+              "elapsed_ms": "1642",
+              "event": "channels ready"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 2262,
+            "height": 800,
+            "width": 1920
+          },
+          "host_startup": [
+            {
+              "elapsed_ms": 0.39374997140839696,
+              "event": "host ICE ready",
+              "uptime_ms": 439172133.91487503
+            },
+            {
+              "elapsed_ms": 42.414291645400226,
+              "event": "host offer sent",
+              "uptime_ms": 439172175.93537503
+            },
+            {
+              "elapsed_ms": 550.1742082997225,
+              "event": "host connected",
+              "uptime_ms": 439172683.69533336
+            },
+            {
+              "elapsed_ms": 0.07220834959298372,
+              "event": "host ICE ready",
+              "uptime_ms": 439174272.651
+            },
+            {
+              "elapsed_ms": 6.4258333295583725,
+              "event": "host offer sent",
+              "uptime_ms": 439174279.004625
+            },
+            {
+              "elapsed_ms": 581.9967083516531,
+              "event": "host connected",
+              "uptime_ms": 439174854.5755
+            },
+            {
+              "elapsed_ms": 0.1176249934360385,
+              "event": "host ICE ready",
+              "uptime_ms": 439176325.29137504
+            },
+            {
+              "elapsed_ms": 11.103541648481041,
+              "event": "host offer sent",
+              "uptime_ms": 439176336.27741665
+            },
+            {
+              "elapsed_ms": 662.9615416750312,
+              "event": "host connected",
+              "uptime_ms": 439176988.1352917
+            }
+          ],
+          "control_ms": 105.89483327930793
+        }
+      ],
+      "run": {
+        "started_at": "2026-09-16T22:08:25.259621+00:00",
+        "load_average": [
+          93.4892578125,
+          95.80615234375,
+          103.65625
+        ],
+        "mode": "mac",
+        "label": "mac-final",
+        "finished_at": "2026-09-16T22:08:38.967870+00:00",
+        "exit_code": 0
+      }
+    },
+    "linux_native_frames": {
+      "catalog_ms": 521.3697499711998,
+      "samples": [
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "874",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1136",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1136,
+            "height": 800,
+            "width": 1280
+          }
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "849",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1253",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1253,
+            "height": 800,
+            "width": 1280
+          }
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "1374",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1638",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1638,
+            "height": 800,
+            "width": 1280
+          }
+        }
+      ],
+      "run": {
+        "started_at": "2026-09-16T22:08:16.732241+00:00",
+        "load_average": [
+          97.25,
+          96.58447265625,
+          104.01953125
+        ],
+        "mode": "wan",
+        "label": "linux-wan-final",
+        "finished_at": "2026-09-16T22:08:25.165426+00:00",
+        "exit_code": 0
+      }
+    },
+    "linux_vm_frames": {
+      "catalog_ms": 533.7372083449736,
+      "samples": [
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "900",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1182",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1182,
+            "height": 800,
+            "width": 1280
+          }
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "902",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1130",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1130,
+            "height": 800,
+            "width": 1280
+          }
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "1348",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1620",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1620,
+            "height": 800,
+            "width": 1280
+          }
+        }
+      ],
+      "run": {
+        "started_at": "2026-09-16T22:08:08.295408+00:00",
+        "load_average": [
+          98.60888671875,
+          96.82470703125,
+          104.19140625
+        ],
+        "mode": "wan",
+        "label": "linux-vm-wan-final",
+        "finished_at": "2026-09-16T22:08:16.664664+00:00",
+        "exit_code": 0
+      }
+    },
+    "rejection_retry": {
+      "started_at": "2026-09-16T22:08:02.718387+00:00",
+      "load_average": [
+        98.1396484375,
+        96.70361328125,
+        104.19287109375
+      ],
+      "mode": "rejection",
+      "label": "snapshot-rejection-final",
+      "finished_at": "2026-09-16T22:08:08.211365+00:00",
+      "exit_code": 0
+    }
+  }
+}

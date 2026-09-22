@@ -155,6 +155,21 @@ describe("materializeTurnResolution", () => {
     }))).toEqual({ kind: "retry", error: "blocked", reopenAgent: false, blockedBy: "unfinished-operation" });
   });
 
+  it("reopens the Agent to resume an unsettled host interruption", async () => {
+    const error = Object.assign(new Error("Account hand discovery interrupted"), { code: "host_interrupted" });
+    const turn = { result: async () => { throw error; } } as unknown as Turn;
+    await expect(materializeTurnResolution("interrupted", turn)).resolves.toEqual({
+      kind: "retry", error: error.message, reopenAgent: true,
+    });
+    expect(classifyTurnFailure("interrupted", new Error("admission failed", { cause: error })))
+      .toEqual({ kind: "retry", error: error.message, reopenAgent: true });
+    expect(classifyTurnFailure("interrupted", new Error("transport failed", { cause: error })))
+      .toEqual({ kind: "retry", error: error.message, reopenAgent: true });
+    expect(classifyTurnFailure("committed", Object.assign(new Error("turn failed", { cause: error }), {
+      code: "failed",
+    }))).toMatchObject({ kind: "terminal", terminal: { type: "turn_failed" } });
+  });
+
   it("does not turn unsettled cancellation text into terminal cancellation", () => {
     expect(classifyTurnFailure("pending", Object.assign(new Error("turn was cancelled"), {
       code: "retryable",
@@ -175,6 +190,23 @@ describe("materializeTurnResolution", () => {
 });
 
 describe("managed cancellation projection", () => {
+  it.each([undefined, "failed"])("settles permanent admission failure during cancellation with code %s", (code) => {
+    const message = "durability state at revision 353 is invalid: EOF while parsing a value at line 1 column 0";
+    const resolution = classifyTurnFailure("corrupt", Object.assign(new Error(message), { code }));
+
+    expect(managedControlTransitionForResolution("corrupt", true, resolution, "admission"))
+      .toEqual({ type: "turn_failed", id: "corrupt", error: message });
+  });
+
+  it("keeps transient cancellation admission failures retryable", () => {
+    const resolution = classifyTurnFailure("temporary", Object.assign(new Error("durability store unavailable"), {
+      code: "retryable",
+    }));
+
+    expect(managedControlTransitionForResolution("temporary", true, resolution, "admission"))
+      .toEqual({ type: "turn_cancelling", id: "temporary", error: "durability store unavailable" });
+  });
+
   it("acknowledges only the exact live cancelling turn", () => {
     const deliveredTurn = {};
 

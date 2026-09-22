@@ -1,0 +1,7 @@
+## Interface: 120001, 120100, 120105, 16001
+## Title: NanocodexObserve
+## Notes: On-demand, read-only UI observation JSON prototype
+## Version: 0.1.0
+## OptionalDeps: BlindSlash
+## SavedVariables: NanocodexObserveSnapshot
+NanocodexObserve.lua

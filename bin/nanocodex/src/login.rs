@@ -87,6 +87,7 @@ const CONNECTOR_NAMES: &[&str] = &[
     "x",
     "spotify",
     "soundcloud",
+    "link",
 ];
 
 #[derive(Args, Clone)]
@@ -116,7 +117,7 @@ pub(crate) struct Login {
 #[derive(Args, Clone)]
 pub(crate) struct Connect {
     /// Services: chatgpt, github, gmail, gdrive, gcalendar, gtasks, gdocs, gsheets,
-    /// gslides, gcontacts, slack, x, spotify, soundcloud; or a public remote MCP host
+    /// gslides, gcontacts, slack, x, spotify, soundcloud, link; or a public remote MCP host
     /// (mcp.example.com).
     #[arg(required = true, num_args = 1.., value_name = "SERVICE")]
     services: Vec<ConnectTarget>,
@@ -151,6 +152,7 @@ enum Connector {
     X,
     Spotify,
     Soundcloud,
+    Link,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -178,6 +180,7 @@ impl FromStr for ConnectTarget {
             "x" => Some(Connector::X),
             "spotify" => Some(Connector::Spotify),
             "soundcloud" => Some(Connector::Soundcloud),
+            "link" => Some(Connector::Link),
             _ => None,
         };
         connector.map_or_else(
@@ -257,6 +260,7 @@ impl Connector {
             Self::X => "x",
             Self::Spotify => "spotify",
             Self::Soundcloud => "soundcloud",
+            Self::Link => "link",
         }
     }
 }
@@ -2760,6 +2764,7 @@ fn connector_label(name: &str) -> &str {
         "x" => "X",
         "spotify" => "Spotify",
         "soundcloud" => "SoundCloud",
+        "link" => "Stripe Link",
         _ => name,
     }
 }
@@ -3226,6 +3231,7 @@ mod tests {
             "slack",
             "spotify",
             "soundcloud",
+            "link",
         ] {
             let target = ConnectTarget::from_str(name).unwrap();
             let request = RequestedCapabilities::connect(&[target]);

@@ -1,0 +1,4262 @@
+{
+  "clock_caveat": "Do not subtract epochs across isolates. Worker timers advance on I/O, not continuously. Durations may overlap; zero is not zero CPU.",
+  "cohorts": [
+    {
+      "run": {
+        "started_at": "2026-09-16T22:39:55.180586+00:00",
+        "load_average": [
+          295.77001953125,
+          161.2236328125,
+          94.12109375
+        ],
+        "mode": "admission",
+        "label": "interleaved-before",
+        "finished_at": "2026-09-16T22:40:09.037169+00:00",
+        "exit_code": 0
+      },
+      "samples": [
+        {
+          "sample": "catalog-0-live",
+          "elapsed_ms": 418.5229539871216,
+          "status": 200,
+          "server_timing": "managed_auth;dur=192.0;desc=\"live\", hand_auth;dur=192.0, hand_route;dur=201.0, hand_total;dur=393.0, cfExtPri",
+          "request_id": "c67ff91a-70b7-4092-9079-68251f448862",
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 396,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "c67ff91a-70b7-4092-9079-68251f448862",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "backend_ms": 395
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 393,
+            "log": {
+              "type": "hand.request",
+              "request_id": "c67ff91a-70b7-4092-9079-68251f448862",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 192,
+                "route": 201,
+                "total": 393
+              }
+            }
+          }
+        },
+        {
+          "total_ms": 1197.389006614685,
+          "protocol": "http/1.1",
+          "request_ms": 0.03802776336669922,
+          "status": 101,
+          "reuse": false,
+          "wait_ms": 1060.8019828796387,
+          "fetch_to_request_ms": 134.31298732757568,
+          "request_id": "c7293d17-8fd6-4816-9bec-365d2201e165",
+          "connect_ms": 133.00001621246338,
+          "dns_ms": 0,
+          "server_timing": "managed_auth;dur=193.0;desc=\"live\", hand_auth;dur=193.0, hand_route;dur=170.0, hand_total;dur=363.0",
+          "sample": "viewer-0-live",
+          "tls_ms": 32.99999237060547,
+          "account": {
+            "cpu_ms": 1,
+            "wall_ms": 967,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "c7293d17-8fd6-4816-9bec-365d2201e165",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "backend_ms": 952
+            }
+          },
+          "managed": {
+            "cpu_ms": 12,
+            "wall_ms": 376,
+            "log": {
+              "type": "hand.request",
+              "request_id": "c7293d17-8fd6-4816-9bec-365d2201e165",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "timings_ms": {
+                "auth": 193,
+                "route": 170,
+                "total": 363
+              }
+            }
+          },
+          "ready_ms": 1198.127031326294
+        },
+        {
+          "sample": "catalog-1-access",
+          "elapsed_ms": 210.0989818572998,
+          "status": 200,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=171.0, hand_total;dur=171.0, cfExtPri",
+          "request_id": "98daceed-334e-406e-b978-c463f2574435",
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 175,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "98daceed-334e-406e-b978-c463f2574435",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "backend_ms": 175
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 171,
+            "log": {
+              "type": "hand.request",
+              "request_id": "98daceed-334e-406e-b978-c463f2574435",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "route": 171,
+                "total": 171
+              }
+            }
+          }
+        },
+        {
+          "protocol": "http/1.1",
+          "connect_ms": 44.99995708465576,
+          "request_ms": 0.07700920104980469,
+          "wait_ms": 914.6519899368286,
+          "request_id": "1d375677-5b3a-47d6-890f-009e812b5317",
+          "status": 101,
+          "total_ms": 963.7049436569214,
+          "dns_ms": 0,
+          "fetch_to_request_ms": 46.713948249816895,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=188.0, hand_total;dur=188.0",
+          "reuse": false,
+          "tls_ms": 27.99999713897705,
+          "sample": "viewer-1-access",
+          "account": {
+            "cpu_ms": 2,
+            "wall_ms": 823,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "1d375677-5b3a-47d6-890f-009e812b5317",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "backend_ms": 809
+            }
+          },
+          "managed": {
+            "cpu_ms": 10,
+            "wall_ms": 198,
+            "log": {
+              "type": "hand.request",
+              "request_id": "1d375677-5b3a-47d6-890f-009e812b5317",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "timings_ms": {
+                "auth": 0,
+                "route": 188,
+                "total": 188
+              }
+            }
+          },
+          "ready_ms": 965.3470516204834
+        },
+        {
+          "sample": "catalog-2-live",
+          "elapsed_ms": 417.2459840774536,
+          "status": 200,
+          "server_timing": "managed_auth;dur=210.0;desc=\"live\", hand_auth;dur=210.0, hand_route;dur=176.0, hand_total;dur=386.0, cfExtPri",
+          "request_id": "e02e1a8a-05ce-4f6d-bc41-e7e5e3450a90",
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 390,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "e02e1a8a-05ce-4f6d-bc41-e7e5e3450a90",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "backend_ms": 390
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 387,
+            "log": {
+              "type": "hand.request",
+              "request_id": "e02e1a8a-05ce-4f6d-bc41-e7e5e3450a90",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 210,
+                "route": 176,
+                "total": 386
+              }
+            }
+          }
+        },
+        {
+          "wait_ms": 936.9769096374512,
+          "total_ms": 1001.4610290527344,
+          "request_ms": 0.03600120544433594,
+          "sample": "viewer-2-live",
+          "request_id": "05b40189-5970-40d0-ab5d-c0dcf2595361",
+          "reuse": false,
+          "dns_ms": 0,
+          "fetch_to_request_ms": 62.403082847595215,
+          "server_timing": "managed_auth;dur=186.0;desc=\"live\", hand_auth;dur=186.0, hand_route;dur=181.0, hand_total;dur=367.0",
+          "protocol": "http/1.1",
+          "connect_ms": 60.99998950958252,
+          "tls_ms": 31.999945640563965,
+          "status": 101,
+          "account": {
+            "cpu_ms": 1,
+            "wall_ms": 843,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "05b40189-5970-40d0-ab5d-c0dcf2595361",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "backend_ms": 833
+            }
+          },
+          "managed": {
+            "cpu_ms": 8,
+            "wall_ms": 376,
+            "log": {
+              "type": "hand.request",
+              "request_id": "05b40189-5970-40d0-ab5d-c0dcf2595361",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "timings_ms": {
+                "auth": 186,
+                "route": 181,
+                "total": 367
+              }
+            }
+          },
+          "ready_ms": 1002.0389556884766
+        },
+        {
+          "sample": "catalog-3-access",
+          "elapsed_ms": 195.85394859313965,
+          "status": 200,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=166.0, hand_total;dur=166.0, cfExtPri",
+          "request_id": "3037503f-e0ff-483a-a6c1-3bdbac2c65ec",
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 170,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "3037503f-e0ff-483a-a6c1-3bdbac2c65ec",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "backend_ms": 170
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 166,
+            "log": {
+              "type": "hand.request",
+              "request_id": "3037503f-e0ff-483a-a6c1-3bdbac2c65ec",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "route": 166,
+                "total": 166
+              }
+            }
+          }
+        },
+        {
+          "protocol": "http/1.1",
+          "reuse": false,
+          "request_id": "8765d743-aec8-4a41-9636-8ac7c7de0759",
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=179.0, hand_total;dur=179.0",
+          "total_ms": 1040.7260656356812,
+          "request_ms": 0.04100799560546875,
+          "fetch_to_request_ms": 56.51700496673584,
+          "dns_ms": 0,
+          "status": 101,
+          "connect_ms": 55.9999942779541,
+          "wait_ms": 981.8569421768188,
+          "sample": "viewer-3-access",
+          "tls_ms": 34.00003910064697,
+          "account": {
+            "cpu_ms": 1,
+            "wall_ms": 830,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "8765d743-aec8-4a41-9636-8ac7c7de0759",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "backend_ms": 817
+            }
+          },
+          "managed": {
+            "cpu_ms": 10,
+            "wall_ms": 189,
+            "log": {
+              "type": "hand.request",
+              "request_id": "8765d743-aec8-4a41-9636-8ac7c7de0759",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "timings_ms": {
+                "auth": 0,
+                "route": 179,
+                "total": 179
+              }
+            }
+          },
+          "ready_ms": 1041.4170026779175
+        },
+        {
+          "sample": "catalog-4-live",
+          "elapsed_ms": 601.3890504837036,
+          "status": 200,
+          "server_timing": "managed_auth;dur=202.0;desc=\"live\", hand_auth;dur=202.0, hand_route;dur=176.0, hand_total;dur=378.0, cfExtPri",
+          "request_id": "b5ad5102-82e5-43e5-a0a1-eabacd2683a2",
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 383,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "b5ad5102-82e5-43e5-a0a1-eabacd2683a2",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "backend_ms": 383
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 379,
+            "log": {
+              "type": "hand.request",
+              "request_id": "b5ad5102-82e5-43e5-a0a1-eabacd2683a2",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 202,
+                "route": 176,
+                "total": 378
+              }
+            }
+          }
+        },
+        {
+          "status": 101,
+          "wait_ms": 1079.6350240707397,
+          "dns_ms": 0,
+          "request_id": "f4243f9d-051b-4215-8970-82478b0c6682",
+          "request_ms": 0.03600120544433594,
+          "reuse": false,
+          "server_timing": "managed_auth;dur=198.0;desc=\"live\", hand_auth;dur=198.0, hand_route;dur=165.0, hand_total;dur=363.0",
+          "sample": "viewer-4-live",
+          "connect_ms": 47.99997806549072,
+          "total_ms": 1130.8940649032593,
+          "protocol": "http/1.1",
+          "fetch_to_request_ms": 48.95603656768799,
+          "tls_ms": 32.99999237060547,
+          "account": {
+            "cpu_ms": 2,
+            "wall_ms": 978,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "f4243f9d-051b-4215-8970-82478b0c6682",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "backend_ms": 967
+            }
+          },
+          "managed": {
+            "cpu_ms": 9,
+            "wall_ms": 372,
+            "log": {
+              "type": "hand.request",
+              "request_id": "f4243f9d-051b-4215-8970-82478b0c6682",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "timings_ms": {
+                "auth": 198,
+                "route": 165,
+                "total": 363
+              }
+            }
+          },
+          "ready_ms": 1131.464958190918
+        },
+        {
+          "sample": "catalog-5-access",
+          "elapsed_ms": 214.3990993499756,
+          "status": 200,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=177.0, hand_total;dur=177.0, cfExtPri",
+          "request_id": "2872757f-cb7e-4dad-82a9-950286d09fac",
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 182,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "2872757f-cb7e-4dad-82a9-950286d09fac",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "backend_ms": 182
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 178,
+            "log": {
+              "type": "hand.request",
+              "request_id": "2872757f-cb7e-4dad-82a9-950286d09fac",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "route": 177,
+                "total": 177
+              }
+            }
+          }
+        },
+        {
+          "dns_ms": 0,
+          "connect_ms": 59.999942779541016,
+          "tls_ms": 44.99995708465576,
+          "request_ms": 0.048995018005371094,
+          "total_ms": 1002.2070407867432,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=178.0, hand_total;dur=178.0",
+          "reuse": false,
+          "status": 101,
+          "request_id": "da1683f2-7a8e-4515-a9d5-9a55c1a57369",
+          "wait_ms": 938.8929605484009,
+          "protocol": "http/1.1",
+          "fetch_to_request_ms": 61.04099750518799,
+          "sample": "viewer-5-access",
+          "account": {
+            "cpu_ms": 1,
+            "wall_ms": 823,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "da1683f2-7a8e-4515-a9d5-9a55c1a57369",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "backend_ms": 811
+            }
+          },
+          "managed": {
+            "cpu_ms": 9,
+            "wall_ms": 188,
+            "log": {
+              "type": "hand.request",
+              "request_id": "da1683f2-7a8e-4515-a9d5-9a55c1a57369",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "timings_ms": {
+                "auth": 0,
+                "route": 178,
+                "total": 178
+              }
+            }
+          },
+          "ready_ms": 1002.9439926147461
+        },
+        {
+          "sample": "catalog-6-live",
+          "elapsed_ms": 402.4430513381958,
+          "status": 200,
+          "server_timing": "managed_auth;dur=188.0;desc=\"live\", hand_auth;dur=188.0, hand_route;dur=172.0, hand_total;dur=360.0, cfExtPri",
+          "request_id": "e81be178-6250-48f2-a4cc-f3fe0cbcbdd2",
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 364,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "e81be178-6250-48f2-a4cc-f3fe0cbcbdd2",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "backend_ms": 365
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 360,
+            "log": {
+              "type": "hand.request",
+              "request_id": "e81be178-6250-48f2-a4cc-f3fe0cbcbdd2",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 188,
+                "route": 172,
+                "total": 360
+              }
+            }
+          }
+        },
+        {
+          "total_ms": 1174.5210886001587,
+          "tls_ms": 29.000043869018555,
+          "request_id": "b8e4050c-2359-45db-bc3e-ca3784c673d3",
+          "connect_ms": 50.999999046325684,
+          "dns_ms": 3.999948501586914,
+          "reuse": false,
+          "server_timing": "managed_auth;dur=203.0;desc=\"live\", hand_auth;dur=203.0, hand_route;dur=177.0, hand_total;dur=380.0",
+          "protocol": "http/1.1",
+          "fetch_to_request_ms": 57.06906318664551,
+          "request_ms": 0.03600120544433594,
+          "status": 101,
+          "wait_ms": 1114.6949529647827,
+          "sample": "viewer-6-live",
+          "account": {
+            "cpu_ms": 2,
+            "wall_ms": 1005,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "b8e4050c-2359-45db-bc3e-ca3784c673d3",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "backend_ms": 992
+            }
+          },
+          "managed": {
+            "cpu_ms": 10,
+            "wall_ms": 389,
+            "log": {
+              "type": "hand.request",
+              "request_id": "b8e4050c-2359-45db-bc3e-ca3784c673d3",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "timings_ms": {
+                "auth": 203,
+                "route": 177,
+                "total": 380
+              }
+            }
+          },
+          "ready_ms": 1175.157070159912
+        },
+        {
+          "sample": "catalog-7-access",
+          "elapsed_ms": 201.9510269165039,
+          "status": 200,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=167.0, hand_total;dur=167.0, cfExtPri",
+          "request_id": "21c98ab6-c661-4f1d-bb4d-d7147abd4141",
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 169,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "21c98ab6-c661-4f1d-bb4d-d7147abd4141",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "backend_ms": 169
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 167,
+            "log": {
+              "type": "hand.request",
+              "request_id": "21c98ab6-c661-4f1d-bb4d-d7147abd4141",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "route": 167,
+                "total": 167
+              }
+            }
+          }
+        },
+        {
+          "dns_ms": 0,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=177.0, hand_total;dur=177.0",
+          "total_ms": 993.5200214385986,
+          "fetch_to_request_ms": 136.49499416351318,
+          "tls_ms": 32.99999237060547,
+          "protocol": "http/1.1",
+          "request_ms": 0.04494190216064453,
+          "status": 101,
+          "reuse": false,
+          "sample": "viewer-7-access",
+          "wait_ms": 854.9550771713257,
+          "connect_ms": 134.99999046325684,
+          "request_id": "2653bdb9-f275-446b-bec2-f0b8e0792014",
+          "account": {
+            "cpu_ms": 2,
+            "wall_ms": 762,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "2653bdb9-f275-446b-bec2-f0b8e0792014",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "backend_ms": 750
+            }
+          },
+          "managed": {
+            "cpu_ms": 8,
+            "wall_ms": 186,
+            "log": {
+              "type": "hand.request",
+              "request_id": "2653bdb9-f275-446b-bec2-f0b8e0792014",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "timings_ms": {
+                "auth": 0,
+                "route": 177,
+                "total": 177
+              }
+            }
+          },
+          "ready_ms": 994.1549301147461
+        }
+      ]
+    },
+    {
+      "run": {
+        "started_at": "2026-09-16T22:52:44.022541+00:00",
+        "load_average": [
+          51.23681640625,
+          162.189453125,
+          165.01171875
+        ],
+        "mode": "admission",
+        "label": "interleaved-epochs",
+        "finished_at": "2026-09-16T22:52:58.839863+00:00",
+        "exit_code": 0
+      },
+      "samples": [
+        {
+          "sample": "catalog-0-live",
+          "elapsed_ms": 535.0689888000488,
+          "status": 200,
+          "request_id": "66d88c27-c2a5-464c-80f4-9a87eeb85252",
+          "server_timing": "managed_auth;dur=193.0;desc=\"live\", hand_auth;dur=193.0, hand_route;dur=166.0, hand_total;dur=359.0, cfExtPri",
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 360,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "66d88c27-c2a5-464c-80f4-9a87eeb85252",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "backend_ms": 359
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 360,
+            "log": {
+              "type": "hand.request",
+              "request_id": "66d88c27-c2a5-464c-80f4-9a87eeb85252",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 193,
+                "route": 166,
+                "total": 359
+              },
+              "started_at_ms": 1789599166416,
+              "finished_at_ms": 1789599166775,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "total_ms": 1199.7730731964111,
+          "reuse": false,
+          "connect_ms": 103.00004482269287,
+          "tls_ms": 74.00000095367432,
+          "status": 101,
+          "dns_ms": 0,
+          "sample": "viewer-0-live",
+          "wait_ms": 1093.3269262313843,
+          "request_id": "ce18bfb1-e868-44d6-8757-4d033bd30094",
+          "request_ms": 0.048041343688964844,
+          "server_timing": "managed_auth;dur=192.0;desc=\"live\", hand_auth;dur=192.0, hand_route;dur=162.0, hand_total;dur=354.0",
+          "fetch_to_request_ms": 103.8370132446289,
+          "protocol": "http/1.1",
+          "account": {
+            "cpu_ms": 1,
+            "wall_ms": 1007,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "ce18bfb1-e868-44d6-8757-4d033bd30094",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "backend_ms": 995
+            }
+          },
+          "managed": {
+            "cpu_ms": 10,
+            "wall_ms": 364,
+            "log": {
+              "type": "hand.request",
+              "request_id": "ce18bfb1-e868-44d6-8757-4d033bd30094",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "timings_ms": {
+                "auth": 192,
+                "route": 162,
+                "total": 354
+              },
+              "started_at_ms": 1789599167610,
+              "finished_at_ms": 1789599167964,
+              "request_colo": "SJC"
+            }
+          },
+          "ready_ms": 1200.8699178695679
+        },
+        {
+          "sample": "catalog-1-access",
+          "elapsed_ms": 203.5120725631714,
+          "status": 200,
+          "request_id": "5c8a2a74-05c2-4082-9b19-2e8395eb6149",
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=170.0, hand_total;dur=170.0, cfExtPri",
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 174,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "5c8a2a74-05c2-4082-9b19-2e8395eb6149",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "backend_ms": 170
+            }
+          },
+          "managed": {
+            "cpu_ms": 3,
+            "wall_ms": 173,
+            "log": {
+              "type": "hand.request",
+              "request_id": "5c8a2a74-05c2-4082-9b19-2e8395eb6149",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "route": 170,
+                "total": 170
+              },
+              "started_at_ms": 1789599168113,
+              "finished_at_ms": 1789599168283,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "fetch_to_request_ms": 59.5700740814209,
+          "tls_ms": 34.00003910064697,
+          "dns_ms": 1.000046730041504,
+          "request_ms": 0.048995018005371094,
+          "sample": "viewer-1-access",
+          "protocol": "http/1.1",
+          "connect_ms": 54.000020027160645,
+          "wait_ms": 763.1629705429077,
+          "request_id": "f117d573-8922-47b6-86be-3c501bb3c097",
+          "reuse": false,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=177.0, hand_total;dur=177.0",
+          "total_ms": 826.166033744812,
+          "status": 101,
+          "account": {
+            "cpu_ms": 2,
+            "wall_ms": 658,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "f117d573-8922-47b6-86be-3c501bb3c097",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "backend_ms": 645
+            }
+          },
+          "managed": {
+            "cpu_ms": 8,
+            "wall_ms": 186,
+            "log": {
+              "type": "hand.request",
+              "request_id": "f117d573-8922-47b6-86be-3c501bb3c097",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "timings_ms": {
+                "auth": 0,
+                "route": 177,
+                "total": 177
+              },
+              "started_at_ms": 1789599168920,
+              "finished_at_ms": 1789599169097,
+              "request_colo": "SJC"
+            }
+          },
+          "ready_ms": 826.8660306930542
+        },
+        {
+          "sample": "catalog-2-live",
+          "elapsed_ms": 455.5230140686035,
+          "status": 200,
+          "request_id": "0a6157c0-a88c-4dfe-afde-4dab14f7a99f",
+          "server_timing": "managed_auth;dur=201.0;desc=\"live\", hand_auth;dur=201.0, hand_route;dur=166.0, hand_total;dur=367.0, cfExtPri",
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 368,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "0a6157c0-a88c-4dfe-afde-4dab14f7a99f",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "backend_ms": 367
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 367,
+            "log": {
+              "type": "hand.request",
+              "request_id": "0a6157c0-a88c-4dfe-afde-4dab14f7a99f",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 201,
+                "route": 166,
+                "total": 367
+              },
+              "started_at_ms": 1789599169310,
+              "finished_at_ms": 1789599169677,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "connect_ms": 129.99999523162842,
+          "sample": "viewer-2-live",
+          "reuse": false,
+          "total_ms": 1233.2569360733032,
+          "wait_ms": 1100.1430749893188,
+          "status": 101,
+          "protocol": "http/1.1",
+          "server_timing": "managed_auth;dur=184.0;desc=\"live\", hand_auth;dur=184.0, hand_route;dur=183.0, hand_total;dur=367.0",
+          "fetch_to_request_ms": 131.0049295425415,
+          "request_id": "d0433fae-fba5-4c37-9c57-68d69db4ae52",
+          "request_ms": 0.03600120544433594,
+          "tls_ms": 108.99996757507324,
+          "dns_ms": 0,
+          "account": {
+            "cpu_ms": 2,
+            "wall_ms": 1002,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "d0433fae-fba5-4c37-9c57-68d69db4ae52",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "backend_ms": 990
+            }
+          },
+          "managed": {
+            "cpu_ms": 11,
+            "wall_ms": 377,
+            "log": {
+              "type": "hand.request",
+              "request_id": "d0433fae-fba5-4c37-9c57-68d69db4ae52",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "timings_ms": {
+                "auth": 184,
+                "route": 183,
+                "total": 367
+              },
+              "started_at_ms": 1789599170539,
+              "finished_at_ms": 1789599170906,
+              "request_colo": "SJC"
+            }
+          },
+          "ready_ms": 1241.5850162506104
+        },
+        {
+          "sample": "catalog-3-access",
+          "elapsed_ms": 211.16304397583008,
+          "status": 200,
+          "request_id": "cf423f12-d5a0-4976-999c-7b8ae971638c",
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=174.0, hand_total;dur=174.0, cfExtPri",
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 176,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "cf423f12-d5a0-4976-999c-7b8ae971638c",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "backend_ms": 174
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 175,
+            "log": {
+              "type": "hand.request",
+              "request_id": "cf423f12-d5a0-4976-999c-7b8ae971638c",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "route": 174,
+                "total": 174
+              },
+              "started_at_ms": 1789599171084,
+              "finished_at_ms": 1789599171258,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "tls_ms": 111.9999885559082,
+          "reuse": false,
+          "request_id": "f2f8d01a-4c1e-48d1-a1d0-97de37a8c498",
+          "sample": "viewer-3-access",
+          "request_ms": 0.03910064697265625,
+          "dns_ms": 0,
+          "connect_ms": 134.99999046325684,
+          "total_ms": 1326.7399072647095,
+          "status": 101,
+          "protocol": "http/1.1",
+          "wait_ms": 1186.3349676132202,
+          "fetch_to_request_ms": 137.45391368865967,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=172.0, hand_total;dur=172.0",
+          "account": {
+            "cpu_ms": 3,
+            "wall_ms": 1052,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "f2f8d01a-4c1e-48d1-a1d0-97de37a8c498",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "backend_ms": 1032
+            }
+          },
+          "managed": {
+            "cpu_ms": 15,
+            "wall_ms": 188,
+            "log": {
+              "type": "hand.request",
+              "request_id": "f2f8d01a-4c1e-48d1-a1d0-97de37a8c498",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "timings_ms": {
+                "auth": 0,
+                "route": 172,
+                "total": 172
+              },
+              "started_at_ms": 1789599172394,
+              "finished_at_ms": 1789599172566,
+              "request_colo": "SJC"
+            }
+          },
+          "ready_ms": 1327.8800249099731
+        },
+        {
+          "sample": "catalog-4-live",
+          "elapsed_ms": 390.5380964279175,
+          "status": 200,
+          "request_id": "262179e2-76ba-4607-b997-b0493909ea7d",
+          "server_timing": "managed_auth;dur=193.0;desc=\"live\", hand_auth;dur=193.0, hand_route;dur=163.0, hand_total;dur=356.0, cfExtPri",
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 358,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "262179e2-76ba-4607-b997-b0493909ea7d",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "backend_ms": 356
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 357,
+            "log": {
+              "type": "hand.request",
+              "request_id": "262179e2-76ba-4607-b997-b0493909ea7d",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 193,
+                "route": 163,
+                "total": 356
+              },
+              "started_at_ms": 1789599172736,
+              "finished_at_ms": 1789599173092,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "fetch_to_request_ms": 47.84703254699707,
+          "request_ms": 0.03993511199951172,
+          "request_id": "9ae608ad-da72-4eda-8326-ee6568ec0d48",
+          "protocol": "http/1.1",
+          "server_timing": "managed_auth;dur=201.0;desc=\"live\", hand_auth;dur=201.0, hand_route;dur=180.0, hand_total;dur=381.0",
+          "connect_ms": 47.00005054473877,
+          "wait_ms": 1093.8760042190552,
+          "dns_ms": 0,
+          "reuse": false,
+          "sample": "viewer-4-live",
+          "total_ms": 1150.2799987792969,
+          "status": 101,
+          "tls_ms": 32.99999237060547,
+          "account": {
+            "cpu_ms": 1,
+            "wall_ms": 1002,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "9ae608ad-da72-4eda-8326-ee6568ec0d48",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "backend_ms": 987
+            }
+          },
+          "managed": {
+            "cpu_ms": 13,
+            "wall_ms": 393,
+            "log": {
+              "type": "hand.request",
+              "request_id": "9ae608ad-da72-4eda-8326-ee6568ec0d48",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "timings_ms": {
+                "auth": 201,
+                "route": 180,
+                "total": 381
+              },
+              "started_at_ms": 1789599173837,
+              "finished_at_ms": 1789599174218,
+              "request_colo": "SJC"
+            }
+          },
+          "ready_ms": 1150.9590148925781
+        },
+        {
+          "sample": "catalog-5-access",
+          "elapsed_ms": 193.72999668121338,
+          "status": 200,
+          "request_id": "1c559d00-39e2-46c3-8083-1a0bb0600124",
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=168.0, hand_total;dur=168.0, cfExtPri",
+          "account": {
+            "cpu_ms": 1,
+            "wall_ms": 169,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "1c559d00-39e2-46c3-8083-1a0bb0600124",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "backend_ms": 168
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 167,
+            "log": {
+              "type": "hand.request",
+              "request_id": "1c559d00-39e2-46c3-8083-1a0bb0600124",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "route": 168,
+                "total": 168
+              },
+              "started_at_ms": 1789599174369,
+              "finished_at_ms": 1789599174537,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "protocol": "http/1.1",
+          "sample": "viewer-5-access",
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=174.0, hand_total;dur=174.0",
+          "dns_ms": 0,
+          "tls_ms": 42.00005531311035,
+          "total_ms": 1040.0760173797607,
+          "status": 101,
+          "request_id": "cf2a999b-be88-4d98-a41b-35c0bb93b208",
+          "wait_ms": 971.3529348373413,
+          "reuse": false,
+          "connect_ms": 64.00001049041748,
+          "fetch_to_request_ms": 65.5510425567627,
+          "request_ms": 0.11801719665527344,
+          "account": {
+            "cpu_ms": 2,
+            "wall_ms": 805,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "cf2a999b-be88-4d98-a41b-35c0bb93b208",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "backend_ms": 787
+            }
+          },
+          "managed": {
+            "cpu_ms": 9,
+            "wall_ms": 185,
+            "log": {
+              "type": "hand.request",
+              "request_id": "cf2a999b-be88-4d98-a41b-35c0bb93b208",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "timings_ms": {
+                "auth": 0,
+                "route": 174,
+                "total": 174
+              },
+              "started_at_ms": 1789599175341,
+              "finished_at_ms": 1789599175515,
+              "request_colo": "SJC"
+            }
+          },
+          "ready_ms": 1052.4981021881104
+        },
+        {
+          "sample": "catalog-6-live",
+          "elapsed_ms": 415.40801525115967,
+          "status": 200,
+          "request_id": "2c98a3f3-34ff-4354-bff9-9d93ebf7d23c",
+          "server_timing": "managed_auth;dur=205.0;desc=\"live\", hand_auth;dur=205.0, hand_route;dur=173.0, hand_total;dur=378.0, cfExtPri",
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 379,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "2c98a3f3-34ff-4354-bff9-9d93ebf7d23c",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "backend_ms": 378
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 378,
+            "log": {
+              "type": "hand.request",
+              "request_id": "2c98a3f3-34ff-4354-bff9-9d93ebf7d23c",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 205,
+                "route": 173,
+                "total": 378
+              },
+              "started_at_ms": 1789599175738,
+              "finished_at_ms": 1789599176116,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "connect_ms": 49.99995231628418,
+          "wait_ms": 1122.2809553146362,
+          "tls_ms": 32.99999237060547,
+          "request_ms": 0.8109807968139648,
+          "status": 101,
+          "sample": "viewer-6-live",
+          "request_id": "3fe3fe9f-1901-4760-afd2-72658b65e24b",
+          "server_timing": "managed_auth;dur=196.0;desc=\"live\", hand_auth;dur=196.0, hand_route;dur=173.0, hand_total;dur=369.0",
+          "protocol": "http/1.1",
+          "dns_ms": 1.000046730041504,
+          "reuse": false,
+          "fetch_to_request_ms": 52.296996116638184,
+          "total_ms": 1177.0439147949219,
+          "account": {
+            "cpu_ms": 1,
+            "wall_ms": 1018,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "3fe3fe9f-1901-4760-afd2-72658b65e24b",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "backend_ms": 1004
+            }
+          },
+          "managed": {
+            "cpu_ms": 9,
+            "wall_ms": 382,
+            "log": {
+              "type": "hand.request",
+              "request_id": "3fe3fe9f-1901-4760-afd2-72658b65e24b",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "timings_ms": {
+                "auth": 196,
+                "route": 173,
+                "total": 369
+              },
+              "started_at_ms": 1789599176908,
+              "finished_at_ms": 1789599177277,
+              "request_colo": "SJC"
+            }
+          },
+          "ready_ms": 1177.6809692382812
+        },
+        {
+          "sample": "catalog-7-access",
+          "elapsed_ms": 282.5889587402344,
+          "status": 200,
+          "request_id": "7e244742-5c63-4459-8f0e-53d749582587",
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=165.0, hand_total;dur=165.0, cfExtPri",
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 165,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "7e244742-5c63-4459-8f0e-53d749582587",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "backend_ms": 165
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 164,
+            "log": {
+              "type": "hand.request",
+              "request_id": "7e244742-5c63-4459-8f0e-53d749582587",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "route": 165,
+                "total": 165
+              },
+              "started_at_ms": 1789599177423,
+              "finished_at_ms": 1789599177588,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "request_id": "b8030e2e-6f71-4c5a-9e6b-37a8bb5a46c2",
+          "wait_ms": 994.7319030761719,
+          "reuse": false,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=182.0, hand_total;dur=182.0",
+          "request_ms": 0.05710124969482422,
+          "connect_ms": 52.00004577636719,
+          "status": 101,
+          "sample": "viewer-7-access",
+          "tls_ms": 31.00001811981201,
+          "dns_ms": 0,
+          "protocol": "http/1.1",
+          "total_ms": 1049.6879816055298,
+          "fetch_to_request_ms": 52.82998085021973,
+          "account": {
+            "cpu_ms": 2,
+            "wall_ms": 822,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "b8030e2e-6f71-4c5a-9e6b-37a8bb5a46c2",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "backend_ms": 809
+            }
+          },
+          "managed": {
+            "cpu_ms": 10,
+            "wall_ms": 193,
+            "log": {
+              "type": "hand.request",
+              "request_id": "b8030e2e-6f71-4c5a-9e6b-37a8bb5a46c2",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "timings_ms": {
+                "auth": 0,
+                "route": 182,
+                "total": 182
+              },
+              "started_at_ms": 1789599178457,
+              "finished_at_ms": 1789599178639,
+              "request_colo": "SJC"
+            }
+          },
+          "ready_ms": 1050.4250526428223
+        }
+      ]
+    },
+    {
+      "run": {
+        "started_at": "2026-09-16T22:53:33.148159+00:00",
+        "load_average": [
+          30.51171875,
+          139.52294921875,
+          156.4619140625
+        ],
+        "mode": "admission",
+        "label": "interleaved-after",
+        "finished_at": "2026-09-16T22:53:51.273210+00:00",
+        "exit_code": 0
+      },
+      "samples": [
+        {
+          "server_timing": "managed_auth;dur=200.0;desc=\"live\", hand_auth;dur=200.0, hand_route;dur=160.0, hand_total;dur=360.0, cfExtPri",
+          "sample": "catalog-0-live",
+          "request_id": "e5b4382f-4a0e-44c6-98a1-34dbf762a01c",
+          "elapsed_ms": 389.89198207855225,
+          "status": 200,
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 364,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "e5b4382f-4a0e-44c6-98a1-34dbf762a01c",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 364,
+              "started_at_ms": 1789599214927,
+              "finished_at_ms": 1789599215291,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 361,
+            "log": {
+              "type": "hand.request",
+              "request_id": "e5b4382f-4a0e-44c6-98a1-34dbf762a01c",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 200,
+                "route": 160,
+                "total": 360
+              },
+              "started_at_ms": 1789599214929,
+              "finished_at_ms": 1789599215289,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "dns_ms": 0,
+          "protocol": "http/1.1",
+          "wait_ms": 1048.0220317840576,
+          "status": 101,
+          "total_ms": 1273.0159759521484,
+          "server_timing": "managed_auth;dur=189.0;desc=\"live\", hand_auth;dur=189.0, hand_total;dur=189.0, screen_admission;dur=692.0, screen_route;dur=178.0, screen_total;dur=870.0",
+          "reuse": false,
+          "request_ms": 0.12004375457763672,
+          "connect_ms": 222.00000286102295,
+          "tls_ms": 203.99999618530273,
+          "request_id": "41c4f704-c4a5-476b-8076-d130a80c867c",
+          "fetch_to_request_ms": 222.98598289489746,
+          "sample": "viewer-0-live",
+          "account": {
+            "cpu_ms": 2,
+            "wall_ms": 883,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "41c4f704-c4a5-476b-8076-d130a80c867c",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "direct_broker",
+              "backend_ms": 870,
+              "started_at_ms": 1789599215685,
+              "finished_at_ms": 1789599216555,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 3,
+            "wall_ms": 193,
+            "log": {
+              "type": "hand.request",
+              "request_id": "41c4f704-c4a5-476b-8076-d130a80c867c",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 204,
+              "timings_ms": {
+                "auth": 189,
+                "total": 189
+              },
+              "started_at_ms": 1789599216188,
+              "finished_at_ms": 1789599216377,
+              "request_colo": "SJC"
+            }
+          },
+          "ready_ms": 1273.6679315567017
+        },
+        {
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=178.0, hand_total;dur=178.0, cfExtPri",
+          "sample": "catalog-1-access",
+          "request_id": "fb594968-e063-44df-8d95-48922634f95e",
+          "elapsed_ms": 206.45999908447266,
+          "status": 200,
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 181,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "fb594968-e063-44df-8d95-48922634f95e",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 181,
+              "started_at_ms": 1789599216701,
+              "finished_at_ms": 1789599216882,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 2,
+            "wall_ms": 179,
+            "log": {
+              "type": "hand.request",
+              "request_id": "fb594968-e063-44df-8d95-48922634f95e",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "route": 178,
+                "total": 178
+              },
+              "started_at_ms": 1789599216702,
+              "finished_at_ms": 1789599216880,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "dns_ms": 0,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0, screen_admission;dur=574.0, screen_route;dur=161.0, screen_total;dur=735.0",
+          "fetch_to_request_ms": 140.46704769134521,
+          "wait_ms": 854.8070192337036,
+          "sample": "viewer-1-access",
+          "protocol": "http/1.1",
+          "total_ms": 997.331976890564,
+          "request_ms": 0.04601478576660156,
+          "request_id": "8873f262-6d5b-43c6-a45b-e0ee4359abb3",
+          "tls_ms": 113.0000352859497,
+          "reuse": false,
+          "status": 101,
+          "connect_ms": 139.0000581741333,
+          "account": {
+            "cpu_ms": 2,
+            "wall_ms": 751,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "8873f262-6d5b-43c6-a45b-e0ee4359abb3",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "direct_broker",
+              "backend_ms": 735,
+              "started_at_ms": 1789599217126,
+              "finished_at_ms": 1789599217861,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 2,
+            "wall_ms": 3,
+            "log": {
+              "type": "hand.request",
+              "request_id": "8873f262-6d5b-43c6-a45b-e0ee4359abb3",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 204,
+              "timings_ms": {
+                "auth": 0,
+                "total": 0
+              },
+              "started_at_ms": 1789599217700,
+              "finished_at_ms": 1789599217700,
+              "request_colo": "SJC"
+            }
+          },
+          "ready_ms": 997.9499578475952
+        },
+        {
+          "server_timing": "managed_auth;dur=195.0;desc=\"live\", hand_auth;dur=195.0, hand_route;dur=175.0, hand_total;dur=370.0, cfExtPri",
+          "sample": "catalog-2-live",
+          "request_id": "fce8b346-26b8-4445-b6fb-54189728ae39",
+          "elapsed_ms": 463.37294578552246,
+          "status": 200,
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 374,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "fce8b346-26b8-4445-b6fb-54189728ae39",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 374,
+              "started_at_ms": 1789599218072,
+              "finished_at_ms": 1789599218446,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 2,
+            "wall_ms": 372,
+            "log": {
+              "type": "hand.request",
+              "request_id": "fce8b346-26b8-4445-b6fb-54189728ae39",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 195,
+                "route": 175,
+                "total": 370
+              },
+              "started_at_ms": 1789599218074,
+              "finished_at_ms": 1789599218444,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "total_ms": 1476.0119915008545,
+          "tls_ms": 106.00006580352783,
+          "status": 101,
+          "dns_ms": 0,
+          "connect_ms": 123.00002574920654,
+          "protocol": "http/1.1",
+          "sample": "viewer-2-live",
+          "server_timing": "managed_auth;dur=196.0;desc=\"live\", hand_auth;dur=196.0, hand_total;dur=196.0, screen_admission;dur=1031.0, screen_route;dur=164.0, screen_total;dur=1195.0",
+          "wait_ms": 1350.1189947128296,
+          "request_id": "86edd85d-9d19-455b-b746-9dccf6c3f95b",
+          "request_ms": 0.051021575927734375,
+          "reuse": false,
+          "fetch_to_request_ms": 123.9769458770752,
+          "account": {
+            "cpu_ms": 4,
+            "wall_ms": 1230,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "86edd85d-9d19-455b-b746-9dccf6c3f95b",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "direct_broker",
+              "backend_ms": 1195,
+              "started_at_ms": 1789599218693,
+              "finished_at_ms": 1789599219888,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 6,
+            "wall_ms": 210,
+            "log": {
+              "type": "hand.request",
+              "request_id": "86edd85d-9d19-455b-b746-9dccf6c3f95b",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 204,
+              "timings_ms": {
+                "auth": 196,
+                "total": 196
+              },
+              "started_at_ms": 1789599219528,
+              "finished_at_ms": 1789599219724,
+              "request_colo": "SJC"
+            }
+          },
+          "ready_ms": 1476.5180349349976
+        },
+        {
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=182.0, hand_total;dur=182.0, cfExtPri",
+          "sample": "catalog-3-access",
+          "request_id": "a0c49315-a323-47c4-9238-cbf489613f8c",
+          "elapsed_ms": 208.72998237609863,
+          "status": 200,
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 186,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "a0c49315-a323-47c4-9238-cbf489613f8c",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 186,
+              "started_at_ms": 1789599220050,
+              "finished_at_ms": 1789599220236,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 184,
+            "log": {
+              "type": "hand.request",
+              "request_id": "a0c49315-a323-47c4-9238-cbf489613f8c",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "route": 182,
+                "total": 182
+              },
+              "started_at_ms": 1789599220052,
+              "finished_at_ms": 1789599220234,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "request_ms": 0.04303455352783203,
+          "dns_ms": 0,
+          "tls_ms": 35.00008583068848,
+          "total_ms": 1391.7529582977295,
+          "status": 101,
+          "connect_ms": 57.000041007995605,
+          "wait_ms": 1329.6109437942505,
+          "request_id": "6e5e6748-5d00-4183-a87d-01695d9fdb9b",
+          "fetch_to_request_ms": 57.97600746154785,
+          "protocol": "http/1.1",
+          "sample": "viewer-3-access",
+          "reuse": false,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0, screen_admission;dur=984.0, screen_route;dur=174.0, screen_total;dur=1158.0",
+          "account": {
+            "cpu_ms": 5,
+            "wall_ms": 1183,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "6e5e6748-5d00-4183-a87d-01695d9fdb9b",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "direct_broker",
+              "backend_ms": 1158,
+              "started_at_ms": 1789599220439,
+              "finished_at_ms": 1789599221597,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 6,
+            "wall_ms": 9,
+            "log": {
+              "type": "hand.request",
+              "request_id": "6e5e6748-5d00-4183-a87d-01695d9fdb9b",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 204,
+              "timings_ms": {
+                "auth": 0,
+                "total": 0
+              },
+              "started_at_ms": 1789599221423,
+              "finished_at_ms": 1789599221423,
+              "request_colo": "SJC"
+            }
+          },
+          "ready_ms": 1392.5960063934326
+        },
+        {
+          "server_timing": "managed_auth;dur=189.0;desc=\"live\", hand_auth;dur=189.0, hand_route;dur=174.0, hand_total;dur=363.0, cfExtPri",
+          "sample": "catalog-4-live",
+          "request_id": "4b9d5c9e-6189-40d8-acd2-92a61f0cdea5",
+          "elapsed_ms": 398.8230228424072,
+          "status": 200,
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 367,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "4b9d5c9e-6189-40d8-acd2-92a61f0cdea5",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 367,
+              "started_at_ms": 1789599221759,
+              "finished_at_ms": 1789599222126,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 364,
+            "log": {
+              "type": "hand.request",
+              "request_id": "4b9d5c9e-6189-40d8-acd2-92a61f0cdea5",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 189,
+                "route": 174,
+                "total": 363
+              },
+              "started_at_ms": 1789599221761,
+              "finished_at_ms": 1789599222124,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "tls_ms": 29.000043869018555,
+          "sample": "viewer-4-live",
+          "connect_ms": 134.99999046325684,
+          "dns_ms": 0,
+          "protocol": "http/1.1",
+          "reuse": false,
+          "request_ms": 0.102996826171875,
+          "server_timing": "managed_auth;dur=193.0;desc=\"live\", hand_auth;dur=193.0, hand_total;dur=193.0, screen_admission;dur=718.0, screen_route;dur=178.0, screen_total;dur=896.0",
+          "total_ms": 1168.8599586486816,
+          "status": 101,
+          "wait_ms": 1022.7630138397217,
+          "fetch_to_request_ms": 137.9159688949585,
+          "request_id": "68b5c28c-1eea-43ca-9c30-6e7fd4203642",
+          "account": {
+            "cpu_ms": 2,
+            "wall_ms": 905,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "68b5c28c-1eea-43ca-9c30-6e7fd4203642",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "direct_broker",
+              "backend_ms": 896,
+              "started_at_ms": 1789599222370,
+              "finished_at_ms": 1789599223266,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 3,
+            "wall_ms": 197,
+            "log": {
+              "type": "hand.request",
+              "request_id": "68b5c28c-1eea-43ca-9c30-6e7fd4203642",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 204,
+              "timings_ms": {
+                "auth": 193,
+                "total": 193
+              },
+              "started_at_ms": 1789599222895,
+              "finished_at_ms": 1789599223088,
+              "request_colo": "SJC"
+            }
+          },
+          "ready_ms": 1176.6209602355957
+        },
+        {
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=174.0, hand_total;dur=174.0, cfExtPri",
+          "sample": "catalog-5-access",
+          "request_id": "5493211c-9fba-423e-a8b7-72fc52e4137e",
+          "elapsed_ms": 204.55598831176758,
+          "status": 200,
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 177,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "5493211c-9fba-423e-a8b7-72fc52e4137e",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 178,
+              "started_at_ms": 1789599223431,
+              "finished_at_ms": 1789599223609,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 175,
+            "log": {
+              "type": "hand.request",
+              "request_id": "5493211c-9fba-423e-a8b7-72fc52e4137e",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "route": 174,
+                "total": 174
+              },
+              "started_at_ms": 1789599223433,
+              "finished_at_ms": 1789599223607,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "total_ms": 4543.691039085388,
+          "sample": "viewer-5-access",
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0, screen_admission;dur=1036.0, screen_route;dur=2969.0, screen_total;dur=4005.0",
+          "connect_ms": 205.9999704360962,
+          "fetch_to_request_ms": 207.19408988952637,
+          "wait_ms": 4334.380984306335,
+          "protocol": "http/1.1",
+          "reuse": false,
+          "tls_ms": 189.99993801116943,
+          "request_ms": 0.048995018005371094,
+          "request_id": "007d7c2c-1428-4ccd-9b5d-eade40a7ea77",
+          "dns_ms": 0,
+          "status": 101,
+          "account": {
+            "cpu_ms": 4,
+            "wall_ms": 4007,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "007d7c2c-1428-4ccd-9b5d-eade40a7ea77",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "direct_broker",
+              "backend_ms": 4005,
+              "started_at_ms": 1789599224145,
+              "finished_at_ms": 1789599228150,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 5,
+            "wall_ms": 7,
+            "log": {
+              "type": "hand.request",
+              "request_id": "007d7c2c-1428-4ccd-9b5d-eade40a7ea77",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 204,
+              "timings_ms": {
+                "auth": 0,
+                "total": 0
+              },
+              "started_at_ms": 1789599225181,
+              "finished_at_ms": 1789599225181,
+              "request_colo": "SJC"
+            }
+          },
+          "ready_ms": 4544.257044792175
+        },
+        {
+          "server_timing": "managed_auth;dur=197.0;desc=\"live\", hand_auth;dur=197.0, hand_route;dur=176.0, hand_total;dur=373.0, cfExtPri",
+          "sample": "catalog-6-live",
+          "request_id": "37c7b78f-acbe-4577-b96f-e7e6ccdbefc1",
+          "elapsed_ms": 488.2389307022095,
+          "status": 200,
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 377,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "37c7b78f-acbe-4577-b96f-e7e6ccdbefc1",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 378,
+              "started_at_ms": 1789599228369,
+              "finished_at_ms": 1789599228747,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 375,
+            "log": {
+              "type": "hand.request",
+              "request_id": "37c7b78f-acbe-4577-b96f-e7e6ccdbefc1",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 197,
+                "route": 176,
+                "total": 373
+              },
+              "started_at_ms": 1789599228371,
+              "finished_at_ms": 1789599228744,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "sample": "viewer-6-live",
+          "tls_ms": 42.999982833862305,
+          "dns_ms": 0,
+          "total_ms": 1030.0899744033813,
+          "connect_ms": 54.000020027160645,
+          "request_ms": 0.03600120544433594,
+          "wait_ms": 972.0219373703003,
+          "request_id": "19ae4a8a-3275-4864-bd64-ff8f16c804d9",
+          "server_timing": "managed_auth;dur=193.0;desc=\"live\", hand_auth;dur=193.0, hand_total;dur=193.0, screen_admission;dur=720.0, screen_route;dur=156.0, screen_total;dur=876.0",
+          "reuse": false,
+          "fetch_to_request_ms": 56.066036224365234,
+          "protocol": "http/1.1",
+          "status": 101,
+          "account": {
+            "cpu_ms": 2,
+            "wall_ms": 890,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "19ae4a8a-3275-4864-bd64-ff8f16c804d9",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "direct_broker",
+              "backend_ms": 876,
+              "started_at_ms": 1789599228888,
+              "finished_at_ms": 1789599229764,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 3,
+            "wall_ms": 197,
+            "log": {
+              "type": "hand.request",
+              "request_id": "19ae4a8a-3275-4864-bd64-ff8f16c804d9",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 204,
+              "timings_ms": {
+                "auth": 193,
+                "total": 193
+              },
+              "started_at_ms": 1789599229415,
+              "finished_at_ms": 1789599229608,
+              "request_colo": "SJC"
+            }
+          },
+          "ready_ms": 1030.5989980697632
+        },
+        {
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=161.0, hand_total;dur=161.0, cfExtPri",
+          "sample": "catalog-7-access",
+          "request_id": "67547f42-f60a-43a2-8b17-2d10ce5c5818",
+          "elapsed_ms": 216.7959213256836,
+          "status": 200,
+          "account": {
+            "cpu_ms": 0,
+            "wall_ms": 164,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "67547f42-f60a-43a2-8b17-2d10ce5c5818",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 164,
+              "started_at_ms": 1789599229910,
+              "finished_at_ms": 1789599230074,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 1,
+            "wall_ms": 162,
+            "log": {
+              "type": "hand.request",
+              "request_id": "67547f42-f60a-43a2-8b17-2d10ce5c5818",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "route": 161,
+                "total": 161
+              },
+              "started_at_ms": 1789599229912,
+              "finished_at_ms": 1789599230073,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "total_ms": 1057.602047920227,
+          "status": 101,
+          "dns_ms": 0,
+          "sample": "viewer-7-access",
+          "request_id": "33770c5d-337a-45f3-b03d-8cfc9d84d385",
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0, screen_admission;dur=493.0, screen_route;dur=172.0, screen_total;dur=665.0",
+          "connect_ms": 52.00004577636719,
+          "reuse": false,
+          "request_ms": 0.04303455352783203,
+          "tls_ms": 27.99999713897705,
+          "protocol": "http/1.1",
+          "wait_ms": 999.688982963562,
+          "fetch_to_request_ms": 52.5050163269043,
+          "account": {
+            "cpu_ms": 2,
+            "wall_ms": 676,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "33770c5d-337a-45f3-b03d-8cfc9d84d385",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "direct_broker",
+              "backend_ms": 665,
+              "started_at_ms": 1789599230378,
+              "finished_at_ms": 1789599231043,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 2,
+            "wall_ms": 3,
+            "log": {
+              "type": "hand.request",
+              "request_id": "33770c5d-337a-45f3-b03d-8cfc9d84d385",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 204,
+              "timings_ms": {
+                "auth": 0,
+                "total": 0
+              },
+              "started_at_ms": 1789599230871,
+              "finished_at_ms": 1789599230871,
+              "request_colo": "SJC"
+            }
+          },
+          "ready_ms": 1058.1960678100586
+        }
+      ]
+    },
+    {
+      "run": {
+        "started_at": "2026-09-16T23:02:49.142227+00:00",
+        "load_average": [
+          39.2705078125,
+          50.0458984375,
+          96.779296875
+        ],
+        "mode": "admission",
+        "label": "interleaved-dto",
+        "finished_at": "2026-09-16T23:03:04.331747+00:00",
+        "exit_code": 0
+      },
+      "samples": [
+        {
+          "sample": "catalog-0-live",
+          "status": 200,
+          "elapsed_ms": 457.2709798812866,
+          "server_timing": "managed_auth;dur=196.0;desc=\"live\", hand_auth;dur=196.0, hand_route;dur=180.0, hand_total;dur=376.0, cfExtPri",
+          "request_id": "accb39b7-d56d-4706-b69f-5d93833e6571",
+          "account": {
+            "cpu_ms": 1,
+            "wall_ms": 383,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "accb39b7-d56d-4706-b69f-5d93833e6571",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 383,
+              "started_at_ms": 1789599771658,
+              "finished_at_ms": 1789599772041,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 3,
+            "wall_ms": 378,
+            "log": {
+              "type": "hand.request",
+              "request_id": "accb39b7-d56d-4706-b69f-5d93833e6571",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 196,
+                "route": 180,
+                "total": 376
+              },
+              "started_at_ms": 1789599771660,
+              "finished_at_ms": 1789599772036,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "wait_ms": 1010.051965713501,
+          "protocol": "http/1.1",
+          "sample": "viewer-0-live",
+          "connect_ms": 49.99995231628418,
+          "dns_ms": 0,
+          "tls_ms": 32.99999237060547,
+          "request_ms": 0.07796287536621094,
+          "request_id": "a14f86f7-e344-4b5f-90a7-1603fb56a284",
+          "server_timing": "managed_auth;dur=196.0;desc=\"live\", hand_auth;dur=196.0, hand_total;dur=196.0, screen_admission;dur=719.0, screen_route;dur=175.0, screen_total;dur=894.0",
+          "reuse": false,
+          "fetch_to_request_ms": 51.86307430267334,
+          "status": 101,
+          "total_ms": 1067.357063293457,
+          "account": {
+            "cpu_ms": 3,
+            "wall_ms": 908,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "a14f86f7-e344-4b5f-90a7-1603fb56a284",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "direct_broker",
+              "backend_ms": 894,
+              "started_at_ms": 1789599772243,
+              "finished_at_ms": 1789599773137,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 4,
+            "wall_ms": 201,
+            "log": {
+              "type": "hand.request",
+              "request_id": "a14f86f7-e344-4b5f-90a7-1603fb56a284",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 204,
+              "timings_ms": {
+                "auth": 196,
+                "total": 196
+              },
+              "started_at_ms": 1789599772766,
+              "finished_at_ms": 1789599772962
+            }
+          },
+          "ready_ms": 1070.2550411224365
+        },
+        {
+          "sample": "catalog-1-access",
+          "status": 200,
+          "elapsed_ms": 200.7009983062744,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=169.0, hand_total;dur=169.0, cfExtPri",
+          "request_id": "6bcb91f7-8bb0-41d8-8027-47428c7f8c8f",
+          "account": {
+            "cpu_ms": 1,
+            "wall_ms": 176,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "6bcb91f7-8bb0-41d8-8027-47428c7f8c8f",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 175,
+              "started_at_ms": 1789599773287,
+              "finished_at_ms": 1789599773462,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 3,
+            "wall_ms": 172,
+            "log": {
+              "type": "hand.request",
+              "request_id": "6bcb91f7-8bb0-41d8-8027-47428c7f8c8f",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "route": 169,
+                "total": 169
+              },
+              "started_at_ms": 1789599773290,
+              "finished_at_ms": 1789599773459,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "tls_ms": 27.99999713897705,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0, screen_admission;dur=938.0, screen_route;dur=158.0, screen_total;dur=1096.0",
+          "wait_ms": 1270.9959745407104,
+          "fetch_to_request_ms": 55.77194690704346,
+          "connect_ms": 54.9999475479126,
+          "protocol": "http/1.1",
+          "dns_ms": 0,
+          "total_ms": 1330.1129341125488,
+          "sample": "viewer-1-access",
+          "reuse": false,
+          "status": 101,
+          "request_id": "d8b8eeef-7725-487b-840f-1048374be9cf",
+          "request_ms": 0.07903575897216797,
+          "account": {
+            "cpu_ms": 4,
+            "wall_ms": 1125,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "d8b8eeef-7725-487b-840f-1048374be9cf",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "direct_broker",
+              "backend_ms": 1096,
+              "started_at_ms": 1789599773660,
+              "finished_at_ms": 1789599774756,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 4,
+            "wall_ms": 6,
+            "log": {
+              "type": "hand.request",
+              "request_id": "d8b8eeef-7725-487b-840f-1048374be9cf",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 204,
+              "timings_ms": {
+                "auth": 0,
+                "total": 0
+              },
+              "started_at_ms": 1789599774598,
+              "finished_at_ms": 1789599774598
+            }
+          },
+          "ready_ms": 1330.8260440826416
+        },
+        {
+          "sample": "catalog-2-live",
+          "status": 200,
+          "elapsed_ms": 407.8359603881836,
+          "server_timing": "managed_auth;dur=194.0;desc=\"live\", hand_auth;dur=194.0, hand_route;dur=178.0, hand_total;dur=372.0, cfExtPri",
+          "request_id": "f3e82de7-7163-4c22-b0e4-c51cc2a1e1cd",
+          "account": {
+            "cpu_ms": 1,
+            "wall_ms": 379,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "f3e82de7-7163-4c22-b0e4-c51cc2a1e1cd",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 379,
+              "started_at_ms": 1789599774922,
+              "finished_at_ms": 1789599775301,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 3,
+            "wall_ms": 375,
+            "log": {
+              "type": "hand.request",
+              "request_id": "f3e82de7-7163-4c22-b0e4-c51cc2a1e1cd",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 194,
+                "route": 178,
+                "total": 372
+              },
+              "started_at_ms": 1789599774925,
+              "finished_at_ms": 1789599775297,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "total_ms": 1060.6050491333008,
+          "fetch_to_request_ms": 64.88001346588135,
+          "dns_ms": 0,
+          "request_id": "01c0f67c-eaa1-460c-a763-08b72418e7b8",
+          "server_timing": "managed_auth;dur=200.0;desc=\"live\", hand_auth;dur=200.0, hand_total;dur=200.0, screen_admission;dur=702.0, screen_route;dur=175.0, screen_total;dur=877.0",
+          "reuse": false,
+          "status": 101,
+          "connect_ms": 64.00001049041748,
+          "protocol": "http/1.1",
+          "wait_ms": 993.1190013885498,
+          "request_ms": 0.06401538848876953,
+          "sample": "viewer-2-live",
+          "tls_ms": 36.00001335144043,
+          "account": {
+            "cpu_ms": 3,
+            "wall_ms": 891,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "01c0f67c-eaa1-460c-a763-08b72418e7b8",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "direct_broker",
+              "backend_ms": 877,
+              "started_at_ms": 1789599775469,
+              "finished_at_ms": 1789599776346,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 4,
+            "wall_ms": 206,
+            "log": {
+              "type": "hand.request",
+              "request_id": "01c0f67c-eaa1-460c-a763-08b72418e7b8",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 204,
+              "timings_ms": {
+                "auth": 200,
+                "total": 200
+              },
+              "started_at_ms": 1789599775971,
+              "finished_at_ms": 1789599776171
+            }
+          },
+          "ready_ms": 1061.3139867782593
+        },
+        {
+          "sample": "catalog-3-access",
+          "status": 200,
+          "elapsed_ms": 225.2800464630127,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=189.0, hand_total;dur=189.0, cfExtPri",
+          "request_id": "5971fe44-1f86-4b60-8246-d51abdc494e8",
+          "account": {
+            "cpu_ms": 1,
+            "wall_ms": 194,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "5971fe44-1f86-4b60-8246-d51abdc494e8",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 193,
+              "started_at_ms": 1789599776503,
+              "finished_at_ms": 1789599776696,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 2,
+            "wall_ms": 190,
+            "log": {
+              "type": "hand.request",
+              "request_id": "5971fe44-1f86-4b60-8246-d51abdc494e8",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "route": 189,
+                "total": 189
+              },
+              "started_at_ms": 1789599776505,
+              "finished_at_ms": 1789599776694,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "connect_ms": 144.99998092651367,
+          "sample": "viewer-3-access",
+          "fetch_to_request_ms": 149.12700653076172,
+          "request_ms": 0.07200241088867188,
+          "tls_ms": 39.00003433227539,
+          "reuse": false,
+          "request_id": "0367fd01-2a07-4337-a306-a6030e45c80e",
+          "dns_ms": 0,
+          "total_ms": 946.4279413223267,
+          "status": 101,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0, screen_admission;dur=509.0, screen_route;dur=171.0, screen_total;dur=680.0",
+          "protocol": "http/1.1",
+          "wait_ms": 794.9579954147339,
+          "account": {
+            "cpu_ms": 2,
+            "wall_ms": 694,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "0367fd01-2a07-4337-a306-a6030e45c80e",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "direct_broker",
+              "backend_ms": 680,
+              "started_at_ms": 1789599776951,
+              "finished_at_ms": 1789599777631,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 2,
+            "wall_ms": 3,
+            "log": {
+              "type": "hand.request",
+              "request_id": "0367fd01-2a07-4337-a306-a6030e45c80e",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 204,
+              "timings_ms": {
+                "auth": 0,
+                "total": 0
+              },
+              "started_at_ms": 1789599777460,
+              "finished_at_ms": 1789599777460
+            }
+          },
+          "ready_ms": 948.0329751968384
+        },
+        {
+          "sample": "catalog-4-live",
+          "status": 200,
+          "elapsed_ms": 419.0700054168701,
+          "server_timing": "managed_auth;dur=192.0;desc=\"live\", hand_auth;dur=192.0, hand_route;dur=185.0, hand_total;dur=377.0, cfExtPri",
+          "request_id": "5c250efa-8fea-4a17-8762-8df4f7e85f86",
+          "account": {
+            "cpu_ms": 1,
+            "wall_ms": 383,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "5c250efa-8fea-4a17-8762-8df4f7e85f86",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 382,
+              "started_at_ms": 1789599777783,
+              "finished_at_ms": 1789599778165,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 2,
+            "wall_ms": 378,
+            "log": {
+              "type": "hand.request",
+              "request_id": "5c250efa-8fea-4a17-8762-8df4f7e85f86",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 192,
+                "route": 185,
+                "total": 377
+              },
+              "started_at_ms": 1789599777786,
+              "finished_at_ms": 1789599778163,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "total_ms": 1080.320954322815,
+          "reuse": false,
+          "connect_ms": 55.9999942779541,
+          "request_id": "dbde24a7-3861-45d1-b592-002984aa7d0c",
+          "tls_ms": 24.000048637390137,
+          "status": 101,
+          "request_ms": 0.03504753112792969,
+          "fetch_to_request_ms": 56.63895606994629,
+          "server_timing": "managed_auth;dur=188.0;desc=\"live\", hand_auth;dur=188.0, hand_total;dur=188.0, screen_admission;dur=728.0, screen_route;dur=157.0, screen_total;dur=885.0",
+          "wait_ms": 1019.8419094085693,
+          "dns_ms": 0,
+          "protocol": "http/1.1",
+          "sample": "viewer-4-live",
+          "account": {
+            "cpu_ms": 2,
+            "wall_ms": 900,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "dbde24a7-3861-45d1-b592-002984aa7d0c",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "direct_broker",
+              "backend_ms": 885,
+              "started_at_ms": 1789599778345,
+              "finished_at_ms": 1789599779230,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 3,
+            "wall_ms": 193,
+            "log": {
+              "type": "hand.request",
+              "request_id": "dbde24a7-3861-45d1-b592-002984aa7d0c",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 204,
+              "timings_ms": {
+                "auth": 188,
+                "total": 188
+              },
+              "started_at_ms": 1789599778885,
+              "finished_at_ms": 1789599779073
+            }
+          },
+          "ready_ms": 1080.8860063552856
+        },
+        {
+          "sample": "catalog-5-access",
+          "status": 200,
+          "elapsed_ms": 267.47190952301025,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=169.0, hand_total;dur=169.0, cfExtPri",
+          "request_id": "fcdd31de-0fe1-47ef-94c3-bcd66e88c28a",
+          "account": {
+            "cpu_ms": 1,
+            "wall_ms": 175,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "fcdd31de-0fe1-47ef-94c3-bcd66e88c28a",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 174,
+              "started_at_ms": 1789599779450,
+              "finished_at_ms": 1789599779624,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 2,
+            "wall_ms": 171,
+            "log": {
+              "type": "hand.request",
+              "request_id": "fcdd31de-0fe1-47ef-94c3-bcd66e88c28a",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "route": 169,
+                "total": 169
+              },
+              "started_at_ms": 1789599779452,
+              "finished_at_ms": 1789599779621,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "dns_ms": 0,
+          "status": 101,
+          "connect_ms": 50.999999046325684,
+          "request_id": "2995e118-95d2-4342-8c5a-3bbe477fdfd0",
+          "protocol": "http/1.1",
+          "tls_ms": 26.999950408935547,
+          "reuse": false,
+          "sample": "viewer-5-access",
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0, screen_admission;dur=505.0, screen_route;dur=171.0, screen_total;dur=676.0",
+          "total_ms": 868.4329986572266,
+          "request_ms": 0.07796287536621094,
+          "wait_ms": 804.9459457397461,
+          "fetch_to_request_ms": 53.797006607055664,
+          "account": {
+            "cpu_ms": 2,
+            "wall_ms": 688,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "2995e118-95d2-4342-8c5a-3bbe477fdfd0",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "direct_broker",
+              "backend_ms": 676,
+              "started_at_ms": 1789599779781,
+              "finished_at_ms": 1789599780457,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 2,
+            "wall_ms": 3,
+            "log": {
+              "type": "hand.request",
+              "request_id": "2995e118-95d2-4342-8c5a-3bbe477fdfd0",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 204,
+              "timings_ms": {
+                "auth": 0,
+                "total": 0
+              },
+              "started_at_ms": 1789599780286,
+              "finished_at_ms": 1789599780286
+            }
+          },
+          "ready_ms": 869.871973991394
+        },
+        {
+          "sample": "catalog-6-live",
+          "status": 200,
+          "elapsed_ms": 428.2609224319458,
+          "server_timing": "managed_auth;dur=196.0;desc=\"live\", hand_auth;dur=196.0, hand_route;dur=185.0, hand_total;dur=381.0, cfExtPri",
+          "request_id": "8787392a-7e7d-46af-acdc-c4a9354ff18e",
+          "account": {
+            "cpu_ms": 1,
+            "wall_ms": 389,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "8787392a-7e7d-46af-acdc-c4a9354ff18e",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 388,
+              "started_at_ms": 1789599780667,
+              "finished_at_ms": 1789599781055,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 4,
+            "wall_ms": 384,
+            "log": {
+              "type": "hand.request",
+              "request_id": "8787392a-7e7d-46af-acdc-c4a9354ff18e",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 196,
+                "route": 185,
+                "total": 381
+              },
+              "started_at_ms": 1789599780669,
+              "finished_at_ms": 1789599781050,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "protocol": "http/1.1",
+          "wait_ms": 1128.0949115753174,
+          "connect_ms": 49.99995231628418,
+          "server_timing": "managed_auth;dur=187.0;desc=\"live\", hand_auth;dur=187.0, hand_total;dur=187.0, screen_admission;dur=828.0, screen_route;dur=170.0, screen_total;dur=998.0",
+          "tls_ms": 31.999945640563965,
+          "status": 101,
+          "dns_ms": 1.000046730041504,
+          "sample": "viewer-6-live",
+          "reuse": false,
+          "request_ms": 0.03600120544433594,
+          "request_id": "745edc7d-f8c1-4ff8-9a47-e4e78010d6ab",
+          "fetch_to_request_ms": 53.65908145904541,
+          "total_ms": 1184.527039527893,
+          "account": {
+            "cpu_ms": 3,
+            "wall_ms": 1014,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "745edc7d-f8c1-4ff8-9a47-e4e78010d6ab",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "direct_broker",
+              "backend_ms": 998,
+              "started_at_ms": 1789599781221,
+              "finished_at_ms": 1789599782219,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 4,
+            "wall_ms": 193,
+            "log": {
+              "type": "hand.request",
+              "request_id": "745edc7d-f8c1-4ff8-9a47-e4e78010d6ab",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 204,
+              "timings_ms": {
+                "auth": 187,
+                "total": 187
+              },
+              "started_at_ms": 1789599781862,
+              "finished_at_ms": 1789599782049
+            }
+          },
+          "ready_ms": 1185.8960390090942
+        },
+        {
+          "sample": "catalog-7-access",
+          "status": 200,
+          "elapsed_ms": 231.89902305603027,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=180.0, hand_total;dur=180.0, cfExtPri",
+          "request_id": "f946a7da-45e0-4119-87b5-de9b0e44296e",
+          "account": {
+            "cpu_ms": 2,
+            "wall_ms": 190,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "f946a7da-45e0-4119-87b5-de9b0e44296e",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 189,
+              "started_at_ms": 1789599782379,
+              "finished_at_ms": 1789599782568,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 2,
+            "wall_ms": 182,
+            "log": {
+              "type": "hand.request",
+              "request_id": "f946a7da-45e0-4119-87b5-de9b0e44296e",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "route": 180,
+                "total": 180
+              },
+              "started_at_ms": 1789599782386,
+              "finished_at_ms": 1789599782566,
+              "request_colo": "SJC"
+            }
+          }
+        },
+        {
+          "sample": "viewer-7-access",
+          "connect_ms": 90.99996089935303,
+          "fetch_to_request_ms": 95.32499313354492,
+          "reuse": false,
+          "request_ms": 0.4019737243652344,
+          "total_ms": 1618.901014328003,
+          "status": 101,
+          "tls_ms": 57.99996852874756,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0, screen_admission;dur=1178.0, screen_route;dur=162.0, screen_total;dur=1340.0",
+          "request_id": "92c2f15b-a3c2-47df-8ea7-02eab5418953",
+          "wait_ms": 1518.1549787521362,
+          "protocol": "http/1.1",
+          "dns_ms": 1.000046730041504,
+          "account": {
+            "cpu_ms": 5,
+            "wall_ms": 1366,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "92c2f15b-a3c2-47df-8ea7-02eab5418953",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "direct_broker",
+              "backend_ms": 1340,
+              "started_at_ms": 1789599782827,
+              "finished_at_ms": 1789599784167,
+              "request_colo": "SJC"
+            }
+          },
+          "managed": {
+            "cpu_ms": 6,
+            "wall_ms": 10,
+            "log": {
+              "type": "hand.request",
+              "request_id": "92c2f15b-a3c2-47df-8ea7-02eab5418953",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 204,
+              "timings_ms": {
+                "auth": 0,
+                "total": 0
+              },
+              "started_at_ms": 1789599784005,
+              "finished_at_ms": 1789599784005
+            }
+          },
+          "ready_ms": 1620.597004890442
+        }
+      ]
+    }
+  ],
+  "decoded_frames": [
+    {
+      "run": {
+        "started_at": "2026-09-16T22:53:56.220076+00:00",
+        "load_average": [
+          28.7509765625,
+          130.267578125,
+          152.6279296875
+        ],
+        "mode": "wan",
+        "label": "linux-native-after",
+        "finished_at": "2026-09-16T22:54:04.251673+00:00",
+        "exit_code": 0
+      },
+      "catalog_ms": 579.2864583199844,
+      "transport": "frames-v1",
+      "samples": [
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "911",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1229",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1229,
+            "height": 800,
+            "width": 1280
+          },
+          "state": "no peer ready=true/true retries=0 last="
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "887",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1152",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1152,
+            "height": 800,
+            "width": 1280
+          },
+          "state": "no peer ready=true/true retries=0 last="
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "1143",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1345",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1345,
+            "height": 800,
+            "width": 1280
+          },
+          "state": "no peer ready=true/true retries=0 last="
+        }
+      ]
+    },
+    {
+      "run": {
+        "started_at": "2026-09-16T22:54:04.349823+00:00",
+        "load_average": [
+          27.5693359375,
+          128.3369140625,
+          151.8154296875
+        ],
+        "mode": "mac",
+        "label": "mac-after",
+        "finished_at": "2026-09-16T22:54:19.789512+00:00",
+        "exit_code": 0
+      },
+      "catalog_ms": 215.6995833502151,
+      "transport": "webrtc",
+      "samples": [
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "53",
+              "event": "initial ICE ready"
+            },
+            {
+              "elapsed_ms": "841",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1054",
+              "event": "receive offer"
+            },
+            {
+              "elapsed_ms": "1065",
+              "event": "send answer"
+            },
+            {
+              "elapsed_ms": "1066",
+              "event": "peer state 1"
+            },
+            {
+              "elapsed_ms": "1376",
+              "event": "peer state 2"
+            },
+            {
+              "elapsed_ms": "1401",
+              "event": "channels ready"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1953,
+            "height": 800,
+            "width": 1920
+          },
+          "state": "2/2 channels=1,1 ICE=11/23/23 SDP=true/true ready=true/true retries=0 last="
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "41",
+              "event": "initial ICE ready"
+            },
+            {
+              "elapsed_ms": "1380",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1575",
+              "event": "receive offer"
+            },
+            {
+              "elapsed_ms": "1587",
+              "event": "send answer"
+            },
+            {
+              "elapsed_ms": "1589",
+              "event": "peer state 1"
+            },
+            {
+              "elapsed_ms": "1791",
+              "event": "peer state 2"
+            },
+            {
+              "elapsed_ms": "1794",
+              "event": "channels ready"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 2060,
+            "height": 800,
+            "width": 1920
+          },
+          "state": "2/2 channels=1,1 ICE=11/23/23 SDP=true/true ready=true/true retries=0 last="
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "103",
+              "event": "initial ICE ready"
+            },
+            {
+              "elapsed_ms": "959",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1145",
+              "event": "receive offer"
+            },
+            {
+              "elapsed_ms": "1158",
+              "event": "send answer"
+            },
+            {
+              "elapsed_ms": "1159",
+              "event": "peer state 1"
+            },
+            {
+              "elapsed_ms": "1361",
+              "event": "peer state 2"
+            },
+            {
+              "elapsed_ms": "1366",
+              "event": "channels ready"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1551,
+            "height": 800,
+            "width": 1920
+          },
+          "state": "2/2 channels=1,1 ICE=11/23/23 SDP=true/true ready=true/true retries=0 last="
+        }
+      ]
+    },
+    {
+      "run": {
+        "started_at": "2026-09-16T23:03:12.305774+00:00",
+        "load_average": [
+          42.0908203125,
+          49.75732421875,
+          95.31591796875
+        ],
+        "mode": "wan",
+        "label": "linux-native-dto",
+        "finished_at": "2026-09-16T23:03:24.260623+00:00",
+        "exit_code": 0
+      },
+      "catalog_ms": 592.4256250145845,
+      "transport": "frames-v1",
+      "samples": [
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "1163",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1341",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1341,
+            "height": 800,
+            "width": 1280
+          },
+          "state": "no peer ready=true/true retries=0 last="
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "939",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1201",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1201,
+            "height": 800,
+            "width": 1280
+          },
+          "state": "no peer ready=true/true retries=0 last="
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "907",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1323",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1323,
+            "height": 800,
+            "width": 1280
+          },
+          "state": "no peer ready=true/true retries=0 last="
+        }
+      ]
+    },
+    {
+      "run": {
+        "started_at": "2026-09-16T23:03:24.308176+00:00",
+        "load_average": [
+          43.5146484375,
+          49.8134765625,
+          94.8037109375
+        ],
+        "mode": "wan",
+        "label": "linux-vm-dto",
+        "finished_at": "2026-09-16T23:03:33.768323+00:00",
+        "exit_code": 0
+      },
+      "catalog_ms": 454.38558334717527,
+      "transport": "frames-v1",
+      "samples": [
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "963",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1174",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1174,
+            "height": 800,
+            "width": 1280
+          },
+          "state": "no peer ready=true/true retries=0 last="
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "1033",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1359",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1359,
+            "height": 800,
+            "width": 1280
+          },
+          "state": "no peer ready=true/true retries=0 last="
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "909",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "1184",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1184,
+            "height": 800,
+            "width": 1280
+          },
+          "state": "no peer ready=true/true retries=0 last="
+        }
+      ]
+    }
+  ],
+  "controls": {
+    "failfast-before-dto": {
+      "run": {
+        "started_at": "2026-09-16T23:00:01.510788+00:00",
+        "load_average": [
+          32.48388671875,
+          59.15087890625,
+          109.4765625
+        ],
+        "mode": "admission",
+        "label": "failfast-before-dto",
+        "finished_at": "2026-09-16T23:00:04.341901+00:00",
+        "exit_code": 0
+      },
+      "samples": [
+        {
+          "total_ms": 66.7719841003418,
+          "request_id": "1a47ec87-9909-40f3-be5c-318d54c244c0",
+          "connect_ms": null,
+          "dns_ms": null,
+          "request_ms": 0.18990039825439453,
+          "status": 401,
+          "sample": "probe-0-http-invalid",
+          "reuse": true,
+          "wait_ms": 65.68801403045654,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0, cfExtPri",
+          "protocol": "h3",
+          "tls_ms": null,
+          "fetch_to_request_ms": 0.5080699920654297
+        },
+        {
+          "tls_ms": 32.000064849853516,
+          "status": 401,
+          "wait_ms": 657.4920415878296,
+          "protocol": "http/1.1",
+          "reuse": false,
+          "request_id": "9d37c162-bde5-4579-809c-e55493d2048d",
+          "total_ms": 712.3399972915649,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0",
+          "fetch_to_request_ms": 50.047993659973145,
+          "request_ms": 0.06198883056640625,
+          "sample": "probe-0-ws-invalid",
+          "dns_ms": 0,
+          "connect_ms": 49.00002479553223
+        },
+        {
+          "sample": "probe-0-http-health",
+          "fetch_to_request_ms": 0.2689361572265625,
+          "protocol": "h3",
+          "tls_ms": null,
+          "dns_ms": null,
+          "reuse": true,
+          "total_ms": 50.794005393981934,
+          "wait_ms": 50.114989280700684,
+          "server_timing": "cfExtPri",
+          "request_ms": 0.18906593322753906,
+          "status": 200,
+          "request_id": "",
+          "connect_ms": null
+        },
+        {
+          "total_ms": 41.342973709106445,
+          "reuse": true,
+          "status": 200,
+          "dns_ms": null,
+          "tls_ms": null,
+          "request_ms": 0.08690357208251953,
+          "connect_ms": null,
+          "sample": "probe-0-ws-health",
+          "protocol": "http/1.1",
+          "request_id": "",
+          "wait_ms": 40.484070777893066,
+          "fetch_to_request_ms": 0.2510547637939453,
+          "server_timing": ""
+        },
+        {
+          "total_ms": 208.6160182952881,
+          "reuse": true,
+          "status": 409,
+          "dns_ms": null,
+          "tls_ms": null,
+          "request_ms": 0.07903575897216797,
+          "connect_ms": null,
+          "sample": "probe-0-ws-stale",
+          "protocol": "http/1.1",
+          "request_id": "956ae0c6-245b-4202-90a1-a80a0dc83f91",
+          "wait_ms": 205.33394813537598,
+          "fetch_to_request_ms": 0.30303001403808594,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=171.0, hand_total;dur=171.0"
+        },
+        {
+          "total_ms": 57.240962982177734,
+          "reuse": true,
+          "status": 401,
+          "dns_ms": null,
+          "tls_ms": null,
+          "request_ms": 0.23603439331054688,
+          "connect_ms": null,
+          "sample": "probe-1-http-invalid",
+          "protocol": "h3",
+          "request_id": "1e9ab93b-ce6b-4723-9228-9abbe10b205f",
+          "wait_ms": 55.9079647064209,
+          "fetch_to_request_ms": 0.2859830856323242,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0, cfExtPri"
+        },
+        {
+          "total_ms": 32.65202045440674,
+          "reuse": true,
+          "status": 401,
+          "dns_ms": null,
+          "tls_ms": null,
+          "request_ms": 0.09000301361083984,
+          "connect_ms": null,
+          "sample": "probe-1-ws-invalid",
+          "protocol": "http/1.1",
+          "request_id": "9fe9e345-0415-412e-baba-c6c51ea080f7",
+          "wait_ms": 31.165003776550293,
+          "fetch_to_request_ms": 0.7649660110473633,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0"
+        },
+        {
+          "total_ms": 50.62699317932129,
+          "reuse": true,
+          "status": 200,
+          "dns_ms": null,
+          "tls_ms": null,
+          "request_ms": 0.19299983978271484,
+          "connect_ms": null,
+          "sample": "probe-1-http-health",
+          "protocol": "h3",
+          "request_id": "",
+          "wait_ms": 49.18110370635986,
+          "fetch_to_request_ms": 0.7969141006469727,
+          "server_timing": "cfExtPri"
+        },
+        {
+          "total_ms": 32.74405002593994,
+          "reuse": true,
+          "status": 200,
+          "dns_ms": null,
+          "tls_ms": null,
+          "request_ms": 0.10597705841064453,
+          "connect_ms": null,
+          "sample": "probe-1-ws-health",
+          "protocol": "http/1.1",
+          "request_id": "",
+          "wait_ms": 32.22298622131348,
+          "fetch_to_request_ms": 0.2340078353881836,
+          "server_timing": ""
+        },
+        {
+          "total_ms": 266.3480043411255,
+          "reuse": true,
+          "status": 409,
+          "dns_ms": null,
+          "tls_ms": null,
+          "request_ms": 0.05996227264404297,
+          "connect_ms": null,
+          "sample": "probe-1-ws-stale",
+          "protocol": "http/1.1",
+          "request_id": "13eee43b-b76f-4dc3-b252-0d4a48dd2d5e",
+          "wait_ms": 265.9270763397217,
+          "fetch_to_request_ms": 0.2110004425048828,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=178.0, hand_total;dur=178.0"
+        },
+        {
+          "total_ms": 36.33391857147217,
+          "reuse": true,
+          "status": 401,
+          "dns_ms": null,
+          "tls_ms": null,
+          "request_ms": 0.2830028533935547,
+          "connect_ms": null,
+          "sample": "probe-2-http-invalid",
+          "protocol": "h3",
+          "request_id": "5e444c25-ca83-455f-bf09-e98e4ccc0360",
+          "wait_ms": 34.935951232910156,
+          "fetch_to_request_ms": 0.764012336730957,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0, cfExtPri"
+        },
+        {
+          "total_ms": 21.69501781463623,
+          "reuse": true,
+          "status": 401,
+          "dns_ms": null,
+          "tls_ms": null,
+          "request_ms": 0.18894672393798828,
+          "connect_ms": null,
+          "sample": "probe-2-ws-invalid",
+          "protocol": "http/1.1",
+          "request_id": "f3bf5558-8ff2-4366-bc5f-01a7c9bf24b7",
+          "wait_ms": 21.08001708984375,
+          "fetch_to_request_ms": 0.22304058074951172,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0"
+        },
+        {
+          "total_ms": 43.66505146026611,
+          "reuse": true,
+          "status": 200,
+          "dns_ms": null,
+          "tls_ms": null,
+          "request_ms": 0.1538991928100586,
+          "connect_ms": null,
+          "sample": "probe-2-http-health",
+          "protocol": "h3",
+          "request_id": "",
+          "wait_ms": 43.000102043151855,
+          "fetch_to_request_ms": 0.18107891082763672,
+          "server_timing": "cfExtPri"
+        },
+        {
+          "total_ms": null,
+          "reuse": true,
+          "status": 200,
+          "dns_ms": null,
+          "tls_ms": null,
+          "request_ms": 0.10597705841064453,
+          "connect_ms": null,
+          "sample": "probe-2-ws-health",
+          "protocol": "http/1.1",
+          "request_id": "",
+          "wait_ms": 47.698020935058594,
+          "fetch_to_request_ms": 0.26094913482666016,
+          "server_timing": ""
+        },
+        {
+          "total_ms": 376.0019540786743,
+          "reuse": true,
+          "status": 409,
+          "dns_ms": null,
+          "tls_ms": null,
+          "request_ms": 0.09608268737792969,
+          "connect_ms": null,
+          "sample": "probe-2-ws-stale",
+          "protocol": "http/1.1",
+          "request_id": "56fe7706-19c4-4b57-88d2-17b3ee9a7767",
+          "wait_ms": 374.35293197631836,
+          "fetch_to_request_ms": 0.2149343490600586,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=194.0, hand_total;dur=194.0"
+        }
+      ]
+    },
+    "failfast-fresh-before-dto": {
+      "run": {
+        "started_at": "2026-09-16T23:00:45.049241+00:00",
+        "load_average": [
+          34.67236328125,
+          56.4951171875,
+          106.19921875
+        ],
+        "mode": "admission",
+        "label": "failfast-fresh-before-dto",
+        "finished_at": "2026-09-16T23:00:53.832774+00:00",
+        "exit_code": 0
+      },
+      "samples": [
+        {
+          "request_ms": 0.14007091522216797,
+          "status": 401,
+          "sample": "probe-0-http-invalid",
+          "fetch_to_request_ms": 345.62599658966064,
+          "dns_ms": 1.000046730041504,
+          "total_ms": 641.558051109314,
+          "protocol": "h3",
+          "request_id": "0972949e-451b-4554-a072-1d4da79b8d2a",
+          "wait_ms": 292.2639846801758,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0, cfExtPri",
+          "connect_ms": 340.0000333786011,
+          "tls_ms": 338.99998664855957,
+          "reuse": false
+        },
+        {
+          "dns_ms": 1.000046730041504,
+          "request_id": "6e2ace42-ff6b-41d9-9734-a4e2fc72a3e0",
+          "fetch_to_request_ms": 232.28096961975098,
+          "total_ms": 1025.4939794540405,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0",
+          "protocol": "http/1.1",
+          "sample": "probe-0-ws-invalid",
+          "request_ms": 0.04303455352783203,
+          "connect_ms": 230.00001907348633,
+          "tls_ms": 215.00003337860107,
+          "wait_ms": 790.6389236450195,
+          "status": 401,
+          "reuse": false
+        },
+        {
+          "dns_ms": 0,
+          "reuse": false,
+          "status": 200,
+          "request_ms": 0.06902217864990234,
+          "fetch_to_request_ms": 47.49405384063721,
+          "sample": "probe-0-http-health",
+          "server_timing": "cfExtPri",
+          "request_id": "",
+          "total_ms": 105.46207427978516,
+          "connect_ms": 44.00002956390381,
+          "protocol": "h3",
+          "wait_ms": 55.41694164276123,
+          "tls_ms": 44.00002956390381
+        },
+        {
+          "connect_ms": 57.99996852874756,
+          "reuse": false,
+          "fetch_to_request_ms": 61.3020658493042,
+          "tls_ms": 33.99991989135742,
+          "status": 200,
+          "protocol": "http/1.1",
+          "dns_ms": 1.000046730041504,
+          "server_timing": "",
+          "wait_ms": 682.4389696121216,
+          "request_id": "",
+          "total_ms": 747.0650672912598,
+          "sample": "probe-0-ws-health",
+          "request_ms": 0.0699758529663086
+        },
+        {
+          "fetch_to_request_ms": 134.40799713134766,
+          "protocol": "http/1.1",
+          "request_id": "2e7681d1-21cb-41fd-8e64-f5e51ff4fccd",
+          "dns_ms": 1.000046730041504,
+          "connect_ms": 131.99996948242188,
+          "status": 409,
+          "reuse": false,
+          "tls_ms": 27.99999713897705,
+          "total_ms": 998.7679719924927,
+          "request_ms": 0.04100799560546875,
+          "sample": "probe-0-ws-stale",
+          "wait_ms": 862.2440099716187,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=171.0, hand_total;dur=171.0"
+        },
+        {
+          "fetch_to_request_ms": 39.86096382141113,
+          "protocol": "h3",
+          "request_id": "5429de37-a34c-4615-bf95-9bad2daaa9f5",
+          "dns_ms": 1.000046730041504,
+          "connect_ms": 34.999966621398926,
+          "status": 401,
+          "reuse": false,
+          "tls_ms": 33.99991989135742,
+          "total_ms": 146.75593376159668,
+          "request_ms": 0.0820159912109375,
+          "sample": "probe-1-http-invalid",
+          "wait_ms": 104.55894470214844,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0, cfExtPri"
+        },
+        {
+          "fetch_to_request_ms": 57.04605579376221,
+          "protocol": "http/1.1",
+          "request_id": "64eb52e0-cd7f-4acc-b83c-5aac8927f300",
+          "dns_ms": 4.999995231628418,
+          "connect_ms": 49.99995231628418,
+          "status": 401,
+          "reuse": false,
+          "tls_ms": 30.99989891052246,
+          "total_ms": 91.5299654006958,
+          "request_ms": 0.04696846008300781,
+          "sample": "probe-1-ws-invalid",
+          "wait_ms": 32.20200538635254,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0"
+        },
+        {
+          "fetch_to_request_ms": 36.543965339660645,
+          "protocol": "h3",
+          "request_id": "",
+          "dns_ms": 0,
+          "connect_ms": 31.00001811981201,
+          "status": 200,
+          "reuse": false,
+          "tls_ms": 31.00001811981201,
+          "total_ms": 92.97406673431396,
+          "request_ms": 0.07104873657226562,
+          "sample": "probe-1-http-health",
+          "wait_ms": 54.01897430419922,
+          "server_timing": "cfExtPri"
+        },
+        {
+          "fetch_to_request_ms": 76.0730504989624,
+          "protocol": "http/1.1",
+          "request_id": "",
+          "dns_ms": 1.000046730041504,
+          "connect_ms": 74.00000095367432,
+          "status": 200,
+          "reuse": false,
+          "tls_ms": 57.000041007995605,
+          "total_ms": 861.3430261611938,
+          "request_ms": 0.03993511199951172,
+          "sample": "probe-1-ws-health",
+          "wait_ms": 781.7569971084595,
+          "server_timing": ""
+        },
+        {
+          "fetch_to_request_ms": 62.31999397277832,
+          "protocol": "http/1.1",
+          "request_id": "f3ed61bb-21ef-4755-b716-6ca840b91d77",
+          "dns_ms": 4.999995231628418,
+          "connect_ms": 54.9999475479126,
+          "status": 409,
+          "reuse": false,
+          "tls_ms": 33.99991989135742,
+          "total_ms": 1366.1469221115112,
+          "request_ms": 0.08296966552734375,
+          "sample": "probe-1-ws-stale",
+          "wait_ms": 1298.7509965896606,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=166.0, hand_total;dur=166.0"
+        },
+        {
+          "fetch_to_request_ms": 55.487990379333496,
+          "protocol": "h3",
+          "request_id": "7fccbd15-003f-4166-9366-81b966c24c10",
+          "dns_ms": 3.000020980834961,
+          "connect_ms": 47.00005054473877,
+          "status": 401,
+          "reuse": false,
+          "tls_ms": 46.000003814697266,
+          "total_ms": 209.85698699951172,
+          "request_ms": 0.09393692016601562,
+          "sample": "probe-2-http-invalid",
+          "wait_ms": 145.60997486114502,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0, cfExtPri"
+        },
+        {
+          "fetch_to_request_ms": 60.05895137786865,
+          "protocol": "http/1.1",
+          "request_id": "ba7894d8-1d10-4938-a61b-2c4a6737de35",
+          "dns_ms": 1.000046730041504,
+          "connect_ms": 55.9999942779541,
+          "status": 401,
+          "reuse": false,
+          "tls_ms": 27.99999713897705,
+          "total_ms": 97.04506397247314,
+          "request_ms": 0.0730752944946289,
+          "sample": "probe-2-ws-invalid",
+          "wait_ms": 33.9280366897583,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_total;dur=0.0"
+        },
+        {
+          "fetch_to_request_ms": 39.95800018310547,
+          "protocol": "h3",
+          "request_id": "",
+          "dns_ms": 1.000046730041504,
+          "connect_ms": 34.999966621398926,
+          "status": 200,
+          "reuse": false,
+          "tls_ms": 33.99991989135742,
+          "total_ms": 83.17995071411133,
+          "request_ms": 0.07903575897216797,
+          "sample": "probe-2-http-health",
+          "wait_ms": 40.79389572143555,
+          "server_timing": "cfExtPri"
+        },
+        {
+          "fetch_to_request_ms": 49.60298538208008,
+          "protocol": "http/1.1",
+          "request_id": "",
+          "dns_ms": 1.000046730041504,
+          "connect_ms": 47.00005054473877,
+          "status": 200,
+          "reuse": false,
+          "tls_ms": 31.00001811981201,
+          "total_ms": 651.4099836349487,
+          "request_ms": 0.06604194641113281,
+          "sample": "probe-2-ws-health",
+          "wait_ms": 599.3649959564209,
+          "server_timing": ""
+        },
+        {
+          "fetch_to_request_ms": 47.091007232666016,
+          "protocol": "http/1.1",
+          "request_id": "7cf98bd7-e4a8-4bc3-8c91-84df5ac6d83b",
+          "dns_ms": 1.000046730041504,
+          "connect_ms": 44.99995708465576,
+          "status": 409,
+          "reuse": false,
+          "tls_ms": 28.999924659729004,
+          "total_ms": 949.476957321167,
+          "request_ms": 0.05793571472167969,
+          "sample": "probe-2-ws-stale",
+          "wait_ms": 898.7081050872803,
+          "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=194.0, hand_total;dur=194.0"
+        }
+      ]
+    },
+    "node-health": [
+      {
+        "started_at": "2026-09-16T23:04:46.251Z",
+        "load_average": [
+          41.90478515625,
+          47.3994140625,
+          89.5810546875
+        ],
+        "node": "v24.19.0"
+      },
+      {
+        "kind": "https",
+        "index": 0,
+        "socket_ms": 17.40354099999999,
+        "dns_end_ms": 32.68974999999999,
+        "connect_end_ms": 166.84858300000002,
+        "tls_end_ms": 194.8875,
+        "request_end_ms": 196.82012500000002,
+        "response_ms": 278.203208,
+        "elapsed_ms": 278.239208,
+        "status": 200,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "ws",
+        "index": 0,
+        "socket_ms": 8.224707999999964,
+        "dns_end_ms": 16.442207999999994,
+        "connect_end_ms": 41.768416,
+        "tls_end_ms": 77.62041599999998,
+        "request_end_ms": 77.71862499999997,
+        "response_ms": 704.3199999999999,
+        "elapsed_ms": 704.3205829999999,
+        "status": 200,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "upgrade",
+        "index": 0,
+        "socket_ms": 0.6628330000000915,
+        "dns_end_ms": 6.541417000000138,
+        "connect_end_ms": 26.44425000000001,
+        "tls_end_ms": 55.17879200000016,
+        "request_end_ms": 55.26975000000016,
+        "response_ms": 724.12625,
+        "elapsed_ms": 724.126917,
+        "status": 200,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "https",
+        "index": 1,
+        "socket_ms": 0.5292499999998199,
+        "dns_end_ms": 3.576999999999998,
+        "connect_end_ms": 26.053083000000015,
+        "tls_end_ms": 60.57591699999989,
+        "request_end_ms": 60.690374999999904,
+        "response_ms": 112.55358299999989,
+        "elapsed_ms": 112.55412499999989,
+        "status": 200,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "ws",
+        "index": 1,
+        "socket_ms": 0.6806660000002012,
+        "dns_end_ms": 14.457000000000107,
+        "connect_end_ms": 60.158541000000014,
+        "tls_end_ms": 97.3922500000001,
+        "request_end_ms": 98.61950000000002,
+        "response_ms": 729.7945410000002,
+        "elapsed_ms": 729.795083,
+        "status": 200,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "upgrade",
+        "index": 1,
+        "socket_ms": 0.6075409999998556,
+        "dns_end_ms": 2.3294160000000375,
+        "connect_end_ms": 26.806540999999925,
+        "tls_end_ms": 58.197208000000046,
+        "request_end_ms": 58.294790999999805,
+        "response_ms": 729.304416,
+        "elapsed_ms": 729.3050830000002,
+        "status": 200,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "https",
+        "index": 2,
+        "socket_ms": 0.7846249999997781,
+        "dns_end_ms": 3.9061249999999745,
+        "connect_end_ms": 27.20483400000012,
+        "tls_end_ms": 56.75804199999993,
+        "request_end_ms": 56.910833999999795,
+        "response_ms": 98.32720900000004,
+        "elapsed_ms": 98.32829200000015,
+        "status": 200,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "ws",
+        "index": 2,
+        "socket_ms": 0.6435830000000351,
+        "dns_end_ms": 4.84729200000038,
+        "connect_end_ms": 24.492917000000034,
+        "tls_end_ms": 58.49287500000037,
+        "request_end_ms": 58.58125000000018,
+        "response_ms": 102.99366700000019,
+        "elapsed_ms": 102.99420800000007,
+        "status": 200,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "upgrade",
+        "index": 2,
+        "socket_ms": 0.9967079999996713,
+        "dns_end_ms": 12.16012499999988,
+        "connect_end_ms": 36.560207999999875,
+        "tls_end_ms": 67.48383299999978,
+        "request_end_ms": 67.56849999999986,
+        "response_ms": 643.029333,
+        "elapsed_ms": 643.0334580000003,
+        "status": 200,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "https",
+        "index": 3,
+        "socket_ms": 0.6203330000007554,
+        "dns_end_ms": 3.425000000000182,
+        "connect_end_ms": 22.895042000000103,
+        "tls_end_ms": 55.19954200000029,
+        "request_end_ms": 55.30095800000072,
+        "response_ms": 945.8391250000004,
+        "elapsed_ms": 945.8543750000008,
+        "status": 200,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "ws",
+        "index": 3,
+        "socket_ms": 1.232125000000451,
+        "dns_end_ms": 4.644500000000335,
+        "connect_end_ms": 20.213708000000224,
+        "tls_end_ms": 49.62129199999981,
+        "request_end_ms": 49.71362500000032,
+        "response_ms": 631.459417,
+        "elapsed_ms": 631.4602500000001,
+        "status": 200,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "upgrade",
+        "index": 3,
+        "socket_ms": 0.6999589999995806,
+        "dns_end_ms": 3.5426669999997102,
+        "connect_end_ms": 28.265292000000045,
+        "tls_end_ms": 52.31437499999993,
+        "request_end_ms": 52.421542000000045,
+        "response_ms": 717.0702499999998,
+        "elapsed_ms": 717.0709589999997,
+        "status": 200,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      }
+    ],
+    "node-finite-no-io": [
+      {
+        "started_at": "2026-09-16T23:06:42.076Z",
+        "load_average": [
+          43.27001953125,
+          46.04248046875,
+          83.6845703125
+        ],
+        "node": "v24.19.0"
+      },
+      {
+        "kind": "https",
+        "index": 0,
+        "socket_ms": 8.876292,
+        "dns_end_ms": 12.837167,
+        "connect_end_ms": 33.120791999999994,
+        "tls_end_ms": 59.338042,
+        "request_end_ms": 59.513374999999996,
+        "response_ms": 97.06675,
+        "elapsed_ms": 97.098875,
+        "status": 409,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "ws",
+        "index": 0,
+        "socket_ms": 1.273165999999975,
+        "dns_end_ms": 2.7098749999999825,
+        "connect_end_ms": 20.70399999999998,
+        "tls_end_ms": 58.790249999999986,
+        "request_end_ms": 58.90549999999999,
+        "response_ms": 169.18475,
+        "elapsed_ms": 169.185333,
+        "status": 409,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "upgrade",
+        "index": 0,
+        "socket_ms": 0.7255409999999642,
+        "dns_end_ms": 2.9196249999999964,
+        "connect_end_ms": 23.594625000000008,
+        "tls_end_ms": 127.179375,
+        "request_end_ms": 127.51333299999999,
+        "response_ms": 222.93449999999996,
+        "elapsed_ms": 222.93591600000002,
+        "status": 409,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "https",
+        "index": 1,
+        "socket_ms": 0.5043749999999818,
+        "dns_end_ms": 2.062708999999927,
+        "connect_end_ms": 23.178874999999948,
+        "tls_end_ms": 54.27441699999997,
+        "request_end_ms": 54.34695899999997,
+        "response_ms": 102.31958399999996,
+        "elapsed_ms": 102.32104199999992,
+        "status": 409,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "ws",
+        "index": 1,
+        "socket_ms": 3.4966249999999945,
+        "dns_end_ms": 6.465208000000075,
+        "connect_end_ms": 26.80362500000001,
+        "tls_end_ms": 93.68525,
+        "request_end_ms": 93.87170800000001,
+        "response_ms": 217.73195800000008,
+        "elapsed_ms": 217.733291,
+        "status": 409,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "upgrade",
+        "index": 1,
+        "socket_ms": 1.6749169999999367,
+        "dns_end_ms": 8.234417000000008,
+        "connect_end_ms": 101.44849999999997,
+        "tls_end_ms": 129.568667,
+        "request_end_ms": 129.72254199999998,
+        "response_ms": 245.83199999999988,
+        "elapsed_ms": 245.832584,
+        "status": 409,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "https",
+        "index": 2,
+        "socket_ms": 0.6134999999999309,
+        "dns_end_ms": 2.163041999999905,
+        "connect_end_ms": 22.59720799999991,
+        "tls_end_ms": 74.23454199999992,
+        "request_end_ms": 74.32316700000001,
+        "response_ms": 108.53320799999983,
+        "elapsed_ms": 108.5346669999999,
+        "status": 409,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "ws",
+        "index": 2,
+        "socket_ms": 1.5579159999999774,
+        "dns_end_ms": 3.94787499999984,
+        "connect_end_ms": 25.743540999999823,
+        "tls_end_ms": 57.49604099999988,
+        "request_end_ms": 57.66020800000001,
+        "response_ms": 176.46962499999995,
+        "elapsed_ms": 176.47020799999996,
+        "status": 409,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "upgrade",
+        "index": 2,
+        "socket_ms": 0.5829170000001795,
+        "dns_end_ms": 2.8963750000000346,
+        "connect_end_ms": 112.07791700000007,
+        "tls_end_ms": 141.69229200000018,
+        "request_end_ms": 141.7722080000001,
+        "response_ms": 248.096,
+        "elapsed_ms": 248.096542,
+        "status": 409,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "https",
+        "index": 3,
+        "socket_ms": 0.5447920000001432,
+        "dns_end_ms": 2.223750000000109,
+        "connect_end_ms": 24.06775000000016,
+        "tls_end_ms": 50.41045900000017,
+        "request_end_ms": 50.51950000000011,
+        "response_ms": 92.55037500000003,
+        "elapsed_ms": 92.55112499999996,
+        "status": 409,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "ws",
+        "index": 3,
+        "socket_ms": 0.5616250000000491,
+        "dns_end_ms": 2.5032920000001013,
+        "connect_end_ms": 21.007125000000087,
+        "tls_end_ms": 48.308042000000114,
+        "request_end_ms": 48.39604200000008,
+        "response_ms": 149.830375,
+        "elapsed_ms": 149.8307920000002,
+        "status": 409,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      },
+      {
+        "kind": "upgrade",
+        "index": 3,
+        "socket_ms": 2.1764169999999012,
+        "dns_end_ms": 3.450749999999971,
+        "connect_end_ms": 23.29758300000003,
+        "tls_end_ms": 129.19512499999996,
+        "request_end_ms": 129.24637499999994,
+        "response_ms": 241.436917,
+        "elapsed_ms": 241.43766700000015,
+        "status": 409,
+        "cf_colo": "SJC",
+        "http_version": "1.1",
+        "reused": false
+      }
+    ],
+    "native-finite-no-io": {
+      "started_at": "2026-09-16T23:06:40Z",
+      "metrics": [
+        {
+          "server_timing": "cfExtPri",
+          "sample": "probe-0-https",
+          "reuse": false,
+          "protocol": "h3",
+          "dns_ms": 1.000046730041504,
+          "request_id": "",
+          "status": 409,
+          "tls_ms": 38.99991512298584,
+          "total_ms": 80.56998252868652,
+          "fetch_to_request_ms": 47.92201519012451,
+          "request_ms": 0.1590251922607422,
+          "connect_ms": 39.999961853027344,
+          "wait_ms": 30.261993408203125
+        },
+        {
+          "total_ms": 267.6990032196045,
+          "dns_ms": 0,
+          "request_ms": 0.041961669921875,
+          "protocol": "http/1.1",
+          "status": 409,
+          "tls_ms": 34.00003910064697,
+          "fetch_to_request_ms": 67.15202331542969,
+          "request_id": "",
+          "server_timing": "",
+          "connect_ms": 65.00005722045898,
+          "reuse": false,
+          "sample": "probe-0-ws",
+          "wait_ms": 197.8360414505005
+        },
+        {
+          "total_ms": 85.4640007019043,
+          "dns_ms": 1.000046730041504,
+          "request_ms": 0.06306171417236328,
+          "protocol": "h3",
+          "status": 409,
+          "tls_ms": 32.99999237060547,
+          "fetch_to_request_ms": 37.04798221588135,
+          "request_id": "",
+          "server_timing": "cfExtPri",
+          "connect_ms": 34.00003910064697,
+          "reuse": false,
+          "sample": "probe-1-https",
+          "wait_ms": 45.53794860839844
+        },
+        {
+          "total_ms": 164.436936378479,
+          "dns_ms": 1.000046730041504,
+          "request_ms": 0.15401840209960938,
+          "protocol": "http/1.1",
+          "status": 409,
+          "tls_ms": 34.999966621398926,
+          "fetch_to_request_ms": 56.0380220413208,
+          "request_id": "",
+          "server_timing": "",
+          "connect_ms": 52.99997329711914,
+          "reuse": false,
+          "sample": "probe-1-ws",
+          "wait_ms": 102.15699672698975
+        },
+        {
+          "sample": "probe-2-https",
+          "fetch_to_request_ms": 59.68892574310303,
+          "reuse": false,
+          "tls_ms": 49.99995231628418,
+          "request_ms": 0.0749826431274414,
+          "server_timing": "cfExtPri",
+          "dns_ms": 1.000046730041504,
+          "wait_ms": 46.208977699279785,
+          "status": 409,
+          "request_id": "",
+          "total_ms": 111.72592639923096,
+          "protocol": "h3",
+          "connect_ms": 50.999999046325684
+        },
+        {
+          "sample": "probe-2-ws",
+          "fetch_to_request_ms": 58.15696716308594,
+          "reuse": false,
+          "tls_ms": 31.00001811981201,
+          "request_ms": 0.033020973205566406,
+          "server_timing": "",
+          "dns_ms": 1.999974250793457,
+          "wait_ms": 111.37700080871582,
+          "status": 409,
+          "request_id": "",
+          "total_ms": 173.92194271087646,
+          "protocol": "http/1.1",
+          "connect_ms": 54.000020027160645
+        },
+        {
+          "sample": "probe-3-https",
+          "fetch_to_request_ms": 46.55301570892334,
+          "reuse": false,
+          "tls_ms": 39.00003433227539,
+          "request_ms": 0.14507770538330078,
+          "server_timing": "cfExtPri",
+          "dns_ms": 1.000046730041504,
+          "wait_ms": 41.83399677276611,
+          "status": 409,
+          "request_id": "",
+          "total_ms": 95.69907188415527,
+          "protocol": "h3",
+          "connect_ms": 41.00000858306885
+        }
+      ],
+      "results": [
+        {
+          "sample": "probe-0-https",
+          "elapsed_ms": 84.48004722595215,
+          "outcome": "finite"
+        },
+        {
+          "sample": "probe-0-ws",
+          "elapsed_ms": 269.631028175354,
+          "outcome": "rejected"
+        },
+        {
+          "sample": "probe-1-https",
+          "elapsed_ms": 85.92498302459717,
+          "outcome": "finite"
+        },
+        {
+          "sample": "probe-1-ws",
+          "elapsed_ms": 164.8350954055786,
+          "outcome": "rejected"
+        },
+        {
+          "sample": "probe-2-https",
+          "elapsed_ms": 112.57600784301758,
+          "outcome": "finite"
+        },
+        {
+          "sample": "probe-2-ws",
+          "elapsed_ms": 174.32498931884766,
+          "outcome": "rejected"
+        },
+        {
+          "sample": "probe-3-https",
+          "elapsed_ms": 96.53604030609131,
+          "outcome": "finite"
+        },
+        {
+          "sample": "probe-3-ws",
+          "elapsed_ms": 230.27300834655762,
+          "outcome": "rejected"
+        }
+      ],
+      "note": "Last websocket task metric callback not delivered before process exit; completion timer retained."
+    }
+  }
+}

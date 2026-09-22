@@ -63,6 +63,12 @@ export async function downloadRepositoryArchive(
       }
       if (entry.header.type !== "directory" && entry.header.type !== "file") {
         await entry.body.cancel();
+        if (entry.header.type === "symlink") {
+          throw Object.assign(new Error(
+            "repository archive contains symbolic links, which this workspace cannot preserve; "
+            + "cloning into the requested destination requires symlink support in the workspace backend",
+          ), { code: "ERR_ARCHIVE_SYMLINK_UNSUPPORTED" });
+        }
         throw new Error(`repository archive entry type '${entry.header.type}' is unsupported`);
       }
       if (parts.length === 1) { await entry.body.cancel(); continue; }

@@ -1,3 +1,5 @@
+import { LINK_PATH } from "./connectors/link";
+import { chatGptFailoverSocket, chatGptLimitReset } from "./chatgpt-failover";
 import { WorkerEntrypoint } from "cloudflare:workers";
 import {
   AgentSubjectDirectory,
@@ -9,6 +11,7 @@ import {
   validChatGptCredentialImport,
   validateMaterializedVaultEntry,
   validateVaultEntryPayload,
+  validBrowserOrigin,
 } from "./broker";
 import {
   BROWSER_COOKIE_JAR_ID,
@@ -89,14 +92,14 @@ const PRIVATE_HOST_SUFFIXES = [
   ".internal", ".invalid", ".local", ".localhost", ".test", ".home.arpa",
 ];
 const VAULT_PROVIDER_HOSTS = new Set([
-  "api.github.com", "api.openai.com", "api.x.com", "api.spotify.com", "api.soundcloud.com", "chatgpt.com",
+  "api.github.com", "api.openai.com", "api.x.com", "api.spotify.com", "api.soundcloud.com", "api.link.com", "chatgpt.com",
   "calendar.googleapis.com", "docs.googleapis.com", "gmail.googleapis.com",
   "people.googleapis.com", "sheets.googleapis.com", "slack.com",
   "slides.googleapis.com", "tasks.googleapis.com", "www.googleapis.com",
 ]);
 const RELAY_CAPABILITY_PATH = /^\/v1\/[A-Za-z0-9_-]{43,}$/;
 const RELAY_HTTP_ROUTES: Readonly<Record<ModelOperation["id"], string | undefined>> = {
-  responses: undefined,
+  responses: "codex-responses",
   search: "codex-web-search",
   "image-generation": "codex-image-generation",
   "image-edit": "codex-image-edit",
@@ -106,7 +109,7 @@ const RELAY_HTTP_ROUTES: Readonly<Record<ModelOperation["id"], string | undefine
 
 type ConnectorOperation = Readonly<{
   id: "github" | "gmail" | "gdrive" | "gcalendar" | "gtasks" | "gdocs"
-    | "gsheets" | "gslides" | "gcontacts" | "slack" | "x" | "spotify" | "soundcloud";
+    | "gsheets" | "gslides" | "gcontacts" | "slack" | "x" | "spotify" | "soundcloud" | "link";
   origin: `https://${string}`;
   paths: readonly RegExp[];
 }>;
@@ -124,6 +127,7 @@ type VaultEgressEnvelope = Readonly<{
 }>;
 
 const CONNECTOR_OPERATIONS: readonly ConnectorOperation[] = [
+  { id: "link", origin: "https://api.link.com", paths: [LINK_PATH] },
   {
     id: "github",
     origin: "https://github.com",
@@ -285,7 +289,7 @@ export class SessionModelEgress extends WorkerEntrypoint<EgressEnv> {
     const owner = request.headers.get(SESSION_MODEL_OWNER_HEADER);
     const subject = request.headers.get(SUBJECT_HEADER);
     if (request.url !== "https://nanocodex.internal/v1/responses"
-      || request.method !== "GET" || !owner || !USER_ID.test(owner)
+      || (request.method !== "GET" && request.method !== "POST") || !owner || !USER_ID.test(owner)
       || !subject || !MANAGED_SESSION_SUBJECT.test(subject)) {
       return Promise.resolve(jsonError(403, "invalid_session_model_authority"));
     }
@@ -308,6 +312,14 @@ type ModelOperation = Readonly<{
 }>;
 
 const OPERATIONS: readonly ModelOperation[] = [
+  {
+    id: "responses",
+    method: "POST",
+    path: "/v1/responses",
+    websocket: false,
+    openai: "https://api.openai.com/v1/responses",
+    chatgpt: "https://chatgpt.com/backend-api/codex/responses",
+  },
   {
     id: "responses",
     method: "GET",
@@ -399,6 +411,29 @@ async function handleEgressWithOwner(
     return handlePublicEgress(request, env, upstreamFetch);
   }
 
+  // Service-binding only. The model HTTP gateway never routes this origin.
+  if (url.origin === "https://browser-vault.internal" && url.pathname === "/v1/login" && !url.search) {
+    if (request.method !== "POST") return jsonError(405, "method_not_allowed");
+    const subject = request.headers.get(SUBJECT_HEADER);
+    if (!subject || !SUBJECT.test(subject) || !isJsonContentType(request.headers.get("content-type"))) {
+      return jsonError(403, "vault_browser_denied");
+    }
+    try {
+      const body: unknown = JSON.parse(await readBoundedText(request, 4096));
+      if (!isRecord(body) || Object.keys(body).length !== 2
+        || typeof body.vault_id !== "string" || !VAULT_ENTRY_ID.test(body.vault_id)
+        || !validBrowserOrigin(body.expected_origin)) return jsonError(400, "invalid_request");
+      const owner = await resolveSubject(env, subject);
+      const entry = await resolveVaultEntry(env, owner, body.vault_id);
+      if (entry.kind !== "login" || entry.browser_origin !== body.expected_origin) {
+        return jsonError(403, "vault_browser_origin_not_approved");
+      }
+      return Response.json({ username: entry.username, password: entry.password }, {
+        headers: { "cache-control": "no-store" },
+      });
+    } catch { return jsonError(403, "vault_browser_denied"); }
+  }
+
   if (url.protocol === "https:" && url.hostname === "vault-egress.internal" && !url.port
     && url.pathname === "/v1/request" && !url.search) {
     return handleVaultEgress(request, url, env, started, upstreamFetch);
@@ -415,7 +450,10 @@ async function handleEgressWithOwner(
   }
   const connector = connectorOperation(url);
   if (connector) return handleConnectorEgress(request, url, connector, env, started);
-  if (url.search) return jsonError(403, "destination_denied");
+  const linkPoll = request.method === "GET"
+    && /^\/users\/[A-Za-z0-9][A-Za-z0-9._:-]{0,127}\/connectors\/link$/.test(url.pathname)
+    && /^\?attempt=[A-Za-z0-9_-]{43}$/.test(url.search);
+  if (url.search && !linkPoll) return jsonError(403, "destination_denied");
 
   if (url.pathname.startsWith("/subjects/") || url.pathname.startsWith("/users/")) {
     const response = await handleControl(request, url, env);
@@ -454,7 +492,8 @@ async function handleEgressWithOwner(
       || !responseHeadersValid || !realtimeHeadersValid) {
       return auditedError(403, "required_header_mismatch", request, url, operation.id, started);
     }
-  } else if (request.headers.get("content-type")?.toLowerCase() !== "application/json") {
+  } else if (request.headers.get("content-type")?.toLowerCase() !== "application/json"
+    || (operation.id === "responses" && request.headers.has("upgrade"))) {
     return auditedError(403, "required_header_mismatch", request, url, operation.id, started);
   }
 
@@ -466,9 +505,13 @@ async function handleEgressWithOwner(
     userId = sessionModelAuthority?.owner ?? (operation.id === "realtime-call" && verifiedVoiceOwner?.subject === subject
       ? verifiedVoiceOwner.userId : await resolveSubject(env, subject));
     const subjectResolvedAt = Date.now();
-    const sponsoredDemo = EPHEMERAL_BROWSER_MODEL_SUBJECT.test(subject)
+    const accountId = request.headers.get("x-nanocodex-chatgpt-account-id") ?? undefined;
+    if (accountId !== undefined && !/^[\x21-\x7e]{1,256}$/.test(accountId)) {
+      return jsonError(400, "invalid_chatgpt_account");
+    }
+    const sponsoredDemo = !accountId && EPHEMERAL_BROWSER_MODEL_SUBJECT.test(subject)
       && operation.id === "responses";
-    let credential = await resolveCredential(env, userId, false, undefined, sponsoredDemo);
+    let credential = await resolveCredential(env, userId, false, undefined, sponsoredDemo, accountId);
     const credentialResolvedAt = Date.now();
     const credentialBrokerMs = credential.broker_ms;
     const credentialBrokerActivationMs = credential.broker_activation_ms;
@@ -479,6 +522,12 @@ async function handleEgressWithOwner(
         user_id: userId,
         deployment_sha: env.DEPLOYMENT_SHA,
       });
+    }
+    // Sponsored admission is enforced per response.create frame, including
+    // continuation grants and interrupted-attempt fencing. Until HTTPS has the
+    // same lifecycle, reject before dispatch; a POST must never bypass metering.
+    if (credential.source === "sponsored" && operation.id === "responses" && !operation.websocket) {
+      throw new EgressFailure(409, "sponsored_https_unavailable");
     }
     let sponsoredConnectionId = credential.source === "sponsored" && operation.id === "responses"
       ? await acquireSponsoredConnection(env, userId)
@@ -504,6 +553,7 @@ async function handleEgressWithOwner(
           true,
           credential.revision,
           sponsoredDemo,
+          accountId,
         );
         if (operation.chatGptOnly && credential.kind !== "chatgpt") {
           return auditedError(409, "chatgpt_credential_required", request, url, operation.id, started, {
@@ -522,6 +572,32 @@ async function handleEgressWithOwner(
         );
         recovered = true;
       }
+      let rejectionBody: unknown;
+      const attemptedAccounts = new Set<string>();
+      while (upstream.status === 429 && credential.kind === "chatgpt"
+        && credential.source === "user" && credential.accountId
+        && !attemptedAccounts.has(credential.accountId)) {
+        attemptedAccounts.add(credential.accountId);
+        let resetAt: number | undefined;
+        try {
+          rejectionBody = JSON.parse(await readBoundedText(upstream, 64 * 1024));
+          resetAt = chatGptLimitReset(rejectionBody, upstream.headers.get("retry-after"));
+        } catch { /* An unrecognized rejection must not switch accounts. */ }
+        if (!resetAt) break;
+        if (!await reportChatGptLimit(env, userId, credential, resetAt, !accountId)) {
+          return auditedError(429, accountId ? "chatgpt_account_exhausted" : "chatgpt_accounts_exhausted", request, url, operation.id, started, {
+            user_id: userId, deployment_sha: env.DEPLOYMENT_SHA,
+          });
+        }
+        credential = await resolveCredential(env, userId, false);
+        if (credential.kind !== "chatgpt" || !credential.accountId
+          || attemptedAccounts.has(credential.accountId)) break;
+        rejectionBody = undefined;
+        upstream = await fetchUpstream(env, userId, credential, operation,
+          buildUpstreamRequest(request, env, operation, credential, body), upstreamFetch,
+          request.headers.get("x-nanocodex-voice-region"));
+        recovered = true;
+      }
       if (REDIRECT_STATUS.has(upstream.status)) {
         await cancelResponseBody(upstream);
         return auditedError(502, "upstream_redirect_blocked", request, url, operation.id, started, {
@@ -531,6 +607,28 @@ async function handleEgressWithOwner(
       }
       if (upstream.status >= 400) {
         const upstreamStatus = upstream.status;
+        if (operation.id === "responses") {
+          // Keep model HTTP/handshake failures distinguishable and correctly retryable.
+          // Provider messages may echo input or credentials; project known codes only.
+          if (!upstream.bodyUsed) {
+            try { rejectionBody = JSON.parse(await readBoundedText(upstream, 64 * 1024)); }
+            catch { /* Malformed, oversized, or failed bodies retain their HTTP status. */ }
+          }
+          const diagnostic = modelRejectionDiagnostic(rejectionBody);
+          const { code } = diagnostic;
+          audit(upstreamStatus >= 500 ? "error" : "deny", request, url, operation.id, started, {
+            code, status: upstreamStatus, upstream_status: upstreamStatus,
+            deployment_sha: env.DEPLOYMENT_SHA,
+          });
+          const response = json({
+            error: { ...diagnostic, message: diagnostic.message ?? `Upstream model request rejected (HTTP ${upstreamStatus}; ${code}).` },
+            upstream_status: upstreamStatus,
+          }, upstreamStatus);
+          const retryAfter = upstream.headers.get("retry-after");
+          if (retryAfter && /^\d{1,8}$/.test(retryAfter)) response.headers.set("retry-after", retryAfter);
+          await cancelResponseBody(upstream);
+          return response;
+        }
         await cancelResponseBody(upstream);
         return auditedError(
           upstreamStatus === 429 ? 503 : 502,
@@ -578,6 +676,12 @@ async function handleEgressWithOwner(
         );
         sponsoredConnectionId = undefined;
         return response;
+      }
+      if (credential.kind === "chatgpt" && credential.source === "user"
+        && operation.id === "responses" && upstream.status === 101) {
+        const socketCredential = credential;
+        return chatGptFailoverSocket(upstream, sanitizedUpstreamHeaders(upstream.headers),
+          (resetAt) => reportChatGptLimit(env, userId!, socketCredential, resetAt, !accountId), ctx);
       }
       return sanitizeUpstreamResponse(upstream);
     } finally {
@@ -1983,23 +2087,25 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
   }
 
   const connectorMatch = url.pathname.match(
-    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/connectors(?:\/(github|google|gmail|gdrive|slack|x|spotify|soundcloud)(?:\/(callback)|\/connections\/([A-Za-z0-9_-]{43}))?)?$/,
+    /^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/connectors(?:\/(github|google|gmail|gdrive|slack|x|spotify|soundcloud|link)(?:\/(callback)|\/connections\/([A-Za-z0-9_-]{43}))?)?$/,
   );
   if (connectorMatch) {
     const userId = connectorMatch[1]!;
     const connector = connectorMatch[2];
     const callback = connectorMatch[3] === "callback";
     const connectionId = connectorMatch[4];
+    const linkPoll = connector === "link" && request.method === "GET" && !callback && !connectionId;
+    if (linkPoll && (!/^[A-Za-z0-9_-]{43}$/.test(url.searchParams.get("attempt") ?? "") || [...url.searchParams.keys()].some(key => key !== "attempt"))) return jsonError(400, "invalid_request");
     const target = connector
       ? `https://connectors.internal/v1/${connector}${callback
         ? "/callback"
-        : connectionId ? `/connections/${connectionId}` : request.method === "POST" ? "/start" : ""}`
+        : connectionId ? `/connections/${connectionId}` : request.method === "POST" ? "/start" : linkPoll ? url.search : ""}`
       : "https://connectors.internal/v1/status";
     if ((!connector && request.method !== "GET")
       || (connector && callback && request.method !== "POST")
       || (connectionId && request.method !== "DELETE")
       || (connector && !callback && !connectionId
-        && request.method !== "POST" && request.method !== "DELETE")) {
+        && request.method !== "POST" && request.method !== "DELETE" && !linkPoll)) {
       return jsonError(405, "method_not_allowed");
     }
     return connectorBroker(env, userId).fetch(target, {
@@ -2015,6 +2121,14 @@ async function handleControl(request: Request, url: URL, env: EgressEnv): Promis
   if (vaultOwner) {
     if (request.method !== "GET") return jsonError(405, "method_not_allowed");
     return userBroker(env, vaultOwner).fetch("https://credentials.internal/v1/vault");
+  }
+
+  const vaultOrigin = url.pathname.match(/^\/users\/([A-Za-z0-9][A-Za-z0-9._:-]{0,127})\/credentials\/vault\/login\/([A-Za-z0-9_-]{22,64})\/origin$/);
+  if (vaultOrigin) {
+    if (request.method !== "PUT") return jsonError(405, "method_not_allowed");
+    return userBroker(env, vaultOrigin[1]!).fetch(`https://credentials.internal/v1/vault/login/${vaultOrigin[2]}/origin`, {
+      method: "PUT", headers: { "content-type": request.headers.get("content-type") ?? "" }, body: request.body,
+    });
   }
 
   const vaultMatch = url.pathname.match(
@@ -2298,6 +2412,11 @@ function buildUpstreamRequest(
     headers.set("thread-id", threadId);
     headers.set("user-agent", "codex_cli_rs/0.0.0");
   }
+  if (operation.id === "responses" && !operation.websocket) {
+    headers.delete("openai-beta");
+    headers.set("content-type", "application/json");
+    headers.set("accept", "text/event-stream");
+  }
   headers.set("authorization", `Bearer ${credential.secret}`);
   if (credential.kind === "chatgpt") {
     if (!credential.accountId) throw new EgressFailure(503, "credential_field_unavailable");
@@ -2317,6 +2436,7 @@ function buildUpstreamRequest(
     body,
     cache: "no-store",
     redirect: "manual",
+    signal: original.signal,
   });
 }
 
@@ -2394,6 +2514,7 @@ async function fetchUpstream(
       headers: request.headers,
       body: request.body,
       redirect: "manual",
+      signal: request.signal,
     }));
   }
   const environment = env.ENVIRONMENT?.trim().toLowerCase();
@@ -2489,20 +2610,38 @@ async function subjectUser(response: Response): Promise<string> {
   return userId!;
 }
 
+async function reportChatGptLimit(
+  env: EgressEnv,
+  userId: string,
+  credential: UserCredentialSnapshot,
+  resetAt: number,
+  select = true,
+): Promise<boolean> {
+  const response = await userBroker(env, userId).fetch("https://credentials.internal/v1/chatgpt/limit", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ account_id: credential.accountId, revision: credential.revision, reset_at: resetAt, select }),
+  });
+  if (!response.ok) { await cancelResponseBody(response); return false; }
+  const value = await response.json<{ available?: boolean }>();
+  return value.available === true;
+}
+
 async function resolveCredential(
   env: EgressEnv,
   userId: string,
   recover: boolean,
   revision?: number,
   allowSponsored = false,
+  accountId?: string,
 ): Promise<ResolvedModelCredential> {
   try {
-    const credential = await resolveUserCredential(env, userId, recover, revision);
+    const credential = await resolveUserCredential(env, userId, recover, revision, accountId);
     if (!isLegacyLocalBootstrapCredential(env, userId, credential)) {
       return { ...credential, source: "user" };
     }
   } catch (error) {
-    if (!(error instanceof EgressFailure) || error.status !== 409) throw error;
+    if (accountId || !(error instanceof EgressFailure) || error.status !== 409) throw error;
   }
   if (!allowSponsored) throw new EgressFailure(409, "user_credential_unavailable");
   return { ...await resolveSponsoredChatGptCredential(env, recover, revision), source: "sponsored" };
@@ -2574,10 +2713,12 @@ async function resolveUserCredential(
   userId: string,
   recover: boolean,
   revision?: number,
+  accountId?: string,
 ): Promise<UserCredentialSnapshot & Pick<ResolvedModelCredential, "broker_ms" | "broker_activation_ms" | "broker_age_ms" | "broker_resolve_id">> {
-  const result = await userBroker(env, userId).resolveModelCredential(recover, revision);
+  const result = await userBroker(env, userId).resolveModelCredential(recover, revision, accountId);
   if (result.status < 200 || result.status >= 300) {
-    throw new EgressFailure(result.status === 404 ? 409 : 503, "user_credential_unavailable");
+    if (result.status === 429) throw new EgressFailure(429, accountId ? "chatgpt_account_exhausted" : "chatgpt_accounts_exhausted");
+    throw new EgressFailure(result.status === 404 ? 409 : 503, accountId ? "chatgpt_account_unavailable" : "user_credential_unavailable");
   }
   const value = result.credential;
   if (!value || (value.kind !== "openai" && value.kind !== "chatgpt") || !value.secret
@@ -2712,6 +2853,50 @@ function isJsonContentType(value: string | null): boolean {
 function json(body: unknown, status: number): Response {
   return Response.json(body, { status, headers: { "cache-control": "no-store", pragma: "no-cache" } });
 }
+// A closed vocabulary prevents arbitrary provider response content crossing egress.
+const MODEL_REJECTION_CODES = new Set([
+  "context_length_exceeded", "invalid_request_error", "invalid_value", "invalid_image",
+  "invalid_encrypted_content", "invalid_api_key", "authentication_error",
+  "permission_denied", "model_not_found", "rate_limit_exceeded",
+  "usage_limit_reached", "usage_limit_exceeded", "insufficient_quota",
+  "server_error", "internal_server_error", "overloaded_error",
+  "server_is_overloaded", "slow_down", "websocket_connection_limit_reached",
+  "invalid_function_parameters", "previous_response_not_found",
+  "usage_not_included", "cyber_policy", "misalignment_policy_violation",
+  "invalid_prompt", "bio_policy",
+]);
+function modelRejectionDiagnostic(body: unknown): { code: string; type?: string; param?: string; message?: string } {
+  const diagnostic: { code: string; type?: string; param?: string; message?: string } = { code: "upstream_rejected" };
+  if (!isRecord(body)) return diagnostic;
+  const error = isRecord(body.error) ? body.error
+    : isRecord(body.response) && isRecord(body.response.error) ? body.response.error : body;
+  for (const code of [error.code, error.type]) {
+    if (typeof code === "string" && MODEL_REJECTION_CODES.has(code)) {
+      diagnostic.code = code;
+      break;
+    }
+  }
+  if (typeof error.type === "string" && MODEL_REJECTION_CODES.has(error.type)) diagnostic.type = error.type;
+  // Codex recognizes this older image-decoding failure by a fixed diagnostic.
+  // Emit only that constant, never the provider's suffix or reflected input.
+  const invalidImage = "The image data you provided does not represent a valid image";
+  if (!["misalignment_policy_violation", "cyber_policy", "bio_policy", "context_length_exceeded"].includes(diagnostic.code)
+    && typeof error.message === "string" && error.message.includes(invalidImage)) {
+    diagnostic.code = "invalid_image";
+    diagnostic.message = invalidImage;
+  }
+  // Preserve recovery selectors, never arbitrary field names or provider messages.
+  if (typeof error.param === "string" && error.param.length <= 256) {
+    if (/^input\[\d{1,9}\]\.(?:(?:output|content)\[\d{1,9}\]\.)?image_url$/.test(error.param)) {
+      diagnostic.param = error.param;
+    } else {
+      const schema = error.param.match(/^input\[\d{1,9}\](?:\.tools\[\d{1,9}\])+\.parameters(?:$|[.\[])/);
+      if (schema) diagnostic.param = schema[0].replace(/[.\[]$/, "");
+    }
+  }
+  return diagnostic;
+}
+
 function jsonError(status: number, error: string): Response { return json({ error }, status); }
 
 class EgressFailure extends Error {
@@ -2750,7 +2935,7 @@ function auditControl(
   const subject = url.pathname.startsWith("/subjects/");
   const tail = user?.[3];
   const connector = user?.[2] === "connectors"
-    ? tail?.match(/^(github|google|gmail|gdrive|slack|x|spotify|soundcloud)/)?.[1]
+    ? tail?.match(/^(github|google|gmail|gdrive|slack|x|spotify|soundcloud|link)/)?.[1]
     : undefined;
   const log = status >= 500 ? console.error : status >= 400 ? console.warn : console.info;
   log({
@@ -2776,7 +2961,7 @@ function audit(
   const connector = rule === "github" || rule === "gmail" || rule === "gdrive"
     || rule === "gcalendar" || rule === "gtasks" || rule === "gdocs"
     || rule === "gsheets" || rule === "gslides" || rule === "gcontacts"
-    || rule === "slack" || rule === "x" || rule === "spotify" || rule === "soundcloud" || rule === "mcp";
+    || rule === "slack" || rule === "x" || rule === "spotify" || rule === "soundcloud" || rule === "link" || rule === "mcp";
   const log = action === "error" ? console.error : action === "deny" ? console.warn : console.info;
   const safeDetail = {
     ...(typeof detail.voice_session_id === "string" && /^[0-9a-f-]{36}$/.test(detail.voice_session_id)

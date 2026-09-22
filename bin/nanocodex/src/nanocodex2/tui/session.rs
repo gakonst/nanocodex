@@ -10,7 +10,7 @@ use std::{path::PathBuf, time::Duration};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub(crate) struct SessionSummary {
     pub(crate) session_id: String,
-    pub(crate) started_at_unix_ms: u64,
+    pub(crate) updated_at_unix_ms: u64,
     pub(crate) model: String,
     pub(crate) effort: ReasoningEffort,
     pub(crate) reasoning_mode: ReasoningMode,
@@ -26,11 +26,11 @@ pub(crate) struct RecentPrompt {
     pub(crate) workspace: PathBuf,
 }
 
-pub(crate) fn format_age(started_at_unix_ms: u64) -> String {
+pub(crate) fn format_age(updated_at_unix_ms: u64) -> String {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default();
-    let started = Duration::from_millis(started_at_unix_ms);
+    let started = Duration::from_millis(updated_at_unix_ms);
     let age = now.saturating_sub(started);
     if age.as_secs() < 60 {
         return "now".to_owned();

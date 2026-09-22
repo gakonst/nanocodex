@@ -2,7 +2,7 @@
 // admission limit: one input may occupy any number of rows.
 const CHUNK_CODE_UNITS = 256_000;
 const REFERENCE_PREFIX = "chunks:";
-type InputChunkTable = "managed_turn_input_chunks" | "managed_cron_input_chunks" | "durable_memory_content_chunks" | "managed_turn_terminal_chunks" | "managed_history_projection_chunks";
+type InputChunkTable = "extension_memory_file_chunks" | "managed_turn_input_chunks" | "managed_cron_input_chunks" | "durable_memory_content_chunks" | "managed_turn_terminal_chunks" | "managed_history_projection_chunks";
 
 export function* inputChunks(input: string): Generator<string> {
   for (let offset = 0; offset < input.length;) {

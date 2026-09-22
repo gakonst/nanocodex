@@ -1,0 +1,2837 @@
+{
+  "baseline_managed_version": "30220bd9-b9f8-414e-90c9-625843a452cb",
+  "after_managed_version": "a0afbf49-c783-4803-9320-8498def61e38",
+  "baseline_source": "1dada0ac3",
+  "after_source": "8f41f2cfd",
+  "runtime_note": "Same published925 Linux runtime and service PIDs throughout; Worker deploys reconnected sockets. Absolute clocks across Worker isolates and Linux are not subtracted. Baseline1 has API/factory logs but no VM stage tail; all later samples are traced.",
+  "cohorts": [
+    {
+      "name": "baseline1",
+      "agent": "01a0ac6b-d76c-7a04-a770-a9bf1f75cba0",
+      "mount_id": "01a0ac6b-f2c9-735d-a064-aaeb3c5bb2fd",
+      "allocation_id": "649cb025-e38e-4806-b2fa-182a986fdd28",
+      "summary": {
+        "mount_ms": 3383.0,
+        "agent_scope_query_ms": null,
+        "preparation_to_reservation_ms": null,
+        "account_reservation_ms": null,
+        "readiness_until_settled_ms": null,
+        "poll_count": 0,
+        "factory_attachment_ms": 1218.0155790000001,
+        "factory_desktop_ms": 953.724218
+      },
+      "tools": [
+        {
+          "tool": "mount",
+          "duration_ms": 3383.0,
+          "status": "completed",
+          "result": {
+            "created": true,
+            "id": "01a0ac6b-f2c9-735d-a064-aaeb3c5bb2fd",
+            "mount": "/mnt-overlay-perf-probe-3c5bb2fd",
+            "name": "overlay-perf-probe",
+            "provider": "linux-paradigm",
+            "status": "mounted"
+          }
+        },
+        {
+          "tool": "exec_command",
+          "duration_ms": 254.0,
+          "status": "completed",
+          "result": {
+            "chunk_id": "d4fc01",
+            "exit_code": 0,
+            "original_token_count": 8,
+            "output": "Linux\noverlay_persistence_probe",
+            "wall_time_seconds": 0.004134985
+          }
+        }
+      ],
+      "mount_stages": [],
+      "pool_stages": [],
+      "factory_stages": [
+        {
+          "timestamp": "2026-09-16T22:52:32.938800Z",
+          "stage": "vm.provision.start",
+          "allocation_id": "649cb025-e38e-4806-b2fa-182a986fdd28"
+        },
+        {
+          "timestamp": "2026-09-16T22:52:32.939484Z",
+          "stage": "vm.provision.spare_claimed",
+          "allocation_id": "649cb025-e38e-4806-b2fa-182a986fdd28",
+          "elapsed_ms": 0.6878690000000001
+        },
+        {
+          "timestamp": "2026-09-16T22:52:32.939527Z",
+          "stage": "vm.provision.guest",
+          "allocation_id": "649cb025-e38e-4806-b2fa-182a986fdd28",
+          "warm": true,
+          "elapsed_ms": 0.730599
+        },
+        {
+          "timestamp": "2026-09-16T22:52:32.991301Z",
+          "stage": "screen.capture.initial",
+          "machine_id": "vm:01a0ac6b-f2c9-735d-a064-aaeb3c5bb2fd",
+          "elapsed_ms": 51.758464
+        },
+        {
+          "timestamp": "2026-09-16T22:52:32.991712Z",
+          "stage": "screen.socket.resolved",
+          "machine_id": "vm:01a0ac6b-f2c9-735d-a064-aaeb3c5bb2fd",
+          "elapsed_ms": 0.379581
+        },
+        {
+          "timestamp": "2026-09-16T22:52:33.011821Z",
+          "stage": "screen.socket.tcp",
+          "machine_id": "vm:01a0ac6b-f2c9-735d-a064-aaeb3c5bb2fd",
+          "elapsed_ms": 20.487924
+        },
+        {
+          "timestamp": "2026-09-16T22:52:33.011832Z",
+          "stage": "screen.socket.trust",
+          "machine_id": "vm:01a0ac6b-f2c9-735d-a064-aaeb3c5bb2fd",
+          "elapsed_ms": 20.499436
+        },
+        {
+          "timestamp": "2026-09-16T22:52:33.763770Z",
+          "stage": "screen.socket.connected",
+          "machine_id": "vm:01a0ac6b-f2c9-735d-a064-aaeb3c5bb2fd",
+          "elapsed_ms": 772.434089
+        },
+        {
+          "timestamp": "2026-09-16T22:52:33.769753Z",
+          "stage": "screen.socket.ready",
+          "machine_id": "vm:01a0ac6b-f2c9-735d-a064-aaeb3c5bb2fd",
+          "elapsed_ms": 778.419445
+        },
+        {
+          "timestamp": "2026-09-16T22:52:33.892476Z",
+          "stage": "screen.published",
+          "machine_id": "vm:01a0ac6b-f2c9-735d-a064-aaeb3c5bb2fd",
+          "elapsed_ms": 901.142883
+        },
+        {
+          "timestamp": "2026-09-16T22:52:33.892520Z",
+          "stage": "vm.provision.desktop",
+          "allocation_id": "649cb025-e38e-4806-b2fa-182a986fdd28",
+          "elapsed_ms": 953.724218,
+          "success": true
+        },
+        {
+          "timestamp": "2026-09-16T22:52:34.156811Z",
+          "stage": "vm.provision.attached",
+          "allocation_id": "649cb025-e38e-4806-b2fa-182a986fdd28",
+          "elapsed_ms": 1218.0155790000001,
+          "success": true
+        }
+      ],
+      "deleted": true
+    },
+    {
+      "name": "baseline2",
+      "agent": "01a0ac6c-ef4b-7464-9c03-26d4aa08cf3a",
+      "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+      "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+      "summary": {
+        "mount_ms": 2706.0,
+        "agent_scope_query_ms": 1316,
+        "preparation_to_reservation_ms": 1467,
+        "account_reservation_ms": 151,
+        "readiness_until_settled_ms": 1239,
+        "poll_count": 7,
+        "factory_attachment_ms": 1170.424594,
+        "factory_desktop_ms": 1046.149547
+      },
+      "tools": [
+        {
+          "tool": "mount",
+          "duration_ms": 2706.0,
+          "status": "completed",
+          "result": {
+            "created": true,
+            "id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+            "mount": "/mnt-overlay-perf-probe-157df798",
+            "name": "overlay-perf-probe",
+            "provider": "linux-paradigm",
+            "status": "mounted"
+          }
+        },
+        {
+          "tool": "exec_command",
+          "duration_ms": 318.0,
+          "status": "completed",
+          "result": {
+            "chunk_id": "f6b1c9",
+            "exit_code": 0,
+            "original_token_count": 8,
+            "output": "Linux\noverlay_persistence_probe",
+            "wall_time_seconds": 0.003811157
+          }
+        }
+      ],
+      "mount_stages": [
+        {
+          "type": "vm.mount.stage",
+          "stage": "intent",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599223130,
+          "duration_ms": 0,
+          "provider": "host"
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "prepare",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599223130,
+          "elapsed_ms": 0
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "scopes_located",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599223130,
+          "elapsed_ms": 0
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "acquire_headers",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599224446,
+          "elapsed_ms": 1316,
+          "scope": "agent",
+          "status": 404,
+          "duration_ms": 1316
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "acquire_failure_body",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599224446,
+          "elapsed_ms": 1316,
+          "scope": "agent",
+          "status": 404,
+          "duration_ms": 1316
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "acquire_headers",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599224597,
+          "elapsed_ms": 1467,
+          "scope": "account",
+          "status": 201,
+          "duration_ms": 151
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "reserved",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599224597,
+          "elapsed_ms": 1467,
+          "scope": "account",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "duration_ms": 151
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599224718,
+          "elapsed_ms": 1588,
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "poll": 1,
+          "duration_ms": 121,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599224718,
+          "elapsed_ms": 1588,
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "poll": 1,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599224903,
+          "elapsed_ms": 1773,
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "poll": 2,
+          "duration_ms": 85,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599224903,
+          "elapsed_ms": 1773,
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "poll": 2,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599225092,
+          "elapsed_ms": 1962,
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "poll": 3,
+          "duration_ms": 89,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599225092,
+          "elapsed_ms": 1962,
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "poll": 3,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599225280,
+          "elapsed_ms": 2150,
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "poll": 4,
+          "duration_ms": 88,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599225280,
+          "elapsed_ms": 2150,
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "poll": 4,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599225653,
+          "elapsed_ms": 2523,
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "poll": 6,
+          "duration_ms": 90,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599225653,
+          "elapsed_ms": 2523,
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "poll": 6,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599225836,
+          "elapsed_ms": 2706,
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "poll": 7,
+          "duration_ms": 83,
+          "ready": true
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599225836,
+          "elapsed_ms": 2706,
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "poll": 7,
+          "machine_ready": true
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "settled",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599225836,
+          "duration_ms": 2706,
+          "provider": "host"
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599225463,
+          "elapsed_ms": 2333,
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "poll": 5,
+          "duration_ms": 83,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599225463,
+          "elapsed_ms": 2333,
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "poll": 5,
+          "machine_ready": false
+        }
+      ],
+      "pool_stages": [
+        {
+          "type": "vm.pool.stage",
+          "stage": "provision_dispatch",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "timestamp": 1789599224620
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "acquire_response",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599224620,
+          "duration_ms": 0,
+          "status": 201
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "acquire_absent",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "timestamp": 1789599224525,
+          "duration_ms": 0
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "timestamp": 1789599224753,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "timestamp": 1789599224928,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "timestamp": 1789599225106,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "timestamp": 1789599225281,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "timestamp": 1789599225456,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "timestamp": 1789599225642,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "provisioned",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "timestamp": 1789599225829
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "timestamp": 1789599225870,
+          "ready": true
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "timestamp": 1789599228842,
+          "ready": true
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "provision_dispatch",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "timestamp": 1789599500338
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "provisioned",
+          "mount_id": "01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "timestamp": 1789599502282
+        }
+      ],
+      "factory_stages": [
+        {
+          "timestamp": "2026-09-16T22:53:44.656328Z",
+          "stage": "vm.provision.start",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744"
+        },
+        {
+          "timestamp": "2026-09-16T22:53:44.657036Z",
+          "stage": "vm.provision.spare_claimed",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "elapsed_ms": 0.710762
+        },
+        {
+          "timestamp": "2026-09-16T22:53:44.657080Z",
+          "stage": "vm.provision.guest",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "warm": true,
+          "elapsed_ms": 0.7555459999999999
+        },
+        {
+          "timestamp": "2026-09-16T22:53:44.713020Z",
+          "stage": "screen.capture.initial",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 55.926023
+        },
+        {
+          "timestamp": "2026-09-16T22:53:44.713416Z",
+          "stage": "screen.socket.resolved",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 0.37353000000000003
+        },
+        {
+          "timestamp": "2026-09-16T22:53:44.735761Z",
+          "stage": "screen.socket.tcp",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 22.717782
+        },
+        {
+          "timestamp": "2026-09-16T22:53:44.735772Z",
+          "stage": "screen.socket.trust",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 22.729564
+        },
+        {
+          "timestamp": "2026-09-16T22:53:45.571839Z",
+          "stage": "screen.socket.connected",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 858.796384
+        },
+        {
+          "timestamp": "2026-09-16T22:53:45.577539Z",
+          "stage": "screen.socket.ready",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 864.496476
+        },
+        {
+          "timestamp": "2026-09-16T22:53:45.702438Z",
+          "stage": "screen.published",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 989.395352
+        },
+        {
+          "timestamp": "2026-09-16T22:53:45.702474Z",
+          "stage": "vm.provision.desktop",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "elapsed_ms": 1046.149547,
+          "success": true
+        },
+        {
+          "timestamp": "2026-09-16T22:53:45.826749Z",
+          "stage": "vm.provision.attached",
+          "allocation_id": "cd10ef97-731e-40f5-8cd1-076ece2ce744",
+          "elapsed_ms": 1170.424594,
+          "success": true
+        },
+        {
+          "timestamp": "2026-09-16T22:58:20.376503Z",
+          "stage": "screen.socket.resolved",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 0.479889
+        },
+        {
+          "timestamp": "2026-09-16T22:58:20.398176Z",
+          "stage": "screen.socket.tcp",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 22.153004
+        },
+        {
+          "timestamp": "2026-09-16T22:58:20.398183Z",
+          "stage": "screen.socket.trust",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 22.160068000000003
+        },
+        {
+          "timestamp": "2026-09-16T22:58:21.127510Z",
+          "stage": "screen.socket.connected",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 751.486705
+        },
+        {
+          "timestamp": "2026-09-16T22:58:21.133055Z",
+          "stage": "screen.socket.ready",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 757.031636
+        },
+        {
+          "timestamp": "2026-09-16T22:58:21.256615Z",
+          "stage": "screen.published",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 880.591606
+        },
+        {
+          "timestamp": "2026-09-16T23:00:34.141084Z",
+          "stage": "screen.socket.resolved",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 0.6593359999999999
+        },
+        {
+          "timestamp": "2026-09-16T23:00:34.161062Z",
+          "stage": "screen.socket.tcp",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 20.64063
+        },
+        {
+          "timestamp": "2026-09-16T23:00:34.161072Z",
+          "stage": "screen.socket.trust",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 20.65088
+        },
+        {
+          "timestamp": "2026-09-16T23:00:42.082887Z",
+          "stage": "screen.socket.resolved",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 0.662923
+        },
+        {
+          "timestamp": "2026-09-16T23:00:42.103320Z",
+          "stage": "screen.socket.tcp",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 21.096574999999998
+        },
+        {
+          "timestamp": "2026-09-16T23:00:42.103330Z",
+          "stage": "screen.socket.trust",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 21.106754
+        },
+        {
+          "timestamp": "2026-09-16T23:00:42.908398Z",
+          "stage": "screen.socket.connected",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 826.174294
+        },
+        {
+          "timestamp": "2026-09-16T23:00:42.913908Z",
+          "stage": "screen.socket.ready",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 831.6847200000001
+        },
+        {
+          "timestamp": "2026-09-16T23:00:43.041200Z",
+          "stage": "screen.published",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 958.9766440000001
+        },
+        {
+          "timestamp": "2026-09-16T23:01:55.904791Z",
+          "stage": "screen.socket.resolved",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 0.51249
+        },
+        {
+          "timestamp": "2026-09-16T23:01:55.924745Z",
+          "stage": "screen.socket.tcp",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 20.467696
+        },
+        {
+          "timestamp": "2026-09-16T23:01:55.924760Z",
+          "stage": "screen.socket.trust",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 20.484507999999998
+        },
+        {
+          "timestamp": "2026-09-16T23:01:56.753245Z",
+          "stage": "screen.socket.connected",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 848.9661179999999
+        },
+        {
+          "timestamp": "2026-09-16T23:01:56.758742Z",
+          "stage": "screen.socket.ready",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 854.465213
+        },
+        {
+          "timestamp": "2026-09-16T23:01:56.888811Z",
+          "stage": "screen.published",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 984.534362
+        },
+        {
+          "timestamp": "2026-09-16T23:02:01.483465Z",
+          "stage": "screen.socket.resolved",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 0.504966
+        },
+        {
+          "timestamp": "2026-09-16T23:02:01.503796Z",
+          "stage": "screen.socket.tcp",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 20.831989
+        },
+        {
+          "timestamp": "2026-09-16T23:02:01.503814Z",
+          "stage": "screen.socket.trust",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 20.8541
+        },
+        {
+          "timestamp": "2026-09-16T23:02:02.252101Z",
+          "stage": "screen.socket.connected",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 769.137119
+        },
+        {
+          "timestamp": "2026-09-16T23:02:02.258190Z",
+          "stage": "screen.socket.ready",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 775.228884
+        },
+        {
+          "timestamp": "2026-09-16T23:02:02.380603Z",
+          "stage": "screen.published",
+          "machine_id": "vm:01a0ac6d-0d5a-72c8-ac77-8c8d157df798",
+          "elapsed_ms": 897.6417650000001
+        }
+      ],
+      "deleted": true
+    },
+    {
+      "name": "baseline3",
+      "agent": "01a0ac6e-8e46-7473-b64f-b563920fc3b3",
+      "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+      "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+      "summary": {
+        "mount_ms": 3178.0,
+        "agent_scope_query_ms": 1680,
+        "preparation_to_reservation_ms": 1833,
+        "account_reservation_ms": 153,
+        "readiness_until_settled_ms": 1345,
+        "poll_count": 8,
+        "factory_attachment_ms": 1139.483121,
+        "factory_desktop_ms": 1014.0922219999999
+      },
+      "tools": [
+        {
+          "tool": "mount",
+          "duration_ms": 3178.0,
+          "status": "completed",
+          "result": {
+            "created": true,
+            "id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+            "mount": "/mnt-overlay-perf-probe-1a95217c",
+            "name": "overlay-perf-probe",
+            "provider": "linux-paradigm",
+            "status": "mounted"
+          }
+        },
+        {
+          "tool": "exec_command",
+          "duration_ms": 367.0,
+          "status": "completed",
+          "result": {
+            "chunk_id": "6b705f",
+            "exit_code": 0,
+            "original_token_count": 8,
+            "output": "Linux\noverlay_persistence_probe",
+            "wall_time_seconds": 0.00452199
+          }
+        }
+      ],
+      "mount_stages": [
+        {
+          "type": "vm.mount.stage",
+          "stage": "intent",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599329151,
+          "duration_ms": 0,
+          "provider": "host"
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "prepare",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599329151,
+          "elapsed_ms": 0
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "scopes_located",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599329151,
+          "elapsed_ms": 0
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "acquire_headers",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599330831,
+          "elapsed_ms": 1680,
+          "scope": "agent",
+          "status": 404,
+          "duration_ms": 1680
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "acquire_failure_body",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599330831,
+          "elapsed_ms": 1680,
+          "scope": "agent",
+          "status": 404,
+          "duration_ms": 1680
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "acquire_headers",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599330984,
+          "elapsed_ms": 1833,
+          "scope": "account",
+          "status": 201,
+          "duration_ms": 153
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "reserved",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599330984,
+          "elapsed_ms": 1833,
+          "scope": "account",
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "duration_ms": 153
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599331091,
+          "elapsed_ms": 1940,
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "poll": 1,
+          "duration_ms": 107,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599331091,
+          "elapsed_ms": 1940,
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "poll": 1,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599331264,
+          "elapsed_ms": 2113,
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "poll": 2,
+          "duration_ms": 73,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599331264,
+          "elapsed_ms": 2113,
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "poll": 2,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599331435,
+          "elapsed_ms": 2284,
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "poll": 3,
+          "duration_ms": 71,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599331435,
+          "elapsed_ms": 2284,
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "poll": 3,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599331606,
+          "elapsed_ms": 2455,
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "poll": 4,
+          "duration_ms": 71,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599331606,
+          "elapsed_ms": 2455,
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "poll": 4,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599331780,
+          "elapsed_ms": 2629,
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "poll": 5,
+          "duration_ms": 74,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599331780,
+          "elapsed_ms": 2629,
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "poll": 5,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599332151,
+          "elapsed_ms": 3000,
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "poll": 7,
+          "duration_ms": 103,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599332151,
+          "elapsed_ms": 3000,
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "poll": 7,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599332329,
+          "elapsed_ms": 3178,
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "poll": 8,
+          "duration_ms": 78,
+          "ready": true
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599332329,
+          "elapsed_ms": 3178,
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "poll": 8,
+          "machine_ready": true
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "settled",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599332329,
+          "duration_ms": 3178,
+          "provider": "host"
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599331948,
+          "elapsed_ms": 2797,
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "poll": 6,
+          "duration_ms": 68,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599331948,
+          "elapsed_ms": 2797,
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "poll": 6,
+          "machine_ready": false
+        }
+      ],
+      "pool_stages": [
+        {
+          "type": "vm.pool.stage",
+          "stage": "provision_dispatch",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "timestamp": 1789599331027
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "acquire_response",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599331027,
+          "duration_ms": 0,
+          "status": 201
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "acquire_absent",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "timestamp": 1789599330848,
+          "duration_ms": 0
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "timestamp": 1789599331151,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "timestamp": 1789599331310,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "timestamp": 1789599331471,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "timestamp": 1789599331631,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "timestamp": 1789599331793,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "timestamp": 1789599331961,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "timestamp": 1789599332206,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "provisioned",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "timestamp": 1789599332210
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "timestamp": 1789599332369,
+          "ready": true
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "timestamp": 1789599335346,
+          "ready": true
+        }
+      ],
+      "factory_stages": [
+        {
+          "timestamp": "2026-09-16T22:55:31.064713Z",
+          "stage": "vm.provision.start",
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278"
+        },
+        {
+          "timestamp": "2026-09-16T22:55:31.065401Z",
+          "stage": "vm.provision.spare_claimed",
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "elapsed_ms": 0.690524
+        },
+        {
+          "timestamp": "2026-09-16T22:55:31.065443Z",
+          "stage": "vm.provision.guest",
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "warm": true,
+          "elapsed_ms": 0.733074
+        },
+        {
+          "timestamp": "2026-09-16T22:55:31.117982Z",
+          "stage": "screen.capture.initial",
+          "machine_id": "vm:01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "elapsed_ms": 52.524950000000004
+        },
+        {
+          "timestamp": "2026-09-16T22:55:31.118402Z",
+          "stage": "screen.socket.resolved",
+          "machine_id": "vm:01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "elapsed_ms": 0.395041
+        },
+        {
+          "timestamp": "2026-09-16T22:55:31.140048Z",
+          "stage": "screen.socket.tcp",
+          "machine_id": "vm:01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "elapsed_ms": 22.041456
+        },
+        {
+          "timestamp": "2026-09-16T22:55:31.140055Z",
+          "stage": "screen.socket.trust",
+          "machine_id": "vm:01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "elapsed_ms": 22.048728999999998
+        },
+        {
+          "timestamp": "2026-09-16T22:55:31.940051Z",
+          "stage": "screen.socket.connected",
+          "machine_id": "vm:01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "elapsed_ms": 822.04408
+        },
+        {
+          "timestamp": "2026-09-16T22:55:31.945839Z",
+          "stage": "screen.socket.ready",
+          "machine_id": "vm:01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "elapsed_ms": 827.8323469999999
+        },
+        {
+          "timestamp": "2026-09-16T22:55:32.078751Z",
+          "stage": "screen.published",
+          "machine_id": "vm:01a0ac6e-ab7f-7461-b1e9-173b1a95217c",
+          "elapsed_ms": 960.742547
+        },
+        {
+          "timestamp": "2026-09-16T22:55:32.078802Z",
+          "stage": "vm.provision.desktop",
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "elapsed_ms": 1014.0922219999999,
+          "success": true
+        },
+        {
+          "timestamp": "2026-09-16T22:55:32.204193Z",
+          "stage": "vm.provision.attached",
+          "allocation_id": "1a5aab8f-9727-461b-9744-ff2c17dfd278",
+          "elapsed_ms": 1139.483121,
+          "success": true
+        }
+      ],
+      "deleted": true
+    },
+    {
+      "name": "after1",
+      "agent": "01a0ac74-f2a6-7d9a-b498-21f13aec410f",
+      "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+      "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+      "summary": {
+        "mount_ms": 2937.0,
+        "agent_scope_query_ms": null,
+        "preparation_to_reservation_ms": 295,
+        "account_reservation_ms": 295,
+        "readiness_until_settled_ms": 2642,
+        "poll_count": 14,
+        "factory_attachment_ms": 1212.353937,
+        "factory_desktop_ms": 2201.6738060000002
+      },
+      "tools": [
+        {
+          "tool": "mount",
+          "duration_ms": 2937.0,
+          "status": "completed",
+          "result": {
+            "created": true,
+            "id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+            "mount": "/mnt-overlay-perf-probe-2b019a7f",
+            "name": "overlay-perf-probe",
+            "provider": "linux-paradigm",
+            "status": "mounted"
+          }
+        },
+        {
+          "tool": "exec_command",
+          "duration_ms": 280.0,
+          "status": "completed",
+          "result": {
+            "chunk_id": "eef7f8",
+            "exit_code": 0,
+            "original_token_count": 8,
+            "output": "Linux\noverlay_persistence_probe",
+            "wall_time_seconds": 0.004735992
+          }
+        }
+      ],
+      "mount_stages": [
+        {
+          "type": "vm.mount.stage",
+          "stage": "intent",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599752121,
+          "duration_ms": 0,
+          "provider": "host"
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "prepare",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599752121,
+          "elapsed_ms": 0
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "scopes_located",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599752121,
+          "elapsed_ms": 0
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "agent_scope_known_empty",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599752121,
+          "elapsed_ms": 0
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "acquire_headers",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599752416,
+          "elapsed_ms": 295,
+          "scope": "account",
+          "status": 201,
+          "duration_ms": 295
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "reserved",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599752416,
+          "elapsed_ms": 295,
+          "scope": "account",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "duration_ms": 295
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599752579,
+          "elapsed_ms": 458,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 1,
+          "duration_ms": 163,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599752579,
+          "elapsed_ms": 458,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 1,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599752786,
+          "elapsed_ms": 665,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 2,
+          "duration_ms": 107,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599752786,
+          "elapsed_ms": 665,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 2,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599752986,
+          "elapsed_ms": 865,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 3,
+          "duration_ms": 100,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599752986,
+          "elapsed_ms": 865,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 3,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599753183,
+          "elapsed_ms": 1062,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 4,
+          "duration_ms": 97,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599753183,
+          "elapsed_ms": 1062,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 4,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599753377,
+          "elapsed_ms": 1256,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 5,
+          "duration_ms": 94,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599753377,
+          "elapsed_ms": 1256,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 5,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599753715,
+          "elapsed_ms": 1594,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 7,
+          "duration_ms": 49,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599753715,
+          "elapsed_ms": 1594,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 7,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599753910,
+          "elapsed_ms": 1789,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 8,
+          "duration_ms": 95,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599753910,
+          "elapsed_ms": 1789,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 8,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599754104,
+          "elapsed_ms": 1983,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 9,
+          "duration_ms": 94,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599754104,
+          "elapsed_ms": 1983,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 9,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599754292,
+          "elapsed_ms": 2171,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 10,
+          "duration_ms": 88,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599754292,
+          "elapsed_ms": 2171,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 10,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599754490,
+          "elapsed_ms": 2369,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 11,
+          "duration_ms": 98,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599754490,
+          "elapsed_ms": 2369,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 11,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599754675,
+          "elapsed_ms": 2554,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 12,
+          "duration_ms": 85,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599754675,
+          "elapsed_ms": 2554,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 12,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599754868,
+          "elapsed_ms": 2747,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 13,
+          "duration_ms": 93,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599754868,
+          "elapsed_ms": 2747,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 13,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599755058,
+          "elapsed_ms": 2937,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 14,
+          "duration_ms": 90,
+          "ready": true
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599755058,
+          "elapsed_ms": 2937,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 14,
+          "machine_ready": true
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "settled",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599755058,
+          "duration_ms": 2937,
+          "provider": "host"
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599753566,
+          "elapsed_ms": 1445,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 6,
+          "duration_ms": 89,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599753566,
+          "elapsed_ms": 1445,
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "poll": 6,
+          "machine_ready": false
+        }
+      ],
+      "pool_stages": [
+        {
+          "type": "vm.pool.stage",
+          "stage": "provision_dispatch",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "timestamp": 1789599752651
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "acquire_response",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "timestamp": 1789599752651,
+          "duration_ms": 0,
+          "status": 201
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "timestamp": 1789599752848,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "timestamp": 1789599753006,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "timestamp": 1789599753168,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "timestamp": 1789599753333,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "timestamp": 1789599753499,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "timestamp": 1789599753665,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "timestamp": 1789599753833,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "timestamp": 1789599754016,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "timestamp": 1789599754185,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "timestamp": 1789599754357,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "timestamp": 1789599754537,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "timestamp": 1789599754709,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "timestamp": 1789599754885,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "provisioned",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "timestamp": 1789599754941
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "timestamp": 1789599755064,
+          "ready": true
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "timestamp": 1789599758067,
+          "ready": true
+        }
+      ],
+      "factory_stages": [
+        {
+          "timestamp": "2026-09-16T23:02:32.736116Z",
+          "stage": "vm.provision.start",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223"
+        },
+        {
+          "timestamp": "2026-09-16T23:02:32.736925Z",
+          "stage": "vm.provision.spare_claimed",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "elapsed_ms": 0.8122119999999999
+        },
+        {
+          "timestamp": "2026-09-16T23:02:32.736966Z",
+          "stage": "vm.provision.guest",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "warm": true,
+          "elapsed_ms": 0.853309
+        },
+        {
+          "timestamp": "2026-09-16T23:02:32.789936Z",
+          "stage": "screen.capture.initial",
+          "machine_id": "vm:01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "elapsed_ms": 52.956891
+        },
+        {
+          "timestamp": "2026-09-16T23:02:32.790315Z",
+          "stage": "screen.socket.resolved",
+          "machine_id": "vm:01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "elapsed_ms": 0.343213
+        },
+        {
+          "timestamp": "2026-09-16T23:02:32.810589Z",
+          "stage": "screen.socket.tcp",
+          "machine_id": "vm:01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "elapsed_ms": 20.617637000000002
+        },
+        {
+          "timestamp": "2026-09-16T23:02:32.810600Z",
+          "stage": "screen.socket.trust",
+          "machine_id": "vm:01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "elapsed_ms": 20.629169
+        },
+        {
+          "timestamp": "2026-09-16T23:02:33.948467Z",
+          "stage": "vm.provision.attached",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "elapsed_ms": 1212.353937,
+          "success": true
+        },
+        {
+          "timestamp": "2026-09-16T23:02:34.805032Z",
+          "stage": "screen.socket.connected",
+          "machine_id": "vm:01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "elapsed_ms": 2015.0577200000002
+        },
+        {
+          "timestamp": "2026-09-16T23:02:34.812060Z",
+          "stage": "screen.socket.ready",
+          "machine_id": "vm:01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "elapsed_ms": 2022.087704
+        },
+        {
+          "timestamp": "2026-09-16T23:02:34.937727Z",
+          "stage": "screen.published",
+          "machine_id": "vm:01a0ac75-1fb9-7a71-96cd-a0d82b019a7f",
+          "elapsed_ms": 2147.755112
+        },
+        {
+          "timestamp": "2026-09-16T23:02:34.937786Z",
+          "stage": "vm.provision.desktop",
+          "allocation_id": "c402fb20-00b1-4853-8f96-ec2292a48223",
+          "elapsed_ms": 2201.6738060000002,
+          "success": true
+        }
+      ],
+      "deleted": true
+    },
+    {
+      "name": "after2",
+      "agent": "01a0ac75-95b8-78f7-8e26-2b108111fba9",
+      "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+      "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+      "summary": {
+        "mount_ms": 1832.0,
+        "agent_scope_query_ms": null,
+        "preparation_to_reservation_ms": 195,
+        "account_reservation_ms": 195,
+        "readiness_until_settled_ms": 1637,
+        "poll_count": 9,
+        "factory_attachment_ms": 1435.185903,
+        "factory_desktop_ms": 1082.045389
+      },
+      "tools": [
+        {
+          "tool": "mount",
+          "duration_ms": 1832.0,
+          "status": "completed",
+          "result": {
+            "created": true,
+            "id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+            "mount": "/mnt-overlay-perf-probe-e20ac657",
+            "name": "overlay-perf-probe",
+            "provider": "linux-paradigm",
+            "status": "mounted"
+          }
+        },
+        {
+          "tool": "exec_command",
+          "duration_ms": 288.0,
+          "status": "completed",
+          "result": {
+            "chunk_id": "809047",
+            "exit_code": 0,
+            "original_token_count": 8,
+            "output": "Linux\noverlay_persistence_probe",
+            "wall_time_seconds": 0.003877682
+          }
+        }
+      ],
+      "mount_stages": [
+        {
+          "type": "vm.mount.stage",
+          "stage": "intent",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599787902,
+          "duration_ms": 0,
+          "provider": "host"
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "prepare",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599787902,
+          "elapsed_ms": 0
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "scopes_located",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599787902,
+          "elapsed_ms": 0
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "agent_scope_known_empty",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599787902,
+          "elapsed_ms": 0
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "acquire_headers",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599788097,
+          "elapsed_ms": 195,
+          "scope": "account",
+          "status": 201,
+          "duration_ms": 195
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "reserved",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599788097,
+          "elapsed_ms": 195,
+          "scope": "account",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "duration_ms": 195
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599788237,
+          "elapsed_ms": 335,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 1,
+          "duration_ms": 140,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599788237,
+          "elapsed_ms": 335,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 1,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599788425,
+          "elapsed_ms": 523,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 2,
+          "duration_ms": 88,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599788425,
+          "elapsed_ms": 523,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 2,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599788615,
+          "elapsed_ms": 713,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 3,
+          "duration_ms": 90,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599788615,
+          "elapsed_ms": 713,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 3,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599788806,
+          "elapsed_ms": 904,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 4,
+          "duration_ms": 91,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599788806,
+          "elapsed_ms": 904,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 4,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599788992,
+          "elapsed_ms": 1090,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 5,
+          "duration_ms": 86,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599788992,
+          "elapsed_ms": 1090,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 5,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599789177,
+          "elapsed_ms": 1275,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 6,
+          "duration_ms": 85,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599789177,
+          "elapsed_ms": 1275,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 6,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599789541,
+          "elapsed_ms": 1639,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 8,
+          "duration_ms": 82,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599789541,
+          "elapsed_ms": 1639,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 8,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599789734,
+          "elapsed_ms": 1832,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 9,
+          "duration_ms": 93,
+          "ready": true
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599789734,
+          "elapsed_ms": 1832,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 9,
+          "machine_ready": true
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "settled",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599789734,
+          "duration_ms": 1832,
+          "provider": "host"
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599789359,
+          "elapsed_ms": 1457,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 7,
+          "duration_ms": 82,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599789359,
+          "elapsed_ms": 1457,
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "poll": 7,
+          "machine_ready": false
+        }
+      ],
+      "pool_stages": [
+        {
+          "type": "vm.pool.stage",
+          "stage": "provision_dispatch",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "timestamp": 1789599788208
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "acquire_response",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "timestamp": 1789599788208,
+          "duration_ms": 0,
+          "status": 201
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "timestamp": 1789599788356,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "timestamp": 1789599788520,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "timestamp": 1789599788688,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "timestamp": 1789599788859,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "timestamp": 1789599789033,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "timestamp": 1789599789203,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "timestamp": 1789599789376,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "timestamp": 1789599789549,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "provisioned",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "timestamp": 1789599789694
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "timestamp": 1789599789749,
+          "ready": true
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "timestamp": 1789599792991,
+          "ready": true
+        }
+      ],
+      "factory_stages": [
+        {
+          "timestamp": "2026-09-16T23:03:08.253605Z",
+          "stage": "vm.provision.start",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9"
+        },
+        {
+          "timestamp": "2026-09-16T23:03:08.254416Z",
+          "stage": "vm.provision.spare_claimed",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "elapsed_ms": 0.814817
+        },
+        {
+          "timestamp": "2026-09-16T23:03:08.254464Z",
+          "stage": "vm.provision.guest",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "warm": true,
+          "elapsed_ms": 0.863147
+        },
+        {
+          "timestamp": "2026-09-16T23:03:08.302963Z",
+          "stage": "screen.capture.initial",
+          "machine_id": "vm:01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "elapsed_ms": 48.484339
+        },
+        {
+          "timestamp": "2026-09-16T23:03:08.303504Z",
+          "stage": "screen.socket.resolved",
+          "machine_id": "vm:01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "elapsed_ms": 0.512451
+        },
+        {
+          "timestamp": "2026-09-16T23:03:08.324384Z",
+          "stage": "screen.socket.tcp",
+          "machine_id": "vm:01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "elapsed_ms": 21.391658
+        },
+        {
+          "timestamp": "2026-09-16T23:03:08.324397Z",
+          "stage": "screen.socket.trust",
+          "machine_id": "vm:01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "elapsed_ms": 21.405424
+        },
+        {
+          "timestamp": "2026-09-16T23:03:09.212449Z",
+          "stage": "screen.socket.connected",
+          "machine_id": "vm:01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "elapsed_ms": 909.454405
+        },
+        {
+          "timestamp": "2026-09-16T23:03:09.217974Z",
+          "stage": "screen.socket.ready",
+          "machine_id": "vm:01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "elapsed_ms": 914.981282
+        },
+        {
+          "timestamp": "2026-09-16T23:03:09.335572Z",
+          "stage": "screen.published",
+          "machine_id": "vm:01a0ac75-ab7e-7d07-96e7-a2dee20ac657",
+          "elapsed_ms": 1032.578439
+        },
+        {
+          "timestamp": "2026-09-16T23:03:09.335647Z",
+          "stage": "vm.provision.desktop",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "elapsed_ms": 1082.045389,
+          "success": true
+        },
+        {
+          "timestamp": "2026-09-16T23:03:09.688790Z",
+          "stage": "vm.provision.attached",
+          "allocation_id": "1eeaa62b-daa5-4491-bc45-2d39b55523f9",
+          "elapsed_ms": 1435.185903,
+          "success": true
+        }
+      ],
+      "deleted": true
+    },
+    {
+      "name": "after3",
+      "agent": "01a0ac76-1c48-72e4-8c1d-6a53f19c1e54",
+      "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+      "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+      "summary": {
+        "mount_ms": 1603.0,
+        "agent_scope_query_ms": null,
+        "preparation_to_reservation_ms": 141,
+        "account_reservation_ms": 141,
+        "readiness_until_settled_ms": 1462,
+        "poll_count": 9,
+        "factory_attachment_ms": 1233.147976,
+        "factory_desktop_ms": 1001.088959
+      },
+      "tools": [
+        {
+          "tool": "mount",
+          "duration_ms": 1603.0,
+          "status": "completed",
+          "result": {
+            "created": true,
+            "id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+            "mount": "/mnt-overlay-perf-probe-5251f460",
+            "name": "overlay-perf-probe",
+            "provider": "linux-paradigm",
+            "status": "mounted"
+          }
+        },
+        {
+          "tool": "exec_command",
+          "duration_ms": 259.0,
+          "status": "completed",
+          "result": {
+            "chunk_id": "67b4ef",
+            "exit_code": 0,
+            "original_token_count": 8,
+            "output": "Linux\noverlay_persistence_probe",
+            "wall_time_seconds": 0.003543325
+          }
+        }
+      ],
+      "mount_stages": [
+        {
+          "type": "vm.mount.stage",
+          "stage": "intent",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599822047,
+          "duration_ms": 0,
+          "provider": "host"
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "prepare",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599822047,
+          "elapsed_ms": 0
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "scopes_located",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599822047,
+          "elapsed_ms": 0
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "agent_scope_known_empty",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599822047,
+          "elapsed_ms": 0
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "acquire_headers",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599822188,
+          "elapsed_ms": 141,
+          "scope": "account",
+          "status": 201,
+          "duration_ms": 141
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "reserved",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599822188,
+          "elapsed_ms": 141,
+          "scope": "account",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "duration_ms": 141
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599822295,
+          "elapsed_ms": 248,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 1,
+          "duration_ms": 107,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599822295,
+          "elapsed_ms": 248,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 1,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599822470,
+          "elapsed_ms": 423,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 2,
+          "duration_ms": 75,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599822470,
+          "elapsed_ms": 423,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 2,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599822642,
+          "elapsed_ms": 595,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 3,
+          "duration_ms": 72,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599822642,
+          "elapsed_ms": 595,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 3,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599822812,
+          "elapsed_ms": 765,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 4,
+          "duration_ms": 70,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599822812,
+          "elapsed_ms": 765,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 4,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599822985,
+          "elapsed_ms": 938,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 5,
+          "duration_ms": 73,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599822985,
+          "elapsed_ms": 938,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 5,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599823166,
+          "elapsed_ms": 1119,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 6,
+          "duration_ms": 81,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599823166,
+          "elapsed_ms": 1119,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 6,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599823476,
+          "elapsed_ms": 1429,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 8,
+          "duration_ms": 41,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599823476,
+          "elapsed_ms": 1429,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 8,
+          "machine_ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599823650,
+          "elapsed_ms": 1603,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 9,
+          "duration_ms": 74,
+          "ready": true
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599823650,
+          "elapsed_ms": 1603,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 9,
+          "machine_ready": true
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "settled",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599823650,
+          "duration_ms": 1603,
+          "provider": "host"
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "readiness",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599823335,
+          "elapsed_ms": 1288,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 7,
+          "duration_ms": 69,
+          "ready": false
+        },
+        {
+          "type": "vm.mount.stage",
+          "stage": "route_checked",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599823335,
+          "elapsed_ms": 1288,
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "poll": 7,
+          "machine_ready": false
+        }
+      ],
+      "pool_stages": [
+        {
+          "type": "vm.pool.stage",
+          "stage": "provision_dispatch",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "timestamp": 1789599822323
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "acquire_response",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "timestamp": 1789599822323,
+          "duration_ms": 0,
+          "status": 201
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "timestamp": 1789599822428,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "timestamp": 1789599822585,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "timestamp": 1789599822737,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "timestamp": 1789599822890,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "timestamp": 1789599823044,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "timestamp": 1789599823201,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "timestamp": 1789599823366,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "timestamp": 1789599823526,
+          "ready": false
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "provisioned",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "timestamp": 1789599823606
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "timestamp": 1789599823682,
+          "ready": true
+        },
+        {
+          "type": "vm.pool.stage",
+          "stage": "readiness_response",
+          "mount_id": "01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "timestamp": 1789599826694,
+          "ready": true
+        }
+      ],
+      "factory_stages": [
+        {
+          "timestamp": "2026-09-16T23:03:42.365265Z",
+          "stage": "vm.provision.start",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432"
+        },
+        {
+          "timestamp": "2026-09-16T23:03:42.365927Z",
+          "stage": "vm.provision.spare_claimed",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "elapsed_ms": 0.663424
+        },
+        {
+          "timestamp": "2026-09-16T23:03:42.365981Z",
+          "stage": "vm.provision.guest",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "warm": true,
+          "elapsed_ms": 0.718266
+        },
+        {
+          "timestamp": "2026-09-16T23:03:42.414346Z",
+          "stage": "screen.capture.initial",
+          "machine_id": "vm:01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "elapsed_ms": 48.348425
+        },
+        {
+          "timestamp": "2026-09-16T23:03:42.438925Z",
+          "stage": "screen.socket.resolved",
+          "machine_id": "vm:01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "elapsed_ms": 24.549015
+        },
+        {
+          "timestamp": "2026-09-16T23:03:42.460476Z",
+          "stage": "screen.socket.tcp",
+          "machine_id": "vm:01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "elapsed_ms": 46.100192
+        },
+        {
+          "timestamp": "2026-09-16T23:03:42.460487Z",
+          "stage": "screen.socket.trust",
+          "machine_id": "vm:01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "elapsed_ms": 46.111894
+        },
+        {
+          "timestamp": "2026-09-16T23:03:43.237605Z",
+          "stage": "screen.socket.connected",
+          "machine_id": "vm:01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "elapsed_ms": 823.228839
+        },
+        {
+          "timestamp": "2026-09-16T23:03:43.242967Z",
+          "stage": "screen.socket.ready",
+          "machine_id": "vm:01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "elapsed_ms": 828.5914290000001
+        },
+        {
+          "timestamp": "2026-09-16T23:03:43.366305Z",
+          "stage": "screen.published",
+          "machine_id": "vm:01a0ac76-30df-7e73-8098-3bfb5251f460",
+          "elapsed_ms": 951.929414
+        },
+        {
+          "timestamp": "2026-09-16T23:03:43.366352Z",
+          "stage": "vm.provision.desktop",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "elapsed_ms": 1001.088959,
+          "success": true
+        },
+        {
+          "timestamp": "2026-09-16T23:03:43.598412Z",
+          "stage": "vm.provision.attached",
+          "allocation_id": "89effaf8-f340-404c-b217-238658aeb432",
+          "elapsed_ms": 1233.147976,
+          "success": true
+        }
+      ],
+      "deleted": true
+    }
+  ],
+  "final_state": {
+    "manifest": {
+      "release": "nightly-92528e17b4feb63fed238abc2f2b766777fc24ff",
+      "artifacts": [
+        {
+          "name": "nanocodex2",
+          "url": "https://github.com/gakonst/nanocodex/releases/download/nightly-92528e17b4feb63fed238abc2f2b766777fc24ff/nanocodex2-x86_64-unknown-linux-gnu.gz?asset_id=568925943",
+          "sha256": "e80b537aae5932023faf21670129aedbfb52e3f243f8b6f9e24961f693fd98e8",
+          "gzip": true
+        },
+        {
+          "name": "nanocodex-vm-guest",
+          "url": "https://github.com/gakonst/nanocodex/releases/download/nightly-92528e17b4feb63fed238abc2f2b766777fc24ff/nanocodex-vm-guest-x86_64-unknown-linux-musl.gz?asset_id=568925641",
+          "sha256": "aa9ef76e46b72d7620f7ff51a0271400a77045515dbb3b931a6dfd40170d544d",
+          "gzip": true
+        },
+        {
+          "name": "nanocodex-computer",
+          "url": "https://github.com/gakonst/nanocodex/releases/download/nightly-92528e17b4feb63fed238abc2f2b766777fc24ff/nanocodex-computer-x86_64-unknown-linux-gnu.gz?asset_id=568925648",
+          "sha256": "5d6d7ff2d1fb9a331fe442668a57df717f7657f85cfa74a2358288d2dc64b388",
+          "gzip": true
+        }
+      ],
+      "origin": "https://nanocodex.gakonst.workers.dev",
+      "owner": "631f6a83-9e3f-474a-977a-68897d3ee436",
+      "factory_name": "linux-paradigm",
+      "native_only": false,
+      "max_vms": 4,
+      "vm_cpus": 2,
+      "vm_memory_mib": 4096,
+      "template": "/opt/nanocodex/images/desktop-d9ff55d7f6c73339.ext4",
+      "revision": "5bd37aeb25c6a3d2021642ff",
+      "machine_id": "0dbfda66-12e4-4bcf-b1a9-994a052b3181"
+    },
+    "identity": {
+      "machine_id": "0dbfda66-12e4-4bcf-b1a9-994a052b3181",
+      "workspace": "/srv/nanocodex/workspace"
+    },
+    "services": {
+      "nanocodex-hand.service": {
+        "MainPID": "1007910",
+        "NRestarts": "0",
+        "ExecMainStartTimestamp": "Wed 2026-09-16 22:33:10 UTC",
+        "ExecStart": "{ path=/opt/nanocodex/current/nanocodex2 ; argv[]=/opt/nanocodex/current/nanocodex2 hand --workspace /srv/nanocodex/workspace --state-dir /srv/nanocodex/native-state --machine-name linux-paradigm --log-format json --vm-provider linux-paradigm ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }",
+        "ActiveState": "active",
+        "executable": "/opt/nanocodex/releases/5bd37aeb25c6a3d2021642ff/nanocodex2"
+      },
+      "nanocodex-factory.service": {
+        "MainPID": "1009041",
+        "NRestarts": "0",
+        "ExecMainStartTimestamp": "Wed 2026-09-16 22:34:17 UTC",
+        "ExecStart": "{ path=/opt/nanocodex/current/nanocodex2 ; argv[]=/opt/nanocodex/current/nanocodex2 host --scope user --factory-name linux-paradigm --state-dir /srv/nanocodex/factory-state --vm-template /opt/nanocodex/images/desktop-d9ff55d7f6c73339.ext4 --vm-guest-runtime /opt/nanocodex/current/nanocodex-vm-guest --vm-firmware /opt/nanocodex/firmware --vm-cache /srv/nanocodex/cache --vm-workspace /workspace --max-vms 4 --vm-cpus 2 --vm-memory-mib 4096 --log-format json ; ignore_errors=no ; start_time=[Wed 2026-09-16 22:34:17 UTC] ; stop_time=[n/a] ; pid=1009041 ; code=(null) ; status=0/0 }",
+        "ActiveState": "active",
+        "executable": "/opt/nanocodex/releases/5bd37aeb25c6a3d2021642ff/nanocodex2"
+      }
+    },
+    "current": "/opt/nanocodex/releases/5bd37aeb25c6a3d2021642ff",
+    "binary_sha256": {
+      "nanocodex2": "629e911a96f859e53d163f9cae589798a7235312bbe575a8121c9d7d329c2125",
+      "nanocodex-vm-guest": "509e42ac3386ec42488287eaeae7212d046358e3cc6f888598f4ffbf12ba25ea",
+      "nanocodex-computer": "8a89843e14c60bff70c2769953b30da6d7a5be7829c3b73d7c7f444196a0344c"
+    },
+    "perf_override_exists": false,
+    "perf_executables_exist": false,
+    "allocations": []
+  },
+  "tests": {
+    "vm_host_scope": 3,
+    "vm_host_pool": 9,
+    "typecheck": "passed"
+  },
+  "raw_evidence": "nanocodex-vm-perf/output/vm-mount-path/"
+}

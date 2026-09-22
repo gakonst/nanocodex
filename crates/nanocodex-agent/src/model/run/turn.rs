@@ -86,12 +86,17 @@ where
             self.config.context_window_tokens,
         )
         .unwrap_or(self.config.context_window_tokens);
+        let (history, prompt_repaired) = session.conversation.prompt_history_with_repair();
         let compacted = {
             let compaction = self.perform_compaction(
                 self.stats.model_calls,
-                session.conversation.prompt_history(),
-                session.conversation.delta_start(),
-                previous_response_id.as_deref(),
+                history,
+                if prompt_repaired {
+                    0
+                } else {
+                    session.conversation.delta_start()
+                },
+                previous_response_id.as_deref().filter(|_| !prompt_repaired),
                 active_context_tokens,
                 auto_compact_token_limit,
                 &session.factory,
@@ -113,6 +118,9 @@ where
         let (item, _usage, server_reasoning_included) = match compacted {
             Ok(compacted) => compacted,
             Err(error) => {
+                if error.requires_image_repair() {
+                    session.conversation.replace_rejected_images();
+                }
                 session.conversation.reset_for_full_request();
                 let checkpoint = Self::checkpoint_from_session(
                     &session,
@@ -241,6 +249,7 @@ where
         execution_steps: Option<ExecutionSteps>,
     ) -> Result<ModelTurnOutcome> {
         self.execution_steps = execution_steps;
+        self.instruction_revision = task.instruction_revision();
         self.thinking = thinking;
         self.fast_mode = fast_mode;
         self.started_at = Instant::now();
@@ -330,9 +339,7 @@ where
                     // observed the failed request without returning a usable
                     // continuation.
                     if let Some(session) = &mut self.session {
-                        if error.responses_error().is_some_and(|source| {
-                            matches!(source, ResponsesError::InvalidImageRequest { .. })
-                        }) {
+                        if error.requires_image_repair() {
                             session.conversation.replace_rejected_images();
                         }
                         if let Some(definition) = error
@@ -518,11 +525,20 @@ where
                 self.context_source.execution_environment(),
             );
             let mut history = task_input(&task, user_content, &context_snapshot);
-            if !self.pending_developer_messages.is_empty() {
-                history.splice(2..2, self.pending_developer_messages.drain(..));
+            let mut pending = std::mem::take(&mut self.pending_developer_messages);
+            for item in &mut pending {
+                assign_missing_response_item_id(item);
             }
+            let client_authored = pending
+                .iter()
+                .filter_map(|item| item.id().map(ToString::to_string))
+                .collect();
+            history.splice(2..2, pending);
             context.establish(context_snapshot);
-            let conversation = ConversationState::new(history)?;
+            let mut conversation = ConversationState::new(history)?;
+            conversation
+                .managed
+                .restore_client_authored(client_authored);
             let mut session = ModelSessionState {
                 workspace,
                 tools,
@@ -910,6 +926,7 @@ where
                 call_index,
                 code_calls,
                 history,
+                session.factory.profile().turn_id(),
             )
             .await?;
             let compacted = self
@@ -972,6 +989,9 @@ where
                     content = content.as_str(),
                     "turn content"
                 );
+            }
+            if let Some(revision) = steer.prompt.instruction_revision() {
+                self.instruction_revision = Some(revision);
             }
             let instruction_bytes = steer.prompt.text_bytes();
             let user_content = prepare_user_input(&steer.prompt.instruction).await;

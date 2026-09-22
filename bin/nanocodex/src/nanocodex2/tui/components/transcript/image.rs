@@ -168,6 +168,10 @@ struct TmuxClient {
     font_size: Option<FontSize>,
 }
 
+pub(crate) fn video_picker() -> Picker {
+    PICKER.get_or_init(Picker::halfblocks).clone()
+}
+
 pub(crate) fn initialize() {
     let inside_tmux = env::var_os("TMUX").is_some();
     let tmux_client = inside_tmux.then(tmux_client).flatten();
@@ -571,6 +575,10 @@ fn encode(picker: &Picker, image: DynamicImage, size: Size) -> Option<Arc<Sliced
 }
 
 fn local_path(destination: &str, workspace: &Path) -> Option<PathBuf> {
+    let destination_path = Path::new(destination);
+    if destination_path.is_absolute() {
+        return Some(destination_path.to_path_buf());
+    }
     let base = Url::from_directory_path(workspace).ok()?;
     let destination = base.join(destination).ok()?;
     if destination.scheme() != "file" {

@@ -1,6 +1,7 @@
 import {
   authenticate,
   authenticatePersistentAccount,
+  authenticateVaultAccount,
   requireSameOriginMutation,
   type AccountAuthEnv,
 } from "./account-auth";
@@ -29,12 +30,13 @@ export async function routeCredentialRequest(
   url: URL,
 ): Promise<Response | undefined> {
   const sshIdentity = url.pathname.match(/^\/v1\/credentials\/ssh\/([A-Za-z0-9][A-Za-z0-9._-]{0,63})$/)?.[1];
+  const originId = url.pathname.match(/^\/v1\/credentials\/vault\/login\/([A-Za-z0-9_-]{22,64})\/origin$/)?.[1];
   const vaultMatch = url.pathname.match(
     /^\/v1\/credentials\/vault\/(login|api_key|card|address|phone)(?:\/([A-Za-z0-9_-]{22,64}))?$/,
   );
   const vaultKind = vaultMatch?.[1] as VaultKind | undefined;
   const vaultId = vaultMatch?.[2];
-  const methods = ROUTES.get(url.pathname)
+  const methods = (originId ? new Set(["PUT"]) : undefined) ?? ROUTES.get(url.pathname)
     ?? (sshIdentity ? new Set(["PUT", "DELETE"]) : undefined)
     ?? (vaultKind ? new Set(vaultId ? ["DELETE"] : ["POST"]) : undefined);
   if (!methods) return undefined;
@@ -44,17 +46,19 @@ export async function routeCredentialRequest(
   // Metadata reads are safe for an ephemeral browser identity, but mutations
   // must be tied to a passkey-backed account so a user-supplied provider secret
   // cannot outlive the anonymous session that submitted it.
-  const principal = request.method === "GET"
-    ? await authenticate(request, env, url)
+  const vaultRoute = Boolean(vaultKind || originId || url.pathname === "/v1/credentials");
+  const principal = request.method === "GET" ? await authenticate(request, env, url)
+    : vaultRoute ? await authenticateVaultAccount(request, env, url)
     : await authenticatePersistentAccount(request, env, url);
-  if (!principal || principal.kind !== "account_session") {
+  if (!principal || (principal.kind !== "account_session" && !(vaultRoute && principal.kind === "api_key"
+    && principal.capabilities.includes("agents:write") && principal.capabilities.includes("tools:use")))) {
     return json({ error: "unauthorized" }, 401);
   }
   if (request.method === "PUT" && (url.pathname === "/v1/credentials/openai" || sshIdentity)
     && !request.headers.get("content-type")?.toLowerCase().startsWith("application/json")) {
     return json({ error: "invalid_content_type" }, 415);
   }
-  if (request.method === "POST" && vaultKind
+  if (((request.method === "POST" && vaultKind) || originId)
     && !isJsonContentType(request.headers.get("content-type"))) {
     return json({ error: "invalid_content_type" }, 415);
   }
@@ -64,7 +68,7 @@ export async function routeCredentialRequest(
   }
 
   let vaultBody: string | undefined;
-  if (request.method === "POST" && vaultKind) {
+  if ((request.method === "POST" && vaultKind) || originId) {
     let value: unknown;
     try {
       value = JSON.parse(await readBoundedText(request, MAX_VAULT_BODY_BYTES));
@@ -73,7 +77,10 @@ export async function routeCredentialRequest(
         ? json({ error: "body_too_large" }, 413)
         : json({ error: "invalid_vault_entry" }, 400);
     }
-    const validated = validateVaultPayload(value, vaultKind);
+    const validated = originId
+      ? isRecord(value) && Object.keys(value).length === 1 && validBrowserOrigin(value.browser_origin)
+        ? { browser_origin: value.browser_origin } : undefined
+      : validateVaultPayload(value, vaultKind!);
     if (!validated) return json({ error: "invalid_vault_entry" }, 400);
     vaultBody = JSON.stringify(validated);
   }
@@ -209,7 +216,7 @@ function validateVaultPayload(
 ): Record<string, string> | undefined {
   if (!isRecord(value)) return undefined;
   const hasAddressLine2 = Object.prototype.hasOwnProperty.call(value, "address_line_2");
-  const expected = vaultKeys(kind, hasAddressLine2);
+  const expected = vaultKeys(kind, hasAddressLine2, Object.prototype.hasOwnProperty.call(value, "browser_origin"));
   const keys = Object.keys(value);
   if (keys.length !== expected.length || keys.some((key) => !expected.includes(key))) {
     return undefined;
@@ -223,7 +230,9 @@ function validateVaultPayload(
   if (kind === "login") {
     const username = boundedText(value.username, 512);
     const password = boundedSecret(value.password, 8_192);
-    return username && password ? { name, username, password } : undefined;
+    const origin = value.browser_origin;
+    if (origin !== undefined && !validBrowserOrigin(origin)) return undefined;
+    return username && password ? { name, username, password, ...(typeof origin === "string" ? { browser_origin: origin } : {}) } : undefined;
   }
   if (kind === "card") {
     const cardNumber = vaultCardNumber(value.card_number);
@@ -269,10 +278,10 @@ function validateVaultPayload(
   return phoneNumber ? { name, phone_number: phoneNumber } : undefined;
 }
 
-function vaultKeys(kind: VaultKind, hasAddressLine2: boolean): readonly string[] {
+function vaultKeys(kind: VaultKind, hasAddressLine2: boolean, hasBrowserOrigin = false): readonly string[] {
   switch (kind) {
     case "api_key": return ["name", "api_key"];
-    case "login": return ["name", "username", "password"];
+    case "login": return ["name", "username", "password", ...(hasBrowserOrigin ? ["browser_origin"] : [])];
     case "card": return [
       "name", "card_number", "expiry_month", "expiry_year", "cvv", "billing_zip",
     ];
@@ -332,3 +341,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 class BodyTooLarge extends Error {}
+
+function validBrowserOrigin(value: unknown): value is string {
+  if (typeof value !== "string" || value.length > 2048) return false;
+  try { const url = new URL(value); return url.protocol === "https:" && url.origin === value && !url.username && !url.password; } catch { return false; }
+}

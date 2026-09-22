@@ -12,3 +12,6 @@ export type { ConversationSummary } from "./ConversationHistoryRail.js";
 export type { VoiceTerminalEntry } from "./TerminalTranscriptSurface.js";
 export type { AgentStatus, AgentTerminalMode, AgentTerminalState } from "./types.js";
 export type { AgentEntry, ToolActivity, GeneratedOutput } from "nanocodex-react/agent";
+
+export { ElevenLabsSettings } from "./ElevenLabsSettings.js";
+export type { ElevenLabsManager, ElevenLabsVoice } from "./ElevenLabsSettings.js";

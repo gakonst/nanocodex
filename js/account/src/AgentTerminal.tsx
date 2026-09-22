@@ -25,7 +25,9 @@ import {
   type ModelSessionStatus,
   type CredentialSource,
 } from "./modelSession";
+import { VaultIntakeCard } from "./VaultIntakeCard";
 import { ArtifactDock } from "./ArtifactDock";
+import { PhoneCallsPanel } from "./PhoneCallsPanel";
 import { ManagedAgentSchedules } from "./ManagedAgentSchedules";
 import {
   ACCOUNT_MCP_CATALOG_CHANGED,
@@ -199,6 +201,7 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
       onTerminalEvent={onTerminalEvent}
       onStateChange={onStateChange}
       retryAgent={retryAgent}
+      renderTool={(tool, { submit }) => <VaultIntakeCard key={tool.callId} tool={tool} onReceipt={submit} />}
       voice={voiceEnabled}
       welcome={welcome}
       controls={source === "brokered" || account?.persistent ? ({ agentReady }) => (
@@ -322,6 +325,8 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
   // optional hand does not block the managed brain or subsequent reconnects.
   const startupReady = browserHandSettledFor === managed || (settingsReady && conversationStarted);
   return (
+    <>
+    <PhoneCallsPanel key={`${accountId}:${agentId}`} parentAgentId={agentId} enabled={Boolean(accountId) && mode !== "hidden"} />
     <AgentTerminalView
       agent={startupReady ? agent : undefined}
       agentError={stateQuery.error?.message}
@@ -337,6 +342,7 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
       onConversationActivity={recordConversationActivity}
       onStateChange={onStateChange}
       retryAgent={retryAgent}
+      renderTool={(tool, { submit }) => <VaultIntakeCard key={tool.callId} tool={tool} onReceipt={submit} />}
       voice={voiceEnabled}
       welcome={settingsReady && !conversationStarted ? "# What should we work on?" : undefined}
       composerPlaceholder="Ask Nanocodex"
@@ -368,6 +374,7 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
         />
       ) : null}
     />
+    </>
   );
 });
 

@@ -11,6 +11,14 @@ await cua.getState();
 ```
 
 
+To see the Mac screen, capture the main display directly. This read-only screenshot includes the desktop and visible windows, works when Finder has no open window, and does not launch or activate an app:
+
+```javascript
+await cua.getScreenshot();
+```
+
+Use `cua.getApp(...)` for a specific app's window. Desktop screenshot pixels are not app-relative coordinates for app actions.
+
 Use the first matching browser control option from the user's request:
 
 For a tab @-mention (`mention=tab-v1`):
@@ -46,6 +54,8 @@ If the user specifies an app to use, get the app by name, bundle ID, or path:
 ```javascript
 let app = await cua.getApp("Example App");
 ```
+
+After initialization, when `cua.listWindows` is available, use `await cua.listWindows("Example App")` to discover native windows. Bind an observed window with `await cua.getApp("Example App", { windowId })` before controlling multiple windows. Keep a separate handle for each window. Background input preserves the human pointer; input to windows in the same Mac process is coordinated because they share keyboard focus.
 
 
 To add other content to the tool result, use `nodeRepl.write(value)` for text or other values and `await nodeRepl.emitImage(image)` for images. The APIs listed above already display their documentation or UI state; do not wrap their results in `write` or `emitImage`.

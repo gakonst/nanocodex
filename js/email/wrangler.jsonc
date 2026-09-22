@@ -1,0 +1,15 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nanocodex-email",
+  "account_id": "16ce0442a940f01beefdb15a196a43ea",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-29",
+  "compatibility_flags": ["global_fetch_strictly_public"],
+  "workers_dev": false,
+  "preview_urls": false,
+  "vars": {"EMAIL_SEND_ENABLED": "true", "MAILBOX_ADMIN_ID": "631f6a83-9e3f-474a-977a-68897d3ee436", "MAILBOX_OWNER_ID": "631f6a83-9e3f-474a-977a-68897d3ee436", "MAILBOX_ADDRESS": "agent@agents.gakonst.com"},
+  "services": [{"binding":"NANOCODEX_EMAIL_AGENT","service":"nanocodex-durable-agent","entrypoint":"EmailAgentBackend"}],
+  "send_email": [{"name": "EMAIL", "allowed_sender_addresses": ["agent@agents.gakonst.com"]}],
+  "durable_objects": {"bindings": [{"name": "MAILBOX", "class_name": "Mailbox"}]},
+  "migrations": [{"tag": "v1", "new_sqlite_classes": ["Mailbox"]}]
+}

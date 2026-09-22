@@ -40,7 +40,7 @@ pub(super) fn decode(
     let stride =
         (width as usize * usize::from(bits)).div_ceil(usize::from(pad)) * usize::from(pad) / 8;
     let expected = stride * height as usize;
-    if expected > 8_000_000 || data.len() < expected || data.len() > expected + 3 {
+    if expected > 4096 * 4096 * 4 || data.len() < expected || data.len() > expected + 3 {
         return Err(invalid("invalid or excessive X image buffer"));
     }
     let mut output = Vec::with_capacity(width as usize * height as usize * 3);

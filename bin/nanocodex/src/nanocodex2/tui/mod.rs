@@ -6,6 +6,7 @@
 //! orchestration and hosted tools; this module owns only presentation, terminal
 //! interaction, and the caller-local shell convenience.
 
+mod bug;
 mod clipboard;
 mod components;
 mod context;
@@ -13,15 +14,19 @@ mod control;
 mod editor;
 mod format;
 mod history;
+mod links;
 mod pane;
 mod prompt;
 mod scheduler;
+mod screen;
 mod session;
 mod shell;
 mod spinner;
 mod terminal;
 mod theme;
 mod transcript;
+mod vault;
+mod voice_clone;
 
 use self::{
     components::{
@@ -56,7 +61,7 @@ use std::{
     io,
     path::{Path, PathBuf},
     sync::Arc,
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tokio::{sync::mpsc, task::JoinSet};
 use tokio_util::sync::CancellationToken;
@@ -156,7 +161,7 @@ type CancelCompletion = (PaneId, CancelTarget, Result<CancelDisposition, String>
 type SettingsCompletion = (
     PaneId,
     String,
-    &'static str,
+    SettingsMutation,
     Result<AgentSettings, ManagedError>,
 );
 type HistoryCompletion = (
@@ -443,6 +448,7 @@ struct ConnectionFailure {
 enum ConnectionPurpose {
     Startup,
     Resume(PaneId),
+    Bug(PaneId),
 }
 
 #[derive(Clone, Copy, Eq, PartialEq)]
@@ -450,6 +456,14 @@ enum RecoveryPhase {
     Connecting,
     Replaying,
     Disconnected,
+}
+
+struct SessionSearchCompletion {
+    pane: PaneId,
+    picker_id: u64,
+    request_id: u64,
+    query: String,
+    result: Result<Vec<nanocodex_managed::SessionSearchHit>, String>,
 }
 
 enum ConnectionResult {
@@ -468,6 +482,7 @@ enum ConnectionResult {
 
 #[derive(Clone, Copy)]
 enum SettingsMutation {
+    AutoRoute,
     Complete(AgentSettings),
     Thinking(Thinking),
     FastMode(bool),
@@ -476,6 +491,7 @@ enum SettingsMutation {
 impl SettingsMutation {
     fn failure_subject(self) -> &'static str {
         match self {
+            Self::AutoRoute => "enable automatic routing",
             Self::Complete(_) => "select model",
             Self::Thinking(_) => "change thinking effort",
             Self::FastMode(_) => "change fast mode",
@@ -483,8 +499,21 @@ impl SettingsMutation {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PendingVoice {
+    pane: PaneId,
+    selection: crate::voice::Selection,
+    muted: bool,
+}
+
 struct DriverRuntime {
     control_bridge: Option<nanocodex_tui_control::Bridge>,
+    screen: screen::Controller,
+    pending_voice: Option<PendingVoice>,
+    voice_selection: crate::voice::Selection,
+    clone_panel: Option<voice_clone::Panel>,
+    voice_tasks: JoinSet<(PaneId, Result<String, String>)>,
+    voice: Option<crate::voice::Session>,
     client: ManagedClient,
     agent: Option<Nanocodex>,
     startup_attach: bool,
@@ -499,6 +528,15 @@ struct DriverRuntime {
     agent_id: String,
     settings: AgentSettings,
     pending_settings: Option<AgentSettings>,
+    pending_autoroute: Option<PaneId>,
+    routing_enabled: bool,
+    routing_resolved: bool,
+    routing_generation: u64,
+    routing_updates: JoinSet<(
+        String,
+        u64,
+        Result<nanocodex_managed::RoutingStatus, ManagedError>,
+    )>,
     workspace: PathBuf,
     sequence: u64,
     next_turn: u64,
@@ -518,6 +556,8 @@ struct DriverRuntime {
     admissions: JoinSet<Admission>,
     completions: JoinSet<Completion>,
     steers: JoinSet<SteerCompletion>,
+    vault_tasks: JoinSet<vault::Completion>,
+    vault_attempted: HashSet<(String, String)>,
     steer_receipts: HashMap<(PaneId, components::QueueId), (u64, SteerTarget, String)>,
     pending_withdrawals: HashSet<(PaneId, components::QueueId)>,
     withdrawals: JoinSet<WithdrawalCompletion>,
@@ -528,6 +568,7 @@ struct DriverRuntime {
     settings_updates: JoinSet<SettingsCompletion>,
     settings_queue: VecDeque<(PaneId, String, SettingsMutation)>,
     shells: JoinSet<(PaneId, ShellExecution)>,
+    links: JoinSet<(PaneId, Result<(), String>)>,
     history_loads: JoinSet<HistoryCompletion>,
     history_replays: JoinSet<HistoryReplayCompletion>,
     history_prefetch: HistoryPrefetch,
@@ -543,6 +584,8 @@ struct DriverRuntime {
     recent_prompts: Vec<RecentPrompt>,
     connection: JoinSet<ConnectionResult>,
     session_list_cancellations: HashMap<(PaneId, u64), CancellationToken>,
+    session_searches: JoinSet<SessionSearchCompletion>,
+    session_search_tasks: HashMap<PaneId, tokio::task::AbortHandle>,
     retry_target: Option<RetryTarget>,
 }
 
@@ -618,7 +661,314 @@ fn history_replay_matches(
         && runtime_before == Some(requested_before)
 }
 
+fn voice_settings(selection: &crate::voice::Selection) -> nanocodex_voice_protocol::VoiceSettings {
+    use nanocodex_voice_protocol::{VoiceOutputProvider, VoiceSettings};
+    match selection {
+        crate::voice::Selection::Chatgpt(name) => VoiceSettings {
+            voice: (*name).into(),
+            ..Default::default()
+        },
+        crate::voice::Selection::ElevenLabs(id) => VoiceSettings {
+            output_provider: VoiceOutputProvider::Elevenlabs,
+            eleven_labs_voice_id: Some(id.clone()),
+            ..Default::default()
+        },
+    }
+}
+
+async fn list_elevenlabs_voices() -> Result<String, String> {
+    let client = crate::voice::elevenlabs::Client::from_env().map_err(|e| e.to_string())?;
+    let voices = client.voices().await.map_err(|e| e.to_string())?;
+    let mut lines = vec!["ElevenLabs voices (use /voice elevenlabs VOICE_ID):".to_owned()];
+    for voice in voices {
+        lines.push(format!(
+            "{} — {}{}",
+            voice.voice_id,
+            voice.name,
+            if voice.category.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", voice.category)
+            }
+        ));
+    }
+    if lines.len() == 1 {
+        lines.push("No voices found. Use /voice clone NAME PATH --consent.".into());
+    }
+    Ok(lines.join("\n"))
+}
+
+fn resolve_voice_sample_path(
+    workspace: &Path,
+    path: PathBuf,
+    home: Option<PathBuf>,
+) -> Result<PathBuf, String> {
+    if let Ok(relative) = path.strip_prefix("~") {
+        return home.map(|home| home.join(relative)).ok_or_else(|| {
+            "Cannot expand ~/ audio path: HOME is not set. Use an absolute path.".into()
+        });
+    }
+    Ok(if path.is_absolute() {
+        path
+    } else {
+        workspace.join(path)
+    })
+}
+
+async fn clone_elevenlabs_voice(name: String, path: PathBuf) -> Result<String, String> {
+    // The provider currently reads samples synchronously. Keep even slow local files
+    // off the terminal's executor; the transport itself remains asynchronous.
+    let handle = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        handle.block_on(async move {
+            let client = crate::voice::elevenlabs::Client::from_env().map_err(|e| e.to_string())?;
+            let voice = client
+                .clone_voice(&name, &[path], true)
+                .await
+                .map_err(|e| e.to_string())?;
+            if voice.requires_verification {
+                Ok(format!("Voice created ({}). Complete verification in ElevenLabs before using this voice.", voice.voice_id))
+            } else {
+                Ok(format!("Voice cloned. Select it with /voice elevenlabs {}", voice.voice_id))
+            }
+        })
+    })
+    .await
+    .map_err(|_| "Voice clone task failed".to_owned())?
+}
+
 impl DriverRuntime {
+    fn voice_status(&self) -> Option<crate::voice_state::Status> {
+        if let Some(panel) = &self.clone_panel {
+            return Some(crate::voice_state::Status {
+                text: panel.text(),
+                microphone: panel.microphone_peak(),
+                ..Default::default()
+            });
+        }
+        self.voice
+            .as_ref()
+            .map(|voice| voice.status.borrow().clone())
+            .or_else(|| {
+                self.pending_voice
+                    .as_ref()
+                    .map(|pending| crate::voice_state::Status {
+                        text: "Voice connecting…".into(),
+                        muted: pending.muted,
+                        ..Default::default()
+                    })
+            })
+    }
+
+    fn take_ready_voice(&mut self) -> Option<PendingVoice> {
+        if self.agent_id.is_empty()
+            || !self.managed_events_open
+            || self.pending_resume.is_some()
+            || self.recovery.is_some()
+            || self.voice.is_some()
+        {
+            return None;
+        }
+        self.pending_voice.take()
+    }
+
+    fn voice_command(
+        &mut self,
+        pane: PaneId,
+        command: crate::voice::Command,
+    ) -> Result<Option<String>, String> {
+        use crate::voice::Command;
+        if self.clone_panel.is_some()
+            && matches!(
+                command,
+                Command::Toggle | Command::Start(_) | Command::Select(_) | Command::Clone { .. }
+            )
+        {
+            return Err(
+                "Finish or cancel /voice clone before starting realtime voice or another clone."
+                    .into(),
+            );
+        }
+        let command = match command {
+            Command::Toggle if self.voice.is_some() || self.pending_voice.is_some() => {
+                Command::Stop
+            }
+            Command::Toggle => Command::Start(None),
+            other => other,
+        };
+        match command {
+            Command::Start(None) if self.voice.is_some() => Ok(None),
+            Command::Start(name) => {
+                let selection = name
+                    .map(crate::voice::Selection::Chatgpt)
+                    .unwrap_or_else(|| self.voice_selection.clone());
+                self.voice_command(pane, Command::Select(selection))
+            }
+            Command::Select(selection) => {
+                self.voice_selection = selection.clone();
+                let muted = self
+                    .voice
+                    .as_ref()
+                    .map(|voice| voice.is_muted())
+                    .or_else(|| self.pending_voice.as_ref().map(|pending| pending.muted))
+                    .unwrap_or(false);
+                self.pending_voice = Some(PendingVoice {
+                    pane,
+                    selection,
+                    muted,
+                });
+                // Wait for the old session's finished status before starting new media.
+                if let Some(voice) = &self.voice {
+                    voice.stop();
+                }
+                Ok(None)
+            }
+            Command::Stop => {
+                self.pending_voice = None;
+                if let Some(voice) = &self.voice {
+                    voice.stop();
+                }
+                Ok(None)
+            }
+            Command::ToggleMute | Command::Unmute => {
+                let current = self
+                    .pending_voice
+                    .as_ref()
+                    .map(|pending| pending.muted)
+                    .or_else(|| self.voice.as_ref().map(|voice| voice.is_muted()))
+                    .ok_or_else(|| "Start /voice before muting.".to_owned())?;
+                let muted = command == Command::ToggleMute && !current;
+                if let Some(voice) = &self.voice {
+                    voice.mute(muted);
+                }
+                if let Some(pending) = &mut self.pending_voice {
+                    pending.muted = muted;
+                }
+                Ok(None)
+            }
+            Command::Help => Ok(Some(crate::voice::HELP.into())),
+            Command::ListProvider(crate::voice::Provider::Chatgpt) => Ok(Some(format!(
+                "ChatGPT voices: {}. Use /voice chatgpt NAME.",
+                nanocodex_voice_protocol::CHATGPT_REALTIME_VOICES.join(", ")
+            ))),
+            Command::List | Command::ListProvider(crate::voice::Provider::ElevenLabs) => {
+                let all = command == Command::List;
+                self.voice_tasks.spawn(async move {
+                    let result = list_elevenlabs_voices().await;
+                    let result = if all {
+                        let chatgpt = format!(
+                            "ChatGPT voices: {}. Use /voice chatgpt NAME.",
+                            nanocodex_voice_protocol::CHATGPT_REALTIME_VOICES.join(", ")
+                        );
+                        Ok(format!(
+                            "{chatgpt}\n{}",
+                            result.unwrap_or_else(|error| format!("ElevenLabs: {error}"))
+                        ))
+                    } else {
+                        result
+                    };
+                    (pane, result)
+                });
+                Ok(Some("Loading voice catalog…".into()))
+            }
+            Command::CloneOpen(name) => {
+                if self.clone_panel.is_some() {
+                    return Err("Cancel the current clone first.".into());
+                }
+                self.clone_panel = Some(voice_clone::Panel::new(name));
+                Ok(None)
+            }
+            Command::CloneRecord(name) => {
+                if let Some(name) = name {
+                    if self.clone_panel.is_some() {
+                        return Err("Cancel the current clone first.".into());
+                    }
+                    self.clone_panel = Some(voice_clone::Panel::new(name));
+                }
+                self.clone_panel
+                    .as_mut()
+                    .ok_or("Open /voice clone NAME first.")?
+                    .record()?;
+                self.pending_voice = None;
+                if let Some(voice) = &self.voice {
+                    voice.stop();
+                }
+                Ok(None)
+            }
+            Command::CloneStop => {
+                self.clone_panel
+                    .as_mut()
+                    .ok_or("No clone recording is open.")?
+                    .stop()?;
+                Ok(None)
+            }
+            Command::ClonePlay => {
+                self.clone_panel
+                    .as_mut()
+                    .ok_or("No clone recording is open.")?
+                    .play()?;
+                Ok(None)
+            }
+            Command::CloneReview => Ok(Some(
+                self.clone_panel
+                    .as_ref()
+                    .ok_or("No clone recording is open.")?
+                    .review()?,
+            )),
+            Command::CloneCancel => {
+                self.clone_panel = None;
+                Ok(Some("Clone cancelled; local recording discarded.".into()))
+            }
+            Command::CloneSubmit => {
+                if !self
+                    .clone_panel
+                    .as_ref()
+                    .is_some_and(|panel| matches!(panel.state, voice_clone::State::Review(_)))
+                {
+                    return Err("Stop and review a local recording before submitting.".into());
+                }
+                // Keep the recording available if local credentials are missing.
+                crate::voice::elevenlabs::Client::from_env().map_err(|error| error.to_string())?;
+                let mut panel = self.clone_panel.take().unwrap();
+                let name = panel.name.clone();
+                let voice_clone::State::Review(sample) =
+                    std::mem::replace(&mut panel.state, voice_clone::State::Busy)
+                else {
+                    unreachable!()
+                };
+                self.voice_tasks.spawn(async move {
+                    let result = clone_elevenlabs_voice(name, sample.path().to_owned()).await;
+                    drop(sample);
+                    (pane, result)
+                });
+                Ok(Some(
+                    "Uploading consented recording directly to ElevenLabs…".into(),
+                ))
+            }
+            Command::Clone { name, path } => {
+                let path = resolve_voice_sample_path(
+                    &self.workspace,
+                    path,
+                    std::env::var_os("HOME").map(PathBuf::from),
+                )?;
+                self.voice_tasks
+                    .spawn(async move { (pane, clone_elevenlabs_voice(name, path).await) });
+                Ok(Some("Cloning voice with ElevenLabs…".into()))
+            }
+            Command::Status => Ok(Some(self.voice_status().map_or_else(
+                || format!("Voice is off · selected {}", self.voice_selection.label()),
+                |status| {
+                    if status.muted {
+                        format!("{} · microphone muted", status.text)
+                    } else {
+                        status.text
+                    }
+                },
+            ))),
+            Command::Toggle => unreachable!("toggle resolved above"),
+        }
+    }
+
     fn finish_resume(&mut self, task_id: tokio::task::Id) -> Option<PaneId> {
         let (task, _) = self.pending_resume.as_ref()?;
         if task.id() != task_id {
@@ -984,6 +1334,32 @@ impl DriverRuntime {
         live_managed_projection(event, &self.agent_id, &self.workspace, &mut self.sequence)
     }
 
+    fn refresh_routing(&mut self) {
+        if self.agent_id.is_empty() || !self.routing_updates.is_empty() {
+            return;
+        }
+        let client = self.client.clone();
+        let agent_id = self.agent_id.clone();
+        let generation = self.routing_generation;
+        self.routing_updates.spawn(async move {
+            let result = client.routing_status(&agent_id).await;
+            (agent_id, generation, result)
+        });
+    }
+
+    fn enable_autoroute(&mut self, pane: PaneId) {
+        if self.agent.is_none() {
+            self.pending_autoroute = Some(pane);
+            if self.connection.is_empty()
+                && let Some(target) = self.retry_target.take()
+            {
+                self.spawn_connection(ConnectionPurpose::Startup, target);
+            }
+            return;
+        }
+        self.queue_settings(pane, SettingsMutation::AutoRoute);
+    }
+
     fn queue_settings(&mut self, pane: PaneId, mutation: SettingsMutation) {
         self.settings_queue
             .push_back((pane, self.agent_id.clone(), mutation));
@@ -1000,6 +1376,10 @@ impl DriverRuntime {
         let client = self.client.clone();
         self.settings_updates.spawn(async move {
             let result = match mutation {
+                SettingsMutation::AutoRoute => client
+                    .enable_auto_routing(&agent_id)
+                    .await
+                    .map(|receipt| receipt.settings),
                 SettingsMutation::Complete(settings) => {
                     client.set_settings(&agent_id, settings).await
                 }
@@ -1010,7 +1390,7 @@ impl DriverRuntime {
                     client.set_fast_mode(&agent_id, enabled).await
                 }
             };
-            (pane, agent_id, mutation.failure_subject(), result)
+            (pane, agent_id, mutation, result)
         });
     }
 
@@ -1031,7 +1411,46 @@ impl DriverRuntime {
         });
     }
 
+    fn detach_bug_source(&mut self) {
+        self.admissions = JoinSet::new();
+        self.completions = JoinSet::new();
+        self.steers = JoinSet::new();
+        self.cancellations = JoinSet::new();
+        self.settings_updates = JoinSet::new();
+        self.settings_queue.clear();
+        self.pending_settings = None;
+        self.pending_autoroute = None;
+        self.routing_enabled = false;
+        self.routing_resolved = false;
+        self.routing_generation = self.routing_generation.wrapping_add(1);
+        self.routing_updates = JoinSet::new();
+        self.controls.clear();
+        self.admitting.clear();
+        self.cancel_after_admission.clear();
+        self.local_managed_turns.clear();
+        self.unacknowledged_inputs.clear();
+        self.confirmed_requests.clear();
+        self.waiting_steers.clear();
+        self.pending_steer_target = None;
+        self.unconfirmed_steer = None;
+        self.pending_submission = None;
+        self.pending_voice = None;
+        self.clone_panel = None;
+        self.recovery = None;
+        self.recovery_events.clear();
+        // Discard any queued recovery result for the old agent as well.
+        self.connection = JoinSet::new();
+        self.session_list_cancellations.clear();
+        self.shell_cancellation.cancel();
+        self.shells = JoinSet::new();
+        self.shell_cancellation = CancellationToken::new();
+        self.active_shells = 0;
+    }
+
     fn start_new_session(&mut self, settings: AgentSettings) {
+        self.voice.take();
+        self.clone_panel = None;
+        self.pending_voice = None;
         // Stop routing input and events to the previous agent before exposing
         // the new composer. Creation then uses the same pending-input path as launch.
         if let Some(previous) = self.agent.take() {
@@ -1046,6 +1465,11 @@ impl DriverRuntime {
         self.agent_id.clear();
         self.settings = settings;
         self.pending_settings = None;
+        self.pending_autoroute = None;
+        self.routing_enabled = false;
+        self.routing_resolved = false;
+        self.routing_generation = self.routing_generation.wrapping_add(1);
+        self.routing_updates = JoinSet::new();
         self.managed_active_turns = ManagedActiveTurns::default();
         self.local_managed_turns.clear();
         self.submitted_turns.clear();
@@ -1070,6 +1494,27 @@ impl DriverRuntime {
         self.shell_context.clear();
         self.sequence = 1;
         self.spawn_connection(ConnectionPurpose::Startup, RetryTarget::Create(settings));
+    }
+
+    /// Local mutations must settle before replacing the client; accepted remote
+    /// turns need not finish. Local shell commands also retain their terminal.
+    fn ready_for_reload(&self) -> bool {
+        self.pending_resume.is_none()
+            && self.connection.is_empty()
+            && self.admissions.is_empty()
+            && self.pending_submission.is_none()
+            && self.steers.is_empty()
+            && self.waiting_steers.is_empty()
+            && self.unconfirmed_steer.is_none()
+            && self.withdrawals.is_empty()
+            && self.cancellations.is_empty()
+            && self.settings_updates.is_empty()
+            && self.settings_queue.is_empty()
+            && self.vault_tasks.is_empty()
+            && self.voice_tasks.is_empty()
+            // Keep local recordings and samples until explicitly submitted or discarded.
+            && self.clone_panel.is_none()
+            && self.active_shells == 0
     }
 
     fn idle(&self) -> bool {
@@ -1353,12 +1798,26 @@ async fn run_inner(
         theme.set_system_scheme(scheme);
     }
     let mut app = AppNode::new(theme, workspace.clone(), root);
+    let mut reload = match crate::reload::register() {
+        Ok(registration) => Some(registration),
+        Err(error) => {
+            tracing::warn!(%error, "local reload unavailable");
+            None
+        }
+    };
+    let mut reload_requested = false;
     let mut terminal = TerminalSession::enter().map_err(terminal_error)?;
     let mut input = EventStream::new();
     let mut scheduler = RenderScheduler::new(STREAM_FRAME_INTERVAL, Instant::now());
     let mut runtime = DriverRuntime {
         control_bridge: None,
+        screen: screen::Controller::new(components::video_picker()),
         client: client.clone(),
+        pending_voice: None,
+        voice_selection: Default::default(),
+        voice_tasks: JoinSet::new(),
+        clone_panel: None,
+        voice: None,
         agent: None,
         startup_attach: matches!(attach, Some(Some(_))),
         pending_resume: None,
@@ -1372,6 +1831,11 @@ async fn run_inner(
         agent_id: String::new(),
         settings: initial_settings,
         pending_settings: None,
+        pending_autoroute: None,
+        routing_enabled: false,
+        routing_resolved: false,
+        routing_generation: 0,
+        routing_updates: JoinSet::new(),
         workspace: workspace.clone(),
         sequence: 1,
         next_turn: 1,
@@ -1391,6 +1855,8 @@ async fn run_inner(
         admissions: JoinSet::new(),
         completions: JoinSet::new(),
         steers: JoinSet::new(),
+        vault_tasks: JoinSet::new(),
+        vault_attempted: HashSet::new(),
         steer_receipts: HashMap::new(),
         pending_withdrawals: HashSet::new(),
         withdrawals: JoinSet::new(),
@@ -1401,6 +1867,7 @@ async fn run_inner(
         settings_updates: JoinSet::new(),
         settings_queue: VecDeque::new(),
         shells: JoinSet::new(),
+        links: JoinSet::new(),
         history_loads: JoinSet::new(),
         history_replays: JoinSet::new(),
         history_prefetch: HistoryPrefetch::default(),
@@ -1416,6 +1883,8 @@ async fn run_inner(
         recent_prompts: Vec::new(),
         connection: JoinSet::new(),
         session_list_cancellations: HashMap::new(),
+        session_searches: JoinSet::new(),
+        session_search_tasks: HashMap::new(),
         retry_target: None,
     };
     // Put the complete interface on screen before any managed request starts.
@@ -1449,6 +1918,8 @@ async fn run_inner(
             );
         }
     }
+    let mut clone_tick = tokio::time::interval(std::time::Duration::from_millis(200));
+    clone_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut stopping = false;
     let mut control_server = if nanocodex_tui_control::Server::enabled() {
         Some(nanocodex_tui_control::Server::start("managed").map_err(terminal_error)?)
@@ -1458,11 +1929,30 @@ async fn run_inner(
     runtime.control_bridge = control_server.as_ref().map(|server| server.bridge.clone());
     let mut control_tasks = JoinSet::new();
 
+    let mut routing_tick = tokio::time::interval(Duration::from_secs(1));
+    routing_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
     while !stopping {
         if let Some(server) = &control_server {
             control::snapshot(&server.bridge, &app, &runtime, false);
         }
-
+        // Finish thread selection and prompt admission before detaching. The durable
+        // managed turn itself continues independently of this terminal.
+        if reload_requested && runtime.ready_for_reload() {
+            match reload.as_ref().expect("registered reload").preflight() {
+                Ok(()) => break,
+                Err(error) => {
+                    reload_requested = false;
+                    request_render(
+                        app.update(AppEvent::NotifyError {
+                            pane: PaneId::Main,
+                            error,
+                        }),
+                        &mut scheduler,
+                    );
+                }
+            }
+        }
         if runtime.recovery == Some(RecoveryPhase::Replaying) && runtime.recovery_events.is_empty()
         {
             runtime.recovery = None;
@@ -1501,6 +1991,7 @@ async fn run_inner(
             {
                 runtime.start_submission(pane, id, prompt);
             }
+            runtime.refresh_routing();
             runtime.start_history_prefetch(PaneId::Main);
         }
         if runtime.recovery.is_none()
@@ -1554,15 +2045,54 @@ async fn run_inner(
                 break;
             }
         }
+        if runtime.voice.is_none()
+            && let Some(panel) = &mut runtime.clone_panel
+        {
+            panel.start_if_ready();
+        }
+        if let Some(pending) = runtime.take_ready_voice() {
+            match crate::voice::Session::start_with_settings(
+                runtime.client.clone(),
+                runtime.agent_id.clone(),
+                voice_settings(&pending.selection),
+                pending.muted,
+            ) {
+                Ok(voice) => runtime.voice = Some(voice),
+                Err(error) => request_render(
+                    app.update(AppEvent::NotifyError {
+                        pane: pending.pane,
+                        error: error.to_string(),
+                    }),
+                    &mut scheduler,
+                ),
+            }
+            request_render(
+                app.update(AppEvent::VoiceStatus(runtime.voice_status())),
+                &mut scheduler,
+            );
+        }
         if scheduler.is_due(Instant::now()) {
             terminal
                 .draw(|frame| app.render(frame))
                 .map_err(terminal_error)?;
+            runtime.screen.size.send_if_modified(|size| {
+                let current = app.screen_size();
+                if *size == current {
+                    false
+                } else {
+                    *size = current;
+                    true
+                }
+            });
             scheduler.presented(Instant::now());
         }
 
         let render_deadline = scheduler.deadline();
         let animation_deadline = app.animation_deadline();
+        let (mut voice_status, mut voice_transcripts) =
+            runtime.voice.as_mut().map_or((None, None), |voice| {
+                (Some(&mut voice.status), Some(&mut voice.transcripts))
+            });
         tokio::select! {
             command = async { match &mut control_server { Some(server) => server.commands.recv().await, None => pending().await } } => {
                 if let Some(command) = command { control::dispatch(command, &control_server.as_ref().unwrap().bridge, &runtime, &mut control_tasks); }
@@ -1581,11 +2111,157 @@ async fn run_inner(
                     command.finish(result);
                 }
             }
+            _ = routing_tick.tick(), if runtime.routing_enabled && !runtime.routing_resolved
+                && (!runtime.controls.is_empty() || !runtime.admitting.is_empty() || !runtime.managed_active_turns.ids.is_empty()) => {
+                runtime.refresh_routing();
+            }
+            result = runtime.routing_updates.join_next(), if !runtime.routing_updates.is_empty() => {
+                if let Some(Ok((agent_id, generation, Ok(status)))) = result
+                    && agent_id == runtime.agent_id && generation == runtime.routing_generation
+                {
+                    runtime.routing_enabled = status.enabled;
+                    runtime.routing_resolved = status.route.is_some();
+                    let (provider, model, effort) = status.route.map_or((None, None, None), |route| {
+                        runtime.settings.model = route.model;
+                        runtime.settings.thinking = route.thinking;
+                        (Some(route.backend.label().to_owned()), Some(route.model), Some(effort_from_thinking(route.thinking)))
+                    });
+                    request_render(app.update(AppEvent::RoutingHydrated { pane: PaneId::Main,
+                        enabled: status.enabled, provider, model, effort }), &mut scheduler);
+                }
+            }
+            _ = clone_tick.tick(), if runtime.clone_panel.as_ref().is_some_and(|panel| matches!(panel.state, voice_clone::State::Recording(_))) => {
+                let panel = runtime.clone_panel.as_mut().unwrap();
+                let stop_reason = match &mut panel.state {
+                    voice_clone::State::Recording(recorder) if recorder.elapsed().as_secs() >= crate::voice_recording::MAX_SECONDS => Some("Reached the 2-minute recording limit"),
+                    voice_clone::State::Recording(recorder) => match recorder.is_finished() {
+                        Ok(true) if recorder.elapsed().as_secs() >= crate::voice_recording::MAX_SECONDS - 1 => Some("Reached the 2-minute recording limit"),
+                        Ok(true) => Some("Microphone recorder ended early; R records a new sample"),
+                        Err(_) => Some("Microphone recorder stopped unexpectedly; R retries"),
+                        Ok(false) => None,
+                    },
+                    _ => None,
+                };
+                if let Some(reason) = stop_reason { let _ = panel.stop_with_reason(reason); }
+                request_render(app.update(AppEvent::VoiceStatus(runtime.voice_status())), &mut scheduler);
+            }
+            Some(completion) = async {
+                match runtime.clone_panel.as_mut() {
+                    Some(panel) if !panel.tasks.is_empty() => panel.tasks.join_next().await,
+                    _ => pending().await,
+                }
+            } => {
+                let message = match completion {
+                    Ok(Ok(state)) => {
+                        let panel = runtime.clone_panel.as_mut().unwrap();
+                        panel.state = match state {
+                            voice_clone::State::PlaybackFailed(sample, error) => { panel.error = Some(error); voice_clone::State::Review(sample) }
+                            other => other,
+                        };
+                        panel.review().unwrap_or_else(|_| panel.text())
+                    }
+                    result => {
+                        let message = match result { Ok(Err(error)) => error, _ => "Local recording task failed; recording discarded.".into() };
+                        if let Some(panel) = &mut runtime.clone_panel {
+                            panel.state = voice_clone::State::Ready;
+                            panel.error = Some(format!("{message}\nPress R to retry, or Esc to cancel."));
+                        }
+                        message
+                    }
+                };
+                request_render(app.update(AppEvent::VoiceStatus(runtime.voice_status())), &mut scheduler);
+                request_render(app.update(AppEvent::VoiceOutput { pane: PaneId::Main, text: message }), &mut scheduler);
+            }
+            Some(completion) = runtime.voice_tasks.join_next(), if !runtime.voice_tasks.is_empty() => {
+                let event = match completion {
+                    Ok((pane, Ok(text))) => AppEvent::VoiceOutput { pane, text },
+                    Ok((pane, Err(text))) => AppEvent::VoiceOutput { pane, text },
+                    Err(_) => AppEvent::NotifyError { pane: PaneId::Main, error: "Voice operation failed".into() },
+                };
+                request_render(app.update(event), &mut scheduler);
+            }
+            result = async { match &mut reload {
+                Some(registration) => registration.requested().await,
+                None => pending().await,
+            } }, if !reload_requested => {
+                if let Err(error) = result {
+                    reload = None;
+                    request_render(app.update(AppEvent::NotifyError { pane: PaneId::Main, error }), &mut scheduler);
+                    continue;
+                }
+                reload_requested = true;
+                request_render(app.update(AppEvent::NotifySuccess {
+                    pane: PaneId::Main,
+                    message: "Reloading after pending local operations finish…".into(),
+                }), &mut scheduler);
+            }
+            Some(completion) = runtime.vault_tasks.join_next(), if !runtime.vault_tasks.is_empty() => {
+                if let Ok((pane, agent_id, generation, result)) = completion {
+                    if !vault::scope_matches(&agent_id, generation, &runtime.agent_id, runtime.connection_generation) {
+                        request_render(app.update(AppEvent::NotifyError { pane: PaneId::Main, error: "Vault request finished after changing conversations. Check your Vault before continuing.".into() }), &mut scheduler);
+                        continue;
+                    }
+                    let update = match result {
+                        Ok(vault::Outcome::Review(review)) => app.update(AppEvent::VaultReview { pane, review }),
+                        Ok(vault::Outcome::Saved(receipt)) => app.update(AppEvent::VaultReceipt { pane, receipt }),
+                        Err(error) => app.update(AppEvent::NotifyError { pane, error }),
+                    };
+                    stopping |= apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+                }
+            }
+            changed = runtime.screen.updates.changed() => {
+                if changed.is_ok() {
+                    let snapshot = runtime.screen.updates.borrow_and_update().clone();
+                    request_render(app.update(AppEvent::Screen(snapshot)), &mut scheduler);
+                }
+            }
+            Some(transcript) = async { match &mut voice_transcripts { Some(receiver) => receiver.recv().await, None => pending().await } } => {
+                // A stopped/replaced session may still have queued final captions.
+                // Do not present them as speech from the newly selected voice.
+                if runtime.voice.as_ref().is_some_and(crate::voice::Session::accepting_transcripts) {
+                    let record = runtime.local_record(LocalEvent::VoiceTranscript(transcript))?;
+                    request_render(app.update(AppEvent::Transcript { pane: PaneId::Main, record }), &mut scheduler);
+                }
+            }
+            changed = async { match &mut voice_status { Some(receiver) => receiver.changed().await, None => pending().await } } => {
+                let voice = runtime.voice.as_mut().unwrap();
+                let status = voice.status.borrow_and_update().clone();
+                let finished = changed.is_err() || status.finished;
+                if finished {
+                    if status.text.contains("cleanup unconfirmed") || changed.is_err() && !status.finished {
+                        runtime.clone_panel = None;
+                        runtime.pending_voice = None;
+                    }
+                    let mut voice = runtime.voice.take().unwrap();
+                    while let Ok(transcript) = voice.transcripts.try_recv() {
+                        if voice.accepting_transcripts() {
+                            let record = runtime.local_record(LocalEvent::VoiceTranscript(transcript))?;
+                            request_render(app.update(AppEvent::Transcript { pane: PaneId::Main, record }), &mut scheduler);
+                        }
+                    }
+                }
+                let update = app.update(AppEvent::VoiceStatus(runtime.voice_status()));
+                request_render(update, &mut scheduler);
+                if finished {
+                    let event = if status.text.starts_with("Voice failed") || status.text.contains("cleanup unconfirmed") { AppEvent::NotifyError {pane: PaneId::Main, error: status.text} } else { AppEvent::NotifySuccess {pane: PaneId::Main, message: status.text} };
+                    request_render(app.update(event), &mut scheduler);
+                }
+            }
             input_event = input.next() => {
                 let event = input_event
                     .transpose()
                     .map_err(terminal_error)?
                     .ok_or_else(|| terminal_error(io::Error::new(io::ErrorKind::UnexpectedEof, "terminal input closed")))?;
+                // Mute remains global while another pane or a modal has focus.
+                if (runtime.voice.is_some() || runtime.pending_voice.is_some())
+                    && matches!(&event, Event::Key(key) if key.code == KeyCode::Char('x') && key.modifiers == KeyModifiers::CONTROL)
+                {
+                    if matches!(&event, Event::Key(key) if key.kind == KeyEventKind::Press) {
+                        let _ = runtime.voice_command(PaneId::Main, crate::voice::Command::ToggleMute);
+                        request_render(app.update(AppEvent::VoiceStatus(runtime.voice_status())), &mut scheduler);
+                    }
+                    continue;
+                }
                 let refresh_cursor = matches!(&event, Event::FocusGained | Event::Mouse(_));
                 if refresh_cursor {
                     terminal.invalidate_cursor_visibility();
@@ -1642,6 +2318,10 @@ async fn run_inner(
                             ManagedEventData::TurnCompleted { id, .. }
                             | ManagedEventData::TurnCancelled { id }
                             | ManagedEventData::TurnFailed { id, .. } => {
+                                if runtime.routing_enabled && !runtime.routing_resolved {
+                                    runtime.routing_updates = JoinSet::new();
+                                    runtime.refresh_routing();
+                                }
                                 runtime.cancellation_fences.managed_terminal(id);
                                 if let Some(local_id) = runtime
                                     .local_managed_turns
@@ -1711,6 +2391,14 @@ async fn run_inner(
                     None => runtime.begin_recovery(&mut app, &mut scheduler, true),
                 }
             }
+            Some(result) = runtime.session_searches.join_next(), if !runtime.session_searches.is_empty() => {
+                if let Ok(search) = result {
+                    request_render(app.update(AppEvent::SessionSearchResults {
+                        pane: search.pane, picker_id: search.picker_id, request_id: search.request_id,
+                        query: search.query, result: search.result,
+                    }), &mut scheduler);
+                }
+            }
             result = runtime.connection.join_next_with_id(), if !runtime.connection.is_empty() => {
                 if let Some(result) = result {
                     let (task_id, result) = match result {
@@ -1728,6 +2416,8 @@ async fn run_inner(
                             if error.is_cancelled() {
                                 continue;
                             }
+                            runtime.pending_voice = None;
+                            request_render(app.update(AppEvent::VoiceStatus(runtime.voice_status())), &mut scheduler);
                             if runtime.recovery == Some(RecoveryPhase::Connecting) {
                                 runtime.recovery = Some(RecoveryPhase::Disconnected);
                                 request_render(app.update(AppEvent::AgentReconnectFailed { pane: PaneId::Main, error: message }), &mut scheduler);
@@ -1777,7 +2467,7 @@ async fn run_inner(
                             continue;
                         }
                     };
-                    if matches!(&result, ConnectionResult::Agent { purpose: ConnectionPurpose::Resume(_), .. })
+                    if matches!(&result, ConnectionResult::Agent { purpose: ConnectionPurpose::Resume(_) | ConnectionPurpose::Bug(_), .. })
                         && runtime.finish_resume(task_id).is_none()
                     {
                         // Abort cannot retract a result already queued by JoinSet.
@@ -1792,6 +2482,11 @@ async fn run_inner(
                     match result {
                         ConnectionResult::Recovered(Ok((agent, events, agent_id, workspace, history, _, settings, _, active_turns))) => {
                             runtime.agent = Some(agent);
+                            if runtime.agent_id != agent_id {
+                                runtime.voice.take();
+                                runtime.clone_panel = None;
+                                request_render(app.update(AppEvent::VoiceStatus(None)), &mut scheduler);
+                            }
                             runtime.agent_id = agent_id;
                             runtime.workspace = workspace;
                             runtime.settings = settings;
@@ -1808,6 +2503,8 @@ async fn run_inner(
                             runtime.recovery = Some(RecoveryPhase::Replaying);
                         }
                         ConnectionResult::Recovered(Err(failure)) => {
+                            runtime.pending_voice = None;
+                            request_render(app.update(AppEvent::VoiceStatus(runtime.voice_status())), &mut scheduler);
                             runtime.recovery = Some(RecoveryPhase::Disconnected);
                             request_render(app.update(AppEvent::AgentReconnectFailed {
                                 pane: PaneId::Main,
@@ -1834,6 +2531,9 @@ async fn run_inner(
                             stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
                         }
                         ConnectionResult::Agent { purpose, result: Ok((agent, managed_events, agent_id, workspace, history, warning, settings, created, active_turns)) } => {
+                            if matches!(purpose, ConnectionPurpose::Bug(_)) {
+                                runtime.detach_bug_source();
+                            }
                             runtime.startup_attach = false;
                             runtime.retry_target = None;
                             let requested_startup_settings = if created {
@@ -1899,6 +2599,11 @@ async fn run_inner(
                             runtime.withdrawals = JoinSet::new();
                             runtime.managed_events = Some(managed_events);
                             runtime.managed_events_open = true;
+                            if runtime.agent_id != agent_id {
+                                runtime.voice.take();
+                                runtime.clone_panel = None;
+                                request_render(app.update(AppEvent::VoiceStatus(None)), &mut scheduler);
+                            }
                             runtime.agent_id = agent_id;
                             runtime.settings = settings;
                             runtime.workspace = workspace;
@@ -1913,7 +2618,7 @@ async fn run_inner(
                             runtime.history_records = history_records;
                             let pane = match purpose {
                                 ConnectionPurpose::Startup => PaneId::Main,
-                                ConnectionPurpose::Resume(pane) => pane,
+                                ConnectionPurpose::Resume(pane) | ConnectionPurpose::Bug(pane) => pane,
                             };
                             let update = match purpose {
                                 ConnectionPurpose::Startup if created => {
@@ -1927,7 +2632,7 @@ async fn run_inner(
                                         model: display_settings.model,
                                     })
                                 }
-                                ConnectionPurpose::Startup | ConnectionPurpose::Resume(_) => {
+                                ConnectionPurpose::Startup | ConnectionPurpose::Resume(_) | ConnectionPurpose::Bug(_) => {
                                     let effort = effort_from_thinking(settings.thinking);
                                     let reasoning_mode =
                                         reasoning_mode_from_managed(settings.reasoning_mode);
@@ -1938,7 +2643,7 @@ async fn run_inner(
                                         pane,
                                         draft_reset: match purpose {
                                             ConnectionPurpose::Startup => DraftReset::Preserve,
-                                            ConnectionPurpose::Resume(_) => DraftReset::Clear,
+                                            ConnectionPurpose::Resume(_) | ConnectionPurpose::Bug(_) => DraftReset::Clear,
                                         },
                                         projection: Box::new(projection),
                                         effort,
@@ -1951,6 +2656,12 @@ async fn run_inner(
                                 }
                             };
                             request_render(update, &mut scheduler);
+                            if matches!(purpose, ConnectionPurpose::Bug(_)) {
+                                request_render(app.update(AppEvent::NotifySuccess {
+                                    pane,
+                                    message: format!("Debugging Nanocodex in cloud agent {}", runtime.agent_id),
+                                }), &mut scheduler);
+                            }
                             request_render(
                                 app.update(AppEvent::ManagedActiveTurns {
                                     pane,
@@ -1966,6 +2677,9 @@ async fn run_inner(
                                     SettingsMutation::Complete(requested),
                                 );
                             }
+                            if let Some(pane) = runtime.pending_autoroute.take() {
+                                runtime.queue_settings(pane, SettingsMutation::AutoRoute);
+                            }
                             if let Some(warning) = warning {
                                 request_render(app.update(AppEvent::NotifyError {
                                     pane: PaneId::Main,
@@ -1978,9 +2692,12 @@ async fn run_inner(
                             {
                                 runtime.start_submission(pane, id, prompt);
                             }
+                            runtime.refresh_routing();
                             runtime.start_history_prefetch(pane);
                         }
                         ConnectionResult::Agent { purpose, result: Err(failure) } => {
+                            runtime.pending_voice = None;
+                            request_render(app.update(AppEvent::VoiceStatus(runtime.voice_status())), &mut scheduler);
                             let message = format!("Could not connect to the managed agent: {}", failure.error);
                             if matches!(purpose, ConnectionPurpose::Startup) {
                                 runtime.retry_target = Some(failure.retry);
@@ -2007,14 +2724,18 @@ async fn run_inner(
                                     pane: PaneId::Main,
                                     error: message.clone(),
                                 }),
+                                ConnectionPurpose::Bug(pane) => app.update(AppEvent::NotifyError { pane, error: message.clone() }),
                                 ConnectionPurpose::Resume(pane) => app.update(AppEvent::SessionLoadFailed {
                                     pane,
                                     error: message.clone(),
                                 }),
                             };
                             request_render(update, &mut scheduler);
-                            if matches!(purpose, ConnectionPurpose::Resume(_)) && !runtime.managed_events_open {
+                            if matches!(purpose, ConnectionPurpose::Resume(_) | ConnectionPurpose::Bug(_)) && !runtime.managed_events_open {
                                 runtime.begin_recovery(&mut app, &mut scheduler, true);
+                            }
+                            if matches!(purpose, ConnectionPurpose::Bug(_)) {
+                                continue;
                             }
                             for (pane, id) in
                                 take_waiting_steer_failures(&mut runtime.waiting_steers)
@@ -2066,18 +2787,40 @@ async fn run_inner(
                     }
                 }
             }
+            Some(result) = runtime.links.join_next(), if !runtime.links.is_empty() => {
+                let (pane, result) = result.unwrap_or_else(|error| (
+                    PaneId::Main, Err(format!("Could not open link: {error}")),
+                ));
+                if let Err(error) = result {
+                    request_render(app.update(AppEvent::NotifyError { pane, error }), &mut scheduler);
+                }
+            }
             result = runtime.settings_updates.join_next(), if !runtime.settings_updates.is_empty() => {
                 if let Some(result) = result {
-                    let (pane, agent_id, failure_subject, outcome) = result.map_err(|error| {
+                    let (pane, agent_id, mutation, outcome) = result.map_err(|error| {
                         ManagedError::Configuration(format!("settings task failed: {error}"))
                     })?;
                     if agent_id == runtime.agent_id {
                         match outcome {
-                            Ok(settings) => runtime.settings = settings,
+                            Ok(settings) => {
+                                runtime.settings = settings;
+                                if matches!(mutation, SettingsMutation::AutoRoute) {
+                                    runtime.routing_generation = runtime.routing_generation.wrapping_add(1);
+                                    runtime.routing_updates = JoinSet::new();
+                                    runtime.routing_enabled = true;
+                                    runtime.routing_resolved = false;
+                                    request_render(app.update(AppEvent::RoutingHydrated { pane, enabled: true,
+                                        provider: None, model: None, effort: None }), &mut scheduler);
+                                    request_render(app.update(AppEvent::NotifySuccess {
+                                        pane,
+                                        message: "Automatic routing enabled. Jev will choose from your first message, then lock this thread’s provider and model.".to_owned(),
+                                    }), &mut scheduler);
+                                }
+                            },
                             Err(error) => request_render(
                                 app.update(AppEvent::NotifyError {
                                     pane,
-                                    error: format!("Could not {failure_subject}: {error}"),
+                                    error: format!("Could not {}: {error}", mutation.failure_subject()),
                                 }),
                                 &mut scheduler,
                             ),
@@ -2204,6 +2947,10 @@ async fn run_inner(
                 }
             }
             result = runtime.completions.join_next(), if !runtime.completions.is_empty() => {
+                if runtime.routing_enabled && !runtime.routing_resolved {
+                    runtime.routing_updates = JoinSet::new();
+                    runtime.refresh_routing();
+                }
                 if let Some(result) = result {
                     let (pane, id, outcome) = result.map_err(|error| ManagedError::Configuration(format!("turn task failed: {error}")))?;
                     if outcome.as_ref().is_err_and(connection_failure) {
@@ -2455,6 +3202,18 @@ async fn run_inner(
     }
 
     drop(terminal);
+    if let Some(voice) = runtime.voice.take() {
+        voice.finish().await;
+    }
+    if reload_requested {
+        if let Some(agent) = runtime.agent.take() {
+            agent.disconnect().await.map_err(super::agent_error)?;
+        }
+        return reload
+            .expect("reload request requires a registration")
+            .restart(&runtime.agent_id)
+            .map_err(ManagedError::Configuration);
+    }
     let Some(agent) = runtime.agent.take() else {
         return Ok(());
     };
@@ -2462,6 +3221,16 @@ async fn run_inner(
         agent.shutdown().await.map_err(super::agent_error)
     } else {
         agent.disconnect().await.map_err(super::agent_error)
+    }
+}
+
+fn fresh_thread_settings(was_routed: bool, settings: AgentSettings) -> AgentSettings {
+    // A routed GLM/provider choice is owned by the old conversation, not a new
+    // manual default (GLM is only admissible through an explicit routing policy).
+    if was_routed {
+        new_agent_settings()
+    } else {
+        settings
     }
 }
 
@@ -2486,6 +3255,7 @@ async fn apply_update(
     let mut stopping = false;
     while let Some(effect) = effects.pop_front() {
         match effect {
+            AppEffect::Screen(command) => runtime.screen.command(&runtime.client, command),
             AppEffect::Shutdown => stopping = true,
             AppEffect::SetTheme(_) => scheduler.request_immediate(Instant::now()),
             AppEffect::OpenFork { pane, .. } => {
@@ -2502,7 +3272,42 @@ async fn apply_update(
             AppEffect::Pane { pane, effect } => {
                 // Keep the hosted effect boundary visually separate from app-level routing.
                 match effect {
+                    RootEffect::Reload => {
+                        let update = match crate::reload::request_all() {
+                            Ok(count) => app.update(AppEvent::NotifySuccess { pane, message: format!("Reload requested for {count} local terminal(s)…") }),
+                            Err(error) => app.update(AppEvent::NotifyError { pane, error }),
+                        };
+                        absorb(update, &mut effects, scheduler);
+                    }
+                    RootEffect::Screen | RootEffect::Zoom => {
+                        unreachable!("workspace commands are handled by AppNode")
+                    }
+                    RootEffect::Voice(command) => {
+                        let persistent = matches!(command, crate::voice::Command::Help | crate::voice::Command::ListProvider(crate::voice::Provider::Chatgpt));
+                        let outcome = runtime.voice_command(pane, command);
+                        absorb(
+                            app.update(AppEvent::VoiceStatus(runtime.voice_status())),
+                            &mut effects,
+                            scheduler,
+                        );
+                        match outcome {
+                            Ok(Some(message)) => absorb(
+                                app.update(if persistent { AppEvent::VoiceOutput { pane, text: message } } else { AppEvent::NotifySuccess { pane, message } }),
+                                &mut effects,
+                                scheduler,
+                            ),
+                            Err(error) => absorb(
+                                app.update(AppEvent::NotifyError { pane, error }),
+                                &mut effects,
+                                scheduler,
+                            ),
+                            Ok(None) => {}
+                        }
+                    }
                     RootEffect::Submit(prompt) | RootEffect::ContinueSubagent(prompt) => {
+                        if let Some(voice) = &runtime.voice {
+                            voice.typed();
+                        }
                         let id = TurnId::new(runtime.next_turn);
                         runtime.next_turn = runtime.next_turn.saturating_add(1);
                         let record = runtime.record_submission(id, &prompt)?;
@@ -2516,6 +3321,47 @@ async fn apply_update(
                         } else {
                             runtime.pending_submission = Some((pane, id, prompt));
                         }
+                    }
+                    RootEffect::Vault(command) => {
+                        match command {
+                            vault::Command::Open => {
+                                let client = runtime.client.clone();
+                                let agent_id = runtime.agent_id.clone();
+                                let destination = client.vault_url();
+                                runtime.links.spawn(async move {
+                                    (pane, links::open(&client, &agent_id, &destination).await)
+                                });
+                            }
+                            vault::Command::Latest | vault::Command::Help => absorb(app.update(AppEvent::NotifyError { pane, error: "No pending Vault request is loaded. Use /vault open to manage your Vault. Never enter passwords in chat.".into() }), &mut effects, scheduler),
+                            vault::Command::Review { id, origin } => {
+                                if !runtime.vault_tasks.is_empty() { continue; }
+                                let client = runtime.client.clone();
+                                let agent_id = runtime.agent_id.clone();
+                                let generation = runtime.connection_generation;
+                                runtime.vault_tasks.spawn(async move {
+                                    let result = client.vault_login(&id).await
+                                        .map(|login| vault::Outcome::Review(vault::Review { login, origin, agent_id: agent_id.clone(), generation, visible: false }))
+                                        .map_err(|_| "Couldn’t verify this saved login. Use /vault open to check the item and your account.".to_owned());
+                                    (pane, agent_id, generation, result)
+                                });
+                                absorb(app.update(AppEvent::NotifySuccess { pane, message: "Verifying saved login in your Vault…".into() }), &mut effects, scheduler);
+                            }
+                        }
+                    }
+                    RootEffect::ApproveVault(review) => {
+                        if !vault::scope_matches(&review.agent_id, review.generation, &runtime.agent_id, runtime.connection_generation) || !runtime.vault_tasks.is_empty() { continue; }
+                        if !runtime.vault_attempted.insert((review.login.id.clone(), review.origin.clone())) {
+                            absorb(app.update(AppEvent::NotifyError { pane, error: "This approval was already attempted. Check /vault open before trying again.".into() }), &mut effects, scheduler);
+                            continue;
+                        }
+                        let client = runtime.client.clone();
+                        runtime.vault_tasks.spawn(async move {
+                            let result = client.approve_vault_login_origin(&review.login.id, &review.origin).await
+                                .map(|login| vault::Outcome::Saved(vault::receipt(&login)))
+                                .map_err(|_| "The website approval could not be confirmed. Check /vault open; this request will not be retried automatically.".to_owned());
+                            (pane, review.agent_id, review.generation, result)
+                        });
+                        absorb(app.update(AppEvent::NotifySuccess { pane, message: "Saving website approval to Vault…".into() }), &mut effects, scheduler);
                     }
                     RootEffect::ShowAgentId => {
                         if runtime.agent_id.is_empty() {
@@ -2563,6 +3409,9 @@ async fn apply_update(
                         });
                     }
                     RootEffect::Steer { id, prompt } => {
+                        if let Some(voice) = &runtime.voice {
+                            voice.typed();
+                        }
                         if !runtime.steers.is_empty() || runtime.unconfirmed_steer.is_some() {
                             runtime.waiting_steers.push_back((pane, id, prompt));
                             continue;
@@ -2869,11 +3718,55 @@ async fn apply_update(
                         }
                     }
                     RootEffect::Copy(text) => {
-                        if terminal.copy_to_clipboard(&text).is_err() {
-                            let _ = clipboard::copy_text(&text);
+                        if let Err(error) = clipboard::copy_text(&text) {
+                            tracing::warn!(%error, "failed to copy the mouse selection");
+                            absorb(
+                                app.update(AppEvent::NotifyError {
+                                    pane,
+                                    error: format!("Clipboard copy failed: {error}"),
+                                }),
+                                &mut effects,
+                                scheduler,
+                            );
                         }
                     }
                     RootEffect::SetTheme(_) => {}
+                    RootEffect::SearchSessions {
+                        picker_id,
+                        request_id,
+                        query,
+                    } => {
+                        if let Some(task) = runtime.session_search_tasks.remove(&pane) {
+                            task.abort();
+                        }
+                        if !query.trim().is_empty() {
+                            let client = runtime.client.clone();
+                            let task = runtime.session_searches.spawn(async move {
+                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                                let result = client
+                                    .find(&nanocodex_managed::FindSessionsRequest {
+                                        query: query.clone(),
+                                        limit: Some(20),
+                                    })
+                                    .await
+                                    .map(|response| response.results)
+                                    .map_err(|error| error.to_string());
+                                SessionSearchCompletion {
+                                    pane,
+                                    picker_id,
+                                    request_id,
+                                    query,
+                                    result,
+                                }
+                            });
+                            runtime.session_search_tasks.insert(pane, task);
+                        }
+                    }
+                    RootEffect::CancelSessionSearch => {
+                        if let Some(task) = runtime.session_search_tasks.remove(&pane) {
+                            task.abort();
+                        }
+                    }
                     RootEffect::LoadSessions { request_id, .. } => {
                         let client = runtime.client.clone();
                         let cancellation = CancellationToken::new();
@@ -2923,6 +3816,9 @@ async fn apply_update(
                         runtime.start_history_prefetch(pane);
                     }
                     RootEffect::ResumeSession(agent_id) => {
+                        if let Some(task) = runtime.session_search_tasks.remove(&pane) {
+                            task.abort();
+                        }
                         if !runtime.idle() {
                             absorb(
                             app.update(AppEvent::SessionLoadFailed {
@@ -2950,6 +3846,44 @@ async fn apply_update(
                         });
                         runtime.pending_resume = Some((resume, pane));
                     }
+                    RootEffect::Bug(description) => {
+                        if runtime.agent_id.is_empty() || runtime.pending_resume.is_some() {
+                            absorb(
+                                app.update(AppEvent::NotifyError {
+                                    pane,
+                                    error: "Wait for the agent connection before starting /bug."
+                                        .to_owned(),
+                                }),
+                                &mut effects,
+                                scheduler,
+                            );
+                            continue;
+                        }
+                        let prompt = bug::debug_prompt(
+                            &runtime.agent_id,
+                            &runtime.observed_cursor,
+                            &description,
+                            &runtime.history_records,
+                            &runtime.live_records,
+                        );
+                        let client = runtime.client.clone();
+                        let settings = runtime.settings;
+                        let task = runtime.connection.spawn(async move {
+                            ConnectionResult::Agent {
+                                purpose: ConnectionPurpose::Bug(pane),
+                                result: bug::launch(client, settings, prompt).await,
+                            }
+                        });
+                        runtime.pending_resume = Some((task, pane));
+                        absorb(
+                            app.update(AppEvent::NotifySuccess {
+                                pane,
+                                message: "Starting a cloud agent to debug Nanocodex…".to_owned(),
+                            }),
+                            &mut effects,
+                            scheduler,
+                        );
+                    }
                     RootEffect::NewSession(model) => {
                         if !runtime.idle() {
                             absorb(
@@ -2963,12 +3897,13 @@ async fn apply_update(
                             continue;
                         }
                         let root = app.root(pane).expect("new-session pane must exist");
-                        let settings = AgentSettings {
+                        let settings = fresh_thread_settings(root.composer().auto_routing(), AgentSettings {
                             model,
                             thinking: thinking_from_effort(root.composer().effort()),
                             reasoning_mode: managed_reasoning_mode(root.preferred_reasoning_mode()),
                             fast_mode: root.composer().fast_mode(),
-                        };
+                        });
+                        request_render(app.update(AppEvent::VoiceStatus(None)), scheduler);
                         runtime.start_new_session(settings);
                         absorb(
                             app.update(AppEvent::NewSessionReady {
@@ -3000,7 +3935,13 @@ async fn apply_update(
                         );
                         runtime.start_submission(pane, id, prompt);
                     }
-                    RootEffect::OpenLink(destination) => open_link(&destination),
+                    RootEffect::OpenLink(destination) => {
+                        let client = runtime.client.clone();
+                        let agent_id = runtime.agent_id.clone();
+                        runtime.links.spawn(async move {
+                            (pane, links::open(&client, &agent_id, &destination).await)
+                        });
+                    }
                     RootEffect::OpenDraftEditor => {
                         if !runtime.idle() {
                             absorb(
@@ -3075,6 +4016,7 @@ async fn apply_update(
                         scheduler,
                     );
                     }
+                    RootEffect::AutoRoute => runtime.enable_autoroute(pane),
                     RootEffect::SetModel(model) => {
                         let root = app.root(pane).expect("model-selection pane must exist");
                         let requested = AgentSettings {
@@ -3224,14 +4166,15 @@ fn session_summaries(list: &AgentList, workspace: &Path) -> Vec<SessionSummary> 
         .iter()
         .filter_map(|agent_id| {
             let summary = list.summaries.get(agent_id)?;
-            let timestamp = if summary.created_at < 10_000_000_000.0 {
-                summary.created_at * 1_000.0
+            let updated_at = summary.updated_at.max(summary.created_at);
+            let timestamp = if updated_at < 10_000_000_000.0 {
+                updated_at * 1_000.0
             } else {
-                summary.created_at
+                updated_at
             };
             Some(SessionSummary {
                 session_id: agent_id.clone(),
-                started_at_unix_ms: timestamp.max(0.0) as u64,
+                updated_at_unix_ms: timestamp.max(0.0) as u64,
                 model: Model::Sol.to_string(),
                 effort: ReasoningEffort::Medium,
                 reasoning_mode: ReasoningMode::Standard,
@@ -3243,7 +4186,11 @@ fn session_summaries(list: &AgentList, workspace: &Path) -> Vec<SessionSummary> 
 }
 
 fn inject_shell_context(context: &mut Vec<String>, prompt: Submission) -> Submission {
-    if context.is_empty() {
+    // Server controls must stay literal; retain shell output for the next task.
+    if context.is_empty()
+        || (!prompt.has_images()
+            && prompt.display_text().split_whitespace().next() == Some("/goal"))
+    {
         return prompt;
     }
     let prefix = context.join("\n\n");
@@ -3295,22 +4242,6 @@ fn is_image_paste(event: &Event) -> bool {
     )
 }
 
-fn open_link(destination: &str) {
-    #[cfg(target_os = "macos")]
-    let mut command = std::process::Command::new("open");
-    #[cfg(target_os = "linux")]
-    let mut command = std::process::Command::new("xdg-open");
-    #[cfg(target_os = "windows")]
-    let mut command = {
-        let mut command = std::process::Command::new("cmd");
-        command.args(["/C", "start", ""]);
-        command
-    };
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    return;
-    let _ = command.arg(destination).spawn();
-}
-
 fn terminal_error(error: io::Error) -> ManagedError {
     ManagedError::Configuration(format!("terminal error: {error}"))
 }
@@ -3338,6 +4269,101 @@ mod tests {
         path::Path,
     };
     use tokio::task::JoinSet;
+
+    #[test]
+    fn goal_commands_preserve_pending_shell_context() {
+        let mut context = vec!["Shell output: completed".to_owned()];
+        for command in ["/goal", "/goal pause", "/goal resume"] {
+            let prompt =
+                super::inject_shell_context(&mut context, Submission::text(command.into()));
+            assert_eq!(prompt.display_text(), command);
+            assert_eq!(context.len(), 1);
+        }
+        let next = super::inject_shell_context(&mut context, Submission::text("continue".into()));
+        assert_eq!(next.display_text(), "Shell output: completed\n\ncontinue");
+        assert!(context.is_empty());
+    }
+
+    #[tokio::test]
+    async fn bug_switch_discards_old_local_work_and_queued_recovery() {
+        let mut runtime = history_runtime(HistoryWindow::default());
+        runtime.pending_submission = Some((
+            PaneId::Main,
+            TurnId::new(7),
+            Submission::text("old input".into()),
+        ));
+        runtime.admitting.insert(TurnId::new(7));
+        runtime.cancel_after_admission.insert(TurnId::new(7));
+        runtime
+            .local_managed_turns
+            .insert(TurnId::new(7), "old-turn".into());
+        runtime.recovery = Some(super::RecoveryPhase::Connecting);
+        runtime
+            .connection
+            .spawn(async { super::ConnectionResult::Disconnected(Ok(())) });
+        runtime.active_shells = 1;
+        let old_shell_cancellation = runtime.shell_cancellation.clone();
+        let source_id = runtime.agent_id.clone();
+
+        runtime.detach_bug_source();
+
+        assert!(runtime.connection.is_empty());
+        assert!(runtime.pending_submission.is_none());
+        assert!(runtime.admitting.is_empty());
+        assert!(runtime.cancel_after_admission.is_empty());
+        assert!(runtime.local_managed_turns.is_empty());
+        assert!(runtime.recovery.is_none());
+        assert!(old_shell_cancellation.is_cancelled());
+        assert!(!runtime.shell_cancellation.is_cancelled());
+        assert_eq!(runtime.active_shells, 0);
+        assert_eq!(runtime.agent_id, source_id);
+        assert!(runtime.cancellations.is_empty());
+    }
+
+    #[tokio::test]
+    async fn reload_waits_for_local_work_but_not_durable_turns() {
+        let mut runtime = history_runtime(HistoryWindow::default());
+        runtime
+            .managed_active_turns
+            .ids
+            .insert("remote-turn".into());
+        assert!(runtime.ready_for_reload());
+        runtime.active_shells = 1;
+        assert!(!runtime.ready_for_reload());
+        runtime.active_shells = 0;
+        runtime.connection.spawn(std::future::pending());
+        assert!(!runtime.ready_for_reload());
+        runtime.connection.abort_all();
+        while runtime.connection.join_next().await.is_some() {}
+        assert!(runtime.ready_for_reload());
+        runtime.voice_tasks.spawn(std::future::pending());
+        assert!(!runtime.ready_for_reload());
+        runtime.voice_tasks.abort_all();
+        while runtime.voice_tasks.join_next().await.is_some() {}
+        assert!(runtime.ready_for_reload());
+        runtime.clone_panel = Some(super::voice_clone::Panel::new("Synthetic speaker".into()));
+        assert!(!runtime.ready_for_reload());
+        runtime.clone_panel = None;
+        assert!(runtime.ready_for_reload());
+    }
+
+    #[test]
+    fn new_threads_do_not_inherit_a_routed_provider_model_or_effort() {
+        let routed = AgentSettings {
+            model: nanocodex::Model::Glm53,
+            thinking: nanocodex_managed::Thinking::High,
+            ..AgentSettings::default()
+        };
+        assert_eq!(
+            super::fresh_thread_settings(true, routed),
+            new_agent_settings()
+        );
+        let manual = AgentSettings {
+            model: nanocodex::Model::Sol,
+            ..AgentSettings::default()
+        };
+        assert_eq!(super::fresh_thread_settings(false, manual), manual);
+    }
 
     #[test]
     fn new_agents_select_astra_without_an_entitlement_probe() {
@@ -3395,6 +4421,191 @@ mod tests {
         assert!(runtime.finish_resume(completed).is_none());
     }
 
+    #[tokio::test]
+    async fn voice_requested_during_startup_starts_once_when_connected_with_selected_controls() {
+        use crate::voice::Command;
+        let mut runtime = history_runtime(HistoryWindow::default());
+        runtime.agent_id.clear();
+        assert_eq!(
+            runtime.voice_command(PaneId::Main, Command::Toggle),
+            Ok(None)
+        );
+        assert!(runtime.take_ready_voice().is_none());
+        assert_eq!(
+            runtime.voice_status().unwrap().phase,
+            crate::voice_state::Phase::Connecting
+        );
+        runtime
+            .voice_command(PaneId::Main, Command::Start(Some("ember")))
+            .unwrap();
+        runtime
+            .voice_command(PaneId::Main, Command::ToggleMute)
+            .unwrap();
+        // Repeated explicit start keeps the selected voice and mute preference.
+        runtime
+            .voice_command(PaneId::Main, Command::Start(None))
+            .unwrap();
+        runtime.agent_id = "connected-agent".into();
+        assert!(runtime.take_ready_voice().is_none());
+        runtime.managed_events_open = true;
+        let ready = runtime.take_ready_voice().unwrap();
+        assert_eq!(ready.selection, crate::voice::Selection::Chatgpt("ember"));
+        assert!(ready.muted);
+        assert!(runtime.take_ready_voice().is_none());
+    }
+
+    #[tokio::test]
+    async fn clone_panel_never_starts_or_uploads_implicitly() {
+        use crate::voice::Command;
+        let mut runtime = history_runtime(HistoryWindow::default());
+        runtime
+            .voice_command(PaneId::Main, Command::CloneOpen("Synthetic voice".into()))
+            .unwrap();
+        assert!(runtime.voice_tasks.is_empty());
+        assert!(runtime.clone_panel.as_ref().unwrap().tasks.is_empty());
+        assert!(
+            runtime
+                .voice_command(PaneId::Main, Command::CloneSubmit)
+                .is_err()
+        );
+        assert!(
+            runtime
+                .voice_command(PaneId::Main, Command::Start(None))
+                .is_err()
+        );
+        assert!(runtime.voice_status().unwrap().text.contains("Ready"));
+        runtime
+            .voice_command(PaneId::Main, Command::CloneRecord(None))
+            .unwrap();
+        assert!(runtime.pending_voice.is_none());
+        assert!(runtime.clone_panel.as_ref().unwrap().tasks.is_empty());
+        runtime
+            .voice_command(PaneId::Main, Command::CloneCancel)
+            .unwrap();
+        assert!(runtime.clone_panel.is_none());
+        assert!(runtime.voice_tasks.is_empty());
+    }
+
+    #[test]
+    fn voice_sample_paths_expand_home_without_shell_expansion() {
+        use std::path::PathBuf;
+        let workspace = Path::new("/workspace");
+        let home = Some(PathBuf::from("/home/speaker"));
+        assert_eq!(
+            super::resolve_voice_sample_path(workspace, "~/audio sample.wav".into(), home.clone())
+                .unwrap(),
+            PathBuf::from("/home/speaker/audio sample.wav")
+        );
+        assert_eq!(
+            super::resolve_voice_sample_path(workspace, "samples/voice.wav".into(), home.clone())
+                .unwrap(),
+            PathBuf::from("/workspace/samples/voice.wav")
+        );
+        assert_eq!(
+            super::resolve_voice_sample_path(workspace, "/audio/voice.wav".into(), home.clone())
+                .unwrap(),
+            PathBuf::from("/audio/voice.wav")
+        );
+        assert_eq!(
+            super::resolve_voice_sample_path(workspace, "~other/$(example).wav".into(), home)
+                .unwrap(),
+            PathBuf::from("/workspace/~other/$(example).wav")
+        );
+        assert!(super::resolve_voice_sample_path(workspace, "~/audio.wav".into(), None).is_err());
+    }
+
+    #[test]
+    fn voice_provider_settings_keep_valid_realtime_input() {
+        use crate::voice::Selection;
+        use nanocodex_voice_protocol::VoiceOutputProvider;
+        let eleven = super::voice_settings(&Selection::ElevenLabs("sample_voice".into()));
+        assert_eq!(eleven.output_provider, VoiceOutputProvider::Elevenlabs);
+        assert_eq!(eleven.eleven_labs_voice_id.as_deref(), Some("sample_voice"));
+        eleven.validate_chatgpt().unwrap();
+        let chatgpt = super::voice_settings(&Selection::Chatgpt("ember"));
+        assert_eq!(chatgpt.output_provider, VoiceOutputProvider::Openai);
+        assert_eq!(chatgpt.voice, "ember");
+        assert!(chatgpt.eleven_labs_voice_id.is_none());
+    }
+
+    #[tokio::test]
+    async fn voice_provider_selection_survives_stop_and_replaces_pending_start() {
+        use crate::voice::{Command, Selection};
+        let mut runtime = history_runtime(HistoryWindow::default());
+        runtime
+            .voice_command(
+                PaneId::Main,
+                Command::Select(Selection::ElevenLabs("sample_voice".into())),
+            )
+            .unwrap();
+        runtime.voice_command(PaneId::Main, Command::Stop).unwrap();
+        runtime
+            .voice_command(PaneId::Main, Command::Start(None))
+            .unwrap();
+        runtime.managed_events_open = true;
+        assert_eq!(
+            runtime.take_ready_voice().unwrap().selection,
+            Selection::ElevenLabs("sample_voice".into())
+        );
+        runtime
+            .voice_command(
+                PaneId::Main,
+                Command::Select(Selection::ElevenLabs("second".into())),
+            )
+            .unwrap();
+        runtime
+            .voice_command(PaneId::Main, Command::Start(Some("ember")))
+            .unwrap();
+        assert_eq!(
+            runtime.take_ready_voice().unwrap().selection,
+            Selection::Chatgpt("ember")
+        );
+    }
+
+    #[tokio::test]
+    async fn queued_voice_can_be_cancelled_and_does_not_leak_to_a_new_session() {
+        use crate::voice::Command;
+        let mut runtime = history_runtime(HistoryWindow::default());
+        for stop in [Command::Stop, Command::Toggle] {
+            runtime
+                .voice_command(PaneId::Main, Command::Start(None))
+                .unwrap();
+            runtime.voice_command(PaneId::Main, stop).unwrap();
+            runtime.managed_events_open = true;
+            assert!(runtime.take_ready_voice().is_none());
+            assert!(runtime.voice_status().is_none());
+        }
+        runtime
+            .voice_command(PaneId::Main, Command::Start(None))
+            .unwrap();
+        runtime.start_new_session(new_agent_settings());
+        assert!(runtime.pending_voice.is_none());
+    }
+
+    #[tokio::test]
+    async fn queued_voice_waits_for_recovery_and_session_switch() {
+        use crate::voice::Command;
+        let mut runtime = history_runtime(HistoryWindow::default());
+        runtime
+            .voice_command(PaneId::Main, Command::Toggle)
+            .unwrap();
+        runtime.managed_events_open = true;
+        runtime.recovery = Some(super::RecoveryPhase::Replaying);
+        assert!(runtime.take_ready_voice().is_none());
+        runtime.recovery = None;
+        let task = runtime.connection.spawn(std::future::pending());
+        runtime.pending_resume = Some((task, PaneId::Main));
+        assert!(runtime.take_ready_voice().is_none());
+        runtime.pending_resume.take().unwrap().0.abort();
+        runtime
+            .voice_command(PaneId::Main, Command::ToggleMute)
+            .unwrap();
+        runtime
+            .voice_command(PaneId::Main, Command::Unmute)
+            .unwrap();
+        assert!(!runtime.take_ready_voice().unwrap().muted);
+    }
+
     fn history_runtime(history: HistoryWindow) -> DriverRuntime {
         let mut history_sequences = HashMap::new();
         let mut sequence = 1;
@@ -3411,6 +4622,12 @@ mod tests {
                 .unwrap();
         DriverRuntime {
             control_bridge: None,
+            screen: crate::tui::screen::Controller::new(ratatui_image::picker::Picker::halfblocks()),
+            pending_voice: None,
+            voice_selection: Default::default(),
+            voice_tasks: JoinSet::new(),
+            clone_panel: None,
+            voice: None,
             client: ManagedClient::new("http://127.0.0.1:9", api_key).unwrap(),
             agent: None,
             startup_attach: false,
@@ -3425,6 +4642,11 @@ mod tests {
             agent_id: "agent-1".to_owned(),
             settings: AgentSettings::default(),
             pending_settings: None,
+            pending_autoroute: None,
+            routing_enabled: false,
+            routing_resolved: false,
+            routing_generation: 0,
+            routing_updates: JoinSet::new(),
             workspace: Path::new("/workspace").to_path_buf(),
             sequence,
             next_turn: sequence,
@@ -3444,6 +4666,8 @@ mod tests {
             admissions: JoinSet::new(),
             completions: JoinSet::new(),
             steers: JoinSet::new(),
+            vault_tasks: JoinSet::new(),
+            vault_attempted: HashSet::new(),
             steer_receipts: HashMap::new(),
             pending_withdrawals: HashSet::new(),
             withdrawals: JoinSet::new(),
@@ -3454,6 +4678,7 @@ mod tests {
             settings_updates: JoinSet::new(),
             settings_queue: VecDeque::new(),
             shells: JoinSet::new(),
+            links: JoinSet::new(),
             history_loads: JoinSet::new(),
             history_replays: JoinSet::new(),
             history_prefetch: HistoryPrefetch::default(),
@@ -3469,6 +4694,8 @@ mod tests {
             recent_prompts,
             connection: JoinSet::new(),
             session_list_cancellations: HashMap::new(),
+            session_searches: JoinSet::new(),
+            session_search_tasks: HashMap::new(),
             retry_target: None,
         }
     }
@@ -3939,6 +5166,41 @@ mod tests {
                 .is_some()
         );
         assert_eq!(runtime.live_records.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn autoroute_waits_for_connection_and_does_not_leak_into_new_sessions() {
+        let mut runtime = history_runtime(HistoryWindow::default());
+        runtime.agent_id.clear();
+        runtime.enable_autoroute(PaneId::Main);
+        assert_eq!(runtime.pending_autoroute, Some(PaneId::Main));
+        assert!(runtime.settings_updates.is_empty());
+        assert!(runtime.admissions.is_empty());
+        runtime.start_new_session(new_agent_settings());
+        assert!(runtime.pending_autoroute.is_none());
+    }
+
+    #[tokio::test]
+    async fn autoroute_settings_update_holds_the_first_prompt_until_it_settles() {
+        let mut runtime = history_runtime(HistoryWindow::default());
+        // A pending API receipt fences the first prompt, including non-keyboard input.
+        runtime.settings_updates.spawn(std::future::pending());
+        runtime.start_submission(
+            PaneId::Main,
+            TurnId::new(1),
+            Submission::text("first task".into()),
+        );
+        assert!(runtime.admissions.is_empty());
+        assert!(runtime.submitted_turns.is_empty());
+        assert_eq!(
+            runtime
+                .pending_submission
+                .as_ref()
+                .unwrap()
+                .2
+                .display_text(),
+            "first task"
+        );
     }
 
     #[tokio::test]
@@ -4671,6 +5933,6 @@ mod tests {
         assert_eq!(sessions.len(), 1);
         assert_eq!(sessions[0].session_id, "agent-1");
         assert_eq!(sessions[0].preview, "A durable task");
-        assert_eq!(sessions[0].started_at_unix_ms, 1_750_000_000_000);
+        assert_eq!(sessions[0].updated_at_unix_ms, 1_750_000_100_000);
     }
 }

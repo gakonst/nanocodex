@@ -5,7 +5,7 @@ authenticates public requests, projects the caller's authority, and routes work
 to durable, account-scoped services.
 
 Managed agents have a native `browseX` tool for public X posts, profiles, search,
-followers, and following. `accountInfo().apis` advertises the tool independently
+followers, and following. `environment().apis` advertises the tool independently
 of connector authentication. It calls the private [X Worker](../x-api/README.md)
 through `NANOCODEX_X`; deploy it with `pnpm deploy:x` before `pnpm deploy:managed`.
 
@@ -29,12 +29,22 @@ before admission, preserving the credential, body and operation identity.
 
 Finite `/v1/agents` requests verify the signature locally. Their owning Session
 still checks local owner, organization, team, epoch, lifecycle and operation
-permissions. Streams, socket handshakes and account administration retain live
+permissions. Account screen viewers can also reuse a snapshot; publishers,
+ten-second viewer renewal, agent streams and account administration retain live
 authentication. Existing accepted work retains its established execution policy.
+
+The account Worker can verify viewer snapshots through the shared
+`nanocodex/cloudflare/managed-access` module and reach its existing screen broker
+directly. Configure the same `NANOCODEX_ACCESS_SECRET` in both the managed and
+account Workers. Missing configuration or an invalid snapshot preserves the
+original managed route and rejection protocol. This does not introduce a new
+principal cache or extend the snapshot lifetime.
 
 Account/key/membership changes prevent new snapshots immediately; an existing
 snapshot may authorize requests until expiry. Rotating `NANOCODEX_ACCESS_SECRET`
-invalidates all snapshots once the new deployment is active. No per-user instant
+in **both Workers** invalidates all snapshots once both updates are active. A
+one-sided update does not invalidate the other verifier's accepted snapshots.
+No per-user instant
 revocation of issued snapshots is implied. Local Session fencing remains in
 force. Tokens are never accepted for token renewal or as provider credentials.
 
@@ -82,17 +92,52 @@ would break already-created sessions.
 
 In production, the private `NANOCODEX_SESSION_MODEL_EGRESS` binding targets
 egress's `SessionModelEgress` entrypoint. New-strategy Sessions validate retained
-ownership locally for each model WebSocket connection and reconnect, avoiding
+ownership locally for each model WebSocket connection, reconnect, and HTTPS request, avoiding
 a broker callback into the originating Session. This binding is not exposed to
 tools. Credential selection remains live in the broker. Without the optional
 binding, the transport retains the usual broker ownership lookup; legacy
 directory subjects retain their existing authority.
 
-First-turn runtime discovery and environment bootstrap share one live connector
-and MCP catalog read. This snapshot is scoped to that admission, never cached
-across turns. Warm-turn discovery and later explicit account-info calls still
-read current state. Egress must expose `/users/:user/catalog` before deploying
-this managed startup path.
+Hosted Responses requests can fall back from WebSockets to streaming HTTPS through
+that same private binding. Compaction permits the initial request plus two retries
+per transport, matching codex-rs; after WebSocket exhaustion it switches to HTTPS
+and replays the full retained history. The selected transport remains sticky for
+the live model session. If compaction still fails, its failure receipt is retained
+before the turn fails, so durable recovery replays the failure instead of starting
+another provider retry cycle. In-flight interruption and storage failures remain
+recoverable, and failed compaction preserves the conversation history.
+
+Deploy egress and the ChatGPT HTTP relay support before the managed runtime.
+Sponsored trial credentials currently reject HTTPS Responses before dispatch;
+the WebSocket admission and metering policy cannot be bypassed by fallback.
+
+Active clients call `POST /v1/agents/:id/prepare` (no body), or the managed SDK's
+`agent.prepare()`, when opening a conversation. The authenticated mutation
+requires `agents:write`, `tools:use`, and the ChatGPT connector for delegated
+grants. It acknowledges with HTTP 202 `{ "state": "preparing" }`; this means
+accepted, not provider-ready. One session-owned task starts runtime/socket
+preconnection, personalization, and first-turn account metadata. Prompt and
+voice media admission do not await the activation HTTP request. Passive event
+and history subscriptions do not prepare models. Preparation installs an idle
+alarm and expires after the configured runtime idle interval (30 seconds by
+default); reopening the conversation renews it. No `generate:false` model
+request is inserted before a prompt.
+
+Connector/MCP discovery, hosted-tool snapshots, and startup account metadata
+are retained in memory for at most `MANAGED_ACCESS_TTL_MS` (two minutes), measured
+from the start of each read. Concurrent callers share reads. Startup metadata
+is keyed by owner, organization, team, authorization epoch and exact turn
+authorization; catalog reuse is owner/authority scoped. Runtime shutdown,
+including settings replacement, invalidates these snapshots. Failed reads are
+not retained as successful snapshots. Explicit account-info tools still force
+live discovery, and tool invocation retains its existing live authorization.
+These caches store discovery metadata, not credentials or an authorization
+bypass. Egress must expose `/users/:user/catalog` for this startup path.
+
+`managed.agent.transport` observations include the managed turn and runtime
+request IDs, failure class/phase, retry delay, connection generation and whether
+a retry opens a new socket. Raw provider frames and error strings remain
+excluded from logs and replay storage.
 
 The resolver reads retained ownership without constructing the agent runtime.
 Deleted, exported, or pending-import sessions deny resolution; egress never
@@ -106,7 +151,7 @@ storage ownership.
 ## Prepared personalization
 
 Managed admission no longer runs prompt-derived history search or memory scan.
-The MemoryScope prepares a deterministic snapshot of saved team memories; Sessions
+The MemoryScope prepares deterministic snapshots of saved personal and team memories; Sessions
 warm a disposable copy on create, open, or activity without awaiting it. Each turn
 pins the eligible local copy or a cache miss. A miss proceeds without retrieval.
 Explicit `find_session`, `read_session`, and memory tools remain available.
@@ -116,12 +161,13 @@ lease. New memories coalesce until refresh; replacements and deletions invalidat
 issued copies before the mutation succeeds. Failed invalidations retain durable
 retry debt. Expiry is checked again before model injection. Previously delivered
 conversation history cannot be erased; later prepared blocks replace or withdraw
-prior prepared context. Source facts remain shared team data, not private user
-facts. No conversation summarizer or inferred personal profile is added here.
+prior prepared context. Existing team facts remain shared; personal facts are
+stored separately for the authenticated user within their organization.
+No conversation summarizer or inferred personal profile is added here.
 
-The source selection is indexed, limited to 32 facts and 8 KB of fact content,
+Each source selection is indexed, limited to 32 facts and 8 KB of fact content,
 and does not write scan/use counters. A team snapshot serves multiple agents;
-active subscriber leases are bounded to 256 per organization. Additional agents
+active subscriber leases are bounded to 256 per memory store. Additional agents
 proceed with a cache miss. Refresh is activity-driven, so idle users incur no
 periodic job. Identical content is not appended again on later turns, and pinned
 context is pruned when the associated turn receipts are archived.
@@ -130,6 +176,36 @@ Voice startup receives optional prepared context in the existing context respons
 Updated Rust/WASM and Apple voice clients accept it as bounded background data;
 older clients ignore the optional field. Media readiness never awaits preparation.
 Account/environment discovery remains a separate first-turn dependency.
+
+### Personal memories and request attribution
+
+`memory` accepts `scope: "personal" | "team"` (default `team`). Use personal for
+private user preferences and facts, and team for shared knowledge. A scan receipt
+and every memory key belong to their scope; keep it unchanged across scan, read,
+put, and delete. Both scopes use the existing root-only write policy, capability
+checks, secret filtering, version checks, and forget/correction invalidation.
+Personal memory is isolated by authenticated user and organization and follows
+that user across teams in that organization. Connected-app grants cannot access
+personal memories or receive them in prepared context. Team memories are never
+relabelled or copied into personal storage.
+
+`GET /v1/memory?scope=personal`, POST operations with `scope: "personal"`, and
+`DELETE /v1/memory/:id?version=:version&scope=personal` use the authenticated user;
+a request cannot supply another user ID. The JavaScript managed SDK accepts
+`{ scope: "personal" }` on `listMemories`, `memory`, and `deleteMemory`.
+
+Clients may send bounded `x-nanocodex-client-context` JSON (`client`, `hand`,
+logical `cwd`, `timezone`, optional `location`). Location contains numeric `latitude`,
+`longitude`, `accuracy_meters`, Unix-millisecond `timestamp_ms`, and boolean
+`approximate`. Only finite coordinates in geographic range, accuracy from 0 to
+100,000 meters, and samples at most five minutes old or 30 seconds in the future
+are retained. Invalid location is omitted without losing other context; freshness
+is checked again at startup projection. Location is unverified client-reported
+data and is never inferred from an attached Hand. The SDK exposes `requestOrigin`; the native CLI sets
+its own context automatically. The authenticated edge overwrites the principal
+assertion. HTTP, WebSocket, and voice admission pin caller context on the first
+turn; reconnects and retries cannot replace it. The snapshot is appended once,
+without rewriting baseline instructions, cache keys, or the conversation prefix.
 
 ## Public journeys and protocol boundaries
 
@@ -232,28 +308,46 @@ Account/environment discovery remains a separate first-turn dependency.
   Successful memory puts and deletes emit authorized `managed.voice.context`
   events; Rust validates call scope, deduplicates cursors, and queues background
   context through reconnects. Retrieved context is data, never instructions.
-- `/v1/history/*` and `/v1/memory` expose organization- and team-scoped
-  retained context. `/v1/credentials` and `/v1/connectors` manage brokered
+- `/v1/history/*` exposes retained team history; `/v1/memory` exposes team or
+  personal memories. `/v1/credentials` and `/v1/connectors` manage brokered
   credentials, OAuth connections, and MCP connections without exposing secrets.
 - Managed agents can search completed team conversations with `find_session`
   (`find_sessions` remains available) and verify exact turns with `read_session`.
   Each call requires its own agent's `history:read` capability.
-- The first admitted prompt automatically calls `find_session` and `memory`
-  (`operation: "scan"`) before the model starts, using a bounded query from
-  that prompt. The normal tool handlers enforce the caller's capabilities.
-  Retrieval runs in parallel with runtime and account discovery. A durable
-  developer message injects the results and the safe `accountInfo` snapshot,
-  including known hands, logical mounts, and capabilities, before the first
-  model request. Retrieved content is explicitly untrusted data. Bootstrap emits
-  no tool events and leaves the user prompt unchanged. Stable instructions stay
-  first; the snapshot is appended once, preserving the cached conversation prefix.
-  Durable receipts and checkpoint reconciliation prevent duplicate injection on
-  recovery or reconnect. Later connection changes are available through `accountInfo`.
+- Before the first model request, the host appends one durable developer message
+  in `<startup_context>` tags after the baseline prompt and static runtime rules.
+  It includes the startup UTC time, account/team/session scope, known request
+  transport, authenticated principal, available Hands, connected accounts, and bounded
+  prepared snapshots of personal and team memories when available. The CLI reports
+  its project Hand and logical cwd; web and Apple clients report client type and
+  timezone. Client/Hand attribution is explicitly client-reported, not proof of a
+  physical device or person. Hand keys/cwd are matched against authorized Hands;
+  missing or unmatched attribution remains unknown and never grants authority.
+  `environment().hands` maps each Hand key to its logical `path`, capabilities,
+  name, online status, and providers. Use that path as `exec_command.workdir`.
+  Native paths use readable computer names, such as `/omarchy-desktop`. The
+  first assignment is persisted by machine identity; duplicate names receive
+  numeric suffixes and renames do not retarget existing paths. Previous opaque
+  identity paths remain accepted by execution, preview and computer selection.
+  New VM paths include their factory and purpose (`/vm-omarchy-desktop-demo`);
+  Cloudflare sandboxes use `/cloudflare-demo`. Existing persisted VM roots keep
+  their original spelling. VM display names also identify their provider.
+  `environment().accounts[service].connections` lists exact account selectors;
+  service entries also advertise deferred tools and documentation.
+  XML data is escaped and explicitly carries no instructional authority.
+  Startup does not search past threads using the current prompt: `find_session`,
+  `read_session`, and `memory scan/read` provide scoped recall when needed.
+  The environment and timestamp are frozen once, including across retries,
+  reconnects, and pending-memory invalidation. Later turns append to the existing
+  conversation without rewriting its cacheable prefix or changing cache keys.
+  Existing memory correction/forget invalidation remains effective; it never
+  refreshes the startup environment. Use `environment()` for an explicit refresh.
+  Old configurations naming `accountInfo` are normalized to `environment`.
   User hands include `online` attachment status. Offline hands remain in the
   namespace so admitted calls can recover their receipts. A broker-confirmed
   unstarted call returns an unavailable-hand result for the agent to handle;
   transport failures with unknown admission retain the existing call identity.
-  Subsequent turns use `memory` to scan, read, put/replace, and delete team facts;
+  Subsequent turns use `memory` to scan, read, put/replace, and delete scoped facts;
   mutations require root-agent `memory:write` authority and puts require a scan.
 - `create_cron` saves a recurring prompt through the same durable scheduler as
   `/v1/agents/:id/triggers/:triggerId`. Supply a stable `id`, five-field `cron`,
@@ -433,23 +527,60 @@ These tools become available after the managed container image is built and
 rolled out. Existing running sandboxes need recreation with the updated image.
 When changing tool versions in CI, update the corresponding image pins too.
 
+### Opening files from another Hand
+
+`GET /v1/agents/:id/files?path=<logical absolute path>` serves private, uncached
+file bytes after checking account, organization, team, authorization epoch,
+`agents:read`, and `tools:use`. Connect grants cannot use this route. `/brain`
+reads stream from the conversation's R2 prefix. Hand paths resolve through the
+conversation's durable mount identities and use a captured execution route to
+read bounded binary chunks; filenames are quoted as data on POSIX and Windows.
+Missing or offline Hands fail explicitly. Only `file_path_unmapped` permits a
+client to try its own local filesystem.
+
+The terminal client downloads a complete file into a private temporary directory
+before invoking the local viewer, preserves the filename, and removes failed or
+cancelled downloads. Successful copies remain available to the viewer after the
+terminal exits. File links may include the documented `:line` or `:line:column`
+suffix. This behavior requires both the updated managed Worker and terminal
+client; no update to an existing Hand is required.
+
 ### Original media attachments
 
-The authenticated `/v1/agents/:id/attachments/:uuid` route stores original
-image or MP4/MOV bytes in the agent's existing `/brain/attachments/:uuid/original.*`
-filesystem. `POST` accepts `{name, media_type, size}` and returns the file path,
-part size, next part number, and completion state. Parts are normally 8 MiB and scale up to 100 MB to fit R2’s 10,000-part limit. The current Free/Pro 100 MB request ingress limit therefore permits files up to 1 TB. Parts stream through hashing to R2 with backpressure, and the service serializes ingestion across attachments. `PUT .../parts/:number`
-accepts exact binary chunks in order; identical retries are safe and conflicting
-bytes are rejected. `POST .../complete` finalizes the file idempotently. `GET`
-returns private, uncached bytes and supports ranges. Multipart upload IDs remain
-server-side. Image previews use a separate immutable authenticated endpoint; original bytes remain unchanged.
+The authenticated `/v1/agents/:id/attachments/:uuid` route streams original
+image and MP4/MOV files into the existing R2 binding. It does not buffer complete
+files or parts in Worker memory, and requires no S3 signing keys. Files keep
+their `/brain/attachments/:uuid/original.*` paths.
 
-Account ownership, organization, team, authorization epoch, and capabilities
-are checked before filesystem access. Connect grants cannot use this route.
-Session deletion fences new work, cancels body readers, drains pending writes,
-and aborts incomplete uploads before the existing `/brain` cleanup. The
-`attachments.test.ts` Worker tests exercise real local R2 multipart behavior,
-reconstruction, retries, filesystem reads, deletion fencing, and account isolation.
+`POST` accepts `{name, media_type, size}` and returns the path, part size, next
+part number, and completion state. The Apple client uploads file-backed parts
+with `PUT .../parts/:number`; the service hashes each incoming stream while
+forwarding it to R2 with backpressure. Only one part body is ingested at a time
+per agent. Identical retries are safe and conflicting bytes are rejected.
+`POST .../complete` finalizes the R2 multipart upload and records it in the brain
+filesystem catalog. Parts are normally 8 MiB and grow up to 100 MB to fit R2's
+10,000-part limit. The Worker ingress limit applies per request, not per file;
+this permits originals up to 1 TB. Original and preview bytes remain separate.
+
+The phone prepares an oriented JPEG inspection fallback bounded to 2048 pixels
+and 2 MiB. Preview uploads stream through the same R2 binding. Original downloads
+remain private and support ranges; preview downloads are immutable and
+account-scoped. Account, organization, team, authorization epoch, and capability
+checks apply before upload. Connect grants cannot use this route. Deletion
+cancels readers and aborts incomplete uploads before brain cleanup.
+
+Default `view_image` passes the original R2 body stream to Cloudflare Images,
+which decodes and resizes it outside the brain's JavaScript heap. Only the bounded
+model image is encoded in the Worker. If the original cannot be transformed,
+the tool can return the attachment's labeled JPEG fallback. Exact
+`detail: "original"` reads preserve original bytes and supported-format behavior,
+with an early 10 MiB size check; use default inspection for larger originals.
+The production Wrangler configuration declares `NANOCODEX_ATTACHMENT_IMAGES`.
+No R2 access key or new upload credential is needed.
+
+Tests cover multipart streaming and retries, image transformation without
+original-body buffering, bounded preview handling, cancellation, filesystem
+visibility, and preserved original bytes on Apple clients.
 
 ## Browser on the Cloudflare sandbox desktop
 
@@ -477,8 +608,8 @@ inspection, immutable turn artifacts and HTTP tool results are documented in
 Managed agents discover first-party `github_request`, Google Workspace capability
 `*_request`, `slack_request`, `x_request`, `spotify_request`, and
 `soundcloud_request` tools through the same `tool_search` used by connected MCPs.
-`accountInfo.connectorTools` advertises tools for connected, grant-visible services;
-`connectorAccounts` supplies exact account selectors. Each call uses authenticated
+`environment().accounts` advertises tools for connected, grant-visible services;
+`accounts[service].connections` supplies exact account selectors. Each call uses authenticated
 egress with live grant and connection checks, broker-owned token refresh, fixed
 provider origins, bounded JSON bodies/responses, and no automatic write retries.
 Provider scopes and endpoint availability still apply. Spotify connection links

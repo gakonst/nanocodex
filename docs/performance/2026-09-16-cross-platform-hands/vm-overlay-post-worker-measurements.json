@@ -1,0 +1,321 @@
+{
+  "measured_on": "2026-09-16",
+  "managed_version": "dd307c9e-d2aa-4752-af53-ea1559716905",
+  "factory_pid": 998465,
+  "factory_sha256": "6cc6d44b39b83f3e09487525dae373123c3a7442c1be25e3a9e3f70208555063",
+  "guest_sha256": "b7b0ef80b06134b4114ceb729918faa16f4358d25fc23ad85753292816fd14c2",
+  "installed_native_revision": "beae96461973c4d53950c75c",
+  "native_pid": 970756,
+  "first": {
+    "agent": "01a0ac3f-121d-7339-a605-ce1f764f66c3",
+    "tools": [
+      {
+        "protocol_version": 1,
+        "request_id": "01a0ac3f-121d-7339-a605-ce1f764f66c3",
+        "seq": 25,
+        "type": "tool.result",
+        "payload": {
+          "call_id": "call_NN6Xq9DXPFnoRfdhtbac7Jmy/code-1",
+          "tool": "mount",
+          "status": "completed",
+          "duration_ns": 3979000000,
+          "started_after_ns": 0,
+          "result": "{\"id\":\"01a0ac3f-2d64-753d-84bd-f697c6c702c8\",\"name\":\"overlay-perf-probe\",\"provider\":\"linux-paradigm\",\"mount\":\"/mnt-overlay-perf-probe-c6c702c8\",\"status\":\"mounted\",\"created\":true}",
+          "structured_result": {
+            "created": true,
+            "id": "01a0ac3f-2d64-753d-84bd-f697c6c702c8",
+            "mount": "/mnt-overlay-perf-probe-c6c702c8",
+            "name": "overlay-perf-probe",
+            "provider": "linux-paradigm",
+            "status": "mounted"
+          }
+        }
+      },
+      {
+        "protocol_version": 1,
+        "request_id": "01a0ac3f-121d-7339-a605-ce1f764f66c3",
+        "seq": 31,
+        "type": "tool.result",
+        "payload": {
+          "call_id": "call_3EHRHYJQ6VpYecBnF9qOI9xf/code-2",
+          "tool": "exec_command",
+          "status": "completed",
+          "duration_ns": 316000000,
+          "started_after_ns": 0,
+          "result": "Chunk ID: 1d5aa0\nWall time: 0.0040 seconds\nProcess exited with code 0\nOriginal token count: 8\nOutput:\nLinux\noverlay_persistence_probe",
+          "structured_result": {
+            "chunk_id": "1d5aa0",
+            "exit_code": 0,
+            "original_token_count": 8,
+            "output": "Linux\noverlay_persistence_probe",
+            "wall_time_seconds": 0.004011253
+          },
+          "metadata": {
+            "machine_id": "vm:01a0ac3f-2d64-753d-84bd-f697c6c702c8",
+            "machine_name": "vm:01a0ac3f-2d64-753d-84bd-f697c6c702c8",
+            "tool_name": "exec_command"
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "timestamp": "2026-09-16T22:03:39.402221Z",
+        "stage": "vm.provision.start",
+        "allocation_id": "0ca93342-5a46-4f47-ac26-2fdee4bbd436"
+      },
+      {
+        "timestamp": "2026-09-16T22:03:39.403165Z",
+        "stage": "vm.provision.spare_claimed",
+        "allocation_id": "0ca93342-5a46-4f47-ac26-2fdee4bbd436",
+        "elapsed_ms": 0.947897
+      },
+      {
+        "timestamp": "2026-09-16T22:03:39.403217Z",
+        "stage": "vm.provision.guest",
+        "allocation_id": "0ca93342-5a46-4f47-ac26-2fdee4bbd436",
+        "warm": true,
+        "elapsed_ms": 0.999874
+      },
+      {
+        "timestamp": "2026-09-16T22:03:39.403388Z",
+        "message": "attachment catalog prepared",
+        "stage": "attachment.catalog_prepared",
+        "duration_ms": 0.07590200000000001
+      },
+      {
+        "timestamp": "2026-09-16T22:03:39.403424Z",
+        "message": "attachment TLS trust ready",
+        "stage": "attachment.socket.trust",
+        "elapsed_ms": 0.004067
+      },
+      {
+        "timestamp": "2026-09-16T22:03:39.403971Z",
+        "message": "attachment address resolved",
+        "stage": "attachment.socket.resolved",
+        "elapsed_ms": 0.5506719999999999
+      },
+      {
+        "timestamp": "2026-09-16T22:03:39.423921Z",
+        "message": "attachment TCP connected",
+        "stage": "attachment.socket.tcp",
+        "elapsed_ms": 20.498435
+      },
+      {
+        "timestamp": "2026-09-16T22:03:40.382595Z",
+        "message": "attachment WebSocket connected",
+        "stage": "attachment.websocket_connected",
+        "duration_ms": 979.1739739999999,
+        "request_id": "37143c8a-8e6e-454a-81ca-56a7bfd2f3d7"
+      },
+      {
+        "timestamp": "2026-09-16T22:03:40.415668Z",
+        "stage": "vm.provision.desktop",
+        "allocation_id": "0ca93342-5a46-4f47-ac26-2fdee4bbd436",
+        "elapsed_ms": 1013.4500790000001,
+        "success": true
+      },
+      {
+        "timestamp": "2026-09-16T22:03:40.634486Z",
+        "message": "attachment catalog acknowledged",
+        "stage": "attachment.catalog_ready",
+        "send_ms": 0.051116,
+        "acknowledge_ms": 251.83015199999997
+      },
+      {
+        "timestamp": "2026-09-16T22:03:40.634496Z",
+        "message": "attachment catalog published",
+        "stage": "attachment.catalog_published",
+        "tool.count": 4
+      },
+      {
+        "timestamp": "2026-09-16T22:03:40.634515Z",
+        "stage": "vm.provision.attached",
+        "allocation_id": "0ca93342-5a46-4f47-ac26-2fdee4bbd436",
+        "elapsed_ms": 1232.296749,
+        "success": true
+      },
+      {
+        "timestamp": "2026-09-16T22:03:40.641408Z",
+        "stage": "vm.spare.root",
+        "elapsed_ms": 6.319033
+      },
+      {
+        "timestamp": "2026-09-16T22:03:40.912926Z",
+        "stage": "vm.spare.guest",
+        "elapsed_ms": 277.837333
+      },
+      {
+        "timestamp": "2026-09-16T22:03:41.523584Z",
+        "message": "Fresh VM spare ready without account or allocation credentials",
+        "stage": "vm.spare.ready",
+        "elapsed_ms": 888.4948870000001
+      }
+    ],
+    "cleanup": {
+      "code": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  },
+  "second": {
+    "agent": "01a0ac43-bc72-769c-923b-abfcc44ed72e",
+    "tools": [
+      {
+        "protocol_version": 1,
+        "request_id": "01a0ac43-bc72-769c-923b-abfcc44ed72e",
+        "seq": 27,
+        "type": "tool.result",
+        "payload": {
+          "call_id": "call_VjXPsbKjgiUir8JdzZBJcTzx/code-1",
+          "tool": "mount",
+          "status": "completed",
+          "duration_ns": 3096000000,
+          "started_after_ns": 0,
+          "result": "{\"id\":\"01a0ac43-d90c-795f-88ee-922c87f1c0cf\",\"name\":\"overlay-perf-probe\",\"provider\":\"linux-paradigm\",\"mount\":\"/mnt-overlay-perf-probe-87f1c0cf\",\"status\":\"mounted\",\"created\":true}",
+          "structured_result": {
+            "created": true,
+            "id": "01a0ac43-d90c-795f-88ee-922c87f1c0cf",
+            "mount": "/mnt-overlay-perf-probe-87f1c0cf",
+            "name": "overlay-perf-probe",
+            "provider": "linux-paradigm",
+            "status": "mounted"
+          }
+        }
+      },
+      {
+        "protocol_version": 1,
+        "request_id": "01a0ac43-bc72-769c-923b-abfcc44ed72e",
+        "seq": 33,
+        "type": "tool.result",
+        "payload": {
+          "call_id": "call_c5RPJRjCVyJxtMAg2l5pjc8C/code-2",
+          "tool": "exec_command",
+          "status": "completed",
+          "duration_ns": 265000000,
+          "started_after_ns": 0,
+          "result": "Chunk ID: 679243\nWall time: 0.0042 seconds\nProcess exited with code 0\nOriginal token count: 8\nOutput:\nLinux\noverlay_persistence_probe",
+          "structured_result": {
+            "chunk_id": "679243",
+            "exit_code": 0,
+            "original_token_count": 8,
+            "output": "Linux\noverlay_persistence_probe",
+            "wall_time_seconds": 0.004176673
+          },
+          "metadata": {
+            "machine_id": "vm:01a0ac43-d90c-795f-88ee-922c87f1c0cf",
+            "machine_name": "vm:01a0ac43-d90c-795f-88ee-922c87f1c0cf",
+            "tool_name": "exec_command"
+          }
+        }
+      }
+    ],
+    "events": [
+      {
+        "timestamp": "2026-09-16T22:08:44.657155Z",
+        "stage": "vm.provision.start",
+        "allocation_id": "6c990b5d-ccc5-4f05-887f-f999a74739ad"
+      },
+      {
+        "timestamp": "2026-09-16T22:08:44.657944Z",
+        "stage": "vm.provision.spare_claimed",
+        "allocation_id": "6c990b5d-ccc5-4f05-887f-f999a74739ad",
+        "elapsed_ms": 0.7916340000000001
+      },
+      {
+        "timestamp": "2026-09-16T22:08:44.657986Z",
+        "stage": "vm.provision.guest",
+        "allocation_id": "6c990b5d-ccc5-4f05-887f-f999a74739ad",
+        "warm": true,
+        "elapsed_ms": 0.8331019999999999
+      },
+      {
+        "timestamp": "2026-09-16T22:08:44.658154Z",
+        "message": "attachment catalog prepared",
+        "stage": "attachment.catalog_prepared",
+        "duration_ms": 0.07479
+      },
+      {
+        "timestamp": "2026-09-16T22:08:44.663761Z",
+        "message": "attachment TLS trust ready",
+        "stage": "attachment.socket.trust",
+        "elapsed_ms": 5.5786050000000005
+      },
+      {
+        "timestamp": "2026-09-16T22:08:44.779146Z",
+        "message": "attachment address resolved",
+        "stage": "attachment.socket.resolved",
+        "elapsed_ms": 120.963266
+      },
+      {
+        "timestamp": "2026-09-16T22:08:44.799551Z",
+        "message": "attachment TCP connected",
+        "stage": "attachment.socket.tcp",
+        "elapsed_ms": 141.368638
+      },
+      {
+        "timestamp": "2026-09-16T22:08:45.640722Z",
+        "message": "attachment WebSocket connected",
+        "stage": "attachment.websocket_connected",
+        "duration_ms": 982.5393329999999,
+        "request_id": "f7f99f62-e4ab-401a-b0a7-0b8a898a56a7"
+      },
+      {
+        "timestamp": "2026-09-16T22:08:45.852500Z",
+        "stage": "vm.provision.desktop",
+        "allocation_id": "6c990b5d-ccc5-4f05-887f-f999a74739ad",
+        "elapsed_ms": 1195.347475,
+        "success": true
+      },
+      {
+        "timestamp": "2026-09-16T22:08:45.860142Z",
+        "message": "attachment catalog acknowledged",
+        "stage": "attachment.catalog_ready",
+        "send_ms": 0.06383899999999999,
+        "acknowledge_ms": 219.344682
+      },
+      {
+        "timestamp": "2026-09-16T22:08:45.860155Z",
+        "message": "attachment catalog published",
+        "stage": "attachment.catalog_published",
+        "tool.count": 4
+      },
+      {
+        "timestamp": "2026-09-16T22:08:45.860167Z",
+        "stage": "vm.provision.attached",
+        "allocation_id": "6c990b5d-ccc5-4f05-887f-f999a74739ad",
+        "elapsed_ms": 1203.014093,
+        "success": true
+      },
+      {
+        "timestamp": "2026-09-16T22:08:45.868820Z",
+        "stage": "vm.spare.root",
+        "elapsed_ms": 8.1159
+      },
+      {
+        "timestamp": "2026-09-16T22:08:46.124845Z",
+        "stage": "vm.spare.guest",
+        "elapsed_ms": 264.14079200000003
+      },
+      {
+        "timestamp": "2026-09-16T22:08:46.838858Z",
+        "message": "Fresh VM spare ready without account or allocation credentials",
+        "stage": "vm.spare.ready",
+        "elapsed_ms": 978.1537340000001
+      }
+    ],
+    "cleanup": {
+      "code": 0,
+      "stdout": "",
+      "stderr": ""
+    }
+  },
+  "second_account_frontend_version": "c627a2a8-6dc6-475e-af81-22fecdc2bbb6",
+  "limits": [
+    "Same factory and native binaries across comparison; Worker/account rollout varied as labeled",
+    "Full mount did not improve consistently: 3979 and3096ms versus earlier2955/3254ms",
+    "Factory attachment improved to1232/1203ms but1893ms remained outside it in secondcohort",
+    "Scratch agents deleted; firstVM also served3successful read-only1280x800viewer tests reported separately",
+    "Not installed publishednightly yet at measurement time"
+  ]
+}

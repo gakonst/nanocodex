@@ -17,7 +17,8 @@ swift apple/NanocodexInboxUITests/fixtures/screen.swift apple/NanocodexInboxUITe
 With the fixture running, set `TEST_RUNNER_NANOCODEX_SCREEN_FIXTURE=1` when
 running Xcode tests. The focused journeys are:
 
-- iOS: `NanocodexInboxUITests/RemoteScreenLifecycleUITests/testInlineScreenKeepsHistoryComposerAndSession`
+- iOS dock: `NanocodexInboxUITests/InboxUITests/testThreadScreenDockPreservesDraftAndThreadNavigation`
+- iOS full controls: `NanocodexInboxUITests/RemoteScreenLifecycleUITests/testScreenCardZoomDismissalAndDraftRestoration`
 - macOS: `NanocodexTests/ProtocolTests/testScreenPaneResizesWithoutReplacingConversation`
 
 The iOS journey uses `--demo` plus `NANOCODEX_DEMO_SCREENS=1`; this loopback

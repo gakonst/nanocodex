@@ -10,6 +10,9 @@ pub enum ManagedError {
     /// The HTTP transport failed before a complete response was available.
     #[error("managed request failed")]
     Transport(#[source] reqwest::Error),
+    /// Creating, writing, or publishing a local download failed.
+    #[error("managed file download failed: {0}")]
+    Io(#[from] std::io::Error),
     /// The managed service returned a non-success HTTP response.
     #[error("managed request failed ({status}): {code}: {message}")]
     Http {

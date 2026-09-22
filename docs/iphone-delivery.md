@@ -1,62 +1,113 @@
-# Phone-driven Nanocodex delivery
+# iPhone delivery from a Mac
 
-Nanocodex owns the build request and update UI. A Cloudflare Sandbox Hand
-dispatches a clean GitHub-hosted macOS builder; Apple performs distribution and
-iOS performs installation. No nearby Mac, USB cable, Tailscale network, or
-third-party sideloading app is part of the path.
+The local OTA path builds the `xyz.paradigm.centaur` app with the Mac's Xcode
+signing credentials and serves it at
+https://nanocodex-ios-updates.gakonst.workers.dev. The iPhone can download over
+cellular or Wi-Fi; the Mac and phone do not need to share a network. iOS performs
+the installation after the user confirms its prompt.
 
-## Request a Nanocodex self-update
+## Build and publish
 
-From a checked-out repository in a Cloudflare Sandbox Hand:
+Use a Mac with Xcode, Python 3.9 or later, the repository's pnpm dependencies,
+Cloudflare deployment access, and working automatic signing for the app, share
+extension, and widget extension. The target device must be registered in each
+development provisioning profile. A development-signed installation also needs
+Developer Mode enabled on the phone. Keep signing credentials in the Mac's
+normal keychain and Xcode account settings.
+
+Choose a monotonically increasing positive integer build number. Use one
+persistent asset directory outside every repository checkout; keep this entire
+directory between publications and deployments. It contains the full release
+history. Do not use a temporary directory or commit exported IPAs.
 
 ```sh
-bash apple/scripts/request-self-update.sh
+# Replace these example values with your next build and chosen persistent path.
+bash apple/scripts/build-mac-update.sh 123 "$HOME/Library/Application Support/Nanocodex/ota-assets" \
+  --deploy --notes 'Improved iPhone updates'
 ```
 
-The helper starts `ios-self-update.yml`, waits for the exact correlated run, and
-writes `/brain/ios-deployments/latest.json`. The workflow archives the current
-`xyz.paradigm.centaur` app with Xcode, signs it on the ephemeral runner, uploads
-it as an internal-only TestFlight build, and deletes the temporary signing
-keychain. The phone can then use Settings → Nanocodex updates. Apple controls
-processing and final installation timing.
+The script rebuilds the shared voice core, performs a Release archive, exports
+with Xcode's `debugging` method and automatic signing, validates the IPA, and
+publishes it. The printed archive/export directory is retained for diagnosis. Xcode may need
+to refresh profiles through its configured account. Pass `--device-udid` or set
+`NANOCODEX_DEVICE_UDID` privately to require that every profile includes a
+specific phone. No device identifier is stored in this repository or feed.
 
-The Cloudflare sandbox image already includes `gh`; Nanocodex provides its
-scoped GitHub authentication through egress. Never put GitHub or Apple private
-keys in `/brain` or a sandbox workspace.
+To validate and prepare an existing exported IPA without deploying:
 
-## One-time Apple setup
+```sh
+python3 apple/scripts/publish-mac-update.py --ipa /path/to/Nanocodex.ipa \
+  --assets-dir "$HOME/Library/Application Support/Nanocodex/ota-assets"
+```
 
-Use the existing **Centaur by Paradigm** App Store Connect record for bundle ID
-`xyz.paradigm.centaur`. Create an Apple Distribution certificate, a matching
-App Store provisioning profile, an App Store Connect API key, and an internal
-TestFlight group with automatic distribution. Configure these Actions secrets:
+Add `--deploy` to invoke `pnpm --filter nanocodex-managed-service exec wrangler deploy --config
+apple/ota/wrangler.jsonc --assets ASSETSDIR`. `--config` can specify another
+Wrangler configuration for the same publication origin. Preparation changes the
+local feed only; deployment must succeed before the phone can see it. On a
+failed deployment rerun with the same IPA and asset directory. Do not run
+independent publishers with different asset directories: the local lock and
+latest-build policy protect one persistent directory, not competing hosts.
 
-| Secret | Value |
-| --- | --- |
-| `IOS_DISTRIBUTION_P12_BASE64` | Password-protected distribution certificate and private key |
-| `IOS_DISTRIBUTION_P12_PASSWORD` | Password for that p12 |
-| `IOS_PROVISIONING_PROFILE_BASE64` | App Store profile for `xyz.paradigm.centaur` |
-| `IOS_SHARE_PROVISIONING_PROFILE_BASE64` | App Store profile for `xyz.paradigm.centaur.share` |
-| `IOS_WIDGETS_PROVISIONING_PROFILE_BASE64` | App Store profile for `xyz.paradigm.centaur.widgets` |
-| `APP_STORE_CONNECT_KEY_ID` | API key ID |
-| `APP_STORE_CONNECT_ISSUER_ID` | API issuer ID |
-| `APP_STORE_CONNECT_PRIVATE_KEY` | Complete p8 contents |
+Validation checks the expected bundle ID, a numeric build, strict code signatures,
+and unexpired profiles for every app and extension. App Store-only profiles are
+rejected. Specifying the device additionally checks installation eligibility in
+every profile. An existing build cannot be replaced with different IPA bytes or
+manifest metadata, and `latest.json` cannot move to a lower build. Keep a backup
+of the asset directory; deploying an incomplete directory removes older assets
+from the deployed site. If the directory is lost, restore it before publishing.
 
-The workflow validates the profile type, bundle ID, and expiry before importing
-the certificate. Pull requests only create an unsigned device archive and
-cannot read or upload with these secrets.
+## Install and update
 
-## New apps built by Nanocodex
+For the first installation, open the site above in **Safari on the registered
+iPhone**, tap **Install Nanocodex**, and accept the iOS installation prompt.
+After bootstrapping, Nanocodex checks on foreground entry and once per minute
+while active. A prominent banner above the conversation offers **Install** when
+a newer build is published. **Settings → Nanocodex updates** also provides manual
+checking and installed-build details. Checks pause while the app is inactive;
+this is not a background push notification or a silent installation. iOS controls the final installation; opening the
+installation link does not itself prove completion. Expired profiles need a new
+signed build. Cellular downloading still depends on the phone's connectivity
+and data settings.
 
-`latest.json` is intentionally a deployment-provider receipt rather than a raw
-IPA handoff. The first provider is `apple` / `testflight-internal`. New bundle
-IDs can use the same build request contract once their App Store records and
-profiles exist. For instant private fleet installation, add an Apple device
-management provider; enrolled devices can receive managed custom or proprietary
-apps wirelessly. A normal iOS app cannot install an arbitrary unsigned IPA or
-act as its own package manager.
+The static feed has this schema (`notes` is optional):
 
-The first implementation therefore proves the supported self-update path while
-leaving the provider boundary ready for MDM. It does not depend on Linux SDK
-extraction projects: those can compile selected SwiftPM apps, but this app uses
-an Xcode project and Apple's distribution services.
+```json
+{
+  "version": "1.0",
+  "build": "123",
+  "bundle_id": "xyz.paradigm.centaur",
+  "manifest_url": "https://nanocodex-ios-updates.gakonst.workers.dev/builds/123/manifest.plist",
+  "published_at": "2026-09-20T12:00:00Z",
+  "notes": "Improved iPhone updates"
+}
+```
+
+Each immutable `/builds/<build>/` contains `Nanocodex.ipa`, `manifest.plist`, an
+installation page, and `sha256.txt`. The root page and `latest.json` use
+`Cache-Control: no-store`; build assets use immutable caching. `_headers` also
+sets the IPA and plist content types and disallows indexing. Anyone with an
+asset URL can download it; signing and device provisioning control whether iOS
+can install it. Check the hosting plan's per-asset size limit before deployment.
+
+Run the focused policy tests with:
+
+```sh
+python3 apple/scripts/test-publish-mac-update.py
+```
+
+## Optional TestFlight delivery
+
+`bash apple/scripts/request-self-update.sh` remains available from a Cloudflare
+Sandbox Hand. It dispatches `ios-self-update.yml`, waits for the correlated
+GitHub-hosted macOS build, and writes a delivery receipt under
+`/brain/ios-deployments`. The workflow uses App Store Connect and Apple-managed
+TestFlight distribution, which has separate processing and installation timing.
+Its receipt is separate from this static OTA `latest.json`.
+
+The TestFlight workflow requires the existing App Store Connect record and its
+Actions signing secrets: `IOS_DISTRIBUTION_P12_BASE64`,
+`IOS_DISTRIBUTION_P12_PASSWORD`, `IOS_PROVISIONING_PROFILE_BASE64`,
+`IOS_SHARE_PROVISIONING_PROFILE_BASE64`, `IOS_WIDGETS_PROVISIONING_PROFILE_BASE64`,
+`APP_STORE_CONNECT_KEY_ID`, `APP_STORE_CONNECT_ISSUER_ID`, and
+`APP_STORE_CONNECT_PRIVATE_KEY`. Configure an internal TestFlight group with
+automatic distribution. Keep private keys out of `/brain` and workspaces.

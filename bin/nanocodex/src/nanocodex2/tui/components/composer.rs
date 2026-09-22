@@ -52,6 +52,7 @@ const DEVELOPMENT_BADGE: &str = " ◉ dev ";
 #[derive(Debug, Eq, PartialEq)]
 pub(crate) enum ComposerEffect {
     ShowAgentId,
+    Vault(crate::tui::vault::Command),
     Submit(Submission),
     Queue(Submission),
     RunShell(String),
@@ -61,6 +62,13 @@ pub(crate) enum ComposerEffect {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SettingsCommand {
+    Bug(String),
+    Attach,
+    AutoRoute,
+    Reload,
+    Screen,
+    Zoom,
+    Voice(crate::voice::Command),
     OpenEffort,
     SetEffort(ReasoningEffort),
     OpenModel,
@@ -73,6 +81,37 @@ impl SettingsCommand {
         let mut parts = input.split_whitespace();
         let command = parts.next()?;
         match command {
+            "/bug" => Some(Self::Bug(
+                input.trim_start()[command.len()..].trim().to_owned(),
+            )),
+            "/autoroute" => Some(if parts.next().is_some() {
+                Self::Invalid("Usage: /autoroute".into())
+            } else {
+                Self::AutoRoute
+            }),
+            "/reload" => Some(if parts.next().is_some() {
+                Self::Invalid("Usage: /reload".into())
+            } else {
+                Self::Reload
+            }),
+            "/attach" => Some(if parts.next().is_some() {
+                Self::Invalid("Usage: /attach".into())
+            } else {
+                Self::Attach
+            }),
+            "/screen" | "/zoom" => Some(if parts.next().is_some() {
+                Self::Invalid(format!("Usage: {command}"))
+            } else if command == "/screen" {
+                Self::Screen
+            } else {
+                Self::Zoom
+            }),
+            "/voice" => Some(
+                match crate::voice::Command::parse(input.trim_start()[command.len()..].trim()) {
+                    Ok(command) => Self::Voice(command),
+                    Err(error) => Self::Invalid(error),
+                },
+            ),
             "/model" => {
                 let Some(argument) = parts.next() else {
                     return Some(Self::OpenModel);
@@ -124,6 +163,12 @@ pub(crate) enum ComposerEvent {
     ReplaceDraft(String),
     SetEffort(ReasoningEffort),
     SetModel(Model),
+    RoutingHydrated {
+        enabled: bool,
+        provider: Option<String>,
+        model: Option<Model>,
+        effort: Option<ReasoningEffort>,
+    },
     SetReasoningMode(ReasoningMode),
     SetFastMode(bool),
     InputMode(Option<String>),
@@ -164,6 +209,10 @@ pub(crate) struct Composer {
     workspace: String,
     thinking: ReasoningEffort,
     model: Model,
+    auto_routing: bool,
+    routed_model: Option<Model>,
+    routed_provider: Option<&'static str>,
+    routed_effort: Option<ReasoningEffort>,
     reasoning_mode: ReasoningMode,
     fast_mode: bool,
     input_mode: Option<String>,
@@ -322,6 +371,10 @@ impl Composer {
             workspace: shorten_home(workspace),
             thinking,
             model: Model::default(),
+            auto_routing: false,
+            routed_model: None,
+            routed_provider: None,
+            routed_effort: None,
             reasoning_mode: ReasoningMode::Standard,
             fast_mode: false,
             input_mode: None,
@@ -391,6 +444,28 @@ impl Composer {
                     return ComposerUpdate::unchanged();
                 }
                 self.model = model;
+                ComposerUpdate::changed()
+            }
+            ComposerEvent::RoutingHydrated {
+                enabled,
+                provider,
+                model,
+                effort,
+            } => {
+                self.auto_routing = enabled;
+                self.routed_model = model.filter(|_| enabled);
+                self.routed_provider = if enabled {
+                    match provider.as_deref() {
+                        Some("ChatGPT") => Some("ChatGPT"),
+                        Some("Workers AI") => Some("Workers AI"),
+                        Some("OpenRouter") => Some("OpenRouter"),
+                        Some("Vercel") => Some("Vercel"),
+                        _ => None,
+                    }
+                } else {
+                    None
+                };
+                self.routed_effort = effort.filter(|_| enabled && model.is_some());
                 ComposerUpdate::changed()
             }
             ComposerEvent::SetReasoningMode(mode) => {
@@ -717,11 +792,42 @@ impl Composer {
     }
 
     pub(crate) const fn effort(&self) -> ReasoningEffort {
-        self.thinking
+        match self.routed_effort {
+            Some(effort) => effort,
+            None => self.thinking,
+        }
     }
 
     pub(crate) const fn model(&self) -> Model {
-        self.model
+        match self.routed_model {
+            Some(model) => model,
+            None => self.model,
+        }
+    }
+
+    pub(crate) const fn auto_routing(&self) -> bool {
+        self.auto_routing
+    }
+
+    fn model_label(&self) -> String {
+        if !self.auto_routing {
+            return self.model.to_string();
+        }
+        let Some(model) = self.routed_model else {
+            return "Auto · choosing…".to_owned();
+        };
+        let label = match model {
+            Model::Glm53 => "glm-5.3",
+            Model::Astra => "Astra",
+            Model::Sol => "Sol",
+            Model::Terra => "Terra",
+            Model::Luna => "Luna",
+            _ => model.as_str(),
+        };
+        match self.routed_provider {
+            Some(provider) => format!("{label} · {provider}"),
+            None => label.to_owned(),
+        }
     }
 
     pub(crate) const fn fast_mode(&self) -> bool {
@@ -975,9 +1081,24 @@ impl Composer {
 
     fn take_local_command(&mut self) -> Option<ComposerUpdate> {
         if !self.images.is_empty() {
+            if self.draft.split_whitespace().next() == Some("/autoroute") {
+                return Some(ComposerUpdate::effect(
+                    ComposerEffect::Settings(SettingsCommand::Invalid(
+                        "Usage: /autoroute without attachments".into(),
+                    )),
+                    false,
+                ));
+            }
+            if self.draft.split_whitespace().next() == Some("/voice") {
+                return Some(ComposerUpdate::effect(ComposerEffect::Settings(SettingsCommand::Invalid(
+                    "Voice commands use local audio paths. Remove image attachments before running /voice.".into()
+                )), false));
+            }
             return None;
         }
-        let effect = if self.draft.trim() == "/id" {
+        let effect = if let Some(command) = crate::tui::vault::Command::parse(self.draft.trim()) {
+            ComposerEffect::Vault(command)
+        } else if self.draft.trim() == "/id" {
             ComposerEffect::ShowAgentId
         } else {
             ComposerEffect::Settings(SettingsCommand::parse(self.draft.trim())?)
@@ -1483,15 +1604,20 @@ impl Composer {
         } else {
             format!("{usage_before_subagents}{} ", subagent_segment.trim_start())
         };
-        let model = format!(" {} ", self.model);
+        let model = format!(" {} ", self.model_label());
         let timer = self
             .turn_timers
             .front()
             .map(|timer| format!(" {} ", timer.label()))
             .unwrap_or_default();
-        let effort = format!(" {} ", self.thinking.as_str());
-        let fast_mode = self.fast_mode.then_some("⚡ ");
-        let pro_mode = (self.reasoning_mode == ReasoningMode::Pro).then_some("pro ");
+        let effort = if self.auto_routing && self.routed_effort.is_none() {
+            String::new()
+        } else {
+            format!(" {} ", self.effort().as_str())
+        };
+        let fast_mode = (!self.auto_routing && self.fast_mode).then_some("⚡ ");
+        let pro_mode =
+            (!self.auto_routing && self.reasoning_mode == ReasoningMode::Pro).then_some("pro ");
         let right_width = timer.width()
             + model.width()
             + effort.width()
@@ -1574,7 +1700,11 @@ impl Composer {
             top,
             &model,
             usize::from(content_end.saturating_sub(model_start)),
-            Style::default().fg(theme.model(self.model)),
+            Style::default().fg(if self.auto_routing && self.routed_model.is_none() {
+                theme.muted()
+            } else {
+                theme.model(self.model())
+            }),
         );
         let effort_start = model_start + u16::try_from(model.width()).unwrap_or(u16::MAX);
         if effort_start < content_end {
@@ -1592,7 +1722,7 @@ impl Composer {
                 &effort,
                 usize::from(content_end - effort_start),
                 Style::default()
-                    .fg(theme.effort(self.thinking))
+                    .fg(theme.effort(self.effort()))
                     .add_modifier(Modifier::BOLD),
             );
         }
@@ -2009,6 +2139,84 @@ mod tests {
         let action_help = action_key + 2;
         assert_eq!(buffer[(action_key, 4)].fg, Color::Reset);
         assert_eq!(buffer[(action_help, 4)].fg, Theme::default().muted());
+    }
+
+    #[test]
+    fn autoroute_chrome_tracks_pending_resolved_and_disabled_routes() {
+        let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+        composer.update(ComposerEvent::SetModel(Model::Astra));
+        composer.update(ComposerEvent::RoutingHydrated {
+            enabled: true,
+            provider: None,
+            model: None,
+            effort: None,
+        });
+        // Default placeholder settings can arrive after enabling routing.
+        composer.update(ComposerEvent::SetModel(Model::Astra));
+        composer.update(ComposerEvent::SetEffort(ReasoningEffort::High));
+        let pending = rows(&render(&mut composer, 100, 5))[0].clone();
+        assert!(pending.contains("Auto · choosing…"));
+        assert!(!pending.contains("astra"));
+        assert!(!pending.contains("medium"));
+        assert!(!pending.contains("high"));
+
+        for (model, provider, label) in [
+            (Model::Glm53, "Vercel", "glm-5.3 · Vercel"),
+            (Model::Glm53, "Workers AI", "glm-5.3 · Workers AI"),
+            (Model::Astra, "OpenRouter", "Astra · OpenRouter"),
+            (Model::Sol, "ChatGPT", "Sol · ChatGPT"),
+        ] {
+            composer.update(ComposerEvent::RoutingHydrated {
+                enabled: true,
+                provider: Some(provider.into()),
+                model: Some(model),
+                effort: Some(ReasoningEffort::Low),
+            });
+            // An ordinary settings refresh must not overwrite the chosen route.
+            composer.update(ComposerEvent::SetModel(Model::Astra));
+            composer.update(ComposerEvent::SetEffort(ReasoningEffort::High));
+            let resolved = rows(&render(&mut composer, 100, 5))[0].clone();
+            assert!(resolved.contains(label), "{resolved}");
+            assert!(resolved.contains("low"));
+            assert!(!resolved.contains("choosing"));
+            assert_eq!(composer.model(), model);
+            assert_eq!(composer.effort(), ReasoningEffort::Low);
+        }
+
+        composer.update(ComposerEvent::RoutingHydrated {
+            enabled: false,
+            provider: Some("Vercel".into()),
+            model: Some(Model::Glm53),
+            effort: Some(ReasoningEffort::Low),
+        });
+        let disabled = rows(&render(&mut composer, 100, 5))[0].clone();
+        assert!(disabled.contains(Model::Astra.as_str()));
+        assert!(disabled.contains("high"));
+        assert!(!disabled.contains("Vercel"));
+        assert!(!composer.auto_routing());
+    }
+
+    #[test]
+    fn autoroute_chrome_never_infers_or_renders_unvalidated_providers() {
+        for provider in [
+            None,
+            Some("unknown"),
+            Some("Vercel\nspoofed"),
+            Some("Vercel\x1b[31m"),
+        ] {
+            let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+            composer.update(ComposerEvent::RoutingHydrated {
+                enabled: true,
+                provider: provider.map(str::to_owned),
+                model: Some(Model::Glm53),
+                effort: Some(ReasoningEffort::Low),
+            });
+            let rendered = rows(&render(&mut composer, 100, 5))[0].clone();
+            assert!(rendered.contains("glm-5.3"));
+            assert!(!rendered.contains("Vercel"));
+            assert!(!rendered.contains("Workers AI"));
+            assert!(!rendered.contains("spoofed"));
+        }
     }
 
     #[test]
@@ -3186,6 +3394,70 @@ mod tests {
     }
 
     #[test]
+    fn slash_bug_parses_optional_description_and_preserves_internal_whitespace() {
+        for (input, description) in [
+            ("/bug", ""),
+            ("  /bug  ", ""),
+            (
+                "/bug  rendering  breaks\non resize  ",
+                "rendering  breaks\non resize",
+            ),
+        ] {
+            let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+            composer.replace_draft(input.to_owned());
+            assert_eq!(
+                composer.submit().effect,
+                Some(ComposerEffect::Settings(SettingsCommand::Bug(
+                    description.to_owned()
+                )))
+            );
+            assert!(composer.draft().is_empty());
+        }
+        assert_eq!(SettingsCommand::parse("/bugfix rendering"), None);
+    }
+
+    #[test]
+    fn voice_commands_with_attachments_never_become_model_submissions() {
+        let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+        composer.replace_draft("/voice clone me sample.wav --consent ".into());
+        composer.update(ComposerEvent::PasteImage(
+            "data:image/png;base64,fixture".into(),
+        ));
+        assert!(matches!(
+            composer.submit().effect,
+            Some(ComposerEffect::Settings(SettingsCommand::Invalid(_)))
+        ));
+        assert!(matches!(
+            composer.queue().effect,
+            Some(ComposerEffect::Settings(SettingsCommand::Invalid(_)))
+        ));
+        assert!(!composer.images.is_empty());
+    }
+
+    #[test]
+    fn voice_clone_is_a_local_settings_command_with_quoted_arguments() {
+        assert_eq!(
+            SettingsCommand::parse(
+                "/voice clone \"Sample speaker\" \"audio/my sample.wav\" --consent"
+            ),
+            Some(SettingsCommand::Voice(crate::voice::Command::Clone {
+                name: "Sample speaker".into(),
+                path: "audio/my sample.wav".into()
+            }))
+        );
+        assert!(matches!(
+            SettingsCommand::parse("/voice clone me audio.wav"),
+            Some(SettingsCommand::Invalid(_))
+        ));
+        assert!(matches!(
+            SettingsCommand::parse("/voice voices elevenlabs"),
+            Some(SettingsCommand::Voice(crate::voice::Command::ListProvider(
+                crate::voice::Provider::ElevenLabs
+            )))
+        ));
+    }
+
+    #[test]
     fn slash_settings_commands_open_pickers_and_accept_direct_values() {
         let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
 
@@ -3219,6 +3491,25 @@ mod tests {
     }
 
     #[test]
+    fn slash_goal_commands_remain_standard_submissions() {
+        let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+        for command in [
+            "/goal",
+            "/goal status",
+            "/goal pause",
+            "/goal resume",
+            "/goal clear",
+            "/goal build  a better TUI",
+        ] {
+            assert_eq!(SettingsCommand::parse(command), None);
+            composer.replace_draft(command.to_owned());
+            assert!(
+                matches!(composer.submit().effect, Some(ComposerEffect::Submit(prompt)) if prompt.display_text() == command)
+            );
+        }
+    }
+
+    #[test]
     fn similarly_prefixed_prompts_are_not_treated_as_settings_commands() {
         let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
         composer.replace_draft("/modeling the system".to_owned());
@@ -3238,5 +3529,97 @@ mod tests {
         let terminal = render(&mut composer, 3, 2);
 
         assert_eq!(rows(&terminal)[0], "abc");
+    }
+
+    #[test]
+    fn autoroute_parser_accepts_only_the_exact_command_without_arguments() {
+        for input in ["/autoroute", "  /autoroute  ", "\t/autoroute\n"] {
+            assert_eq!(
+                SettingsCommand::parse(input),
+                Some(SettingsCommand::AutoRoute)
+            );
+        }
+        for input in ["/autoroute extra", "/autoroute\nextra", "/autoroute --on"] {
+            assert_eq!(
+                SettingsCommand::parse(input),
+                Some(SettingsCommand::Invalid("Usage: /autoroute".to_owned()))
+            );
+        }
+        for input in ["/autorouting", "/autorouteable", "/AutoRoute"] {
+            assert_eq!(SettingsCommand::parse(input), None);
+        }
+    }
+
+    #[test]
+    fn autoroute_enter_and_tab_never_submit_or_queue_prompts() {
+        for code in [KeyCode::Enter, KeyCode::Tab] {
+            for (input, expected) in [
+                ("/autoroute", SettingsCommand::AutoRoute),
+                (
+                    "/autoroute extra",
+                    SettingsCommand::Invalid("Usage: /autoroute".to_owned()),
+                ),
+            ] {
+                let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+                composer.replace_draft(input.to_owned());
+                let update = composer.update(key(code, KeyModifiers::NONE));
+                assert_eq!(update.effect, Some(ComposerEffect::Settings(expected)));
+                assert!(composer.draft().is_empty());
+            }
+        }
+    }
+
+    #[test]
+    fn autoroute_with_attachments_is_rejected_without_losing_the_draft() {
+        for code in [KeyCode::Enter, KeyCode::Tab] {
+            let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+            composer.replace_draft("/autoroute ".to_owned());
+            composer.update(ComposerEvent::PasteImage(
+                "data:image/png;base64,first".to_owned(),
+            ));
+            let draft = composer.draft().to_owned();
+            let update = composer.update(key(code, KeyModifiers::NONE));
+            assert_eq!(
+                update.effect,
+                Some(ComposerEffect::Settings(SettingsCommand::Invalid(
+                    "Usage: /autoroute without attachments".into(),
+                )))
+            );
+            assert_eq!(composer.draft(), draft);
+            assert_eq!(composer.images.len(), 1);
+        }
+    }
+
+    #[test]
+    fn reload_parser_accepts_only_the_exact_command_without_arguments() {
+        for input in ["/reload", "  /reload  ", "\t/reload\n"] {
+            assert_eq!(SettingsCommand::parse(input), Some(SettingsCommand::Reload));
+        }
+        for input in ["/reload extra", "/reload\nextra", "/reload --all"] {
+            assert_eq!(
+                SettingsCommand::parse(input),
+                Some(SettingsCommand::Invalid("Usage: /reload".to_owned()))
+            );
+        }
+        assert_eq!(SettingsCommand::parse("/reloadable"), None);
+    }
+
+    #[test]
+    fn reload_enter_and_tab_never_submit_or_queue_prompts() {
+        for code in [KeyCode::Enter, KeyCode::Tab] {
+            for (input, expected) in [
+                ("/reload", SettingsCommand::Reload),
+                (
+                    "/reload extra",
+                    SettingsCommand::Invalid("Usage: /reload".to_owned()),
+                ),
+            ] {
+                let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
+                composer.replace_draft(input.to_owned());
+                let update = composer.update(key(code, KeyModifiers::NONE));
+                assert_eq!(update.effect, Some(ComposerEffect::Settings(expected)));
+                assert!(composer.draft().is_empty());
+            }
+        }
     }
 }

@@ -562,3 +562,88 @@ async fn completed_response_accepts_null_usage_details() -> Result<()> {
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
+
+#[tokio::test]
+async fn compaction_misalignment_stops_the_session_and_queued_work() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let release = std::sync::Arc::new(tokio::sync::Notify::new());
+    let server_release = std::sync::Arc::clone(&release);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+        assert_warmup(&next_json(&mut socket).await?);
+        send_warmup(&mut socket, "resp-warmup").await?;
+        next_json(&mut socket).await?;
+        send_final(&mut socket, "resp-seed").await?;
+        let compact = next_json(&mut socket).await?;
+        assert!(compact.to_string().contains("compaction_trigger"));
+        server_release.notified().await;
+        send_json(
+            &mut socket,
+            json!({
+                "type": "error",
+                "code": "misalignment_policy_violation",
+                "message": "stop this conversation"
+            }),
+        )
+        .await?;
+
+        let next = timeout(std::time::Duration::from_secs(1), socket.next()).await;
+        assert!(
+            !matches!(next, Ok(Some(Ok(Message::Text(_))))),
+            "misalignment compaction must not dispatch generation or queued work"
+        );
+        Result::<()>::Ok(())
+    });
+
+    let workspace = temporary_workspace("compaction-misalignment")?;
+    let openai = OpenAi::builder("test-key")
+        .websocket_url(endpoint)
+        .build()?;
+    let (agent, events) = Nanocodex::builder(openai)
+        .model(Model::Astra)
+        .thinking(Thinking::Low)
+        .context_window_tokens(1)
+        .workspace(&workspace)
+        .session_id(test_session_id())
+        .build()?;
+    drop(events);
+
+    agent.prompt("seed context").await?.await?;
+    let first = agent.prompt("trigger monitored compaction").await?;
+    let queued = agent.prompt("must never dispatch").await?;
+    release.notify_one();
+    let first_error = first
+        .await
+        .expect_err("misalignment must fail the first turn");
+    assert!(matches!(
+        first_error,
+        NanocodexError::CompactionFailed {
+            requires_session_stop: true,
+            ..
+        }
+    ));
+    assert!(
+        first_error.responses_error().is_none(),
+        "terminal compaction must not expose retry advice"
+    );
+    let queued_error = queued.await.expect_err("queued work must be fenced");
+    assert!(matches!(
+        queued_error,
+        NanocodexError::TurnCancelled | NanocodexError::AgentStopped
+    ));
+    let later = match agent.prompt("must remain stopped").await {
+        Ok(_) => panic!("misalignment must permanently close admission"),
+        Err(error) => error,
+    };
+    assert!(matches!(later, NanocodexError::AgentStopped));
+
+    agent.shutdown().await?;
+    drop(agent);
+    timeout(std::time::Duration::from_secs(5), server)
+        .await
+        .map_err(|_| eyre!("mock Responses server did not finish"))???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}

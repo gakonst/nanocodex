@@ -1,5 +1,55 @@
 # Releasing the Linux server Hand image
 
+## Screen performance
+
+The companion publishes WebRTC H.264 by default at 60 Hz. It probes NVIDIA
+NVENC using the actual capture dimensions and encoder settings, and falls back
+to software H.264 when a GPU, compatible driver, or encoder is unavailable.
+`NANOCODEX_VIDEO_ENCODER=software` forces the portable path; `nvenc` requires
+hardware and reports an error if the probe fails. Both paths use a half-second
+keyframe interval, a one-frame bitrate buffer, immediate packet flushing, and
+compositor pacing rather than FFmpeg's additional `-re` clock. RTP timestamps
+follow elapsed time so skipped captures do not accumulate playback delay.
+The encoder helper lives in the same binary and is included automatically in
+AMD64 and ARM64 builds. The image smoke test exercises the software fallback.
+
+Hosts with multiple interfaces can explicitly choose `--interface NAME`,
+`--ipv4-only`, and a bounded `--udp-port-min PORT --udp-port-max PORT` range for
+their firewall. Defaults preserve all interfaces, both IP families, and OS
+ephemeral ports. Interface names, LAN routes, and firewall rules are deployment
+configuration; no machine-specific network settings are embedded in the image.
+
+`--frames` remains an explicit compatibility transport. Shared web and Apple
+viewers target 30 JPEG requests per second for legacy single-frame publishers,
+counting capture/network/decode time toward that budget. Publishers advertising
+a frame window retain the bounded pipelined transport; Rust publishers allow
+six outstanding frames and pace capture at up to 30 Hz. Rust native and
+VM/Docker Hand publishers now also default to continuous 60 Hz H.264/WebRTC
+when FFmpeg is available. Linux captures X11 independently of input; macOS uses
+AVFoundation screen capture and VideoToolbox. VM video uses bounded streaming
+stdout over the existing private guest channel, including offline guests.
+Agent observations still return bounded JPEGs. Older guest images and hosts
+without a working encoder retain `frames-v1`; that fallback is not 60 fps.
+Swift macOS capture already feeds ScreenCaptureKit buffers directly to WebRTC
+at up to 60 Hz; paired-device capture retains its existing 30 Hz WDA limit.
+
+On September 16, 2026, the shared companion was verified on an RTX 3080 Ti host
+at 1600×900: 59.9 decoded fps, zero dropped frames or packet loss over a 12-second
+sample, about 7.3 ms receiver buffering, and 1 ms network RTT. A separate
+GPU-free container encoded and decoded all 60 test frames using the automatic
+software fallback. These are measured host/viewer results, not a guarantee for
+every network or VM. Account authentication and control leases are unchanged.
+
+The shared Rust publisher was also measured that day: native Linux 59.9 fps,
+native macOS 60.1 fps, libkrun VM 59.9 fps, and offline Docker with an animated
+screen 60.0 fps, each with zero dropped frames over 12 seconds. Linux/guest
+samples used 1280×800; the Mac main display was scaled to 1280×534. Receiver
+buffering was approximately 6.5–9 ms on Linux/guests and 35.6 ms on the Mac.
+These browser measurements do not establish phone or off-LAN performance.
+
+
+## Image release
+
 The manual `Linux Hand image` workflow builds `hands/remote/image/Dockerfile`
 on native AMD64 and ARM64 GitHub runners. Zig runs on the target architecture;
 the build does not depend on Rosetta or QEMU. Each image must start a non-root

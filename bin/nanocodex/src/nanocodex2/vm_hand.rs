@@ -5,7 +5,6 @@ use std::{
 };
 
 use fs2::FileExt as _;
-use nanocodex_browser::{Browser, BrowserExecuteTool};
 use nanocodex_managed::ManagedError;
 use nanocodex_tools::{
     Tools,
@@ -50,8 +49,8 @@ pub(crate) struct VmHand {
     workspace: HandWorkspace,
     tools: Tools,
     machine: AttachmentMachine,
-    browser: Option<Browser>,
     _root_lock: Option<File>,
+    _lower_lock: Option<File>,
     desktop: Option<VmDesktop>,
 }
 
@@ -92,6 +91,17 @@ impl VmHand {
     pub(crate) async fn start_config(config: &VmHandConfig) -> Result<Self, ManagedError> {
         validate_common_config(config)?;
         let machine = attachment_machine(config)?;
+        let started = Instant::now();
+        let lower_lock = config
+            .overlay_lower
+            .as_ref()
+            .map(|path| {
+                let file = File::open(path).map_err(|error| configuration(error.to_string()))?;
+                fs2::FileExt::try_lock_shared(&file)
+                    .map_err(|error| configuration(error.to_string()))?;
+                Ok::<_, ManagedError>(file)
+            })
+            .transpose()?;
         let (workspace, root_lock) = if let Some(docker) = &config.docker {
             let mut builder = DockerWorkspace::builder(&docker.image, &docker.volume)
                 .guest_workspace(&config.vm_workspace)
@@ -142,6 +152,10 @@ impl VmHand {
             if ext4 {
                 let runtime = prepare_guest_runtime(config)?;
                 builder = builder.guest_runtime_disk(runtime.path().to_path_buf());
+                if let Some(lower) = &config.overlay_lower {
+                    builder = builder.overlay_lower(lower);
+                }
+                tracing::info!(target: "nanocodex2", stage = "vm.start.runtime", elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
             } else if config.vm_guest_runtime.is_some() {
                 return Err(configuration(
                     "--vm-guest-runtime is only used with raw ext4 roots; directory roots must contain /usr/local/bin/nanocodex-vm-guest",
@@ -160,37 +174,23 @@ impl VmHand {
             })?;
             (HandWorkspace::Vm(workspace), root_lock)
         };
-        let browser = if config.browser {
-            let mut builder = Browser::builder();
-            if let Some(executable) = &config.browser_executable {
-                builder = builder.executable(executable);
+        tracing::info!(target: "nanocodex2", stage = "vm.start.guest_ready", elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
+        let tools = match workspace.attachment_tools_builder().await {
+            Ok(tools) => tools,
+            Err(error) => {
+                let message = format!("failed to discover Hand upstream Sky tools: {error}");
+                return match workspace.shutdown().await {
+                    Ok(()) => Err(configuration(message)),
+                    Err(shutdown) => Err(configuration(format!(
+                        "{message}; Hand shutdown also failed: {shutdown}"
+                    ))),
+                };
             }
-            match builder.build() {
-                Ok(browser) => Some(browser),
-                Err(error) => {
-                    let message = format!("failed to configure Hand browser: {error}");
-                    return match workspace.shutdown().await {
-                        Ok(()) => Err(configuration(message)),
-                        Err(shutdown) => Err(configuration(format!(
-                            "{message}; Hand shutdown also failed: {shutdown}"
-                        ))),
-                    };
-                }
-            }
-        } else {
-            None
         };
-        let mut tools = workspace.attachment_tools_builder();
-        if let Some(browser) = &browser {
-            tools = tools.tool(BrowserExecuteTool::from_browser(browser.clone()));
-        }
         let tools = match tools.build() {
             Ok(tools) => tools,
             Err(error) => {
                 let message = format!("failed to prepare Hand tools: {error}");
-                if let Some(browser) = &browser {
-                    let _ = browser.close().await;
-                }
                 return match workspace.shutdown().await {
                     Ok(()) => Err(configuration(message)),
                     Err(shutdown) => Err(configuration(format!(
@@ -203,8 +203,8 @@ impl VmHand {
             workspace,
             tools,
             machine,
-            browser,
             _root_lock: root_lock,
+            _lower_lock: lower_lock,
             desktop: None,
         })
     }
@@ -337,6 +337,32 @@ impl VmHand {
             return Ok(());
         };
         let executable = desktop.executable.clone();
+        let video_runner = self.workspace.control();
+        let video_executable = executable.clone();
+        let video: super::screen_video::VideoSource = Arc::new(move || {
+            let runner = video_runner.clone();
+            let executable = video_executable.clone();
+            Box::pin(async move {
+                use tokio::io::AsyncWriteExt;
+                let (sink, mut chunks) = tokio::sync::mpsc::channel(8);
+                let (reader, mut writer) = tokio::io::duplex(64 * 1024);
+                let command = VmCommand::new(executable)
+                    .arg("--desktop-video")
+                    .arg(DESKTOP_RUNTIME)
+                    .timeout(Duration::from_secs(365 * 24 * 60 * 60))
+                    .max_output_bytes(64 * 1024);
+                let owner = super::screen_video::Task(tokio::spawn(async move {
+                    tokio::select! {
+                        _ = runner.stream_command(command, sink) => {},
+                        _ = async { while let Some(bytes) = chunks.recv().await { if writer.write_all(&bytes).await.is_err() { break; } } } => {},
+                    }
+                }));
+                Ok(super::screen_video::Capture {
+                    reader: Box::new(reader),
+                    owner,
+                })
+            })
+        });
         let runner = self.workspace.control();
         let backend: ScreenBackend = Arc::new(move |input| {
             let control = runner.clone();
@@ -360,7 +386,25 @@ impl VmHand {
                     .map_err(|_| configuration("invalid VM desktop result"))
             })
         });
-        let publisher = ScreenPublisher::start(target, &self.machine, backend).await?;
+        // Old guest binaries reject unknown Execute fields. The display file
+        // is written only by desktops supporting the streaming protocol.
+        let video = self
+            .workspace
+            .control()
+            .read_file(format!("{DESKTOP_RUNTIME}/display"))
+            .await
+            .ok()
+            .map(|_| video);
+        let publisher = ScreenPublisher::start(
+            target,
+            &self.machine,
+            backend,
+            video,
+            None,
+            None,
+            super::observation_providers::Registry::remote(),
+        )
+        .await?;
         self.desktop.as_mut().expect("desktop started").publisher = Some(publisher);
         tracing::info!(target: "nanocodex2", stage = "vm.screen.ready", "Rust VM screen is published");
         Ok(())
@@ -435,15 +479,8 @@ impl VmHand {
             }
         }
         drop(self.tools);
-        let browser = match self.browser.take() {
-            Some(browser) => browser
-                .close()
-                .await
-                .map_err(|error| configuration(format!("failed to close Hand browser: {error}"))),
-            None => Ok(()),
-        };
         let started_at = Instant::now();
-        let workspace = loop {
+        loop {
             match self.workspace.shutdown().await {
                 Ok(()) => break Ok(()),
                 Err(error)
@@ -457,16 +494,15 @@ impl VmHand {
                     )));
                 }
             }
-        };
-        match (browser, workspace) {
-            (Ok(()), Ok(())) => Ok(()),
-            (Err(error), Ok(())) | (Ok(()), Err(error)) => Err(error),
-            (Err(browser), Err(workspace)) => Err(configuration(format!("{browser}; {workspace}"))),
         }
     }
 }
 
 fn validate_common_config(config: &VmHandConfig) -> Result<(), ManagedError> {
+    super::native_hand::reject_browser_options(
+        config.browser,
+        config.browser_executable.as_deref(),
+    )?;
     if config.docker.is_some() && config.vm_gpu {
         return Err(configuration(
             "--gpu is supported only with --vm; Docker Hands use software rendering",
@@ -551,9 +587,6 @@ fn attachment_machine(config: &VmHandConfig) -> Result<AttachmentMachine, Manage
         .map_or(!config.vm_no_network, |docker| docker.internet)
     {
         capabilities.push("network".to_owned());
-    }
-    if config.browser {
-        capabilities.extend(["browser".to_owned(), "browser-egress".to_owned()]);
     }
     capabilities.sort_unstable();
     AttachmentMachine::new(
@@ -651,6 +684,7 @@ mod tests {
     fn docker_hand_skips_kvm_and_advertises_container_isolation() {
         let config = VmHandConfig {
             rootfs: PathBuf::new(),
+            overlay_lower: None,
             docker: Some(super::super::vm_hand_config::DockerHandConfig {
                 image: "image".into(),
                 volume: "workspace".into(),
@@ -680,6 +714,18 @@ mod tests {
                 .iter()
                 .any(|value| value == "vm" || value == "network")
         );
+        let mut legacy_browser = config.clone();
+        legacy_browser.browser = true;
+        assert!(
+            validate_common_config(&legacy_browser)
+                .unwrap_err()
+                .to_string()
+                .contains("CUA")
+        );
+        let machine = serde_json::to_value(attachment_machine(&legacy_browser).unwrap()).unwrap();
+        let capabilities = machine["capabilities"].as_array().unwrap();
+        assert!(!capabilities.contains(&serde_json::json!("browser")));
+        assert!(!capabilities.contains(&serde_json::json!("browser-egress")));
         let mut internet = config;
         internet.docker.as_mut().unwrap().internet = true;
         let machine = serde_json::to_value(attachment_machine(&internet).unwrap()).unwrap();

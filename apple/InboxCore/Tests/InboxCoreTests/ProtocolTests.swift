@@ -2,7 +2,7 @@ import XCTest
 @testable import InboxCore
 
 final class ProtocolTests: XCTestCase {
-    func testActivityCoalescesPhasesAndSubagentsWithoutHidingAnswers() throws {
+    func testFeedPreservesPhasesSubagentsAndChronology() throws {
         func output(_ cursor: String, _ type: String, _ text: String, phase: String? = nil, agent: String? = nil) throws -> AgentEvent {
             var payload: [String: JSON] = ["text": .string(text)]
             if let phase { payload["phase"] = .string(phase); payload["item_id"] = .string(phase) }
@@ -15,9 +15,9 @@ final class ProtocolTests: XCTestCase {
                       try output("3", "assistant.delta", "Checking sources.", phase: "commentary"),
                       try output("4", "assistant.delta", "A helper update.", agent: "helper")]
         let live = ConversationItem.group(transcript(events), activeTurns: ["t"])
-        XCTAssertEqual(live.count, 2)
+        XCTAssertEqual(live.count, 4)
         let groupID = try XCTUnwrap(live.last?.id)
-        XCTAssertEqual(live.last?.activity.count, 3)
+        XCTAssertEqual(live.compactMap(\.message).map(\.role), ["You", "Thinking", "Agent"])
         XCTAssertEqual(live.last?.isRunning, true)
         // A queued acceptance must not split the first response or absorb its work.
         events.append(try event("5", "turn_accepted", ["turn_id": .string("next:turn"), "input": .string("Follow up")]))
@@ -27,11 +27,59 @@ final class ProtocolTests: XCTestCase {
         let rows = transcript(events)
         let grouped = ConversationItem.group(rows)
         XCTAssertEqual(grouped.map(\.id).filter { $0 == groupID }.count, 1)
-        XCTAssertEqual(grouped.compactMap(\.message).map(\.text), ["Find the answer", "The answer", "Follow up"])
+        XCTAssertEqual(grouped.compactMap(\.message).map(\.text), ["Find the answer", "Compare sources.", "Checking sources.", "Follow up", "The answer"])
         XCTAssertFalse(grouped.contains(where: \.isRunning))
         XCTAssertEqual(rows.filter { $0.phase == "commentary" }.map(\.text), ["Checking sources."])
         XCTAssertEqual(try JSONDecoder().decode([TranscriptRow].self, from: JSONEncoder().encode(rows)), rows)
         XCTAssertEqual(ConversationItem.group([.init(id: "legacy", role: "Agent", text: "An untagged answer")]).first?.message?.text, "An untagged answer")
+    }
+
+    func testDistinctModelCallsDoNotMergeCommentaryAcrossTools() throws {
+        func delta(_ cursor: String, _ call: Double, _ text: String) throws -> AgentEvent {
+            try event(cursor, "event", ["event": .object(["type": .string("assistant.delta"), "payload": .object([
+                "text": .string(text), "phase": .string("commentary"), "model_call_index": .number(call)])])])
+        }
+        let events = try [delta("1", 0, "Before"),
+            event("2", "event", ["event": .object(["type": .string("tool.call"), "payload": .object(["call_id": .string("c"), "tool": .string("read")])])]),
+            delta("3", 1, "After"), delta("4", 1, " tool")]
+        let rows = transcript(events)
+        XCTAssertEqual(rows.map(\.role), ["Agent", "Tool", "Agent"])
+        XCTAssertEqual(rows.map(\.text), ["Before", rows[1].text, "After tool"])
+        XCTAssertEqual(rows.last?.cursor?.rawValue, "3")
+    }
+
+    func testUnidentifiedCommentaryRestartsAfterToolCall() throws {
+        func inner(_ cursor: String, _ type: String, _ payload: JSON) throws -> AgentEvent {
+            try event(cursor, "event", ["event": .object(["type": .string(type), "payload": payload])])
+        }
+        let rows = try transcript([
+            inner("1", "assistant.delta", .object(["text": .string("Before"), "phase": .string("commentary")])),
+            inner("2", "tool.call", .object(["call_id": .string("c"), "tool": .string("read")])),
+            inner("3", "assistant.delta", .object(["text": .string("After"), "phase": .string("commentary")]))])
+        XCTAssertEqual(rows.map(\.role), ["Agent", "Tool", "Agent"])
+        XCTAssertEqual(rows.first?.text, "Before")
+        XCTAssertFalse(rows[0].running)
+        XCTAssertEqual(rows.last?.text, "After")
+    }
+
+    func testReasoningRestartsAfterToolsAndSteeringNoiseIsOmitted() throws {
+        func inner(_ cursor: String, _ type: String, _ payload: JSON) throws -> AgentEvent {
+            try event(cursor, "event", ["event": .object(["type": .string(type), "payload": payload])])
+        }
+        let events = try [
+            inner("1", "reasoning.summary.delta", .object(["text": .string("Before")])),
+            inner("2", "tool.call", .object(["call_id": .string("one"), "tool": .string("read")])),
+            inner("3", "reasoning.summary.delta", .object(["text": .string("After")])),
+            inner("4", "run.steered", .object([:])),
+            inner("5", "tool.result", .object(["call_id": .string("one"), "tool": .string("read"), "result": .string("Done")]))
+        ]
+        let live = transcript(Array(events.prefix(3)))
+        let finished = transcript(events + events)
+        XCTAssertEqual(finished.map(\.role), ["Thinking", "Tool", "Thinking"])
+        XCTAssertEqual(finished.map(\.id), live.map(\.id))
+        XCTAssertEqual(finished.filter { $0.role == "Thinking" }.map(\.text), ["Before", "After"])
+        XCTAssertFalse(finished[0].running)
+        XCTAssertFalse(finished[1].running)
     }
 
     func testStreamedAnswerSurvivesInterleavedEventsAndFinalization() throws {
@@ -67,6 +115,33 @@ final class ProtocolTests: XCTestCase {
         let answers = ConversationItem.group(transcript(events + events)).compactMap(\.message)
         XCTAssertEqual(answers.map(\.text), ["Hello world!"])
         XCTAssertEqual(answers.first?.id, identity)
+    }
+
+    func testChildJSONUsesActivityForLiveReplayAndCachedRows() throws {
+        func output(_ cursor: String, _ type: String, _ text: String, child: Bool = false) throws -> AgentEvent {
+            var payload: [String: JSON] = ["text": .string(text)]
+            if child { payload["managed_agent_id"] = .number(7) }
+            return try event(cursor, "event", ["event": .object(["type": .string(type), "payload": .object(payload)])])
+        }
+        let events = try [output("1", "assistant.delta", "{\"answer\":"),
+                          output("2", "assistant.delta", "{\"report\":", child: true),
+                          output("3", "assistant.message", "{\"report\":\"child\"}", child: true),
+                          output("4", "assistant.message", "{\"answer\":\"root\"}")]
+        XCTAssertFalse(events[1].producesConversationRow)
+        XCTAssertFalse(events[2].producesConversationRow)
+        XCTAssertTrue(events[3].producesConversationRow)
+        var projection = TranscriptProjection()
+        for event in events { projection.append([event][...]) }
+        let replay = transcript(events + events)
+        XCTAssertEqual(projection.rows, replay)
+        let cached = try JSONDecoder().decode([TranscriptRow].self, from: JSONEncoder().encode(replay))
+        for rows in [projection.rows, replay, cached] {
+            let feed = ConversationItem.group(rows)
+            XCTAssertEqual(feed.compactMap(\.message).map(\.text), ["{\"answer\":\"root\"}"])
+            let child = try XCTUnwrap(feed.first { $0.childAgentID == "7" })
+            XCTAssertEqual(child.activity.map(\.text), ["{\"report\":\"child\"}"])
+            XCTAssertNil(child.message)
+        }
     }
 
     func event(_ cursor: String, _ type: String, _ fields: [String: JSON] = [:]) throws -> AgentEvent {
@@ -348,10 +423,40 @@ final class ProtocolTests: XCTestCase {
         defer { client.close() }
         let request = try client.request(path: "/v1/agents")
         XCTAssertEqual(request.url?.absoluteString, "https://example.com/v1/agents")
+        let reported = try XCTUnwrap(request.value(forHTTPHeaderField: "x-nanocodex-client-context"))
+        let context = try JSONDecoder().decode([String: String].self, from: Data(reported.utf8))
+        XCTAssertTrue(["ios", "macos", "apple"].contains(context["client"] ?? ""))
+        XCTAssertEqual(context["timezone"], TimeZone.current.identifier)
+        XCTAssertNil(context["hand"])
+        XCTAssertEqual(try client.request(path: "/v1/agents/followup").value(forHTTPHeaderField: "x-nanocodex-client-context"), reported)
         XCTAssertEqual(request.value(forHTTPHeaderField: "Authorization"), "Bearer " + key)
         XCTAssertNil(request.url?.query)
         XCTAssertThrowsError(try client.request(path: "//example.org/v1/agents"))
     }
+    func testLocationContextIsOnlySentWithAgentAdmission() async throws {
+        let location: JSON = .object(["latitude": .number(37), "longitude": .number(-122),
+            "accuracy_meters": .number(100), "timestamp_ms": .number(1_789_776_000_000), "approximate": .bool(true)])
+        let fixture = try HTTPFixture { request in
+            let header = request.headers["x-nanocodex-client-context"] ?? "{}"
+            let context = (try? JSONDecoder().decode(JSON.self, from: Data(header.utf8))) ?? .null
+            let admission = request.method == "POST" && (request.path == "/v1/agents" || request.path.hasSuffix("/turns"))
+            XCTAssertEqual(context["location"], admission ? location : .null)
+            return .init(status: 200, body: request.path == "/v1/agents" ? #"{"agent_id":"created-agent"}"# : "{}")
+        }
+        defer { fixture.close() }
+        let client = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey),
+            configuration: fixture.configuration, locationContext: { location })
+        defer { client.close() }
+        _ = try await client.create(requestID: "location-create")
+        _ = try await client.command(AgentCommand(agentID: "created-agent", input: "hello", kind: .followUp))
+        _ = try await client.json(path: "/v1/agents/created-agent")
+        _ = try await client.json(path: "/v1/connectors", method: "POST")
+        _ = try await client.command(AgentCommand(agentID: "created-agent", turnID: "turn", kind: .stop))
+        let plain = try client.request(path: "/v1/agents/created-agent", location: location)
+        let header = try XCTUnwrap(plain.value(forHTTPHeaderField: "x-nanocodex-client-context"))
+        XCTAssertEqual(try JSONDecoder().decode(JSON.self, from: Data(header.utf8))["location"], .null)
+    }
+
     func testDefaultAgentCreationUsesNoBodyAndRetainsRetryIdentity() async throws {
         var requests = 0
         let fixture = try HTTPFixture { request in

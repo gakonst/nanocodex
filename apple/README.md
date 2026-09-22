@@ -1,10 +1,12 @@
 # Nanocodex for iPhone and iPad
 
-A native SwiftUI app for iPhone and iPad. One managed agent per tab:
-review the latest update, steer its current turn, and switch between agents.
-The interface uses ChatGPT-style neutral surfaces, native typography, a rounded
-composer, and right-aligned user message bubbles, with Nanocodex naming and
-agent tabs, a live overview, and steering controls.
+A native SwiftUI app for iPhone and iPad. Each managed agent has an independent
+conversation in a searchable drawer. The compact conversation header, blue user
+bubbles, unboxed replies, and rounded composer keep the conversation in focus.
+Use the compose button to start another conversation. Back, per-conversation screens,
+and captured context are available in the app menu. Queue and steering controls
+remain with each conversation.
+Nanocodex retains per-agent drafts, steering, voice, and remote screens.
 Appearance follows the system light/dark setting, including conversations, the composer,
 and voice controls.
 The native Mac app lives in [`macos/`](../macos/README.md). It owns the tiled
@@ -13,6 +15,23 @@ project targets iPhone and iPad only; Mac Catalyst and the Designed for iPad
 Mac destination are disabled. It connects directly to the managed HTTP/SSE
 contract without a bundled Node runtime.
 Its authenticated native Hand can also bridge [Bluetooth Low Energy devices](../docs/bluetooth-le.md), including typed [Flipper Zero](../docs/flipper-zero.md) RPC tools without custom Flipper firmware.
+
+For Lock Screen voice tasks, add the **Speak to Nanocodex** widget after
+signing in and granting Microphone and Speech Recognition access in the app.
+Record, then tap **Send** or **Cancel** in the Live Activity. Send waits for
+transcription and cloud admission; the activity shows **Sent** only after the
+service accepts the message. English and Greek use the language selected in
+the app's quick voice sheet.
+
+On iPhones with an Action Button, select **Settings → Action Button → Shortcut
+→ Choose a Shortcut → Nanocodex → Record Voice Task**. The shortcut uses the
+same background recording flow. iOS owns this hardware assignment; the app
+cannot select it for the user. The right-side Camera Control below the side
+button is different: Apple's APIs require a camera capture experience and do
+not provide a general voice-task shortcut binding. See Apple's
+[capture controls overview](https://developer.apple.com/videos/play/wwdc2025/253/).
+Locked recording, speech recognition, and hardware activation still require
+physical-device verification; simulator tests do not establish these behaviors.
 
 The local `apple/NanocodexUI` package owns the shared chat palette, Markdown
 block rendering, and copy feedback. Both Apple apps render headings, lists,
@@ -23,38 +42,68 @@ HighlightSwift in light and dark mode. Unsupported languages remain readable
 as plain code. Desktop pane
 arrangement, tiling, navigation shortcuts, and per-agent state remain owned by
 the existing workspace.
-The mobile tab strip and switcher count default to conversations touched in the last
-24 hours, plus running, focused, and explicitly opened conversations. The overview
-loads older conversations in batches of 24 with **Load older conversations**; browsing
-older previews does not add them to the tab strip. Roster and state checks continue
-for background work, while older transcripts load only when opened or visible.
+The sidebar lists all known conversations, including conversations previously hidden
+by the old tab interface. Rows are created lazily and search covers the whole roster.
+Roster and state checks continue for background work; transcripts load when opened.
 The composer grows up to six lines, then scrolls; its expand button opens a larger
 editor sharing the same draft and attachments.
+Paste a copied screenshot or photo into either editor to attach it without opening
+the picker. Image providers enter the same account-scoped draft flow as Photos and Files;
+they do not replace your typed message. Plain text continues to use native text
+editing. With the phone Hand enabled, sending images retains their originals and
+previews in its account-scoped workspace and sends small path references. The
+agent uses that phone’s `view_image` tool to inspect them; the phone must be
+connected. Composer and history thumbnails read the retained local previews,
+including after draft cleanup and relaunch. Videos and images sent with the Hand
+disabled continue to use authenticated cloud uploads.
+Image attachments appear in a compact, trailing-aligned grid above the message
+text, with square crops for multiple images and preserved proportions for a single
+image. Tapping opens the full original. The composer uses a horizontally
+scrollable 120-point thumbnail strip without filename captions. Thumbnail decoding starts
+when the view appears, preserves EXIF orientation, and shares a bounded cache
+so scrolling does not repeatedly blank and decode the same images.
 
-Each tab opens the full conversation directly. The full-screen overview shows
-searchable cards with miniature transcripts and an outline around the selected tab.
-Close a card with its × button or a horizontal swipe; the overview stays open while
-the remaining cards rearrange. Closing the selected tab selects its neighbor.
-Closed tabs remain closed across launches on this device and can be reopened from
-**More → Closed tabs**. Closing preserves conversation history, drafts, and running work.
-Overview cards render miniature transcripts with the same message components and
-latest available content.
+
+The current conversation stays mounted while the session drawer opens. The drawer
+uses lightweight roster summaries and search, without tabs, preview grids, or status
+filters. The drawer uses the shared neutral sidebar palette and system sans-serif typography.
+Titles stay neutral, with a small green dot for running agents and explicit status
+labels available to VoiceOver. Titles, status and current-work text scale with Dynamic
+Type. Search and compose sit at the top; Settings stays at the bottom.
+Selecting a row restores that agent's draft and reading position. Swipe right from
+the left 28 points of the screen to open the drawer; swipe left to close. The
+conversation follows the finger and settles with a short spring over the stationary list. Vertical scrolling
+keeps it open. Previously hidden conversations are available in this same list.
+Reply bubbles hug their content with 12-point horizontal and 9-point vertical padding.
+Long-press a reply to copy it; code blocks retain their own copy controls. The composer
+uses 4-point vertical padding around controls with 44-point touch targets.
 Unchanged Markdown stays behind an equality boundary, so typing, scrolling, and
 another row's streamed updates do not reparse completed messages. Parsing runs on
 a background actor with a bounded cache; streamed changes coalesce for 32 ms,
 and cancelled parses cannot replace newer content. The
 `ChatMarkdownParse` Points of Interest signpost measures actual parsing work.
 
-Generated attachments appear directly in conversations and their overview previews, outside
-collapsed Activity. Tool text, memory payloads, and command diagnostics stay
-inside Activity; only assistant replies supply conversation text. The shared
+Commentary and reasoning summaries appear inline in chronological order. Each
+tool call has a compact card with expandable input and result details. Short shell
+commands remain readable in full; oversized commands use a bounded preview. Full
+large source opens in a scrollable, read-only native viewer with a copy control,
+so encoded payloads and long blank runs cannot stretch the conversation. Syntax
+highlighting is skipped for sources larger than 16 KiB.
+Generated attachments appear directly after their originating tool card.
+The thread controls above the composer collapse all tool disclosures, including nested
+Code Mode tools and JavaScript. Individual tools can be reopened, and their choices
+remain independent when switching threads. Up and down arrows move between user
+messages, fetching earlier or later history when necessary. Manual scrolling resets
+the arrow position; the separate latest-message control resumes following responses.
+All controls have 44-point targets and VoiceOver labels.
+Tool text, memory payloads, and command diagnostics stay inside that disclosure. The shared
 `ChatGeneratedOutput` parser combines raw and structured tool results, including
 emitted `input_text`/`input_image` blocks and MCP images, audio, video, and resources.
 Its default attachment-only policy applies to nested content blocks and resource
 previews too. Images use bounded, cached thumbnails; audio/video have native
 playback controls; provided files can be opened or shared. Embedded text resources
 retain a complete downloadable file. HTML and SVG remain files. Unsupported
-device-local resource identities show an unavailable message, and Activity hides
+device-local resource identities show an unavailable message, and tool details hide
 embedded binary data. Result parsing and image decoding stay outside view bodies,
 and repeated inner/outer tool outputs share a stable content identity.
 
@@ -138,9 +187,10 @@ Return/Tab/Esc controls below the video.
 
 | Action | Result |
 | --- | --- |
-| Tap an agent tab | Switch agents while preserving each agent’s draft and queued messages |
-| Tab bar plus | Open a new agent immediately and start composing |
-| Tab overview | See agents’ latest content and running status; tap a preview to select it |
+| Header → Conversations | Search and switch agents while preserving each agent’s draft and queued messages |
+| Dock plus | Open a new agent immediately and start composing |
+| Swipe right from the left edge | Open the conversation drawer, including while composing |
+| Swipe drawer left | Return to the current conversation without losing the draft |
 | Drag down while typing | Interactively dismiss the keyboard while keeping the current conversation and draft |
 | Scroll a conversation | Read the full history, reasoning, and expandable tool details while keeping the composer available |
 | Attachment plus → Camera / Photos & Videos / Files | Take a photo or attach photos/videos; preview or remove attachments before sending |
@@ -148,21 +198,26 @@ Return/Tab/Esc controls below the video.
 | Steer now on queued message | Inject the queued input into the active turn through the steering API |
 | Voice | Start an interactive spoken conversation with this agent; minimize the panel to keep talking |
 | Stop turn | Immediately cancel the selected turn from the send button |
-| Bottom menu → Account settings | Manage the account and device Hand |
-| Bottom menu → Scheduled jobs | View active and paused jobs across the account, inspect their schedule, or open the source chat and latest run |
+| Header menu → Account settings | Manage the account and device Hand in a dismissible sheet |
+| Header menu → Scheduled jobs | View, edit, pause, resume, or cancel jobs across the account; open the source chat and latest run |
 
-Conversation tabs sit at the top. Below the composer, the bottom bar groups Back,
-new-agent plus, overview, Remote screens, and the rightmost app menu. Back returns
-to the previous conversation, retaining its draft and reading position.
-The overview replaces the sidebar: search conversations, filter to running agents,
-or select a live preview. The app menu opens Scheduled jobs and Account settings.
-The full conversation scrolls independently; horizontal swipes and upward pulls do not switch
-agents or create conversations.
+The compact header shows the selected conversation, its running indicator, a
+Conversations button, and the app menu. Below the composer, the floating dock
+groups Back, Remote screens, new-agent plus, and captured context.
+Back returns to the previous conversation, retaining its draft and reading position.
+The sidebar owns conversation switching. The drawer uses a short, damped horizontal transition and respects
+Reduce Motion. Glass controls use opaque surfaces with Reduce Transparency.
+
+Attachments open in a native sheet, then hand off to the existing photo, camera,
+or file picker after dismissal. Settings has its own navigation stack in a sheet;
+remote screens use medium/large sheet detents and retain the selected viewer while
+resizing. These surfaces leave the conversation and its draft in place. The app
+menu keeps Scheduled jobs and Connectors accessible. Horizontal swipes inside the
+transcript and upward pulls do not switch agents or create conversations.
 Streamed responses follow the bottom while you are reading the latest output. Scrolling
 back pauses following and preserves your reading position. A small circular down-arrow
 above the composer returns to the latest messages and resumes following, including
-when newer history must first load. Working activity appears as a compact inline
-indicator; details expand when activity is available. Scheduled jobs and Settings use full-page
+when newer history must first load. Each tool call appears as a compact inline card with expandable details. Scheduled jobs and Settings use full-page
 navigation with a Back button. Agent updates refresh automatically without a
 refresh button.
 
@@ -171,6 +226,11 @@ existing per-agent triggers API and shows the prompt, cron expression, time zone
 next run, last dispatch, and last skipped occurrence. Dispatch does not imply
 successful completion; open the linked conversation to read the result. Pull to
 refresh or use Refresh to pick up changes, including jobs created in chat.
+The job detail’s **Edit or cancel job** form changes the prompt, cron expression,
+time zone, active status, and conversation mode. Updates use the update-only PATCH
+endpoint, so an edit cannot recreate a concurrently deleted job. Cancellation
+requires confirmation and stops future scheduling; dispatched or running work
+is not stopped. Existing conversations remain available.
 Schedules prefetch after the opening conversation history using the sign-in agent list. Reads use a rolling
 four-request limit and publish each agent's jobs immediately; one slow agent does
 not block the others. The account summary's `may_have_scheduled_jobs` hint skips
@@ -186,19 +246,15 @@ agent was deleted during discovery. Only confirmed removals become empty results
 advertised but unreadable agents and authorization failures retain their warning.
 
 When no conversation is available, the empty page offers an action to start one.
-The tab overview shows each agent’s latest available content and status, sorted
-by most recent activity first. Live event timestamps advance that ordering;
-replayed history and stale account snapshots cannot move a conversation backward.
-The top tab strip retains its order while replies arrive.
-Searching or filtering the overview keeps the current conversation selected.
-Live changes preserve the selected tab;
+The sidebar sorts by your last sent message, newest first, and retains its order while replies
+arrive. Searching keeps the current conversation selected.
+Live changes preserve the selected conversation;
 new work does not steal focus while typing. Drafts belong to agent IDs. Multiple
 active turns get an explicit selector. Navigation never approves tools, stops an
 agent, or deletes history. No approval endpoints are invented by this client.
 
-The selected agent and visible overview previews receive live updates.
-Other agents refresh in the background. Overview observation follows the visible
-previews and stops when the overview closes. The stream resumes from an exact decimal cursor with
+The selected agent receives live updates. Other agents refresh in the background.
+The stream resumes from an exact decimal cursor with
 backoff after disconnect. Backgrounding detaches observation; agents continue
 on the service. Foregrounding reloads history and resumes. Active-turn state
 reads cannot overwrite newer streamed events. Changing accounts invalidates old
@@ -422,6 +478,20 @@ the Xcode test result as `automatic-hand-connected`,
 `automatic-hand-real-file-roundtrip`, and
 `automatic-hand-restored-file-after-cold-launch`.
 
+## Read photos through the phone Hand
+
+With Photos read access already enabled in device permissions, the connected
+phone Hand can use `search_photos` to find accessible asset IDs and `read_photo`
+to inspect one image directly. Limited access stays limited to the selected
+library. The tool does not prompt for permission or download iCloud-only assets.
+It returns an oriented JPEG inspection image, bounded to 2048 pixels and 512 KiB,
+and saves that rendition under the phone workspace's `photos/` directory. The
+original remains in Photos. Code Mode can display the returned MCP image with
+`image(result.content[1])`; the phone's text-only `read_file` is not an image reader.
+The phone must be connected and have foreground or iOS-granted background time.
+For durable original files available while the phone is offline, attach with
+Photos, Files, or Paste and send the message through the R2-backed upload flow.
+
 ## Context from other apps
 
 Open **+ → Context from other apps** beside the composer, then enable **Capture from other apps**.
@@ -593,6 +663,14 @@ XCTest runner environment. For `testPerformanceInboxInteractionJourney`, also se
 with conversation history on that account. These journeys use no demo arguments,
 sample agents, or mocked service responses.
 
+`testPerformanceCurrentSessionDrawerAndSheets` measures the currently selected saved
+conversation while opening/dismissing the sidebar, attachments, and settings. It
+preserves the selected identity and draft, sends no messages, and records three
+CPU/memory/hitch iterations after XCTest's warm-up. The final Muse-inspired UI
+passed this check on iPhone 17 Pro with zero hitches in all three iterations; this
+is a narrow navigation result with no Muse or pre-change baseline. See
+[the reference study and validation notes](../docs/ux/2026-09-16-muse-dogfood.md).
+
 `testPerformanceSavedAccountResponsiveColdLaunch` measures process-cold launch
 until the app responds and separately records saved-account restoration through
 the `RestoreAccount` signpost. OS and filesystem caches remain warm.
@@ -612,9 +690,9 @@ scope and never connects to the account service. Use `ChatMarkdownParse` Points
 of Interest with Time Profiler to inspect actual parsing during this journey;
 simulator metrics do not represent physical-device input latency.
 
-Thinking, tool calls, explicit progress commentary, and subagent updates share one collapsed **Activity** row per turn. Running activity uses a native spinner without changing status text or step counts in the transcript. Counts remain available to accessibility; failed steps show their status after expansion. Expand once for a compact, scrollable timeline, then expand a step for its notes, inputs, and results. Both levels use native DisclosureGroup controls with bounded scrollable content. Final answers and errors remain visible outside Activity; older untagged assistant text is preserved. Commands retain code formatting and structured results use readable fields. Expansion respects Reduce Motion, and new steps never grow the closed transcript.
+Thinking summaries, progress commentary, subagent updates, and final answers remain visible inline in chronological order. Each tool call occupies its own compact, single-line card showing its action, subject, and state. Tap a card to expand its inputs and results in the main conversation scroll. Commands retain code formatting and structured results use readable fields. Generated attachments and secure Vault forms remain visible outside the tool disclosure. Cards keep their identities when results arrive, and explicit accessibility expansion values accompany each control.
 
-Images and videos open in native Quick Look, including original uploads, draft attachments, and generated media. Original files download only when opened; the conversation uses bounded thumbnails with stable loading heights. Generated media has independent, stable transcript rows; it is projected with its history page so earlier outputs within the same turn cannot arrive as a second layout insertion. Scrolling toward earlier messages prefetches one cursor-bound page within two viewports of the top, without inserting it or moving the reader. Crossing the load boundary reuses that request and presents the page without the live-stream batching delay. Geometry updates reuse an item index and only recalculate history retention when the visible selection changes. Reconnect controls do not change the transcript viewport, and history insertions cannot reverse the inferred swipe direction. One history insertion consumes the direct scroll direction that triggered it; deceleration and bounce-back do not establish a new paging direction. Expanded Activity retains the visible tool step while earlier work arrives, even when the timeline changes height. Legacy sampled video frames stay grouped inside one attachment and open as a native preview collection. Attachment descriptors, echoed user history, and image-inspection results do not become generated replies. Remote screens use UIScrollView/AppKit magnification: pinch to zoom, pan locally while watching, or use two fingers to pan a magnified screen while controlling its pointer with one finger.
+Images and videos open in native Quick Look, including original uploads, draft attachments, and generated media. Original files download only when opened; the conversation uses bounded thumbnails with stable loading heights. Generated media has independent, stable transcript rows; it is projected with its history page so earlier outputs within the same turn cannot arrive as a second layout insertion. Scrolling toward earlier messages prefetches one cursor-bound page within two viewports of the top, without inserting it or moving the reader. Crossing the load boundary reuses that request and presents the page without the live-stream batching delay. Geometry updates reuse an item index and only recalculate history retention when the visible selection changes. Reconnect controls do not change the transcript viewport, and history insertions cannot reverse the inferred swipe direction. One history insertion consumes the direct scroll direction that triggered it; deceleration and bounce-back do not establish a new paging direction. Expanded tool cards retain their reading position while earlier work arrives. Legacy sampled video frames stay grouped inside one attachment and open as a native preview collection. Attachment descriptors, echoed user history, and image-inspection results do not become generated replies. Remote screens use UIScrollView/AppKit magnification: pinch to zoom, pan locally while watching, or use two fingers to pan a magnified screen while controlling its pointer with one finger.
 
 The focused media journey is `InboxUITests/testNativeMediaPreviewZoomPlaybackAndDraftRestoration`. The screen fixture journey is `RemoteScreenLifecycleUITests/testScreenCardZoomDismissalAndDraftRestoration`; start `NanocodexInboxUITests/fixtures/remote-screen.mjs` and pass `TEST_RUNNER_NANOCODEX_SCREEN_FIXTURE=1` to xcodebuild.
 
@@ -622,9 +700,16 @@ New conversations open synchronously as local drafts. Creation runs in the backg
 
 Verified on 2026-09-06: seven native UI checks passed, including creation delayed by 10–20 seconds, immediate send, cancellation before admission, draft and keyboard preservation, retry, navigation, and relaunch. The signed-in iPhone journey also passed against the real backend: opening, two turns, history after relaunch, and voice connect/mute/minimize/end.
 
-Conversation scroll targets retain the visible message across prepended history and new output, and new conversations open at the latest messages. Returning to the foreground resumes the existing cursor and transcript rather than clearing the screen. Conversation scrolling preserves the selected agent; navigation uses the tab strip and overview.
+Conversation scroll targets retain the visible message across prepended history and new output, and new conversations open at the latest messages. Returning to the foreground resumes the existing cursor and transcript rather than clearing the screen. Conversation scrolling preserves the selected agent; navigation uses the searchable sidebar.
 
-The conversation keeps the same agent composer fixed above the keyboard while you read older messages. Sending dismisses the iPhone/iPad keyboard. Sending to an idle conversation immediately displays the message and local attachment previews in the transcript, even while conversation creation or admission is pending. The bubble retains its identity through acknowledgement and execution; unconfirmed delivery shows Retry and Cancel beside that message. Follow-ups waiting behind another turn appear once in the queue above the composer; execution evidence promotes them into the conversation. API-accepted steering appears with an explicit steering label. The queue follows server order across devices and relaunch; messages whose content has not loaded retain a placeholder and queue position. Cancelling and retrying keep the same identity. “Steer now” injects the input through the active turn’s steering API without stopping that turn. With an empty draft and a running turn, the send button becomes Stop; adding text or an image restores Send in the same position. Drafts, queued follow-ups, steering, and stop controls belong to the selected agent. Switching tabs or opening the overview preserves that work.
+The conversation keeps the same agent composer fixed above the keyboard while you read older messages. Sending dismisses the iPhone/iPad keyboard. Sending to an idle conversation immediately displays the message and local attachment previews in the transcript, even while conversation creation or admission is pending. The bubble retains its identity through acknowledgement and execution; unconfirmed delivery shows Retry and Cancel beside that message. Follow-ups waiting behind another turn appear once in the queue above the composer; execution evidence promotes them into the conversation. API-accepted steering appears with an explicit steering label. The queue follows server order across devices and relaunch; messages whose content has not loaded retain a placeholder and queue position. Cancelling and retrying keep the same identity. “Steer now” injects the input through the active turn’s steering API without stopping that turn. With an empty draft and a running turn, the send button becomes Stop; adding text or an image restores Send in the same position. Drafts, queued follow-ups, steering, and stop controls belong to the selected agent. Switching conversations or opening the drawer preserves that work.
+
+Verified on 2026-09-17: eight focused compact-UI simulator journeys passed across
+runs, plus 24 shared rendering tests. The Release iPhone 17 Pro test preserved the
+conversation and draft through three measured drawer-left-swipe, attachment, and
+settings rounds, with zero reported hitches. The drawer uses tap recognition that
+fails during a drag, preventing swipe release from selecting a row. See the UX
+notes and compact-device metrics above for scope, recordings, and limitations.
 
 Verified on 2026-09-12: focused simulator checks cover immediate first-send rendering during delayed creation, stable bubbles through delayed failure and Retry, cached tabs without reload, startup restoration, and reading position during streaming. Transcript grouping is computed with the conversation revision rather than each scroll update. Row geometry does not publish per-pixel view updates, and history navigation follows native scroll events without an additional drag recognizer. The phone uses a fully measured native stack for its bounded history window, avoiding feedback between estimated lazy heights and scroll restoration. Native visibility events load and release generated image thumbnails as they enter and leave the viewport. Native size-change anchoring follows streamed output. Image previews apply media validation directly without encoding the complete image into JSON first. Desktop thread loading uses the system progress indicator, and first-send failures remain beside their original bubble. These fixture checks do not measure physical-device network latency.
 
@@ -640,6 +725,12 @@ during startup. `NANOCODEX_VOICE_TIMING=1` additionally records startup and clea
 stages, HTTP timings, event types, playback state, and audio transport statistics
 without SDP, transcripts, payloads, or credentials.
 It never captures microphone audio or claims to validate spoken interaction.
+`VoiceLatencyTests.testManagedStartupLatency` separately repeats three real
+receive-only connections with `NANOCODEX_VOICE_LATENCY=1` and `NC_API_KEY`.
+It reports time to the native active state, checks data-channel acknowledgements,
+and removes its validation agent. Enable `NANOCODEX_VOICE_TIMING=1` to split out
+call HTTP, peer, backend, and task-admission timing. These measurements exclude
+microphone capture and do not establish physical iPhone audio latency.
 `InboxUITests.testLiveVoiceConnectsMinimizesAndStops` checks two real voice
 connections, received test-phrase audio, minimizing, and ending on a signed-in
 iPhone with `NANOCODEX_VOICE_UI_LIVE=1`. The first call activates the microphone;
@@ -715,3 +806,44 @@ Connectors (also linked from Account Settings); `nanocodex://connect/soundcloud`
 opens that connector in the list. The app receives only the code and state. App credentials,
 PKCE, tokens, and refresh remain in the broker. SoundCloud app registration is a
 one-time deployment setup; ordinary users authorize their own accounts on the phone.
+
+## Native touch gamepad
+
+Open a controllable live screen and choose its game controls. Linux Wayland
+hosts that advertise a working virtual gamepad show two analog sticks, a D-pad,
+ABXY buttons, shoulders, triggers, stick clicks, Back and Start. Other hosts keep
+the keyboard/mouse controls. The phone sends complete controller snapshots over
+the ordered input channel, including a 30 Hz heartbeat while an input is held.
+Stop, leaving controls, losing control, and backgrounding release held inputs;
+foregrounding requires taking control again.
+
+The Linux screen publisher must explicitly enable `NANOCODEX_VIRTUAL_GAMEPAD=1`
+and have access to `/dev/uinput`. It creates a virtual Xbox-compatible controller
+and advertises support only after device creation succeeds. Grant access to the
+publisher's user narrowly; do not make the device world-writable. If input stops
+arriving for 500 ms, the host releases the virtual controls. Games still need to
+support the resulting Linux/Wine controller device; showing controller-themed
+UI alone does not establish that a game receives its input.
+
+The loopback fixture in `NanocodexInboxUITests/fixtures/remote-screen.mjs`
+records synthetic input without injecting it into the OS. Start it before
+running `RemoteScreenLifecycleUITests` with
+`TEST_RUNNER_NANOCODEX_SCREEN_FIXTURE=1`. Its native gamepad test checks touch
+states, neutral release, Stop, exit and background recovery; live game input
+requires a separate test on the configured desktop.
+
+The native controller is designed for landscape play. Its movement/camera thumb
+zones stay near the edges on larger displays, leaving the middle of the stream
+clear. iOS 26 uses native Liquid Glass in a shared effect container; older iOS
+versions use system material. Reduce Transparency uses opaque controls, and
+stick updates do not inherit layout animations. WoW hints describe default
+bindings, not a live reading of the game's configuration. The LT/RT indicator
+tracks the selected crossbar; spell assignments and customized bindings remain
+owned by the game. All controls keep at least 44-point touch targets.
+The default hints were checked against WoW Forever 1.60.1.69913's exported
+[face-button handlers](https://github.com/Gethe/wow-ui-source/blob/70ef1b2fd78061a73f886c4a1e79dc5b5cff6d5e/Interface/AddOns/Blizzard_GamepadActionBars/MainActionBarFrame.lua#L287-L409),
+[modifier legend](https://github.com/Gethe/wow-ui-source/blob/70ef1b2fd78061a73f886c4a1e79dc5b5cff6d5e/Interface/AddOns/Blizzard_Gamepad/UI/PersistentInputLegend/GamepadPersistentInputLegend.lua#L326-L403),
+and [crossbar selection](https://github.com/Gethe/wow-ui-source/blob/70ef1b2fd78061a73f886c4a1e79dc5b5cff6d5e/Interface/AddOns/Blizzard_GamepadActionBars/PageUnit.lua#L566-L617).
+Shoulder targeting, shoulder swapping/toggle settings, HUD focus and user
+rebinding can change the displayed default roles; the overlay always sends
+physical gamepad input and lets WoW resolve those settings.

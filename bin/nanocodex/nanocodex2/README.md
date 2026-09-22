@@ -12,6 +12,37 @@ keyboard input for capability probes. Recognized Kitty, Ghostty, iTerm2, and
 WezTerm environments use native images where supported; other terminals use
 half-block images.
 
+## Hand screens
+
+Type `/screen`, filter by Hand name, then press Enter to watch its live screen
+beside the conversation. It stays inside the current terminal window. Tab and
+Shift+Tab cycle the chat, screen, and any existing `/btw` pane; `/zoom` toggles
+the focused pane between the split layout and full width. In the screen pane,
+`z` also toggles zoom, `r` reconnects, and Esc closes the viewer. `/screen` there
+returns to Hand selection. Watching does not acquire mouse or keyboard control.
+Desktop Opus audio plays automatically through the local output device. Press
+`m` to mute or unmute. Closing the viewer or switching Hands stops its audio;
+watching never opens the microphone. Audio failure is shown separately and
+does not interrupt video.
+
+The viewer receives the Hand's live H.264/WebRTC stream and targets 60 video
+frames per second. `ffmpeg` decodes video and `ffplay` handles stereo Opus RTP,
+packet reordering and audio output. Both come from the local FFmpeg package.
+Executable discovery checks PATH and standard Homebrew/system directories.
+
+Local Kitty-compatible terminals, including Ghostty, read temporary RGB pixel
+buffers directly, avoiding per-frame base64 encoding and Rust-side resizing.
+The decoder scales to the pane’s pixel dimensions and refreshes on zoom/resize.
+Frames replace one named image placement, keeping the image grid stable between
+updates. Pending transfers are bounded and reclaimed on close. Over SSH, or
+when local file transfers are unavailable, the viewer falls back to inline
+terminal graphics. Other image protocols and text previews remain supported.
+The displayed FPS counts distinct frames presented by the TUI. Source cadence,
+terminal rendering and transport still determine actual throughput; a 60 fps
+target does not upgrade a slower publisher. Slow presentation drops stale frames
+instead of queuing old video. `frames-v1` Hands retain their existing lower-rate
+image transport and do not publish audio.
+
 ## Account sign-in
 
 ```bash
@@ -60,7 +91,56 @@ selected server's saved key; environment credentials remain active until unset.
 To revoke a key remotely, remove it in the web account's API Keys menu. Logging
 in again replaces the saved key without revoking previous account keys.
 
+## Voice
+
+In the terminal, `/voice` toggles voice in the current conversation. During agent
+startup it starts automatically once connected; mute and stop work while
+waiting. The empty conversation shows a pixel spinner around `nanocodex2`.
+Spoken user and voice-agent messages stream inline in the chat and remain in
+scrollback after the call ends. A compact strip above the composer shows audio
+levels and call status. Ctrl+X or `/voice mute` toggles the microphone; `/voice unmute`
+explicitly unmutes it. `/voice on` and `/voice off` (also `start`/`stop`) explicitly
+start or stop; `/voice status` reports state. `/voice voices` lists choices and
+`/voice cove` starts with a named voice. Voice also appears in the Actions menu.
+Typed input suppresses stale spoken replies; stopping voice stops audio
+immediately and leaves agent work running. Switching conversations closes the previous conversation's audio.
+
+For a voice-only terminal session:
+
+```bash
+nanocodex2 voice                         # Creates a conversation
+nanocodex2 voice --agent AGENT_ID         # Resumes an existing conversation
+nanocodex2 voice --voice cove --muted     # Connects with the microphone muted
+nanocodex2 voice --muted --duration 10 --log-format json
+```
+
+Ctrl+C stops the call. The command prints the conversation ID and JSON status
+updates; timing logs separately report media startup, control-channel readiness,
+agent handoff, and speech delivery. A connection check does not prove speech
+recognition or audible playback. Voice needs a connected ChatGPT account and
+the matching native voice package beside the executable. Source builds can set
+`NANOCODEX_VOICE_PACKAGE` to a package directory and must use the helper's
+`STABLE_GIT_COMMIT` build identity. Availability is checked before opening audio
+hardware; an unavailable runtime produces a visible error.
+
+The managed service owns authentication and agent execution. The CLI uses the
+shared voice protocol and native audio helper, starts media and agent admission
+concurrently, and reads agent events independently of realtime audio events.
+The latter prevents frequent audio traffic from cancelling a pending event-stream
+connection and delaying spoken tool results.
+
 ## Working in a running session
+
+On macOS and Linux, after installing a new binary at the same executable path,
+use `/reload` in any
+terminal to restart this user's reload-capable interactive nanocodex2 instances
+on the current machine. Each returns to its current managed thread in the same
+terminal and working directory. Accepted managed turns continue running; pending
+local operations finish before the client disconnects. This does not restart
+Hand services, VM helpers, or instances on other machines. Instances started with
+an older binary without reload support need one manual restart first.
+Reload restores the managed thread, not unsent drafts or the current pane layout.
+
 
 Use `/id` to open the agent ID popup. Press Enter to copy the full ID to the
 clipboard, or Esc to close it. Resume it later with `nanocodex2 attach AGENT_ID`.
@@ -120,7 +200,28 @@ Durable failure reasons replace provisional errors from the same run in place.
 Earlier retry attempts keep their own errors; other turns and child agents keep
 running.
 
+Use `/bug [description]` to investigate a Nanocodex framework problem. It starts
+an independent durable cloud agent with the source session ID, event cursor, and
+a bounded snapshot of recent transcript records, then switches the TUI to that
+agent's thread so you can watch the investigation and fix. The description is
+optional, and the command works while the source agent is busy. Accepted source
+turns continue in the cloud; local shell work is stopped when switching. If
+launching or attaching fails, the source thread stays open and the error includes
+the new agent ID when available. Use `/attach` to return to the source thread.
+
 Scrolling back through older history keeps typing and live updates responsive.
+`nanocodex2 attach` and the in-TUI `/attach` command show recent threads first,
+ordered by last activity, with titles above session IDs. Type to fuzzy search
+titles and IDs; space-separated terms can appear in any order. Title matches rank
+by relevance, with recent activity breaking ties. The same query also searches
+retained user and assistant messages after a short typing pause. Content matches
+appear once per attachable thread, below title matches. A preview pane on the
+right shows the selected thread's matching passage, wraps the text, and highlights
+literal query terms. Page Up/Down scrolls the preview. In narrower terminals the
+preview moves below the list; very small terminals keep compact inline excerpts. This uses
+the server's history search (up to 20 hits), while title/ID matching stays local
+and fuzzy. Clearing the query restores recent threads. Use arrows or Ctrl+N/Ctrl+P to
+move, Enter/Tab to select, Ctrl+U to clear, and Esc/Ctrl+C to close.
 If the session picker takes too long to load, Esc or Ctrl+C cancels the lookup
 and restores the draft. A cancelled lookup cannot reopen or replace a newer picker.
 If the current turn finishes during a lookup, ready follow-ups resume when the
@@ -155,6 +256,10 @@ available without reopening the menu.
 nanocodex2 new --model astra --thinking high
 nanocodex2 run "Inspect this repository" --model sol --thinking high
 nanocodex2 run "Continue the review" --agent AGENT_ID
+
+# Pin a new session to one connected ChatGPT account for testing.
+nanocodex2 new --chatgpt-account ACCOUNT_ID
+nanocodex2 run "Reply with hello" --chatgpt-account ACCOUNT_ID
 
 # Read settings or update one field for subsequent turns.
 nanocodex2 settings AGENT_ID
@@ -263,6 +368,26 @@ Docker Hands default to **offline**. `--network internet` explicitly enables
 ordinary Docker bridge networking, including any destinations that network can
 reach. This mode does not enforce broker-only egress. Account signaling and
 screen publication remain in the host process and work with an offline guest.
+
+Rust native and VM/Docker screens default to continuous H.264/WebRTC at 60 Hz.
+Install FFmpeg on native hosts; desktop guest images already include it. macOS
+uses AVFoundation capture of the main display and VideoToolbox encoding; Linux
+uses X11 capture and low-latency x264. Keyboard/control use a reliable WebRTC
+channel, and pointer motion keeps only the latest event. Capture runs separately
+from input and agent observations. Agent screenshots retain their bounded JPEG
+contract. Actual decoded frame rate depends on capture, CPU/GPU, and network.
+
+Upgrade the CLI and guest runtime together to enable video in VMs and Docker
+Hands. The host recognizes older desktops and retains `frames-v1` compatibility;
+missing or unavailable encoders also fall back to screenshots. Encoded guest
+stdout travels over the existing private control channel, with bounded queues,
+backpressure cancellation, and no need to enable guest networking. Account and
+WebRTC credentials stay on the host.
+
+Optional host settings `NANOCODEX_VIDEO_INTERFACE`, `NANOCODEX_VIDEO_IPV4_ONLY=1`,
+and `NANOCODEX_VIDEO_UDP_PORTS=50032-50127` constrain ICE candidates and firewall
+ports. Defaults use all interfaces, both address families, and ephemeral ports.
+These settings are host configuration; do not put host interface names in images.
 A future broker-only mode must enforce its network boundary, not rely on proxy
 environment variables. `--runtime runsc` selects an installed Docker
 runtime without fallback; gVisor/desktop compatibility must be checked on that
@@ -317,36 +442,15 @@ before account setup. If KVM is unavailable, the error explains how to enable
 it and shows `hand --docker IMAGE --volume NAME` as the explicit alternative.
 Run `hand` without a backend flag to connect the native computer.
 
-## Browser egress through a connected Hand
+## Browser interactions through a connected Hand
 
-Add `--browser` to a native, VM, or Docker Hand to publish a private Chromium
-session whose public requests leave through that machine's network connection:
+Agents interact with desktop browsers through the Hand's CUA tools. Native,
+VM, and Docker Hands do not publish `browser_execute` or browser egress
+capabilities. A connected Hand must provide CUA tools for browser interaction;
+a screen publisher alone does not provide agent control.
 
-```bash
-nanocodex2 hand --workspace /path/to/workspace --browser
-
-nanocodex2 hand \
-  --docker nanocodex-hand:local \
-  --volume personal-hand-workspace \
-  --browser
-```
-
-`NANOCODEX_BROWSER_EXECUTABLE` or `--browser-executable PATH` selects an exact
-Chrome or Chromium binary. The default uses the dedicated automation browser;
-it never attaches to the person's normal browser profile.
-
-The Hand publishes the same `browser_execute({ code })` callable contract as
-the managed Cloudflare browser. While exactly one compatible browser Hand is
-live, the tool router sends new browser calls to it. If it is unavailable
-before dispatch, the existing Cloudflare browser handles the call. An admitted
-or dispatched call stays pinned to its selected placement: disconnects and
-ambiguous outcomes are never replayed through the other browser.
-
-Both placements expose the same bounded `cdp`/`codemode` surface. Only the
-allowlisted Target, Page, DOM, and Input commands are accepted; cookie,
-authorization, unrestricted runtime evaluation, provider connection URLs, and
-Live View access are rejected or redacted. Run only one browser-enabled Hand
-per account when deterministic residential placement is required.
+The legacy `--browser`, `--browser-executable`, and
+`NANOCODEX_BROWSER_EXECUTABLE` options are rejected with guidance to use CUA.
 
 The on-demand `host` pool remains libkrun-only; Docker is available through the
 single `hand` command and the `nanocodex_vm::docker` library API.

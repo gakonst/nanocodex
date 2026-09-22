@@ -8,6 +8,7 @@ pub(in crate::rollout) struct RolloutWriter {
     written_revision: Option<u64>,
     written_len: usize,
     written_context_baseline: Option<ContextBaseline>,
+    written_client_authored: Option<std::collections::BTreeSet<String>>,
     workspace: PathBuf,
     window_number: u64,
     first_window_id: String,
@@ -29,6 +30,7 @@ impl RolloutWriter {
             written_revision: None,
             written_len: 0,
             written_context_baseline: None,
+            written_client_authored: None,
             workspace,
             window_number: 0,
             first_window_id: initial_window_id.clone(),
@@ -46,6 +48,7 @@ impl RolloutWriter {
             written_revision: Some(0),
             written_len: state.written_len,
             written_context_baseline: state.context_baseline,
+            written_client_authored: None,
             workspace: state.workspace,
             window_number: state.window_number,
             first_window_id: state.first_window_id,
@@ -179,7 +182,10 @@ impl RolloutWriter {
                     turn: commit.turn.clone(),
                     model: commit.model,
                     context_baseline: commit.context_baseline.clone(),
-                    write_state: true,
+                    client_authored: commit.client_authored.clone(),
+                    write_state: self.written_context_baseline.as_ref()
+                        != Some(&commit.context_baseline)
+                        || self.written_client_authored.as_ref() != Some(&commit.client_authored),
                 })
             }
             None => Ok(PreparedAppend {
@@ -193,8 +199,10 @@ impl RolloutWriter {
                 turn: commit.turn.clone(),
                 model: commit.model,
                 context_baseline: commit.context_baseline.clone(),
+                client_authored: commit.client_authored.clone(),
                 write_state: self.written_context_baseline.as_ref()
-                    != Some(&commit.context_baseline),
+                    != Some(&commit.context_baseline)
+                    || self.written_client_authored.as_ref() != Some(&commit.client_authored),
             }),
             Some(revision) if revision == commit.revision => {
                 if len < self.written_len {
@@ -214,8 +222,10 @@ impl RolloutWriter {
                     turn: commit.turn.clone(),
                     model: commit.model,
                     context_baseline: commit.context_baseline.clone(),
+                    client_authored: commit.client_authored.clone(),
                     write_state: self.written_context_baseline.as_ref()
-                        != Some(&commit.context_baseline),
+                        != Some(&commit.context_baseline)
+                        || self.written_client_authored.as_ref() != Some(&commit.client_authored),
                 })
             }
             Some(_) => {
@@ -239,6 +249,7 @@ impl RolloutWriter {
                     turn: commit.turn.clone(),
                     model: commit.model,
                     context_baseline: commit.context_baseline.clone(),
+                    client_authored: commit.client_authored.clone(),
                     // A compaction starts a new history window, whose context
                     // baseline must be independently reconstructable.
                     write_state: true,
@@ -300,6 +311,7 @@ impl RolloutWriter {
                         full: true,
                         state: PersistedContextState {
                             nanocodex_context: &prepared.context_baseline,
+                            nanocodex_client_authored: &prepared.client_authored,
                         },
                     }),
                 },
@@ -407,6 +419,7 @@ impl RolloutWriter {
         self.written_len = prepared.len;
         if prepared.write_state {
             self.written_context_baseline = Some(prepared.context_baseline);
+            self.written_client_authored = Some(prepared.client_authored);
         }
         if let Some(window) = prepared.window {
             self.window_number = window.number;
@@ -434,6 +447,7 @@ struct PreparedAppend {
     turn: RolloutTurn,
     model: Model,
     context_baseline: ContextBaseline,
+    client_authored: std::collections::BTreeSet<String>,
     write_state: bool,
 }
 

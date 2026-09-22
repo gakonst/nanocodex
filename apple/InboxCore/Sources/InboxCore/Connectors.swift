@@ -179,8 +179,16 @@ public extension ManagedClient {
             provider: provider,
             authorizationURL: authorizationURL,
             callbackURL: callbackURL,
-            attemptID: attemptID
+            attemptID: provider == "link" ? response["attempt"].string : attemptID
         )
+    }
+
+    func pollLinkAuthorization(attemptID: String) async throws -> String {
+        guard attemptID.range(of: #"^[A-Za-z0-9_-]{43}$"#, options: .regularExpression) != nil else { throw APIError.invalidResponse }
+        let response = try await json(path: "/v1/connectors/link?attempt=\(attemptID)")
+        let state = response["state"].string
+        guard ["pending", "connected", "denied", "expired"].contains(state) else { throw APIError.invalidResponse }
+        return state
     }
 
     func disconnectConnector(provider: String, connectionID: String) async throws {

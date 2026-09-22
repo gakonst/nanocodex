@@ -13,6 +13,7 @@ import {
   HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE,
   type HostedToolsAuthorizationContext,
   type HostedToolsBrokerContext,
+  type HostedToolsBrokerOptions,
   type HostedToolsBrokerPersistence,
 } from "../src/hosted-tools-broker";
 import {
@@ -40,6 +41,72 @@ type CallRow = NonNullable<ReturnType<HostedToolsBrokerPersistence["call"]>>;
 type CallState = CallRow["state"];
 
 describe("HostedToolsBroker socket-owned protocol", () => {
+  it("sends current turn metadata through hibernation", async () => {
+    const fixture = createFixture();
+    const host = fixture.socket();
+    await fixture.broker.message(host.webSocket, JSON.stringify({
+      type: "catalog", capabilities: ["turn_metadata"], tools: [entry()],
+    }));
+    expect(host.sent).toEqual([{ type: "ready" }]);
+    const callKeys = [
+      "type", "session_id", "call_id", "model", "name", "input",
+      "output_token_budget", "output_byte_budget", "deadline_at",
+    ];
+    async function call(broker: HostedToolsBroker, callId: string, turnId?: string) {
+      const tool = broker.provider().resolve("fixture__lookup")!;
+      const pending = tool.handler({}, {
+        sessionId: "session", callId, model: "fixture",
+        ...(turnId === undefined ? {} : { turnId }),
+      });
+      const frame = host.sent.filter((frame) => frame.type === "call").at(-1)!;
+      expect(Object.keys(frame).sort()).toEqual([
+        ...callKeys, ...(turnId !== undefined ? ["turn_id"] : []),
+      ].sort());
+      expect(frame.turn_id).toBe(turnId);
+      expect(fixture.persistence.call(String(frame.call_id))?.turn_id).toBe(turnId ?? null);
+      await broker.message(host.webSocket, result(String(frame.call_id), "ok"));
+      await expect(pending).resolves.toMatchObject({ success: true, output: "ok" });
+      expect(host.closed).toBeUndefined();
+    }
+    await call(fixture.broker, "before-hibernation", "session:7");
+    const resumed = new HostedToolsBroker(fixture.context, {
+      persistence: fixture.persistence, now: () => NOW, resumeRetainedSockets: true,
+    });
+    await call(resumed, "same-turn", "session:7");
+    await call(resumed, "next-turn", "session:8");
+    await call(resumed, "without-turn-context");
+    resumed.close(host.webSocket, "test complete");
+  });
+
+  it("publishes every discovered CUA contract on leased Hands without a fixed tool allowlist", async () => {
+    const fixture = createFixture();
+    const host = fixture.socket(undefined, undefined, undefined, "leased-vm", NOW + 10, "cua-route");
+    const names = ["js", "js_reset", "js_add_node_module_dir", "future_provider_tool"];
+    const tools = names.map((name) => ({
+      ...entry(`mcp__cua_repl__${name}`),
+      definition: {
+        type: "function" as const, name: `mcp__cua_repl__${name}`,
+        description: `Provider contract for ${name}`, strict: false,
+        parameters: { type: "object", properties: { provider_argument: { type: "string" } } },
+      },
+    }));
+    await fixture.broker.message(host.webSocket, JSON.stringify({
+      type: "catalog", capabilities: ["turn_metadata"], attachment_id: "leased-vm", tools,
+      machines: [{ id: "leased-vm", name: "CUA fixture", workspace: "/workspace", capabilities: ["computer"] }],
+    }));
+    expect(host.sent).toEqual([{ type: "ready" }]);
+    expect(host.closed).toBeUndefined();
+    const discovered = fixture.broker.provider().definitions();
+    expect(discovered).toHaveLength(names.length);
+    for (const tool of tools) {
+      expect(discovered).toContainEqual(expect.objectContaining({
+        description: tool.definition.description, parameters: tool.definition.parameters,
+      }));
+      expect(fixture.broker.machineTool("leased-vm", tool.definition.name as `mcp__cua_repl__${string}`)?.definition)
+        .toMatchObject(tool.definition);
+    }
+  });
+
   it("accepts one immutable catalog and exposes provider metadata without public identity pins", async () => {
     const fixture = createFixture();
     const host = fixture.socket();
@@ -72,7 +139,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
       capabilities: ["filesystem", "native-shell"],
     }];
     await fixture.broker.message(host.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "desktop",
       tools: [entry()],
       machines,
@@ -83,55 +150,38 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(fixture.broker.machines()).toEqual([]);
   });
 
-  it("publishes the browser placement overlay under the exact cloud tool name", async () => {
+  for (const name of ["browser_execute", "browser_vault_fill", "browser_vault_snapshot", "browser_vault_request_takeover"]) {
+    it(`filters disabled hosted browser tool ${name}`, async () => {
+      const fixture = createFixture();
+      const host = fixture.socket();
+      await fixture.broker.message(host.webSocket, JSON.stringify({ type: "catalog", capabilities: ["turn_metadata"], tools: [entry(name)] }));
+      expect(host.sent).toEqual([{ type: "ready" }]);
+      expect(host.closed).toBeUndefined();
+      expect(fixture.broker.provider().definitions()).toEqual([]);
+      expect(fixture.broker.provider().resolve(name)).toBeUndefined();
+    });
+  }
+
+  it("filters browser tools restored from persisted catalogs while retaining ordinary tools", async () => {
     const fixture = createFixture();
     const host = fixture.socket();
-    const validator = vi.fn(() => true as const);
-    fixture.broker.provider().setCatalogValidator(validator);
-    await fixture.broker.message(host.webSocket, JSON.stringify({
-      type: "catalog",
-      attachment_id: "desktop",
-      tools: [machineEntry("exec_command"), browserExecuteEntry()],
-      machines: [{
-        id: "desktop",
-        name: "Residential browser",
-        workspace: "/workspace",
-        capabilities: ["browser", "browser-egress", "filesystem"],
-      }],
-    }));
-
-    expect(host.sent).toEqual([{ type: "ready" }]);
-    expect(fixture.broker.provider().definitions()).toEqual([
-      expect.objectContaining({
-        name: "browser_execute",
-        defer_loading: true,
-        parameters: {
-          type: "object",
-          properties: { code: { type: "string" } },
-          required: ["code"],
-          additionalProperties: false,
-        },
-      }),
-    ]);
-    expect(fixture.broker.provider().resolve("browser_execute")).toMatchObject({
-      name: "browser_execute",
-      provider: "machine",
-      remoteName: "browser_execute",
+    await catalog(fixture.broker, host);
+    fixture.persistence.replaceHost({ ...fixture.persistence.current,
+      catalog_json: JSON.stringify([entry(), entry("browser_execute"), entry("browser_vault_fill")]),
     });
-    expect(fixture.broker.provider().resolve("user_desktop_browser_execute")).toBeUndefined();
-    expect(validator).toHaveBeenCalledWith([
-      expect.objectContaining({ definition: expect.objectContaining({ name: "browser_execute" }) }),
-    ]);
+    expect(fixture.broker.provider().definitions().map(tool => tool.name)).toEqual(["fixture__lookup"]);
+    expect(fixture.broker.provider().resolve("browser_execute")).toBeUndefined();
+    expect(fixture.broker.provider().resolve("browser_vault_fill")).toBeUndefined();
   });
 
-  it("allows the browser placement overlay on a leased Hand but rejects arbitrary extras", async () => {
+  it("keeps exec and CUA from old leased Hands while filtering browser tools and rejecting arbitrary extras", async () => {
     const route = "vm-host:browser:1";
     const fixture = createFixture();
     const allowed = fixture.socket(undefined, undefined, undefined, "leased-vm", NOW + 10, route);
     await fixture.broker.message(allowed.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "leased-vm",
-      tools: [machineEntry("exec_command"), browserExecuteEntry()],
+      tools: [machineEntry("exec_command"), browserExecuteEntry(), entry("mcp__cua_repl__js")],
       machines: [{
         id: "leased-vm",
         name: "Leased browser Hand",
@@ -140,13 +190,19 @@ describe("HostedToolsBroker socket-owned protocol", () => {
       }],
     }));
     expect(allowed.sent).toEqual([{ type: "ready" }]);
-    expect(fixture.broker.provider().resolve("browser_execute")).toBeDefined();
+    expect(allowed.closed).toBeUndefined();
+    expect(fixture.broker.machineTool("leased-vm", "exec_command")).toBeDefined();
+    expect(fixture.broker.machineTool("leased-vm", "mcp__cua_repl__js")).toBeDefined();
+    expect(fixture.broker.provider().resolve("browser_execute")).toBeUndefined();
+    expect(fixture.broker.provider().resolve("user_leased-vm_browser_execute")).toBeUndefined();
+    expect(fixture.broker.provider().definitions().some(tool => tool.name.includes("browser_execute"))).toBe(false);
+    expect(fixture.persistence.states().some(state => state.catalog_json?.includes("browser_execute"))).toBe(false);
 
     const rejected = fixture.socket(
       undefined, undefined, undefined, "other-vm", NOW + 10, "vm-host:browser:2",
     );
     await fixture.broker.message(rejected.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "other-vm",
       tools: [machineEntry("exec_command"), entry("arbitrary_extra")],
       machines: [{
@@ -165,7 +221,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     const successorRoute = "vm-host:33333333-3333-4333-8333-333333333333:2";
     const host = fixture.socket(undefined, undefined, undefined, "leased-vm", NOW + 10, firstRoute);
     await fixture.broker.message(host.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "leased-vm",
       tools: [machineEntry("exec_command")],
       machines: [{
@@ -182,13 +238,13 @@ describe("HostedToolsBroker socket-owned protocol", () => {
 
     fixture.persistence.routes.get(firstRoute)!.lease_expires_at = NOW - 1;
     fixture.broker.expire();
-    expect(host.closed).toMatchObject({ code: 1008 });
+    expect(host.closed).toMatchObject({ code: 1012 });
 
     const successor = fixture.socket(
       undefined, undefined, undefined, "leased-vm", NOW + 20, successorRoute,
     );
     await fixture.broker.message(successor.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "leased-vm",
       tools: [machineEntry("exec_command")],
       machines: [{
@@ -218,7 +274,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
       undefined, undefined, undefined, "leased-vm", NOW + 60_000, route, "opaque-renewal",
     );
     await fixture.broker.message(host.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "leased-vm",
       tools: [machineEntry("exec_command")],
       machines: [{
@@ -256,7 +312,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
 
     const delayed = fixture.socket(undefined, undefined, undefined, "leased-vm", NOW + 20, route);
     await fixture.broker.message(delayed.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "leased-vm",
       tools: [machineEntry("exec_command")],
       machines: [{
@@ -280,7 +336,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     });
     const retried = fixture.socket(undefined, undefined, undefined, "leased-vm", NOW + 30, route);
     await resumed.message(retried.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "leased-vm",
       tools: [machineEntry("exec_command")],
       machines: [{
@@ -298,7 +354,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     const route = "vm-host:44444444-4444-4444-8444-444444444444:8";
     const leased = fixture.socket(undefined, undefined, undefined, "vm:mount", NOW + 20, route);
     await fixture.broker.message(leased.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "vm:mount",
       tools: [machineEntry("exec_command")],
       machines: [{
@@ -315,7 +371,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
 
     const ordinary = fixture.socket();
     await fixture.broker.message(ordinary.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "vm:mount",
       tools: [machineEntry("exec_command")],
       machines: [{
@@ -345,7 +401,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     const route = "vm-host:44444444-4444-4444-8444-444444444444:10";
     const leased = fixture.socket(undefined, undefined, undefined, "vm:retained", NOW + 20, route);
     await fixture.broker.message(leased.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "vm:retained",
       tools: [machineEntry("exec_command")],
       machines: [{
@@ -390,7 +446,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     const route = "vm-host:44444444-4444-4444-8444-444444444444:9";
     const leased = fixture.socket(undefined, undefined, undefined, "vm:mount", NOW + 20, route);
     await fixture.broker.message(leased.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "vm:mount",
       tools: [machineEntry("exec_command"), entry("fixture__injected")],
       machines: [{
@@ -412,7 +468,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     const fixture = createFixture();
     const first = fixture.socket();
     await fixture.broker.message(first.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "laptop",
       tools: [entry()],
       machines: [{
@@ -424,7 +480,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     }));
     const replacement = fixture.socket();
     await fixture.broker.message(replacement.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "laptop",
       tools: [entry()],
       machines: [{
@@ -448,14 +504,14 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     const fixture = createFixture();
     const routeB = fixture.socket();
     await fixture.broker.message(routeB.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "machine-b",
       tools: [machineEntry("exec_command")],
       machines: [{ id: "machine-b", name: "Machine B", workspace: "/b", capabilities: ["shell"] }],
     }));
     const routeA = fixture.socket();
     await fixture.broker.message(routeA.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "machine-a",
       tools: [machineEntry("exec_command")],
       machines: [{ id: "machine-a", name: "Machine A", workspace: "/a", capabilities: ["filesystem"] }],
@@ -497,7 +553,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
 
     const replacementA = fixture.socket();
     await fixture.broker.message(replacementA.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "machine-a",
       tools: [machineEntry("exec_command")],
       machines: [{ id: "machine-a", name: "Machine A2", workspace: "/a2", capabilities: ["filesystem"] }],
@@ -530,16 +586,17 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     const fixture = createFixture();
     const first = fixture.socket();
     await fixture.broker.message(first.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "machine-a",
       tools: [machineEntry("exec_command")],
       machines: [{ id: "machine-a", name: "Machine A", workspace: "/a", capabilities: ["shell"] }],
     }));
     const selected = fixture.broker.machineTool("machine-a", "exec_command")!;
+    expect(selected.definition).toMatchObject(machineEntry("exec_command").definition);
 
     const replacement = fixture.socket();
     await fixture.broker.message(replacement.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "machine-a",
       tools: [machineEntry("exec_command")],
       machines: [{ id: "machine-a", name: "Machine A2", workspace: "/a2", capabilities: ["shell"] }],
@@ -562,7 +619,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
       machineEntry("preview"),
     ];
     await fixture.broker.message(host.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "machine-a",
       tools,
       machines: [{ id: "machine-a", name: "Machine A", workspace: "/a", capabilities: ["shell"] }],
@@ -582,7 +639,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     const invalidExec = machineEntry("exec_command");
     (invalidExec.definition.parameters.properties as Record<string, unknown>).environment = { type: "string" };
     await invalid.broker.message(invalidHost.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "machine-b",
       tools: [invalidExec],
       machines: [{ id: "machine-b", name: "Machine B", workspace: "/b", capabilities: ["shell"] }],
@@ -597,14 +654,14 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     const fixture = createFixture();
     const routeA = fixture.socket();
     await fixture.broker.message(routeA.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "machine-a",
       tools: [entry("alpha")],
       machines: [{ id: "machine-a", name: "Machine A", workspace: "/a", capabilities: ["shell"] }],
     }));
     const routeB = fixture.socket();
     await fixture.broker.message(routeB.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "machine-b",
       tools: [entry("beta")],
       machines: [{ id: "machine-b", name: "Machine B", workspace: "/b", capabilities: ["shell"] }],
@@ -613,7 +670,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     fixture.broker.expire();
 
     expect(fixture.broker.machines().map((machine) => machine.id)).toEqual(["machine-a", "machine-b"]);
-    expect(routeA.closed).toMatchObject({ code: 1008 });
+    expect(routeA.closed).toMatchObject({ code: 1012 });
     expect(routeB.closed).toBeUndefined();
     expect(fixture.broker.provider().definitions().map((definition) => definition.name))
       .toEqual(["user_machine-a_alpha", "user_machine-b_beta"]);
@@ -623,13 +680,13 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     const fixture = createFixture();
     const routeA = fixture.socket();
     await fixture.broker.message(routeA.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "route-a",
       tools: [entry("alpha")],
     }));
     const routeB = fixture.socket();
     await fixture.broker.message(routeB.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "route-b",
       tools: [entry("beta")],
     }));
@@ -641,7 +698,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
 
     const replacementB = fixture.socket();
     await fixture.broker.message(replacementB.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "route-b",
       tools: [entry("gamma")],
     }));
@@ -656,11 +713,11 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     const fixture = createFixture();
     const first = fixture.socket();
     await fixture.broker.message(first.webSocket, JSON.stringify({
-      type: "catalog", attachment_id: "generic-a", tools: [entry("alpha")],
+      type: "catalog", capabilities: ["turn_metadata"], attachment_id: "generic-a", tools: [entry("alpha")],
     }));
     const candidate = fixture.socket();
     await fixture.broker.message(candidate.webSocket, JSON.stringify({
-      type: "catalog", attachment_id: "generic-b", tools: [entry("alpha")],
+      type: "catalog", capabilities: ["turn_metadata"], attachment_id: "generic-b", tools: [entry("alpha")],
     }));
     expect(candidate.closed).toMatchObject({
       code: 1008,
@@ -676,7 +733,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     const originalName = `run_${"x".repeat(124)}`;
     const host = fixture.socket();
     const frame = {
-      type: "catalog", attachment_id: machineId, tools: [entry(originalName)],
+      type: "catalog", capabilities: ["turn_metadata"], attachment_id: machineId, tools: [entry(originalName)],
       machines: [{ id: machineId, name: "Long machine", workspace: "/long", capabilities: ["shell"] }],
     };
     await fixture.broker.message(host.webSocket, JSON.stringify(frame));
@@ -704,7 +761,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     const fixture = createFixture();
     const host = fixture.socket();
     await fixture.broker.message(host.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "laptop",
       tools: [entry()],
       machines: [{
@@ -718,14 +775,14 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     fixture.broker.expire();
 
     expect(fixture.broker.machines().map(({ id }) => id)).toEqual(["laptop"]);
-    expect(host.closed).toMatchObject({ code: 1008 });
+    expect(host.closed).toMatchObject({ code: 1012 });
   });
 
   it("rejects machine metadata from Connect-grant hosts", async () => {
     const fixture = createFixture();
     const host = fixture.socket([], CLEANUP_DIGEST, GRANT_A);
     await fixture.broker.message(host.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "desktop",
       tools: [cleanupEntry()],
       machines: [{
@@ -759,7 +816,8 @@ describe("HostedToolsBroker socket-owned protocol", () => {
   });
 
   it("durably dispatches an exact call and ACKs both the result and duplicate receipt", async () => {
-    const fixture = createFixture();
+    const onCallTiming = vi.fn(() => { throw new Error("diagnostic sink failed"); });
+    const fixture = createFixture(undefined, { onCallTiming });
     const host = fixture.socket();
     await catalog(fixture.broker, host);
     const tool = fixture.broker.provider().resolve("fixture__lookup")!;
@@ -786,6 +844,10 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     await fixture.broker.message(host.webSocket, result(IDS[1]!, "done"));
     expect(host.sent.filter((frame) => frame.type === "ack")).toHaveLength(2);
     expect(fixture.persistence.call(IDS[1]!)?.state).toBe("completed");
+    expect(onCallTiming).toHaveBeenCalledExactlyOnceWith({
+      session_id: "session:1", source_call_id: "source:1", transport_call_id: IDS[1],
+      admission_ms: expect.any(Number), roundtrip_ms: expect.any(Number), settlement_ms: expect.any(Number),
+    });
   });
 
   it("removes routing before acknowledging graceful drain while dispatched calls can finish", async () => {
@@ -821,6 +883,15 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(fixture.persistence.callBySource("session:1", "source:1")).toBeUndefined();
   });
 
+  it("allows reconnect after a broker send failure", async () => {
+    const fixture = createFixture();
+    const host = fixture.socket();
+    host.onSend = () => { throw new Error("send failed"); };
+    await catalog(fixture.broker, host);
+    expect(host.closed).toMatchObject({ code: 1011 });
+    expect(fixture.broker.provider().definitions()).toEqual([]);
+  });
+
   it("keeps the active catalog when a replacement candidate fails parity validation", async () => {
     const fixture = createFixture();
     const first = fixture.socket();
@@ -831,7 +902,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     });
     const candidate = fixture.socket();
     await fixture.broker.message(candidate.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: [{ ...entry(), provider: "rejected" }],
     }));
     expect(candidate.closed).toMatchObject({ code: 1008, reason: expect.stringContaining("parity failed") });
@@ -844,7 +915,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     const allowed = createFixture();
     const allowedHost = allowed.socket([mcpId], CLEANUP_DIGEST, GRANT_A);
     await allowed.broker.message(allowedHost.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: [cleanupEntry(), { ...entry(), provider: `mcp:${mcpId}` }],
     }));
     expect(allowedHost.closed).toBeUndefined();
@@ -859,7 +930,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
       const denied = createFixture();
       const deniedHost = denied.socket([mcpId], digest, GRANT_A);
       await denied.broker.message(deniedHost.webSocket, JSON.stringify({
-        type: "catalog",
+        type: "catalog", capabilities: ["turn_metadata"],
         tools: [candidate],
       }));
       expect(deniedHost.closed).toMatchObject({
@@ -880,7 +951,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     }, hostGrantId, hostDigest, candidate));
     const first = fixture.socket([mcpId], CLEANUP_DIGEST, GRANT_A);
     await fixture.broker.message(first.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: [cleanupEntry(), { ...entry(), provider: `mcp:${mcpId}` }],
     }));
     expect(first.sent).toEqual([{ type: "ready" }]);
@@ -889,7 +960,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
 
     const competing = fixture.socket([mcpId], CLEANUP_DIGEST, GRANT_B);
     await fixture.broker.message(competing.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: [cleanupEntry(), { ...entry(), provider: `mcp:${mcpId}` }],
     }));
     expect(competing.closed).toMatchObject({
@@ -916,7 +987,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
         ? fixture.socket([], CLEANUP_DIGEST, GRANT_A)
         : fixture.socket();
       await fixture.broker.message(first.webSocket, JSON.stringify({
-        type: "catalog",
+        type: "catalog", capabilities: ["turn_metadata"],
         tools: [connectFirst ? cleanupEntry() : entry()],
       }));
       expect(first.sent).toEqual([{ type: "ready" }]);
@@ -925,7 +996,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
         ? fixture.socket()
         : fixture.socket([], CLEANUP_DIGEST, GRANT_A);
       await fixture.broker.message(competing.webSocket, JSON.stringify({
-        type: "catalog",
+        type: "catalog", capabilities: ["turn_metadata"],
         tools: [connectFirst ? entry() : cleanupEntry()],
       }));
       expect(competing.sent).toEqual([{ type: "ready" }]);
@@ -967,7 +1038,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     ));
     const host = fixture.socket([], CLEANUP_DIGEST, GRANT_A);
     await fixture.broker.message(host.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       tools: [cleanupEntry()],
     }));
     expect(host.closed).toBeUndefined();
@@ -1065,7 +1136,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     const fixture = createFixture();
     const host = fixture.socket();
     await fixture.broker.message(host.webSocket, JSON.stringify({
-      type: "catalog", attachment_id: "machine-a", tools: [machineEntry("exec_command")],
+      type: "catalog", capabilities: ["turn_metadata"], attachment_id: "machine-a", tools: [machineEntry("exec_command")],
       machines: [{ id: "machine-a", name: "Machine A", workspace: "/a", capabilities: ["shell"] }],
     }));
     fixture.broker.webSocketClose(host.webSocket, 1006, "transport lost");
@@ -1086,13 +1157,13 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     const left = fixture.socket();
     const right = fixture.socket();
     await fixture.broker.message(left.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "machine-a",
       tools: [machineEntry("exec_command")],
       machines: [{ id: "machine-a", name: "Machine A", workspace: "/a", capabilities: ["shell"] }],
     }));
     await fixture.broker.message(right.webSocket, JSON.stringify({
-      type: "catalog",
+      type: "catalog", capabilities: ["turn_metadata"],
       attachment_id: "machine-b",
       tools: [machineEntry("exec_command")],
       machines: [{ id: "machine-b", name: "Machine B", workspace: "/b", capabilities: ["shell"] }],
@@ -1121,6 +1192,7 @@ function createFixture(
   ) => boolean,
   options?: Readonly<{
     now?: () => number;
+    onCallTiming?: HostedToolsBrokerOptions["onCallTiming"];
     renewLeasedAttachment?: (renewal: {
       expectedAttachmentId: string;
       fixedRouteId: string;
@@ -1139,6 +1211,7 @@ function createFixture(
   const broker = new HostedToolsBroker(context, {
     persistence,
     now: options?.now ?? (() => NOW),
+    onCallTiming: options?.onCallTiming,
     ...(options?.renewLeasedAttachment === undefined ? {} : {
       renewLeasedAttachment: options.renewLeasedAttachment,
     }),
@@ -1309,7 +1382,7 @@ class MemoryPersistence implements HostedToolsBrokerPersistence {
 }
 
 async function catalog(broker: HostedToolsBroker, host: FakeSocket): Promise<void> {
-  await broker.message(host.webSocket, JSON.stringify({ type: "catalog", tools: [entry()] }));
+  await broker.message(host.webSocket, JSON.stringify({ type: "catalog", capabilities: ["turn_metadata"], tools: [entry()] }));
 }
 
 function entry(name = "fixture__lookup") {

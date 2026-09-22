@@ -1,0 +1,96 @@
+{
+  "configuration": "Release, physical iPhone 17 Pro, iOS 26.6.1",
+  "journey": "Open and dismiss conversation drawer, attachment sheet, and settings; preserve selected session and untouched draft",
+  "iterations": 3,
+  "warmup": "XCTest warm-up excluded",
+  "comparison_baseline": null,
+  "limitations": [
+    "Measures one existing conversation and navigation journey, not scrolling, voice, media, cold launch, network latency, or Muse.",
+    "CPU time varies with live background work and XCTest waits.",
+    "No pre-change baseline or Muse instrumentation is available; this does not establish a comparative speedup."
+  ],
+  "metrics": [
+    {
+      "name": "Absolute Memory Physical (centaur)",
+      "unit": "kB",
+      "measurements": [
+        42189.768,
+        42288.072,
+        42271.688
+      ]
+    },
+    {
+      "name": "Memory Physical (centaur)",
+      "unit": "kB",
+      "measurements": [
+        -294.912,
+        147.456,
+        -16.384
+      ]
+    },
+    {
+      "name": "Number of Hitches (centaur)",
+      "unit": "hitches",
+      "measurements": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "CPU Cycles (centaur)",
+      "unit": "kC",
+      "measurements": [
+        5396674.74,
+        20968443.309,
+        4986435.344
+      ]
+    },
+    {
+      "name": "Hitch Time Ratio (centaur)",
+      "unit": "ms per s",
+      "measurements": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "Memory Peak Physical (centaur)",
+      "unit": "kB",
+      "measurements": [
+        44811.208,
+        45433.8,
+        44762.056
+      ]
+    },
+    {
+      "name": "CPU Time (centaur)",
+      "unit": "s",
+      "measurements": [
+        2.6735269340000003,
+        7.126439067000001,
+        2.5557255700000003
+      ]
+    },
+    {
+      "name": "Hitches Total Duration (centaur)",
+      "unit": "s",
+      "measurements": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "CPU Instructions Retired (centaur)",
+      "unit": "kI",
+      "measurements": [
+        13382545.101,
+        58377726.759,
+        12169733.681
+      ]
+    }
+  ],
+  "result_bundle": "/tmp/nanocodex-muse-device-complete.xcresult"
+}

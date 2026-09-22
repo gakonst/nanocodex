@@ -23,6 +23,16 @@ function setup() {
 }
 
 describe("connected service discovery and requests", () => {
+  it("sends Link approval requests once through the selected account and refuses delegated endpoints", async () => {
+    const { router, fetch } = setup();
+    await router.execute("link_request", { method: "POST", path: "/spend_requests/lsrq_123/request_approval", connection_id: ID }, context);
+    const request = fetch.mock.calls[0]![0];
+    expect(request.url).toBe("https://api.link.com/spend_requests/lsrq_123/request_approval");
+    expect(request.method).toBe("POST");
+    expect(request.headers.get("x-nanocodex-connector-connection")).toBe(ID);
+    expect(await router.execute("link_request", { method: "POST", path: "/spend_requests/create_delegated" }, context)).toMatchObject({ status: 403 });
+    expect(fetch).toHaveBeenCalledTimes(1);
+  });
   it("advertises every supported provider in the native connector catalog", () => {
     expect(CONNECTOR_PROVIDER_CATALOG.map(provider => provider.id)).toEqual(CONNECTOR_PROVIDER_IDS);
   });

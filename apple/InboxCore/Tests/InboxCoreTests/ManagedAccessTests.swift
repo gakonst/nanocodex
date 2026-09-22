@@ -31,6 +31,35 @@ final class ManagedAccessTests: XCTestCase {
         XCTAssertEqual(calls, 3)
     }
 
+    func testScreenAdmissionReusesCredentialBoundTokenAndRetriesOnlyRejection() async throws {
+        ManagedAccess.clear()
+        defer { ManagedAccess.clear() }
+        let fixture = try HTTPFixture { request in
+            return FixtureReply(headers: ["Content-Type": "application/json", "x-nanocodex-access": "ncx_access_v1.screen.signature", "x-nanocodex-access-ttl-ms": "120000"])
+        }
+        defer { fixture.close() }
+        let client = ManagedClient(credential: try .init(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
+        defer { client.close() }
+        _ = try await client.json(path: "/v1/account/hands/screens")
+        func request(_ path: String) -> URLRequest {
+            var request = URLRequest(url: URL(string: fixture.origin + "/" + path)!)
+            request.setValue("Bearer " + fixtureKey, forHTTPHeaderField: "Authorization")
+            return request
+        }
+        for path in ["v1/account/hands/host", "v1/account/hands/renew", "v1/agents/one/ws"] {
+            XCTAssertNil(ManagedAccess.prepared(request(path)).value(forHTTPHeaderField: "x-nanocodex-access"))
+        }
+        var viewer = ManagedAccess.prepared(request("v1/account/hands/view"))
+        XCTAssertEqual(viewer.value(forHTTPHeaderField: "x-nanocodex-access"), "ncx_access_v1.screen.signature")
+        var components = URLComponents(url: viewer.url!, resolvingAgainstBaseURL: false)!
+        components.scheme = "wss"; viewer.url = components.url
+        let ordinary = HTTPURLResponse(url: viewer.url!, statusCode: 401, httpVersion: nil, headerFields: [:])!
+        XCTAssertFalse(ManagedAccess.rejected(viewer, response: ordinary))
+        let rejected = HTTPURLResponse(url: viewer.url!, statusCode: 401, httpVersion: nil, headerFields: ["x-nanocodex-access-rejected": "1"])!
+        XCTAssertTrue(ManagedAccess.rejected(viewer, response: rejected))
+        XCTAssertNil(ManagedAccess.prepared(request("v1/account/hands/view")).value(forHTTPHeaderField: "x-nanocodex-access"))
+    }
+
     func testDoesNotReuseAcrossAccountsOrForAccountAdministration() async throws {
         var calls = 0
         let fixture = try HTTPFixture { request in

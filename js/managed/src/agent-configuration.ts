@@ -1,3 +1,5 @@
+import { routingPolicySchema } from "./thread-model-routing";
+import { retiredProjectTools } from "./retired-projects";
 import { z } from "zod";
 
 const name = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/);
@@ -20,8 +22,10 @@ export const environmentSchema = z.object({
   network: networkSchema.default({ access: "enabled" }),
 }).strict();
 export const configurationSchema = z.object({
+  model_routing: routingPolicySchema.optional(),
+  chatgpt_account_id: z.string().regex(/^[\x21-\x7e]{1,256}$/).optional(),
   settings: z.object({
-    model: z.enum(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]),
+    model: z.enum(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "@cf/zai-org/glm-5.3"]),
     thinking: z.enum(["none", "low", "medium", "high", "xhigh", "max"]),
     reasoning_mode: z.enum(["standard", "pro"]), fast_mode: z.boolean(),
   }).strict().refine(s => s.model !== "gpt-6-astra" || s.thinking !== "none" && s.reasoning_mode !== "pro").optional(),
@@ -34,13 +38,19 @@ export const configurationSchema = z.object({
   output_schema: z.record(z.string(), z.unknown()).optional(),
   prompt_cache: z.enum(["implicit", "explicit"]).optional(),
   environment: environmentSchema.optional(),
-}).strict();
+}).strict()
+  .refine(c => !c.model_routing || c.settings === undefined, "model_routing owns model and thinking; omit settings");
 export type AgentConfiguration = z.infer<typeof configurationSchema>;
 export type AgentEnvironment = z.infer<typeof environmentSchema>;
 export type NetworkPolicy = z.infer<typeof networkSchema>;
 export function parseConfiguration(value: unknown): AgentConfiguration {
   if (new TextEncoder().encode(JSON.stringify(value ?? {})).byteLength > 1_000_000) throw new TypeError("configuration exceeds 1 MB");
-  return configurationSchema.parse(value ?? {});
+  return normalizeToolNames(configurationSchema.parse(value ?? {}));
+}
+/** Apply tool aliases on both admission and reads of retained configurations. */
+export function normalizeToolNames(configuration: AgentConfiguration): AgentConfiguration {
+  if (!configuration.tools?.some(name => name === "accountInfo" || retiredProjectTools.has(name))) return configuration;
+  return { ...configuration, tools: [...new Set(configuration.tools.filter(name => !retiredProjectTools.has(name)).map(name => name === "accountInfo" ? "environment" : name))] };
 }
 /** Account discovery is unnecessary when policy excludes every account provider. */
 export function accountToolsEnabled(configuration: AgentConfiguration): boolean {
@@ -95,7 +105,9 @@ export async function configurationCatalog(request: Request, storage: DurableObj
     if (new TextEncoder().encode(body).byteLength > 1_000_000) throw new TypeError("template exceeds 1 MB");
     const current = storage.sql.exec<{ body: string; created_at: number }>(
       "SELECT body, created_at FROM managed_configuration_catalog WHERE kind = ? AND id = ?", kind!, id).toArray()[0];
-    if (current && current.body !== body) return Response.json({ error: "immutable_template" }, { status: 409 });
+    const retainedBody = current && kind === "agent-definitions"
+      ? JSON.stringify(normalizeToolNames(JSON.parse(current.body) as AgentConfiguration)) : current?.body;
+    if (current && retainedBody !== body) return Response.json({ error: "immutable_template" }, { status: 409 });
     if (!current && storage.sql.exec<{ n: number }>("SELECT COUNT(*) AS n FROM managed_configuration_catalog").one().n >= 1000)
       return Response.json({ error: "template_limit" }, { status: 409 });
     const createdAt = current?.created_at ?? Date.now();

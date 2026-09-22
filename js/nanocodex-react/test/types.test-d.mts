@@ -79,6 +79,11 @@ void Consumer;
 function VoiceConsumer(agent: DefaultAgent | ManagedAgent | ConnectAgent | undefined) {
   const voice: UseVoiceReturnType = useVoice(agent, {
     beforeAgentTurn: async () => {},
+    outputProvider: "elevenlabs",
+    elevenLabsVoiceId: "synthetic-voice",
+    synthesize: async (text: string, signal: AbortSignal): Promise<Response> => {
+      void text; void signal; return new Response();
+    },
     voice: "cove",
   });
   void voice.start({ voice: "juniper" });

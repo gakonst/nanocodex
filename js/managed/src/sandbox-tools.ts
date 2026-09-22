@@ -716,7 +716,8 @@ function validateNamespaceMounts(
     if (!/^[A-Za-z0-9._:-]{1,256}$/.test(mount.resourceId)) {
       throw new Error("Cloudflare namespace mount has an invalid resource id");
     }
-    if (!/^\/mnt-[a-z0-9](?:[a-z0-9._-]{0,61}[a-z0-9])?-[a-f0-9]{8}$/.test(mount.root)) {
+    if (!/^\/(?:mnt-[a-z0-9](?:[a-z0-9._-]{0,61}[a-z0-9])?-[a-f0-9]{8}|cloudflare-[a-z0-9](?:[a-z0-9._-]*[a-z0-9])?)$/.test(mount.root)
+      || mount.root.length > 64) {
       throw new Error("Cloudflare namespace mount has an invalid logical root");
     }
     if (!Number.isInteger(mount.slot)

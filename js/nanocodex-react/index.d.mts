@@ -118,3 +118,11 @@ export function useVoice(
   agent: DefaultAgent | ManagedAgent | ConnectAgent | undefined,
   options?: UseVoiceParameters,
 ): UseVoiceReturnType;
+
+export type ElevenLabsVoice = Readonly<{ voiceId: string; name: string; category?: string | undefined; requiresVerification?: boolean | undefined }>;
+export type ElevenLabsManager = Readonly<{
+  listVoices(): Promise<readonly ElevenLabsVoice[]>;
+  saveApiKey(apiKey: string): Promise<void>;
+  cloneVoice(input: { name: string; files: readonly File[]; consent: true }): Promise<ElevenLabsVoice>;
+}>;
+export function createElevenLabsManager(options?: { baseUrl?: string; fetch?: typeof globalThis.fetch }): ElevenLabsManager;

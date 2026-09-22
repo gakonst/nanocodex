@@ -49,6 +49,9 @@ pub(crate) struct CommittedSession {
     lineage_id: Arc<str>,
     selected_model: Model,
     model: ModelCheckpoint,
+    // Runtime preparation may normalize context IDs, images, and request prefix.
+    // Until another boundary is committed, snapshot the retained boundary exactly.
+    retained_snapshot: Option<SessionSnapshot>,
 }
 
 #[cfg(feature = "openai")]
@@ -62,7 +65,13 @@ impl CommittedSession {
             lineage_id,
             selected_model,
             model,
+            retained_snapshot: None,
         }
+    }
+
+    pub(crate) fn with_retained_snapshot(mut self, snapshot: Option<SessionSnapshot>) -> Self {
+        self.retained_snapshot = snapshot;
+        self
     }
 
     pub(crate) fn lineage_id(&self) -> &str {
@@ -94,6 +103,9 @@ impl CommittedSession {
     }
 
     pub(crate) fn snapshot(&self) -> SessionSnapshot {
+        if let Some(snapshot) = &self.retained_snapshot {
+            return snapshot.clone();
+        }
         SessionSnapshot {
             version: SESSION_SNAPSHOT_VERSION,
             model: self.selected_model.as_str().to_owned(),
@@ -104,6 +116,7 @@ impl CommittedSession {
             request_prefix: Some(self.model.request_prefix().to_vec()),
             canonical_context: self.model.canonical_context().clone(),
             history: self.model.snapshot_history(),
+            client_authored: self.model.client_authored().clone(),
             context_snapshot: Some(self.model.context_baseline().clone()),
         }
     }
@@ -132,6 +145,8 @@ pub struct SessionSnapshot {
     request_prefix: Option<Vec<ResponseItem>>,
     canonical_context: ResponseItem,
     history: Vec<ResponseItem>,
+    #[serde(default, skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    client_authored: std::collections::BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     context_snapshot: Option<ContextBaseline>,
 }
@@ -182,6 +197,7 @@ impl SessionSnapshot {
     }
 
     #[cfg(all(feature = "openai", not(target_family = "wasm")))]
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn from_rollout(
         model: Model,
         thread_id: String,
@@ -189,6 +205,7 @@ impl SessionSnapshot {
         workspace: String,
         base_instructions: Option<String>,
         history: Vec<ResponseItem>,
+        client_authored: std::collections::BTreeSet<String>,
         context_snapshot: Option<ContextBaseline>,
     ) -> Result<Self> {
         let canonical_context = history
@@ -210,6 +227,7 @@ impl SessionSnapshot {
             request_prefix: None,
             canonical_context,
             history,
+            client_authored,
             context_snapshot,
         })
     }
@@ -285,6 +303,7 @@ impl SessionSnapshot {
                     Arc::clone(&prompt_cache_key),
                     self.canonical_context.clone(),
                     self.history.clone(),
+                    self.client_authored.clone(),
                     None,
                     self.context_snapshot.clone(),
                 )
@@ -297,6 +316,7 @@ impl SessionSnapshot {
             workspace: self.workspace,
             canonical_context: self.canonical_context,
             history: self.history,
+            client_authored: self.client_authored,
             context_baseline: self.context_snapshot,
             checkpoint,
         })
@@ -311,6 +331,7 @@ pub(crate) struct SessionResume {
     pub(crate) workspace: String,
     pub(crate) canonical_context: ResponseItem,
     pub(crate) history: Vec<ResponseItem>,
+    pub(crate) client_authored: std::collections::BTreeSet<String>,
     pub(crate) context_baseline: Option<ContextBaseline>,
     pub(crate) checkpoint: Option<ModelCheckpoint>,
 }

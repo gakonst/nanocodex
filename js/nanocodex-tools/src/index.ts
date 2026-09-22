@@ -59,3 +59,10 @@ export type {
   Workspace,
   WorkspaceEntry,
 } from "../tools/types.mjs";
+export {
+  createMediaCommands,
+  type MediaCommandOptions,
+  type MediaFile,
+  type MediaRequest,
+  type MediaResult,
+} from "./media.js";

@@ -72,10 +72,12 @@ export async function routeBrowserModel(
     ? await ownedRealtimeSubject(request, env, principal)
     : undefined;
   if (realtimeSubject instanceof Response) return realtimeSubject;
-  const subject = realtimeSubject ?? await browserModelSubject(principal.userId);
+  const subject = realtimeSubject?.subject ?? await browserModelSubject(principal.userId);
   const headers = new Headers(request.headers);
   headers.delete("cookie");
   headers.delete("x-nanocodex-agent-id");
+  headers.delete("x-nanocodex-chatgpt-account-id");
+  if (realtimeSubject?.accountId) headers.set("x-nanocodex-chatgpt-account-id", realtimeSubject.accountId);
   headers.set("x-nanocodex-subject", subject);
 
   if (status || resetSponsoredTrial) {
@@ -92,7 +94,7 @@ export async function routeBrowserModel(
     await retryRequest.body?.cancel().catch(() => {});
     throw error;
   }
-  if (realtimeSubject?.startsWith("managed-session-v1_") || !await agentSubjectUnavailable(response)) {
+  if (realtimeSubject?.subject.startsWith("managed-session-v1_") || !await agentSubjectUnavailable(response)) {
     await retryRequest.body?.cancel().catch(() => {});
     return response;
   }
@@ -136,7 +138,7 @@ async function ownedRealtimeSubject(
   request: Request,
   env: BrowserModelEnv,
   principal: Principal,
-): Promise<string | Response | undefined> {
+): Promise<{ subject: string; accountId?: string } | Response | undefined> {
   const agentId = request.headers.get("x-nanocodex-agent-id");
   if (agentId === null) return undefined;
   const identities = [
@@ -159,7 +161,7 @@ async function ownedRealtimeSubject(
   });
   const retained = await readSessionCredentialSubject(owned, durableId.toString());
   if (!retained) return Response.json({ error: "not_found" }, { status: 404 });
-  return retained.subject;
+  return retained;
 }
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

@@ -29,10 +29,22 @@ pub enum VoiceHandoffMode {
     BemTags,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum VoiceOutputProvider {
+    #[default]
+    Openai,
+    Elevenlabs,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(default, deny_unknown_fields, rename_all = "camelCase")]
 pub struct VoiceSettings {
     pub voice: String,
+    /// Output synthesis only; realtime input and delegation remain with Codex.
+    pub output_provider: VoiceOutputProvider,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub eleven_labs_voice_id: Option<String>,
     /// Additional speaking preferences; the base assistant instructions are retained.
     pub instructions: String,
     pub pace: VoicePace,
@@ -47,6 +59,8 @@ impl Default for VoiceSettings {
     fn default() -> Self {
         Self {
             voice: crate::CHATGPT_REALTIME_VOICE.to_owned(),
+            output_provider: VoiceOutputProvider::Openai,
+            eleven_labs_voice_id: None,
             instructions: String::new(),
             pace: VoicePace::Natural,
             updates: VoiceUpdates::Auto,
@@ -58,6 +72,17 @@ impl Default for VoiceSettings {
 
 impl VoiceSettings {
     pub fn validate(&self) -> Result<(), String> {
+        if self.output_provider == VoiceOutputProvider::Elevenlabs
+            && !self.eleven_labs_voice_id.as_deref().is_some_and(|id| {
+                !id.is_empty()
+                    && id.len() <= 128
+                    && id
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"_-".contains(&byte))
+            })
+        {
+            return Err("ElevenLabs output requires a valid voice ID".to_owned());
+        }
         if self.instructions.contains('\0') {
             return Err("voice instructions must not contain NUL".to_owned());
         }
@@ -178,6 +203,34 @@ mod tests {
         assert_eq!(
             settings.output_channel(Some("final_answer")),
             Some("speakable")
+        );
+    }
+
+    #[test]
+    fn elevenlabs_settings_roundtrip_and_validate_voice_id() {
+        let settings: VoiceSettings = serde_json::from_value(json!({
+            "outputProvider": "elevenlabs", "elevenLabsVoiceId": "synthetic_voice-1"
+        }))
+        .unwrap();
+        assert!(settings.validate_chatgpt().is_ok());
+        assert_eq!(
+            serde_json::to_value(&settings).unwrap()["outputProvider"],
+            "elevenlabs"
+        );
+        for id in [None, Some(""), Some("../invalid"), Some("with spaces")] {
+            assert!(
+                VoiceSettings {
+                    output_provider: VoiceOutputProvider::Elevenlabs,
+                    eleven_labs_voice_id: id.map(str::to_owned),
+                    ..Default::default()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        assert_eq!(
+            VoiceSettings::default().output_provider,
+            VoiceOutputProvider::Openai
         );
     }
 

@@ -1,3 +1,4 @@
+import { responsesHttpHeaders } from "../runtime/responses-http.mjs";
 import { cloudflareEgressSubject } from "./egress-subject.mjs";
 
 const OPENAI_WEBSOCKET_BETA = "responses_websockets=2026-02-06";
@@ -14,6 +15,19 @@ export function cloudflareEgress(options) {
   return Object.freeze({
     apiBaseUrl: BROKER_API_BASE_URL,
     websocketUrl: BROKER_WEBSOCKET_URL,
+    async createResponse(endpoint, sessionId, request) {
+      if (request?.authorization !== "host_managed") {
+        throw new Error("Cloudflare EGRESS requires Transport.hostManaged authorization");
+      }
+      const url = exactWebSocketEndpoint(endpoint, BROKER_WEBSOCKET_URL);
+      const headers = responsesHttpHeaders("NANOCODEX_PROVIDER_CREDENTIAL", sessionId, {
+        threadId: request.threadId, turnState: request.turnState,
+      });
+      const subject = cloudflareEgressSubject(binding);
+      if (subject !== undefined) headers.set("x-nanocodex-subject", subject);
+      return binding.fetch(url, { method: "POST", headers, body: request.body,
+        signal: request.signal, redirect: "manual" });
+    },
     createWebSocket: (endpoint, sessionId, request) =>
       openBrokeredWebSocket(binding, endpoint, sessionId, request),
   });

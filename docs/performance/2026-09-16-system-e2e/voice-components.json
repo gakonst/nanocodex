@@ -1,0 +1,884 @@
+[
+  {
+    "cohort": "browser-fresh-and-warm",
+    "pass": 1,
+    "agent_id": "bc43b66f-0bb3-8d7e-a6cb-f5e808b8613a",
+    "voice_session_id": "01a0ac8d-0314-7b8e-a436-70c9b2a382dc",
+    "request_id": "62821fa8-e383-49da-a904-55190904902b",
+    "events": {
+      "managed": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601318155,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+            },
+            "cpuTime": 2,
+            "wallTime": 942
+          },
+          "message": {
+            "type": "managed.auth",
+            "request_id": "62821fa8-e383-49da-a904-55190904902b",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "POST",
+            "path": "/v1/agents/bc43b66f-0bb3-8d7e-a6cb-f5e808b8613a/realtime/calls",
+            "status": 201
+          }
+        },
+        {
+          "envelope": {
+            "eventTimestamp": 1789601318155,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+            },
+            "cpuTime": 2,
+            "wallTime": 942
+          },
+          "message": {
+            "type": "managed.request",
+            "request_id": "62821fa8-e383-49da-a904-55190904902b",
+            "method": "POST",
+            "path": "/v1/agents/bc43b66f-0bb3-8d7e-a6cb-f5e808b8613a/realtime/calls",
+            "status": 201,
+            "duration_ms": 942
+          }
+        }
+      ],
+      "egress": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601318198,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "d8f1b3e5-2ae9-439b-a587-cd39224eeb92"
+            },
+            "cpuTime": 1,
+            "wallTime": 903
+          },
+          "message": {
+            "type": "egress.request",
+            "agent_subject": "managed-session-v1_ba642da277b4f557edc76fd1874e0bb6a0a90c384dae4aca04e9d92e3bf21385",
+            "action": "allow",
+            "rule": "realtime-call",
+            "method": "POST",
+            "path": "/v1/realtime/calls",
+            "duration_ms": 896,
+            "voice_session_id": "01a0ac8d-0314-7b8e-a436-70c9b2a382dc",
+            "relay_transport": "fetch",
+            "credential_broker_resolve_id": "488e70e6-4459-4246-977b-b0ab4b416f39",
+            "subject_ms": 0,
+            "credential_ms": 176,
+            "credential_broker_ms": 0,
+            "credential_broker_activation_ms": 0,
+            "credential_broker_age_ms": 0,
+            "upstream_ms": 720,
+            "status": 201,
+            "recovered": false
+          }
+        }
+      ],
+      "account": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601318390,
+            "durableObjectId": "de0b4ab021601214e6948775bd36f171df62830a3dde1b4350605b6f28956b32",
+            "scriptVersion": {
+              "id": "83d1e7ce-0db2-4637-9de8-8e9fd5f6968f"
+            },
+            "cpuTime": 1,
+            "wallTime": 11362
+          },
+          "message": {
+            "type": "voice.relay",
+            "voice_session_id": "01a0ac8d-0314-7b8e-a436-70c9b2a382dc",
+            "was_running": true,
+            "duration_ms": 702,
+            "status": 201,
+            "process_age_ms": 52122.13,
+            "fetch_ms": 579.07,
+            "socket_wait_ms": 100.61,
+            "upload_ms": 95.61,
+            "response_wait_ms": 381.63,
+            "socket_reused": false
+          }
+        }
+      ]
+    },
+    "additive_readiness_components_ms": {
+      "client_before_call": 451.89999997615814,
+      "provider_response_wait": 381.63,
+      "post_sdp_media": 1335.5,
+      "credential_rpc": 176,
+      "container_boundary_residual": 122.92999999999995,
+      "client_frontdoor_residual": 58.39999997615814,
+      "ownership_rpc": 40.0,
+      "managed_egress_residual": 6.0,
+      "egress_relay_residual": 18,
+      "socket_readiness": 100.61,
+      "request_upload": 95.61,
+      "response_body_read": 0.30000001192092896,
+      "managed_auth": 0.0,
+      "validation": 0.0,
+      "node_fetch_residual": 1.2200000000000557
+    }
+  },
+  {
+    "cohort": "browser-fresh-and-warm",
+    "pass": 2,
+    "agent_id": "bc43b66f-0bb3-8d7e-a6cb-f5e808b8613a",
+    "voice_session_id": "01a0ac8d-3144-7668-a1d1-127f88f884d6",
+    "request_id": "754a76e1-ec83-4a38-96f9-856b708b253f",
+    "events": {
+      "managed": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601329518,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+            },
+            "cpuTime": 2,
+            "wallTime": 1015
+          },
+          "message": {
+            "type": "managed.auth",
+            "request_id": "754a76e1-ec83-4a38-96f9-856b708b253f",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "POST",
+            "path": "/v1/agents/bc43b66f-0bb3-8d7e-a6cb-f5e808b8613a/realtime/calls",
+            "status": 201
+          }
+        },
+        {
+          "envelope": {
+            "eventTimestamp": 1789601329518,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+            },
+            "cpuTime": 2,
+            "wallTime": 1015
+          },
+          "message": {
+            "type": "managed.request",
+            "request_id": "754a76e1-ec83-4a38-96f9-856b708b253f",
+            "method": "POST",
+            "path": "/v1/agents/bc43b66f-0bb3-8d7e-a6cb-f5e808b8613a/realtime/calls",
+            "status": 201,
+            "duration_ms": 1016
+          }
+        }
+      ],
+      "egress": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601329560,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "d8f1b3e5-2ae9-439b-a587-cd39224eeb92"
+            },
+            "cpuTime": 2,
+            "wallTime": 977
+          },
+          "message": {
+            "type": "egress.request",
+            "agent_subject": "managed-session-v1_ba642da277b4f557edc76fd1874e0bb6a0a90c384dae4aca04e9d92e3bf21385",
+            "action": "allow",
+            "rule": "realtime-call",
+            "method": "POST",
+            "path": "/v1/realtime/calls",
+            "duration_ms": 972,
+            "voice_session_id": "01a0ac8d-3144-7668-a1d1-127f88f884d6",
+            "relay_transport": "fetch",
+            "credential_broker_resolve_id": "b2163a11-1c2e-47e0-83c1-541cd54eebaa",
+            "subject_ms": 0,
+            "credential_ms": 175,
+            "credential_broker_ms": 0,
+            "credential_broker_activation_ms": 0,
+            "credential_broker_age_ms": 11361,
+            "upstream_ms": 797,
+            "status": 201,
+            "recovered": false
+          }
+        }
+      ],
+      "account": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601329752,
+            "durableObjectId": "de0b4ab021601214e6948775bd36f171df62830a3dde1b4350605b6f28956b32",
+            "scriptVersion": {
+              "id": "83d1e7ce-0db2-4637-9de8-8e9fd5f6968f"
+            },
+            "cpuTime": 1,
+            "wallTime": 12948
+          },
+          "message": {
+            "type": "voice.relay",
+            "voice_session_id": "01a0ac8d-3144-7668-a1d1-127f88f884d6",
+            "was_running": true,
+            "duration_ms": 777,
+            "status": 201,
+            "process_age_ms": 63555.73,
+            "fetch_ms": 651.28,
+            "socket_wait_ms": 41.4,
+            "upload_ms": 94.28,
+            "response_wait_ms": 514.49,
+            "socket_reused": false
+          }
+        }
+      ]
+    },
+    "additive_readiness_components_ms": {
+      "client_before_call": 5.099999964237213,
+      "provider_response_wait": 514.49,
+      "post_sdp_media": 543.5,
+      "credential_rpc": 175,
+      "container_boundary_residual": 125.72000000000003,
+      "client_frontdoor_residual": 63.60000002384186,
+      "ownership_rpc": 39.0,
+      "managed_egress_residual": 5.0,
+      "egress_relay_residual": 20,
+      "socket_readiness": 41.4,
+      "request_upload": 94.28,
+      "response_body_read": 0.3999999761581421,
+      "managed_auth": 0.0,
+      "validation": 0.0,
+      "node_fetch_residual": 1.1099999999999568
+    }
+  },
+  {
+    "cohort": "browser-fresh-and-warm",
+    "pass": 3,
+    "agent_id": "bc43b66f-0bb3-8d7e-a6cb-f5e808b8613a",
+    "voice_session_id": "01a0ac8d-63c1-745a-8d0c-da6870252fd3",
+    "request_id": "c9e8317e-ddc7-4a70-97d9-a80c44bd34a7",
+    "events": {
+      "managed": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601342474,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+            },
+            "cpuTime": 1,
+            "wallTime": 1163
+          },
+          "message": {
+            "type": "managed.auth",
+            "request_id": "c9e8317e-ddc7-4a70-97d9-a80c44bd34a7",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "POST",
+            "path": "/v1/agents/bc43b66f-0bb3-8d7e-a6cb-f5e808b8613a/realtime/calls",
+            "status": 201
+          }
+        },
+        {
+          "envelope": {
+            "eventTimestamp": 1789601342474,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+            },
+            "cpuTime": 1,
+            "wallTime": 1163
+          },
+          "message": {
+            "type": "managed.request",
+            "request_id": "c9e8317e-ddc7-4a70-97d9-a80c44bd34a7",
+            "method": "POST",
+            "path": "/v1/agents/bc43b66f-0bb3-8d7e-a6cb-f5e808b8613a/realtime/calls",
+            "status": 201,
+            "duration_ms": 1161
+          }
+        }
+      ],
+      "egress": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601342501,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "d8f1b3e5-2ae9-439b-a587-cd39224eeb92"
+            },
+            "cpuTime": 1,
+            "wallTime": 1137
+          },
+          "message": {
+            "type": "egress.request",
+            "agent_subject": "managed-session-v1_ba642da277b4f557edc76fd1874e0bb6a0a90c384dae4aca04e9d92e3bf21385",
+            "action": "allow",
+            "rule": "realtime-call",
+            "method": "POST",
+            "path": "/v1/realtime/calls",
+            "duration_ms": 1134,
+            "voice_session_id": "01a0ac8d-63c1-745a-8d0c-da6870252fd3",
+            "relay_transport": "fetch",
+            "credential_broker_resolve_id": "cb2a583d-81c3-499a-aefa-c27f1ca4c6e4",
+            "subject_ms": 0,
+            "credential_ms": 183,
+            "credential_broker_ms": 0,
+            "credential_broker_activation_ms": 0,
+            "credential_broker_age_ms": 0,
+            "upstream_ms": 951,
+            "status": 201,
+            "recovered": false
+          }
+        }
+      ],
+      "account": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601342700,
+            "durableObjectId": "de0b4ab021601214e6948775bd36f171df62830a3dde1b4350605b6f28956b32",
+            "scriptVersion": {
+              "id": "83d1e7ce-0db2-4637-9de8-8e9fd5f6968f"
+            },
+            "cpuTime": 1,
+            "wallTime": 63442
+          },
+          "message": {
+            "type": "voice.relay",
+            "voice_session_id": "01a0ac8d-63c1-745a-8d0c-da6870252fd3",
+            "was_running": true,
+            "duration_ms": 930,
+            "status": 201,
+            "process_age_ms": 76657.36,
+            "fetch_ms": 809.24,
+            "socket_wait_ms": 293.17,
+            "upload_ms": 2.15,
+            "response_wait_ms": 512.71,
+            "socket_reused": false
+          }
+        }
+      ]
+    },
+    "additive_readiness_components_ms": {
+      "client_before_call": 5.100000023841858,
+      "provider_response_wait": 512.71,
+      "post_sdp_media": 387.69999998807907,
+      "credential_rpc": 183,
+      "container_boundary_residual": 120.75999999999999,
+      "client_frontdoor_residual": 72.19999998807907,
+      "ownership_rpc": 23.0,
+      "managed_egress_residual": 4.0,
+      "egress_relay_residual": 21,
+      "socket_readiness": 293.17,
+      "request_upload": 2.15,
+      "response_body_read": 0.10000002384185791,
+      "managed_auth": 0.0,
+      "validation": 0.0,
+      "node_fetch_residual": 1.2099999999999569
+    }
+  },
+  {
+    "cohort": "browser-fresh-repeat",
+    "pass": 1,
+    "agent_id": "84ba8667-a359-847c-b845-4ba9988c3d6d",
+    "voice_session_id": "01a0ac8e-5a18-794e-9d7e-e4eba0a62be1",
+    "request_id": "220f6cc8-0339-4c8a-bf9d-7cb142a0051c",
+    "events": {
+      "managed": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601405907,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+            },
+            "cpuTime": 2,
+            "wallTime": 1304
+          },
+          "message": {
+            "type": "managed.auth",
+            "request_id": "220f6cc8-0339-4c8a-bf9d-7cb142a0051c",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "POST",
+            "path": "/v1/agents/84ba8667-a359-847c-b845-4ba9988c3d6d/realtime/calls",
+            "status": 201
+          }
+        },
+        {
+          "envelope": {
+            "eventTimestamp": 1789601405907,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+            },
+            "cpuTime": 2,
+            "wallTime": 1304
+          },
+          "message": {
+            "type": "managed.request",
+            "request_id": "220f6cc8-0339-4c8a-bf9d-7cb142a0051c",
+            "method": "POST",
+            "path": "/v1/agents/84ba8667-a359-847c-b845-4ba9988c3d6d/realtime/calls",
+            "status": 201,
+            "duration_ms": 1304
+          }
+        }
+      ],
+      "egress": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601405953,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "d8f1b3e5-2ae9-439b-a587-cd39224eeb92"
+            },
+            "cpuTime": 2,
+            "wallTime": 1262
+          },
+          "message": {
+            "type": "egress.request",
+            "agent_subject": "managed-session-v1_ad97bb2f8469286960852cb03cf487252b93949052cbba4e2ce3c85c6c56b673",
+            "action": "allow",
+            "rule": "realtime-call",
+            "method": "POST",
+            "path": "/v1/realtime/calls",
+            "duration_ms": 1116,
+            "voice_session_id": "01a0ac8e-5a18-794e-9d7e-e4eba0a62be1",
+            "relay_transport": "fetch",
+            "credential_broker_resolve_id": "7d647729-05d4-42d3-b9ac-ca579fee6e61",
+            "subject_ms": 0,
+            "credential_ms": 178,
+            "credential_broker_ms": 0,
+            "credential_broker_activation_ms": 0,
+            "credential_broker_age_ms": 0,
+            "upstream_ms": 938,
+            "status": 201,
+            "recovered": false
+          }
+        }
+      ],
+      "account": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601406144,
+            "durableObjectId": "de0b4ab021601214e6948775bd36f171df62830a3dde1b4350605b6f28956b32",
+            "scriptVersion": {
+              "id": "83d1e7ce-0db2-4637-9de8-8e9fd5f6968f"
+            },
+            "cpuTime": 2,
+            "wallTime": 41039
+          },
+          "message": {
+            "type": "voice.relay",
+            "voice_session_id": "01a0ac8e-5a18-794e-9d7e-e4eba0a62be1",
+            "was_running": true,
+            "duration_ms": 921,
+            "status": 201,
+            "process_age_ms": 140094.37,
+            "fetch_ms": 799.05,
+            "socket_wait_ms": 243.23,
+            "upload_ms": 4.15,
+            "response_wait_ms": 550.37,
+            "socket_reused": false
+          }
+        }
+      ]
+    },
+    "additive_readiness_components_ms": {
+      "client_before_call": 359.60000002384186,
+      "provider_response_wait": 550.37,
+      "post_sdp_media": 416.30000001192093,
+      "credential_rpc": 178,
+      "container_boundary_residual": 121.95000000000005,
+      "client_frontdoor_residual": 84.79999995231628,
+      "ownership_rpc": 39.0,
+      "managed_egress_residual": 146.0,
+      "egress_relay_residual": 17,
+      "socket_readiness": 243.23,
+      "request_upload": 4.15,
+      "response_body_read": 0.6000000238418579,
+      "managed_auth": 0.0,
+      "validation": 3.0,
+      "node_fetch_residual": 1.2999999999999599
+    }
+  },
+  {
+    "cohort": "browser-exact-audio",
+    "pass": 1,
+    "agent_id": "f9bb806a-7b1d-8db0-a706-83ea8826b29f",
+    "voice_session_id": "01a0ac93-2aaa-7967-9497-a006057896a4",
+    "request_id": "5dc676af-44f6-474a-ba9a-f44b64fc4624",
+    "events": {
+      "managed": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601721578,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+            },
+            "cpuTime": 3,
+            "wallTime": 1233
+          },
+          "message": {
+            "type": "managed.auth",
+            "request_id": "5dc676af-44f6-474a-ba9a-f44b64fc4624",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "POST",
+            "path": "/v1/agents/f9bb806a-7b1d-8db0-a706-83ea8826b29f/realtime/calls",
+            "status": 201
+          }
+        },
+        {
+          "envelope": {
+            "eventTimestamp": 1789601721578,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+            },
+            "cpuTime": 3,
+            "wallTime": 1233
+          },
+          "message": {
+            "type": "managed.request",
+            "request_id": "5dc676af-44f6-474a-ba9a-f44b64fc4624",
+            "method": "POST",
+            "path": "/v1/agents/f9bb806a-7b1d-8db0-a706-83ea8826b29f/realtime/calls",
+            "status": 201,
+            "duration_ms": 1233
+          }
+        }
+      ],
+      "egress": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601721594,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "d8f1b3e5-2ae9-439b-a587-cd39224eeb92"
+            },
+            "cpuTime": 4,
+            "wallTime": 992
+          },
+          "message": {
+            "type": "egress.request",
+            "agent_subject": "managed-session-v1_c62e30ab486abc455f9ee876bb62285256b15358af906faced7d29ac24d52e41",
+            "action": "allow",
+            "rule": "realtime-call",
+            "method": "POST",
+            "path": "/v1/realtime/calls",
+            "duration_ms": 853,
+            "voice_session_id": "01a0ac93-2aaa-7967-9497-a006057896a4",
+            "relay_transport": "fetch",
+            "credential_broker_resolve_id": "97e2e171-7f99-4bde-bdba-ba352a05ae0e",
+            "subject_ms": 0,
+            "credential_ms": 175,
+            "credential_broker_ms": 0,
+            "credential_broker_activation_ms": 0,
+            "credential_broker_age_ms": 0,
+            "upstream_ms": 678,
+            "status": 201,
+            "recovered": false
+          }
+        }
+      ],
+      "account": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601722009,
+            "durableObjectId": "de0b4ab021601214e6948775bd36f171df62830a3dde1b4350605b6f28956b32",
+            "scriptVersion": {
+              "id": "83d1e7ce-0db2-4637-9de8-8e9fd5f6968f"
+            },
+            "cpuTime": 1,
+            "wallTime": 10432
+          },
+          "message": {
+            "type": "voice.relay",
+            "voice_session_id": "01a0ac93-2aaa-7967-9497-a006057896a4",
+            "was_running": true,
+            "duration_ms": 663,
+            "status": 201,
+            "process_age_ms": 455699.24,
+            "fetch_ms": 542.82,
+            "socket_wait_ms": 15.76,
+            "upload_ms": 1.75,
+            "response_wait_ms": 520.31,
+            "socket_reused": false
+          }
+        }
+      ]
+    },
+    "additive_readiness_components_ms": {
+      "client_before_call": 524.5999999642372,
+      "provider_response_wait": 520.31,
+      "post_sdp_media": 468.69999998807907,
+      "credential_rpc": 175,
+      "container_boundary_residual": 120.17999999999995,
+      "client_frontdoor_residual": 51.69999998807907,
+      "ownership_rpc": 10.0,
+      "managed_egress_residual": 370.0,
+      "egress_relay_residual": 15,
+      "socket_readiness": 15.76,
+      "request_upload": 1.75,
+      "response_body_read": 0.40000003576278687,
+      "managed_auth": 0.0,
+      "validation": 0.0,
+      "node_fetch_residual": 5.000000000000105
+    }
+  },
+  {
+    "cohort": "browser-exact-audio",
+    "pass": 2,
+    "agent_id": "f9bb806a-7b1d-8db0-a706-83ea8826b29f",
+    "voice_session_id": "01a0ac93-563c-7799-80be-f5cc9bc93f3c",
+    "request_id": "84835925-5b6a-442c-8749-e9e0357a77c1",
+    "events": {
+      "managed": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601732226,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+            },
+            "cpuTime": 2,
+            "wallTime": 727
+          },
+          "message": {
+            "type": "managed.auth",
+            "request_id": "84835925-5b6a-442c-8749-e9e0357a77c1",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "POST",
+            "path": "/v1/agents/f9bb806a-7b1d-8db0-a706-83ea8826b29f/realtime/calls",
+            "status": 201
+          }
+        },
+        {
+          "envelope": {
+            "eventTimestamp": 1789601732226,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+            },
+            "cpuTime": 2,
+            "wallTime": 727
+          },
+          "message": {
+            "type": "managed.request",
+            "request_id": "84835925-5b6a-442c-8749-e9e0357a77c1",
+            "method": "POST",
+            "path": "/v1/agents/f9bb806a-7b1d-8db0-a706-83ea8826b29f/realtime/calls",
+            "status": 201,
+            "duration_ms": 726
+          }
+        }
+      ],
+      "egress": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601732240,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "d8f1b3e5-2ae9-439b-a587-cd39224eeb92"
+            },
+            "cpuTime": 2,
+            "wallTime": 714
+          },
+          "message": {
+            "type": "egress.request",
+            "agent_subject": "managed-session-v1_c62e30ab486abc455f9ee876bb62285256b15358af906faced7d29ac24d52e41",
+            "action": "allow",
+            "rule": "realtime-call",
+            "method": "POST",
+            "path": "/v1/realtime/calls",
+            "duration_ms": 711,
+            "voice_session_id": "01a0ac93-563c-7799-80be-f5cc9bc93f3c",
+            "relay_transport": "fetch",
+            "credential_broker_resolve_id": "94f2ad4c-2031-421e-bf6c-e219383a184d",
+            "subject_ms": 0,
+            "credential_ms": 190,
+            "credential_broker_ms": 0,
+            "credential_broker_activation_ms": 0,
+            "credential_broker_age_ms": 10433,
+            "upstream_ms": 521,
+            "status": 201,
+            "recovered": false
+          }
+        }
+      ],
+      "account": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601732441,
+            "durableObjectId": "de0b4ab021601214e6948775bd36f171df62830a3dde1b4350605b6f28956b32",
+            "scriptVersion": {
+              "id": "83d1e7ce-0db2-4637-9de8-8e9fd5f6968f"
+            },
+            "cpuTime": 1,
+            "wallTime": 13022
+          },
+          "message": {
+            "type": "voice.relay",
+            "voice_session_id": "01a0ac93-563c-7799-80be-f5cc9bc93f3c",
+            "was_running": true,
+            "duration_ms": 507,
+            "status": 201,
+            "process_age_ms": 465976.92,
+            "fetch_ms": 388.06,
+            "socket_wait_ms": 16.82,
+            "upload_ms": 32.07,
+            "response_wait_ms": 338.34,
+            "socket_reused": false
+          }
+        }
+      ]
+    },
+    "additive_readiness_components_ms": {
+      "client_before_call": 7.5,
+      "provider_response_wait": 338.34,
+      "post_sdp_media": 472.30000001192093,
+      "credential_rpc": 190,
+      "container_boundary_residual": 118.94,
+      "client_frontdoor_residual": 66.10000002384186,
+      "ownership_rpc": 9.0,
+      "managed_egress_residual": 4.0,
+      "egress_relay_residual": 14,
+      "socket_readiness": 16.82,
+      "request_upload": 32.07,
+      "response_body_read": 0.2999999523162842,
+      "managed_auth": 0.0,
+      "validation": 2.0,
+      "node_fetch_residual": 0.8300000000000267
+    }
+  },
+  {
+    "cohort": "browser-exact-audio",
+    "pass": 3,
+    "agent_id": "f9bb806a-7b1d-8db0-a706-83ea8826b29f",
+    "voice_session_id": "01a0ac93-890e-7ef4-9b34-2270176be664",
+    "request_id": "4b6142a3-16af-4778-8361-0e6d430efa9e",
+    "events": {
+      "managed": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601745265,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+            },
+            "cpuTime": 2,
+            "wallTime": 950
+          },
+          "message": {
+            "type": "managed.auth",
+            "request_id": "4b6142a3-16af-4778-8361-0e6d430efa9e",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "POST",
+            "path": "/v1/agents/f9bb806a-7b1d-8db0-a706-83ea8826b29f/realtime/calls",
+            "status": 201
+          }
+        },
+        {
+          "envelope": {
+            "eventTimestamp": 1789601745265,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+            },
+            "cpuTime": 2,
+            "wallTime": 950
+          },
+          "message": {
+            "type": "managed.request",
+            "request_id": "4b6142a3-16af-4778-8361-0e6d430efa9e",
+            "method": "POST",
+            "path": "/v1/agents/f9bb806a-7b1d-8db0-a706-83ea8826b29f/realtime/calls",
+            "status": 201,
+            "duration_ms": 947
+          }
+        }
+      ],
+      "egress": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601745288,
+            "durableObjectId": null,
+            "scriptVersion": {
+              "id": "d8f1b3e5-2ae9-439b-a587-cd39224eeb92"
+            },
+            "cpuTime": 1,
+            "wallTime": 930
+          },
+          "message": {
+            "type": "egress.request",
+            "agent_subject": "managed-session-v1_c62e30ab486abc455f9ee876bb62285256b15358af906faced7d29ac24d52e41",
+            "action": "allow",
+            "rule": "realtime-call",
+            "method": "POST",
+            "path": "/v1/realtime/calls",
+            "duration_ms": 921,
+            "voice_session_id": "01a0ac93-890e-7ef4-9b34-2270176be664",
+            "relay_transport": "fetch",
+            "credential_broker_resolve_id": "5f148fff-6547-47c8-8f19-1147686d0a29",
+            "subject_ms": 0,
+            "credential_ms": 165,
+            "credential_broker_ms": 0,
+            "credential_broker_activation_ms": 0,
+            "credential_broker_age_ms": 0,
+            "upstream_ms": 756,
+            "status": 201,
+            "recovered": false
+          }
+        }
+      ],
+      "account": [
+        {
+          "envelope": {
+            "eventTimestamp": 1789601745463,
+            "durableObjectId": "de0b4ab021601214e6948775bd36f171df62830a3dde1b4350605b6f28956b32",
+            "scriptVersion": {
+              "id": "83d1e7ce-0db2-4637-9de8-8e9fd5f6968f"
+            },
+            "cpuTime": 2,
+            "wallTime": 61774
+          },
+          "message": {
+            "type": "voice.relay",
+            "voice_session_id": "01a0ac93-890e-7ef4-9b34-2270176be664",
+            "was_running": true,
+            "duration_ms": 745,
+            "status": 201,
+            "process_age_ms": 479237.56,
+            "fetch_ms": 518.2,
+            "socket_wait_ms": 31.85,
+            "upload_ms": 86.84,
+            "response_wait_ms": 398.77,
+            "socket_reused": false
+          }
+        }
+      ]
+    },
+    "additive_readiness_components_ms": {
+      "client_before_call": 4.700000047683716,
+      "provider_response_wait": 398.77,
+      "post_sdp_media": 556.7999999523163,
+      "credential_rpc": 165,
+      "container_boundary_residual": 226.79999999999995,
+      "client_frontdoor_residual": 105.29999995231628,
+      "ownership_rpc": 19.0,
+      "managed_egress_residual": 7.0,
+      "egress_relay_residual": 11,
+      "socket_readiness": 31.85,
+      "request_upload": 86.84,
+      "response_body_read": 0.20000004768371582,
+      "managed_auth": 0.0,
+      "validation": 0.0,
+      "node_fetch_residual": 0.7400000000000659
+    }
+  }
+]

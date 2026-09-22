@@ -1,0 +1,5415 @@
+[
+  {
+    "wallTime": 1364,
+    "cpuTime": 10,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609553911,
+    "outcome": "responseStreamDisconnected",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609555910,
+        "message": {
+          "type": "managed.agent.live_created",
+          "outcome": "success",
+          "create_ms": 1360
+        }
+      },
+      {
+        "timestamp": 1789609555910,
+        "message": {
+          "type": "managed.request",
+          "request_id": null,
+          "method": "GET",
+          "path": "/v1/agents/live",
+          "status": 101,
+          "duration_ms": 1360
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 413,
+    "cpuTime": 15,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609556093,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609557115,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "POST"
+        }
+      },
+      {
+        "timestamp": 1789609557323,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "db83fbac-83b5-4b11-9271-b1d20e1e54d2",
+          "mode": "live",
+          "auth_ms": 192,
+          "method": "POST",
+          "path": "/v1/agents/01a0ad0a-b331-73cd-9946-e7b1d01a1480/prepare",
+          "status": 202
+        }
+      },
+      {
+        "timestamp": 1789609557323,
+        "message": {
+          "type": "managed.request",
+          "request_id": "db83fbac-83b5-4b11-9271-b1d20e1e54d2",
+          "method": "POST",
+          "path": "/v1/agents/01a0ad0a-b331-73cd-9946-e7b1d01a1480/prepare",
+          "status": 202,
+          "duration_ms": 400
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1121,
+    "cpuTime": 330,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609555908,
+    "outcome": "ok",
+    "durableObjectId": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+    "logs": [
+      {
+        "timestamp": 1789609555908,
+        "message": {
+          "type": "managed.personalization.pinned",
+          "turn_id": "01a0ad0a-b7cc-7ac0-9a94-a7c0a86d6a2b",
+          "agent_id": "01a0ad0a-b331-73cd-9946-e7b1d01a1480",
+          "cache_hit": false,
+          "fact_count": 0
+        }
+      },
+      {
+        "timestamp": 1789609555908,
+        "message": {
+          "type": "managed.turn.accepted",
+          "turn_id": "01a0ad0a-b7cc-7ac0-9a94-a7c0a86d6a2b",
+          "transport": "managed"
+        }
+      },
+      {
+        "timestamp": 1789609556461,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0a-b7cc-7ac0-9a94-a7c0a86d6a2b",
+          "stage": "account.hosted_tools",
+          "started_at": 1789609555908,
+          "duration_ms": 553,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609556631,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0a-b7cc-7ac0-9a94-a7c0a86d6a2b",
+          "stage": "account.catalog",
+          "started_at": 1789609555908,
+          "duration_ms": 723,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609556631,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0a-b7cc-7ac0-9a94-a7c0a86d6a2b",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789609555908,
+          "duration_ms": 723,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609556631,
+        "message": {
+          "type": "managed.capacity",
+          "reason": "agent_constructed",
+          "session_id": "01a0ad0a-b331-73cd-9946-e7b1d01a1480",
+          "account_mcp_refresh_ms": 723,
+          "credential_binding_ms": 0,
+          "browser_runtime_ms": 0,
+          "workspace_ms": 0,
+          "computer_runtime_ms": 0,
+          "code_evaluator_ms": 0,
+          "managed_tools_ms": 0,
+          "cloudflare_agent_ms": 0,
+          "construction_ms": 0,
+          "runtime_ready_ms": 723
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609558126,
+    "outcome": "ok",
+    "durableObjectId": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+    "logs": [
+      {
+        "timestamp": 1789609558126,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 145,
+    "cpuTime": 28,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609556756,
+    "outcome": "ok",
+    "durableObjectId": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+    "logs": [
+      {
+        "timestamp": 1789609556756,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "session.POST /prepare",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 5,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609556756,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "account.hosted_tools",
+          "started_at": 1789609556756,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609556756,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789609556756,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609556756,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "conversation.prepare",
+          "started_at": 1789609556756,
+          "duration_ms": 0,
+          "success": true
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2,
+    "cpuTime": 0,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609559278,
+    "outcome": "ok",
+    "durableObjectId": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+    "logs": [
+      {
+        "timestamp": 1789609559278,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 187,
+    "cpuTime": 5,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609558807,
+    "outcome": "ok",
+    "durableObjectId": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+    "logs": [
+      {
+        "timestamp": 1789609558807,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609559480,
+    "outcome": "ok",
+    "durableObjectId": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+    "logs": [
+      {
+        "timestamp": 1789609559480,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 260,
+    "cpuTime": 18,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609559010,
+    "outcome": "ok",
+    "durableObjectId": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+    "logs": [
+      {
+        "timestamp": 1789609559010,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 185,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609559280,
+    "outcome": "ok",
+    "durableObjectId": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+    "logs": [
+      {
+        "timestamp": 1789609559280,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2220,
+    "cpuTime": 140,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609559480,
+    "outcome": "ok",
+    "durableObjectId": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+    "logs": [
+      {
+        "timestamp": 1789609559480,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609561713,
+        "message": {
+          "type": "managed.turn.transition",
+          "turn_id": "01a0ad0a-b7cc-7ac0-9a94-a7c0a86d6a2b",
+          "status": "completed",
+          "outcome": "success",
+          "message_type": "turn_completed",
+          "attempt_count": 0
+        }
+      },
+      {
+        "timestamp": 1789609561713,
+        "message": {
+          "type": "managed.capacity",
+          "reason": "terminal_milestone",
+          "session_id": "01a0ad0a-b331-73cd-9946-e7b1d01a1480"
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 663,
+    "cpuTime": 8,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609556096,
+    "outcome": "canceled",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609556825,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609557282,
+        "message": {
+          "type": "managed.request",
+          "request_id": null,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0a-b331-73cd-9946-e7b1d01a1480/tool-host",
+          "status": 101,
+          "duration_ms": 654
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 124,
+    "cpuTime": 41,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609555822,
+    "outcome": "canceled",
+    "durableObjectId": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+    "logs": [
+      {
+        "timestamp": 1789609555824,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "session.GET /create-live",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 4,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 225,
+    "cpuTime": 4,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609562037,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609562226,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609562259,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "143b13be-4030-48cf-ac30-47e5610d134e",
+          "mode": "live",
+          "auth_ms": 189,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0a-b331-73cd-9946-e7b1d01a1480/events/history",
+          "status": 200
+        }
+      },
+      {
+        "timestamp": 1789609562259,
+        "message": {
+          "type": "managed.request",
+          "request_id": "143b13be-4030-48cf-ac30-47e5610d134e",
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0a-b331-73cd-9946-e7b1d01a1480/events/history",
+          "status": 200,
+          "duration_ms": 222
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 224,
+    "cpuTime": 3,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609562298,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609562490,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609562520,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "492f028c-6cec-4073-b5cb-ad7660306cb0",
+          "mode": "live",
+          "auth_ms": 192,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0a-b331-73cd-9946-e7b1d01a1480",
+          "status": 200
+        }
+      },
+      {
+        "timestamp": 1789609562520,
+        "message": {
+          "type": "managed.request",
+          "request_id": "492f028c-6cec-4073-b5cb-ad7660306cb0",
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0a-b331-73cd-9946-e7b1d01a1480",
+          "status": 200,
+          "duration_ms": 222
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 263,
+    "cpuTime": 5,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609562174,
+    "outcome": "ok",
+    "durableObjectId": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+    "logs": [
+      {
+        "timestamp": 1789609562174,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "session.GET /events/history",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 341,
+    "cpuTime": 4,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609562449,
+    "outcome": "ok",
+    "durableObjectId": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+    "logs": [
+      {
+        "timestamp": 1789609562449,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "session.GET /state",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 959,
+    "cpuTime": 67,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609556932,
+    "outcome": "ok",
+    "durableObjectId": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+    "logs": [
+      {
+        "timestamp": 1789609558017,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.connection.completed",
+          "request_id": "01a0ad0a-ba97-714b-902d-588ea2f66ba6",
+          "turn_id": "01a0ad0a-b7cc-7ac0-9a94-a7c0a86d6a2b",
+          "outcome": "success",
+          "transport": "responses_websocket_v2",
+          "operation_kind": "initial",
+          "attempt_count": 1,
+          "connection_generation": 1,
+          "duration_ms": 1272
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 211,
+    "cpuTime": 204,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609556745,
+    "outcome": "canceled",
+    "durableObjectId": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+    "logs": [
+      {
+        "timestamp": 1789609556745,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "attachment.router_ready",
+          "started_at": 1789609556745,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609556745,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "session.GET /tool-host",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609556745,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0a-b7cc-7ac0-9a94-a7c0a86d6a2b",
+          "stage": "account.vault",
+          "started_at": 1789609555908,
+          "duration_ms": 837,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609556745,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0a-b7cc-7ac0-9a94-a7c0a86d6a2b",
+          "stage": "startup.environment",
+          "started_at": 1789609555908,
+          "duration_ms": 837,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609556745,
+        "message": {
+          "type": "managed.turn.dispatch",
+          "turn_id": "01a0ad0a-b7cc-7ac0-9a94-a7c0a86d6a2b",
+          "runtime_ready_ms": 723,
+          "bootstrap_ready_ms": 837,
+          "inject_ms": 0,
+          "admission_ms": 837,
+          "accepted_to_dispatch_ms": 837
+        }
+      },
+      {
+        "timestamp": 1789609556745,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0a-b7cc-7ac0-9a94-a7c0a86d6a2b",
+          "stage": "turn.admission",
+          "duration_ms": 837,
+          "reads": {
+            "session_state": {
+              "count": 17,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609556745,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.attempt.started",
+          "request_id": "01a0ad0a-ba97-714b-902d-588ea2f66ba6",
+          "turn_id": "01a0ad0a-b7cc-7ac0-9a94-a7c0a86d6a2b",
+          "outcome": "observed",
+          "replay_mode": "full_history",
+          "operation_kind": "generation",
+          "attempt_count": 1,
+          "max_attempts": 5,
+          "connection_generation": 0,
+          "model_call_index": 1
+        }
+      },
+      {
+        "timestamp": 1789609556745,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.connection.started",
+          "request_id": "01a0ad0a-ba97-714b-902d-588ea2f66ba6",
+          "turn_id": "01a0ad0a-b7cc-7ac0-9a94-a7c0a86d6a2b",
+          "outcome": "observed",
+          "transport": "responses_websocket_v2",
+          "operation_kind": "initial",
+          "attempt_count": 1,
+          "connection_generation": 1
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 594,
+    "cpuTime": 27,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609558129,
+    "outcome": "ok",
+    "durableObjectId": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+    "logs": [
+      {
+        "timestamp": 1789609558129,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2452,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609562649,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609562835,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "DELETE"
+        }
+      },
+      {
+        "timestamp": 1789609565102,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "cd197f9d-f6f6-448f-9245-6bf75b3ba646",
+          "mode": "live",
+          "auth_ms": 186,
+          "method": "DELETE",
+          "path": "/v1/agents/01a0ad0a-b331-73cd-9946-e7b1d01a1480",
+          "status": 204
+        }
+      },
+      {
+        "timestamp": 1789609565102,
+        "message": {
+          "type": "managed.request",
+          "request_id": "cd197f9d-f6f6-448f-9245-6bf75b3ba646",
+          "method": "DELETE",
+          "path": "/v1/agents/01a0ad0a-b331-73cd-9946-e7b1d01a1480",
+          "status": 204,
+          "duration_ms": 2453
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2217,
+    "cpuTime": 42,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609562830,
+    "outcome": "ok",
+    "durableObjectId": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+    "logs": [
+      {
+        "timestamp": 1789609563044,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "delete.registry_initial",
+          "started_at": 1789609562805,
+          "duration_ms": 239,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609563044,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "delete.runtime",
+          "started_at": 1789609563044,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609563044,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "delete.attachments",
+          "started_at": 1789609563044,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609563261,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "delete.memory",
+          "started_at": 1789609563044,
+          "duration_ms": 217,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609564316,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "delete.containers",
+          "started_at": 1789609563261,
+          "duration_ms": 1055,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609564518,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "delete.sandbox_workspaces",
+          "started_at": 1789609564316,
+          "duration_ms": 202,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609564518,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "delete.brain",
+          "started_at": 1789609564518,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609564706,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "delete.registry_final",
+          "started_at": 1789609564518,
+          "duration_ms": 188,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609565005,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "delete.archives",
+          "started_at": 1789609564706,
+          "duration_ms": 299,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609565005,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "session.DELETE /session",
+          "duration_ms": 2200,
+          "reads": {
+            "session_state": {
+              "count": 2,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609566126,
+    "outcome": "ok",
+    "durableObjectId": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+    "logs": [
+      {
+        "timestamp": 1789609566126,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e2eda69d3a0d8b7b64513f2706de5fcd0c58f3200f95b80336f2cbf39a5340b6",
+          "stage": "session.GET /state",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 226,
+    "cpuTime": 9,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609565338,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609566110,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609566138,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "7fd88321-517f-4855-aac8-0100f3fd01f9",
+          "mode": "live",
+          "auth_ms": 191,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0a-b331-73cd-9946-e7b1d01a1480",
+          "status": 404
+        }
+      },
+      {
+        "timestamp": 1789609566138,
+        "message": {
+          "type": "managed.request",
+          "request_id": "7fd88321-517f-4855-aac8-0100f3fd01f9",
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0a-b331-73cd-9946-e7b1d01a1480",
+          "status": 404,
+          "duration_ms": 219
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1514,
+    "cpuTime": 13,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609566629,
+    "outcome": "responseStreamDisconnected",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609568968,
+        "message": {
+          "type": "managed.agent.live_created",
+          "outcome": "success",
+          "create_ms": 1510
+        }
+      },
+      {
+        "timestamp": 1789609568968,
+        "message": {
+          "type": "managed.request",
+          "request_id": null,
+          "method": "GET",
+          "path": "/v1/agents/live",
+          "status": 101,
+          "duration_ms": 1510
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 513,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609569082,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609569273,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "POST"
+        }
+      },
+      {
+        "timestamp": 1789609569594,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "e0008059-7e7d-454b-b8de-3e72679f84a0",
+          "mode": "live",
+          "auth_ms": 191,
+          "method": "POST",
+          "path": "/v1/agents/01a0ad0a-e5a2-7755-968d-b86d7e425467/prepare",
+          "status": 202
+        }
+      },
+      {
+        "timestamp": 1789609569594,
+        "message": {
+          "type": "managed.request",
+          "request_id": "e0008059-7e7d-454b-b8de-3e72679f84a0",
+          "method": "POST",
+          "path": "/v1/agents/01a0ad0a-e5a2-7755-968d-b86d7e425467/prepare",
+          "status": 202,
+          "duration_ms": 512
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 424,
+    "cpuTime": 246,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609569545,
+    "outcome": "ok",
+    "durableObjectId": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+    "logs": [
+      {
+        "timestamp": 1789609569545,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "session.POST /prepare",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 5,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609569545,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0a-ead1-7d11-ae9b-6d97b67342e0",
+          "stage": "account.hosted_tools",
+          "started_at": 1789609568969,
+          "duration_ms": 576,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609569545,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "account.hosted_tools",
+          "started_at": 1789609569545,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609569711,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0a-ead1-7d11-ae9b-6d97b67342e0",
+          "stage": "account.catalog",
+          "started_at": 1789609568969,
+          "duration_ms": 742,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609569711,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0a-ead1-7d11-ae9b-6d97b67342e0",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789609568969,
+          "duration_ms": 742,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609569711,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789609569545,
+          "duration_ms": 166,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609569711,
+        "message": {
+          "type": "managed.capacity",
+          "reason": "agent_constructed",
+          "session_id": "01a0ad0a-e5a2-7755-968d-b86d7e425467",
+          "account_mcp_refresh_ms": 742,
+          "credential_binding_ms": 0,
+          "browser_runtime_ms": 0,
+          "workspace_ms": 0,
+          "computer_runtime_ms": 0,
+          "code_evaluator_ms": 0,
+          "managed_tools_ms": 0,
+          "cloudflare_agent_ms": 0,
+          "construction_ms": 0,
+          "runtime_ready_ms": 742
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 575,
+    "cpuTime": 14,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609568969,
+    "outcome": "ok",
+    "durableObjectId": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+    "logs": [
+      {
+        "timestamp": 1789609568969,
+        "message": {
+          "type": "managed.personalization.pinned",
+          "turn_id": "01a0ad0a-ead1-7d11-ae9b-6d97b67342e0",
+          "agent_id": "01a0ad0a-e5a2-7755-968d-b86d7e425467",
+          "cache_hit": false,
+          "fact_count": 0
+        }
+      },
+      {
+        "timestamp": 1789609568969,
+        "message": {
+          "type": "managed.turn.accepted",
+          "turn_id": "01a0ad0a-ead1-7d11-ae9b-6d97b67342e0",
+          "transport": "managed"
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 11,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609571003,
+    "outcome": "ok",
+    "durableObjectId": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+    "logs": [
+      {
+        "timestamp": 1789609571003,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 3,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609571764,
+    "outcome": "ok",
+    "durableObjectId": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+    "logs": [
+      {
+        "timestamp": 1789609571764,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 53,
+    "cpuTime": 4,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609571385,
+    "outcome": "ok",
+    "durableObjectId": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+    "logs": [
+      {
+        "timestamp": 1789609571385,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 3,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609571860,
+    "outcome": "ok",
+    "durableObjectId": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+    "logs": [
+      {
+        "timestamp": 1789609571860,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 321,
+    "cpuTime": 33,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609571436,
+    "outcome": "ok",
+    "durableObjectId": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+    "logs": [
+      {
+        "timestamp": 1789609571436,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609571510,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.connection.completed",
+          "request_id": "01a0ad0a-edaf-7358-94cb-ef9061ef0b83",
+          "turn_id": "01a0ad0a-ead1-7d11-ae9b-6d97b67342e0",
+          "outcome": "success",
+          "transport": "responses_websocket_v2",
+          "operation_kind": "initial",
+          "attempt_count": 1,
+          "connection_generation": 1,
+          "duration_ms": 1779
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 90,
+    "cpuTime": 3,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609571764,
+    "outcome": "ok",
+    "durableObjectId": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+    "logs": [
+      {
+        "timestamp": 1789609571764,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2614,
+    "cpuTime": 142,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609571862,
+    "outcome": "ok",
+    "durableObjectId": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+    "logs": [
+      {
+        "timestamp": 1789609571862,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609574563,
+        "message": {
+          "type": "managed.turn.transition",
+          "turn_id": "01a0ad0a-ead1-7d11-ae9b-6d97b67342e0",
+          "status": "completed",
+          "outcome": "success",
+          "message_type": "turn_completed",
+          "attempt_count": 0
+        }
+      },
+      {
+        "timestamp": 1789609574563,
+        "message": {
+          "type": "managed.capacity",
+          "reason": "terminal_milestone",
+          "session_id": "01a0ad0a-e5a2-7755-968d-b86d7e425467"
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 527,
+    "cpuTime": 9,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609569132,
+    "outcome": "canceled",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609569838,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609570158,
+        "message": {
+          "type": "managed.request",
+          "request_id": null,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0a-e5a2-7755-968d-b86d7e425467/tool-host",
+          "status": 101,
+          "duration_ms": 515
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 109,
+    "cpuTime": 37,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609568894,
+    "outcome": "canceled",
+    "durableObjectId": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+    "logs": [
+      {
+        "timestamp": 1789609568896,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "session.GET /create-live",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 4,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 278,
+    "cpuTime": 11,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609574926,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609575755,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609575828,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "a82215bd-fb26-4306-8fd5-cbca9e018715",
+          "mode": "live",
+          "auth_ms": 195,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0a-e5a2-7755-968d-b86d7e425467/events/history",
+          "status": 200
+        }
+      },
+      {
+        "timestamp": 1789609575828,
+        "message": {
+          "type": "managed.request",
+          "request_id": "a82215bd-fb26-4306-8fd5-cbca9e018715",
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0a-e5a2-7755-968d-b86d7e425467/events/history",
+          "status": 200,
+          "duration_ms": 268
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 316,
+    "cpuTime": 6,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609575755,
+    "outcome": "ok",
+    "durableObjectId": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+    "logs": [
+      {
+        "timestamp": 1789609575755,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "session.GET /events/history",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 251,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609575881,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609576078,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609576132,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "b7cfffba-5ea7-4736-82ac-af50d0c84d76",
+          "mode": "live",
+          "auth_ms": 197,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0a-e5a2-7755-968d-b86d7e425467",
+          "status": 200
+        }
+      },
+      {
+        "timestamp": 1789609576132,
+        "message": {
+          "type": "managed.request",
+          "request_id": "b7cfffba-5ea7-4736-82ac-af50d0c84d76",
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0a-e5a2-7755-968d-b86d7e425467",
+          "status": 200,
+          "duration_ms": 251
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 307,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609576075,
+    "outcome": "ok",
+    "durableObjectId": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+    "logs": [
+      {
+        "timestamp": 1789609576075,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "session.GET /state",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 361,
+    "cpuTime": 40,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609571011,
+    "outcome": "ok",
+    "durableObjectId": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+    "logs": [
+      {
+        "timestamp": 1789609571011,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 201,
+    "cpuTime": 159,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609569731,
+    "outcome": "canceled",
+    "durableObjectId": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+    "logs": [
+      {
+        "timestamp": 1789609569731,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "attachment.router_ready",
+          "started_at": 1789609569731,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609569731,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "session.GET /tool-host",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609569731,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0a-ead1-7d11-ae9b-6d97b67342e0",
+          "stage": "account.vault",
+          "started_at": 1789609568969,
+          "duration_ms": 762,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609569731,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0a-ead1-7d11-ae9b-6d97b67342e0",
+          "stage": "startup.environment",
+          "started_at": 1789609568969,
+          "duration_ms": 762,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609569731,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "conversation.prepare",
+          "started_at": 1789609569545,
+          "duration_ms": 186,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609569731,
+        "message": {
+          "type": "managed.turn.dispatch",
+          "turn_id": "01a0ad0a-ead1-7d11-ae9b-6d97b67342e0",
+          "runtime_ready_ms": 742,
+          "bootstrap_ready_ms": 762,
+          "inject_ms": 0,
+          "admission_ms": 762,
+          "accepted_to_dispatch_ms": 762
+        }
+      },
+      {
+        "timestamp": 1789609569731,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0a-ead1-7d11-ae9b-6d97b67342e0",
+          "stage": "turn.admission",
+          "duration_ms": 762,
+          "reads": {
+            "session_state": {
+              "count": 17,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609569731,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.attempt.started",
+          "request_id": "01a0ad0a-edaf-7358-94cb-ef9061ef0b83",
+          "turn_id": "01a0ad0a-ead1-7d11-ae9b-6d97b67342e0",
+          "outcome": "observed",
+          "replay_mode": "full_history",
+          "operation_kind": "generation",
+          "attempt_count": 1,
+          "max_attempts": 5,
+          "connection_generation": 0,
+          "model_call_index": 1
+        }
+      },
+      {
+        "timestamp": 1789609569731,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.connection.started",
+          "request_id": "01a0ad0a-edaf-7358-94cb-ef9061ef0b83",
+          "turn_id": "01a0ad0a-ead1-7d11-ae9b-6d97b67342e0",
+          "outcome": "observed",
+          "transport": "responses_websocket_v2",
+          "operation_kind": "initial",
+          "attempt_count": 1,
+          "connection_generation": 1
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2625,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609576180,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609576378,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "DELETE"
+        }
+      },
+      {
+        "timestamp": 1789609578805,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "bd7ea299-f7d5-4726-b646-fac323b6f55a",
+          "mode": "live",
+          "auth_ms": 198,
+          "method": "DELETE",
+          "path": "/v1/agents/01a0ad0a-e5a2-7755-968d-b86d7e425467",
+          "status": 204
+        }
+      },
+      {
+        "timestamp": 1789609578805,
+        "message": {
+          "type": "managed.request",
+          "request_id": "bd7ea299-f7d5-4726-b646-fac323b6f55a",
+          "method": "DELETE",
+          "path": "/v1/agents/01a0ad0a-e5a2-7755-968d-b86d7e425467",
+          "status": 204,
+          "duration_ms": 2625
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2345,
+    "cpuTime": 38,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609576427,
+    "outcome": "ok",
+    "durableObjectId": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+    "logs": [
+      {
+        "timestamp": 1789609576668,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "delete.registry_initial",
+          "started_at": 1789609576387,
+          "duration_ms": 281,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609576668,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "delete.runtime",
+          "started_at": 1789609576668,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609576668,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "delete.attachments",
+          "started_at": 1789609576668,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609576867,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "delete.memory",
+          "started_at": 1789609576668,
+          "duration_ms": 199,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609577875,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "delete.containers",
+          "started_at": 1789609576867,
+          "duration_ms": 1008,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609578089,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "delete.sandbox_workspaces",
+          "started_at": 1789609577875,
+          "duration_ms": 214,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609578089,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "delete.brain",
+          "started_at": 1789609578089,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609578272,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "delete.registry_final",
+          "started_at": 1789609578089,
+          "duration_ms": 183,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609578756,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "delete.archives",
+          "started_at": 1789609578272,
+          "duration_ms": 484,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609578756,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "session.DELETE /session",
+          "duration_ms": 2369,
+          "reads": {
+            "session_state": {
+              "count": 2,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 224,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609578976,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609579167,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609579199,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "82aed931-5f1d-42db-8633-489b4756dd7a",
+          "mode": "live",
+          "auth_ms": 191,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0a-e5a2-7755-968d-b86d7e425467",
+          "status": 404
+        }
+      },
+      {
+        "timestamp": 1789609579199,
+        "message": {
+          "type": "managed.request",
+          "request_id": "82aed931-5f1d-42db-8633-489b4756dd7a",
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0a-e5a2-7755-968d-b86d7e425467",
+          "status": 404,
+          "duration_ms": 223
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609579177,
+    "outcome": "ok",
+    "durableObjectId": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+    "logs": [
+      {
+        "timestamp": 1789609579177,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "20bcbb08cf7f84a1d6de6e93c608f878cfd090dd37f2d0103647d304df68d4f5",
+          "stage": "session.GET /state",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1213,
+    "cpuTime": 17,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609579651,
+    "outcome": "responseStreamDisconnected",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609581817,
+        "message": {
+          "type": "managed.agent.live_created",
+          "outcome": "success",
+          "create_ms": 1204
+        }
+      },
+      {
+        "timestamp": 1789609581817,
+        "message": {
+          "type": "managed.request",
+          "request_id": null,
+          "method": "GET",
+          "path": "/v1/agents/live",
+          "status": 101,
+          "duration_ms": 1204
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 298,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609581920,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609582118,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "POST"
+        }
+      },
+      {
+        "timestamp": 1789609582216,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "e5a799a4-ebaa-488e-810e-74b4a8a79f31",
+          "mode": "live",
+          "auth_ms": 198,
+          "method": "POST",
+          "path": "/v1/agents/01a0ad0b-1914-7869-8456-4efb82475565/prepare",
+          "status": 202
+        }
+      },
+      {
+        "timestamp": 1789609582216,
+        "message": {
+          "type": "managed.request",
+          "request_id": "e5a799a4-ebaa-488e-810e-74b4a8a79f31",
+          "method": "POST",
+          "path": "/v1/agents/01a0ad0b-1914-7869-8456-4efb82475565/prepare",
+          "status": 202,
+          "duration_ms": 296
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 353,
+    "cpuTime": 7,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609581830,
+    "outcome": "ok",
+    "durableObjectId": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+    "logs": [
+      {
+        "timestamp": 1789609581830,
+        "message": {
+          "type": "managed.personalization.pinned",
+          "turn_id": "01a0ad0b-1d07-7431-b5a4-4c2083403859",
+          "agent_id": "01a0ad0b-1914-7869-8456-4efb82475565",
+          "cache_hit": false,
+          "fact_count": 0
+        }
+      },
+      {
+        "timestamp": 1789609581830,
+        "message": {
+          "type": "managed.turn.accepted",
+          "turn_id": "01a0ad0b-1d07-7431-b5a4-4c2083403859",
+          "transport": "managed"
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 5,
+    "cpuTime": 0,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609583075,
+    "outcome": "ok",
+    "durableObjectId": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+    "logs": [
+      {
+        "timestamp": 1789609583075,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 38,
+    "cpuTime": 0,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609583080,
+    "outcome": "ok",
+    "durableObjectId": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+    "logs": [
+      {
+        "timestamp": 1789609583080,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1,
+    "cpuTime": 0,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609583769,
+    "outcome": "ok",
+    "durableObjectId": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+    "logs": [
+      {
+        "timestamp": 1789609583769,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 49,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609583418,
+    "outcome": "ok",
+    "durableObjectId": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+    "logs": [
+      {
+        "timestamp": 1789609583418,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 0,
+    "cpuTime": 0,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609583864,
+    "outcome": "ok",
+    "durableObjectId": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+    "logs": [
+      {
+        "timestamp": 1789609583864,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 289,
+    "cpuTime": 19,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609583470,
+    "outcome": "ok",
+    "durableObjectId": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+    "logs": [
+      {
+        "timestamp": 1789609583470,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609583733,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.connection.completed",
+          "request_id": "01a0ad0b-1f11-731c-ae06-6b0fb15f8d69",
+          "turn_id": "01a0ad0b-1d07-7431-b5a4-4c2083403859",
+          "outcome": "success",
+          "transport": "responses_websocket_v2",
+          "operation_kind": "initial",
+          "attempt_count": 1,
+          "connection_generation": 1,
+          "duration_ms": 1364
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 87,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609583769,
+    "outcome": "ok",
+    "durableObjectId": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+    "logs": [
+      {
+        "timestamp": 1789609583769,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 4898,
+    "cpuTime": 82,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609583865,
+    "outcome": "ok",
+    "durableObjectId": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+    "logs": [
+      {
+        "timestamp": 1789609583865,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609588829,
+        "message": {
+          "type": "managed.turn.transition",
+          "turn_id": "01a0ad0b-1d07-7431-b5a4-4c2083403859",
+          "status": "completed",
+          "outcome": "success",
+          "message_type": "turn_completed",
+          "attempt_count": 0
+        }
+      },
+      {
+        "timestamp": 1789609588829,
+        "message": {
+          "type": "managed.capacity",
+          "reason": "terminal_milestone",
+          "session_id": "01a0ad0b-1914-7869-8456-4efb82475565"
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 10,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609583066,
+    "outcome": "canceled",
+    "durableObjectId": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+    "logs": [
+      {
+        "timestamp": 1789609583066,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "attachment.router_ready",
+          "started_at": 1789609583066,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609583066,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "session.GET /tool-host",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 173,
+    "cpuTime": 28,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609581681,
+    "outcome": "canceled",
+    "durableObjectId": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+    "logs": [
+      {
+        "timestamp": 1789609581684,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "session.GET /create-live",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 4,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 643,
+    "cpuTime": 8,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609581991,
+    "outcome": "canceled",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609582788,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609583220,
+        "message": {
+          "type": "managed.request",
+          "request_id": null,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-1914-7869-8456-4efb82475565/tool-host",
+          "status": 101,
+          "duration_ms": 632
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 211,
+    "cpuTime": 3,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609589096,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609589288,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609589303,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "3ef28ae6-c828-47b0-be43-43fa7b2a34f4",
+          "mode": "live",
+          "auth_ms": 192,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-1914-7869-8456-4efb82475565/events/history",
+          "status": 200
+        }
+      },
+      {
+        "timestamp": 1789609589303,
+        "message": {
+          "type": "managed.request",
+          "request_id": "3ef28ae6-c828-47b0-be43-43fa7b2a34f4",
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-1914-7869-8456-4efb82475565/events/history",
+          "status": 200,
+          "duration_ms": 207
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 299,
+    "cpuTime": 3,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609589273,
+    "outcome": "ok",
+    "durableObjectId": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+    "logs": [
+      {
+        "timestamp": 1789609589273,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "session.GET /events/history",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 206,
+    "cpuTime": 3,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609589398,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609589586,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609589602,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "af539334-fc7e-41a6-9ca8-c4589e2a9a70",
+          "mode": "live",
+          "auth_ms": 188,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-1914-7869-8456-4efb82475565",
+          "status": 200
+        }
+      },
+      {
+        "timestamp": 1789609589602,
+        "message": {
+          "type": "managed.request",
+          "request_id": "af539334-fc7e-41a6-9ca8-c4589e2a9a70",
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-1914-7869-8456-4efb82475565",
+          "status": 200,
+          "duration_ms": 204
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 246,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609589576,
+    "outcome": "ok",
+    "durableObjectId": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+    "logs": [
+      {
+        "timestamp": 1789609589576,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "session.GET /state",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1013,
+    "cpuTime": 249,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609582182,
+    "outcome": "ok",
+    "durableObjectId": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+    "logs": [
+      {
+        "timestamp": 1789609582182,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "session.POST /prepare",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 5,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609582182,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-1d07-7431-b5a4-4c2083403859",
+          "stage": "account.hosted_tools",
+          "started_at": 1789609581830,
+          "duration_ms": 352,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609582182,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "account.hosted_tools",
+          "started_at": 1789609582182,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609582353,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-1d07-7431-b5a4-4c2083403859",
+          "stage": "account.catalog",
+          "started_at": 1789609581830,
+          "duration_ms": 523,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609582353,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-1d07-7431-b5a4-4c2083403859",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789609581830,
+          "duration_ms": 523,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609582353,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789609582182,
+          "duration_ms": 171,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609582353,
+        "message": {
+          "type": "managed.capacity",
+          "reason": "agent_constructed",
+          "session_id": "01a0ad0b-1914-7869-8456-4efb82475565",
+          "account_mcp_refresh_ms": 523,
+          "credential_binding_ms": 0,
+          "browser_runtime_ms": 0,
+          "workspace_ms": 0,
+          "computer_runtime_ms": 0,
+          "code_evaluator_ms": 0,
+          "managed_tools_ms": 0,
+          "cloudflare_agent_ms": 0,
+          "construction_ms": 0,
+          "runtime_ready_ms": 523
+        }
+      },
+      {
+        "timestamp": 1789609582369,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-1d07-7431-b5a4-4c2083403859",
+          "stage": "account.vault",
+          "started_at": 1789609581830,
+          "duration_ms": 539,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609582369,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-1d07-7431-b5a4-4c2083403859",
+          "stage": "startup.environment",
+          "started_at": 1789609581830,
+          "duration_ms": 539,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609582369,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "conversation.prepare",
+          "started_at": 1789609582182,
+          "duration_ms": 187,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609582369,
+        "message": {
+          "type": "managed.turn.dispatch",
+          "turn_id": "01a0ad0b-1d07-7431-b5a4-4c2083403859",
+          "runtime_ready_ms": 523,
+          "bootstrap_ready_ms": 539,
+          "inject_ms": 0,
+          "admission_ms": 539,
+          "accepted_to_dispatch_ms": 539
+        }
+      },
+      {
+        "timestamp": 1789609582369,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-1d07-7431-b5a4-4c2083403859",
+          "stage": "turn.admission",
+          "duration_ms": 539,
+          "reads": {
+            "session_state": {
+              "count": 17,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609582369,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.attempt.started",
+          "request_id": "01a0ad0b-1f11-731c-ae06-6b0fb15f8d69",
+          "turn_id": "01a0ad0b-1d07-7431-b5a4-4c2083403859",
+          "outcome": "observed",
+          "replay_mode": "full_history",
+          "operation_kind": "generation",
+          "attempt_count": 1,
+          "max_attempts": 5,
+          "connection_generation": 0,
+          "model_call_index": 1
+        }
+      },
+      {
+        "timestamp": 1789609582369,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.connection.started",
+          "request_id": "01a0ad0b-1f11-731c-ae06-6b0fb15f8d69",
+          "turn_id": "01a0ad0b-1d07-7431-b5a4-4c2083403859",
+          "outcome": "observed",
+          "transport": "responses_websocket_v2",
+          "operation_kind": "initial",
+          "attempt_count": 1,
+          "connection_generation": 1
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2991,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609589638,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609589834,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "DELETE"
+        }
+      },
+      {
+        "timestamp": 1789609592628,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "8a4a936e-2684-4a9e-8c62-24e5158135f8",
+          "mode": "live",
+          "auth_ms": 196,
+          "method": "DELETE",
+          "path": "/v1/agents/01a0ad0b-1914-7869-8456-4efb82475565",
+          "status": 204
+        }
+      },
+      {
+        "timestamp": 1789609592628,
+        "message": {
+          "type": "managed.request",
+          "request_id": "8a4a936e-2684-4a9e-8c62-24e5158135f8",
+          "method": "DELETE",
+          "path": "/v1/agents/01a0ad0b-1914-7869-8456-4efb82475565",
+          "status": 204,
+          "duration_ms": 2990
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2681,
+    "cpuTime": 26,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609589925,
+    "outcome": "ok",
+    "durableObjectId": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+    "logs": [
+      {
+        "timestamp": 1789609590144,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "delete.registry_initial",
+          "started_at": 1789609589827,
+          "duration_ms": 317,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609590144,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "delete.runtime",
+          "started_at": 1789609590144,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609590144,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "delete.attachments",
+          "started_at": 1789609590144,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609590333,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "delete.memory",
+          "started_at": 1789609590144,
+          "duration_ms": 189,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609591967,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "delete.containers",
+          "started_at": 1789609590333,
+          "duration_ms": 1634,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609592143,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "delete.sandbox_workspaces",
+          "started_at": 1789609591967,
+          "duration_ms": 176,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609592143,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "delete.brain",
+          "started_at": 1789609592143,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609592320,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "delete.registry_final",
+          "started_at": 1789609592143,
+          "duration_ms": 177,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609592573,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "delete.archives",
+          "started_at": 1789609592320,
+          "duration_ms": 253,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609592573,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "session.DELETE /session",
+          "duration_ms": 2746,
+          "reads": {
+            "session_state": {
+              "count": 2,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 0,
+    "cpuTime": 0,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609592963,
+    "outcome": "ok",
+    "durableObjectId": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+    "logs": [
+      {
+        "timestamp": 1789609592963,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "4749795d4542089a4ff6705fe8e5b841673bbb16f26d682d868c6725bb87854b",
+          "stage": "session.GET /state",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 224,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609592750,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609592954,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609592972,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "531c6b1f-cb6a-468e-af66-b309d24458be",
+          "mode": "live",
+          "auth_ms": 204,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-1914-7869-8456-4efb82475565",
+          "status": 404
+        }
+      },
+      {
+        "timestamp": 1789609592972,
+        "message": {
+          "type": "managed.request",
+          "request_id": "531c6b1f-cb6a-468e-af66-b309d24458be",
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-1914-7869-8456-4efb82475565",
+          "status": 404,
+          "duration_ms": 222
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1225,
+    "cpuTime": 9,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609593432,
+    "outcome": "responseStreamDisconnected",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609595222,
+        "message": {
+          "type": "managed.agent.live_created",
+          "outcome": "success",
+          "create_ms": 1222
+        }
+      },
+      {
+        "timestamp": 1789609595222,
+        "message": {
+          "type": "managed.request",
+          "request_id": null,
+          "method": "GET",
+          "path": "/v1/agents/live",
+          "status": 101,
+          "duration_ms": 1222
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 256,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609595317,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609595521,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "POST"
+        }
+      },
+      {
+        "timestamp": 1789609595571,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "79aaf83c-0be7-4bb6-9ea4-68aa6ece6ba2",
+          "mode": "live",
+          "auth_ms": 204,
+          "method": "POST",
+          "path": "/v1/agents/01a0ad0b-4d4b-7baf-8252-8f3eba1ff836/prepare",
+          "status": 202
+        }
+      },
+      {
+        "timestamp": 1789609595571,
+        "message": {
+          "type": "managed.request",
+          "request_id": "79aaf83c-0be7-4bb6-9ea4-68aa6ece6ba2",
+          "method": "POST",
+          "path": "/v1/agents/01a0ad0b-4d4b-7baf-8252-8f3eba1ff836/prepare",
+          "status": 202,
+          "duration_ms": 254
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 312,
+    "cpuTime": 8,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609595229,
+    "outcome": "ok",
+    "durableObjectId": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+    "logs": [
+      {
+        "timestamp": 1789609595229,
+        "message": {
+          "type": "managed.personalization.pinned",
+          "turn_id": "01a0ad0b-515c-7462-8704-fa0e56d5cebe",
+          "agent_id": "01a0ad0b-4d4b-7baf-8252-8f3eba1ff836",
+          "cache_hit": false,
+          "fact_count": 0
+        }
+      },
+      {
+        "timestamp": 1789609595229,
+        "message": {
+          "type": "managed.turn.accepted",
+          "turn_id": "01a0ad0b-515c-7462-8704-fa0e56d5cebe",
+          "transport": "managed"
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1,
+    "cpuTime": 0,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609596673,
+    "outcome": "ok",
+    "durableObjectId": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+    "logs": [
+      {
+        "timestamp": 1789609596673,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 32,
+    "cpuTime": 0,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609596673,
+    "outcome": "ok",
+    "durableObjectId": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+    "logs": [
+      {
+        "timestamp": 1789609596673,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 4,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609597053,
+    "outcome": "ok",
+    "durableObjectId": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+    "logs": [
+      {
+        "timestamp": 1789609597053,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1,
+    "cpuTime": 0,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609597410,
+    "outcome": "ok",
+    "durableObjectId": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+    "logs": [
+      {
+        "timestamp": 1789609597410,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1,
+    "cpuTime": 0,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609597440,
+    "outcome": "ok",
+    "durableObjectId": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+    "logs": [
+      {
+        "timestamp": 1789609597440,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 334,
+    "cpuTime": 20,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609597057,
+    "outcome": "ok",
+    "durableObjectId": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+    "logs": [
+      {
+        "timestamp": 1789609597057,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609597174,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.connection.completed",
+          "request_id": "01a0ad0b-5351-7457-a6ba-b6f3efc3c6d3",
+          "turn_id": "01a0ad0b-515c-7462-8704-fa0e56d5cebe",
+          "outcome": "success",
+          "transport": "responses_websocket_v2",
+          "operation_kind": "initial",
+          "attempt_count": 1,
+          "connection_generation": 1,
+          "duration_ms": 1445
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 30,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609597410,
+    "outcome": "ok",
+    "durableObjectId": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+    "logs": [
+      {
+        "timestamp": 1789609597410,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 3058,
+    "cpuTime": 86,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609597441,
+    "outcome": "ok",
+    "durableObjectId": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+    "logs": [
+      {
+        "timestamp": 1789609597441,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609600551,
+        "message": {
+          "type": "managed.turn.transition",
+          "turn_id": "01a0ad0b-515c-7462-8704-fa0e56d5cebe",
+          "status": "completed",
+          "outcome": "success",
+          "message_type": "turn_completed",
+          "attempt_count": 0
+        }
+      },
+      {
+        "timestamp": 1789609600551,
+        "message": {
+          "type": "managed.capacity",
+          "reason": "terminal_milestone",
+          "session_id": "01a0ad0b-4d4b-7baf-8252-8f3eba1ff836"
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 166,
+    "cpuTime": 29,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609595089,
+    "outcome": "canceled",
+    "durableObjectId": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+    "logs": [
+      {
+        "timestamp": 1789609595090,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "session.GET /create-live",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 4,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 582,
+    "cpuTime": 17,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609595432,
+    "outcome": "canceled",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609596441,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609596804,
+        "message": {
+          "type": "managed.request",
+          "request_id": null,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-4d4b-7baf-8252-8f3eba1ff836/tool-host",
+          "status": 101,
+          "duration_ms": 558
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 12,
+    "cpuTime": 3,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609596663,
+    "outcome": "canceled",
+    "durableObjectId": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+    "logs": [
+      {
+        "timestamp": 1789609596663,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "attachment.router_ready",
+          "started_at": 1789609596663,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609596663,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "session.GET /tool-host",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 222,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609600834,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609601037,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609601055,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "11e55f8e-24f2-485c-a0e1-af787763e0d8",
+          "mode": "live",
+          "auth_ms": 203,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-4d4b-7baf-8252-8f3eba1ff836/events/history",
+          "status": 200
+        }
+      },
+      {
+        "timestamp": 1789609601055,
+        "message": {
+          "type": "managed.request",
+          "request_id": "11e55f8e-24f2-485c-a0e1-af787763e0d8",
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-4d4b-7baf-8252-8f3eba1ff836/events/history",
+          "status": 200,
+          "duration_ms": 221
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 210,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609601093,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609601287,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609601302,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "00a7dada-5ca3-430c-b504-75ab344f7ee7",
+          "mode": "live",
+          "auth_ms": 194,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-4d4b-7baf-8252-8f3eba1ff836",
+          "status": 200
+        }
+      },
+      {
+        "timestamp": 1789609601302,
+        "message": {
+          "type": "managed.request",
+          "request_id": "00a7dada-5ca3-430c-b504-75ab344f7ee7",
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-4d4b-7baf-8252-8f3eba1ff836",
+          "status": 200,
+          "duration_ms": 209
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 247,
+    "cpuTime": 3,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609601013,
+    "outcome": "ok",
+    "durableObjectId": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+    "logs": [
+      {
+        "timestamp": 1789609601013,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "session.GET /events/history",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 251,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609601266,
+    "outcome": "ok",
+    "durableObjectId": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+    "logs": [
+      {
+        "timestamp": 1789609601266,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "session.GET /state",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1253,
+    "cpuTime": 302,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609595540,
+    "outcome": "ok",
+    "durableObjectId": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+    "logs": [
+      {
+        "timestamp": 1789609595540,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "session.POST /prepare",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 5,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609595563,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-515c-7462-8704-fa0e56d5cebe",
+          "stage": "account.hosted_tools",
+          "started_at": 1789609595229,
+          "duration_ms": 334,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609595563,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "account.hosted_tools",
+          "started_at": 1789609595540,
+          "duration_ms": 23,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609595727,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-515c-7462-8704-fa0e56d5cebe",
+          "stage": "account.vault",
+          "started_at": 1789609595229,
+          "duration_ms": 498,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609595729,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-515c-7462-8704-fa0e56d5cebe",
+          "stage": "account.catalog",
+          "started_at": 1789609595229,
+          "duration_ms": 500,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609595729,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-515c-7462-8704-fa0e56d5cebe",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789609595229,
+          "duration_ms": 500,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609595729,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789609595540,
+          "duration_ms": 189,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609595729,
+        "message": {
+          "type": "managed.capacity",
+          "reason": "agent_constructed",
+          "session_id": "01a0ad0b-4d4b-7baf-8252-8f3eba1ff836",
+          "account_mcp_refresh_ms": 500,
+          "credential_binding_ms": 0,
+          "browser_runtime_ms": 0,
+          "workspace_ms": 0,
+          "computer_runtime_ms": 0,
+          "code_evaluator_ms": 0,
+          "managed_tools_ms": 0,
+          "cloudflare_agent_ms": 0,
+          "construction_ms": 0,
+          "runtime_ready_ms": 500
+        }
+      },
+      {
+        "timestamp": 1789609595729,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "conversation.prepare",
+          "started_at": 1789609595540,
+          "duration_ms": 189,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609595729,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-515c-7462-8704-fa0e56d5cebe",
+          "stage": "startup.environment",
+          "started_at": 1789609595229,
+          "duration_ms": 500,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609595729,
+        "message": {
+          "type": "managed.turn.dispatch",
+          "turn_id": "01a0ad0b-515c-7462-8704-fa0e56d5cebe",
+          "runtime_ready_ms": 500,
+          "bootstrap_ready_ms": 500,
+          "inject_ms": 0,
+          "admission_ms": 500,
+          "accepted_to_dispatch_ms": 500
+        }
+      },
+      {
+        "timestamp": 1789609595729,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-515c-7462-8704-fa0e56d5cebe",
+          "stage": "turn.admission",
+          "duration_ms": 500,
+          "reads": {
+            "session_state": {
+              "count": 17,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609595729,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.attempt.started",
+          "request_id": "01a0ad0b-5351-7457-a6ba-b6f3efc3c6d3",
+          "turn_id": "01a0ad0b-515c-7462-8704-fa0e56d5cebe",
+          "outcome": "observed",
+          "replay_mode": "full_history",
+          "operation_kind": "generation",
+          "attempt_count": 1,
+          "max_attempts": 5,
+          "connection_generation": 0,
+          "model_call_index": 1
+        }
+      },
+      {
+        "timestamp": 1789609595729,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.connection.started",
+          "request_id": "01a0ad0b-5351-7457-a6ba-b6f3efc3c6d3",
+          "turn_id": "01a0ad0b-515c-7462-8704-fa0e56d5cebe",
+          "outcome": "observed",
+          "transport": "responses_websocket_v2",
+          "operation_kind": "initial",
+          "attempt_count": 1,
+          "connection_generation": 1
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2032,
+    "cpuTime": 25,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609601562,
+    "outcome": "ok",
+    "durableObjectId": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+    "logs": [
+      {
+        "timestamp": 1789609601794,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "delete.registry_initial",
+          "started_at": 1789609601524,
+          "duration_ms": 270,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609601794,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "delete.runtime",
+          "started_at": 1789609601794,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609601794,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "delete.attachments",
+          "started_at": 1789609601794,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609601991,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "delete.memory",
+          "started_at": 1789609601794,
+          "duration_ms": 197,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609602936,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "delete.containers",
+          "started_at": 1789609601991,
+          "duration_ms": 945,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609603124,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "delete.sandbox_workspaces",
+          "started_at": 1789609602936,
+          "duration_ms": 188,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609603124,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "delete.brain",
+          "started_at": 1789609603124,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609603306,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "delete.registry_final",
+          "started_at": 1789609603124,
+          "duration_ms": 182,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609603565,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "delete.archives",
+          "started_at": 1789609603306,
+          "duration_ms": 259,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609603565,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "session.DELETE /session",
+          "duration_ms": 2041,
+          "reads": {
+            "session_state": {
+              "count": 2,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2275,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609601349,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609601539,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "DELETE"
+        }
+      },
+      {
+        "timestamp": 1789609603623,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "368f11af-7437-41a0-b02b-8a647431e122",
+          "mode": "live",
+          "auth_ms": 190,
+          "method": "DELETE",
+          "path": "/v1/agents/01a0ad0b-4d4b-7baf-8252-8f3eba1ff836",
+          "status": 204
+        }
+      },
+      {
+        "timestamp": 1789609603623,
+        "message": {
+          "type": "managed.request",
+          "request_id": "368f11af-7437-41a0-b02b-8a647431e122",
+          "method": "DELETE",
+          "path": "/v1/agents/01a0ad0b-4d4b-7baf-8252-8f3eba1ff836",
+          "status": 204,
+          "duration_ms": 2274
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1,
+    "cpuTime": 0,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609603931,
+    "outcome": "ok",
+    "durableObjectId": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+    "logs": [
+      {
+        "timestamp": 1789609603931,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "7fd7fb973f0bbc3ec9e6197aed367e3f2078340fce17398ebb19a6db87b27a9e",
+          "stage": "session.GET /state",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 207,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609603739,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609603934,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609603944,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "31452013-ab1e-40f9-813d-3d600a377179",
+          "mode": "live",
+          "auth_ms": 195,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-4d4b-7baf-8252-8f3eba1ff836",
+          "status": 404
+        }
+      },
+      {
+        "timestamp": 1789609603944,
+        "message": {
+          "type": "managed.request",
+          "request_id": "31452013-ab1e-40f9-813d-3d600a377179",
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-4d4b-7baf-8252-8f3eba1ff836",
+          "status": 404,
+          "duration_ms": 205
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1403,
+    "cpuTime": 9,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609604702,
+    "outcome": "canceled",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609606670,
+        "message": {
+          "type": "managed.agent.live_created",
+          "outcome": "success",
+          "create_ms": 1401
+        }
+      },
+      {
+        "timestamp": 1789609606670,
+        "message": {
+          "type": "managed.request",
+          "request_id": null,
+          "method": "GET",
+          "path": "/v1/agents/live",
+          "status": 101,
+          "duration_ms": 1401
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 508,
+    "cpuTime": 3,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609606815,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609607019,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "POST"
+        }
+      },
+      {
+        "timestamp": 1789609607321,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "8ca0ff46-5632-4a35-b735-2162b5c87ec1",
+          "mode": "live",
+          "auth_ms": 204,
+          "method": "POST",
+          "path": "/v1/agents/01a0ad0b-7954-75a1-bbc7-0c52adc3a3c5/prepare",
+          "status": 202
+        }
+      },
+      {
+        "timestamp": 1789609607321,
+        "message": {
+          "type": "managed.request",
+          "request_id": "8ca0ff46-5632-4a35-b735-2162b5c87ec1",
+          "method": "POST",
+          "path": "/v1/agents/01a0ad0b-7954-75a1-bbc7-0c52adc3a3c5/prepare",
+          "status": 202,
+          "duration_ms": 506
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 547,
+    "cpuTime": 17,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609606723,
+    "outcome": "ok",
+    "durableObjectId": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+    "logs": [
+      {
+        "timestamp": 1789609606723,
+        "message": {
+          "type": "managed.personalization.pinned",
+          "turn_id": "01a0ad0b-7e45-7c61-bddd-dd06e80b4a4f",
+          "agent_id": "01a0ad0b-7954-75a1-bbc7-0c52adc3a3c5",
+          "cache_hit": false,
+          "fact_count": 0
+        }
+      },
+      {
+        "timestamp": 1789609606723,
+        "message": {
+          "type": "managed.turn.accepted",
+          "turn_id": "01a0ad0b-7e45-7c61-bddd-dd06e80b4a4f",
+          "transport": "managed"
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 603,
+    "cpuTime": 402,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609607271,
+    "outcome": "ok",
+    "durableObjectId": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+    "logs": [
+      {
+        "timestamp": 1789609607271,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "session.POST /prepare",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 5,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609607271,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-7e45-7c61-bddd-dd06e80b4a4f",
+          "stage": "account.hosted_tools",
+          "started_at": 1789609606723,
+          "duration_ms": 548,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609607271,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "account.hosted_tools",
+          "started_at": 1789609607271,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609607453,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-7e45-7c61-bddd-dd06e80b4a4f",
+          "stage": "account.vault",
+          "started_at": 1789609606723,
+          "duration_ms": 730,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609607471,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-7e45-7c61-bddd-dd06e80b4a4f",
+          "stage": "account.catalog",
+          "started_at": 1789609606723,
+          "duration_ms": 748,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609607471,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-7e45-7c61-bddd-dd06e80b4a4f",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789609606723,
+          "duration_ms": 748,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609607471,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789609607271,
+          "duration_ms": 200,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609607471,
+        "message": {
+          "type": "managed.capacity",
+          "reason": "agent_constructed",
+          "session_id": "01a0ad0b-7954-75a1-bbc7-0c52adc3a3c5",
+          "account_mcp_refresh_ms": 748,
+          "credential_binding_ms": 0,
+          "browser_runtime_ms": 0,
+          "workspace_ms": 0,
+          "computer_runtime_ms": 0,
+          "code_evaluator_ms": 0,
+          "managed_tools_ms": 0,
+          "cloudflare_agent_ms": 0,
+          "construction_ms": 0,
+          "runtime_ready_ms": 748
+        }
+      },
+      {
+        "timestamp": 1789609607471,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "conversation.prepare",
+          "started_at": 1789609607271,
+          "duration_ms": 200,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609607471,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-7e45-7c61-bddd-dd06e80b4a4f",
+          "stage": "startup.environment",
+          "started_at": 1789609606723,
+          "duration_ms": 748,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609607471,
+        "message": {
+          "type": "managed.turn.dispatch",
+          "turn_id": "01a0ad0b-7e45-7c61-bddd-dd06e80b4a4f",
+          "runtime_ready_ms": 748,
+          "bootstrap_ready_ms": 748,
+          "inject_ms": 0,
+          "admission_ms": 748,
+          "accepted_to_dispatch_ms": 748
+        }
+      },
+      {
+        "timestamp": 1789609607471,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "01a0ad0b-7e45-7c61-bddd-dd06e80b4a4f",
+          "stage": "turn.admission",
+          "duration_ms": 748,
+          "reads": {
+            "session_state": {
+              "count": 17,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609607471,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.attempt.started",
+          "request_id": "01a0ad0b-812f-715c-903d-ea89ee1df1f6",
+          "turn_id": "01a0ad0b-7e45-7c61-bddd-dd06e80b4a4f",
+          "outcome": "observed",
+          "replay_mode": "full_history",
+          "operation_kind": "generation",
+          "attempt_count": 1,
+          "max_attempts": 5,
+          "connection_generation": 0,
+          "model_call_index": 1
+        }
+      },
+      {
+        "timestamp": 1789609607471,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.connection.started",
+          "request_id": "01a0ad0b-812f-715c-903d-ea89ee1df1f6",
+          "turn_id": "01a0ad0b-7e45-7c61-bddd-dd06e80b4a4f",
+          "outcome": "observed",
+          "transport": "responses_websocket_v2",
+          "operation_kind": "initial",
+          "attempt_count": 1,
+          "connection_generation": 1
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 3,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609608957,
+    "outcome": "ok",
+    "durableObjectId": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+    "logs": [
+      {
+        "timestamp": 1789609608957,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609609684,
+    "outcome": "ok",
+    "durableObjectId": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+    "logs": [
+      {
+        "timestamp": 1789609609684,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 22,
+    "cpuTime": 3,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609609340,
+    "outcome": "ok",
+    "durableObjectId": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+    "logs": [
+      {
+        "timestamp": 1789609609340,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2,
+    "cpuTime": 0,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609609761,
+    "outcome": "ok",
+    "durableObjectId": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+    "logs": [
+      {
+        "timestamp": 1789609609761,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 74,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609609684,
+    "outcome": "ok",
+    "durableObjectId": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+    "logs": [
+      {
+        "timestamp": 1789609609684,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 318,
+    "cpuTime": 26,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609609358,
+    "outcome": "ok",
+    "durableObjectId": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+    "logs": [
+      {
+        "timestamp": 1789609609358,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609609454,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.connection.completed",
+          "request_id": "01a0ad0b-812f-715c-903d-ea89ee1df1f6",
+          "turn_id": "01a0ad0b-7e45-7c61-bddd-dd06e80b4a4f",
+          "outcome": "success",
+          "transport": "responses_websocket_v2",
+          "operation_kind": "initial",
+          "attempt_count": 1,
+          "connection_generation": 1,
+          "duration_ms": 1983
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 6003,
+    "cpuTime": 141,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609609762,
+    "outcome": "ok",
+    "durableObjectId": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+    "logs": [
+      {
+        "timestamp": 1789609609762,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789609615826,
+        "message": {
+          "type": "managed.turn.transition",
+          "turn_id": "01a0ad0b-7e45-7c61-bddd-dd06e80b4a4f",
+          "status": "completed",
+          "outcome": "success",
+          "message_type": "turn_completed",
+          "attempt_count": 0
+        }
+      },
+      {
+        "timestamp": 1789609615826,
+        "message": {
+          "type": "managed.capacity",
+          "reason": "terminal_milestone",
+          "session_id": "01a0ad0b-7954-75a1-bbc7-0c52adc3a3c5"
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 532,
+    "cpuTime": 8,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609606887,
+    "outcome": "canceled",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609607628,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609607942,
+        "message": {
+          "type": "managed.request",
+          "request_id": null,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-7954-75a1-bbc7-0c52adc3a3c5/tool-host",
+          "status": 101,
+          "duration_ms": 518
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 313,
+    "cpuTime": 45,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609606445,
+    "outcome": "canceled",
+    "durableObjectId": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+    "logs": [
+      {
+        "timestamp": 1789609606448,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "session.GET /create-live",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 4,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 211,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609616202,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609616385,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609616412,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "f20b8307-5229-4e7c-8072-f2f6132430bb",
+          "mode": "live",
+          "auth_ms": 183,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-7954-75a1-bbc7-0c52adc3a3c5/events/history",
+          "status": 200
+        }
+      },
+      {
+        "timestamp": 1789609616412,
+        "message": {
+          "type": "managed.request",
+          "request_id": "f20b8307-5229-4e7c-8072-f2f6132430bb",
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-7954-75a1-bbc7-0c52adc3a3c5/events/history",
+          "status": 200,
+          "duration_ms": 210
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 227,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609616448,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609616645,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609616674,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "1d725b96-5013-488e-9c73-2e44d7d16cb2",
+          "mode": "live",
+          "auth_ms": 197,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-7954-75a1-bbc7-0c52adc3a3c5",
+          "status": 200
+        }
+      },
+      {
+        "timestamp": 1789609616674,
+        "message": {
+          "type": "managed.request",
+          "request_id": "1d725b96-5013-488e-9c73-2e44d7d16cb2",
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-7954-75a1-bbc7-0c52adc3a3c5",
+          "status": 200,
+          "duration_ms": 226
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 261,
+    "cpuTime": 4,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609616356,
+    "outcome": "ok",
+    "durableObjectId": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+    "logs": [
+      {
+        "timestamp": 1789609616356,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "session.GET /events/history",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 266,
+    "cpuTime": 3,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609616624,
+    "outcome": "ok",
+    "durableObjectId": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+    "logs": [
+      {
+        "timestamp": 1789609616624,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "session.GET /state",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 366,
+    "cpuTime": 31,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609608959,
+    "outcome": "ok",
+    "durableObjectId": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+    "logs": [
+      {
+        "timestamp": 1789609608959,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 83,
+    "cpuTime": 16,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609607477,
+    "outcome": "canceled",
+    "durableObjectId": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+    "logs": [
+      {
+        "timestamp": 1789609607477,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "attachment.router_ready",
+          "started_at": 1789609607477,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609607477,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "session.GET /tool-host",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2680,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609616709,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609616912,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "DELETE"
+        }
+      },
+      {
+        "timestamp": 1789609619390,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "00e2d7d0-5b08-44ce-a315-2e3b465d21ed",
+          "mode": "live",
+          "auth_ms": 203,
+          "method": "DELETE",
+          "path": "/v1/agents/01a0ad0b-7954-75a1-bbc7-0c52adc3a3c5",
+          "status": 204
+        }
+      },
+      {
+        "timestamp": 1789609619390,
+        "message": {
+          "type": "managed.request",
+          "request_id": "00e2d7d0-5b08-44ce-a315-2e3b465d21ed",
+          "method": "DELETE",
+          "path": "/v1/agents/01a0ad0b-7954-75a1-bbc7-0c52adc3a3c5",
+          "status": 204,
+          "duration_ms": 2681
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2416,
+    "cpuTime": 47,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609616932,
+    "outcome": "ok",
+    "durableObjectId": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+    "logs": [
+      {
+        "timestamp": 1789609617197,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "delete.registry_initial",
+          "started_at": 1789609616897,
+          "duration_ms": 300,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609617197,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "delete.runtime",
+          "started_at": 1789609617197,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609617197,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "delete.attachments",
+          "started_at": 1789609617197,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609617401,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "delete.memory",
+          "started_at": 1789609617197,
+          "duration_ms": 204,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609618629,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "delete.containers",
+          "started_at": 1789609617401,
+          "duration_ms": 1228,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609618861,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "delete.sandbox_workspaces",
+          "started_at": 1789609618629,
+          "duration_ms": 232,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609618861,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "delete.brain",
+          "started_at": 1789609618861,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609619038,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "delete.registry_final",
+          "started_at": 1789609618861,
+          "duration_ms": 177,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609619334,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "delete.archives",
+          "started_at": 1789609619038,
+          "duration_ms": 296,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789609619334,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "session.DELETE /session",
+          "duration_ms": 2437,
+          "reads": {
+            "session_state": {
+              "count": 2,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 231,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609619494,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789609619691,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789609619724,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "c8c36f67-f08e-42fe-8a72-c7e2a9696457",
+          "mode": "live",
+          "auth_ms": 197,
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-7954-75a1-bbc7-0c52adc3a3c5",
+          "status": 404
+        }
+      },
+      {
+        "timestamp": 1789609619724,
+        "message": {
+          "type": "managed.request",
+          "request_id": "c8c36f67-f08e-42fe-8a72-c7e2a9696457",
+          "method": "GET",
+          "path": "/v1/agents/01a0ad0b-7954-75a1-bbc7-0c52adc3a3c5",
+          "status": 404,
+          "duration_ms": 230
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "ab908259-a160-4f0b-ba28-48c82d766d30"
+    },
+    "eventTimestamp": 1789609619695,
+    "outcome": "ok",
+    "durableObjectId": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+    "logs": [
+      {
+        "timestamp": 1789609619695,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "e387d716465cfb27ff50f90ddc26783b1c900474fe18d87a20913f2b8ebd42c6",
+          "stage": "session.GET /state",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  }
+]

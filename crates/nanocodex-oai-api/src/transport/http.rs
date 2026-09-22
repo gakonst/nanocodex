@@ -1,21 +1,29 @@
+#[cfg(not(target_family = "wasm"))]
 use std::time::Duration;
 
 use crate::{OpenAiAuthSnapshot, monotonic_now_ns};
 use http::header;
-use tokio_tungstenite::tungstenite::Utf8Bytes;
 
 use crate::{EncodedRequest, ResponsesError, socket::ReceivedText};
 
+#[cfg(not(target_family = "wasm"))]
 const RESPONSES_LITE_HEADER: &str = "x-openai-internal-codex-responses-lite";
+#[cfg(not(target_family = "wasm"))]
 const TURN_STATE_HEADER: &str = "x-codex-turn-state";
 
 #[derive(Clone)]
 pub(crate) struct ResponsesHttp {
+    #[cfg(not(target_family = "wasm"))]
     client: reqwest::Client,
+    #[cfg(target_family = "wasm")]
+    host: Option<std::sync::Arc<dyn crate::transport::host::HostTransport>>,
 }
 
 pub(crate) struct ResponsesHttpStream {
+    #[cfg(not(target_family = "wasm"))]
     response: reqwest::Response,
+    #[cfg(target_family = "wasm")]
+    response: Box<dyn crate::transport::host::HostHttpBody>,
     decoder: SseDecoder,
     ended: bool,
 }
@@ -25,6 +33,7 @@ pub(crate) struct HttpMetadata {
     pub(crate) turn_state: Option<String>,
 }
 
+#[cfg(not(target_family = "wasm"))]
 impl ResponsesHttp {
     pub(crate) const fn new(client: reqwest::Client) -> Self {
         Self { client }
@@ -71,11 +80,11 @@ impl ResponsesHttp {
         if !status.is_success() {
             let retry_after = retry_after(response.headers());
             let body = response.text().await.unwrap_or_default();
-            return Err(ResponsesError::HttpRejected {
-                status: status.as_u16(),
+            return Err(ResponsesError::http_rejected(
+                status.as_u16(),
                 body,
                 retry_after,
-            });
+            ));
         }
         let metadata = HttpMetadata {
             reasoning_included: response.headers().contains_key("x-reasoning-included"),
@@ -101,14 +110,21 @@ impl ResponsesHttpStream {
         loop {
             if let Some(text) = self.decoder.next()? {
                 return Ok(ReceivedText {
-                    text: Utf8Bytes::from(text),
+                    #[cfg(not(target_family = "wasm"))]
+                    text: text.into(),
+                    #[cfg(target_family = "wasm")]
+                    text,
                     received_ns: monotonic_now_ns(),
                 });
             }
             if self.ended {
                 return Err(ResponsesError::UnexpectedEnd);
             }
-            if let Some(chunk) = self.response.chunk().await.map_err(map_http_error)? {
+            #[cfg(not(target_family = "wasm"))]
+            let chunk = self.response.chunk().await.map_err(map_http_error)?;
+            #[cfg(target_family = "wasm")]
+            let chunk = self.response.next().await.map_err(map_host_error)?;
+            if let Some(chunk) = chunk {
                 self.decoder.push(&chunk);
             } else {
                 self.ended = true;
@@ -194,6 +210,7 @@ impl SseDecoder {
     }
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     headers
         .get(header::RETRY_AFTER)
@@ -202,6 +219,7 @@ fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
         .map(Duration::from_secs)
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn map_http_error(error: reqwest::Error) -> ResponsesError {
     ResponsesError::HttpRequest {
         retryable: error.is_connect() || error.is_body() || error.is_request(),
@@ -213,6 +231,32 @@ fn map_http_error(error: reqwest::Error) -> ResponsesError {
 #[cfg(test)]
 mod tests {
     use super::SseDecoder;
+
+    #[test]
+    fn emits_complete_event_before_eof_and_preserves_split_utf8() {
+        let mut decoder = SseDecoder::default();
+        let event = "data: héllo\r\n\r\n".as_bytes();
+        let split = event.iter().position(|byte| *byte == 0xc3).unwrap() + 1;
+        decoder.push(&event[..split]);
+        assert_eq!(decoder.next().unwrap(), None);
+        decoder.push(&event[split..]);
+        assert_eq!(decoder.next().unwrap().as_deref(), Some("héllo"));
+        assert_eq!(decoder.next().unwrap(), None);
+        // The host may remain open indefinitely after this event.
+        assert!(!decoder.finished);
+    }
+
+    #[test]
+    fn reports_invalid_utf8_only_after_a_complete_line() {
+        let mut decoder = SseDecoder::default();
+        decoder.push(b"data: \xff");
+        assert_eq!(decoder.next().unwrap(), None);
+        decoder.push(b"\n\n");
+        assert!(matches!(
+            decoder.next(),
+            Err(crate::ResponsesError::InvalidSseUtf8 { .. })
+        ));
+    }
 
     #[test]
     fn decodes_fragmented_and_multiline_sse_events() {
@@ -255,5 +299,80 @@ mod tests {
             );
         }
         assert_eq!(decoder.next().unwrap(), None);
+    }
+}
+
+#[cfg(target_family = "wasm")]
+impl ResponsesHttp {
+    pub(crate) fn new(
+        host: Option<std::sync::Arc<dyn crate::transport::host::HostTransport>>,
+    ) -> Self {
+        Self { host }
+    }
+
+    pub(crate) async fn send(
+        &self,
+        api_base_url: &str,
+        auth: &OpenAiAuthSnapshot,
+        session_id: &str,
+        thread_id: &str,
+        turn_state: Option<&str>,
+        request: &EncodedRequest,
+    ) -> Result<(ResponsesHttpStream, HttpMetadata), ResponsesError> {
+        use crate::transport::host::HostConnectRequest;
+        let host = self
+            .host
+            .as_deref()
+            .ok_or(ResponsesError::HostUnavailable)?;
+        let endpoint = format!("{}/responses", api_base_url.trim_end_matches('/'));
+        let turn_state =
+            turn_state.filter(|value| header::HeaderValue::from_bytes(value.as_bytes()).is_ok());
+        let response = host
+            .http(
+                HostConnectRequest::new_with_thread_id(
+                    &endpoint,
+                    auth.bearer(),
+                    auth.account_id(),
+                    auth.is_fedramp(),
+                    session_id,
+                    thread_id,
+                    turn_state,
+                ),
+                request.raw().get(),
+            )
+            .await
+            .map_err(map_host_error)?;
+        let metadata = HttpMetadata {
+            reasoning_included: response.metadata.reasoning_included(),
+            turn_state: response.metadata.turn_state().map(str::to_owned),
+        };
+        Ok((
+            ResponsesHttpStream {
+                response: response.body,
+                decoder: SseDecoder::default(),
+                ended: false,
+            },
+            metadata,
+        ))
+    }
+}
+
+#[cfg(target_family = "wasm")]
+fn map_host_error(error: crate::transport::host::HostError) -> ResponsesError {
+    use crate::transport::host::HostError;
+    match error {
+        HostError::HandshakeRejected {
+            status,
+            body,
+            retry_after,
+        } => ResponsesError::http_rejected(status, body, retry_after),
+        HostError::Transport {
+            detail,
+            reconnectable,
+        } => ResponsesError::HttpRequest {
+            detail,
+            retryable: reconnectable,
+            timeout: false,
+        },
     }
 }

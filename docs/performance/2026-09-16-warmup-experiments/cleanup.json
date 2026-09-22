@@ -1,0 +1,203 @@
+{
+  "at": "2026-09-17T00:07:06.317Z",
+  "rows": [
+    {
+      "agent": "01a0aca2-443b-7188-8951-3ae2dd4077f1",
+      "cohort": "hosted.json",
+      "status": 404,
+      "ms": 437.38154199999997
+    },
+    {
+      "agent": "01a0aca2-89d6-7d65-b48f-f9a0bae7bf1d",
+      "cohort": "hosted.json",
+      "status": 404,
+      "ms": 364.29249999999996
+    },
+    {
+      "agent": "01a0aca2-c392-766a-897f-dfa5f46c80e0",
+      "cohort": "hosted.json",
+      "status": 404,
+      "ms": 376.751084
+    },
+    {
+      "agent": "01a0aca2-f573-7898-9ecf-fcdb2f26f0fb",
+      "cohort": "hosted.json",
+      "status": 404,
+      "ms": 258.6901670000002
+    },
+    {
+      "agent": "01a0aca3-390e-7ff7-b052-bb64453f8af9",
+      "cohort": "hosted.json",
+      "status": 404,
+      "ms": 292.521084
+    },
+    {
+      "agent": "01a0aca3-6e93-70e6-9141-a4da085b017c",
+      "cohort": "hosted.json",
+      "status": 404,
+      "ms": 1002.3049580000002
+    },
+    {
+      "agent": "01a0aca3-9d6f-7330-858a-8f1ed2c4b8a4",
+      "cohort": "hosted.json",
+      "status": 404,
+      "ms": 276.20566599999984
+    },
+    {
+      "agent": "01a0aca3-d9fd-708e-a567-71b6be9ce2a5",
+      "cohort": "hosted.json",
+      "status": 404,
+      "ms": 278.51920800000016
+    },
+    {
+      "agent": "01a0aca4-2017-768c-a25f-ee2c116f71fb",
+      "cohort": "hosted.json",
+      "status": 404,
+      "ms": 274.378792
+    },
+    {
+      "agent": "01a0aca4-5071-7002-a331-c1ecdf6076ac",
+      "cohort": "hosted.json",
+      "status": 404,
+      "ms": 282.46879199999967
+    },
+    {
+      "agent": "01a0aca4-8af8-7155-81ac-111a064b45f0",
+      "cohort": "hosted.json",
+      "status": 404,
+      "ms": 249.7957080000001
+    },
+    {
+      "agent": "01a0aca4-c821-72dc-ac5c-22e006973505",
+      "cohort": "hosted.json",
+      "status": 404,
+      "ms": 253.4598329999999
+    },
+    {
+      "agent": "01a0aca6-5c0d-7002-a833-f8d414895328",
+      "cohort": "hosted-confirm.json",
+      "status": 404,
+      "ms": 249.39762500000052
+    },
+    {
+      "agent": "01a0aca6-993d-7605-a2ac-1f44f25e8372",
+      "cohort": "hosted-confirm.json",
+      "status": 404,
+      "ms": 273.1521670000002
+    },
+    {
+      "agent": "01a0aca6-d27c-7e7f-8298-e54882f11ce2",
+      "cohort": "hosted-confirm.json",
+      "status": 404,
+      "ms": 876.3851249999998
+    },
+    {
+      "agent": "01a0aca7-85b0-71ca-8d1c-3e74a7958de2",
+      "cohort": "hosted-confirm.json",
+      "status": 404,
+      "ms": 253.03970800000025
+    },
+    {
+      "agent": "01a0aca7-d66d-72f3-94a4-bb729dd5177e",
+      "cohort": "hosted-confirm.json",
+      "status": 404,
+      "ms": 272.5147500000003
+    },
+    {
+      "agent": "01a0aca8-8a3f-7c46-91ac-e620591f8b92",
+      "cohort": "hosted-confirm.json",
+      "status": 404,
+      "ms": 245.32120899999973
+    },
+    {
+      "agent": "01a0acae-3c67-7a0f-8a1a-1470061623de",
+      "cohort": "hosted-current.json",
+      "status": 404,
+      "ms": 248.21195799999987
+    },
+    {
+      "agent": "01a0acae-84f1-73d8-977f-f6e05a10cebc",
+      "cohort": "hosted-current.json",
+      "status": 404,
+      "ms": 235.18633299999965
+    },
+    {
+      "agent": "01a0acae-cbb2-79c2-a882-486e553381ae",
+      "cohort": "hosted-current.json",
+      "status": 404,
+      "ms": 243.44654199999968
+    },
+    {
+      "agent": "01a0acaf-0ab1-7066-8159-10065bca5188",
+      "cohort": "hosted-current.json",
+      "status": 404,
+      "ms": 267.16429100000005
+    }
+  ],
+  "versions": {
+    "nanocodex-durable-agent": {
+      "id": "6846749b-51a2-440d-8436-64b0cf1619fc",
+      "source": "wrangler",
+      "strategy": "percentage",
+      "annotations": {
+        "workers/message": "GitHub Actions production 68a7f4edc39dfdd353882...",
+        "workers/triggered_by": "upload"
+      },
+      "versions": [
+        {
+          "version_id": "de592775-e274-44a9-9578-1d713c42e0ae",
+          "percentage": 100
+        }
+      ],
+      "created_on": "2026-09-16T23:57:40.694685Z"
+    },
+    "nanocodex-egress": {
+      "id": "fde2d429-9d37-4c37-bcc0-14a336d8884b",
+      "source": "wrangler",
+      "strategy": "percentage",
+      "annotations": {
+        "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+        "workers/triggered_by": "deployment"
+      },
+      "versions": [
+        {
+          "version_id": "62da8fd7-f705-49a9-a903-449d9bc2360c",
+          "percentage": 100
+        }
+      ],
+      "created_on": "2026-09-16T23:57:27.950644Z"
+    },
+    "nanocodex": {
+      "id": "660dce5f-78c5-4045-8a1b-d706e8cc88a2",
+      "source": "wrangler",
+      "strategy": "percentage",
+      "annotations": {
+        "workers/message": "GitHub Actions production 68a7f4edc39dfdd353882...",
+        "workers/triggered_by": "upload"
+      },
+      "versions": [
+        {
+          "version_id": "3a772071-ca4d-4b34-b93e-3be4dfdcb474",
+          "percentage": 100
+        }
+      ],
+      "created_on": "2026-09-16T23:58:20.115415Z"
+    },
+    "nanocodex-connect-api": {
+      "id": "8024f95d-e674-4deb-824e-c9a290cff46a",
+      "source": "wrangler",
+      "strategy": "percentage",
+      "annotations": {
+        "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+        "workers/triggered_by": "deployment"
+      },
+      "versions": [
+        {
+          "version_id": "0e466332-5ee2-4ea1-a9ed-7e800c18ce10",
+          "percentage": 100
+        }
+      ],
+      "created_on": "2026-09-16T23:57:54.602232Z"
+    }
+  }
+}

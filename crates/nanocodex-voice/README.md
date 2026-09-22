@@ -49,8 +49,10 @@ For ChatGPT subscriptions, `VoiceSessionBuilder::settings(VoiceSettings)` applie
 the same preferences used by managed browser and Apple clients: the nine
 built-in voices, extra speaking instructions, pace, background updates, handoff
 routing, and acknowledgement filler. Pace and style append to the existing
-instructions. Settings validate the subscription voice catalog and do not add
-Platform audio options or custom voices. Non-default update preferences select
+instructions. Settings validate the subscription voice catalog. ElevenLabs output is handled
+by the browser and Apple playback adapters; the default-device Rust builder
+rejects that output provider. Platform audio options are not added by these
+preferences. Non-default update preferences select
 the appropriate handoff routing and take precedence over `handoff_mode`.
 
 ```rust,no_run

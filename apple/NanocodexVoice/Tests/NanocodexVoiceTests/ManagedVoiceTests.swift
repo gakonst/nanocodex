@@ -427,11 +427,11 @@ final class ManagedVoiceTests: XCTestCase {
     func testDelegationAndTranscriptUseCanonicalEscapedMarkers() throws {
         let voice = try ManagedVoiceProtocol()
         let partial = voice.realtimeMessage(.object(["type": .string("input_transcript.added"), "item": .object(["text": .string("fix ")])]))
-        XCTAssertEqual(partial.effects.transcripts, [.init(speaker: "user", text: "fix ", isFinal: false)])
+        XCTAssertEqual(partial.effects.transcripts, [.init(speaker: "user", text: "fix ", isFinal: false, id: 0)])
         let continuation = voice.realtimeMessage(.object(["type": .string("input_transcript.added"), "item": .object(["text": .string("this")])]))
-        XCTAssertEqual(continuation.effects.transcripts, [.init(speaker: "user", text: "fix this", isFinal: false)])
+        XCTAssertEqual(continuation.effects.transcripts, [.init(speaker: "user", text: "fix this", isFinal: false, id: 0)])
         let completed = voice.realtimeMessage(.object(["type": .string("turn.done"), "turn": .object(["role": .string("user"), "transcript": .string("fix <x> & ship")])]))
-        XCTAssertEqual(completed.effects.transcripts, [.init(speaker: "user", text: "fix <x> & ship")])
+        XCTAssertEqual(completed.effects.transcripts, [.init(speaker: "user", text: "fix <x> & ship", id: 0)])
         let delegated = voice.realtimeMessage(.object(["type": .string("delegation.created"), "item": .object([
             "type": .string("delegation"), "target": .string("client"), "id": .string("delegation-1"),
             "content": .array([.object(["type": .string("input_text"), "text": .string("fix <x> & ship")])])
@@ -493,10 +493,10 @@ final class ManagedVoiceTests: XCTestCase {
         }
         _ = voice.realtimeMessage(delta("user", "Wait, "))
         _ = voice.realtimeMessage(delta("assistant", "I can "))
-        XCTAssertEqual(voice.realtimeMessage(delta("user", "use the blue one")).effects.transcripts, [.init(speaker: "user", text: "Wait, use the blue one", isFinal: false)])
-        XCTAssertEqual(voice.realtimeMessage(delta("assistant", "do that.")).effects.transcripts, [.init(speaker: "assistant", text: "I can do that.", isFinal: false)])
+        XCTAssertEqual(voice.realtimeMessage(delta("user", "use the blue one")).effects.transcripts, [.init(speaker: "user", text: "Wait, use the blue one", isFinal: false, id: 0)])
+        XCTAssertEqual(voice.realtimeMessage(delta("assistant", "do that.")).effects.transcripts, [.init(speaker: "assistant", text: "I can do that.", isFinal: false, id: 0)])
         _ = voice.realtimeMessage(.object(["type": .string("turn.done"), "turn": .object(["role": .string("user"), "transcript": .string("Wait, use the blue one.")])]))
-        XCTAssertEqual(voice.realtimeMessage(delta("user", "Thanks")).effects.transcripts, [.init(speaker: "user", text: "Thanks", isFinal: false)])
+        XCTAssertEqual(voice.realtimeMessage(delta("user", "Thanks")).effects.transcripts, [.init(speaker: "user", text: "Thanks", isFinal: false, id: 1)])
         let tail = try XCTUnwrap(voice.takeTranscriptTail())
         XCTAssertTrue(tail.contains("user: Wait, use the blue one."))
         XCTAssertTrue(tail.contains("assistant: I can do that."))
@@ -513,7 +513,7 @@ final class ManagedVoiceTests: XCTestCase {
             let voice = try ManagedVoiceProtocol()
             _ = voice.realtimeMessage(.object(["type": .string(role == "user" ? "input_transcript.added" : "output_transcript.added"), "item": .object(["text": .string(streamed)])]))
             let done = voice.realtimeMessage(.object(["type": .string("turn.done"), "turn": .object(["role": .string(role), "transcript": .string(final)])]))
-            XCTAssertEqual(done.effects.transcripts, [.init(speaker: role, text: expected)])
+            XCTAssertEqual(done.effects.transcripts, [.init(speaker: role, text: expected, id: 0)])
             XCTAssertTrue(try XCTUnwrap(voice.takeTranscriptTail()).contains(expected))
         }
     }

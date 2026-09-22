@@ -50,6 +50,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             .await
             .map_err(|error| error as Box<dyn std::error::Error>);
     }
+    if first.as_deref() == Some(OsStr::new("--desktop-video")) {
+        let runtime = arguments
+            .next()
+            .ok_or_else(|| invalid_input("--desktop-video requires RUNTIME"))?;
+        if arguments.next().is_some() {
+            return Err(invalid_input("--desktop-video accepts only RUNTIME").into());
+        }
+        let mut command = nanocodex_vm::desktop::video_command(std::path::Path::new(&runtime))
+            .map_err(|e| e as Box<dyn std::error::Error>)?;
+        return Err(command.exec().into());
+    }
     if first.as_deref() == Some(OsStr::new("--desktop-request")) {
         let input = arguments
             .next()

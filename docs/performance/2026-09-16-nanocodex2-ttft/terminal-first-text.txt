@@ -1,0 +1,125 @@
+installed repetition 1 turn 1: 2929.2 ms
+┃ yo
+Yo
+╭─ 0%/272k Responding… ───────────────────────────────────────────────────────────────────────── 2s  gpt-6-astra  low ─╮
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────── /private/var/folders/32/np0rcmkd3nlfnfhwwmspzjlm0000gp/T/nanocodex2-ttft-YU02mI ─╯
+
+installed repetition 1 turn 2: 2474.3 ms
+┃ yo
+Yo Georgios—what’s up?
+◇ Turn completed · 2s
+┃ yo
+Yo
+╭─ 7%/272k Responding… ───────────────────────────────────────────────────────────────────────── 2s  gpt-6-astra  low ─╮
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────── /private/var/folders/32/np0rcmkd3nlfnfhwwmspzjlm0000gp/T/nanocodex2-ttft-YU02mI ─╯
+
+release repetition 1 turn 1: 4830.6 ms
+┃ yo
+Yo
+╭─ 0%/272k Responding… ───────────────────────────────────────────────────────────────────────── 4s  gpt-6-astra  low ─╮
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────── /private/var/folders/32/np0rcmkd3nlfnfhwwmspzjlm0000gp/T/nanocodex2-ttft-YU02mI ─╯
+
+release repetition 1 turn 2: 2070.5 ms
+┃ yo
+Yo Georgios — what’s up?
+◇ Turn completed · 5s
+┃ yo
+Yo
+╭─ 7%/272k Responding… ───────────────────────────────────────────────────────────────────────── 1s  gpt-6-astra  low ─╮
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────── /private/var/folders/32/np0rcmkd3nlfnfhwwmspzjlm0000gp/T/nanocodex2-ttft-YU02mI ─╯
+
+release repetition 2 turn 1: 2120.8 ms
+┃ yo
+Yo
+╭─ 0%/272k Responding… ───────────────────────────────────────────────────────────────────────── 2s  gpt-6-astra  low ─╮
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────── /private/var/folders/32/np0rcmkd3nlfnfhwwmspzjlm0000gp/T/nanocodex2-ttft-YU02mI ─╯
+
+release repetition 2 turn 2: 2107.5 ms
+┃ yo
+Yo Georgios — what’s up?
+◇ Turn completed · 2s
+┃ yo
+Yo
+╭─ 7%/272k Responding… ───────────────────────────────────────────────────────────────────────── 2s  gpt-6-astra  low ─╮
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────── /private/var/folders/32/np0rcmkd3nlfnfhwwmspzjlm0000gp/T/nanocodex2-ttft-YU02mI ─╯
+
+installed repetition 2 turn 1: 2644.1 ms
+┃ yo
+Yo
+╭─ 0%/272k Responding… ───────────────────────────────────────────────────────────────────────── 2s  gpt-6-astra  low ─╮
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────── /private/var/folders/32/np0rcmkd3nlfnfhwwmspzjlm0000gp/T/nanocodex2-ttft-YU02mI ─╯
+
+installed repetition 2 turn 2: 1657.0 ms
+┃ yo
+Yo Georgios — what’s up?
+◇ Turn completed · 2s
+┃ yo
+Yo
+╭─ 7%/272k Responding… ───────────────────────────────────────────────────────────────────────── 1s  gpt-6-astra  low ─╮
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────── /private/var/folders/32/np0rcmkd3nlfnfhwwmspzjlm0000gp/T/nanocodex2-ttft-YU02mI ─╯
+
+installed repetition 3 turn 1: 3896.0 ms
+┃ yo
+Yo
+╭─ 0%/272k Responding… ───────────────────────────────────────────────────────────────────────── 3s  gpt-6-astra  low ─╮
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────── /private/var/folders/32/np0rcmkd3nlfnfhwwmspzjlm0000gp/T/nanocodex2-ttft-YU02mI ─╯
+
+installed repetition 3 turn 2: 4425.8 ms
+┃ yo
+Yo Georgios — what’s up?
+◇ Turn completed · 4s
+┃ yo
+Yo
+╭─ 7%/272k Responding… ───────────────────────────────────────────────────────────────────────── 4s  gpt-6-astra  low ─╮
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────── /private/var/folders/32/np0rcmkd3nlfnfhwwmspzjlm0000gp/T/nanocodex2-ttft-YU02mI ─╯
+
+release repetition 3 turn 1: 2545.0 ms
+┃ yo
+Yo
+╭─ 0%/272k Responding… ───────────────────────────────────────────────────────────────────────── 2s  gpt-6-astra  low ─╮
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────── /private/var/folders/32/np0rcmkd3nlfnfhwwmspzjlm0000gp/T/nanocodex2-ttft-YU02mI ─╯
+
+release repetition 3 turn 2: 1509.7 ms
+┃ yo
+Yo Georgios — what’s up?
+◇ Turn completed · 2s
+┃ yo
+Yo
+╭─ 7%/272k Responding… ───────────────────────────────────────────────────────────────────────── 1s  gpt-6-astra  low ─╮
+│                                                                                                                      │
+│                                                                                                                      │
+│                                                                                                                      │
+╰──────────────────────────────────── /private/var/folders/32/np0rcmkd3nlfnfhwwmspzjlm0000gp/T/nanocodex2-ttft-YU02mI ─╯

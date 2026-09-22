@@ -25,6 +25,35 @@
       ? undefined
       : jsonParse(jsonStringify(value));
 
+  function isBase64ImageUrl(url) {
+    const comma = url.indexOf(",");
+    if (comma < 0) return false;
+    const header = url.slice(0, comma);
+    // Native view_image returns raw bytes with this generic MIME; the model-history
+    // boundary decodes and validates them before emitting an image MIME.
+    const match = /^data:(?:image\/[a-z0-9!#$&^_.+%-]+|application\/octet-stream);base64$/i.exec(header);
+    // `$` can match before a trailing line terminator: require the full header.
+    if (!match || match[0].length !== header.length) return false;
+    const start = comma + 1;
+    const length = url.length - start;
+    if (length === 0 || length % 4 !== 0) return false;
+    let end = url.length;
+    if (url.charCodeAt(end - 1) === 61) end--;
+    if (url.charCodeAt(end - 1) === 61) end--;
+    // Scan the payload without a repeated regex, which can exhaust the engine's
+    // stack on multi-megabyte images. Padding is permitted only at the end.
+    for (let i = start; i < end; i++) {
+      const code = url.charCodeAt(i);
+      if (
+        !(code >= 65 && code <= 90) &&
+        !(code >= 97 && code <= 122) &&
+        !(code >= 48 && code <= 57) &&
+        code !== 43 && code !== 47
+      ) return false;
+    }
+    return true;
+  }
+
   function stringify(value) {
     if (
       value === undefined ||
@@ -148,7 +177,7 @@
       if (separator < 0) throw invalidImageOutput;
       const scheme = imageUrl.slice(0, separator).toLowerCase();
       if (scheme === "http" || scheme === "https") throw remoteImageOutput;
-      if (scheme !== "data") throw invalidImageOutput;
+      if (scheme !== "data" || !isBase64ImageUrl(imageUrl)) throw invalidImageOutput;
 
       if (detail !== undefined && detail !== null && typeof detail !== "string") {
         throw "image detail must be a string when provided";

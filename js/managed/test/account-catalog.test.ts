@@ -45,3 +45,46 @@ describe("admission account catalog", () => {
     expect(info).toMatchObject({ status: "fulfilled", value: { status: "unavailable" } });
   });
 });
+
+describe("bounded account catalog snapshot", () => {
+  it("coalesces discovery and expires or invalidates without caching failures", async () => {
+    const { AccountCatalogCache } = await import("../src/account-catalog");
+    const { MANAGED_ACCESS_TTL_MS } = await import("../src/managed-access");
+    let now = 1000;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    const fetch = vi.fn(async () => Response.json({ connectors: {}, mcp_connections: [] }));
+    const broker = { fetch } as unknown as Fetcher;
+    const cache = new AccountCatalogCache();
+    try {
+      await Promise.all([cache.get(broker, "owner", "epoch1"), cache.get(broker, "owner", "epoch1")]);
+      expect(fetch).toHaveBeenCalledTimes(1);
+      now += MANAGED_ACCESS_TTL_MS;
+      await cache.get(broker, "owner", "epoch1");
+      expect(fetch).toHaveBeenCalledTimes(2);
+      await cache.get(broker, "owner", "epoch2");
+      expect(fetch).toHaveBeenCalledTimes(3);
+      cache.invalidate();
+      fetch.mockImplementationOnce(async () => new Response(null, { status: 503 }));
+      await expect(cache.get(broker, "owner", "epoch2")).rejects.toThrow();
+      await cache.get(broker, "owner", "epoch2");
+      expect(fetch).toHaveBeenCalledTimes(5);
+    } finally { clock.mockRestore(); }
+  });
+});
+
+it("a failed old owner refresh cannot evict a newer owner's snapshot", async () => {
+  const { AccountCatalogCache } = await import("../src/account-catalog");
+  let release!: (response: Response) => void;
+  const pending = new Promise<Response>(resolve => { release = resolve; });
+  const fetch = vi.fn().mockImplementationOnce(() => pending)
+    .mockImplementation(async () => Response.json({ connectors: {}, mcp_connections: [] }));
+  const broker = { fetch } as unknown as Fetcher;
+  const cache = new AccountCatalogCache();
+  const old = cache.get(broker, "owner-a", "epoch1");
+  const failure = expect(old).rejects.toThrow();
+  await cache.get(broker, "owner-b", "epoch1");
+  release(new Response(null, { status: 503 }));
+  await failure;
+  await cache.get(broker, "owner-b", "epoch1");
+  expect(fetch).toHaveBeenCalledTimes(2);
+});

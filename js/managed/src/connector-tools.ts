@@ -3,6 +3,14 @@ import type { ConnectorCapabilityId } from "./connector-status";
 
 /** Discovery metadata only; live grants and credentials are enforced by managed egress. */
 export const CONNECTOR_TOOL_CATALOG = {
+  link: {
+    methods: ["GET", "POST"],
+    docs: "https://github.com/stripe/link-cli#spend-request-lifecycle",
+    operations: "POST /spend_requests with {merchant_name,merchant_url,context,amount,currency} creates a request; amount is in minor currency units and context must explain the purchase (at least 100 characters). POST /spend_requests/ID/request_approval sends the user a Link approval notification and returns approval_link; show it to the user. GET /spend_requests/ID checks status; POST /spend_requests/ID/cancel cancels. GET /userinfo reads wallet limits. Use test:true for test requests. Never retry a write after an ambiguous failure; list GET /spend_requests to reconcile. Approval happens in Link; this connector cannot approve spends or retrieve payment credentials.",
+    origin: "https://api.link.com",
+    summary: "Stripe Link wallet: create spend requests, request user approval for purchases, check approval status and cancel requests.",
+    example: "/spend_requests",
+  },
   github: {
     methods: ["DELETE", "GET", "PATCH", "POST", "PUT"],
     docs: "https://docs.github.com/en/rest",
@@ -122,7 +130,7 @@ const PARAMETERS = {
   properties: {
     method: { type: "string", enum: ["GET", "POST", "PUT", "PATCH", "DELETE"], description: "HTTP method; defaults to GET. Writes require the user's requested action." },
     path: { type: "string", maxLength: 8192, description: "Absolute API path with optional query string, starting with one /. No host, credentials or fragment. Use provider pagination with bounded page sizes." },
-    connection_id: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$", description: "Exact connectorAccounts id from accountInfo. Required to select among multiple accounts." },
+    connection_id: { type: "string", pattern: "^[A-Za-z0-9_-]{43}$", description: "Exact accounts[service].connections id from environment(). Required to select among multiple accounts." },
     body: { type: "object", additionalProperties: true, description: "JSON request body for a write operation, using the provider API schema." },
   },
   required: ["path"],
@@ -143,7 +151,7 @@ export function connectorToolsProvider(options: Options) {
       capability,
       definition: {
         type: "function" as const, name, defer_loading: true as const, strict: false,
-        description: `${spec.summary} Authenticated JSON HTTP request tool at ${spec.origin}. Use method and path, not invented operation names. Example GET ${spec.example}. ${spec.operations} Other paths and bodies must follow ${spec.docs}. Requires a connected account and granted provider scopes; inspect accountInfo.connectorAccounts and connectorTools for current availability. Credentials and token refresh stay in the broker. Never automatically retry writes. On 429 respect retry_after.`,
+        description: `${spec.summary} Authenticated JSON HTTP request tool at ${spec.origin}. Use method and path, not invented operation names. Example GET ${spec.example}. ${spec.operations} Other paths and bodies must follow ${spec.docs}. Requires a connected account and granted provider scopes; inspect environment().accounts for current availability. Credentials and token refresh stay in the broker. Never automatically retry writes. On 429 respect retry_after.`,
         parameters: { ...PARAMETERS, properties: { ...PARAMETERS.properties, method: { ...PARAMETERS.properties.method, enum: [...spec.methods] } } },
       },
       tool: {

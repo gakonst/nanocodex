@@ -29,7 +29,9 @@ export type ManagedConversation = Readonly<{
   id: string;
   title: string;
   updatedAt?: number;
+  lastUserMessageAt?: number;
   turnCount?: number;
+  presentation?: NonNullable<ManagedAgent["summary"]>["presentation"];
 }>;
 
 export type ManagedConversationSelection = Readonly<{
@@ -55,7 +57,7 @@ export function managedConversationsQueryOptions(accountId: string) {
     queryFn: async ({ signal }) => {
       const agents = await Agent.list({ fetch: queryFetch(signal) });
       signal.throwIfAborted();
-      return Object.freeze(agents.map(managedConversation).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)));
+      return Object.freeze(agents.map(managedConversation).sort((a, b) => (b.lastUserMessageAt ?? 0) - (a.lastUserMessageAt ?? 0) || a.id.localeCompare(b.id)));
     },
     staleTime: 15_000,
   });
@@ -91,8 +93,9 @@ export function recordManagedConversationActivity(accountId: string, agentId: st
       ...item,
       title: (item.turnCount ?? 0) === 0 ? titleFromPrompt(input) : item.title,
       turnCount: (item.turnCount ?? 0) + 1,
+      lastUserMessageAt: Date.now(),
       updatedAt: Date.now(),
-    } : item).sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)))
+    } : item).sort((a, b) => (b.lastUserMessageAt ?? 0) - (a.lastUserMessageAt ?? 0) || a.id.localeCompare(b.id)))
     : undefined);
 }
 
@@ -180,7 +183,9 @@ function managedConversation(agent: ManagedAgent): ManagedConversation {
     title: titleFromPrompt(agent.summary?.title ?? "") || `Conversation ${agent.id.slice(0, 8)}`,
     ...(agent.summary === undefined ? {} : {
       updatedAt: agent.summary.updatedAt,
+      lastUserMessageAt: agent.summary.lastUserMessageAt ?? 0,
       turnCount: agent.summary.turnCount,
+      ...(agent.summary.presentation ? { presentation: agent.summary.presentation } : {}),
     }),
   });
 }
@@ -243,6 +248,7 @@ function managedEventWatcher(
   accountId?: string,
 ): ReturnType<ControllerAgent["events"]["watch"]> {
   const controller = new AbortController();
+  if (isManagedAgent(managed)) void managed.prepare({ signal: controller.signal }).catch(() => {});
   const cacheKey = [...accountQueryKey(accountId), "conversation-history", managed.id] as const;
   const cached = historyEnabled && accountId ? appQueryClient.getQueryData<RetainedManagedHistory>(cacheKey) : undefined;
   const cacheObserver = historyEnabled && accountId ? new QueryObserver<RetainedManagedHistory>(appQueryClient, {

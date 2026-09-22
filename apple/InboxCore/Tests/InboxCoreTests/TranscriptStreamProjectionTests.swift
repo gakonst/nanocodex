@@ -12,6 +12,33 @@ final class TranscriptStreamProjectionTests: XCTestCase {
             "text": .string(text), "phase": .string("final_answer"), "item_id": .string("answer")])])])
     }
 
+    func testOverlappingScreensRetainAdmissionAndRankByCompletionCursor() async throws {
+        func tool(_ cursor: Int, _ type: String, _ call: String) throws -> AgentEvent {
+            try event(cursor, "event", ["event": .object(["type": .string(type), "payload": .object([
+                "call_id": .string(call), "tool": .string("computer"),
+                "arguments": .object(["action": .string("observe")]),
+                "result": .object(["image_url": .string("data:image/png;base64,AQIDBA==")])
+            ])])])
+        }
+        let events = [try tool(10, "tool.call", "a"), try tool(11, "tool.call", "b"),
+                      try tool(12, "tool.result", "b"), try tool(13, "tool.result", "a")]
+        let projector = TranscriptStreamProjection()
+        for end in 1...events.count {
+            let prefix = Array(events.prefix(end))
+            let rows = try await projector.rows(prefix)
+            XCTAssertEqual(rows, transcript(prefix))
+        }
+        let rows = try await projector.rows(events)
+        let first = try XCTUnwrap(rows.first { $0.id.hasSuffix(":a") })
+        let second = try XCTUnwrap(rows.first { $0.id.hasSuffix(":b") })
+        XCTAssertEqual(first.cursor?.rawValue, "10")
+        XCTAssertEqual(second.cursor?.rawValue, "11")
+        XCTAssertEqual(first.completionCursor?.rawValue, "13")
+        XCTAssertEqual(second.completionCursor?.rawValue, "12")
+        XCTAssertTrue(try XCTUnwrap(first.completionCursor) > XCTUnwrap(second.completionCursor))
+        XCTAssertTrue(first.tool?.isComputerScreenOutput == true)
+    }
+
     func testIncrementalReplayPreservesInterleavedTurnsAndTerminalFailures() async throws {
         let history = [
             try event(1, "turn_accepted", ["input": .string("first")]),
@@ -34,6 +61,48 @@ final class TranscriptStreamProjectionTests: XCTestCase {
         for window in [Array(history.suffix(4)), history, Array(history.prefix(2)), []] {
             let actual = try await projector.rows(window)
             XCTAssertEqual(actual, transcript(window), "Prepend/trim/replacement must rebuild, not merge stale rows")
+        }
+    }
+
+    func testCancellationDiagnosticAndTerminalShareOneStatusInEitherOrder() async throws {
+        func diagnostic(_ cursor: Int, _ message: String = "the turn was cancelled", turn: String = "t", agent: String? = nil, extra: [String: JSON] = [:]) throws -> AgentEvent {
+            var payload = extra
+            payload["message"] = .string(message)
+            var fields: [String: JSON] = ["event": .object(["type": .string("run.error"), "payload": .object(payload)])]
+            if let agent { fields["agent_id"] = .string(agent) }
+            return try event(cursor, "event", fields, turn: turn)
+        }
+        for diagnosticFirst in [false, true] {
+            let sequence = [
+                try delta(1, "Partial answer"),
+                try diagnosticFirst ? diagnostic(2) : event(2, "turn_cancelled"),
+                try diagnosticFirst ? event(3, "turn_cancelled") : diagnostic(3),
+                try diagnostic(4, "Connection reset"),
+                try diagnostic(5, turn: "other"),
+                try diagnostic(6, agent: "child"),
+                try diagnostic(7, extra: ["disposition": .string("retryable")]),
+                try diagnostic(8, extra: ["code": .string("storage_failed")]),
+                try event(9, "turn_cancelled")
+            ]
+            let projector = TranscriptStreamProjection()
+            var prefix: [AgentEvent] = []
+            for item in sequence {
+                prefix.append(item)
+                let incremental = try await projector.rows(prefix)
+                XCTAssertEqual(incremental, transcript(prefix))
+            }
+            let rows = try await projector.rows(sequence)
+            XCTAssertEqual(rows.filter { $0.role == "Status" && $0.text == "Stopped." }.count, 1)
+            XCTAssertEqual(rows.filter { $0.text == "Connection reset" }.count, 1)
+            XCTAssertEqual(rows.filter { $0.text == "the turn was cancelled" }.count, 4,
+                           "Other turns, child agents, retryable diagnostics and explicit failures remain visible")
+            XCTAssertFalse(rows.first { $0.role == "Agent" }!.running)
+            let status = try XCTUnwrap(rows.first { $0.text == "Stopped." })
+            XCTAssertEqual(status.cursor?.rawValue, "2", "Confirmation retains the first status row identity")
+            // A page starting at the diagnostic has no terminal proof: preserve it.
+            let clipped = [try diagnostic(10)]
+            let clippedRows = try await projector.rows(clipped)
+            XCTAssertEqual(clippedRows.map(\.text), ["the turn was cancelled"])
         }
     }
 

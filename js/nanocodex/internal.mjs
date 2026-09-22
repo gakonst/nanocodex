@@ -12,6 +12,7 @@ const activeAgentSessions = new Map();
 const pendingCloudflareAgentSessions = new Map();
 const cloudflareAgentSessions = new WeakSet();
 const hostConnections = new Map();
+const hostHttpRequests = new Map();
 const definitionHosts = new Map();
 let nextHostConnection = 1;
 let nextDefinitionHost = 1;
@@ -29,6 +30,7 @@ export function defineRuntime(definition) {
     type: definition.type ?? "custom",
     create: definition.create,
     dispose: definition.dispose || ((agent) => agent.free()),
+    shutdown: definition.shutdown || ((agent) => agent.shutdown()),
     subscribe: definition.subscribe,
     adopt: definition.adopt,
     release: definition.release,
@@ -314,6 +316,8 @@ export function toWasmConfig(options = {}) {
   copy(config, "thinking", options.thinking);
   copy(config, "reasoning_mode", options.reasoningMode);
   copy(config, "fast_mode", options.fastMode);
+  copy(config, "stateless_http", options.stateless);
+  copy(config, "subagent_routing", options.subagentRouting);
   copy(config, "websocket_warmup", options.websocketWarmup);
   copy(config, "websocket_url", options.websocketUrl);
   copy(config, "api_base_url", options.apiBaseUrl);
@@ -426,6 +430,13 @@ export function releaseHostSession(host, sessionId) {
   hostSessions.delete(sessionId);
 }
 
+/** Drops only this host's in-memory registrations, without durable child release. */
+export function releaseHostSessions(host) {
+  for (const [sessionId, owner] of hostSessions) {
+    if (owner === host) releaseHostSession(host, sessionId);
+  }
+}
+
 export function registerDefinitionHost(host, cloudflareReservation) {
   const id = nextDefinitionHost++;
   definitionHosts.set(id, host);
@@ -445,6 +456,32 @@ export function releaseDefinitionHost(id) {
 }
 
 const hostBridge = Object.freeze({
+  httpOpen(endpoint, apiKey, accountId, fedramp, sessionId, threadId, turnState, body) {
+    const host = requiredSessionHost(threadId);
+    if (typeof host.httpOpen !== "function") {
+      throw JSON.stringify({ kind: "transport", detail: "host HTTPS transport is unavailable", reconnectable: false });
+    }
+    const local = host.httpOpen(endpoint, apiKey, sessionId, { accountId, fedramp, threadId, turnState }, body);
+    const handle = nextHostConnection++;
+    hostHttpRequests.set(handle, { host, handle: local });
+    return handle;
+  },
+  async httpReady(handle) {
+    const request = hostHttpRequests.get(handle);
+    try { return await request.host.httpReady(request.handle); }
+    catch (error) { throw JSON.stringify(connectFailure(error)); }
+  },
+  async httpNext(handle) {
+    const request = hostHttpRequests.get(handle);
+    try { return await request.host.httpNext(request.handle); }
+    catch (error) { throw JSON.stringify(connectFailure(error)); }
+  },
+  httpClose(handle) {
+    const request = hostHttpRequests.get(handle);
+    if (!request) return;
+    hostHttpRequests.delete(handle);
+    request.host.httpClose(request.handle);
+  },
   async connect(endpoint, apiKey, accountId, fedramp, sessionId, threadId, turnState) {
     const host = requiredSessionHost(threadId);
     let result;
@@ -488,6 +525,20 @@ const hostBridge = Object.freeze({
     }
     return host.sleep(milliseconds);
   },
+  async routeSubagent(hostDefinitionId, requestJson) {
+    const host = requiredDefinitionHost(hostDefinitionId);
+    if (!cloudflareHostMayBindSubagent(host)) throw new Error("subagent host is no longer active");
+    return JSON.stringify(await host.routeSubagent(JSON.parse(requestJson)));
+  },
+  bindSubagentRoute(hostDefinitionId, requestJson) {
+    const host = requiredDefinitionHost(hostDefinitionId);
+    if (!cloudflareHostMayBindSubagent(host)) throw new Error("subagent host is no longer active");
+    const result = host.bindSubagentRoute(JSON.parse(requestJson));
+    if (result && typeof result.then === "function") {
+      Promise.resolve(result).catch(() => {});
+      throw new TypeError("subagent route binding must be synchronous");
+    }
+  },
   bindSubagentSession(
     hostDefinitionId,
     rootSessionId,
@@ -514,7 +565,24 @@ const hostBridge = Object.freeze({
       }
     }
     host.bindSubagentSession(sessionId, JSON.parse(contextJson), hostContextRef);
+    const reservation = cloudflareHostReservations.get(host);
+    if (existing !== undefined && existing !== host && reservation !== undefined && !reservation.committed) {
+      (reservation.predecessorSubagentHosts ??= new Map()).set(sessionId, existing);
+    }
     hostSessions.set(sessionId, host);
+  },
+  canCheckpointSubagents(hostDefinitionId, rootSessionId) {
+    const host = definitionHosts.get(hostDefinitionId);
+    const reservation = cloudflareHostReservations.get(host);
+    return !!(host && reservation?.committed && reservation.sessionId === rootSessionId
+      && mayReleaseCloudflareSubagentSession(reservation));
+  },
+  checkpointSubagents(hostDefinitionId, rootSessionId, encoded) {
+    const host = definitionHosts.get(hostDefinitionId);
+    const reservation = cloudflareHostReservations.get(host);
+    if (!host || !reservation?.committed || reservation.sessionId !== rootSessionId
+      || !mayReleaseCloudflareSubagentSession(reservation)) return;
+    host.checkpointSubagents?.(encoded);
   },
   releaseSubagentSession(hostDefinitionId, rootSessionId, sessionId) {
     let host;
@@ -529,10 +597,10 @@ const hostBridge = Object.freeze({
     }
     if (!host || hostSessions.get(sessionId) !== host) return;
     host.releaseSession(sessionId);
-    if (hostSessions.get(sessionId) === host) hostSessions.delete(sessionId);
+    releaseHostSession(host, sessionId);
   },
-  executeCode(source, sessionId, callId, model) {
-    return requiredSessionHost(sessionId).executeCode(source, sessionId, callId, model);
+  executeCode(source, sessionId, callId, model, turnId) {
+    return requiredSessionHost(sessionId).executeCode(source, sessionId, callId, model, turnId);
   },
   waitCode(input, sessionId, callId) {
     return requiredSessionHost(sessionId).waitCode(input, sessionId, callId);
@@ -540,8 +608,8 @@ const hostBridge = Object.freeze({
   nextCodeUpdate(sessionId, callId) {
     return requiredSessionHost(sessionId).nextCodeUpdate(sessionId, callId);
   },
-  executeTool(name, input, sessionId, callId, model) {
-    return requiredSessionHost(sessionId).executeTool(name, input, sessionId, callId, model);
+  executeTool(name, input, sessionId, callId, model, turnId) {
+    return requiredSessionHost(sessionId).executeTool(name, input, sessionId, callId, model, turnId);
   },
   beginCodeTurn(sessionId) {
     hostSessions.get(sessionId)?.beginCodeTurn?.(sessionId);
@@ -844,16 +912,20 @@ export function activateCloudflareAgentSession(reservation) {
 }
 
 /** Internal Cloudflare seam: publishes a reconstructed owner after adapter setup succeeds. */
-export function commitCloudflareAgentSession(reservation) {
+export function commitCloudflareAgentSession(reservation, beforeCommit) {
   if (!cloudflareAgentSessions.has(reservation)
     || reservation.released
     || !reservation.adopted
     || activeAgentSessions.get(reservation.sessionId) !== reservation) {
     throw new Error("Cloudflare Agent session reservation is not ready to commit");
   }
+  // A synchronous durable transition must succeed before rollback authority is
+  // relinquished. No other generation can interleave validation and publication.
+  beforeCommit?.();
   reservation.committed = true;
   reservation.predecessor = undefined;
   reservation.predecessorHost = undefined;
+  reservation.predecessorSubagentHosts = undefined;
 }
 
 function adoptAgentSession(reservation, sessionId) {
@@ -887,6 +959,9 @@ export function releaseAgentSession(reservation) {
       if (reservation.predecessorHost !== undefined) {
         hostSessions.set(reservation.sessionId, reservation.predecessorHost);
       }
+      for (const [sessionId, previous] of reservation.predecessorSubagentHosts ?? []) {
+        if (!hostSessions.has(sessionId)) hostSessions.set(sessionId, previous);
+      }
     } else {
       activeAgentSessions.delete(reservation.sessionId);
       if (hostSessions.get(reservation.sessionId) === reservation.host) {
@@ -911,7 +986,9 @@ async function joinAgentShutdown(state) {
   let shutdownFailed = false;
   let shutdownError;
   try {
-    await state.raw.shutdown();
+    await (state.runtime.shutdown === undefined
+      ? state.raw.shutdown()
+      : state.runtime.shutdown(state.raw));
   } catch (error) {
     shutdownFailed = true;
     shutdownError = error;

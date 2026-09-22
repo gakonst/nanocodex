@@ -33,6 +33,7 @@ wasm-bindgen.workspace = true
 wasm-bindgen-futures.workspace = true
 
 [dev-dependencies]
+nanocodex-oai-api.workspace = true
 tower.workspace = true
 
 [lints]

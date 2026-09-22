@@ -13,12 +13,18 @@ pub(crate) type ServiceFuture =
 #[derive(Clone)]
 pub(crate) struct ServicePlatform {
     host: Option<Arc<dyn HostTransport>>,
+    http: crate::http::ResponsesHttp,
 }
 
 impl ServicePlatform {
+    pub(crate) const fn http(&self) -> &crate::http::ResponsesHttp {
+        &self.http
+    }
+
     pub(crate) fn new(config: &ModelConfig) -> Self {
         Self {
             host: config.host_transport.clone(),
+            http: crate::http::ResponsesHttp::new(config.host_transport.clone()),
         }
     }
 }

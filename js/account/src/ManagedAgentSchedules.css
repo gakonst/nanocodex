@@ -33,7 +33,6 @@
 .agent-schedules-note { font-size: 12px; }
 .agent-schedules-status:empty { display: none; }
 .agent-schedules-error { color: var(--negative, #b42318); overflow-wrap: anywhere; }
-.agent-schedules-delete { border-top: 1px solid var(--border-soft, #ddd); padding-top: 10px; display: grid; gap: 8px; }
 @media (max-width: 640px) {
   .nanocodex-demo .agent-touch-field:has(.agent-schedules-open) { grid-template-columns: minmax(0, 1fr); }
   .nanocodex-demo .agent-touch-field:has(.agent-schedules-open) > textarea { grid-column: 1; grid-row: 1; }

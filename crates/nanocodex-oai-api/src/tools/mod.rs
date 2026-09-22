@@ -1,5 +1,8 @@
 //! Dependency-light contract for caller-defined and runtime-provided tools.
 
+mod image_validation;
+pub use image_validation::valid_tool_image_data_url;
+
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{
@@ -25,6 +28,23 @@ pub enum ToolOutputBody {
 }
 
 impl ToolOutputBody {
+    /// Replaces malformed image envelopes before embedded outputs enter model history.
+    /// This validates MIME and base64 syntax, not image decoding or dimensions.
+    pub fn replace_invalid_image_envelopes(&mut self) {
+        let Self::Content(content) = self else {
+            return;
+        };
+        for item in content {
+            if let ToolOutputContent::InputImage { image_url, .. } = item
+                && !valid_tool_image_data_url(image_url)
+            {
+                *item = ToolOutputContent::InputText {
+                    text: "image content omitted because its data URL was malformed".to_owned(),
+                };
+            }
+        }
+    }
+
     /// Returns the machine-readable value represented by this output.
     #[must_use]
     pub fn structured_result(&self) -> Value {
@@ -321,9 +341,11 @@ pub struct ToolContext<'a> {
     model: &'a str,
     session_id: &'a str,
     call_id: &'a str,
+    turn_id: Option<&'a str>,
     history: &'a [ResponseItem],
     output_token_budget: usize,
     host_context: Option<&'a str>,
+    instruction_revision: Option<u64>,
 }
 
 impl<'a> ToolContext<'a> {
@@ -340,10 +362,25 @@ impl<'a> ToolContext<'a> {
             model,
             session_id,
             call_id,
+            turn_id: None,
             history,
             output_token_budget,
             host_context: None,
+            instruction_revision: None,
         }
+    }
+
+    /// Captures the runtime instruction revision at the model call boundary.
+    #[must_use]
+    pub const fn with_instruction_revision(mut self, revision: Option<u64>) -> Self {
+        self.instruction_revision = revision;
+        self
+    }
+
+    /// Returns the captured revision, never a live runtime lookup.
+    #[must_use]
+    pub const fn instruction_revision(self) -> Option<u64> {
+        self.instruction_revision
     }
 
     /// Attaches embedding-owned invocation context without exposing it to tool
@@ -378,6 +415,20 @@ impl<'a> ToolContext<'a> {
     #[must_use]
     pub const fn call_id(self) -> &'a str {
         self.call_id
+    }
+
+    /// Attaches the host's stable logical-turn identity. This is shared by all
+    /// tool calls in a turn and must not be replaced with a tool-call identity.
+    #[must_use]
+    pub const fn with_turn_id(mut self, turn_id: Option<&'a str>) -> Self {
+        self.turn_id = turn_id;
+        self
+    }
+
+    /// Returns the logical-turn identity, if supplied by the execution host.
+    #[must_use]
+    pub const fn turn_id(self) -> Option<&'a str> {
+        self.turn_id
     }
 
     /// Returns committed authoritative history visible at this call boundary.

@@ -51,7 +51,7 @@ describe("voice relay geography", () => {
 });
 
 describe("private voice egress admission", () => {
-  async function fixture(owned: boolean, privateBinding = true, direct = true, sideband = false, rpc = false, callRpc = false) {
+  async function fixture(owned: boolean, privateBinding = true, direct = true, sideband = false, rpc = false, callRpc = false, accountId?: string) {
     const owner = "11111111-1111-4111-8111-111111111111";
     const id = "a".repeat(64);
     const token = `ncx_live_${"k".repeat(12)}_${"s".repeat(43)}`;
@@ -64,12 +64,12 @@ describe("private voice egress admission", () => {
     }));
     const generic = vi.fn(async (_request: RequestInfo | URL, _init?: RequestInit) => new Response("v=0", { status: 201 }));
     const ownership = vi.fn(async (_url: string, _init: RequestInit) => owned
-      ? Response.json({ subject: direct ? `managed-session-v1_${id}` : id, strategy: direct ? "session_v1" : "directory_v1" })
+      ? Response.json({ subject: direct ? `managed-session-v1_${id}` : id, strategy: direct ? "session_v1" : "directory_v1", ...(accountId ? { chatgpt_account_id: accountId } : {}) })
       : new Response(null, { status: 404 }));
     const resolveCredentialSubject = vi.fn(async (assertions: Record<string, string>) => {
       expect(assertions["x-nanocodex-owner-id"]).toBe(owner);
       expect(assertions["x-nanocodex-session-organization-id"]).toBe("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
-      return owned ? { subject: direct ? `managed-session-v1_${id}` : id, strategy: direct ? "session_v1" : "directory_v1" } : undefined;
+      return owned ? { subject: direct ? `managed-session-v1_${id}` : id, strategy: direct ? "session_v1" : "directory_v1", ...(accountId ? { chatgpt_account_id: accountId } : {}) } : undefined;
     });
     const env = {
       NANOCODEX_API_KEYS: { getByName: () => ({ fetch: async () => Response.json({
@@ -126,6 +126,11 @@ describe("private voice egress admission", () => {
     expect(request.headers.get("x-nanocodex-subject")).toBe(direct ? `managed-session-v1_${"a".repeat(64)}` : "a".repeat(64));
     expect(request.headers.get("x-nanocodex-realtime-owner")).toBe(f.owner);
     expect(request.headers.has("x-nanocodex-voice-region")).toBe(false);
+  });
+  it.each([false, true])("carries a retained account pin through voice admission (rpc=%s)", async (rpc) => {
+    const f = await fixture(true, true, true, false, rpc, false, "account-a");
+    expect(f.response?.status).toBe(201);
+    expect(f.relay.mock.calls[0]![0].headers.get("x-nanocodex-chatgpt-account-id")).toBe("account-a");
   });
   it.each([true, false])("does not reach either egress capability when ownership is denied (direct=%s)", async (direct) => {
     const f = await fixture(false, true, direct);

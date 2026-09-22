@@ -1,3 +1,4 @@
+import { projectEnvironment } from "../environment.mjs";
 import { namedTool } from "../namedTool.mjs";
 import { X_API } from "nanocodex-tools/x";
 
@@ -15,6 +16,7 @@ const CONNECTOR_IDS = [
   "x",
   "spotify",
   "soundcloud",
+  "link",
   "chatgpt",
 ];
 const ACCOUNT_CONNECTION_IDS = Object.freeze(CONNECTOR_IDS.filter((id) => id !== "chatgpt"));
@@ -32,6 +34,7 @@ const ACCOUNT_CONNECTION_LABELS = Object.freeze({
   x: "X",
   spotify: "Spotify",
   soundcloud: "SoundCloud",
+  link: "Stripe Link",
 });
 const GOOGLE_CONNECTION_IDS = new Set([
   "gmail",
@@ -324,18 +327,44 @@ const ACCOUNT_CONNECTION_REQUEST_SCHEMA = Object.freeze({
   additionalProperties: false,
 });
 
-export function browserAccountInfoTool(options) {
-  return namedTool("accountInfo", {
-    description: "Report native public APIs, account authentication, safe Vault references, stablecoin balances, and app authorization boundaries. Native APIs in apis need no connector authorization; call their listed tools directly. Vault references never include passwords, full card numbers, CVVs, expiry details, or billing ZIPs.",
+const ENVIRONMENT_SCHEMA = {
+  ...ACCOUNT_INFO_SCHEMA,
+  properties: {
+    ...Object.fromEntries(Object.entries(ACCOUNT_INFO_SCHEMA.properties).filter(([key]) => !["authenticated", "accounts", "connectorAccounts"].includes(key))),
+    runtime: { type: "string", const: "browser-worker" },
+    default_cwd: { type: "string" },
+    // This browser harness has no execution routing to remote Hands.
+    hands: { type: "object", additionalProperties: false },
+    accounts: {
+      type: "object",
+      properties: Object.fromEntries(CONNECTOR_IDS.map(id => [id, {
+        type: "object",
+        properties: {
+          label: { type: "string" },
+          connections: { type: "array", items: CONNECTOR_CONNECTION_SCHEMA },
+        },
+        required: ["connections"], additionalProperties: false,
+      }])),
+      additionalProperties: false,
+    },
+  },
+  required: [...ACCOUNT_INFO_SCHEMA.required.filter(key => !["authenticated", "accounts", "connectorAccounts"].includes(key)), "runtime", "default_cwd", "hands", "accounts"],
+};
+
+export function browserEnvironmentTool(options, descriptor) {
+  return namedTool("environment", {
+    description: "Inspect the browser environment, connected accounts, native public APIs, safe Vault references, stablecoin balances, and app authorization boundaries. This runtime has a local browser workspace and no remote Hands. Native APIs in apis need no connector authorization; call their listed tools directly. Vault references never include passwords, full card numbers, CVVs, expiry details, or billing ZIPs.",
     parameters: { type: "object", additionalProperties: false },
-    outputSchema: ACCOUNT_INFO_SCHEMA,
-    handler: (_input, context) => browserAccountInfo(options, context?.signal),
+    outputSchema: ENVIRONMENT_SCHEMA,
+    handler: async (_input, context) => projectEnvironment(await browserAccountInfo(options, context?.signal), {
+      runtime: "browser-worker", default_cwd: descriptor.cwd,
+    }),
   });
 }
 
 export function browserAccountConnectionTool(options) {
   return namedTool("requestAccountConnection", {
-    description: "Request an account authorization link for GitHub, Gmail or another Google Workspace app, Slack, X, Spotify, or SoundCloud. Spotify and SoundCloud open the native Nanocodex app to complete OAuth on the phone. Call this when the user asks to connect or authenticate one of these services. Return the exact authorization_url as a Markdown link in your response; do not claim the account is connected until accountInfo confirms it.",
+    description: "Request an account authorization link for GitHub, Gmail or another Google Workspace app, Slack, X, Spotify, SoundCloud, or Stripe Link. Spotify and SoundCloud open the native Nanocodex app to complete OAuth on the phone. Stripe Link asks the user to approve the connection in Link. Call this when the user asks to connect or authenticate one of these services. Return the exact authorization_url as a Markdown link in your response; do not claim the account is connected until environment confirms it.",
     parameters: {
       type: "object",
       properties: {
@@ -358,7 +387,7 @@ export function browserAccountConnectionTool(options) {
           connector,
           label,
           authorization_url: `nanocodex://connect/${connector}`,
-          message: `Open Nanocodex on your iPhone and tap Connect ${label}. Verify the connection with accountInfo after completing OAuth.`,
+          message: `Open Nanocodex on your iPhone and tap Connect ${label}. Verify the connection with environment after completing OAuth.`,
         };
       }
       if (typeof options?.fetch !== "function") {
@@ -407,6 +436,8 @@ function accountConnectionProvider(connector) {
 function safeAccountAuthorizationUrl(value, provider, publicOrigin) {
   let authorization;
   try { authorization = new URL(value); } catch { return undefined; }
+  if (provider === "link") return ["https://link.com", "https://app.link.com", "https://login.link.com"].includes(authorization.origin)
+    && !authorization.username && !authorization.password && !authorization.hash ? authorization.href : undefined;
   const expected = ACCOUNT_AUTHORIZATION_ENDPOINTS[provider];
   if (!expected
     || authorization.origin !== expected.origin

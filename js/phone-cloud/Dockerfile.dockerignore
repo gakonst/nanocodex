@@ -1,0 +1,14 @@
+.git
+.worktrees
+**/.env
+**/.env.*
+**/.dev.vars*
+**/node_modules
+**/target
+**/dist
+**/.wrangler
+**/*.log
+**/auth.json
+**/phone.env
+**/*.sqlite*
+**/build

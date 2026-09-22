@@ -3,6 +3,7 @@
 use std::{
     collections::HashMap,
     io::{Read, Write},
+    path::Path,
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, Ordering},
@@ -16,7 +17,7 @@ use axum::{
         Query, State, WebSocketUpgrade,
         ws::{Message, WebSocket},
     },
-    routing::{get, post},
+    routing::{get, post, put},
 };
 use base64::Engine as _;
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
@@ -25,6 +26,8 @@ use tokio::sync::{mpsc, oneshot};
 
 const AGENT: &str = "019fc927-b280-79a7-8445-1b9996ad2fb0";
 const REMOTE_TURN: &str = "019fc927-b281-79a7-8445-1b9996ad2fb0";
+const VAULT_ID: &str = "abcdefghijklmnopqrstuv";
+const VAULT_ORIGIN: &str = "https://vault-approval.example:8443";
 const TIMEOUT: Duration = Duration::from_secs(10);
 
 #[cfg(unix)]
@@ -175,6 +178,10 @@ struct Terminal {
 
 impl Terminal {
     fn start(origin: &str, attach: bool) -> Self {
+        Self::start_with_reload_dir(origin, attach, None)
+    }
+
+    fn start_with_reload_dir(origin: &str, attach: bool, reload_dir: Option<&Path>) -> Self {
         let workspace = tempfile::tempdir().unwrap();
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -196,8 +203,22 @@ impl Terminal {
         command.env_remove("TMUX");
         command.env_remove("TMUX_PANE");
         command.env_remove("TERM_PROGRAM");
+        command.env_remove("NANOCODEX2_RELOAD_EXECUTABLE");
         command.env("TERM", "xterm-256color");
+        // Exercise terminal clipboard output without changing the developer's
+        // native clipboard. This fixture emulates a remote terminal.
+        command.env("SSH_TTY", "/dev/nanocodex-test-pty");
         command.env("NANOCODEX_MANAGED_URL", origin);
+        // Terminal/API tests must not discover or install the developer’s CUA runtime.
+        command.env("NANOCODEX_COMPUTER", "off");
+        // Every test terminal gets an isolated registry, even when the caller
+        // inherited a real user's reload directory. Only explicit peers share it.
+        command.env(
+            "NANOCODEX_RELOAD_DIR",
+            reload_dir
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| workspace.path().join(".reload")),
+        );
         command.env(
             "NANOCODEX_API_KEY",
             format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43)),
@@ -297,6 +318,10 @@ impl Drop for Terminal {
 
 #[derive(Clone)]
 struct Service {
+    socket_paths: Arc<Mutex<Vec<String>>>,
+    vault_writes: Arc<Mutex<Vec<Value>>>,
+    routing_requests: Arc<Mutex<Vec<String>>>,
+    model_route: Arc<Mutex<Option<Value>>>,
     listed_agent: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
     active: bool,
@@ -345,6 +370,30 @@ impl Service {
     }
 }
 
+async fn vault_metadata() -> Json<Value> {
+    Json(json!({"vault": [{
+        "id": VAULT_ID, "kind": "login", "name": "VERIFIED_SAVED_LOGIN",
+        "browser_origin": "https://previous.example",
+        "username": "PRIVATE_USERNAME_SENTINEL", "password": "PRIVATE_PASSWORD_SENTINEL"
+    }]}))
+}
+
+async fn approve_vault_origin(
+    State(service): State<Service>,
+    axum::extract::Path(id): axum::extract::Path<String>,
+    Json(body): Json<Value>,
+) -> Json<Value> {
+    service
+        .vault_writes
+        .lock()
+        .unwrap()
+        .push(json!({"id": id, "body": body}));
+    Json(json!({
+        "id": id, "kind": "login", "name": "VERIFIED_SAVED_LOGIN",
+        "browser_origin": body["browser_origin"], "password": "PRIVATE_PASSWORD_SENTINEL"
+    }))
+}
+
 async fn list_agents(State(service): State<Service>) -> Json<Value> {
     let _permit = service.session_list_gate.acquire().await.unwrap();
     let agent = service.listed_agent.lock().unwrap().clone();
@@ -385,6 +434,11 @@ async fn socket(
     upgrade: WebSocketUpgrade,
     Query(query): Query<HashMap<String, String>>,
 ) -> axum::response::Response {
+    service
+        .socket_paths
+        .lock()
+        .unwrap()
+        .push(uri.path().to_owned());
     let cursor = query
         .get("cursor")
         .and_then(|cursor| cursor.parse().ok())
@@ -481,8 +535,22 @@ async fn state(
             "live_steer": true, "live_cancel": true, "workspace": "cloudflare-computer",
             "execution_environments": true, "execution_namespace": "cwd-root-v1", "native_cross_mounts": false},
         "settings": service.settings.lock().unwrap().clone(),
+        "model_routing_enabled": !service.routing_requests.lock().unwrap().is_empty(),
+        "model_route": service.model_route.lock().unwrap().clone(),
         "latest_event_cursor": service.latest_cursor(), "stream_error": null
     })))
+}
+
+async fn enable_routing(
+    State(service): State<Service>,
+    axum::extract::Path(agent): axum::extract::Path<String>,
+) -> Json<Value> {
+    service.routing_requests.lock().unwrap().push(agent);
+    Json(json!({
+        "enabled": true,
+        "model_routing": {"strategy": "direct", "preferences": {}},
+        "settings": service.settings.lock().unwrap().clone()
+    }))
 }
 
 async fn submit(State(service): State<Service>, Json(input): Json<Value>) -> Json<Value> {
@@ -536,6 +604,10 @@ async fn cancel(
 }
 
 struct Fixture {
+    socket_paths: Arc<Mutex<Vec<String>>>,
+    vault_writes: Arc<Mutex<Vec<Value>>>,
+    routing_requests: Arc<Mutex<Vec<String>>>,
+    model_route: Arc<Mutex<Option<Value>>>,
     listed_agent: Arc<Mutex<String>>,
     resume_gate: Arc<tokio::sync::Semaphore>,
     origin: String,
@@ -586,6 +658,29 @@ impl Fixture {
         initial_history: Vec<Value>,
         history_gate: Arc<tokio::sync::Semaphore>,
     ) -> Self {
+        Self::launch_with_reload_dir(active, attach, initial_history, history_gate, None).await
+    }
+
+    async fn start_with_reload_dir(reload_dir: &Path) -> Self {
+        let fixture = Self::launch_with_reload_dir(
+            true,
+            true,
+            Vec::new(),
+            Arc::new(tokio::sync::Semaphore::new(1)),
+            Some(reload_dir),
+        )
+        .await;
+        fixture.terminal.wait_text("Enter steer").await;
+        fixture
+    }
+
+    async fn launch_with_reload_dir(
+        active: bool,
+        attach: bool,
+        initial_history: Vec<Value>,
+        history_gate: Arc<tokio::sync::Semaphore>,
+        reload_dir: Option<&Path>,
+    ) -> Self {
         let cursor = initial_history
             .last()
             .and_then(|event| event["cursor"].as_str())
@@ -605,7 +700,16 @@ impl Fixture {
         let session_list_gate = Arc::new(tokio::sync::Semaphore::new(1));
         let listed_agent = Arc::new(Mutex::new(AGENT.to_owned()));
         let resume_gate = Arc::new(tokio::sync::Semaphore::new(1));
+        let socket_paths = Arc::new(Mutex::new(Vec::new()));
+        let vault_writes = Arc::new(Mutex::new(Vec::new()));
+        let routing_requests = Arc::new(Mutex::new(Vec::new()));
+        let model_route = Arc::new(Mutex::new(None));
         let app = Router::new()
+            .route("/v1/credentials", get(vault_metadata))
+            .route("/v1/credentials/vault/login/{id}/origin", put(approve_vault_origin))
+            .route("/v1/account/hands/screens", get(|| async { Json(json!({"surfaces": [{"id":"desktop","machine_id":"screen-test-hand","machine_name":"SCREEN_TEST_HAND","name":"Desktop","generation":"screen-generation","width":32,"height":18,"transport":"frames-v1"}]})) }))
+            .route("/v1/account/hands/view", get(test_screen_socket))
+            .route("/v1/account/hands/renew", post(|| async { Json(json!({"ok":true})) }))
             .route(
                 "/v1/agents",
                 post(|| async {
@@ -619,10 +723,15 @@ impl Fixture {
             .route("/v1/agents/{agent}", get(state))
             .route("/v1/agents/{agent}/ws", get(socket))
             .route("/v1/agents/{agent}/events/history", get(event_history))
+            .route("/v1/agents/{agent}/routing", post(enable_routing))
             .route("/v1/agents/{agent}/turns", post(submit))
             .route("/v1/agents/{agent}/turns/{turn}/steer", post(steer))
             .route("/v1/agents/{agent}/turns/{turn}/cancel", post(cancel))
             .with_state(Service {
+                socket_paths: socket_paths.clone(),
+                vault_writes: vault_writes.clone(),
+                routing_requests: routing_requests.clone(),
+                model_route: model_route.clone(),
                 listed_agent: listed_agent.clone(),
                 resume_gate: resume_gate.clone(),
                 active,
@@ -643,12 +752,22 @@ impl Fixture {
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.unwrap();
         });
-        let terminal = Terminal::start(&origin, attach);
+        let terminal = Terminal::start_with_reload_dir(&origin, attach, reload_dir);
         let events = tokio::time::timeout(TIMEOUT, connections.recv())
             .await
-            .unwrap()
+            .unwrap_or_else(|_| {
+                panic!(
+                    "initial connection missing: {}\nRaw output: {:?}",
+                    terminal.screen.lock().unwrap().screen().contents(),
+                    String::from_utf8_lossy(&terminal.output.lock().unwrap())
+                )
+            })
             .unwrap();
         Self {
+            socket_paths,
+            vault_writes,
+            routing_requests,
+            model_route,
             listed_agent,
             resume_gate,
             origin,
@@ -764,6 +883,77 @@ impl Drop for Fixture {
 }
 
 #[tokio::test]
+async fn terminal_autoroute_enables_through_api_then_locks_after_first_prompt() {
+    let mut fixture = Fixture::start().await;
+    fixture.terminal.prompt("/autoroute", "\r");
+    fixture
+        .terminal
+        .wait_text("Automatic routing enabled")
+        .await;
+    assert_eq!(*fixture.routing_requests.lock().unwrap(), [AGENT]);
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+
+    fixture.terminal.prompt("FIRST_ROUTED_TASK", "\r");
+    let turn = fixture.submission("FIRST_ROUTED_TASK").await;
+    // The chooser selects a different model and transport from the startup defaults.
+    *fixture.model_route.lock().unwrap() = Some(json!({
+        "backend": "vercel", "model": "@cf/zai-org/glm-5.3", "thinking": "high"
+    }));
+    fixture.complete(&turn);
+    fixture.terminal.wait_text("done").await;
+    fixture.terminal.wait_text("Vercel").await;
+    fixture.terminal.wait_text("glm-5.3").await;
+
+    fixture.terminal.prompt("/autoroute", "\r");
+    fixture
+        .terminal
+        .wait_text("Auto routing can only be enabled before the first prompt")
+        .await;
+    assert_eq!(*fixture.routing_requests.lock().unwrap(), [AGENT]);
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+
+    // A subsequent ordinary prompt is a barrier: no delayed slash command may
+    // enter the model stream after the local rejection.
+    fixture.terminal.prompt("FOLLOWUP_WITH_PINNED_ROUTE", "\r");
+    let followup = fixture.submission("FOLLOWUP_WITH_PINNED_ROUTE").await;
+    fixture.complete(&followup);
+    assert_eq!(*fixture.routing_requests.lock().unwrap(), [AGENT]);
+}
+
+#[tokio::test]
+async fn terminal_autoroute_cannot_enable_on_an_attached_session_with_history() {
+    let history = vec![
+        json!({"cursor": "1", "turn_id": REMOTE_TURN, "type": "turn_accepted", "id": REMOTE_TURN, "input": "PREVIOUS_USER_MESSAGE", "replayed": false}),
+        json!({"cursor": "2", "turn_id": REMOTE_TURN, "type": "turn_completed", "id": REMOTE_TURN, "final_message": "PREVIOUS_ANSWER", "usage": null, "citations": [], "usage_error": null}),
+    ];
+    let mut fixture = Fixture::start_with_history(false, true, history).await;
+    fixture.terminal.wait_text("PREVIOUS_USER_MESSAGE").await;
+    fixture.terminal.prompt("/autoroute", "\r");
+    fixture
+        .terminal
+        .wait_text("Auto routing can only be enabled before the first prompt")
+        .await;
+    assert!(fixture.routing_requests.lock().unwrap().is_empty());
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn terminal_autoroute_can_enable_on_an_empty_attached_session() {
+    let mut fixture = Fixture::start_with_history(false, true, Vec::new()).await;
+    fixture.terminal.prompt("/autoroute", "\r");
+    fixture
+        .terminal
+        .wait_text("Automatic routing enabled")
+        .await;
+    assert_eq!(*fixture.routing_requests.lock().unwrap(), [AGENT]);
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn terminal_id_command_shows_attached_agent_without_sending_input() {
     for pasted in [false, true] {
         let mut fixture = Fixture::start_with_active(true).await;
@@ -787,11 +977,24 @@ async fn terminal_id_command_shows_attached_agent_without_sending_input() {
 }
 
 #[tokio::test]
-async fn terminal_id_command_before_creation_does_not_start_an_agent() {
-    let mut fixture = Fixture::start().await;
+async fn terminal_id_command_during_startup_does_not_submit_a_turn() {
+    // Startup eagerly connects. Hold history, but allow the identity to arrive
+    // before replay finishes: either ID response must remain a local control.
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let mut fixture = Fixture::launch_with_history(false, false, Vec::new(), gate.clone()).await;
+    fixture.terminal.wait_text("nanocodex2").await;
     fixture.terminal.prompt("/id", "\r");
-    fixture.terminal.wait_text("No agent ID yet").await;
+    fixture.terminal.wait_text("ID").await;
+    let screen = fixture.terminal.screen.lock().unwrap().screen().contents();
+    if screen.contains(AGENT) {
+        assert!(screen.contains("Agent ID"));
+        fixture.terminal.input("\x1b");
+        fixture.terminal.wait_no_text("Agent ID").await;
+    } else {
+        assert!(screen.contains("No agent ID yet"), "{screen}");
+    }
     assert!(fixture.submissions.try_recv().is_err());
+    gate.add_permits(1);
 
     fixture.terminal.prompt("create an agent", "\r");
     let turn = fixture.submission("create an agent").await;
@@ -2903,6 +3106,35 @@ async fn terminal_failed_initial_attach_retries_without_submitting_its_draft() {
 }
 
 #[tokio::test]
+async fn terminal_voice_during_attach_waits_and_can_be_muted_or_cancelled() {
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    let mut fixture = Fixture::launch_with_history(false, true, Vec::new(), gate.clone()).await;
+    fixture.terminal.wait_text("Connecting").await;
+    fixture.terminal.prompt("/voice on", "\r");
+    fixture.terminal.wait_text("ctrl+x mute").await;
+    fixture.terminal.prompt("DRAFT_WHILE_VOICE_CONNECTS", "");
+    fixture.terminal.input("\x18");
+    fixture.terminal.wait_text("ctrl+x unmute").await;
+    fixture
+        .terminal
+        .wait_text("DRAFT_WHILE_VOICE_CONNECTS")
+        .await;
+    fixture.terminal.input("\x15");
+    fixture.terminal.prompt("/voice off", "\r");
+    fixture
+        .terminal
+        .wait_text_presence("ctrl+x unmute", false)
+        .await;
+    gate.add_permits(1);
+    fixture.terminal.wait_text("Enter send").await;
+    fixture.terminal.prompt("/voice status", "\r");
+    fixture.terminal.wait_text("Voice is off").await;
+    let output = fixture.terminal.output.lock().unwrap();
+    assert!(!String::from_utf8_lossy(&output).contains("Try /voice when connected"));
+    assert!(fixture.submissions.try_recv().is_err());
+}
+
+#[tokio::test]
 async fn terminal_enter_during_attach_does_not_start_an_unintended_parallel_turn() {
     let gate = Arc::new(tokio::sync::Semaphore::new(0));
     let history = active_restore_history("run.warming", json!({}));
@@ -3175,4 +3407,255 @@ async fn terminal_batch_children_expand_independently_and_collapse_with_parent()
     click_row(&mut fixture.terminal, "check-first");
     fixture.terminal.wait_no_text("FIRST_CHILD_OUTPUT").await;
     fixture.terminal.wait_text("SECOND_CHILD_OUTPUT").await;
+}
+
+async fn test_screen_socket(
+    upgrade: WebSocketUpgrade,
+    Query(query): Query<HashMap<String, String>>,
+) -> axum::response::Response {
+    assert_eq!(
+        query.get("machine_id").map(String::as_str),
+        Some("screen-test-hand")
+    );
+    assert_eq!(query.get("surface_id").map(String::as_str), Some("desktop"));
+    assert_eq!(
+        query.get("generation").map(String::as_str),
+        Some("screen-generation")
+    );
+    upgrade.on_upgrade(|mut socket| async move {
+        let mut bytes = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut bytes)
+            .encode_image(&image::RgbImage::from_pixel(
+                32,
+                18,
+                image::Rgb([40, 120, 200]),
+            ))
+            .unwrap();
+        let jpeg = base64::engine::general_purpose::STANDARD.encode(bytes);
+        socket
+            .send(Message::Text(
+                json!({"type":"ready", "connection_id":"screen-test-connection"})
+                    .to_string()
+                    .into(),
+            ))
+            .await
+            .unwrap();
+        while let Some(Ok(Message::Text(text))) = socket.recv().await {
+            let message: Value = serde_json::from_str(&text).unwrap();
+            if message["type"] == "ping" {
+                if socket
+                    .send(Message::Text(json!({"type":"pong"}).to_string().into()))
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+                continue;
+            }
+            // Watching must never acquire the remote input lease.
+            assert_eq!(message["type"], "frame_request");
+            tokio::time::sleep(Duration::from_millis(16)).await;
+            if socket
+                .send(Message::Text(
+                    json!({"type":"frame", "jpeg":jpeg,"width":32,"height":18})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .is_err()
+            {
+                break;
+            }
+        }
+    })
+}
+
+#[tokio::test]
+async fn terminal_screen_selection_zoom_and_tabs_preserve_chat_draft() {
+    let mut fixture = Fixture::start().await;
+    fixture.terminal.prompt("/screen", "\r");
+    fixture.terminal.wait_text("Select Hand").await;
+    fixture.terminal.wait_text("SCREEN_TEST_HAND").await;
+    fixture.terminal.input("\r");
+    fixture.terminal.wait_text("Watching").await;
+    fixture.terminal.input("\t");
+    fixture.terminal.prompt("DRAFT_WHILE_WATCHING", "");
+    fixture.terminal.wait_text("DRAFT_WHILE_WATCHING").await;
+    fixture.terminal.input("\t");
+    fixture.terminal.prompt("/zoom", "\r");
+    fixture.terminal.wait_text(": restore").await;
+    fixture.terminal.wait_no_text("DRAFT_WHILE_WATCHING").await;
+    fixture.terminal.input("\t");
+    fixture.terminal.wait_text("DRAFT_WHILE_WATCHING").await;
+    fixture.terminal.wait_no_text("Watching").await;
+    fixture.terminal.input("\t\x1b");
+    fixture.terminal.wait_text("DRAFT_WHILE_WATCHING").await;
+    fixture.terminal.wait_no_text("Screen").await;
+    assert!(fixture.submissions.try_recv().is_err());
+    fixture.terminal.input("\r");
+    let turn = fixture.submission("DRAFT_WHILE_WATCHING").await;
+    fixture.complete(&turn);
+}
+
+#[tokio::test]
+async fn terminal_vault_approval_cancel_then_explicit_approve_sends_one_safe_receipt() {
+    let mut fixture = Fixture::start_with_active(true).await;
+    fixture.nested(REMOTE_TURN, "tool.call", json!({
+        "call_id": "vault-approval", "tool": "request_vault_intake",
+        "arguments": {"operation": "authorize_origin", "kind": "login", "vault_id": VAULT_ID, "origin": VAULT_ORIGIN}
+    }));
+    fixture.nested(REMOTE_TURN, "tool.result", json!({
+        "call_id": "vault-approval", "tool": "request_vault_intake", "status": "completed", "duration_ns": 1,
+        "result": {"type": "vault_intake", "status": "input_required", "operation": "authorize_origin",
+            "kind": "login", "vault_id": VAULT_ID, "origin": VAULT_ORIGIN, "name": "UNVERIFIED_TOOL_LABEL"}
+    }));
+    fixture.terminal.wait_text("Approve Vault website").await;
+    fixture.complete(REMOTE_TURN);
+    assert!(fixture.vault_writes.lock().unwrap().is_empty());
+
+    for approve in [false, true] {
+        if approve {
+            fixture.terminal.prompt("/vault", "\r");
+        }
+        fixture.terminal.wait_text("Approve Vault website").await;
+        fixture.terminal.wait_text("VERIFIED_SAVED_LOGIN").await;
+        fixture.terminal.wait_text(VAULT_ID).await;
+        fixture.terminal.wait_text(VAULT_ORIGIN).await;
+        fixture.terminal.wait_text("https://previous.example").await;
+        fixture
+            .terminal
+            .wait_text("Press Ctrl+Enter to approve")
+            .await;
+        assert!(fixture.vault_writes.lock().unwrap().is_empty());
+        assert!(fixture.submissions.try_recv().is_err());
+        if approve {
+            fixture.terminal.input("\x1b[13;5u");
+        } else {
+            fixture.terminal.input("\x1b");
+            fixture.terminal.wait_no_text("Approve Vault website").await;
+            fixture.terminal.wait_text("Enter send").await;
+            assert!(fixture.vault_writes.lock().unwrap().is_empty());
+            assert!(fixture.submissions.try_recv().is_err());
+        }
+    }
+    let receipt = format!(
+        "Vault website approval saved.\nLogin: VERIFIED_SAVED_LOGIN\nVault ID: {VAULT_ID}\nApproved website: {VAULT_ORIGIN}\nPassword stayed in Vault."
+    );
+    let turn = fixture.submission(&receipt).await;
+    fixture.complete(&turn);
+    fixture
+        .terminal
+        .wait_text("Vault website approval saved.")
+        .await;
+    fixture.terminal.wait_text("Enter send").await;
+    assert_eq!(
+        *fixture.vault_writes.lock().unwrap(),
+        vec![json!({
+            "id": VAULT_ID, "body": {"browser_origin": VAULT_ORIGIN}
+        })]
+    );
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+    let output = fixture.terminal.output.lock().unwrap();
+    let output = String::from_utf8_lossy(&output);
+    for forbidden in [
+        "PRIVATE_USERNAME_SENTINEL",
+        "PRIVATE_PASSWORD_SENTINEL",
+        "UNVERIFIED_TOOL_LABEL",
+        "\"vault_intake\"",
+        "\"input_required\"",
+        "\"browser_origin\"",
+    ] {
+        assert!(
+            !output.contains(forbidden),
+            "unsafe/raw Vault output: {forbidden}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn terminal_voice_clone_recording_panel_cancels_without_model_input() {
+    let mut fixture = Fixture::start_with_active(true).await;
+    fixture
+        .terminal
+        .prompt("/voice clone \"Sample speaker\"", "\r");
+    fixture.terminal.wait_text("Sample speaker").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_no_text("Sample speaker").await;
+    fixture.terminal.wait_text("Enter steer").await;
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+    // Opening/canceling the local panel must leave the normal composer usable.
+    fixture.terminal.prompt("/voice voices chatgpt", "\r");
+    fixture.terminal.wait_text("ChatGPT voices").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_no_text("ChatGPT voices").await;
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn terminal_voice_menu_exposes_clone_and_chatgpt_picker_without_model_input() {
+    let mut fixture = Fixture::start_with_active(true).await;
+    fixture.terminal.prompt("/voice", "\r");
+    fixture.terminal.wait_text("Record a voice clone").await;
+    fixture.terminal.wait_text("ChatGPT voices").await;
+    fixture.terminal.wait_text("ElevenLabs voices").await;
+    fixture.terminal.input("\x1b[B\x1b[B\x1b[B\r");
+    fixture.terminal.wait_text("Voice clone: My voice").await;
+    fixture.terminal.wait_text("R: record/re-record").await;
+    fixture.terminal.wait_text("H: read-aloud script").await;
+    fixture.terminal.input("h");
+    fixture.terminal.wait_text("Read naturally").await;
+    fixture.terminal.wait_text("This morning").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_no_text("Voice clone:").await;
+    fixture.terminal.prompt("/voice", "\r");
+    fixture.terminal.wait_text("Record a voice clone").await;
+    fixture.terminal.input("\x1b[B\r");
+    fixture.terminal.wait_text("ChatGPT voices").await;
+    fixture.terminal.wait_text("cove").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_no_text("ChatGPT voices").await;
+    assert!(fixture.submissions.try_recv().is_err());
+    assert!(fixture.steers.try_recv().is_err());
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn terminal_reload_restarts_local_peers_without_stopping_durable_work() {
+    let registry_parent = tempfile::tempdir().unwrap();
+    let registry = registry_parent.path().join("reload");
+    let mut first = Fixture::start_with_reload_dir(&registry).await;
+    let mut second = Fixture::start_with_reload_dir(&registry).await;
+    let expected_path = format!("/v1/agents/{AGENT}/ws");
+    for fixture in [&first, &second] {
+        assert_eq!(
+            fixture.socket_paths.lock().unwrap().as_slice(),
+            std::slice::from_ref(&expected_path)
+        );
+    }
+
+    first.terminal.prompt("/reload", "\r");
+    first.replacement_connection().await;
+    second.replacement_connection().await;
+
+    for fixture in [&mut first, &mut second] {
+        fixture.terminal.wait_text("Enter steer").await;
+        assert_eq!(
+            *fixture.socket_paths.lock().unwrap(),
+            [expected_path.clone(), expected_path.clone()],
+            "reload must reattach to the existing agent on each original service"
+        );
+        assert!(fixture.terminal.child.try_wait().unwrap().is_none());
+        fixture.terminal.prompt("/id", "\r");
+        fixture.terminal.wait_text("Agent ID").await;
+        fixture.terminal.wait_text(AGENT).await;
+        fixture.terminal.input("\x1b");
+        fixture.terminal.wait_no_text("Agent ID").await;
+        fixture.terminal.wait_text("Enter steer").await;
+        assert!(fixture.submissions.try_recv().is_err());
+        assert!(fixture.steers.try_recv().is_err());
+        assert!(fixture.cancellations.try_recv().is_err());
+    }
 }

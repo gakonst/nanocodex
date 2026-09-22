@@ -108,6 +108,7 @@ const connectorIds = [
   "x",
   "spotify",
   "soundcloud",
+  "link",
   "chatgpt",
 ] as const satisfies readonly ConnectorCapability[];
 const connectDialogRoutingHeaders = { "x-nanocodex-connect-client": "onboarding" } as const;
@@ -927,6 +928,11 @@ export function ConnectOnboarding({
       await connectMusic(approval, provider);
       return;
     }
+    if (provider === "link") {
+      const popup = window.open("about:blank", "nanocodex-connect-link", "popup,width=520,height=720") ?? undefined;
+      await startConnector(approval, statuses, id, popup);
+      return;
+    }
     setFailure(undefined);
     setConnectorAction(provider);
     try {
@@ -1054,7 +1060,7 @@ export function ConnectOnboarding({
       await connectMusic(pendingApproval, provider);
       return;
     }
-    if (wizard) {
+    if (wizard && provider !== "link") {
       await connectDeviceConnector(pendingApproval, connectorStatuses, id);
       return;
     }
@@ -1157,7 +1163,7 @@ export function ConnectOnboarding({
     };
     activeConnector.current = attempt;
     setConnectorAction(provider);
-    if (id !== "chatgpt") monitorPopup(attempt);
+    if (id !== "chatgpt" && id !== "link") monitorPopup(attempt);
     try {
       const response = await fetch(`${approval.apiUrl}/v1/connectors/${provider}`, {
         method: "POST",
@@ -1205,6 +1211,20 @@ export function ConnectOnboarding({
       }
       const authorizationUrl = requiredUrl(body.authorization_url);
       popup!.location.href = authorizationUrl;
+      if (id === "link") {
+        const expiresAt = requiredExpiry(body.expires_at);
+        while (isActiveConnector(activeConnector.current, attempt, currentRequestId.current) && Date.now() < expiresAt) {
+          await abortableDelay(5_000, attempt.abort.signal);
+          const polled = await fetch(`${approval.apiUrl}/v1/connectors/link?attempt=${encodeURIComponent(String(body.attempt))}`, {
+            headers: { authorization: `Bearer ${approval.token}`, ...(wizard ? connectDeviceRoutingHeaders : connectRoutingHeaders) }, signal: attempt.abort.signal,
+          });
+          const result = await polled.json() as { state?: string };
+          if (!isActiveConnector(activeConnector.current, attempt, currentRequestId.current)) return;
+          if (!polled.ok || result.state === "denied" || result.state === "expired") throw new Error("The Link connection was declined or expired. Try connecting again.");
+          if (result.state === "connected") { await refreshConnectors(approval); finishConnectorAttempt(attempt); return; }
+        }
+        if (activeConnector.current === attempt) throw new Error("The Link connection expired. Try connecting again.");
+      }
     } catch (error) {
       if (finishConnectorAttempt(attempt) && !isAbortError(error)) {
         setFailure({ id: attempt.requestId, message: errorMessage(error) });
@@ -2008,6 +2028,7 @@ function permissionTitle(id: string, fallback: string) {
   if (id === "gdrive") return "Google Drive";
   if (id === "spotify") return "Spotify";
   if (id === "soundcloud") return "SoundCloud";
+  if (id === "link") return "Stripe Link";
   if (id === "x") return "X";
   if (id === "chatgpt" || id === "model") return "ChatGPT";
   return fallback;
@@ -2329,6 +2350,7 @@ function connectorDefinition(id: ConnectorId) {
   if (id === "gcontacts") return { id, name: "Google Contacts", detail: "Read and manage contacts" };
   if (id === "slack") return { id, name: "Slack", detail: "Act as you in connected workspaces" };
   if (id === "spotify") return { id, name: "Spotify", detail: "Playlists, library, follows, and playback" };
+  if (id === "link") return { id, name: "Stripe Link", detail: "Request spend approvals in your Link wallet" };
   if (id === "soundcloud") return { id, name: "SoundCloud", detail: "Tracks, playlists, likes, reposts, and follows" };
   if (id === "x") return { id, name: "X", detail: "Posts, follows, likes, lists, and messages" };
   return { id, name: "ChatGPT", detail: "Model access through your account" };
@@ -2424,6 +2446,7 @@ function connectorProviderLabel(provider: ConnectorProvider): string {
   if (provider === "slack") return "Slack";
   if (provider === "spotify") return "Spotify";
   if (provider === "soundcloud") return "SoundCloud";
+  if (provider === "link") return "Stripe Link";
   if (provider === "chatgpt") return "ChatGPT";
   return "X";
 }

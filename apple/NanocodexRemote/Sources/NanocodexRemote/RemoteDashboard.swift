@@ -15,6 +15,8 @@ enum RemoteHostIdentity {
 
 public struct RemoteDashboard: View {
     private let service: RemoteService
+    private var initialSelection: RemoteScreenSelection? = nil
+    @State private var restoredSelection = false
     private let onClose: (() -> Void)?
     private var embedded: Bool { onClose != nil }
     @StateObject private var viewer = RemoteViewer()
@@ -25,7 +27,10 @@ public struct RemoteDashboard: View {
     @State private var discoveryError: String?
     @State private var text = ""
     @State private var showKeyboard = false
+    @State private var gameControls = false
     @State private var screenQuery = ""
+    @State private var broadcastURL = ""
+    @State private var broadcastPreset = "source"
     private var filteredHands: [RemoteHand] {
         hands.filter { screenQuery.isEmpty || ($0.machineName + " " + $0.name).localizedCaseInsensitiveContains(screenQuery) }
     }
@@ -43,8 +48,8 @@ public struct RemoteDashboard: View {
     // default changed the machine identity on every new dashboard/relaunch.
     private let machineID = RemoteHostIdentity.load()
 #endif
-    public init(service: RemoteService, onClose: (() -> Void)? = nil) {
-        self.service = service; self.onClose = onClose
+    public init(service: RemoteService, initialSelection: RemoteScreenSelection? = nil, onClose: (() -> Void)? = nil) {
+        self.service = service; self.onClose = onClose; self.initialSelection = initialSelection
 #if os(macOS)
         _host = StateObject(wrappedValue: RemoteMacHost()); _phoneHost = StateObject(wrappedValue: RemoteMacHost()); ownsHosts = true
 #endif
@@ -95,6 +100,17 @@ public struct RemoteDashboard: View {
                     Button { Task { await refresh() } } label: { Image(systemName: "arrow.clockwise") }
                         .accessibilityLabel("Refresh screens")
                 }
+                if viewer.hand != nil {
+                    Button {
+                        NotificationCenter.default.post(name: .remoteToggleFullScreen, object: viewer)
+                    } label: {
+                        Label("Full Screen", systemImage: "arrow.up.left.and.arrow.down.right")
+                    }
+                    .labelStyle(.iconOnly)
+                    .keyboardShortcut("f", modifiers: [.control, .command])
+                    .help("Show the livestream full screen (⌃⌘F). Press again to exit.")
+                    .accessibilityIdentifier("remote-fullscreen")
+                }
                 if let onClose {
                     Button(action: onClose) { Image(systemName: "xmark").frame(width: 32, height: 32) }
                         .accessibilityLabel("Close screen pane").accessibilityIdentifier("close-screen-pane")
@@ -109,11 +125,19 @@ public struct RemoteDashboard: View {
                     Label(viewer.controlling ? "Controlling" : "View only", systemImage: viewer.controlling ? "cursorarrow" : "eye")
                         .font(.caption).foregroundStyle(viewer.controlling ? Color.accentColor : Color.secondary)
                     Spacer(minLength: 0)
+                    audioControls
                     if viewer.controlling {
+                        if viewer.relativePointer {
+                            Toggle("Lock Mouse", isOn: $viewer.captureMouse)
+                                .toggleStyle(.checkbox)
+                                .help("For games: click the screen to lock the mouse. ⌘⇧Esc releases control.")
+                                .accessibilityIdentifier("remote-lock-mouse")
+                        }
                         Button { showKeyboard.toggle() } label: { Image(systemName: "keyboard") }
                             .help("Remote typing controls").accessibilityLabel("Remote keyboard")
                             .accessibilityValue(showKeyboard ? "Visible" : "Hidden")
                         Button("Release control") { viewer.releaseControl() }
+                            .keyboardShortcut(.escape, modifiers: [.command, .shift])
                             .accessibilityIdentifier("remote-release-control")
                     } else if viewer.hand?.controllable == true {
                         Button("Take control") { viewer.takeControl() }.buttonStyle(.borderedProminent).disabled(!viewer.connected)
@@ -128,6 +152,57 @@ public struct RemoteDashboard: View {
 #endif
     }
 #endif
+    private var audioControls: some View {
+        HStack(spacing: 8) {
+            Button { viewer.setSpeakersEnabled(!viewer.speakersEnabled) } label: {
+                Image(systemName: viewer.speakersEnabled ? "speaker.wave.2" : "speaker.slash")
+            }
+            .accessibilityLabel(viewer.speakersEnabled ? "Mute remote sound" : "Enable remote sound")
+            .accessibilityIdentifier("remote-speakers")
+            .disabled(!viewer.connected || !viewer.supportsSpeakers)
+            if viewer.supportsMicrophone {
+                Button { viewer.setMicrophoneEnabled(!viewer.microphoneEnabled && !viewer.microphonePending) } label: {
+                    Image(systemName: viewer.microphoneEnabled ? "mic.fill" : "mic.slash")
+                        .foregroundStyle(viewer.microphoneEnabled ? Color.red : Color.primary)
+                }
+                .accessibilityLabel(viewer.microphonePending ? "Cancel microphone" : viewer.microphoneEnabled ? "Mute microphone" : "Enable microphone")
+                .accessibilityValue(viewer.microphonePending ? "Connecting" : viewer.microphoneEnabled ? "On" : "Off")
+                .help(viewer.microphoneError ?? viewer.microphoneSetupHint)
+                .accessibilityIdentifier("remote-microphone")
+                .disabled(!viewer.connected || !viewer.controlling)
+            }
+            if let error = viewer.microphoneError { Text(error).font(.caption2).foregroundStyle(.red) }
+        }
+    }
+
+    private var broadcastControls: some View {
+        DisclosureGroup("Broadcast · " + viewer.broadcastStatus) {
+            VStack(alignment: .leading, spacing: 8) {
+                SecureField("RTMP(S) destination including stream key", text: $broadcastURL)
+                    .textFieldStyle(.roundedBorder).autocorrectionDisabled()
+#if os(iOS)
+                    .textInputAutocapitalization(.never)
+#endif
+                Picker("Quality", selection: $broadcastPreset) {
+                    Text("Source · up to 4K60").tag("source")
+                    Text("1080p60").tag("1080p")
+                    Text("720p60").tag("720p")
+                    Text("Twitch · 1080p60 · 6 Mbps").tag("twitch")
+                    Text("X · 1080p30 · 9 Mbps").tag("x")
+                }
+                HStack {
+                    Button("Start broadcast") {
+                        viewer.broadcast(action: "start", url: broadcastURL, preset: broadcastPreset)
+                        broadcastURL = ""
+                    }.disabled(!viewer.connected || viewer.broadcastWaiting || broadcastURL.isEmpty ||
+                        ["starting", "live", "reconnecting", "stopping"].contains(viewer.broadcastStatus))
+                    Button("Stop broadcast") { viewer.broadcast(action: "stop") }
+                        .disabled(!viewer.connected || viewer.broadcastWaiting || ["idle", "stopped", "stopping"].contains(viewer.broadcastStatus))
+                }
+                if let error = viewer.broadcastError { Text(error).font(.caption).foregroundStyle(.red) }
+            }.padding(.top, 6)
+        }.onChange(of: viewer.hand?.identity) { _, _ in broadcastURL = "" }
+    }
     public var body: some View {
         VStack(spacing: embedded ? 6 : 12) {
 #if os(macOS)
@@ -135,7 +210,11 @@ public struct RemoteDashboard: View {
 #endif
             if viewer.hand != nil {
 
+                ZStack {
                 RemoteCanvas(viewer: viewer).accessibilityIdentifier("remote-canvas")
+#if os(iOS)
+                    .allowsHitTesting(!gameControls)
+#endif
                     .frame(maxWidth: .infinity, maxHeight: .infinity).clipped()
 #if os(macOS)
                     .clipShape(RoundedRectangle(cornerRadius: 12))
@@ -153,6 +232,16 @@ public struct RemoteDashboard: View {
                             }.padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                         }
                     }
+#if os(iOS)
+                    if gameControls {
+                        RemoteGameControls(viewer: viewer) {
+                            viewer.releaseControl()
+                            gameControls = false
+                        }
+                    }
+#endif
+                }
+                if !gameControls {
                 HStack {
                     Text(viewer.status).font(.caption).foregroundStyle(.secondary)
                         .accessibilityValue(viewer.diagnosticPresentation)
@@ -163,14 +252,25 @@ public struct RemoteDashboard: View {
                     Spacer()
 #if os(macOS)
                     if viewer.controlling {
-                        Text("Click screen to type · ⌘⇧Esc releases").font(.caption2).foregroundStyle(.secondary)
+                        Text(viewer.captureMouse ? "Click screen to lock mouse · ⌘⇧Esc releases" : "Click screen to type · ⌘⇧Esc releases").font(.caption2).foregroundStyle(.secondary)
                             .fixedSize(horizontal: false, vertical: true)
                     }
 #else
+                    audioControls
                     if viewer.controlling {
                         Button("Release control") { viewer.releaseControl() }
                     } else if viewer.hand?.controllable == true {
                         Button("Take control") { viewer.takeControl() }.disabled(!viewer.connected)
+                    }
+                    if viewer.hand?.controllable == true, viewer.hand?.kind != .phone {
+                        Button {
+                            showKeyboard = false
+                            gameControls = true
+                            viewer.takeControl()
+                        } label: { Image(systemName: "gamecontroller") }
+                            .accessibilityLabel("WoW controls")
+                            .accessibilityIdentifier("remote-game-controls")
+                            .disabled(!viewer.connected)
                     }
                     if viewer.controlling {
                         Button { showKeyboard.toggle() } label: { Image(systemName: "keyboard") }
@@ -184,7 +284,9 @@ public struct RemoteDashboard: View {
 #if os(iOS)
                 .padding(.horizontal)
 #endif
-                if viewer.controlling && (!embedded || showKeyboard) {
+                }
+                if !gameControls && viewer.hand?.broadcast == true { broadcastControls }
+                if !gameControls && viewer.controlling && (!embedded || showKeyboard) {
                     VStack(spacing: 8) {
                         HStack {
                             TextField("Type on remote screen", text: $text).textFieldStyle(.roundedBorder).onSubmit(sendText)
@@ -309,7 +411,10 @@ public struct RemoteDashboard: View {
 #if os(macOS)
         .padding(embedded ? 8 : 16)
 #else
-        .padding(.bottom, 8)
+        .padding(.bottom, gameControls ? 0 : 8)
+        .background { if gameControls { Color.black.ignoresSafeArea() } }
+        .statusBarHidden(gameControls)
+        .toolbar(gameControls ? .hidden : .visible, for: .navigationBar)
         .navigationTitle(viewer.hand?.name ?? "Screens")
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -342,6 +447,7 @@ public struct RemoteDashboard: View {
             if phase == .background { viewer.suspend() }
 #endif
         }
+        .onChange(of: viewer.hand?.identity) { _, _ in gameControls = false }
         .onChange(of: viewer.controlling) { _, controlling in if !controlling { text = ""; showKeyboard = false } }
         .onDisappear {
             viewer.close()
@@ -351,7 +457,7 @@ public struct RemoteDashboard: View {
         }
     }
     private func screenRow(_ hand: RemoteHand) -> some View {
-        Button { Task { await viewer.connect(service: service, hand: hand) } } label: {
+        Button { restoredSelection = true; Task { await viewer.connect(service: service, hand: hand) } } label: {
             HStack(spacing: 12) {
                 Image(systemName: hand.kind == .phone ? "iphone" : "display")
                     .frame(width: 28)
@@ -376,7 +482,15 @@ public struct RemoteDashboard: View {
     }
 
     private func refresh() async {
-        do { let values = try await service.list(); guard !Task.isCancelled else { return }; hands = values; discoveryError = nil; discoveryLoaded = true }
+        do {
+            let values = try await service.list(); guard !Task.isCancelled else { return }
+            hands = values; discoveryError = nil; discoveryLoaded = true
+            if !restoredSelection, let initialSelection,
+               let hand = values.first(where: initialSelection.matches) {
+                restoredSelection = true
+                await viewer.connect(service: service, hand: hand)
+            }
+        }
         catch { if !Task.isCancelled { discoveryError = error.localizedDescription; discoveryLoaded = true } }
     }
     private func key(_ code: UInt16) { for down in [true, false] { viewer.input(kind: .key, down: down, key: code) } }

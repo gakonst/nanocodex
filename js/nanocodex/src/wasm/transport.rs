@@ -3,7 +3,7 @@ use std::time::Duration;
 use js_sys::Promise;
 use nanocodex::oai::transport::host::{
     ConnectedHost, HostConnectRequest, HostConnection, HostConnectionMetadata, HostError,
-    HostFuture, HostMessage, HostTransport,
+    HostFuture, HostHttpBody, HostHttpResponse, HostMessage, HostTransport,
 };
 use serde::Deserialize;
 use wasm_bindgen::prelude::*;
@@ -11,6 +11,27 @@ use wasm_bindgen_futures::JsFuture;
 
 #[wasm_bindgen]
 extern "C" {
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = httpOpen)]
+    fn host_http_open(
+        endpoint: &str,
+        bearer_token: &str,
+        account_id: Option<&str>,
+        fedramp: bool,
+        session_id: &str,
+        thread_id: &str,
+        turn_state: Option<&str>,
+        body: &str,
+    ) -> Result<u32, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = httpReady)]
+    fn host_http_ready(handle: u32) -> Result<Promise, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = httpNext)]
+    fn host_http_next(handle: u32) -> Result<Promise, JsValue>;
+
+    #[wasm_bindgen(js_namespace = ["globalThis", "nanocodexHost"], js_name = httpClose)]
+    fn host_http_close(handle: u32);
+
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = connect)]
     fn host_connect(
         endpoint: &str,
@@ -101,6 +122,41 @@ enum HostFailureWire {
 }
 
 impl HostTransport for JavaScriptResponsesHost {
+    fn http<'a>(
+        &'a self,
+        request: HostConnectRequest<'a>,
+        body: &'a str,
+    ) -> HostFuture<'a, Result<HostHttpResponse, HostError>> {
+        Box::pin(async move {
+            let handle = host_http_open(
+                request.endpoint(),
+                request.bearer_token(),
+                request.account_id(),
+                request.is_fedramp(),
+                request.session_id(),
+                request.thread_id(),
+                request.turn_state(),
+                body,
+            )
+            .map_err(|error| decode_host_error(&error, true))?;
+            // Install cancellation before the first await, including the header wait.
+            let body = JavaScriptHttpBody { handle };
+            let ready = host_http_ready(handle).map_err(|error| decode_host_error(&error, true))?;
+            let wire: HostHttpWire = await_json(ready)
+                .await
+                .map_err(|error| decode_host_error(&error, true))?;
+            let mut metadata = HostConnectionMetadata::new(wire.status)
+                .with_reasoning_included(wire.reasoning_included);
+            if let Some(turn_state) = wire.turn_state {
+                metadata = metadata.with_turn_state(turn_state);
+            }
+            Ok(HostHttpResponse {
+                body: Box::new(body),
+                metadata,
+            })
+        })
+    }
+
     fn connect<'a>(
         &'a self,
         request: HostConnectRequest<'a>,
@@ -234,4 +290,43 @@ fn decode_host_error(error: &JsValue, reconnectable: bool) -> HostError {
 
 fn host_error_message(error: &JsValue) -> String {
     error.as_string().unwrap_or_else(|| format!("{error:?}"))
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostHttpWire {
+    status: u16,
+    #[serde(default)]
+    reasoning_included: bool,
+    #[serde(default)]
+    turn_state: Option<String>,
+}
+
+struct JavaScriptHttpBody {
+    handle: u32,
+}
+
+impl HostHttpBody for JavaScriptHttpBody {
+    fn next(&mut self) -> HostFuture<'_, Result<Option<Vec<u8>>, HostError>> {
+        Box::pin(async move {
+            let promise =
+                host_http_next(self.handle).map_err(|error| decode_host_error(&error, true))?;
+            let value = JsFuture::from(promise)
+                .await
+                .map_err(|error| decode_host_error(&error, true))?;
+            if value.is_null() {
+                return Ok(None);
+            }
+            let bytes = value
+                .dyn_into::<js_sys::Uint8Array>()
+                .map_err(|_| HostError::new("JavaScript HTTPS host returned a non-byte chunk"))?;
+            Ok(Some(bytes.to_vec()))
+        })
+    }
+}
+
+impl Drop for JavaScriptHttpBody {
+    fn drop(&mut self) {
+        host_http_close(self.handle);
+    }
 }

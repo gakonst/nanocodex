@@ -347,6 +347,7 @@ async fn initialize_and_run(
     status_tx: watch::Sender<AttachmentStatus>,
     closed_tx: watch::Sender<Option<Result<(), AttachmentError>>>,
 ) {
+    let prepare_started = std::time::Instant::now();
     let runtime = tokio::select! {
         biased;
         command = command_rx.recv() => {
@@ -397,6 +398,10 @@ async fn initialize_and_run(
             return;
         }
     };
+    tracing::info!(target: "nanocodex_tools::attachment",
+        stage = "attachment.catalog_prepared",
+        duration_ms = prepare_started.elapsed().as_secs_f64() * 1000.0,
+        "attachment catalog prepared");
     driver::run(config, runtime, command_rx, event_tx, status_tx, closed_tx).await;
 }
 

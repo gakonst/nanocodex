@@ -1,0 +1,344 @@
+[
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-us-20260921",
+      "fixed-luna-low",
+      "cloudflare:openai/gpt-5.6-luna:low",
+      "short",
+      true
+    ],
+    "attempts": 3,
+    "completed": 3,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 1558,
+    "meaningful_p95_ms": 3398,
+    "total_p50_ms": 1558,
+    "total_p95_ms": 3398,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-eu-20260921",
+      "fixed-luna-low",
+      "cloudflare:openai/gpt-5.6-luna:low",
+      "short",
+      true
+    ],
+    "attempts": 3,
+    "completed": 3,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 2112,
+    "meaningful_p95_ms": 5540,
+    "total_p50_ms": 2112,
+    "total_p95_ms": 5540,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-ap-20260921",
+      "fixed-luna-low",
+      "cloudflare:openai/gpt-5.6-luna:low",
+      "short",
+      true
+    ],
+    "attempts": 3,
+    "completed": 3,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 1953,
+    "meaningful_p95_ms": 6687,
+    "total_p50_ms": 1953,
+    "total_p95_ms": 6687,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-us-20260921",
+      "fixed-luna-low",
+      "openrouter:openai/gpt-5.6-luna:low",
+      "short",
+      true
+    ],
+    "attempts": 3,
+    "completed": 3,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 1882,
+    "meaningful_p95_ms": 2295,
+    "total_p50_ms": 1882,
+    "total_p95_ms": 2295,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-ap-20260921",
+      "fixed-luna-low",
+      "openrouter:openai/gpt-5.6-luna:low",
+      "short",
+      true
+    ],
+    "attempts": 3,
+    "completed": 3,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 1663,
+    "meaningful_p95_ms": 3005,
+    "total_p50_ms": 1663,
+    "total_p95_ms": 3005,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-eu-20260921",
+      "fixed-luna-low",
+      "openrouter:openai/gpt-5.6-luna:low",
+      "short",
+      true
+    ],
+    "attempts": 3,
+    "completed": 3,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 1661,
+    "meaningful_p95_ms": 2522,
+    "total_p50_ms": 1661,
+    "total_p95_ms": 2522,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-us-20260921",
+      "fixed-luna-low",
+      "vercel:openai/gpt-5.6-luna:low",
+      "short",
+      true
+    ],
+    "attempts": 3,
+    "completed": 3,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 2045,
+    "meaningful_p95_ms": 2822,
+    "total_p50_ms": 2045,
+    "total_p95_ms": 2822,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-eu-20260921",
+      "fixed-luna-low",
+      "vercel:openai/gpt-5.6-luna:low",
+      "short",
+      true
+    ],
+    "attempts": 3,
+    "completed": 3,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 1951,
+    "meaningful_p95_ms": 3196,
+    "total_p50_ms": 1951,
+    "total_p95_ms": 3196,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-ap-20260921",
+      "fixed-luna-low",
+      "vercel:openai/gpt-5.6-luna:low",
+      "short",
+      true
+    ],
+    "attempts": 3,
+    "completed": 3,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 1757,
+    "meaningful_p95_ms": 3724,
+    "total_p50_ms": 1757,
+    "total_p95_ms": 3724,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-us-20260921",
+      "fixed-luna-low",
+      "openrouter:openai/gpt-5.6-luna:low",
+      "long-prefix",
+      true
+    ],
+    "attempts": 2,
+    "completed": 2,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 1031,
+    "meaningful_p95_ms": 1290,
+    "total_p50_ms": 1031,
+    "total_p95_ms": 1290,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-eu-20260921",
+      "fixed-luna-low",
+      "openrouter:openai/gpt-5.6-luna:low",
+      "long-prefix",
+      true
+    ],
+    "attempts": 2,
+    "completed": 2,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 1351,
+    "meaningful_p95_ms": 1693,
+    "total_p50_ms": 1351,
+    "total_p95_ms": 1693,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-ap-20260921",
+      "fixed-luna-low",
+      "openrouter:openai/gpt-5.6-luna:low",
+      "long-prefix",
+      true
+    ],
+    "attempts": 2,
+    "completed": 2,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 1748,
+    "meaningful_p95_ms": 2760,
+    "total_p50_ms": 1748,
+    "total_p95_ms": 2760,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-eu-20260921",
+      "fixed-luna-low",
+      "vercel:openai/gpt-5.6-luna:low",
+      "long-prefix",
+      true
+    ],
+    "attempts": 2,
+    "completed": 2,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 1337,
+    "meaningful_p95_ms": 2459,
+    "total_p50_ms": 1337,
+    "total_p95_ms": 2459,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-ap-20260921",
+      "fixed-luna-low",
+      "vercel:openai/gpt-5.6-luna:low",
+      "long-prefix",
+      true
+    ],
+    "attempts": 2,
+    "completed": 2,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 1446,
+    "meaningful_p95_ms": 1902,
+    "total_p50_ms": 1446,
+    "total_p95_ms": 1902,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-us-20260921",
+      "fixed-luna-low",
+      "vercel:openai/gpt-5.6-luna:low",
+      "long-prefix",
+      true
+    ],
+    "attempts": 2,
+    "completed": 2,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 1763,
+    "meaningful_p95_ms": 3093,
+    "total_p50_ms": 1763,
+    "total_p95_ms": 3093,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-eu-20260921",
+      "fixed-luna-low",
+      "cloudflare:openai/gpt-5.6-luna:low",
+      "long-prefix",
+      true
+    ],
+    "attempts": 2,
+    "completed": 2,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 1425,
+    "meaningful_p95_ms": 2205,
+    "total_p50_ms": 1425,
+    "total_p95_ms": 2205,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-ap-20260921",
+      "fixed-luna-low",
+      "cloudflare:openai/gpt-5.6-luna:low",
+      "long-prefix",
+      true
+    ],
+    "attempts": 2,
+    "completed": 2,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 1785,
+    "meaningful_p95_ms": 2188,
+    "total_p50_ms": 1785,
+    "total_p95_ms": 2188,
+    "p95_caution": "fewer_than_20_samples"
+  },
+  {
+    "group": [
+      "baseline",
+      "nanocodex-bench-us-20260921",
+      "fixed-luna-low",
+      "cloudflare:openai/gpt-5.6-luna:low",
+      "long-prefix",
+      true
+    ],
+    "attempts": 2,
+    "completed": 2,
+    "errors": 0,
+    "incomplete": 0,
+    "meaningful_p50_ms": 1700,
+    "meaningful_p95_ms": 2300,
+    "total_p50_ms": 1700,
+    "total_p95_ms": 2300,
+    "p95_caution": "fewer_than_20_samples"
+  }
+]

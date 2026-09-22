@@ -1,0 +1,652 @@
+{
+  "release": "nightly-92528e17b4feb63fed238abc2f2b766777fc24ff",
+  "ci_run": 35154748579,
+  "host": "ubuntu@206.223.235.69",
+  "method": "Published Mac nanocodex hand add installer, ordinary nightly resolution, no --artifacts",
+  "install": {
+    "exit_code": 0,
+    "elapsed_s": 14.611165332957171
+  },
+  "verified_downloads": {
+    "installer": {
+      "asset": "nanocodex-aarch64-apple-darwin.gz",
+      "compressed_sha256": "4c7f9ab807852a87782a4162fc6d75f9ca02029517b2ac966e8a5c011ee8b589",
+      "binary_sha256": "77cb19665c26c5d6220deaf0b87ac6ce36a7aebb5488945c6e7f72320e06cc1f",
+      "binary_bytes": 98495248
+    },
+    "nanocodex2": {
+      "asset": "nanocodex2-x86_64-unknown-linux-gnu.gz",
+      "compressed_sha256": "e80b537aae5932023faf21670129aedbfb52e3f243f8b6f9e24961f693fd98e8",
+      "binary_sha256": "629e911a96f859e53d163f9cae589798a7235312bbe575a8121c9d7d329c2125",
+      "binary_bytes": 50187152
+    },
+    "nanocodex-vm-guest": {
+      "asset": "nanocodex-vm-guest-x86_64-unknown-linux-musl.gz",
+      "compressed_sha256": "aa9ef76e46b72d7620f7ff51a0271400a77045515dbb3b931a6dfd40170d544d",
+      "binary_sha256": "509e42ac3386ec42488287eaeae7212d046358e3cc6f888598f4ffbf12ba25ea",
+      "binary_bytes": 4325856
+    },
+    "nanocodex-computer": {
+      "asset": "nanocodex-computer-x86_64-unknown-linux-gnu.gz",
+      "compressed_sha256": "5d6d7ff2d1fb9a331fe442668a57df717f7657f85cfa74a2358288d2dc64b388",
+      "binary_sha256": "8a89843e14c60bff70c2769953b30da6d7a5be7829c3b73d7c7f444196a0344c",
+      "binary_bytes": 16706216
+    }
+  },
+  "final_state": {
+    "manifest": {
+      "release": "nightly-92528e17b4feb63fed238abc2f2b766777fc24ff",
+      "artifacts": [
+        {
+          "name": "nanocodex2",
+          "url": "https://github.com/gakonst/nanocodex/releases/download/nightly-92528e17b4feb63fed238abc2f2b766777fc24ff/nanocodex2-x86_64-unknown-linux-gnu.gz?asset_id=568925943",
+          "sha256": "e80b537aae5932023faf21670129aedbfb52e3f243f8b6f9e24961f693fd98e8",
+          "gzip": true
+        },
+        {
+          "name": "nanocodex-vm-guest",
+          "url": "https://github.com/gakonst/nanocodex/releases/download/nightly-92528e17b4feb63fed238abc2f2b766777fc24ff/nanocodex-vm-guest-x86_64-unknown-linux-musl.gz?asset_id=568925641",
+          "sha256": "aa9ef76e46b72d7620f7ff51a0271400a77045515dbb3b931a6dfd40170d544d",
+          "gzip": true
+        },
+        {
+          "name": "nanocodex-computer",
+          "url": "https://github.com/gakonst/nanocodex/releases/download/nightly-92528e17b4feb63fed238abc2f2b766777fc24ff/nanocodex-computer-x86_64-unknown-linux-gnu.gz?asset_id=568925648",
+          "sha256": "5d6d7ff2d1fb9a331fe442668a57df717f7657f85cfa74a2358288d2dc64b388",
+          "gzip": true
+        }
+      ],
+      "origin": "https://nanocodex.gakonst.workers.dev",
+      "owner": "631f6a83-9e3f-474a-977a-68897d3ee436",
+      "factory_name": "linux-paradigm",
+      "native_only": false,
+      "max_vms": 4,
+      "vm_cpus": 2,
+      "vm_memory_mib": 4096,
+      "template": "/opt/nanocodex/images/desktop-d9ff55d7f6c73339.ext4",
+      "revision": "5bd37aeb25c6a3d2021642ff",
+      "machine_id": "0dbfda66-12e4-4bcf-b1a9-994a052b3181"
+    },
+    "identity": {
+      "machine_id": "0dbfda66-12e4-4bcf-b1a9-994a052b3181",
+      "workspace": "/srv/nanocodex/workspace"
+    },
+    "services": {
+      "nanocodex-hand.service": {
+        "MainPID": "1007910",
+        "NRestarts": "0",
+        "ExecMainStartTimestamp": "Wed 2026-09-16 22:33:10 UTC",
+        "ExecStart": "{ path=/opt/nanocodex/current/nanocodex2 ; argv[]=/opt/nanocodex/current/nanocodex2 hand --workspace /srv/nanocodex/workspace --state-dir /srv/nanocodex/native-state --machine-name linux-paradigm --log-format json --vm-provider linux-paradigm ; ignore_errors=no ; start_time=[n/a] ; stop_time=[n/a] ; pid=0 ; code=(null) ; status=0/0 }",
+        "ActiveState": "active",
+        "executable": "/opt/nanocodex/releases/5bd37aeb25c6a3d2021642ff/nanocodex2"
+      },
+      "nanocodex-factory.service": {
+        "MainPID": "1009041",
+        "NRestarts": "0",
+        "ExecMainStartTimestamp": "Wed 2026-09-16 22:34:17 UTC",
+        "ExecStart": "{ path=/opt/nanocodex/current/nanocodex2 ; argv[]=/opt/nanocodex/current/nanocodex2 host --scope user --factory-name linux-paradigm --state-dir /srv/nanocodex/factory-state --vm-template /opt/nanocodex/images/desktop-d9ff55d7f6c73339.ext4 --vm-guest-runtime /opt/nanocodex/current/nanocodex-vm-guest --vm-firmware /opt/nanocodex/firmware --vm-cache /srv/nanocodex/cache --vm-workspace /workspace --max-vms 4 --vm-cpus 2 --vm-memory-mib 4096 --log-format json ; ignore_errors=no ; start_time=[Wed 2026-09-16 22:34:17 UTC] ; stop_time=[n/a] ; pid=1009041 ; code=(null) ; status=0/0 }",
+        "ActiveState": "active",
+        "executable": "/opt/nanocodex/releases/5bd37aeb25c6a3d2021642ff/nanocodex2"
+      }
+    },
+    "current": "/opt/nanocodex/releases/5bd37aeb25c6a3d2021642ff",
+    "binary_sha256": {
+      "nanocodex2": "629e911a96f859e53d163f9cae589798a7235312bbe575a8121c9d7d329c2125",
+      "nanocodex-vm-guest": "509e42ac3386ec42488287eaeae7212d046358e3cc6f888598f4ffbf12ba25ea",
+      "nanocodex-computer": "8a89843e14c60bff70c2769953b30da6d7a5be7829c3b73d7c7f444196a0344c"
+    },
+    "perf_override_exists": false,
+    "perf_executables_exist": false,
+    "allocations": []
+  },
+  "agent": "01a0ac5a-e21d-7bce-86ae-fde44d3a5b78",
+  "tool_results": {
+    "create": [
+      {
+        "tool": "mount",
+        "status": "completed",
+        "duration_ms": 2865.0,
+        "result": {
+          "created": true,
+          "id": "01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+          "mount": "/mnt-overlay-perf-probe-d0842c01",
+          "name": "overlay-perf-probe",
+          "provider": "linux-paradigm",
+          "status": "mounted"
+        }
+      },
+      {
+        "tool": "exec_command",
+        "status": "completed",
+        "duration_ms": 245.0,
+        "result": {
+          "chunk_id": "9f5e75",
+          "exit_code": 0,
+          "original_token_count": 8,
+          "output": "Linux\noverlay_persistence_probe",
+          "wall_time_seconds": 0.003606944
+        }
+      }
+    ],
+    "resume": [
+      {
+        "tool": "exec_command",
+        "status": "completed",
+        "duration_ms": 251.0,
+        "result": {
+          "chunk_id": "816326",
+          "exit_code": 0,
+          "original_token_count": 9,
+          "output": "overlay_persistence_proberecovery_ok",
+          "wall_time_seconds": 0.002216046
+        }
+      }
+    ]
+  },
+  "deleted": true,
+  "factory_stages": [
+    {
+      "timestamp": "2026-09-16T22:33:34.769059Z",
+      "stage": "vm.template.cached",
+      "fresh": false,
+      "elapsed_ms": 0.0069229999999999995
+    },
+    {
+      "timestamp": "2026-09-16T22:33:34.778301Z",
+      "stage": "vm.spare.root",
+      "elapsed_ms": 9.098946999999999
+    },
+    {
+      "timestamp": "2026-09-16T22:33:34.778736Z",
+      "stage": "vm.start.runtime",
+      "elapsed_ms": 0.09537799999999999
+    },
+    {
+      "timestamp": "2026-09-16T22:33:35.049044Z",
+      "stage": "vm.start.guest_ready",
+      "elapsed_ms": 270.402749
+    },
+    {
+      "timestamp": "2026-09-16T22:33:35.049200Z",
+      "stage": "vm.spare.guest",
+      "elapsed_ms": 279.999128
+    },
+    {
+      "timestamp": "2026-09-16T22:33:35.053300Z",
+      "stage": "vm.desktop.inspected",
+      "machine_id": "unprovisioned",
+      "elapsed_ms": 4.094661
+    },
+    {
+      "timestamp": "2026-09-16T22:33:35.054192Z",
+      "stage": "vm.desktop.runtime",
+      "machine_id": "unprovisioned",
+      "elapsed_ms": 4.986051
+    },
+    {
+      "timestamp": "2026-09-16T22:33:35.764958Z",
+      "stage": "vm.desktop.stages",
+      "machine_id": "unprovisioned",
+      "startup_ms": "{\"capture\":660.995734,\"openbox\":566.3159410000001,\"x_server\":130.80194600000002,\"xterm\":629.680195}"
+    },
+    {
+      "timestamp": "2026-09-16T22:33:35.764977Z",
+      "stage": "vm.desktop.local_ready",
+      "machine_id": "unprovisioned",
+      "elapsed_ms": 715.7719259999999
+    },
+    {
+      "timestamp": "2026-09-16T22:33:35.764981Z",
+      "message": "Fresh VM spare ready without account or allocation credentials",
+      "stage": "vm.spare.ready",
+      "elapsed_ms": 995.780352
+    },
+    {
+      "timestamp": "2026-09-16T22:33:36.741651Z",
+      "message": "VM host registration reconciled",
+      "stage": "vm.host.ready"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:02.635721Z",
+      "stage": "vm.provision.start",
+      "allocation_id": "1e787ca7-80fa-4aca-80a8-6cefd1525df2"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:02.636438Z",
+      "stage": "vm.provision.spare_claimed",
+      "allocation_id": "1e787ca7-80fa-4aca-80a8-6cefd1525df2",
+      "elapsed_ms": 0.7236849999999999
+    },
+    {
+      "timestamp": "2026-09-16T22:34:02.636486Z",
+      "stage": "vm.provision.guest",
+      "allocation_id": "1e787ca7-80fa-4aca-80a8-6cefd1525df2",
+      "warm": true,
+      "elapsed_ms": 0.7719060000000001
+    },
+    {
+      "timestamp": "2026-09-16T22:34:02.636772Z",
+      "message": "attachment catalog prepared",
+      "stage": "attachment.catalog_prepared",
+      "duration_ms": 0.127539
+    },
+    {
+      "timestamp": "2026-09-16T22:34:02.636792Z",
+      "message": "connecting attachment",
+      "stage": "attachment.connecting"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:02.636833Z",
+      "message": "attachment TLS trust ready",
+      "stage": "attachment.socket.trust",
+      "elapsed_ms": 0.011321000000000001
+    },
+    {
+      "timestamp": "2026-09-16T22:34:02.637458Z",
+      "message": "attachment address resolved",
+      "stage": "attachment.socket.resolved",
+      "elapsed_ms": 0.636382
+    },
+    {
+      "timestamp": "2026-09-16T22:34:02.659122Z",
+      "message": "attachment TCP connected",
+      "stage": "attachment.socket.tcp",
+      "elapsed_ms": 22.299789
+    },
+    {
+      "timestamp": "2026-09-16T22:34:02.680081Z",
+      "stage": "screen.capture.initial",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "elapsed_ms": 43.579196
+    },
+    {
+      "timestamp": "2026-09-16T22:34:02.680549Z",
+      "stage": "screen.socket.resolved",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "elapsed_ms": 0.43246
+    },
+    {
+      "timestamp": "2026-09-16T22:34:02.700728Z",
+      "stage": "screen.socket.tcp",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "elapsed_ms": 20.610764
+    },
+    {
+      "timestamp": "2026-09-16T22:34:02.700737Z",
+      "stage": "screen.socket.trust",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "elapsed_ms": 20.620533
+    },
+    {
+      "timestamp": "2026-09-16T22:34:03.460835Z",
+      "stage": "screen.socket.connected",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "elapsed_ms": 780.716381
+    },
+    {
+      "timestamp": "2026-09-16T22:34:03.467305Z",
+      "stage": "screen.socket.ready",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "elapsed_ms": 787.188356
+    },
+    {
+      "timestamp": "2026-09-16T22:34:03.590722Z",
+      "stage": "screen.published",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "elapsed_ms": 910.60471
+    },
+    {
+      "timestamp": "2026-09-16T22:34:03.590768Z",
+      "message": "Rust VM screen is published",
+      "stage": "vm.screen.ready"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:03.590781Z",
+      "stage": "vm.provision.desktop",
+      "allocation_id": "1e787ca7-80fa-4aca-80a8-6cefd1525df2",
+      "elapsed_ms": 955.066159,
+      "success": true
+    },
+    {
+      "timestamp": "2026-09-16T22:34:03.756672Z",
+      "message": "attachment WebSocket connected",
+      "stage": "attachment.websocket_connected",
+      "duration_ms": 1119.849475,
+      "request_id": "504fba4c-eca5-4878-962d-ea3f994e6789"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:03.969635Z",
+      "message": "attachment catalog acknowledged",
+      "stage": "attachment.catalog_ready",
+      "send_ms": 0.09034,
+      "acknowledge_ms": 212.849288
+    },
+    {
+      "timestamp": "2026-09-16T22:34:03.969649Z",
+      "message": "attachment accepted",
+      "stage": "attachment.attached"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:03.969655Z",
+      "message": "attachment catalog published",
+      "stage": "attachment.catalog_published",
+      "tool.count": 4
+    },
+    {
+      "timestamp": "2026-09-16T22:34:03.969684Z",
+      "stage": "vm.provision.attached",
+      "allocation_id": "1e787ca7-80fa-4aca-80a8-6cefd1525df2",
+      "elapsed_ms": 1333.9687119999999,
+      "success": true
+    },
+    {
+      "timestamp": "2026-09-16T22:34:03.978778Z",
+      "stage": "vm.spare.root",
+      "elapsed_ms": 8.543145
+    },
+    {
+      "timestamp": "2026-09-16T22:34:03.979483Z",
+      "stage": "vm.start.runtime",
+      "elapsed_ms": 0.12207900000000001
+    },
+    {
+      "timestamp": "2026-09-16T22:34:04.241819Z",
+      "stage": "vm.start.guest_ready",
+      "elapsed_ms": 262.457622
+    },
+    {
+      "timestamp": "2026-09-16T22:34:04.241883Z",
+      "stage": "vm.spare.guest",
+      "elapsed_ms": 271.6485
+    },
+    {
+      "timestamp": "2026-09-16T22:34:04.245660Z",
+      "stage": "vm.desktop.inspected",
+      "machine_id": "unprovisioned",
+      "elapsed_ms": 3.772157
+    },
+    {
+      "timestamp": "2026-09-16T22:34:04.246495Z",
+      "stage": "vm.desktop.runtime",
+      "machine_id": "unprovisioned",
+      "elapsed_ms": 4.607182
+    },
+    {
+      "timestamp": "2026-09-16T22:34:04.854329Z",
+      "stage": "vm.desktop.stages",
+      "machine_id": "unprovisioned",
+      "startup_ms": "{\"capture\":587.992364,\"openbox\":505.258344,\"x_server\":110.138404,\"xterm\":559.227548}"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:04.854349Z",
+      "stage": "vm.desktop.local_ready",
+      "machine_id": "unprovisioned",
+      "elapsed_ms": 612.460861
+    },
+    {
+      "timestamp": "2026-09-16T22:34:04.854353Z",
+      "message": "Fresh VM spare ready without account or allocation credentials",
+      "stage": "vm.spare.ready",
+      "elapsed_ms": 884.118258
+    },
+    {
+      "timestamp": "2026-09-16T22:34:06.981715Z",
+      "message": "attachment call started",
+      "stage": "attachment.call.started"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:06.985937Z",
+      "message": "attachment call completed",
+      "stage": "attachment.call.completed"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:17.176961Z",
+      "message": "attachment detached",
+      "stage": "attachment.detached"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:17.318958Z",
+      "stage": "vm.template.cached",
+      "fresh": false,
+      "elapsed_ms": 0.009478
+    },
+    {
+      "timestamp": "2026-09-16T22:34:17.325773Z",
+      "stage": "vm.spare.root",
+      "elapsed_ms": 6.588073
+    },
+    {
+      "timestamp": "2026-09-16T22:34:17.326354Z",
+      "stage": "vm.start.runtime",
+      "elapsed_ms": 0.11004599999999999
+    },
+    {
+      "timestamp": "2026-09-16T22:34:17.603841Z",
+      "stage": "vm.start.guest_ready",
+      "elapsed_ms": 277.596256
+    },
+    {
+      "timestamp": "2026-09-16T22:34:17.603992Z",
+      "stage": "vm.spare.guest",
+      "elapsed_ms": 284.81437999999997
+    },
+    {
+      "timestamp": "2026-09-16T22:34:17.607198Z",
+      "stage": "vm.desktop.inspected",
+      "machine_id": "unprovisioned",
+      "elapsed_ms": 3.200356
+    },
+    {
+      "timestamp": "2026-09-16T22:34:17.607875Z",
+      "stage": "vm.desktop.runtime",
+      "machine_id": "unprovisioned",
+      "elapsed_ms": 3.8775250000000003
+    },
+    {
+      "timestamp": "2026-09-16T22:34:18.434698Z",
+      "stage": "vm.desktop.stages",
+      "machine_id": "unprovisioned",
+      "startup_ms": "{\"capture\":782.825205,\"openbox\":686.6495769999999,\"x_server\":281.62416,\"xterm\":752.0083709999999}"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:18.434717Z",
+      "stage": "vm.desktop.local_ready",
+      "machine_id": "unprovisioned",
+      "elapsed_ms": 830.719976
+    },
+    {
+      "timestamp": "2026-09-16T22:34:18.434721Z",
+      "message": "Fresh VM spare ready without account or allocation credentials",
+      "stage": "vm.spare.ready",
+      "elapsed_ms": 1115.543403
+    },
+    {
+      "timestamp": "2026-09-16T22:34:19.378049Z",
+      "message": "VM host registration reconciled",
+      "stage": "vm.host.ready"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:19.425638Z",
+      "stage": "vm.provision.start",
+      "allocation_id": "1e787ca7-80fa-4aca-80a8-6cefd1525df2"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:19.425692Z",
+      "stage": "vm.provision.root",
+      "allocation_id": "1e787ca7-80fa-4aca-80a8-6cefd1525df2",
+      "elapsed_ms": 0.056967
+    },
+    {
+      "timestamp": "2026-09-16T22:34:19.426415Z",
+      "stage": "vm.start.runtime",
+      "elapsed_ms": 0.13095500000000002
+    },
+    {
+      "timestamp": "2026-09-16T22:34:19.659373Z",
+      "stage": "vm.start.guest_ready",
+      "elapsed_ms": 233.088279
+    },
+    {
+      "timestamp": "2026-09-16T22:34:19.659440Z",
+      "stage": "vm.provision.guest",
+      "allocation_id": "1e787ca7-80fa-4aca-80a8-6cefd1525df2",
+      "warm": false,
+      "elapsed_ms": 233.805122
+    },
+    {
+      "timestamp": "2026-09-16T22:34:19.659657Z",
+      "message": "attachment catalog prepared",
+      "stage": "attachment.catalog_prepared",
+      "duration_ms": 0.090058
+    },
+    {
+      "timestamp": "2026-09-16T22:34:19.659676Z",
+      "message": "connecting attachment",
+      "stage": "attachment.connecting"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:19.659704Z",
+      "message": "attachment TLS trust ready",
+      "stage": "attachment.socket.trust",
+      "elapsed_ms": 0.01103
+    },
+    {
+      "timestamp": "2026-09-16T22:34:19.660283Z",
+      "message": "attachment address resolved",
+      "stage": "attachment.socket.resolved",
+      "elapsed_ms": 0.5900449999999999
+    },
+    {
+      "timestamp": "2026-09-16T22:34:19.663119Z",
+      "stage": "vm.desktop.inspected",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "elapsed_ms": 3.6696150000000003
+    },
+    {
+      "timestamp": "2026-09-16T22:34:19.663945Z",
+      "stage": "vm.desktop.runtime",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "elapsed_ms": 4.496655
+    },
+    {
+      "timestamp": "2026-09-16T22:34:19.680534Z",
+      "message": "attachment TCP connected",
+      "stage": "attachment.socket.tcp",
+      "elapsed_ms": 20.841117
+    },
+    {
+      "timestamp": "2026-09-16T22:34:19.972056Z",
+      "stage": "vm.desktop.stages",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "startup_ms": "{\"capture\":265.723669,\"openbox\":190.05044099999998,\"x_server\":119.029328,\"xterm\":238.260124}"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:19.972076Z",
+      "stage": "vm.desktop.local_ready",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "elapsed_ms": 312.627129
+    },
+    {
+      "timestamp": "2026-09-16T22:34:20.016153Z",
+      "stage": "screen.capture.initial",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "elapsed_ms": 44.066520999999995
+    },
+    {
+      "timestamp": "2026-09-16T22:34:20.016581Z",
+      "stage": "screen.socket.resolved",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "elapsed_ms": 0.39619299999999996
+    },
+    {
+      "timestamp": "2026-09-16T22:34:20.036912Z",
+      "stage": "screen.socket.tcp",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "elapsed_ms": 20.727614
+    },
+    {
+      "timestamp": "2026-09-16T22:34:20.036921Z",
+      "stage": "screen.socket.trust",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "elapsed_ms": 20.7363
+    },
+    {
+      "timestamp": "2026-09-16T22:34:20.394309Z",
+      "message": "attachment WebSocket connected",
+      "stage": "attachment.websocket_connected",
+      "duration_ms": 734.615231,
+      "request_id": "db7b1928-f1d4-446f-a7fe-1f88a318e746"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:20.578757Z",
+      "message": "attachment catalog acknowledged",
+      "stage": "attachment.catalog_ready",
+      "send_ms": 0.088495,
+      "acknowledge_ms": 184.338325
+    },
+    {
+      "timestamp": "2026-09-16T22:34:20.578766Z",
+      "message": "attachment accepted",
+      "stage": "attachment.attached"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:20.578771Z",
+      "message": "attachment catalog published",
+      "stage": "attachment.catalog_published",
+      "tool.count": 4
+    },
+    {
+      "timestamp": "2026-09-16T22:34:20.578790Z",
+      "stage": "vm.provision.attached",
+      "allocation_id": "1e787ca7-80fa-4aca-80a8-6cefd1525df2",
+      "elapsed_ms": 1153.154941,
+      "success": true
+    },
+    {
+      "timestamp": "2026-09-16T22:34:20.855573Z",
+      "stage": "screen.socket.connected",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "elapsed_ms": 839.388739
+    },
+    {
+      "timestamp": "2026-09-16T22:34:20.861512Z",
+      "stage": "screen.socket.ready",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "elapsed_ms": 845.326614
+    },
+    {
+      "timestamp": "2026-09-16T22:34:20.986070Z",
+      "stage": "screen.published",
+      "machine_id": "vm:01a0ac5b-0444-76a1-95b3-e6a4d0842c01",
+      "elapsed_ms": 969.885239
+    },
+    {
+      "timestamp": "2026-09-16T22:34:20.986105Z",
+      "message": "Rust VM screen is published",
+      "stage": "vm.screen.ready"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:20.986114Z",
+      "stage": "vm.provision.desktop",
+      "allocation_id": "1e787ca7-80fa-4aca-80a8-6cefd1525df2",
+      "elapsed_ms": 1560.479861,
+      "success": true
+    },
+    {
+      "timestamp": "2026-09-16T22:34:25.303079Z",
+      "message": "attachment call started",
+      "stage": "attachment.call.started"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:25.305931Z",
+      "message": "attachment call completed",
+      "stage": "attachment.call.completed"
+    },
+    {
+      "timestamp": "2026-09-16T22:34:33.201111Z",
+      "message": "attachment fenced",
+      "stage": "attachment.fenced"
+    }
+  ],
+  "raw_evidence": "nanocodex-vm-perf/output/vm-release/"
+}

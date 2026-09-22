@@ -268,6 +268,25 @@ pub(crate) fn enter_guest_overlay_root(
     )
     .map_err(|error| GuestOverlayError::errno("mounting the guest runtime tmpfs", error))?;
 
+    // Keep the static runtime available to child commands (desktop capture and
+    // computer tools) after pivot_root detaches its original runtime disk root.
+    // This bind stays read-only and lives in /run, never in the retained upper.
+    let runtime_directory = run.join("nanocodex");
+    fs::create_dir_all(&runtime_directory).map_err(|error| {
+        GuestOverlayError::io("creating the runtime executable directory", error)
+    })?;
+    let executable = runtime_directory.join("nanocodex-vm-guest");
+    fs::File::create(&executable)
+        .map_err(|error| GuestOverlayError::io("creating the runtime executable target", error))?;
+    mount(
+        Some("/nanocodex-vm-guest"),
+        &executable,
+        None::<&str>,
+        MsFlags::MS_BIND,
+        None::<&str>,
+    )
+    .map_err(|error| GuestOverlayError::errno("retaining the guest runtime executable", error))?;
+
     let old_root = Path::new(MERGED_MOUNT).join(OLD_ROOT_DIRECTORY);
     fs::create_dir_all(&old_root)
         .map_err(|error| GuestOverlayError::io("creating the old-root mount point", error))?;

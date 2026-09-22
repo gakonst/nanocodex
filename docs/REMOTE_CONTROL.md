@@ -8,7 +8,7 @@ claiming that a machine supports files, processes, and desktop control.
 
 ## Architecture checklist
 
-The product diagram uses illustrative mount names. `accountInfo` returns the
+The product diagram uses illustrative mount names. `environment` returns the
 actual mounts available to the current agent; `workdir` selects the execution
 Hand. Code Mode runs in the managed service, while native commands run on the
 selected Hand. Screen tools select their exact machine and publication instead
@@ -69,9 +69,21 @@ and input. VNC is not required. Wayland remains the Linux compositor/input backe
 
 ## Agent control and human takeover
 
-Each published surface advertises an account-owned `screen_*` tool through the
-existing Hand registry. An agent discovers it with `tool_search`, observes the
-screen, and sends click, text, key, scroll, or drag actions. Code Mode callers
+Agents use a Hand's attached `cua_repl` provider through Code Mode. Call
+`tools.mcp__cua_repl__js({workdir:"/laptop"})` to discover its contract, then add
+the provider arguments alongside `workdir` on each invocation. Nanocodex strips
+only `workdir` and forwards the remaining arguments unchanged. There is no
+`select_computer` or global desktop selection. Calls to different Hands can run
+concurrently with `Promise.all`; JS and reset calls to the same Hand are ordered.
+A cell pins each captured Hand connection, so reconnecting does not retarget an
+admitted call. A new cell discovers replacement connections.
+
+A screen publication alone does not provide CUA. `environment` advertises
+`computer` and `screen` capabilities for viewers, while CUA requires its own
+attached provider. Screen-only Hands therefore report CUA unavailable.
+
+Each surface also advertises its account-owned `screen_*` tool through
+`tool_search`, including individual windows when no unique desktop exists. Code Mode callers
 use `image(result)` to display returned screenshots. Coordinates are normalized
 across the whole image; keyboard actions use USB HID usages and optional
 modifiers. An observation is bounded to 1280 pixels on its longest edge.

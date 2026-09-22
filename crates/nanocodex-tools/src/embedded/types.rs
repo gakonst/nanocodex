@@ -13,9 +13,11 @@ use serde_json::{Value, value::RawValue};
 /// form retains shared history without copying it again when execution crosses
 /// an asynchronous embedding boundary.
 pub struct OwnedToolContext {
+    pub(crate) instruction_revision: Option<u64>,
     pub(crate) model: String,
     pub(crate) session_id: String,
     pub(crate) call_id: String,
+    pub(crate) turn_id: Option<Arc<str>>,
     pub(crate) history: Arc<Vec<ResponseItem>>,
     pub(crate) output_token_budget: usize,
     pub(crate) host_context: Option<Arc<str>>,
@@ -32,9 +34,11 @@ impl OwnedToolContext {
         output_token_budget: usize,
     ) -> Self {
         Self {
+            instruction_revision: None,
             model: model.into(),
             session_id: session_id.into(),
             call_id: call_id.into(),
+            turn_id: None,
             history,
             output_token_budget,
             host_context: None,
@@ -51,7 +55,9 @@ impl OwnedToolContext {
             Arc::new(context.history().to_vec()),
             context.output_token_budget(),
         )
+        .with_instruction_revision(context.instruction_revision())
         .with_host_context(context.host_context().map(Arc::from))
+        .with_turn_id(context.turn_id().map(Arc::from))
     }
 
     /// Borrows this owned state as the standard tool invocation context.
@@ -64,7 +70,23 @@ impl OwnedToolContext {
             self.history.as_slice(),
             self.output_token_budget,
         )
+        .with_instruction_revision(self.instruction_revision)
         .with_host_context(self.host_context.as_deref())
+        .with_turn_id(self.turn_id.as_deref())
+    }
+
+    /// Retains the originating model call's revision across asynchronous work.
+    #[must_use]
+    pub const fn with_instruction_revision(mut self, revision: Option<u64>) -> Self {
+        self.instruction_revision = revision;
+        self
+    }
+
+    /// Retains the originating logical turn across asynchronous tool calls.
+    #[must_use]
+    pub fn with_turn_id(mut self, turn_id: Option<Arc<str>>) -> Self {
+        self.turn_id = turn_id;
+        self
     }
 
     /// Attaches embedding-owned context to this owned invocation.

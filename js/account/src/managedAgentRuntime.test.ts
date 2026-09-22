@@ -53,7 +53,8 @@ test("an exact agent route survives a successful list cached before another clie
         summaries: Object.fromEntries(agentIds.map((id, index) => [id, {
           title: `Agent ${index + 1}`,
           created_at: index + 1,
-          updated_at: agentIds.length - index,
+          updated_at: index + 100,
+          last_user_message_at: agentIds.length - index,
           turn_count: index,
         }])),
       });

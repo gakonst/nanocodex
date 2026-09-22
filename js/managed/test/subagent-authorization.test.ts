@@ -5,6 +5,8 @@ import {
   applyManagedSubagentLifecycle,
   initializeManagedSubagentDigests,
   managedAuthorizationForToolContext,
+  managedAuthorizationForRouting,
+  pruneOrphanedManagedSubagentRoutes,
   type DurableAgentSession,
 } from "../src/index";
 
@@ -23,6 +25,73 @@ const connect = {
 };
 
 describe("managed subagent authorization ownership", () => {
+  it("removes unpublished route bindings between runtimes while preserving restorable child pins", async () => {
+    await withSession(async (state) => {
+      const { storage } = state;
+      storage.sql.exec(`CREATE TABLE nanocodex_cloudflare_subagents (
+        session_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL UNIQUE,
+        descriptor_json TEXT NOT NULL, host_context_ref TEXT)`);
+      for (const [sessionId, agentId, parentAgentId] of [
+        [ACCOUNT_SESSION, "parent", null], [NESTED_SESSION, "nested", "parent"],
+      ] as const) {
+        const child = descriptor(agentId, parentAgentId, sessionId, "restorable child");
+        storage.sql.exec(`INSERT INTO nanocodex_cloudflare_subagents
+          (session_id, agent_id, descriptor_json, host_context_ref) VALUES (?, ?, ?, ?)`,
+        sessionId, agentId, JSON.stringify(child), "account-turn");
+      }
+      for (const sessionId of [ACCOUNT_SESSION, NESTED_SESSION, CONNECT_SESSION]) {
+        storage.sql.exec(`INSERT INTO managed_subagent_routes (session_id, route_id, binding_json)
+          VALUES (?, ?, ?)`, sessionId, `route-${sessionId}`, JSON.stringify({ retained: sessionId }));
+      }
+      const retained = () => storage.sql.exec<{ session_id: string; binding_json: string }>(
+        "SELECT session_id, binding_json FROM managed_subagent_routes ORDER BY session_id",
+      ).toArray();
+      const expected = retained().filter(row => row.session_id !== CONNECT_SESSION);
+      pruneOrphanedManagedSubagentRoutes(storage);
+      expect(retained()).toEqual(expected);
+      pruneOrphanedManagedSubagentRoutes(storage);
+      expect(retained()).toEqual(expected);
+      expect(storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM nanocodex_cloudflare_subagents",
+      ).one().count).toBe(2);
+    });
+  });
+
+  it("cleans failed startup routes when the descriptor table was never created", async () => {
+    await withSession(async (state) => {
+      state.storage.sql.exec(`INSERT INTO managed_subagent_routes (session_id, route_id, binding_json)
+        VALUES (?, ?, ?)`, ACCOUNT_SESSION, "unpublished-route", "{}");
+      pruneOrphanedManagedSubagentRoutes(state.storage);
+      expect(state.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM managed_subagent_routes",
+      ).one().count).toBe(0);
+    });
+  });
+
+  it("resolves routing authority from exact parent provenance, independently of current root authority", async () => {
+    await withSession(async (state) => {
+      insertTurn(state.storage, "account-turn", account);
+      insertTurn(state.storage, "connect-turn", connect);
+      const direct = descriptor("route-parent", null, ACCOUNT_SESSION, "parent task");
+      bind(state.storage, "bind", direct, "account-turn");
+      const routeAuthorization = (parent: string, ref: string, root = ROOT_SESSION) =>
+        managedAuthorizationForRouting(state.storage, root, parent, ref);
+      expect(routeAuthorization(ROOT_SESSION, "account-turn")).toEqual(account);
+      expect(routeAuthorization(ROOT_SESSION, "connect-turn")).toEqual(connect);
+      expect(routeAuthorization(ACCOUNT_SESSION, "account-turn")).toEqual(account);
+      expect(routeAuthorization(ACCOUNT_SESSION, "connect-turn")).toBeUndefined();
+      expect(routeAuthorization(ACCOUNT_SESSION, "account-turn", CONNECT_SESSION)).toBeUndefined();
+      expect(routeAuthorization(NESTED_SESSION, "account-turn")).toBeUndefined();
+      const nested = descriptor("route-nested", "route-parent", NESTED_SESSION, "nested task");
+      bind(state.storage, "bind", nested, "account-turn");
+      expect(routeAuthorization(NESTED_SESSION, "account-turn")).toEqual(account);
+      release(state.storage, ACCOUNT_SESSION, "account-turn");
+      expect(routeAuthorization(ACCOUNT_SESSION, "account-turn")).toBeUndefined();
+      // A retained descendant owns its snapshot even after its parent finishes.
+      expect(routeAuthorization(NESTED_SESSION, "account-turn")).toEqual(account);
+    });
+  });
+
   it("snapshots direct authority, inherits it for nested agents, and reconstructs exactly", async () => {
     await withSession(async (state) => {
       insertTurn(state.storage, "account-turn", account);

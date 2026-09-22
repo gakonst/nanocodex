@@ -1,3 +1,4 @@
+import { LINK_PATH, LINK_SCOPES, linkAuthRequest, decodeLinkDevice, decodeLinkToken, decodeLinkIdentity, linkRequestAllowed, linkBodyAllowed, redactLinkCredentials } from "./connectors/link";
 import { DurableObject } from "cloudflare:workers";
 import { credentialFilteringBody } from "./credential-stream";
 import { SpotifyRateLimit, spotifyFetch } from "./spotify-rate-limit";
@@ -65,7 +66,7 @@ const REVOCATION_RETRY_BASE_MS = 30_000;
 const REVOCATION_RETRY_MAX_MS = 60 * 60_000;
 const REDIRECT_STATUS = new Set([301, 302, 303, 307, 308]);
 const CONNECTION_ID = /^[A-Za-z0-9_-]{43}$/;
-const PROVIDER = /^(github|google|slack|x|spotify|soundcloud)$/;
+const PROVIDER = /^(github|google|slack|x|spotify|soundcloud|link)$/;
 const CONNECTOR_METHODS = new Set(["DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT"]);
 
 type ProviderRule = Readonly<{
@@ -76,6 +77,7 @@ type ProviderRule = Readonly<{
 }>;
 
 const PROVIDER_RULES: readonly ProviderRule[] = [
+  { id: "link", provider: "link", origin: "https://api.link.com", paths: [LINK_PATH] },
   {
     id: "github",
     provider: "github",
@@ -174,8 +176,8 @@ const PROVIDER_RULES: readonly ProviderRule[] = [
   },
 ];
 
-export type ConnectorId = "github" | GoogleCapabilityId | "slack" | "x" | MusicProviderId;
-export type OAuthProviderId = "github" | "google" | "slack" | "x" | MusicProviderId;
+export type ConnectorId = "github" | GoogleCapabilityId | "slack" | "x" | MusicProviderId | "link";
+export type OAuthProviderId = "github" | "google" | "slack" | "x" | MusicProviderId | "link";
 
 export interface ConnectorBrokerEnv extends McpConnectionBrokerEnv {
   SPOTIFY_RATE_LIMITS: DurableObjectNamespace<SpotifyRateLimit>;
@@ -223,6 +225,8 @@ type ConnectorState = {
   connections: Partial<Record<OAuthProviderId, Record<string, StoredConnector>>>;
   pending: Partial<Record<OAuthProviderId, PendingAuthorization>>;
   revocations?: PendingRevocation[];
+  linkAttempt?: { id: string; state: "pending" | "connected" | "denied" | "expired"; connectionId?: string };
+  linkDevice?: { deviceCode: string; userCode: string; authorizationUrl: string; expiresAt: number; intervalMs: number; nextPollAt: number; token?: ReturnType<typeof decodeLinkToken> & { expiresAt: number } };
 };
 
 type LegacyConnectorState = {
@@ -325,29 +329,40 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
         return jsonError(403, "destination_denied");
       }
       if (request.method === "GET" && url.pathname === "/v1/status") {
+        await this.#pollLink();
         return json({ connectors: this.#publicStatus() }, 200);
       }
       if (request.method === "GET" && url.pathname === "/v1/catalog") {
+        await this.#pollLink();
         return json({ connectors: this.#publicStatus(), ...this.#mcpConnections.publicMetadata() }, 200);
       }
       const match = url.pathname.match(
-        /^\/v1\/(github|google|gmail|gdrive|slack|x|spotify|soundcloud)(?:\/(start|callback)|\/connections\/([A-Za-z0-9_-]{43}))?$/,
+        /^\/v1\/(github|google|gmail|gdrive|slack|x|spotify|soundcloud|link)(?:\/(start|callback)|\/connections\/([A-Za-z0-9_-]{43}))?$/,
       );
       const controlId = match?.[1];
       const id = oauthProviderId(controlId);
       if (!id) return jsonError(404, "not_found");
+      if (request.method === "GET" && id === "link" && !match?.[2] && !match?.[3]) {
+        const attempt = url.searchParams.get("attempt");
+        if (!attempt || attempt !== this.#connectors.linkAttempt?.id) return jsonError(409, "connector_attempt_replaced");
+        await this.#pollLink();
+        const result = this.#connectors.linkAttempt!;
+        return json({ state: result.state, connected: result.state === "connected",
+          ...(result.connectionId ? { connection_id: result.connectionId } : {}) }, 200);
+      }
       const operation = match?.[2];
       const connectionId = match?.[3];
       if (request.method === "POST" && operation === "start") {
         auditAction = "authorize_start";
         auditConnector = id;
-        const result = json(await this.#start(id, request), 200);
+        const result = json(id === "link" ? await this.#startLink() : await this.#start(id, request), 200);
         connectorAudit("authorize_start", "allow", id, { status: 200 });
         return result;
       }
       if (request.method === "POST" && operation === "callback") {
         auditAction = "authorize_callback";
         auditConnector = id;
+        if (id === "link") return jsonError(405, "method_not_allowed");
         const callback = await this.#callback(id, request);
         connectorAudit("authorize_callback", callback.connected === true ? "allow" : "deny", id, {
           status: 200,
@@ -362,6 +377,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
         if (!connector) return jsonError(404, "connector_connection_not_found");
         const providerRevoked = await this.#revoke(id, connector);
         delete this.#connections(id)[connectionId];
+        if (id === "link" && this.#connectors.linkAttempt?.connectionId === connectionId) delete this.#connectors.linkAttempt;
         await this.#persist();
         connectorAudit("disconnect", "allow", id, {
           status: 204,
@@ -385,6 +401,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
           delete this.#connections(id)[selectedId];
         }
         delete this.#connectors.pending[id];
+        if (id === "link") { delete this.#connectors.linkDevice; delete this.#connectors.linkAttempt; }
         await this.#persist();
         connectorAudit("disconnect", "allow", id, {
           status: 204,
@@ -410,6 +427,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
   }
 
   async #proxy(provider: ProviderRule, request: Request, url: URL): Promise<Response> {
+    if (provider.id === "link" && !linkRequestAllowed(request.method, url)) throw new ConnectorFailure(403, "destination_denied");
     const archiveRepository = provider.id === "github" && request.method === "GET"
       && url.origin === "https://api.github.com"
       ? /^\/repos\/([A-Za-z0-9_-]+\/[A-Za-z0-9_.-]+)\/tarball(?:\/[^/]+)?$/.exec(url.pathname)?.[1]
@@ -447,7 +465,13 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       const cached = this.#spotifyReads.get(spotifyReadKey);
       if (cached) return cached;
     }
-    const requestBody = provider.provider === "slack"
+    let linkBody: string | undefined;
+    if (provider.id === "link" && request.body !== null) {
+      const body = await readJson(request, MAX_BODY_BYTES);
+      if (!linkBodyAllowed(body)) throw new ConnectorFailure(400, "invalid_request");
+      linkBody = JSON.stringify(body);
+    }
+    const requestBody = provider.id === "link" ? linkBody : provider.provider === "slack"
       ? await slackRequestBody(request)
       : request.body;
     let upstream: Response;
@@ -537,6 +561,14 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       status: upstream.status,
       headers: responseHeaders,
     });
+    if (provider.id === "link") {
+      // Do not expose payment credentials, including unexpected expansions in error bodies.
+      if (!responseBodyPermitted(response.status)) return response;
+      let data;
+      try { data = redactLinkCredentials(await providerJson(response)); }
+      catch { throw new ConnectorFailure(502, "connector_response_invalid"); }
+      return json(data, response.status);
+    }
     return spotifyReadKey ? this.#spotifyReads.store(spotifyReadKey, response) : response;
   }
 
@@ -579,7 +611,9 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       await this.#persist();
       throw new ConnectorFailure(409, "connector_reauthentication_required");
     }
-    const refreshed = rule.provider === "spotify" || rule.provider === "soundcloud"
+    const refreshed = rule.provider === "link"
+      ? await this.#refreshLink(selectedId, connector)
+      : rule.provider === "spotify" || rule.provider === "soundcloud"
       ? await this.#refreshMusicConnector(rule.provider, selectedId, connector)
       : rule.provider === "github"
         ? await this.#refreshGitHubConnector(selectedId, connector)
@@ -793,6 +827,12 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
 
   async #revoke(id: OAuthProviderId, connector: StoredConnector): Promise<boolean> {
     // Spotify has no public token revocation endpoint. Disconnect deletes the local grant.
+    if (id === "link") {
+      const response = await providerFetch(linkAuthRequest("revoke", { token: connector.refreshToken ?? connector.accessToken }));
+      await response.body?.cancel();
+      if (!response.ok) throw new ConnectorFailure(503, "connector_revocation_failed");
+      return true;
+    }
     if (id === "spotify") return false;
     if (id === "soundcloud") {
       const response = await providerFetch(buildSoundCloudRevocationRequest(connector.accessToken));
@@ -888,10 +928,114 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
       x: status("x"),
       spotify: status("spotify"),
       soundcloud: status("soundcloud"),
+      link: status("link"),
     };
   }
 
+  async #startLink(): Promise<Record<string, unknown>> {
+    let pending = this.#connectors.linkDevice;
+    if (!pending || pending.expiresAt <= Date.now()) {
+      const response = await providerFetch(linkAuthRequest("code", {
+        scope: LINK_SCOPES.join(" "), connection_label: "Nanocodex", client_hint: "Nanocodex",
+      }));
+      if (!response.ok) {
+        await response.body?.cancel();
+        throw new ConnectorFailure(502, "connector_authorization_failed");
+      }
+      let device;
+      try { device = decodeLinkDevice(await providerJson(response)); }
+      catch { throw new ConnectorFailure(502, "connector_token_response_invalid"); }
+      pending = {
+        deviceCode: device.deviceCode, userCode: device.userCode, authorizationUrl: device.authorizationUrl,
+        expiresAt: Date.now() + device.expiresIn * 1000,
+        intervalMs: Math.max(5, device.interval) * 1000,
+        nextPollAt: Date.now() + Math.max(5, device.interval) * 1000,
+      };
+      this.#connectors.linkDevice = pending;
+      this.#connectors.linkAttempt = { id: randomBase64Url(32), state: "pending" };
+      await this.#persist();
+    }
+    return { attempt: this.#connectors.linkAttempt!.id, authorization_url: pending.authorizationUrl, user_code: pending.userCode,
+      expires_at: pending.expiresAt, poll_after_ms: pending.intervalMs };
+  }
+
+  async #pollLink(): Promise<void> {
+    const pending = this.#connectors.linkDevice;
+    if (!pending) return;
+    if (pending.expiresAt <= Date.now()) {
+      if (this.#connectors.linkAttempt) this.#connectors.linkAttempt.state = "expired";
+      delete this.#connectors.linkDevice;
+      await this.#persist();
+      return;
+    }
+    if (pending.nextPollAt > Date.now()) return;
+    pending.nextPollAt = Date.now() + pending.intervalMs;
+    await this.#persist();
+    try {
+      if (!pending.token) {
+        const response = await providerFetch(linkAuthRequest("token", {
+          grant_type: "urn:ietf:params:oauth:grant-type:device_code", device_code: pending.deviceCode,
+        }));
+        const data = await providerJson(response);
+        if (!response.ok) {
+          if (data.error === "slow_down") {
+            pending.intervalMs += 5000;
+            pending.nextPollAt = Date.now() + pending.intervalMs;
+          } else if (["access_denied", "expired_token", "authorization_failed"].includes(String(data.error))) {
+            if (this.#connectors.linkAttempt) this.#connectors.linkAttempt.state = data.error === "expired_token" ? "expired" : "denied";
+            delete this.#connectors.linkDevice;
+          }
+          await this.#persist();
+          return;
+        }
+        const token = decodeLinkToken(data);
+        pending.token = { ...token, expiresAt: Date.now() + token.expiresIn * 1000 };
+        // Retain the exchanged token before fetching identity; device codes are single-use.
+        await this.#persist();
+      }
+      const response = await providerFetch(new Request("https://api.link.com/userinfo", {
+        headers: { authorization: `Bearer ${pending.token.accessToken}`, accept: "application/json" },
+      }));
+      if (!response.ok) { await response.body?.cancel(); return; }
+      const identity = decodeLinkIdentity(await providerJson(response));
+      const connectionId = this.#connectionIdForIdentity("link", identity.accountId);
+      const previous = this.#connections("link")[connectionId];
+      this.#connections("link")[connectionId] = {
+        accessToken: pending.token.accessToken, refreshToken: pending.token.refreshToken,
+        expiresAt: pending.token.expiresAt, scopes: pending.token.scopes,
+        accountId: identity.accountId, label: identity.displayLabel, connectedAt: previous?.connectedAt ?? Date.now(),
+      };
+      if (this.#connectors.linkAttempt) Object.assign(this.#connectors.linkAttempt, { state: "connected", connectionId });
+      delete this.#connectors.linkDevice;
+      await this.#persist();
+    } catch {
+      // Provider outages must not hide other connected accounts. The persisted
+      // poll deadline bounds retries, including after broker eviction.
+      await this.#restoreDurableState();
+    }
+  }
+
+  async #refreshLink(connectionId: string, connector: StoredConnector): Promise<StoredConnector> {
+    const response = await providerFetch(linkAuthRequest("token", {
+      grant_type: "refresh_token", refresh_token: connector.refreshToken!,
+    }));
+    if (!response.ok) {
+      await response.body?.cancel();
+      if (response.status === 400 || response.status === 401) return this.#rejectRefresh("link", connectionId, connector);
+      throw new ConnectorFailure(503, "connector_provider_unavailable");
+    }
+    let token;
+    try { token = decodeLinkToken(await providerJson(response), connector.scopes); }
+    catch { return this.#rejectRefresh("link", connectionId, connector); }
+    const next = { ...connector, accessToken: token.accessToken, refreshToken: token.refreshToken,
+      scopes: token.scopes, expiresAt: Date.now() + token.expiresIn * 1000 };
+    this.#connections("link")[connectionId] = next;
+    await this.#persist();
+    return next;
+  }
+
   async #start(id: OAuthProviderId, request: Request): Promise<Record<string, unknown>> {
+    if (id === "link") throw new ConnectorFailure(405, "method_not_allowed");
     const body = await readJson(request, MAX_BODY_BYTES);
     const flow = stringField(body, "flow");
     if (flow && !((id === "spotify" && flow === "ncspot_loopback")
@@ -1237,7 +1381,7 @@ function identityRequest(id: Exclude<OAuthProviderId, "slack">, accessToken: str
 }
 
 function revocationRequest(
-  id: Exclude<OAuthProviderId, "slack" | "x" | MusicProviderId>,
+  id: Exclude<OAuthProviderId, "slack" | "x" | MusicProviderId | "link">,
   connector: StoredConnector,
   env: ConnectorBrokerEnv,
 ): Request {
@@ -1287,6 +1431,7 @@ function providerCredentials(
   env: ConnectorBrokerEnv,
   oauthClientId?: string,
 ): { clientId: string; clientSecret: string } {
+  if (id === "link") throw new ConnectorFailure(405, "method_not_allowed");
   if (oauthClientId !== undefined) {
     if (id !== "spotify" || oauthClientId !== SPOTIFY_LOOPBACK_CLIENT_ID) {
       throw new ConnectorFailure(503, "connector_not_configured");

@@ -146,7 +146,7 @@ test("the account-action browser harness exposes one exact model-visible tool se
   assert.deepEqual(runtime.tools.map(({ name }) => name), [
     "exec_command",
     "runtimeInfo",
-    "accountInfo",
+    "environment",
     "requestAccountConnection",
     "browseX",
     "web__run",
@@ -163,23 +163,17 @@ test("the account-action browser harness exposes one exact model-visible tool se
     exit_code: 0,
     output: "pwd\n",
   });
-  const accountInfo = await byName.accountInfo.handler({}, context);
+  const accountInfo = await byName.environment.handler({}, context);
   assert.deepEqual(accountInfo, {
     status: "ready",
     apis: [X_API],
-    authenticated: ["github", "gdrive", "gcalendar", "slack", "x"],
+    runtime: "browser-worker", default_cwd: "/workspace", hands: {},
     accounts: {
-      github: "Nano Cat (nanocat)",
-      gdrive: "Drive User",
-      gcalendar: "Drive User",
-      slack: "Acme (U123)",
-      x: "Nano Cat (@nanocat)",
-    },
-    connectorAccounts: {
-      github: [{ id: "a".repeat(43), label: "Nano Cat (nanocat)", accountId: "github-account", capabilities: ["github"] }],
-      gdrive: [{ id: "b".repeat(43), label: "Drive User", accountId: "google-account", capabilities: ["gmail", "gdrive", "gcalendar"] }],
-      gcalendar: [{ id: "b".repeat(43), label: "Drive User", accountId: "google-account", capabilities: ["gmail", "gdrive", "gcalendar"] }],
-      slack: [{ id: "c".repeat(43), label: "Acme (U123)", accountId: "T123:U123", capabilities: ["slack"] }],
+      github: { label: "Nano Cat (nanocat)", connections: [{ id: "a".repeat(43), label: "Nano Cat (nanocat)", accountId: "github-account", capabilities: ["github"] }] },
+      gdrive: { label: "Drive User", connections: [{ id: "b".repeat(43), label: "Drive User", accountId: "google-account", capabilities: ["gmail", "gdrive", "gcalendar"] }] },
+      gcalendar: { label: "Drive User", connections: [{ id: "b".repeat(43), label: "Drive User", accountId: "google-account", capabilities: ["gmail", "gdrive", "gcalendar"] }] },
+      slack: { label: "Acme (U123)", connections: [{ id: "c".repeat(43), label: "Acme (U123)", accountId: "T123:U123", capabilities: ["slack"] }] },
+      x: { label: "Nano Cat (@nanocat)", connections: [] },
     },
     identity: {},
     stablecoins: [],
@@ -202,7 +196,8 @@ test("the account-action browser harness exposes one exact model-visible tool se
     ],
   });
   const runtimeInfo = await byName.runtimeInfo.handler({}, context);
-  assert.deepEqual(runtimeInfo.account, accountInfo);
+  assert.deepEqual(runtimeInfo.account.vault, accountInfo.vault);
+  assert.deepEqual(runtimeInfo.account.connectorAccounts.github, accountInfo.accounts.github.connections);
   assert.equal(runtimeInfo.shell, shellDescriptor.shell);
   assert.equal(runtimeInfo.shell_network, shellDescriptor.network.mode);
   assert.equal(runtimeInfo.workspace, shellDescriptor.cwd);
@@ -229,7 +224,7 @@ test("the account-action browser harness exposes one exact model-visible tool se
   assert.equal(accountConnectionRequest.cache, "no-store");
   assert.deepEqual(
     byName.requestAccountConnection.parameters.properties.connector.enum,
-    ["github", "gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets", "gslides", "gcontacts", "slack", "x", "spotify", "soundcloud"],
+    ["github", "gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets", "gslides", "gcontacts", "slack", "x", "spotify", "soundcloud", "link"],
   );
   assert.match(byName.requestAccountConnection.description, /exact authorization_url as a Markdown link/i);
   await assert.rejects(
@@ -262,7 +257,7 @@ test("the account-action browser harness exposes one exact model-visible tool se
     detail: "high",
   }]);
   assert.equal(viewed.structuredResult.image_url, "data:image/png;base64,iVBORw0KGgo=");
-  assert.deepEqual(await byName.update_plan.handler({ plan: [] }, context), { updated: true });
+  assert.equal((await byName.update_plan.handler({ plan: [] }, context)).output, "Plan updated");
   const opened = await byName.dataset.handler({
     operation: "open",
     source: {
@@ -374,7 +369,7 @@ test("the browser harness preserves explicit tool URLs", async () => {
   assert.deepEqual(urls, ["https://tools.test/search", "https://tools.test/images"]);
 });
 
-test("accountInfo adds app authorization without forwarding unknown control-plane fields", async () => {
+test("environment adds app authorization without forwarding unknown control-plane fields", async () => {
   const runtime = bindBrowser({
     ...preparedBrowser(),
     fetch: async () => Response.json({
@@ -415,14 +410,13 @@ test("accountInfo adds app authorization without forwarding unknown control-plan
       }],
     }),
   }, { accountInfo: { requireAuthorization: true } });
-  const accountInfo = runtime.tools.find(({ name }) => name === "accountInfo");
+  const accountInfo = runtime.tools.find(({ name }) => name === "environment");
 
   assert.deepEqual(await accountInfo.handler({}, context), {
     status: "ready",
     apis: [X_API],
-    authenticated: ["chatgpt"],
-    accounts: { chatgpt: "Subscription" },
-    connectorAccounts: {},
+    runtime: "browser-worker", default_cwd: "/workspace", hands: {},
+    accounts: { chatgpt: { label: "Subscription", connections: [] } },
     identity: { tempoAddress: "0xabc" },
     stablecoins: [{ token: "0x01", symbol: "MACH", balance: "5000000", decimals: 6 }],
     authorizations: [{
@@ -452,7 +446,7 @@ test("accountInfo adds app authorization without forwarding unknown control-plan
   });
 });
 
-test("accountInfo projects a bounded host identity and hosted authorization", async () => {
+test("environment projects a bounded host identity and hosted authorization", async () => {
   const hostPrincipalId = "p".repeat(43);
   const runtime = bindBrowser({
     ...preparedBrowser(),
@@ -475,14 +469,13 @@ test("accountInfo projects a bounded host identity and hosted authorization", as
       }],
     }),
   }, { accountInfo: { requireAuthorization: true } });
-  const accountInfo = runtime.tools.find(({ name }) => name === "accountInfo");
+  const accountInfo = runtime.tools.find(({ name }) => name === "environment");
 
   assert.deepEqual(await accountInfo.handler({}, context), {
     status: "ready",
     apis: [X_API],
-    authenticated: ["github"],
-    accounts: { github: "Host GitHub" },
-    connectorAccounts: {},
+    runtime: "browser-worker", default_cwd: "/workspace", hands: {},
+    accounts: { github: { label: "Host GitHub", connections: [] } },
     identity: { hostPrincipal: { kind: "host", id: hostPrincipalId } },
     stablecoins: [],
     authorizations: [{
@@ -498,7 +491,7 @@ test("accountInfo projects a bounded host identity and hosted authorization", as
   });
 });
 
-test("accountInfo fails the complete Vault projection closed on unknown secret fields", async () => {
+test("environment fails the complete Vault projection closed on unknown secret fields", async () => {
   const runtime = bindBrowser({
     ...preparedBrowser(),
     fetch: async () => Response.json({
@@ -520,7 +513,7 @@ test("accountInfo fails the complete Vault projection closed on unknown secret f
       ],
     }),
   });
-  const accountInfo = runtime.tools.find(({ name }) => name === "accountInfo");
+  const accountInfo = runtime.tools.find(({ name }) => name === "environment");
 
   const result = await accountInfo.handler({}, context);
   assert.deepEqual(result.vault, []);
@@ -534,7 +527,7 @@ test("accountInfo fails the complete Vault projection closed on unknown secret f
   assert.match(accountInfo.description, /never include passwords, full card numbers, CVVs, expiry details, or billing ZIPs/);
 });
 
-test("accountInfo includes an empty required Vault field in login and unavailable outputs", async () => {
+test("environment includes an empty required Vault field in login and unavailable outputs", async () => {
   for (const [response, expectedStatus] of [
     [new Response(null, { status: 401 }), "requires_login"],
     [new Response(null, { status: 503 }), "unavailable"],
@@ -543,14 +536,13 @@ test("accountInfo includes an empty required Vault field in login and unavailabl
       ...preparedBrowser(),
       fetch: async () => response,
     });
-    const accountInfo = runtime.tools.find(({ name }) => name === "accountInfo");
+    const accountInfo = runtime.tools.find(({ name }) => name === "environment");
 
     assert.deepEqual(await accountInfo.handler({}, context), {
       status: expectedStatus,
       apis: [X_API],
-      authenticated: [],
+      runtime: "browser-worker", default_cwd: "/workspace", hands: {},
       accounts: {},
-      connectorAccounts: {},
       identity: {},
       stablecoins: [],
       authorizations: [],
@@ -559,7 +551,7 @@ test("accountInfo includes an empty required Vault field in login and unavailabl
   }
 });
 
-test("accountInfo rejects Vault metadata outside broker-compatible bounds", async () => {
+test("environment rejects Vault metadata outside broker-compatible bounds", async () => {
   const malformedVaults = [
     [{ id: "short", kind: "login", name: "Example", created_at: 1, username: "nanocat" }],
     [{ id: LOGIN_ID, kind: "login", name: " Example", created_at: 1, username: "nanocat" }],
@@ -588,7 +580,7 @@ test("accountInfo rejects Vault metadata outside broker-compatible bounds", asyn
       ...preparedBrowser(),
       fetch: async () => Response.json({ connectors: {}, vault }),
     });
-    const accountInfo = runtime.tools.find(({ name }) => name === "accountInfo");
+    const accountInfo = runtime.tools.find(({ name }) => name === "environment");
 
     assert.deepEqual((await accountInfo.handler({}, context)).vault, []);
   }
@@ -647,4 +639,25 @@ test("browser agents request music account connections through the phone", async
     assert.equal(result.expires_in_seconds, undefined, "the app link has no OAuth expiry before consent starts");
   }
   assert(!tool.outputSchema.required.includes("expires_in_seconds"));
+});
+
+test("browser agents accept Link device authorization and reject lookalike origins", async () => {
+  let authorizationUrl = "https://login.link.com/verify?code=test";
+  const requests = [];
+  const runtime = bindBrowser({
+    ...preparedBrowser(),
+    fetch: async (url, init) => {
+      requests.push({ url: String(url), init });
+      return Response.json({ authorization_url: authorizationUrl, attempt: "a".repeat(43) });
+    },
+  }, { accountConnectionRequests: true });
+  const tool = runtime.tools.find(({ name }) => name === "requestAccountConnection");
+  const result = await tool.handler({ connector: "link" }, context);
+  assert.equal(result.authorization_url, authorizationUrl);
+  assert.equal(result.label, "Stripe Link");
+  assert.equal(result.status, "authorization_required");
+  assert.equal(requests[0].url, "https://demo.test/v1/connectors/link");
+  assert.equal(requests[0].init.credentials, "same-origin");
+  authorizationUrl = "https://login.link.com.evil.example/verify?code=test";
+  await assert.rejects(tool.handler({ connector: "link" }, context), /authorization/i);
 });

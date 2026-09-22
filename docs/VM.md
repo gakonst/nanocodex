@@ -177,7 +177,7 @@ let workspace = image.private_workspace(
 .firmware_directory(".cache/libkrunfw/libkrunfw")
 .launch()
 .await?;
-let tools = workspace.tools_builder().build()?;
+let tools = workspace.tools_builder().await?.build()?;
 let (agent, events) = Nanocodex::builder(auth)
     .workspace(workspace.guest_workspace())
     .tools(tools)
@@ -193,24 +193,21 @@ image generation, and `update_plan` retain their existing host-side behavior.
 Callers can disable or replace those independently.
 
 Use `NanocodexBuilder::tools_factory` when an agent can spawn or fork. Start one
-`VmWorkspace` for the root agent tree and capture its clone-cheap `VmTools` in
-the factory. Nanocodex invokes the factory once per driver, so agent-relative
-tools are freshly bound to that driver while every driver deliberately shares
-the same VM, filesystem, and retained guest shell sessions:
+`VmWorkspace` for the root agent tree and discover its guest provider catalog
+before creating the factory. The factory clones the prepared tool selection for
+each driver, sharing the same VM, filesystem, and retained guest shell sessions:
 
 ```rust,no_run
 # use nanocodex::{Nanocodex, OpenAiAuth};
 # use nanocodex_vm::tools::VmToolSession;
-# fn build(auth: OpenAiAuth, session: VmToolSession) -> nanocodex::Result<()> {
-let vm = session.tools();
+# async fn build(auth: OpenAiAuth, session: VmToolSession) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+let tools = session.tools().tools_builder().await?
+    .working_directory("/workspace")
+    .default_shell("sh")
+    .build()?;
 let (agent, events) = Nanocodex::builder(auth)
     .workspace("/workspace")
-    .tools_factory(move |_agent| {
-        vm.tools_builder()
-            .working_directory("/workspace")
-            .default_shell("sh")
-            .build()
-    })
+    .tools_factory(move |_agent| Ok(tools.clone()))
     .build()?;
 # drop((agent, events));
 # Ok(())

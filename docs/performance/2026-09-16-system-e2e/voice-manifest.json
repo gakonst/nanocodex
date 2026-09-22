@@ -1,0 +1,145 @@
+{
+  "source_revision": "68a7f4edc39dfdd35388270160c0ecf935848658",
+  "created_at_utc": "2026-09-16T23:27:36Z",
+  "api_origin": "https://nanocodex.gakonst.workers.dev",
+  "native_scope": "Production Apple VoiceSession/WebRTC library via existing DEBUG test harness; receive-only, no microphone; not installed-app UI.",
+  "browser_scope": "Current browser JS and existing WASM artifact, prerecorded speech fixture, real network Chrome; no physical microphone/speaker.",
+  "wasm_attestation": {
+    "schema": 1,
+    "revision": "099753b7776ad320a4101725f2144a29e2e9530d",
+    "dirty": true,
+    "sourceWasmSha256": "8f0aad7695a35117682e2e281c4bf627d467776a83327d51a1a6901ffebac2d1",
+    "artifacts": {
+      "nanocodex.js": "bc3a11266261c589eab5052e5f27f8bce9db5448e5c7e6c687278e1722071b03",
+      "nanocodex.d.ts": "3ebf0faf69bb1c4c1925bb5c3569139bfcbdacb79544083fc6b5019368359aa2",
+      "nanocodex_bg.js": "c5da935a35d284b72daf4a0717c0ad45d05544982a029b4ff33e7b7dd6a61232",
+      "nanocodex_bg.wasm": "3f8614b2cec9e62062ab05eeb86f6b8d95a5aaa427b4ec5eeb09eefa5db1b333",
+      "nanocodex_worker.js": "cc34f0bba38a928752eb147dc75fc1c6b9ced408027b07f7cf237451152a8de9",
+      "package.json": "1239d4d885dcad42201a27ed9324f8f0f760b78700d8db9ced39a511cffe7eae"
+    }
+  },
+  "fixture_sha256": "2bbf3f97391a6025c79a2719e0a8e3f2d4a3d4085c733e40f18141b2b2caf017",
+  "native_core_sha256": "aca07dc28bfa82674a931311a1aedbd79dfc41b8a5d2ed9882019fa3b69fbb05",
+  "load_before": [
+    312.693359375,
+    275.1513671875,
+    181.3544921875
+  ],
+  "finished_at_utc": "2026-09-16T23:30:49Z",
+  "load_after": [
+    420.13916015625,
+    336.7421875,
+    225.482421875
+  ],
+  "exact_audio_cohort": {
+    "recorded_at": 1789601732.314657,
+    "load_before": [
+      39.025390625,
+      190.560546875,
+      195.47607421875
+    ],
+    "capture": "Remote MediaRecorder WebM/Opus; no microphone. Fixture decoded before injection clocks; speech begins immediately after onReady."
+  },
+  "deployments": {
+    "nanocodex-durable-agent": {
+      "id": "52011c4c-236b-439f-9cea-64ccad4c90cf",
+      "source": "wrangler",
+      "strategy": "percentage",
+      "author_email": "gakonst@protonmail.com",
+      "annotations": {
+        "workers/message": "Shared bounded access verification and VM pool ...",
+        "workers/triggered_by": "upload"
+      },
+      "versions": [
+        {
+          "version_id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece",
+          "percentage": 100
+        }
+      ],
+      "created_on": "2026-09-16T23:12:21.035886Z"
+    },
+    "nanocodex-egress": {
+      "id": "2beb3de4-47bd-4e2a-b92f-75c3ad8c5575",
+      "source": "wrangler",
+      "strategy": "percentage",
+      "annotations": {
+        "workers/message": "GitHub Actions production 972a6967dda761d637601603f200162de88508bf",
+        "workers/triggered_by": "deployment"
+      },
+      "versions": [
+        {
+          "version_id": "d8f1b3e5-2ae9-439b-a587-cd39224eeb92",
+          "percentage": 100
+        }
+      ],
+      "created_on": "2026-09-16T22:34:36.799972Z"
+    },
+    "nanocodex": {
+      "id": "3964a202-fcc0-4ae2-892a-a07810367c33",
+      "source": "wrangler",
+      "strategy": "percentage",
+      "author_email": "gakonst@protonmail.com",
+      "annotations": {
+        "workers/message": "Locally verified viewer authority c0d049f68",
+        "workers/triggered_by": "upload"
+      },
+      "versions": [
+        {
+          "version_id": "83d1e7ce-0db2-4637-9de8-8e9fd5f6968f",
+          "percentage": 100
+        }
+      ],
+      "created_on": "2026-09-16T23:12:54.493965Z"
+    },
+    "nanocodex-connect-api": {
+      "id": "316cefe1-f0ae-48ba-8263-e0c80c7af949",
+      "source": "wrangler",
+      "strategy": "percentage",
+      "annotations": {
+        "workers/message": "GitHub Actions production 972a6967dda761d637601603f200162de88508bf",
+        "workers/triggered_by": "deployment"
+      },
+      "versions": [
+        {
+          "version_id": "d7ab1bb1-a22e-4038-87ac-043743d33b82",
+          "percentage": 100
+        }
+      ],
+      "created_on": "2026-09-16T22:35:01.116132Z"
+    }
+  },
+  "deployments_unchanged": true,
+  "sql_trace": {
+    "status": 200,
+    "sql_trace_setting_present": false,
+    "sql_trace_enabled": false,
+    "setting_type": null
+  },
+  "cleanup": [
+    {
+      "agent_id": "9caf1d7b-b4bd-8fe8-bd17-d6a38305481f",
+      "status": 404,
+      "duration_ms": 1365.986375
+    },
+    {
+      "agent_id": "ce60649a-057c-81e7-96c7-d9e9840a0a4c",
+      "status": 404,
+      "duration_ms": 1427.5856670000003
+    },
+    {
+      "agent_id": "bc43b66f-0bb3-8d7e-a6cb-f5e808b8613a",
+      "status": 404,
+      "duration_ms": 354.04645800000026
+    },
+    {
+      "agent_id": "84ba8667-a359-847c-b845-4ba9988c3d6d",
+      "status": 404,
+      "duration_ms": 337.1160420000001
+    },
+    {
+      "agent_id": "f9bb806a-7b1d-8db0-a706-83ea8826b29f",
+      "status": 404,
+      "duration_ms": 299.989916
+    }
+  ]
+}

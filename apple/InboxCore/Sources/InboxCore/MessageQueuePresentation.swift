@@ -2,7 +2,7 @@ import Foundation
 
 /// Show the head message immediately; only actual follow-ups waiting behind
 /// another turn belong in the queue. Delivery bookkeeping remains independent.
-public struct MessageQueuePresentation {
+public struct MessageQueuePresentation: Sendable {
     public let messages: [PendingMessage]
     public let rows: [TranscriptRow]
     public let attachmentNames: [String: [String]]

@@ -509,8 +509,7 @@ text({ first: first.exit_code, second: second.exit_code });
 #[cfg(unix)]
 #[tokio::test]
 async fn nested_call_updates_stream_in_start_and_resolution_order() -> Result<()> {
-    #[derive(Default)]
-    struct Timeline(Vec<String>);
+    struct Timeline(Vec<String>, PathBuf);
 
     impl CodeModeObserver for Timeline {
         fn update(&mut self, update: CodeModeUpdate<'_>) {
@@ -520,6 +519,12 @@ async fn nested_call_updates_stream_in_start_and_resolution_order() -> Result<()
                 }
                 CodeModeUpdate::NestedCallCompleted(call) => {
                     self.0.push(format!("done:{}", call.call_id));
+                    if call.call_id == "call-exec/code-2" {
+                        // Release the first call only after observing the second
+                        // completion; a marker written by its shell races the
+                        // process-exit notification on a busy runner.
+                        std::fs::write(&self.1, b"observed").unwrap();
+                    }
                 }
             }
         }
@@ -528,7 +533,7 @@ async fn nested_call_updates_stream_in_start_and_resolution_order() -> Result<()
     let workspace = temporary_workspace("streaming-nested-tools")?;
     let tools = test_tools(&workspace);
     let history = Vec::new();
-    let mut timeline = Timeline::default();
+    let mut timeline = Timeline(Vec::new(), workspace.join("second.done"));
     let execution = tools
         .execute_code_with_updates(
             r#"
@@ -537,7 +542,7 @@ await Promise.all([
     cmd: "i=0; while [ \"$i\" -lt 500 ]; do [ -f second.done ] && exit 0; i=$((i + 1)); sleep 0.01; done; exit 91",
     login: false,
   }),
-  tools.exec_command({ cmd: "touch second.done", login: false }),
+  tools.exec_command({ cmd: "true", login: false }),
 ]);
 "#,
             test_context(&history),
@@ -752,6 +757,169 @@ async fn image_helper_requires_data_urls() -> Result<()> {
 }
 
 #[tokio::test]
+async fn image_helper_rejects_malformed_base64_without_emitting_images() -> Result<()> {
+    let workspace = temporary_workspace("code-mode-invalid-base64")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let execution = tools
+        .execute_code(
+            r#"
+const invalid = [
+  "data:", "data:image/png;base64,", "data:text/plain;base64,YQ==",
+  "data:image/;base64,YQ==", "data:image/png,YQ==",
+  "data:application/octet-stream;base64,a",
+  "data:application/octet-stream;base64,YQ==\n",
+  "data:application/octet-streamx;base64,YQ==",
+  "data:image/png;base64,a", "data:image/png;base64,YQ=",
+  "data:image/png;base64,====", "data:image/png;base64,A===",
+  "data:image/png;base64,Y=Q=", "data:image/png;base64,YQ==YQ==",
+  "data:image/png;base64,YQ==\n", "data:image/png;base64,Y Q=",
+  "data:image/png;base64,YQ-_", "data:image/png;base64,YQé=",
+  "data:image/png;base64,YQ%3D%3D",
+  "data:image/png;base64\n,AAAA", "data:image/png;base64\r,AAAA",
+  "data:image/png;base64\r\n,AAAA", "data:image/png;base64\u2028,AAAA",
+  "data:image/png;base64\u2029,AAAA",
+];
+let rejected = 0;
+for (const image_url of invalid) {
+  for (const value of [image_url, { image_url }, { type: "image", data: image_url }]) {
+    try { image(value); } catch (error) {
+      if (error !== "Tool call failed: invalid image output. Pass a base64 data URI instead") throw error;
+      rejected++;
+    }
+  }
+}
+for (const value of [
+  { type: "image", data: "a", mimeType: "image/png" },
+  { type: "image", data: "YQ==", mimeType: "text/plain" },
+  { type: "image", data: "YQ==", mimeType: "application/json" },
+]) {
+  try { image(value); } catch (error) {
+    if (error !== "Tool call failed: invalid image output. Pass a base64 data URI instead") throw error;
+    rejected++;
+  }
+}
+if (rejected !== invalid.length * 3 + 3) throw new Error("accepted malformed image");
+text("all rejected");
+"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    assert!(execution.success, "{}", execution_output(&execution));
+    assert_eq!(emitted_text(&execution)?, "all rejected");
+    let ToolOutputBody::Content(content) = &execution.output else {
+        return Err(eyre!("code-mode execution did not emit content"));
+    };
+    assert!(
+        !content
+            .iter()
+            .any(|item| matches!(item, ToolOutputContent::InputImage { .. }))
+    );
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_helper_forwards_native_view_image_to_model_history_validation() -> Result<()> {
+    let workspace = temporary_workspace("code-mode-view-image-normalization")?;
+    let source = image::DynamicImage::new_rgb8(2, 3);
+    source.save(workspace.join("valid.png"))?;
+    std::fs::write(workspace.join("invalid.png"), b"not an image")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let mut execution = tools
+        .execute_code(
+            r#"
+image(await tools.view_image({ path: "valid.png", detail: "original" }));
+image(await tools.view_image({ path: "invalid.png" }));
+"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    assert!(execution.success, "{}", execution_output(&execution));
+    let ToolOutputBody::Content(content) = &execution.output else {
+        return Err(eyre!("code-mode execution did not emit content"));
+    };
+    let images: Vec<_> = content
+        .iter()
+        .filter_map(|item| match item {
+            ToolOutputContent::InputImage { image_url, detail } => Some((image_url, detail)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(images.len(), 2);
+    assert!(
+        images
+            .iter()
+            .all(|(url, _)| url.starts_with("data:application/octet-stream;base64,"))
+    );
+    assert_eq!(*images[0].1, crate::ImageDetail::Original);
+
+    crate::image::prepare_output_images(&mut execution.output).await;
+    let ToolOutputBody::Content(content) = &execution.output else {
+        return Err(eyre!("normalization did not preserve content"));
+    };
+    let images: Vec<_> = content
+        .iter()
+        .filter_map(|item| match item {
+            ToolOutputContent::InputImage { image_url, detail } => Some((image_url, detail)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(images.len(), 1);
+    assert!(images[0].0.starts_with("data:image/png;base64,"));
+    assert_eq!(*images[0].1, crate::ImageDetail::Original);
+    assert!(content.iter().any(|item| matches!(item,
+        ToolOutputContent::InputText { text }
+        if text == "image content omitted because it could not be processed"
+    )));
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn image_helper_accepts_base64_variants_and_large_payloads() -> Result<()> {
+    let workspace = temporary_workspace("code-mode-valid-base64")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let execution = tools
+        .execute_code(
+            r#"
+image("data:image/png;base64,YQ==");
+image("DATA:IMAGE/JPEG;BASE64,YWI=");
+image({ type: "image", data: "YWJj", mime_type: "image/webp" });
+image({ type: "image", data: "data:image/svg+xml;base64,ab+/", mimeType: "unused" });
+image("data:image/png;base64," + "YWJj".repeat(1024 * 1024));
+"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    assert!(execution.success, "{}", execution_output(&execution));
+    let ToolOutputBody::Content(content) = &execution.output else {
+        return Err(eyre!("code-mode execution did not emit content"));
+    };
+    let images: Vec<_> = content
+        .iter()
+        .filter_map(|item| match item {
+            ToolOutputContent::InputImage { image_url, .. } => Some(image_url),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(images.len(), 5);
+    assert_eq!(images[1], "DATA:IMAGE/JPEG;BASE64,YWI=");
+    assert_eq!(images[2], "data:image/webp;base64,YWJj");
+    assert_eq!(
+        images[4].len(),
+        "data:image/png;base64,".len() + 4 * 1024 * 1024
+    );
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn failed_cell_preserves_accumulated_output() -> Result<()> {
     let workspace = temporary_workspace("failed-cell-output")?;
     let tools = test_tools(&workspace);
@@ -760,7 +928,7 @@ async fn failed_cell_preserves_accumulated_output() -> Result<()> {
         .execute_code(
             r#"
 text("before crash");
-image("data:image/png;base64,a", "original");
+image("data:image/png;base64,YQ==", "original");
 throw new Error("boom");
 "#,
             test_context(&history),
@@ -781,7 +949,7 @@ throw new Error("boom");
         Some(ToolOutputContent::InputImage {
             image_url,
             detail: crate::ImageDetail::Original,
-        }) if image_url == "data:image/png;base64,a"
+        }) if image_url == "data:image/png;base64,YQ=="
     ));
     assert!(matches!(
         content.get(3),
@@ -800,7 +968,7 @@ async fn image_helper_normalizes_detail_and_honors_override() -> Result<()> {
     let history = Vec::new();
     let execution = tools
         .execute_code(
-            r#"image({ image_url: "data:image/png;base64,a", detail: "low" }, "ORIGINAL");"#,
+            r#"image({ image_url: "data:image/png;base64,YQ==", detail: "low" }, "ORIGINAL");"#,
             test_context(&history),
         )
         .await
@@ -815,7 +983,7 @@ async fn image_helper_normalizes_detail_and_honors_override() -> Result<()> {
         Some(ToolOutputContent::InputImage {
             image_url,
             detail: crate::ImageDetail::Original,
-        }) if image_url == "data:image/png;base64,a"
+        }) if image_url == "data:image/png;base64,YQ=="
     ));
 
     std::fs::remove_dir_all(workspace)?;
@@ -861,7 +1029,7 @@ async fn output_helpers_accept_raw_mcp_image_and_audio_blocks() -> Result<()> {
 const returnsUndefined = [
   image({
     type: "image",
-    data: "a",
+    data: "YQ==",
     mimeType: "image/png",
     _meta: { "codex/imageDetail": "original" },
   }),
@@ -887,7 +1055,7 @@ text(returnsUndefined);
         Some(ToolOutputContent::InputImage {
             image_url,
             detail: crate::ImageDetail::Original,
-        }) if image_url == "data:image/png;base64,a"
+        }) if image_url == "data:image/png;base64,YQ=="
     ));
     assert_eq!(emitted_text(&execution)?, "[true,true]");
     std::fs::remove_dir_all(workspace)?;
@@ -903,7 +1071,7 @@ async fn generated_image_helper_appends_high_detail_image_and_hint() -> Result<(
         .execute_code(
             r#"
 generatedImage({
-  image_url: "data:image/png;base64,a",
+  image_url: "data:image/png;base64,YQ==",
   output_hint: "generated image save hint",
 });
 "#,
@@ -921,7 +1089,7 @@ generatedImage({
         Some(ToolOutputContent::InputImage {
             image_url,
             detail: crate::ImageDetail::High,
-        }) if image_url == "data:image/png;base64,a"
+        }) if image_url == "data:image/png;base64,YQ=="
     ));
     assert!(matches!(
         content.get(2),
@@ -930,7 +1098,7 @@ generatedImage({
 
     let invalid = tools
         .execute_code(
-            r#"generatedImage({ image_url: "data:image/png;base64,a", output_hint: 1 });"#,
+            r#"generatedImage({ image_url: "data:image/png;base64,YQ==", output_hint: 1 });"#,
             test_context(&history),
         )
         .await
@@ -2370,7 +2538,6 @@ fn test_live_cell(
         id,
         origin_call_id: "test-exec".into(),
         turn_id: AtomicU64::new(0),
-        output_token_budget: crate::contract::DEFAULT_TOOL_OUTPUT_TOKENS,
         observation: Arc::new(tokio::sync::Mutex::new(CellObservationState {
             updates,
             buffered: ObservationBuffer::default(),
@@ -2420,4 +2587,251 @@ fn temporary_workspace(label: &str) -> Result<PathBuf> {
     ));
     std::fs::create_dir_all(&path)?;
     Ok(path)
+}
+
+// These expected values are produced by executing the pinned upstream Rust/V8
+// implementation with scripts/codex-parity/native-behavior.py, not hand-written
+// copies of the algorithms under test.
+fn upstream_native_behavior() -> Value {
+    serde_json::from_str(include_str!("native-behavior.json")).unwrap()
+}
+
+#[test]
+fn wait_arguments_match_executed_upstream_parser() {
+    for case in upstream_native_behavior()["waits"].as_array().unwrap() {
+        let input = case["input"].as_str().unwrap();
+        let actual = match serde_json::from_str::<super::WaitArguments>(input) {
+            Ok(args) => serde_json::json!({"parsed": {
+                "yield_time_ms": args.yield_time_ms,
+                "max_tokens": args.max_tokens,
+                "terminate": args.terminate,
+            }}),
+            Err(error) => serde_json::json!({"error": error.to_string()}),
+        };
+        assert_eq!(actual, case["result"], "{input}");
+    }
+}
+
+#[tokio::test]
+async fn primitive_text_matches_executed_upstream_v8() -> Result<()> {
+    let workspace = temporary_workspace("upstream-v8-text")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    for case in upstream_native_behavior()["helpers"].as_array().unwrap() {
+        if case["kind"] != "text" {
+            continue;
+        }
+        let expression = case["expression"].as_str().unwrap();
+        let result = tools
+            .execute_code(&format!("text({expression});"), test_context(&history))
+            .await
+            .unwrap();
+        assert!(result.success, "{}", execution_output(&result));
+        assert_eq!(
+            emitted_text(&result)?,
+            case["result"]["item"]["text"].as_str().unwrap(),
+            "{expression}"
+        );
+    }
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn wait_budgets_are_fresh_allow_zero_and_apply_to_termination() -> Result<()> {
+    let workspace = temporary_workspace("upstream-wait-budgets")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let first = tools.execute_code(
+        "// @exec: {\"max_output_tokens\":0}\ntext('initial'); yield_control(); await new Promise(r => setTimeout(r, 20)); text('fresh wait budget');",
+        test_context(&history),
+    ).await.unwrap();
+    assert!(execution_output(&first).contains("Warning: truncated output"));
+    let waited = tools
+        .wait_for_code(
+            r#"{"cell_id":"1","yield_time_ms":1000}"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    assert!(execution_output(&waited).contains("fresh wait budget"));
+    assert!(!execution_output(&waited).contains("Warning: truncated output"));
+
+    let second = tools.execute_code(
+        "yield_control(); text('termination output'); await new Promise(r => setTimeout(r, 60000));",
+        test_context(&history),
+    ).await.unwrap();
+    assert!(execution_output(&second).contains("Script running"));
+    // Wait until the actor has published the text so this tests the termination
+    // budget, independently of whether the text raced the preceding yield.
+    tokio::time::sleep(Duration::from_millis(30)).await;
+    let terminated = tools
+        .wait_for_code(
+            r#"{"cell_id":"2","terminate":true,"max_tokens":0}"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    let output = execution_output(&terminated);
+    assert!(output.contains("Script terminated"), "{output}");
+    assert!(output.contains("Warning: truncated output"), "{output}");
+    assert!(!output.contains("termination output"), "{output}");
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn native_timers_coerce_optional_arguments_and_cancel_without_waiting() -> Result<()> {
+    let workspace = temporary_workspace("upstream-timer-coercion")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let execution = tools
+        .execute_code(
+            r#"
+clearTimeout(); clearTimeout(null); clearTimeout(undefined);
+clearTimeout(NaN); clearTimeout(Infinity); clearTimeout(-1);
+const cancelled = setTimeout(() => text('cancelled'), 10);
+clearTimeout(String(cancelled));
+await new Promise(resolve => setTimeout(resolve));
+await new Promise(resolve => setTimeout(resolve, '1.9'));
+await new Promise(resolve => setTimeout(resolve, -1));
+await new Promise(resolve => setTimeout(resolve, Infinity));
+try { setTimeout('bad'); } catch (e) { text(e); }
+try { clearTimeout(Symbol('bad')); } catch (e) { text(e); }
+text('done');
+"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    let output = execution_output(&execution);
+    assert!(execution.success, "{output}");
+    assert!(
+        output.contains("setTimeout expects a function callback"),
+        "{output}"
+    );
+    assert!(
+        output.contains("clearTimeout expects a numeric timeout id"),
+        "{output}"
+    );
+    assert!(output.contains("done"), "{output}");
+    assert!(!output.contains("cancelled"), "{output}");
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn terminated_store_writes_are_discarded_and_concurrent_snapshots_only_commit_writes()
+-> Result<()> {
+    let workspace = temporary_workspace("upstream-store-commit")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    tools
+        .execute_code("store('existing', 1);", test_context(&history))
+        .await
+        .unwrap();
+    let yielded = tools
+        .execute_code(
+            "store('cancelled', 2); yield_control(); await new Promise(r => setTimeout(r, 60000));",
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    assert!(execution_output(&yielded).contains("Script running"));
+    tools
+        .wait_for_code(
+            r#"{"cell_id":"2","terminate":true}"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    tools
+        .execute_code(
+            "yield_control(); await new Promise(r => setTimeout(r, 50)); store('first', 3);",
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    tools
+        .execute_code(
+            "store('existing', 4); store('second', 5);",
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    tools
+        .wait_for_code(
+            r#"{"cell_id":"3","yield_time_ms":1000}"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    let read = tools
+        .execute_code(
+            "text([load('cancelled'), load('existing'), load('first'), load('second')]);",
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    assert_eq!(emitted_text(&read)?, "[null,4,3,5]");
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+struct RevisionProbe {
+    revisions: Arc<std::sync::Mutex<Vec<Option<u64>>>>,
+    release: Arc<Semaphore>,
+}
+
+#[async_trait::async_trait]
+impl Tool for RevisionProbe {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::function(
+            "revision_probe",
+            "Capture revision and wait.",
+            serde_json::json!({
+                "type":"object", "properties":{}, "additionalProperties":false
+            }),
+        )
+    }
+    async fn execute(&self, _input: ToolInput, context: ToolContext<'_>) -> ToolResult {
+        self.revisions
+            .lock()
+            .unwrap()
+            .push(context.instruction_revision());
+        self.release.acquire().await.unwrap().forget();
+        Ok(ToolOutput::text("done"))
+    }
+}
+
+#[tokio::test]
+async fn instruction_revision_survives_yield_and_nested_calls_after_newer_wait() -> Result<()> {
+    let workspace = temporary_workspace("revision-yield")?;
+    let revisions = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let release = Arc::new(Semaphore::new(0));
+    let tools = Tools::builder()
+        .without_defaults()
+        .tool(RevisionProbe {
+            revisions: revisions.clone(),
+            release: release.clone(),
+        })
+        .build()?;
+    let runtime = ToolRuntime::new_with_tools(&workspace, None, None, &tools);
+    let execution = runtime.execute_code(
+        "// @exec: {\"yield_time_ms\": 1}\nawait tools.revision_probe({}); await tools.revision_probe({});",
+        test_context(&[]).with_instruction_revision(Some(41)),
+    ).await?;
+    assert!(execution.cell.as_ref().unwrap().running);
+    release.add_permits(2);
+    let completed = runtime
+        .wait_for_code(
+            r#"{"cell_id":"1","yield_time_ms":5000}"#,
+            test_context_with_call(&[], "newer-wait").with_instruction_revision(Some(42)),
+        )
+        .await?;
+    assert!(completed.success, "{}", execution_output(&completed));
+    assert!(!completed.cell.as_ref().unwrap().running);
+    assert_eq!(*revisions.lock().unwrap(), vec![Some(41), Some(41)]);
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
 }

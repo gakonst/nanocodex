@@ -1,0 +1,220 @@
+{
+  "accountVersion": "976d52cc-01c3-42bc-96b5-d4df43c4f68b",
+  "asset": "/assets/index-C_Rj1kLP.js",
+  "viewer": "Headed Chromium on an isolated Xvfb display; published app through authenticated loopback proxy",
+  "omarchy": {
+    "events": [
+      {
+        "ms": 8775,
+        "type": "fullscreen-view",
+        "fullscreen": "remote-screen-view",
+        "locked": false,
+        "width": 3840
+      },
+      {
+        "ms": 9940,
+        "type": "captured-control",
+        "full": true,
+        "locked": "remote-screen",
+        "cursor": "none",
+        "active": "Remote keyboard",
+        "inputs": [
+          {
+            "channel": "remote-control-v1",
+            "type": "acquire",
+            "hasPoint": false
+          },
+          {
+            "channel": "remote-control-v1",
+            "kind": "relativeMove",
+            "deltaX": 0,
+            "deltaY": 0,
+            "hasPoint": false
+          },
+          {
+            "channel": "remote-control-v1",
+            "kind": "relativeMove",
+            "deltaX": 0,
+            "deltaY": 0,
+            "hasPoint": false
+          },
+          {
+            "channel": "remote-control-v1",
+            "kind": "relativeMove",
+            "deltaX": -242,
+            "deltaY": 298,
+            "hasPoint": false
+          },
+          {
+            "channel": "remote-control-v1",
+            "kind": "relativeMove",
+            "deltaX": 50,
+            "deltaY": 25,
+            "hasPoint": false
+          }
+        ]
+      },
+      {
+        "ms": 10041,
+        "type": "escaped-control",
+        "locked": false,
+        "dialogOpen": true,
+        "status": "Watching",
+        "inputs": [
+          {
+            "channel": "remote-control-v1",
+            "kind": "relativeMove",
+            "deltaX": 0,
+            "deltaY": 0,
+            "hasPoint": false
+          },
+          {
+            "channel": "remote-control-v1",
+            "kind": "relativeMove",
+            "deltaX": -242,
+            "deltaY": 298,
+            "hasPoint": false
+          },
+          {
+            "channel": "remote-control-v1",
+            "kind": "relativeMove",
+            "deltaX": 50,
+            "deltaY": 25,
+            "hasPoint": false
+          },
+          {
+            "channel": "remote-control-v1",
+            "kind": "releaseAll",
+            "hasPoint": false
+          },
+          {
+            "channel": "remote-control-v1",
+            "type": "release",
+            "hasPoint": false
+          }
+        ]
+      }
+    ],
+    "media": [
+      {
+        "kind": "audio",
+        "packetsLost": 0,
+        "packetsReceived": 692
+      },
+      {
+        "kind": "video",
+        "frameWidth": 3840,
+        "frameHeight": 2160,
+        "framesPerSecond": 60,
+        "framesDecoded": 813,
+        "framesDropped": 0,
+        "packetsLost": 0,
+        "packetsReceived": 3234
+      }
+    ]
+  },
+  "windows": {
+    "events": [
+      {
+        "ms": 9937,
+        "type": "fullscreen-view",
+        "fullscreen": "remote-screen-view",
+        "locked": false,
+        "width": 1920
+      },
+      {
+        "ms": 11111,
+        "type": "captured-control",
+        "full": true,
+        "locked": "remote-screen",
+        "cursor": "none",
+        "active": "Remote keyboard",
+        "inputs": [
+          {
+            "channel": "remote-control-v1",
+            "type": "acquire",
+            "hasPoint": false
+          },
+          {
+            "channel": "remote-control-v1",
+            "kind": "relativeMove",
+            "deltaX": 0,
+            "deltaY": 0,
+            "hasPoint": false
+          },
+          {
+            "channel": "remote-control-v1",
+            "kind": "relativeMove",
+            "deltaX": -242,
+            "deltaY": 298,
+            "hasPoint": false
+          },
+          {
+            "channel": "remote-control-v1",
+            "kind": "relativeMove",
+            "deltaX": 50,
+            "deltaY": 25,
+            "hasPoint": false
+          }
+        ]
+      },
+      {
+        "ms": 11308,
+        "type": "escaped-control",
+        "locked": false,
+        "dialogOpen": true,
+        "status": "Watching",
+        "inputs": [
+          {
+            "channel": "remote-control-v1",
+            "kind": "relativeMove",
+            "deltaX": 0,
+            "deltaY": 0,
+            "hasPoint": false
+          },
+          {
+            "channel": "remote-control-v1",
+            "kind": "relativeMove",
+            "deltaX": -242,
+            "deltaY": 298,
+            "hasPoint": false
+          },
+          {
+            "channel": "remote-control-v1",
+            "kind": "relativeMove",
+            "deltaX": 50,
+            "deltaY": 25,
+            "hasPoint": false
+          },
+          {
+            "channel": "remote-control-v1",
+            "kind": "releaseAll",
+            "hasPoint": false
+          },
+          {
+            "channel": "remote-control-v1",
+            "type": "release",
+            "hasPoint": false
+          }
+        ]
+      }
+    ],
+    "media": [
+      {
+        "kind": "audio",
+        "packetsLost": 0,
+        "packetsReceived": 698
+      },
+      {
+        "kind": "video",
+        "frameWidth": 1920,
+        "frameHeight": 1080,
+        "framesPerSecond": 59,
+        "framesDecoded": 803,
+        "framesDropped": 0,
+        "packetsLost": 0,
+        "packetsReceived": 20538
+      }
+    ]
+  }
+}

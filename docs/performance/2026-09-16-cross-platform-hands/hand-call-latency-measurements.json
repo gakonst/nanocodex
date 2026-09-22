@@ -1,0 +1,640 @@
+{
+  "baseline": {
+    "source_revision": "1725e4e70fcafae67c9eab5257b97fe75abec458",
+    "tools": [
+      {
+        "protocol_version": 1,
+        "request_id": "01a0ac2a-f07e-7142-a66b-219d24aa5c68",
+        "seq": 23,
+        "type": "tool.result",
+        "payload": {
+          "call_id": "call_Chq7ZMFvLsFDktQUHAWSb8NT",
+          "tool": "exec_command",
+          "status": "completed",
+          "duration_ns": 440000000,
+          "result": "Chunk ID: 50a324\nWall time: 0.0053 seconds\nProcess exited with code 0\nOriginal token count: 5\nOutput:\nhand_latency_probe",
+          "structured_result": {
+            "chunk_id": "50a324",
+            "exit_code": 0,
+            "original_token_count": 5,
+            "output": "hand_latency_probe",
+            "wall_time_seconds": 0.005330311
+          },
+          "metadata": {
+            "machine_id": "0dbfda66-12e4-4bcf-b1a9-994a052b3181",
+            "machine_name": "linux-paradigm",
+            "tool_name": "exec_command"
+          }
+        }
+      },
+      {
+        "protocol_version": 1,
+        "request_id": "01a0ac2a-f07e-7142-a66b-219d24aa5c68",
+        "seq": 27,
+        "type": "tool.result",
+        "payload": {
+          "call_id": "call_hpZPqlZ61FXcnYDv1LnkfdCY",
+          "tool": "exec_command",
+          "status": "completed",
+          "duration_ns": 407000000,
+          "result": "Chunk ID: c76dfc\nWall time: 0.0052 seconds\nProcess exited with code 0\nOriginal token count: 5\nOutput:\nhand_latency_probe",
+          "structured_result": {
+            "chunk_id": "c76dfc",
+            "exit_code": 0,
+            "original_token_count": 5,
+            "output": "hand_latency_probe",
+            "wall_time_seconds": 0.005212038
+          },
+          "metadata": {
+            "machine_id": "0dbfda66-12e4-4bcf-b1a9-994a052b3181",
+            "machine_name": "linux-paradigm",
+            "tool_name": "exec_command"
+          }
+        }
+      },
+      {
+        "protocol_version": 1,
+        "request_id": "01a0ac2a-f07e-7142-a66b-219d24aa5c68",
+        "seq": 31,
+        "type": "tool.result",
+        "payload": {
+          "call_id": "call_oQvDWUppWZApis8HOSnca4Yh",
+          "tool": "exec_command",
+          "status": "completed",
+          "duration_ns": 418000000,
+          "result": "Chunk ID: 8aa8dc\nWall time: 0.0049 seconds\nProcess exited with code 0\nOriginal token count: 5\nOutput:\nhand_latency_probe",
+          "structured_result": {
+            "chunk_id": "8aa8dc",
+            "exit_code": 0,
+            "original_token_count": 5,
+            "output": "hand_latency_probe",
+            "wall_time_seconds": 0.004938837
+          },
+          "metadata": {
+            "machine_id": "0dbfda66-12e4-4bcf-b1a9-994a052b3181",
+            "machine_name": "linux-paradigm",
+            "tool_name": "exec_command"
+          }
+        }
+      },
+      {
+        "protocol_version": 1,
+        "request_id": "01a0ac2a-f07e-7142-a66b-219d24aa5c68",
+        "seq": 35,
+        "type": "tool.result",
+        "payload": {
+          "call_id": "call_Ni8lDdEAzoA1TCEpY2fgBWld",
+          "tool": "exec_command",
+          "status": "completed",
+          "duration_ns": 404000000,
+          "result": "Chunk ID: 089202\nWall time: 0.0047 seconds\nProcess exited with code 0\nOriginal token count: 5\nOutput:\nhand_latency_probe",
+          "structured_result": {
+            "chunk_id": "089202",
+            "exit_code": 0,
+            "original_token_count": 5,
+            "output": "hand_latency_probe",
+            "wall_time_seconds": 0.004715969
+          },
+          "metadata": {
+            "machine_id": "0dbfda66-12e4-4bcf-b1a9-994a052b3181",
+            "machine_name": "linux-paradigm",
+            "tool_name": "exec_command"
+          }
+        }
+      },
+      {
+        "protocol_version": 1,
+        "request_id": "01a0ac2a-f07e-7142-a66b-219d24aa5c68",
+        "seq": 39,
+        "type": "tool.result",
+        "payload": {
+          "call_id": "call_nDm6NjkqLArpL8k9giFQF3W8",
+          "tool": "exec_command",
+          "status": "completed",
+          "duration_ns": 405000000,
+          "result": "Chunk ID: fe561b\nWall time: 0.0049 seconds\nProcess exited with code 0\nOriginal token count: 5\nOutput:\nhand_latency_probe",
+          "structured_result": {
+            "chunk_id": "fe561b",
+            "exit_code": 0,
+            "original_token_count": 5,
+            "output": "hand_latency_probe",
+            "wall_time_seconds": 0.004885096
+          },
+          "metadata": {
+            "machine_id": "0dbfda66-12e4-4bcf-b1a9-994a052b3181",
+            "machine_name": "linux-paradigm",
+            "tool_name": "exec_command"
+          }
+        }
+      }
+    ],
+    "worker_invocations": [
+      {
+        "eventTimestamp": 1789594900219,
+        "scriptName": "nanocodex-durable-agent",
+        "outcome": "ok",
+        "cpuTime": 3,
+        "wallTime": 187,
+        "trigger": "invoke",
+        "logs": []
+      },
+      {
+        "eventTimestamp": 1789594903898,
+        "scriptName": "nanocodex-durable-agent",
+        "outcome": "ok",
+        "cpuTime": 2,
+        "wallTime": 188,
+        "trigger": "invoke",
+        "logs": []
+      },
+      {
+        "eventTimestamp": 1789594907071,
+        "scriptName": "nanocodex-durable-agent",
+        "outcome": "ok",
+        "cpuTime": 1,
+        "wallTime": 182,
+        "trigger": "invoke",
+        "logs": []
+      },
+      {
+        "eventTimestamp": 1789594909842,
+        "scriptName": "nanocodex-durable-agent",
+        "outcome": "ok",
+        "cpuTime": 1,
+        "wallTime": 182,
+        "trigger": "invoke",
+        "logs": []
+      },
+      {
+        "eventTimestamp": 1789594912451,
+        "scriptName": "nanocodex-durable-agent",
+        "outcome": "ok",
+        "cpuTime": 1,
+        "wallTime": 182,
+        "trigger": "invoke",
+        "logs": []
+      }
+    ],
+    "worker_version": "3184239f-2d34-4254-b9b4-adc4a7f2738f"
+  },
+  "attachment_discovery_baseline": [
+    {
+      "eventTimestamp": 1789595325040,
+      "scriptName": "nanocodex-durable-agent",
+      "outcome": "canceled",
+      "cpuTime": 46,
+      "wallTime": 409,
+      "trigger": "fetch",
+      "logs": [
+        {
+          "type": "managed.performance",
+          "trace_id": "49ad697e35818da1ec36a7b9dfc6642bc333cccb1b9418af87f1ba06b6b5cdd5",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789595325040,
+          "duration_ms": 166,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "49ad697e35818da1ec36a7b9dfc6642bc333cccb1b9418af87f1ba06b6b5cdd5",
+          "stage": "account.hosted_tools",
+          "started_at": 1789595325040,
+          "duration_ms": 282,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "49ad697e35818da1ec36a7b9dfc6642bc333cccb1b9418af87f1ba06b6b5cdd5",
+          "stage": "session.GET /tool-host",
+          "duration_ms": 282,
+          "reads": {
+            "session_state": {
+              "count": 3,
+              "duration_ms": 0
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "post": {
+    "source_revision": "3b51b5fa",
+    "worker_version": "dd307c9e-d2aa-4752-af53-ea1559716905",
+    "egress_version": "54233409-b942-47ea-bae2-b27361c7b3e6",
+    "tools": [
+      {
+        "protocol_version": 1,
+        "request_id": "01a0ac3f-5c24-770f-9bd6-62c69b7b92db",
+        "seq": 23,
+        "type": "tool.result",
+        "payload": {
+          "call_id": "call_KDPsBBUoy2k7ZVjhv6ah3hnq",
+          "tool": "exec_command",
+          "status": "completed",
+          "duration_ns": 446000000,
+          "result": "Chunk ID: 70d3a6\nWall time: 0.0045 seconds\nProcess exited with code 0\nOriginal token count: 5\nOutput:\nhand_latency_probe",
+          "structured_result": {
+            "chunk_id": "70d3a6",
+            "exit_code": 0,
+            "original_token_count": 5,
+            "output": "hand_latency_probe",
+            "wall_time_seconds": 0.004464066
+          },
+          "metadata": {
+            "machine_id": "0dbfda66-12e4-4bcf-b1a9-994a052b3181",
+            "machine_name": "linux-paradigm",
+            "tool_name": "exec_command"
+          }
+        }
+      },
+      {
+        "protocol_version": 1,
+        "request_id": "01a0ac3f-5c24-770f-9bd6-62c69b7b92db",
+        "seq": 27,
+        "type": "tool.result",
+        "payload": {
+          "call_id": "call_rWBMPA6pRvOaZceOK1teRWCU",
+          "tool": "exec_command",
+          "status": "completed",
+          "duration_ns": 456000000,
+          "result": "Chunk ID: 5ee18a\nWall time: 0.0050 seconds\nProcess exited with code 0\nOriginal token count: 5\nOutput:\nhand_latency_probe",
+          "structured_result": {
+            "chunk_id": "5ee18a",
+            "exit_code": 0,
+            "original_token_count": 5,
+            "output": "hand_latency_probe",
+            "wall_time_seconds": 0.004970755
+          },
+          "metadata": {
+            "machine_id": "0dbfda66-12e4-4bcf-b1a9-994a052b3181",
+            "machine_name": "linux-paradigm",
+            "tool_name": "exec_command"
+          }
+        }
+      },
+      {
+        "protocol_version": 1,
+        "request_id": "01a0ac3f-5c24-770f-9bd6-62c69b7b92db",
+        "seq": 31,
+        "type": "tool.result",
+        "payload": {
+          "call_id": "call_vN8ct5dRtez0WjZutmwAau5p",
+          "tool": "exec_command",
+          "status": "completed",
+          "duration_ns": 427000000,
+          "result": "Chunk ID: a474a0\nWall time: 0.0049 seconds\nProcess exited with code 0\nOriginal token count: 5\nOutput:\nhand_latency_probe",
+          "structured_result": {
+            "chunk_id": "a474a0",
+            "exit_code": 0,
+            "original_token_count": 5,
+            "output": "hand_latency_probe",
+            "wall_time_seconds": 0.004900363
+          },
+          "metadata": {
+            "machine_id": "0dbfda66-12e4-4bcf-b1a9-994a052b3181",
+            "machine_name": "linux-paradigm",
+            "tool_name": "exec_command"
+          }
+        }
+      },
+      {
+        "protocol_version": 1,
+        "request_id": "01a0ac3f-5c24-770f-9bd6-62c69b7b92db",
+        "seq": 35,
+        "type": "tool.result",
+        "payload": {
+          "call_id": "call_ygiMgwf7vQu9eefHEDHBgumu",
+          "tool": "exec_command",
+          "status": "completed",
+          "duration_ns": 436000000,
+          "result": "Chunk ID: a92119\nWall time: 0.0051 seconds\nProcess exited with code 0\nOriginal token count: 5\nOutput:\nhand_latency_probe",
+          "structured_result": {
+            "chunk_id": "a92119",
+            "exit_code": 0,
+            "original_token_count": 5,
+            "output": "hand_latency_probe",
+            "wall_time_seconds": 0.005072737
+          },
+          "metadata": {
+            "machine_id": "0dbfda66-12e4-4bcf-b1a9-994a052b3181",
+            "machine_name": "linux-paradigm",
+            "tool_name": "exec_command"
+          }
+        }
+      },
+      {
+        "protocol_version": 1,
+        "request_id": "01a0ac3f-5c24-770f-9bd6-62c69b7b92db",
+        "seq": 39,
+        "type": "tool.result",
+        "payload": {
+          "call_id": "call_ugYiOfuTYCy2YubRyboUA9Kv",
+          "tool": "exec_command",
+          "status": "completed",
+          "duration_ns": 447000000,
+          "result": "Chunk ID: 13bcf1\nWall time: 0.0059 seconds\nProcess exited with code 0\nOriginal token count: 5\nOutput:\nhand_latency_probe",
+          "structured_result": {
+            "chunk_id": "13bcf1",
+            "exit_code": 0,
+            "original_token_count": 5,
+            "output": "hand_latency_probe",
+            "wall_time_seconds": 0.005916559
+          },
+          "metadata": {
+            "machine_id": "0dbfda66-12e4-4bcf-b1a9-994a052b3181",
+            "machine_name": "linux-paradigm",
+            "tool_name": "exec_command"
+          }
+        }
+      }
+    ],
+    "correlated_events": [
+      {
+        "eventTimestamp": 1789596236100,
+        "scriptName": "nanocodex-durable-agent",
+        "outcome": "ok",
+        "cpuTime": 1,
+        "wallTime": 23,
+        "trigger": "other",
+        "logs": [
+          {
+            "type": "hand.call.broker",
+            "session_id": "01a0ac3f-6370-74b7-9cfa-5e6ca7f29f94",
+            "source_call_id": "call_KDPsBBUoy2k7ZVjhv6ah3hnq",
+            "transport_call_id": "7900f15f-0f19-4993-9944-997ccdda555d",
+            "admission_ms": 0,
+            "roundtrip_ms": 159,
+            "settlement_ms": 0
+          },
+          {
+            "type": "hand.call.account",
+            "session_id": "01a0ac3f-6370-74b7-9cfa-5e6ca7f29f94",
+            "source_call_id": "call_KDPsBBUoy2k7ZVjhv6ah3hnq",
+            "ownership_ms": 0,
+            "resolve_ms": 0,
+            "handler_ms": 159,
+            "total_ms": 159
+          }
+        ]
+      },
+      {
+        "eventTimestamp": 1789596238793,
+        "scriptName": "nanocodex-durable-agent",
+        "outcome": "ok",
+        "cpuTime": 0,
+        "wallTime": 22,
+        "trigger": "other",
+        "logs": [
+          {
+            "type": "hand.call.broker",
+            "session_id": "01a0ac3f-6370-74b7-9cfa-5e6ca7f29f94",
+            "source_call_id": "call_rWBMPA6pRvOaZceOK1teRWCU",
+            "transport_call_id": "3741aa82-ce04-4738-b80d-0b57affff71a",
+            "admission_ms": 0,
+            "roundtrip_ms": 159,
+            "settlement_ms": 0
+          },
+          {
+            "type": "hand.call.account",
+            "session_id": "01a0ac3f-6370-74b7-9cfa-5e6ca7f29f94",
+            "source_call_id": "call_rWBMPA6pRvOaZceOK1teRWCU",
+            "ownership_ms": 0,
+            "resolve_ms": 0,
+            "handler_ms": 159,
+            "total_ms": 159
+          }
+        ]
+      },
+      {
+        "eventTimestamp": 1789596241535,
+        "scriptName": "nanocodex-durable-agent",
+        "outcome": "ok",
+        "cpuTime": 1,
+        "wallTime": 23,
+        "trigger": "other",
+        "logs": [
+          {
+            "type": "hand.call.broker",
+            "session_id": "01a0ac3f-6370-74b7-9cfa-5e6ca7f29f94",
+            "source_call_id": "call_vN8ct5dRtez0WjZutmwAau5p",
+            "transport_call_id": "c1232736-9b73-443f-aa8a-e320682cd5c9",
+            "admission_ms": 0,
+            "roundtrip_ms": 158,
+            "settlement_ms": 0
+          },
+          {
+            "type": "hand.call.account",
+            "session_id": "01a0ac3f-6370-74b7-9cfa-5e6ca7f29f94",
+            "source_call_id": "call_vN8ct5dRtez0WjZutmwAau5p",
+            "ownership_ms": 0,
+            "resolve_ms": 0,
+            "handler_ms": 158,
+            "total_ms": 158
+          }
+        ]
+      },
+      {
+        "eventTimestamp": 1789596244218,
+        "scriptName": "nanocodex-durable-agent",
+        "outcome": "ok",
+        "cpuTime": 0,
+        "wallTime": 22,
+        "trigger": "other",
+        "logs": [
+          {
+            "type": "hand.call.broker",
+            "session_id": "01a0ac3f-6370-74b7-9cfa-5e6ca7f29f94",
+            "source_call_id": "call_ygiMgwf7vQu9eefHEDHBgumu",
+            "transport_call_id": "95fbf8c7-8df3-46e4-9a26-c24b309b9f66",
+            "admission_ms": 0,
+            "roundtrip_ms": 157,
+            "settlement_ms": 0
+          },
+          {
+            "type": "hand.call.account",
+            "session_id": "01a0ac3f-6370-74b7-9cfa-5e6ca7f29f94",
+            "source_call_id": "call_ygiMgwf7vQu9eefHEDHBgumu",
+            "ownership_ms": 0,
+            "resolve_ms": 0,
+            "handler_ms": 157,
+            "total_ms": 157
+          }
+        ]
+      },
+      {
+        "eventTimestamp": 1789596232547,
+        "scriptName": "nanocodex-durable-agent",
+        "outcome": "ok",
+        "cpuTime": 840,
+        "wallTime": 12186,
+        "trigger": "fetch",
+        "logs": [
+          {
+            "type": "hand.call.provider",
+            "session_id": "01a0ac3f-6370-74b7-9cfa-5e6ca7f29f94",
+            "source_call_id": "call_KDPsBBUoy2k7ZVjhv6ah3hnq",
+            "fetch_ms": 446,
+            "decode_ms": 0,
+            "total_ms": 446
+          },
+          {
+            "type": "hand.call.provider",
+            "session_id": "01a0ac3f-6370-74b7-9cfa-5e6ca7f29f94",
+            "source_call_id": "call_rWBMPA6pRvOaZceOK1teRWCU",
+            "fetch_ms": 456,
+            "decode_ms": 0,
+            "total_ms": 456
+          },
+          {
+            "type": "hand.call.provider",
+            "session_id": "01a0ac3f-6370-74b7-9cfa-5e6ca7f29f94",
+            "source_call_id": "call_vN8ct5dRtez0WjZutmwAau5p",
+            "fetch_ms": 427,
+            "decode_ms": 0,
+            "total_ms": 427
+          },
+          {
+            "type": "hand.call.provider",
+            "session_id": "01a0ac3f-6370-74b7-9cfa-5e6ca7f29f94",
+            "source_call_id": "call_ygiMgwf7vQu9eefHEDHBgumu",
+            "fetch_ms": 436,
+            "decode_ms": 0,
+            "total_ms": 436
+          }
+        ]
+      },
+      {
+        "eventTimestamp": 1789596246949,
+        "scriptName": "nanocodex-durable-agent",
+        "outcome": "ok",
+        "cpuTime": 0,
+        "wallTime": 23,
+        "trigger": "other",
+        "logs": [
+          {
+            "type": "hand.call.broker",
+            "session_id": "01a0ac3f-6370-74b7-9cfa-5e6ca7f29f94",
+            "source_call_id": "call_ugYiOfuTYCy2YubRyboUA9Kv",
+            "transport_call_id": "8c50fb05-b393-4dc3-a314-9bca0e0ee34d",
+            "admission_ms": 0,
+            "roundtrip_ms": 159,
+            "settlement_ms": 0
+          },
+          {
+            "type": "hand.call.account",
+            "session_id": "01a0ac3f-6370-74b7-9cfa-5e6ca7f29f94",
+            "source_call_id": "call_ugYiOfuTYCy2YubRyboUA9Kv",
+            "ownership_ms": 0,
+            "resolve_ms": 0,
+            "handler_ms": 159,
+            "total_ms": 159
+          }
+        ]
+      },
+      {
+        "eventTimestamp": 1789596244861,
+        "scriptName": "nanocodex-durable-agent",
+        "outcome": "ok",
+        "cpuTime": 382,
+        "wallTime": 5966,
+        "trigger": "other",
+        "logs": [
+          {
+            "type": "hand.call.provider",
+            "session_id": "01a0ac3f-6370-74b7-9cfa-5e6ca7f29f94",
+            "source_call_id": "call_ugYiOfuTYCy2YubRyboUA9Kv",
+            "fetch_ms": 447,
+            "decode_ms": 0,
+            "total_ms": 447
+          }
+        ]
+      }
+    ],
+    "warm_vm_handshake": [
+      {
+        "eventTimestamp": 1789596219535,
+        "scriptName": "nanocodex-durable-agent",
+        "outcome": "responseStreamDisconnected",
+        "cpuTime": 9,
+        "wallTime": 328,
+        "trigger": "fetch",
+        "logs": [
+          {
+            "type": "hand.request",
+            "request_id": "37143c8a-8e6e-454a-81ca-56a7bfd2f3d7",
+            "method": "GET",
+            "path": "/v1/vm-host-attachments/:pool/:allocation/tool-host",
+            "status": 101,
+            "timings_ms": {
+              "grant_headers": 25,
+              "grant_body": 0,
+              "total": 318
+            }
+          }
+        ]
+      }
+    ],
+    "warm_vm_repeat": {
+      "agent_id": "01a0ac43-bc72-769c-923b-abfcc44ed72e",
+      "allocation_id": "6c990b5d-ccc5-4f05-887f-f999a74739ad",
+      "provision_at_utc": "2026-09-16T22:08:44.657Z",
+      "account_worker_version": "c627a2a8-6dc6-475e-af81-22fecdc2bbb6",
+      "factory_claim_ms": 0.792,
+      "trust_ms": 5.579,
+      "dns_cumulative_ms": 120.963,
+      "tcp_cumulative_ms": 141.369,
+      "tools_websocket_ms": 982.539,
+      "catalog_ack_ms": 219.345,
+      "tools_attached_ms": 1203.014,
+      "desktop_attached_ms": 1195.347,
+      "managed_mount_ms": 3096,
+      "exec_ms": 265,
+      "events": [
+        {
+          "eventTimestamp": 1789596524901,
+          "scriptName": "nanocodex-durable-agent",
+          "outcome": "responseStreamDisconnected",
+          "cpuTime": 7,
+          "wallTime": 250,
+          "trigger": "fetch",
+          "logs": [
+            {
+              "type": "hand.request",
+              "request_id": "f7f99f62-e4ab-401a-b0a7-0b8a898a56a7",
+              "method": "GET",
+              "path": "/v1/vm-host-attachments/:pool/:allocation/tool-host",
+              "status": 101,
+              "timings_ms": {
+                "grant_headers": 9,
+                "grant_body": 0,
+                "total": 241
+              }
+            }
+          ]
+        },
+        {
+          "eventTimestamp": 1789596524936,
+          "scriptName": "nanocodex-durable-agent",
+          "outcome": "responseStreamDisconnected",
+          "cpuTime": 8,
+          "wallTime": 135,
+          "trigger": "screen",
+          "logs": [
+            {
+              "type": "hand.request",
+              "request_id": "1bc7118f-56da-40b2-8c04-00359bf21960",
+              "method": "GET",
+              "path": "/v1/vm-host-attachments/:pool/:allocation/hands/host",
+              "status": 101,
+              "timings_ms": {
+                "grant_headers": 14,
+                "grant_body": 0,
+                "total": 123
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

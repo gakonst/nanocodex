@@ -1,4 +1,4 @@
-name: Recover Linux release artifacts
+name: Recover native release artifacts
 
 permissions: {}
 
@@ -9,7 +9,13 @@ on:
         description: Existing immutable release tag to rebuild
         type: string
         required: true
-        default: v0.6.1
+        default: v0.6.4
+      platform:
+        description: Native platform to recover from the immutable tag
+        type: choice
+        required: true
+        default: linux
+        options: [linux, macos]
 
 env:
   CARGO_TERM_COLOR: always
@@ -24,10 +30,10 @@ jobs:
     strategy:
       matrix:
         include:
-          - os: ubuntu-22.04
-            target: x86_64-unknown-linux-gnu
-            artifact: nanocodex-x86_64-unknown-linux-gnu
-            companion: nanocodex2-x86_64-unknown-linux-gnu
+          - os: ${{ inputs.platform == 'macos' && 'macos-15' || 'ubuntu-22.04' }}
+            target: ${{ inputs.platform == 'macos' && 'aarch64-apple-darwin' || 'x86_64-unknown-linux-gnu' }}
+            artifact: ${{ inputs.platform == 'macos' && 'nanocodex-aarch64-apple-darwin' || 'nanocodex-x86_64-unknown-linux-gnu' }}
+            companion: ${{ inputs.platform == 'macos' && 'nanocodex2-aarch64-apple-darwin' || 'nanocodex2-x86_64-unknown-linux-gnu' }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -61,24 +67,24 @@ jobs:
           cargo build --locked --release \
             --package nanocodex2-bin --bin nanocodex2 \
             --target ${{ matrix.target }}
-      - name: Install Linux computer dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes pkg-config libpulse-dev libxkbcommon-dev
-      - name: Build computer companion
+      - name: Sign macOS VM hand host
+        if: runner.os == 'macOS'
         shell: bash
-        run: cargo build --locked --release --manifest-path crates/experimental/nanocodex-computer/runtime/Cargo.toml --target ${{ matrix.target }} --bin nanocodex-computer
+        run: |
+          codesign --force --sign - \
+            --entitlements nanocodex-vm.entitlements \
+            "target/${{ matrix.target }}/release/nanocodex2"
+          codesign --verify --strict "target/${{ matrix.target }}/release/nanocodex2"
       - name: Stage artifact
         shell: bash
         run: |
           mkdir dist
           cp "target/${{ matrix.target }}/release/nanocodex" "dist/${{ matrix.artifact }}"
           cp "target/${{ matrix.target }}/release/nanocodex2" "dist/${{ matrix.companion }}"
-          cp "crates/experimental/nanocodex-computer/runtime/target/${{ matrix.target }}/release/nanocodex-computer" "dist/nanocodex-computer-${{ matrix.target }}"
           gzip -n -9 -c "dist/${{ matrix.artifact }}" \
             > "dist/${{ matrix.artifact }}.gz"
           gzip -n -9 -c "dist/${{ matrix.companion }}" \
             > "dist/${{ matrix.companion }}.gz"
-          gzip -n -9 -c "dist/nanocodex-computer-${{ matrix.target }}" > "dist/nanocodex-computer-${{ matrix.target }}.gz"
       - name: Retain compiled binaries before voice packaging
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -87,7 +93,7 @@ jobs:
           if-no-files-found: error
       - uses: ./.github/actions/voice-release
         env:
-          RUSTFLAGS: -Lnative=${{ runner.temp }}/voice-release/native/prefix/lib
+          RUSTFLAGS: ${{ runner.os == 'Linux' && format('-Lnative={0}/voice-release/native/prefix/lib', runner.temp) || '' }}
           STABLE_GIT_COMMIT: ${{ env.RELEASE_SHA }}
         with:
           target: ${{ matrix.target }}

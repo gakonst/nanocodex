@@ -41,6 +41,12 @@ export type BrowserWebSocketRequest = BrowserWebSocketMetadata & (
     }
 );
 
+/** One streaming HTTPS Responses request. The host must preserve cancellation. */
+export type BrowserHttpRequest = Exclude<BrowserWebSocketRequest, { authorization: "preconnect" }> & {
+  body: string;
+  signal: AbortSignal;
+};
+
 export type BrowserWebSocketConnection = {
   socket: WebSocket;
   status?: number | undefined;
@@ -59,6 +65,7 @@ export function createBrowserHost(options?: {
     sessionId: string,
     request: BrowserWebSocketRequest,
   ) => WebSocket | BrowserWebSocketConnection | Promise<WebSocket | BrowserWebSocketConnection>;
+  createResponse?: (endpoint: string, sessionId: string, request: BrowserHttpRequest) => Promise<Response>;
   filesystem?: Workspace;
   filesystemTools?: boolean;
   onEvent?: (eventJson: string) => void;
@@ -69,10 +76,15 @@ export function createBrowserHost(options?: {
   codeEvaluator?: CodeEvaluator;
   toolMode?: "code" | "direct";
   /** @internal Durable host lifecycle for Rust-owned subagent descriptors. */
+  subagentRouting?: Pick<import('../runtime/subagent-routing.mjs').SubagentRouting, 'resolve' | 'bind'>;
   subagentSessions?: {
     restore(): readonly SubagentToolContext[];
-    bind(sessionId: string, descriptor: SubagentToolContext): void;
-    release(sessionId: string): void;
+    restoreCheckpoint?(): string | undefined;
+    checkpoint?(encoded: string): void;
+    hostContextRef?(sessionId: string): string | undefined;
+    bindingDescriptor?(sessionId: string, descriptor: SubagentToolContext, hostContextRef?: string): SubagentToolContext;
+    bind(sessionId: string, descriptor: SubagentToolContext, hostContextRef?: string): void;
+    release(sessionId: string, hostContextRef?: string): void;
   };
   maxQueuedMessages?: number;
   maxQueuedBytes?: number;

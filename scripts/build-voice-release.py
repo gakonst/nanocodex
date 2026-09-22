@@ -23,11 +23,19 @@ def run(*args, **kwargs):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--upstream", type=Path, required=True)
+    parser.add_argument("--upstream", type=Path, help="pinned GStreamer build tools (non-macOS)")
     parser.add_argument("--target", required=True)
     parser.add_argument("--work", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
+    if args.target.endswith("-apple-darwin"):
+        package = args.work.resolve() / "package"
+        run(sys.executable, ROOT / "scripts/build-voice-native.py", "--target", args.target,
+            "--release", "--output", package)
+        archive_voice(package, args.output)
+        return
+    if args.upstream is None:
+        parser.error("--upstream is required for the GStreamer runtime")
     upstream = args.upstream.resolve(strict=True)
     revision = subprocess.check_output(["git", "-C", str(upstream), "rev-parse", "HEAD"], text=True).strip()
     if revision != UPSTREAM_COMMIT:
@@ -96,14 +104,19 @@ def main():
         "helperBuildCommit": env.get("STABLE_GIT_COMMIT", "dev"),
         "target": args.target,
     }, indent=2) + "\n")
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(args.output, "w:gz", format=tarfile.USTAR_FORMAT) as archive:
+    archive_voice(package, args.output)
+
+
+def archive_voice(package, output):
+    voice = package / "nanocodex-resources/voice"
+    output.parent.mkdir(parents=True, exist_ok=True)
+    with tarfile.open(output, "w:gz", format=tarfile.USTAR_FORMAT) as archive:
         for path in sorted(voice.rglob("*")):
             if path.is_symlink():
                 raise ValueError(f"runtime package contains a symbolic link: {path}")
             if path.is_file():
                 archive.add(path, arcname=path.relative_to(package).as_posix(), recursive=False)
-    print(f"Voice release archive: {args.output}")
+    print(f"Voice release archive: {output}")
 
 
 if __name__ == "__main__":

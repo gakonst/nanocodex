@@ -9,6 +9,7 @@ export type VaultMetadata = Readonly<{
   name: string;
   created_at: number;
   username: string;
+  browser_origin?: string;
 }> | Readonly<{
   id: string;
   kind: "card";

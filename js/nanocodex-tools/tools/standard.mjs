@@ -1,3 +1,4 @@
+import webParameters from "./webParameters.generated.mjs";
 import { IMAGE_DESCRIPTION, WEB_DESCRIPTION } from "./standardDescriptions.mjs";
 import { namedTool } from "./namedTool.mjs";
 import { toolResult } from "../runtime/code-runtime.mjs";
@@ -22,7 +23,8 @@ export function web(options = {}) {
         session_id: context.sessionId,
         model: context.model,
       }, context.signal), "web__run response");
-      return requireString(result.output, "web__run response.output");
+      if (typeof result.output !== "string") throw new Error("web__run response.output must be a string");
+      return result.output;
     },
   });
 }
@@ -39,26 +41,14 @@ export function imageGeneration(options = {}) {
         prompt: { type: "string" },
         referenced_image_paths: {
           type: ["array", "null"],
-          items: { type: "string" },
-          maxItems: 5,
+          items: { type: "string", description: "A path that is guaranteed to be absolute and normalized (though it is not guaranteed to be canonicalized or exist on the filesystem).\n\nIMPORTANT: When deserializing an `AbsolutePathBuf`, a base path must be set using [AbsolutePathBufGuard::new]. If no base path is set, the deserialization will fail unless the path being deserialized is already absolute." },
         },
         num_last_images_to_include: {
           type: ["integer", "null"],
-          minimum: 1,
-          maximum: 5,
         },
       },
       required: ["prompt"],
       additionalProperties: false,
-    },
-    outputSchema: {
-      type: "object",
-      properties: {
-        image_url: { type: "string" },
-        output_hint: { type: "string" },
-      },
-      required: ["image_url"],
-      additionalProperties: true,
     },
     async handler(input, context) {
       const args = requireObject(input, "image_gen__imagegen");
@@ -118,14 +108,15 @@ export function viewImage(options) {
       if (detail !== "high" && detail !== "original") {
         throw new Error("view_image.detail must be high or original");
       }
-      const bytes = await options.workspace.readFile(path);
+      const loaded = await options.loadImage?.(path, detail);
+      const bytes = loaded?.bytes ?? await options.workspace.readFile(path);
       if (bytes.byteLength > MAX_VIEW_IMAGE_BYTES) {
         throw new Error("view_image input exceeds 10 MiB");
       }
       const mimeType = imageMimeType(bytes);
       if (!mimeType) throw new Error("view_image supports PNG, JPEG, GIF, and WebP files");
       const result = { detail, image_url: `data:${mimeType};base64,${base64(bytes)}` };
-      return toolResult([{
+      return toolResult([...(loaded?.note ? [{ type: "input_text", text: loaded.note }] : []), {
         type: "input_image",
         image_url: result.image_url,
         detail,
@@ -137,18 +128,19 @@ export function viewImage(options) {
 export function updatePlan() {
   const plans = new Map();
   return namedTool("update_plan", {
-    description: "Update the current task plan. At most one step may be in progress.",
+    description: "Updates the task plan.\nProvide an optional explanation and a list of plan items, each with a step and status.\nAt most one step can be in_progress at a time.\n",
     parameters: {
       type: "object",
       properties: {
-        explanation: { type: "string" },
+        explanation: { type: "string", description: "Optional explanation for this plan update." },
         plan: {
           type: "array",
+          description: "The list of steps",
           items: {
             type: "object",
             properties: {
-              step: { type: "string" },
-              status: { type: "string", enum: ["pending", "in_progress", "completed"] },
+              step: { type: "string", description: "Task step text." },
+              status: { type: "string", enum: ["pending", "in_progress", "completed"], description: "Step status." },
             },
             required: ["step", "status"],
             additionalProperties: false,
@@ -156,12 +148,6 @@ export function updatePlan() {
         },
       },
       required: ["plan"],
-      additionalProperties: false,
-    },
-    outputSchema: {
-      type: "object",
-      properties: { updated: { type: "boolean", const: true } },
-      required: ["updated"],
       additionalProperties: false,
     },
     async handler(input, context) {
@@ -172,7 +158,7 @@ export function updatePlan() {
       );
       if (active.length > 1) throw new Error("at most one plan step may be in_progress");
       plans.set(context.sessionId, structuredClone(value));
-      return { updated: true };
+      return toolResult("Plan updated", {}, { value: {} });
     },
     releaseSession(sessionId) {
       plans.delete(sessionId);
@@ -220,56 +206,45 @@ function jsonRequester(options, defaultUrl) {
 }
 
 function normalizeWebCommands(input) {
-  const value = requireObject(input, "web__run");
-  const commands = Object.keys(value).length === 1 && value.commands !== undefined
-    ? requireObject(value.commands, "web__run.commands")
-    : value;
-  const normalized = { ...commands };
-  for (const operation of [
-    "search_query",
-    "image_query",
-    "open",
-    "click",
-    "find",
-    "finance",
-    "weather",
-    "sports",
-    "time",
-  ]) {
-    const command = normalized[operation];
-    if (command === undefined || Array.isArray(command)) continue;
-    if (typeof command === "object" && command !== null) {
-      normalized[operation] = [command];
-      continue;
-    }
-    if (typeof command === "string" && (operation === "search_query" || operation === "image_query")) {
-      normalized[operation] = [{ q: command }];
-      continue;
-    }
-    if (typeof command === "string" && operation === "open") {
-      normalized.open = [{ ref_id: command }];
-    }
-  }
-  const operationCount = [
-    "search_query",
-    "image_query",
-    "open",
-    "click",
-    "find",
-    "finance",
-    "weather",
-    "sports",
-    "time",
-  ].reduce((count, operation) => count + (Array.isArray(normalized[operation])
-    ? normalized[operation].length
-    : 0), 0);
-  if (!operationCount) throw new Error("web__run requires at least one operation");
-  const queryCount = Array.isArray(normalized.search_query) ? normalized.search_query.length : 0;
-  if (queryCount > 4) throw new Error("web__run accepts at most 4 search queries");
-  if (queryCount === 4 && normalized.response_length !== "medium" && normalized.response_length !== "long") {
-    throw new Error("web__run requires response_length medium or long for 4 search queries");
+  const commands = requireObject(input, "web__run");
+  const normalized = {};
+  // Mirror serde's SearchCommands: unknown fields are ignored and Option fields
+  // accept null, but operations must be arrays of correctly typed records.
+  for (const [name, schema] of Object.entries(webParameters.properties)) {
+    const value = commands[name];
+    if (value === undefined || value === null) continue;
+    normalized[name] = decodeWebValue(value, schema, name);
   }
   return normalized;
+}
+
+function decodeWebValue(value, schema, path) {
+  if (schema.type === "array") {
+    if (!Array.isArray(value)) throw new Error(`${path} must be an array`);
+    return value.map((item, index) => decodeWebValue(item, schema.items, `${path}[${index}]`));
+  }
+  if (schema.type === "object") {
+    requireObject(value, path);
+    const result = {};
+    for (const [key, field] of Object.entries(schema.properties ?? {})) {
+      const required = schema.required?.includes(key);
+      if (value[key] === undefined || value[key] === null) {
+        if (required) throw new Error(`${path}.${key} is required`);
+        continue;
+      }
+      result[key] = decodeWebValue(value[key], field, `${path}.${key}`);
+    }
+    return result;
+  }
+  if (schema.type === "integer") {
+    if (!Number.isInteger(value) || value < 0 || value >= 2 ** 64) {
+      throw new Error(`${path} must be an unsigned 64-bit integer`);
+    }
+  } else if (schema.type === "string" && typeof value !== "string") {
+    throw new Error(`${path} must be a string`);
+  }
+  if (schema.enum && !schema.enum.includes(value)) throw new Error(`${path} is invalid`);
+  return value;
 }
 
 function requireObject(value, name) {
@@ -332,127 +307,3 @@ function base64(bytes) {
   return btoa(binary);
 }
 
-const query = {
-  description: "Search query with optional domain and recency filters.",
-  type: "object",
-  properties: {
-    q: { type: "string" },
-    recency: { type: "integer" },
-    domains: { type: "array", items: { type: "string" } },
-  },
-  required: ["q"],
-  additionalProperties: false,
-};
-
-const webParameters = {
-  type: "object",
-  properties: {
-    search_query: {
-      type: "array",
-      description: "Query the internet search engine for a given list of queries.",
-      maxItems: 4,
-      items: query,
-    },
-    image_query: {
-      type: "array",
-      description: "Query the image search engine for source pages and captions.",
-      items: query,
-    },
-    open: {
-      type: "array",
-      description: "Open pages by reference id or URL.",
-      items: {
-        type: "object",
-        properties: { ref_id: { type: "string" }, lineno: { type: "integer" } },
-        required: ["ref_id"],
-        additionalProperties: false,
-      },
-    },
-    click: {
-      type: "array",
-      description: "Open numbered links from previously opened pages.",
-      items: {
-        type: "object",
-        properties: { ref_id: { type: "string" }, id: { type: "integer" } },
-        required: ["ref_id", "id"],
-        additionalProperties: false,
-      },
-    },
-    find: {
-      type: "array",
-      description: "Find text patterns in pages.",
-      items: {
-        type: "object",
-        properties: { ref_id: { type: "string" }, pattern: { type: "string" } },
-        required: ["ref_id", "pattern"],
-        additionalProperties: false,
-      },
-    },
-    finance: {
-      type: "array",
-      description: "Look up prices for stock symbols and other assets.",
-      items: {
-        type: "object",
-        properties: {
-          ticker: { type: "string" },
-          type: { type: "string", enum: ["equity", "fund", "crypto", "index"] },
-          market: { type: "string" },
-        },
-        required: ["ticker", "type"],
-        additionalProperties: false,
-      },
-    },
-    weather: {
-      type: "array",
-      description: "Look up weather forecasts.",
-      items: {
-        type: "object",
-        properties: {
-          location: { type: "string" },
-          start: { type: "string" },
-          duration: { type: "integer" },
-        },
-        required: ["location"],
-        additionalProperties: false,
-      },
-    },
-    sports: {
-      type: "array",
-      description: "Look up sports schedules and standings.",
-      items: {
-        type: "object",
-        properties: {
-          fn: { type: "string", enum: ["schedule", "standings"] },
-          league: {
-            type: "string",
-            enum: ["nba", "wnba", "nfl", "nhl", "mlb", "epl", "ncaamb", "ncaawb", "ipl"],
-          },
-          team: { type: "string" },
-          opponent: { type: "string" },
-          date_from: { type: "string" },
-          date_to: { type: "string" },
-          num_games: { type: "integer" },
-          locale: { type: "string" },
-        },
-        required: ["fn", "league"],
-        additionalProperties: false,
-      },
-    },
-    time: {
-      type: "array",
-      description: "Get time for the given UTC offsets.",
-      items: {
-        type: "object",
-        properties: { utc_offset: { type: "string" } },
-        required: ["utc_offset"],
-        additionalProperties: false,
-      },
-    },
-    response_length: {
-      type: "string",
-      description: "Set the length of the returned response.",
-      enum: ["short", "medium", "long"],
-    },
-  },
-  additionalProperties: false,
-};

@@ -19,7 +19,8 @@ use ratatui::{
 use unicode_width::UnicodeWidthStr;
 
 const FOOTER: [(&str, &str); 2] = [("↑↓", "scroll"), ("esc", "close")];
-const BINDINGS: [(&str, &str); 28] = [
+const BINDINGS: [(&str, &str); 33] = [
+    ("ctrl+x", "mute · unmute microphone while voice is active"),
     ("ctrl+s", "change reasoning effort"),
     ("ctrl+d", "select model · before first prompt"),
     ("ctrl+g", "edit prompt in $EDITOR"),
@@ -47,7 +48,14 @@ const BINDINGS: [(&str, &str); 28] = [
     ("ctrl+u/k", "delete to line start · end"),
     ("ctrl+h/d", "delete previous · next character"),
     ("↑/↓ · ctrl+p/n", "move lines · prompt history at edge"),
-    ("tab", "focus queue · when present"),
+    ("tab / shift+tab", "cycle panes · otherwise focus queue"),
+    (
+        "/reload",
+        "restart local terminals in their current threads",
+    ),
+    ("/autoroute", "enable auto routing · before first prompt"),
+    ("/screen", "select a Hand and watch its live screen"),
+    ("/zoom", "expand focused pane · restore split layout"),
     ("/", "open actions · empty prompt only"),
     ("@", "insert workspace file"),
     ("!", "local shell command · prompt start"),
@@ -188,7 +196,7 @@ mod tests {
     #[test]
     fn popup_documents_context_sensitive_composer_shortcuts() {
         let mut help = KeybindingsHelp::default();
-        let mut terminal = Terminal::new(TestBackend::new(80, 31)).unwrap();
+        let mut terminal = Terminal::new(TestBackend::new(80, 40)).unwrap();
 
         terminal
             .draw(|frame| help.render(frame, frame.area(), &Theme::default()))
@@ -202,6 +210,10 @@ mod tests {
             .map(|cells| cells.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>();
         for expected in [
+            "/autoroute",
+            "enable auto routing · before first prompt",
+            "ctrl+x",
+            "mute · unmute microphone while voice is active",
             "ctrl+s",
             "change reasoning effort",
             "ctrl+d",
@@ -229,7 +241,7 @@ mod tests {
             "delete previous · next character",
             "ctrl+p/n",
             "prompt history at edge",
-            "focus queue · when present",
+            "cycle panes · otherwise focus queue",
             "open actions · empty prompt only",
             "insert workspace file",
             "local shell command · prompt start",

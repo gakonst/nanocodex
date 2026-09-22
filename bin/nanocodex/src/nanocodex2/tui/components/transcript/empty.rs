@@ -15,13 +15,13 @@ use std::{
 };
 use unicode_width::UnicodeWidthStr;
 
-const FRAME_INTERVAL: Duration = Duration::from_millis(120);
-const FRAME_COUNT: usize = 48;
-const MAX_WIDTH: u16 = 60;
+const FRAME_INTERVAL: Duration = Duration::from_millis(80);
+const FRAME_COUNT: usize = 32;
+const MAX_WIDTH: u16 = 32;
 const MAX_HEIGHT: u16 = 9;
 const HORIZONTAL_MARGIN: u16 = 4;
 const VERTICAL_MARGIN: u16 = 2;
-const RAMP: [&str; 9] = ["·", ":", "-", "=", "+", "*", "#", "%", "@"];
+const PIXELS: [&str; 4] = ["░", "▒", "▓", "█"];
 const WORDMARK: &str = "nanocodex2";
 
 pub(super) struct EmptyLogo {
@@ -69,27 +69,39 @@ impl EmptyLogo {
         let Some(mask) = mask(area) else {
             return;
         };
-        let phase = TAU * self.frame as f64 / FRAME_COUNT as f64;
-        let center_x = f64::from(mask.width.saturating_sub(1)) / 2.0;
-        let center_y = f64::from(mask.height.saturating_sub(1)) / 2.0;
-
-        for row in 0..mask.height {
-            let inset = corner_inset(row, mask.height).min(mask.width.saturating_sub(1) / 2);
-            for column in inset..mask.width.saturating_sub(inset) {
-                let x = f64::from(column) - center_x;
-                let y = (f64::from(row) - center_y) * 2.2;
-                let distance =
-                    ((x - phase.cos() * 8.0).powi(2) + (y - phase.sin() * 3.0).powi(2)).sqrt();
-                let value = (x * 0.23 + phase).sin()
-                    + (x * 0.11 + y * 0.41 - phase * 2.0).sin()
-                    + (distance * 0.31 - phase).sin();
-                let level = (((value + 3.0) / 6.0) * (RAMP.len() - 1) as f64)
-                    .round()
-                    .clamp(0.0, (RAMP.len() - 1) as f64) as usize;
-                let style = plasma_style(level, theme, effort);
-                frame.buffer_mut()[Position::new(mask.x + column, mask.y + row)]
-                    .set_symbol(RAMP[level])
-                    .set_style(style);
+        // Each pixel is two terminal columns, keeping the orbit round in a
+        // monospace grid. Leave the center clear so the wordmark never flickers.
+        if mask.width >= 18 && mask.height >= 5 {
+            let radius_x = f64::from(mask.width.saturating_sub(2)) / 2.0;
+            let radius_y = f64::from(mask.height.saturating_sub(1)) / 2.0;
+            for pixel in 0..FRAME_COUNT {
+                let angle = TAU * pixel as f64 / FRAME_COUNT as f64;
+                let column = ((radius_x + angle.sin() * radius_x) / 2.0).round() as u16 * 2;
+                let row = (radius_y - angle.cos() * radius_y).round() as u16;
+                let age = (self.frame + FRAME_COUNT - pixel) % FRAME_COUNT;
+                let (glyph, style) = match age {
+                    0..=1 => (
+                        PIXELS[3],
+                        Style::default()
+                            .fg(theme.effort(effort))
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    2..=3 => (PIXELS[2], Style::default().fg(theme.effort(effort))),
+                    4..=6 => (PIXELS[1], Style::default().fg(theme.effort(effort))),
+                    _ => (
+                        PIXELS[0],
+                        Style::default()
+                            .fg(theme.effort(effort))
+                            .add_modifier(Modifier::DIM),
+                    ),
+                };
+                for offset in 0..2 {
+                    if column + offset < mask.width {
+                        frame.buffer_mut()[Position::new(mask.x + column + offset, mask.y + row)]
+                            .set_symbol(glyph)
+                            .set_style(style);
+                    }
+                }
             }
         }
         render_wordmark(frame, mask, theme);
@@ -99,6 +111,9 @@ impl EmptyLogo {
 fn render_wordmark(frame: &mut Frame<'_>, mask: Rect, theme: &Theme) {
     let width = u16::try_from(WORDMARK.width()).unwrap_or(u16::MAX);
     if width > mask.width {
+        frame.buffer_mut()[Position::new(mask.x + mask.width / 2, mask.y + mask.height / 2)]
+            .set_symbol("▓")
+            .set_style(Style::default().fg(theme.code_text()));
         return;
     }
     let x = mask.x + mask.width.saturating_sub(width) / 2;
@@ -106,26 +121,6 @@ fn render_wordmark(frame: &mut Frame<'_>, mask: Rect, theme: &Theme) {
     frame
         .buffer_mut()
         .set_string(x, y, WORDMARK, Style::reset().fg(theme.code_text()));
-}
-
-fn corner_inset(row: u16, height: u16) -> u16 {
-    let edge_distance = row.min(height.saturating_sub(1).saturating_sub(row));
-    match edge_distance {
-        0 => 3,
-        1 => 1,
-        _ => 0,
-    }
-}
-
-fn plasma_style(level: usize, theme: &Theme, effort: ReasoningEffort) -> Style {
-    let style = Style::default().fg(theme.effort(effort));
-    if level < 3 {
-        return style.add_modifier(Modifier::DIM);
-    }
-    if level >= 6 {
-        return style.add_modifier(Modifier::BOLD);
-    }
-    style
 }
 
 fn mask(area: Rect) -> Option<Rect> {
@@ -146,7 +141,7 @@ fn mask(area: Rect) -> Option<Rect> {
 
 #[cfg(test)]
 mod tests {
-    use super::{EmptyLogo, FRAME_INTERVAL, WORDMARK, corner_inset, mask};
+    use super::{EmptyLogo, FRAME_INTERVAL, WORDMARK, mask};
     use crate::{config::ReasoningEffort, tui::theme::Theme};
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
     use std::time::Instant;
@@ -178,35 +173,27 @@ mod tests {
     }
 
     #[test]
-    fn plasma_is_centered_in_a_wide_shallow_rounded_rectangle() {
+    fn pixel_orbit_is_centered_and_leaves_the_wordmark_clear() {
         let logo = EmptyLogo::new(Instant::now());
         let terminal = render(&logo, 80, 20);
         let mask = mask(Rect::new(0, 0, 80, 20)).unwrap();
-
-        assert_eq!(mask, Rect::new(10, 5, 60, 9));
-        assert!(mask.width > mask.height * 6);
-        for y in mask.y..mask.bottom() {
-            let inset = corner_inset(y - mask.y, mask.height);
-            for x in mask.x + inset..mask.right() - inset {
-                assert_ne!(terminal.backend().buffer()[(x, y)].symbol(), " ");
+        assert_eq!(mask, Rect::new(24, 5, 32, 9));
+        let buffer = terminal.backend().buffer();
+        for y in 0..20 {
+            for x in 0..80 {
+                if !mask.contains((x, y).into()) {
+                    assert_eq!(buffer[(x, y)].symbol(), " ");
+                }
             }
         }
-        assert_eq!(terminal.backend().buffer()[(mask.x, mask.y)].symbol(), " ");
-        assert_ne!(
-            terminal.backend().buffer()[(mask.x + 3, mask.y)].symbol(),
-            " "
-        );
-        assert_eq!(
-            terminal.backend().buffer()[(mask.x - 1, mask.y)].symbol(),
-            " "
-        );
-
-        let narrow = render(&logo, 1, 1);
-        assert_ne!(symbols(&narrow), " ");
+        assert_eq!(buffer[(mask.x + 8, mask.y + 3)].symbol(), " ");
+        for (width, height) in [(1, 1), (12, 3), (20, 6), (80, 20)] {
+            assert!(!symbols(&render(&logo, width, height)).trim().is_empty());
+        }
     }
 
     #[test]
-    fn plasma_uses_the_effort_color_with_multiple_character_densities() {
+    fn pixel_orbit_uses_the_effort_color_and_a_fading_trail() {
         let logo = EmptyLogo::new(Instant::now());
         let terminal = render(&logo, 80, 20);
         let buffer = terminal.backend().buffer();

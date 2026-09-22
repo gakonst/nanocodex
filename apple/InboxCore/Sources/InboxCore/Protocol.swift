@@ -54,6 +54,18 @@ public struct AgentEvent: Equatable, Sendable {
     /// Immutable tool results are prepared once when admitted, not on every
     /// streamed transcript rebuild (which may include large generated images).
     let preparedToolResult: ToolPresentation?
+    /// Opening history only needs to locate conversation text, not render tools.
+    /// Delegate the few candidate envelopes to the canonical projection so voice
+    /// lifecycle inputs and future message normalization keep the same semantics.
+    var producesConversationRow: Bool {
+        switch type {
+        case "turn_accepted", "turn_completed": break
+        case "event":
+            guard ["assistant.delta", "assistant.message"].contains(data["event"]["type"].string) else { return false }
+        default: return false
+        }
+        return transcript([self]).contains { $0.agentID == nil && ($0.role == "You" || $0.role == "Agent") }
+    }
     public var type: String { data["type"].string }
     public var turnID: String { data["turn_id"].string.isEmpty ? data["id"].string : data["turn_id"].string }
     public init(_ data: JSON, cursor: String? = nil) throws {
@@ -129,8 +141,11 @@ public struct TranscriptRow: Identifiable, Codable, Equatable, Sendable {
     public var agentID: String?
     public var phase: String?
     public var itemID: String?
+    public var modelCallID: String?
     /// Cursor that admitted this row; retained while streamed content changes.
     public var cursor: Cursor?
+    /// Latest tool result, independent of stable row admission/scroll identity.
+    public var completionCursor: Cursor?
     public init(id: String, role: String, text: String, detail: String = "", running: Bool = false, tool: ToolPresentation? = nil, images: [String]? = nil) {
         self.id = id; self.role = role; self.text = text; self.detail = detail; self.running = running; self.tool = tool; self.images = images
     }
@@ -156,6 +171,7 @@ public struct TranscriptProjection: Sendable {
     private var lastUserRow: [String: Int] = [:]
     private var lastFinalRow: [String: Int] = [:]
     private var toolRows: [String: Int] = [:]
+    private var cancellationRows: [StreamRole: Int] = [:]
     public init() {}
 
     private mutating func finish(_ turn: String, cancelled: Bool) {
@@ -174,7 +190,9 @@ public struct TranscriptProjection: Sendable {
     }
     public mutating func append(_ events: ArraySlice<AgentEvent>) {
         for envelope in events where seen.insert(envelope.cursor.rawValue).inserted {
-            let d = envelope.data, turn = envelope.turnID, agent = envelope.data["agent_id"].pretty
+            let d = envelope.data, turn = envelope.turnID
+            let provenance = d["agent_id"] == .null ? d["event"]["payload"]["managed_agent_id"] : d["agent_id"]
+            let agent = provenance.pretty
             let firstNewRow = rows.count
             let prefix = turn + ":" + agent
             let id = prefix + ":" + envelope.cursor.rawValue
@@ -207,22 +225,46 @@ public struct TranscriptProjection: Sendable {
                 }
                 finish(turn, cancelled: envelope.type == "turn_cancelled")
             } else if envelope.type == "turn_failed" || envelope.type == "turn_cancelled" {
-                rows.append(.init(id: id, role: "Status", text: envelope.type == "turn_cancelled" ? "Stopped." : (d["error"].string.isEmpty ? "This turn failed. Open its activity for details." : d["error"].string)))
+                if envelope.type == "turn_cancelled" {
+                    let scope = StreamRole(turn: turn, agent: agent, role: "Status")
+                    if let index = cancellationRows[scope] {
+                        // The transport diagnostic can precede the durable terminal.
+                        // Keep its identity and position when confirming cancellation.
+                        rows[index].text = "Stopped."
+                    } else {
+                        cancellationRows[scope] = rows.count
+                        rows.append(.init(id: id, role: "Status", text: "Stopped."))
+                    }
+                } else {
+                    rows.append(.init(id: id, role: "Status", text: d["error"].string.isEmpty ? "This turn failed." : d["error"].string))
+                }
                 finish(turn, cancelled: envelope.type == "turn_cancelled")
             } else if envelope.type == "event" {
                 let event = d["event"], p = event["payload"], type = event["type"].string
                 let role = type == "reasoning.summary.delta" ? "Thinking" : "Agent"
                 let phase = p["phase"].string.isEmpty ? nil : p["phase"].string
                 let itemID = p["item_id"].string.isEmpty ? nil : p["item_id"].string
+                if ["assistant.delta", "assistant.message", "tool.call", "tool.result", "run.started", "run.completed", "run.failed"].contains(type) {
+                    if let previous = lastStreamRow.removeValue(forKey: .init(turn: turn, agent: agent, role: "Thinking")) {
+                        rows[previous].running = false
+                    }
+                }
+                if type == "tool.call", let previous = lastStreamRow[.init(turn: turn, agent: agent, role: "Agent")],
+                   rows[previous].itemID == nil, rows[previous].modelCallID == nil {
+                    rows[previous].running = false
+                    lastStreamRow.removeValue(forKey: .init(turn: turn, agent: agent, role: "Agent"))
+                }
+                let modelCallID = p["model_call_index"] == .null ? nil : p["model_call_index"].pretty
                 switch type {
                 case "assistant.delta", "reasoning.summary.delta":
                     if let last = lastStreamRow[.init(turn: turn, agent: agent, role: role)], rows[last].running,
-                       rows[last].phase == phase, rows[last].itemID == itemID {
+                       rows[last].phase == phase, rows[last].itemID == itemID, rows[last].modelCallID == modelCallID {
                         rows[last].text += p["text"].string
                     } else { rows.append(.init(id: id, role: role, text: p["text"].string, running: true)) }
                 case "assistant.message":
                     if let last = lastStreamRow[.init(turn: turn, agent: agent, role: "Agent")], rows[last].running,
-                       (phase == nil || rows[last].phase == phase), (itemID == nil || rows[last].itemID == itemID) {
+                       (phase == nil || rows[last].phase == phase), (itemID == nil || rows[last].itemID == itemID),
+                       (modelCallID == nil || rows[last].modelCallID == modelCallID) {
                         if !p["text"].string.isEmpty { rows[last].text = p["text"].string }
                         rows[last].running = false
                     } else { rows.append(.init(id: id, role: "Agent", text: p["text"].string)) }
@@ -235,7 +277,6 @@ public struct TranscriptProjection: Sendable {
                     if p["tool"].string == "write_stdin",
                        let index = terminalSessions[agent + ":" + p["arguments"]["session_id"].pretty] {
                         terminalPolls[prefix + ":tool:" + p["call_id"].string] = index
-                        if p["arguments"]["chars"].string.isEmpty { continue }
                     }
                     let tool = ToolPresentation(name: p["tool"].string, arguments: p["arguments"], metadata: p["metadata"])
                     rows.append(.init(id: prefix + ":tool:" + p["call_id"].string, role: "Tool", text: tool.title, running: true, tool: tool))
@@ -281,11 +322,37 @@ public struct TranscriptProjection: Sendable {
                             rows.append(.init(id: toolID, role: "Tool", text: result.title, running: result.status == "Running", tool: result))
                         }
                     }
-                case "run.steered": rows.append(.init(id: id, role: "Status", text: "Direction updated"))
-                case "run.error": rows.append(.init(id: id, role: "Status", text: p["message"].string))
+                case "run.steered": break
+                case "run.error":
+                    // Only the canonical cancellation diagnostic duplicates Stopped.
+                    // Other errors (including retryable failures) remain visible.
+                    if p["message"].string == "the turn was cancelled",
+                       p["code"] == .null || p["code"].string == "cancelled",
+                       p["disposition"].string != "retryable" {
+                        let scope = StreamRole(turn: turn, agent: agent, role: "Status")
+                        guard cancellationRows[scope] == nil else { continue }
+                        cancellationRows[scope] = rows.count
+                    }
+                    rows.append(.init(id: id, role: "Status", text: p["message"].string))
                 default: break
                 }
-                for index in firstNewRow..<rows.count { rows[index].phase = phase; rows[index].itemID = itemID }
+                if type == "tool.result",
+                   let index = toolRows[prefix + ":tool:" + p["call_id"].string]
+                    ?? rows.indices.last(where: { rows[$0].id == prefix + ":tool:" + p["call_id"].string }) {
+                    rows[index].completionCursor = envelope.cursor
+                }
+                // A poll invocation ends with its response, even if the process
+                // it observes continues. The original command tracks that process.
+                if type == "tool.result", p["tool"].string == "write_stdin",
+                   let index = toolRows[prefix + ":tool:" + p["call_id"].string]
+                    ?? rows.indices.last(where: { rows[$0].id == prefix + ":tool:" + p["call_id"].string }),
+                   rows[index].tool?.status == "Running" {
+                    rows[index].tool?.status = "Completed"
+                    rows[index].running = false
+                }
+                for index in firstNewRow..<rows.count {
+                    rows[index].phase = phase; rows[index].itemID = itemID; rows[index].modelCallID = modelCallID
+                }
             }
             for index in firstNewRow..<rows.count {
                 rows[index].cursor = envelope.cursor

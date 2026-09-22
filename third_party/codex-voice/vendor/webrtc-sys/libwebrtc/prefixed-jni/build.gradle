@@ -1,0 +1,23 @@
+plugins {
+    id 'java-library'
+    // com.gradleup.shadow is the maintained successor of com.github.johnrengelman.shadow.
+    // 7.1.2 bundled an ASM too old to read the Java 21 (major 65) bytecode that
+    // libwebrtc's libwebrtc.jar ships since m150.
+    id 'com.gradleup.shadow' version '9.6.1'
+}
+
+java {
+    sourceCompatibility = JavaVersion.VERSION_11
+    targetCompatibility = JavaVersion.VERSION_11
+}
+
+dependencies {
+    api files("libs/classes.jar")
+}
+
+shadowJar {
+    // Replaces the old ConfigureShadowRelocation task: prefix every package in
+    // the merged jar with "livekit".
+    enableAutoRelocation = true
+    relocationPrefix = "livekit"
+}

@@ -1,0 +1,2022 @@
+{
+  "browser": [
+    {
+      "cohort": "browser-fresh-and-warm",
+      "pass": 1,
+      "agent_id": "bc43b66f-0bb3-8d7e-a6cb-f5e808b8613a",
+      "voice_session_id": "01a0ac8d-0314-7b8e-a436-70c9b2a382dc",
+      "request_id": "62821fa8-e383-49da-a904-55190904902b",
+      "ready_ms": 2788.099999964237,
+      "start_promise_ms": 2788.699999988079,
+      "speech_start_session_ms": 2791.599999964237,
+      "input_duration_ms": 1251.9166666666665,
+      "speech_end_scheduled_session_ms": 4043.5166666309037,
+      "speech_end_callback_session_ms": null,
+      "first_text_session_ms": 5259.599999964237,
+      "first_text_from_speech_start_ms": 2468.0,
+      "first_text_after_speech_end_ms": 1216.0833333333335,
+      "first_audio_from_speech_start_ms": 2616.600000023842,
+      "first_audio_after_speech_end_ms": 1364.6833333571753,
+      "speech_end_boundary": "approximate: decoder awaited after initial clock",
+      "stages": {
+        "clientStartedAtUTC": "2026-09-16T23:28:37.657Z",
+        "syntheticCaptureReady": 267.69999998807907,
+        "startBegin": 440.5999999642372,
+        "callBodyBegin": 448.39999997615814,
+        "callBodyEnd": 450.5999999642372,
+        "promptSha256": "f0b8d7f0599831328a785d82fe082af2538b549441a713e899d7f6d24faaa752",
+        "model": "gpt-live-1-codex",
+        "voice": "cove",
+        "callBegin": 451.89999997615814,
+        "callEnd": 1452.2999999523163,
+        "serverTiming": "voice_auth;dur=0.0, voice_validate;dur=0.0, voice_ownership;dur=40.0, voice_egress;dur=902.0, managed_auth;dur=0.0;desc=\"access\", cfExtPri",
+        "requestId": "62821fa8-e383-49da-a904-55190904902b",
+        "edge": null,
+        "completeCallBegin": 1452.5999999642372,
+        "completeCallEnd": 1453,
+        "startEnd": 1571.699999988079,
+        "peerConnected": 2510.099999964237,
+        "controlOpen": 2572.899999976158,
+        "mediaReady": 2788.099999964237,
+        "closeMs": 919.8999999761581,
+        "timer20msMaxGap": 443.39999997615814,
+        "timer20msMedianGap": 20
+      },
+      "stats": {
+        "bytes": 2177,
+        "energy": 0.00018220550458668085,
+        "roundTripMs": 260,
+        "sentBytes": 7852
+      },
+      "captured_audio": {},
+      "failures": [],
+      "answer_ready": true
+    },
+    {
+      "cohort": "browser-fresh-and-warm",
+      "pass": 2,
+      "agent_id": "bc43b66f-0bb3-8d7e-a6cb-f5e808b8613a",
+      "voice_session_id": "01a0ac8d-3144-7668-a1d1-127f88f884d6",
+      "request_id": "754a76e1-ec83-4a38-96f9-856b708b253f",
+      "ready_ms": 1628.5999999642372,
+      "start_promise_ms": 2107.2999999523163,
+      "speech_start_session_ms": 2107.7999999523163,
+      "input_duration_ms": 1251.9166666666665,
+      "speech_end_scheduled_session_ms": 3359.716666618983,
+      "speech_end_callback_session_ms": null,
+      "first_text_session_ms": 4313.799999952316,
+      "first_text_from_speech_start_ms": 2206.0,
+      "first_text_after_speech_end_ms": 954.0833333333335,
+      "first_audio_from_speech_start_ms": 2388.100000023842,
+      "first_audio_after_speech_end_ms": 1136.1833333571753,
+      "speech_end_boundary": "approximate: decoder awaited after initial clock",
+      "stages": {
+        "clientStartedAtUTC": "2026-09-16T23:28:49.480Z",
+        "syntheticCaptureReady": 1.699999988079071,
+        "startBegin": 3.299999952316284,
+        "callBodyBegin": 4.699999988079071,
+        "callBodyEnd": 4.899999976158142,
+        "promptSha256": "f0b8d7f0599831328a785d82fe082af2538b549441a713e899d7f6d24faaa752",
+        "model": "gpt-live-1-codex",
+        "voice": "cove",
+        "callBegin": 5.099999964237213,
+        "callEnd": 1084.699999988079,
+        "serverTiming": "voice_auth;dur=0.0, voice_validate;dur=0.0, voice_ownership;dur=39.0, voice_egress;dur=977.0, managed_auth;dur=0.0;desc=\"access\", cfExtPri",
+        "requestId": "754a76e1-ec83-4a38-96f9-856b708b253f",
+        "edge": null,
+        "completeCallBegin": 1085.0999999642372,
+        "completeCallEnd": 1085.199999988079,
+        "peerConnected": 1455.8999999761581,
+        "controlOpen": 1571,
+        "mediaReady": 1628.5999999642372,
+        "startEnd": 2107.2999999523163,
+        "closeMs": 2947.7000000476837,
+        "timer20msMaxGap": 25.100000023841858,
+        "timer20msMedianGap": 20
+      },
+      "stats": {
+        "bytes": 3340,
+        "energy": 0.0006855580378752316,
+        "roundTripMs": 71,
+        "sentBytes": 8278
+      },
+      "captured_audio": {},
+      "failures": [],
+      "answer_ready": true
+    },
+    {
+      "cohort": "browser-fresh-and-warm",
+      "pass": 3,
+      "agent_id": "bc43b66f-0bb3-8d7e-a6cb-f5e808b8613a",
+      "voice_session_id": "01a0ac8d-63c1-745a-8d0c-da6870252fd3",
+      "request_id": "c9e8317e-ddc7-4a70-97d9-a80c44bd34a7",
+      "ready_ms": 1626.1000000238419,
+      "start_promise_ms": 1626.2000000476837,
+      "speech_start_session_ms": 1626.7000000476837,
+      "input_duration_ms": 1251.9166666666665,
+      "speech_end_scheduled_session_ms": 2878.6166667143502,
+      "speech_end_callback_session_ms": null,
+      "first_text_session_ms": 5651.100000023842,
+      "first_text_from_speech_start_ms": 4024.399999976158,
+      "first_text_after_speech_end_ms": 2772.4833333094916,
+      "first_audio_from_speech_start_ms": null,
+      "first_audio_after_speech_end_ms": null,
+      "speech_end_boundary": "approximate: decoder awaited after initial clock",
+      "stages": {
+        "clientStartedAtUTC": "2026-09-16T23:29:02.406Z",
+        "syntheticCaptureReady": 1.5,
+        "startBegin": 3.200000047683716,
+        "callBodyBegin": 4.700000047683716,
+        "callBodyEnd": 4.900000035762787,
+        "promptSha256": "f0b8d7f0599831328a785d82fe082af2538b549441a713e899d7f6d24faaa752",
+        "model": "gpt-live-1-codex",
+        "voice": "cove",
+        "callBegin": 5.100000023841858,
+        "startEnd": 476.9000000357628,
+        "callEnd": 1238.300000011921,
+        "serverTiming": "voice_auth;dur=0.0, voice_validate;dur=0.0, voice_ownership;dur=23.0, voice_egress;dur=1138.0, managed_auth;dur=0.0;desc=\"access\", cfExtPri",
+        "requestId": "c9e8317e-ddc7-4a70-97d9-a80c44bd34a7",
+        "edge": null,
+        "completeCallBegin": 1238.4000000357628,
+        "completeCallEnd": 1238.6000000238419,
+        "peerConnected": 1459.5,
+        "controlOpen": 1506.4000000357628,
+        "mediaReady": 1626.1000000238419,
+        "closeMs": 2546.599999964237,
+        "timer20msMaxGap": 25.399999976158142,
+        "timer20msMedianGap": 19.900000035762787
+      },
+      "stats": {
+        "bytes": 5441,
+        "energy": 0,
+        "roundTripMs": 104,
+        "sentBytes": 27409
+      },
+      "captured_audio": {},
+      "failures": [
+        "No received speech audio energy within 15 seconds"
+      ],
+      "answer_ready": true
+    },
+    {
+      "cohort": "browser-fresh-repeat",
+      "pass": 1,
+      "agent_id": "84ba8667-a359-847c-b845-4ba9988c3d6d",
+      "voice_session_id": "01a0ac8e-5a18-794e-9d7e-e4eba0a62be1",
+      "request_id": "220f6cc8-0339-4c8a-bf9d-7cb142a0051c",
+      "ready_ms": 2165.300000011921,
+      "start_promise_ms": 2165.300000011921,
+      "speech_start_session_ms": 2166.800000011921,
+      "input_duration_ms": 1251.9166666666665,
+      "speech_end_scheduled_session_ms": 3418.7166666785874,
+      "speech_end_callback_session_ms": null,
+      "first_text_session_ms": 4116.899999976158,
+      "first_text_from_speech_start_ms": 1950.0999999642372,
+      "first_text_after_speech_end_ms": 698.1833332975707,
+      "first_audio_from_speech_start_ms": 2381.300000011921,
+      "first_audio_after_speech_end_ms": 1129.3833333452544,
+      "speech_end_boundary": "approximate: decoder awaited after initial clock",
+      "stages": {
+        "clientStartedAtUTC": "2026-09-16T23:30:05.471Z",
+        "syntheticCaptureReady": 220.10000002384186,
+        "startBegin": 351.5,
+        "callBodyBegin": 357.30000001192093,
+        "callBodyEnd": 359.10000002384186,
+        "promptSha256": "f0b8d7f0599831328a785d82fe082af2538b549441a713e899d7f6d24faaa752",
+        "model": "gpt-live-1-codex",
+        "voice": "cove",
+        "callBegin": 359.60000002384186,
+        "startEnd": 1472.800000011921,
+        "callEnd": 1748.3999999761581,
+        "serverTiming": "voice_auth;dur=0.0, voice_validate;dur=3.0, voice_ownership;dur=39.0, voice_egress;dur=1262.0, managed_auth;dur=0.0;desc=\"access\", cfExtPri",
+        "requestId": "220f6cc8-0339-4c8a-bf9d-7cb142a0051c",
+        "edge": null,
+        "completeCallBegin": 1749,
+        "completeCallEnd": 1749.5,
+        "peerConnected": 2055,
+        "controlOpen": 2107.800000011921,
+        "mediaReady": 2165.300000011921,
+        "closeMs": 1013.7000000476837,
+        "timer20msMaxGap": 356.4000000357628,
+        "timer20msMedianGap": 20
+      },
+      "stats": {
+        "bytes": 2320,
+        "energy": 0.0020569602520113025,
+        "roundTripMs": 112,
+        "sentBytes": 7326
+      },
+      "captured_audio": {},
+      "failures": [],
+      "answer_ready": true
+    },
+    {
+      "cohort": "browser-exact-audio",
+      "pass": 1,
+      "agent_id": "f9bb806a-7b1d-8db0-a706-83ea8826b29f",
+      "voice_session_id": "01a0ac93-2aaa-7967-9497-a006057896a4",
+      "request_id": "5dc676af-44f6-474a-ba9a-f44b64fc4624",
+      "ready_ms": 2278.399999976158,
+      "start_promise_ms": 2278.599999964237,
+      "speech_start_session_ms": 2282,
+      "input_duration_ms": 1251.9166666666665,
+      "speech_end_scheduled_session_ms": 3533.9166666666665,
+      "speech_end_callback_session_ms": 3530.7999999523163,
+      "first_text_session_ms": 4378.599999964237,
+      "first_text_from_speech_start_ms": 2096.599999964237,
+      "first_text_after_speech_end_ms": 844.6833332975707,
+      "first_audio_from_speech_start_ms": 2287.2999999523163,
+      "first_audio_after_speech_end_ms": 1035.3833332856498,
+      "speech_end_boundary": "post-decode scheduled AudioContext boundary",
+      "stages": {
+        "clientStartedAtUTC": "2026-09-16T23:35:21.010Z",
+        "syntheticCaptureReady": 322.39999997615814,
+        "startBegin": 519,
+        "callBodyBegin": 522.2999999523163,
+        "callBodyEnd": 524.0999999642372,
+        "promptSha256": "f0b8d7f0599831328a785d82fe082af2538b549441a713e899d7f6d24faaa752",
+        "model": "gpt-live-1-codex",
+        "voice": "cove",
+        "callBegin": 524.5999999642372,
+        "startEnd": 1430.5999999642372,
+        "callEnd": 1809.2999999523163,
+        "serverTiming": "voice_auth;dur=0.0, voice_validate;dur=0.0, voice_ownership;dur=10.0, voice_egress;dur=1223.0, managed_auth;dur=0.0;desc=\"access\", cfExtPri",
+        "requestId": "5dc676af-44f6-474a-ba9a-f44b64fc4624",
+        "edge": null,
+        "completeCallBegin": 1809.699999988079,
+        "completeCallEnd": 1810,
+        "peerConnected": 2087.699999988079,
+        "controlOpen": 2146.199999988079,
+        "mediaReady": 2278.399999976158,
+        "fixtureDecoded": 2282,
+        "fixtureAudioContextState": "running",
+        "fixtureStartContextSeconds": 1.9413333333333334,
+        "fixtureScheduledEndContextSeconds": 3.19325,
+        "fixtureStart": 2282,
+        "fixtureEndedCallback": 3530.7999999523163,
+        "fixtureEndedContextSeconds": 3.1946666666666665,
+        "audioContextAtObservation": "running",
+        "firstEnergyObserved": 4568.899999976158,
+        "outboundBefore": 346,
+        "outboundAfter": 7338,
+        "receiverTracks": [
+          {
+            "kind": "audio",
+            "enabled": true,
+            "muted": false,
+            "readyState": "live"
+          }
+        ],
+        "closeMs": 928.3000000119209,
+        "timer20msMaxGap": 520.5,
+        "timer20msMedianGap": 20
+      },
+      "stats": {
+        "bytes": 2007,
+        "energy": 0.0008194685949705276,
+        "roundTripMs": 148,
+        "sentBytes": 7338,
+        "samples": 92160,
+        "packets": 89,
+        "concealedSamples": 10440,
+        "silentConcealedSamples": 6840
+      },
+      "captured_audio": {
+        "recorderRequestedSessionMs": 1812.5,
+        "recorderStartedSessionMs": 1873.2999999523163,
+        "mime": "audio/webm;codecs=opus",
+        "bytes": 15051,
+        "path": "voice-audio/response-1-full.webm"
+      },
+      "failures": [],
+      "answer_ready": true
+    },
+    {
+      "cohort": "browser-exact-audio",
+      "pass": 2,
+      "agent_id": "f9bb806a-7b1d-8db0-a706-83ea8826b29f",
+      "voice_session_id": "01a0ac93-563c-7799-80be-f5cc9bc93f3c",
+      "request_id": "84835925-5b6a-442c-8749-e9e0357a77c1",
+      "ready_ms": 1272.199999988079,
+      "start_promise_ms": 1272.300000011921,
+      "speech_start_session_ms": 1275.199999988079,
+      "input_duration_ms": 1251.9166666666665,
+      "speech_end_scheduled_session_ms": 2527.1166666547456,
+      "speech_end_callback_session_ms": 2524.300000011921,
+      "first_text_session_ms": 3709.699999988079,
+      "first_text_from_speech_start_ms": 2434.5,
+      "first_text_after_speech_end_ms": 1182.5833333333335,
+      "first_audio_from_speech_start_ms": 2716.100000023842,
+      "first_audio_after_speech_end_ms": 1464.1833333571753,
+      "speech_end_boundary": "post-decode scheduled AudioContext boundary",
+      "stages": {
+        "clientStartedAtUTC": "2026-09-16T23:35:32.161Z",
+        "syntheticCaptureReady": 2.100000023841858,
+        "startBegin": 5.100000023841858,
+        "callBodyBegin": 7,
+        "callBodyEnd": 7.300000011920929,
+        "promptSha256": "f0b8d7f0599831328a785d82fe082af2538b549441a713e899d7f6d24faaa752",
+        "model": "gpt-live-1-codex",
+        "voice": "cove",
+        "callBegin": 7.5,
+        "callEnd": 799.6000000238419,
+        "serverTiming": "voice_auth;dur=0.0, voice_validate;dur=2.0, voice_ownership;dur=9.0, voice_egress;dur=715.0, managed_auth;dur=0.0;desc=\"access\", cfExtPri",
+        "requestId": "84835925-5b6a-442c-8749-e9e0357a77c1",
+        "edge": null,
+        "completeCallBegin": 799.8999999761581,
+        "completeCallEnd": 799.8999999761581,
+        "peerConnected": 1147.1000000238419,
+        "controlOpen": 1214.1000000238419,
+        "mediaReady": 1272.199999988079,
+        "fixtureDecoded": 1275.199999988079,
+        "fixtureAudioContextState": "running",
+        "fixtureStartContextSeconds": 1.264,
+        "fixtureScheduledEndContextSeconds": 2.5159166666666666,
+        "fixtureStart": 1275.199999988079,
+        "startEnd": 2143.600000023842,
+        "fixtureEndedCallback": 2524.300000011921,
+        "fixtureEndedContextSeconds": 2.517333333333333,
+        "audioContextAtObservation": "running",
+        "firstEnergyObserved": 3991.300000011921,
+        "outboundBefore": 206,
+        "outboundAfter": 7723,
+        "receiverTracks": [
+          {
+            "kind": "audio",
+            "enabled": true,
+            "muted": false,
+            "readyState": "live"
+          }
+        ],
+        "closeMs": 3462.699999988079,
+        "timer20msMaxGap": 25.100000023841858,
+        "timer20msMedianGap": 20
+      },
+      "stats": {
+        "bytes": 1864,
+        "energy": 0.00046811444487436206,
+        "roundTripMs": 50,
+        "sentBytes": 7723,
+        "samples": 107040,
+        "packets": 94,
+        "concealedSamples": 21960,
+        "silentConcealedSamples": 15720
+      },
+      "captured_audio": {
+        "recorderRequestedSessionMs": 801.3999999761581,
+        "recorderStartedSessionMs": 844.5,
+        "mime": "audio/webm;codecs=opus",
+        "bytes": 16470,
+        "path": "voice-audio/response-2-full.webm"
+      },
+      "failures": [],
+      "answer_ready": false
+    },
+    {
+      "cohort": "browser-exact-audio",
+      "pass": 3,
+      "agent_id": "f9bb806a-7b1d-8db0-a706-83ea8826b29f",
+      "voice_session_id": "01a0ac93-890e-7ef4-9b34-2270176be664",
+      "request_id": "4b6142a3-16af-4778-8361-0e6d430efa9e",
+      "ready_ms": 1614,
+      "start_promise_ms": 1614.1000000238419,
+      "speech_start_session_ms": 1617,
+      "input_duration_ms": 1251.9166666666665,
+      "speech_end_scheduled_session_ms": 2868.9166666666665,
+      "speech_end_callback_session_ms": 2866.300000011921,
+      "first_text_session_ms": 3685.400000035763,
+      "first_text_from_speech_start_ms": 2068.400000035763,
+      "first_text_after_speech_end_ms": 816.4833333690963,
+      "first_audio_from_speech_start_ms": 2508.400000035763,
+      "first_audio_after_speech_end_ms": 1256.4833333690963,
+      "speech_end_boundary": "post-decode scheduled AudioContext boundary",
+      "stages": {
+        "clientStartedAtUTC": "2026-09-16T23:35:45.168Z",
+        "syntheticCaptureReady": 1.4000000357627869,
+        "startBegin": 3,
+        "callBodyBegin": 4.300000011920929,
+        "callBodyEnd": 4.600000023841858,
+        "promptSha256": "f0b8d7f0599831328a785d82fe082af2538b549441a713e899d7f6d24faaa752",
+        "model": "gpt-live-1-codex",
+        "voice": "cove",
+        "callBegin": 4.700000047683716,
+        "startEnd": 479.80000001192093,
+        "callEnd": 1057,
+        "serverTiming": "voice_auth;dur=0.0, voice_validate;dur=0.0, voice_ownership;dur=19.0, voice_egress;dur=928.0, managed_auth;dur=0.0;desc=\"access\", cfExtPri",
+        "requestId": "4b6142a3-16af-4778-8361-0e6d430efa9e",
+        "edge": null,
+        "completeCallBegin": 1057.2000000476837,
+        "completeCallEnd": 1057.300000011921,
+        "peerConnected": 1390.7000000476837,
+        "controlOpen": 1544.2000000476837,
+        "mediaReady": 1614,
+        "fixtureDecoded": 1616.9000000357628,
+        "fixtureAudioContextState": "running",
+        "fixtureStartContextSeconds": 1.6106666666666667,
+        "fixtureScheduledEndContextSeconds": 2.8625833333333333,
+        "fixtureStart": 1617,
+        "fixtureEndedCallback": 2866.300000011921,
+        "fixtureEndedContextSeconds": 2.864,
+        "audioContextAtObservation": "running",
+        "firstEnergyObserved": 4125.300000011921,
+        "outboundBefore": 381,
+        "outboundAfter": 7550,
+        "receiverTracks": [
+          {
+            "kind": "audio",
+            "enabled": true,
+            "muted": false,
+            "readyState": "live"
+          }
+        ],
+        "closeMs": 2710.2000000476837,
+        "timer20msMaxGap": 25.100000023841858,
+        "timer20msMedianGap": 20.099999964237213
+      },
+      "stats": {
+        "bytes": 2407,
+        "energy": 0.0007211886468324532,
+        "roundTripMs": 137,
+        "sentBytes": 7550,
+        "samples": 99840,
+        "packets": 97,
+        "concealedSamples": 7920,
+        "silentConcealedSamples": 3600
+      },
+      "captured_audio": {
+        "recorderRequestedSessionMs": 1058.6000000238419,
+        "recorderStartedSessionMs": 1101.1000000238419,
+        "mime": "audio/webm;codecs=opus",
+        "bytes": 19600,
+        "path": "voice-audio/response-3-full.webm"
+      },
+      "failures": [],
+      "answer_ready": true
+    }
+  ],
+  "native": {
+    "latency_samples": [
+      {
+        "attempt": 1,
+        "readyMs": 4218.282125
+      },
+      {
+        "attempt": 2,
+        "readyMs": 2652.53425
+      },
+      {
+        "attempt": 3,
+        "readyMs": 1863.9385
+      }
+    ],
+    "integration_ready_seconds": [
+      "5.215240459"
+    ],
+    "explicit_speech_audio_failed": true,
+    "agent_ids": [
+      "9caf1d7b-b4bd-8fe8-bd17-d6a38305481f",
+      "ce60649a-057c-81e7-96c7-d9e9840a0a4c"
+    ],
+    "segments": [
+      {
+        "started_at": 1789601264.6284661,
+        "stages": [
+          {
+            "stage": "tap",
+            "relative_ms": 0.0
+          },
+          {
+            "stage": "configuration.ready",
+            "relative_ms": 2.3527145385742188
+          },
+          {
+            "stage": "transport.prepared",
+            "relative_ms": 4.176855087280273
+          },
+          {
+            "stage": "peer.prepare.begin",
+            "relative_ms": 5.324840545654297
+          },
+          {
+            "stage": "lifecycle.start.begin",
+            "relative_ms": 6.014823913574219
+          },
+          {
+            "stage": "http.begin start",
+            "relative_ms": 6.619930267333984
+          },
+          {
+            "stage": "events.cursor agent_id=9caf1d7b-b4bd-8fe8-bd17-d6a38305481f cursor=1",
+            "relative_ms": 133.81671905517578
+          },
+          {
+            "stage": "events.connect agent_id=9caf1d7b-b4bd-8fe8-bd17-d6a38305481f cursor=1",
+            "relative_ms": 134.19771194458008
+          },
+          {
+            "stage": "events.ready",
+            "relative_ms": 142.44985580444336
+          },
+          {
+            "stage": "peer.prepare.end",
+            "relative_ms": 151.0179042816162
+          },
+          {
+            "stage": "peer.offer.created",
+            "relative_ms": 152.6017189025879
+          },
+          {
+            "stage": "peer.local-description.set",
+            "relative_ms": 154.17885780334473
+          },
+          {
+            "stage": "call.begin",
+            "relative_ms": 154.40082550048828
+          },
+          {
+            "stage": "http.begin calls",
+            "relative_ms": 155.6229591369629
+          },
+          {
+            "stage": "events.opened agent_id=9caf1d7b-b4bd-8fe8-bd17-d6a38305481f cursor=1",
+            "relative_ms": 486.34791374206543
+          },
+          {
+            "stage": "events.control agent_id=9caf1d7b-b4bd-8fe8-bd17-d6a38305481f cursor=1",
+            "relative_ms": 486.88387870788574
+          },
+          {
+            "stage": "http start status=200 reused=false connect_ms=39 server_ms=848 total_ms=895",
+            "relative_ms": 902.6570320129395
+          },
+          {
+            "stage": "lifecycle.start.end",
+            "relative_ms": 903.3079147338867
+          },
+          {
+            "stage": "http calls status=201 reused=true connect_ms=0 server_ms=4302 total_ms=4303",
+            "relative_ms": 4459.247827529907
+          },
+          {
+            "stage": "call.end",
+            "relative_ms": 4465.101718902588
+          },
+          {
+            "stage": "peer.answer.applied",
+            "relative_ms": 4492.584705352783
+          },
+          {
+            "stage": "audio.track enabled=false volume=0.0",
+            "relative_ms": 4493.541717529297
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=false output=0.0",
+            "relative_ms": 4494.102001190186
+          },
+          {
+            "stage": "network round_trip_ms=77",
+            "relative_ms": 4896.885871887207
+          },
+          {
+            "stage": "peer.connected",
+            "relative_ms": 5023.430824279785
+          },
+          {
+            "stage": "data-channel.ready",
+            "relative_ms": 5113.3527755737305
+          },
+          {
+            "stage": "playback enabled=true receivers=1",
+            "relative_ms": 5114.096879959106
+          },
+          {
+            "stage": "realtime.session.started",
+            "relative_ms": 5175.189018249512
+          },
+          {
+            "stage": "voice.ready",
+            "relative_ms": 5175.958871841431
+          },
+          {
+            "stage": "voice.tasks.ready",
+            "relative_ms": 5176.109790802002
+          },
+          {
+            "stage": "send type=session.context.append channel=commentary bytes=168",
+            "relative_ms": 5225.67081451416
+          },
+          {
+            "stage": "send type=session.update channel= bytes=38",
+            "relative_ms": 5226.200819015503
+          },
+          {
+            "stage": "realtime.session.context.appended",
+            "relative_ms": 5375.764846801758
+          },
+          {
+            "stage": "realtime.session.updated",
+            "relative_ms": 5481.602907180786
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 5533.056735992432
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 5533.792018890381
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 6564.263820648193
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 6569.885730743408
+          },
+          {
+            "stage": "send type=session.context.append channel=speakable bytes=114",
+            "relative_ms": 7499.781847000122
+          },
+          {
+            "stage": "playback enabled=true receivers=1",
+            "relative_ms": 7500.264883041382
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 7603.315830230713
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 7604.033946990967
+          },
+          {
+            "stage": "realtime.session.context.appended",
+            "relative_ms": 7756.239891052246
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 8641.203880310059
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 8641.986846923828
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 9662.596702575684
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 9663.322925567627
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 10708.350896835327
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 10709.091901779175
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 11774.042844772339
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 11775.201797485352
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 12815.90986251831
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 12818.121910095215
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 13876.065731048584
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 13877.084732055664
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 14917.350769042969
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 14918.335914611816
+          },
+          {
+            "stage": "events.control agent_id=9caf1d7b-b4bd-8fe8-bd17-d6a38305481f cursor=none",
+            "relative_ms": 15479.382991790771
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 15945.160865783691
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 15945.875883102417
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 16998.684883117676
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 17000.45680999756
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 18036.590814590454
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 18037.34588623047
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 19077.728748321533
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 19082.490921020508
+          },
+          {
+            "stage": "realtime.session.usage.updated",
+            "relative_ms": 19278.02085876465
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 20137.053966522217
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 20137.656927108765
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 21171.063899993896
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 21171.631813049316
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 22208.83584022522
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 22209.596872329712
+          },
+          {
+            "stage": "cleanup.admission.wait",
+            "relative_ms": 23000.202894210815
+          },
+          {
+            "stage": "cleanup.routing.wait",
+            "relative_ms": 23000.446796417236
+          },
+          {
+            "stage": "cleanup.transcript.begin",
+            "relative_ms": 23000.573873519897
+          },
+          {
+            "stage": "lifecycle.stop.begin",
+            "relative_ms": 23000.730991363525
+          },
+          {
+            "stage": "events.cancelled agent_id=9caf1d7b-b4bd-8fe8-bd17-d6a38305481f",
+            "relative_ms": 23001.338958740234
+          },
+          {
+            "stage": "http.begin stop",
+            "relative_ms": 23001.237869262695
+          },
+          {
+            "stage": "http stop status=200 reused=true connect_ms=0 server_ms=449 total_ms=451",
+            "relative_ms": 23453.702926635742
+          },
+          {
+            "stage": "lifecycle.stop.end",
+            "relative_ms": 23454.298973083496
+          },
+          {
+            "stage": "cleanup.end",
+            "relative_ms": 23454.747915267944
+          }
+        ]
+      },
+      {
+        "started_at": 1789601288.083818,
+        "stages": [
+          {
+            "stage": "tap",
+            "relative_ms": 0.0
+          },
+          {
+            "stage": "configuration.ready",
+            "relative_ms": 0.30303001403808594
+          },
+          {
+            "stage": "transport.prepared",
+            "relative_ms": 0.6310939788818359
+          },
+          {
+            "stage": "lifecycle.start.begin",
+            "relative_ms": 0.9951591491699219
+          },
+          {
+            "stage": "peer.prepare.begin",
+            "relative_ms": 1.0099411010742188
+          },
+          {
+            "stage": "http.begin start",
+            "relative_ms": 2.025127410888672
+          },
+          {
+            "stage": "peer.prepare.end",
+            "relative_ms": 11.493206024169922
+          },
+          {
+            "stage": "peer.offer.created",
+            "relative_ms": 12.176036834716797
+          },
+          {
+            "stage": "cleanup.admission.wait",
+            "relative_ms": 13.989925384521484
+          },
+          {
+            "stage": "http start status=0 reused=false connect_ms=0 server_ms=0 total_ms=11",
+            "relative_ms": 14.321088790893555
+          },
+          {
+            "stage": "cleanup.routing.wait",
+            "relative_ms": 15.320062637329102
+          },
+          {
+            "stage": "cleanup.transcript.begin",
+            "relative_ms": 15.804052352905273
+          },
+          {
+            "stage": "lifecycle.stop.begin",
+            "relative_ms": 16.292095184326172
+          },
+          {
+            "stage": "http.begin stop",
+            "relative_ms": 17.261028289794922
+          },
+          {
+            "stage": "http stop status=200 reused=false connect_ms=77 server_ms=1077 total_ms=1162",
+            "relative_ms": 1180.0320148468018
+          },
+          {
+            "stage": "lifecycle.stop.end",
+            "relative_ms": 1180.6490421295166
+          },
+          {
+            "stage": "cleanup.end",
+            "relative_ms": 1181.650161743164
+          }
+        ]
+      },
+      {
+        "started_at": 1789601294.80935,
+        "stages": [
+          {
+            "stage": "tap",
+            "relative_ms": 0.0
+          },
+          {
+            "stage": "configuration.ready",
+            "relative_ms": 0.5478858947753906
+          },
+          {
+            "stage": "transport.prepared",
+            "relative_ms": 1.1899471282958984
+          },
+          {
+            "stage": "peer.prepare.begin",
+            "relative_ms": 1.6820430755615234
+          },
+          {
+            "stage": "lifecycle.start.begin",
+            "relative_ms": 1.6870498657226562
+          },
+          {
+            "stage": "http.begin start",
+            "relative_ms": 2.0439624786376953
+          },
+          {
+            "stage": "peer.prepare.end",
+            "relative_ms": 4.662990570068359
+          },
+          {
+            "stage": "peer.offer.created",
+            "relative_ms": 5.182027816772461
+          },
+          {
+            "stage": "peer.local-description.set",
+            "relative_ms": 5.714893341064453
+          },
+          {
+            "stage": "call.begin",
+            "relative_ms": 6.001949310302734
+          },
+          {
+            "stage": "http.begin calls",
+            "relative_ms": 7.014989852905273
+          },
+          {
+            "stage": "events.cursor agent_id=ce60649a-057c-81e7-96c7-d9e9840a0a4c cursor=1",
+            "relative_ms": 147.07708358764648
+          },
+          {
+            "stage": "events.ready",
+            "relative_ms": 153.1810760498047
+          },
+          {
+            "stage": "events.connect agent_id=ce60649a-057c-81e7-96c7-d9e9840a0a4c cursor=1",
+            "relative_ms": 152.81200408935547
+          },
+          {
+            "stage": "events.opened agent_id=ce60649a-057c-81e7-96c7-d9e9840a0a4c cursor=1",
+            "relative_ms": 752.5501251220703
+          },
+          {
+            "stage": "events.control agent_id=ce60649a-057c-81e7-96c7-d9e9840a0a4c cursor=1",
+            "relative_ms": 753.1440258026123
+          },
+          {
+            "stage": "http start status=200 reused=false connect_ms=60 server_ms=1265 total_ms=1341",
+            "relative_ms": 1344.1979885101318
+          },
+          {
+            "stage": "lifecycle.start.end",
+            "relative_ms": 1344.7818756103516
+          },
+          {
+            "stage": "http calls status=201 reused=true connect_ms=0 server_ms=2839 total_ms=2909",
+            "relative_ms": 2917.330026626587
+          },
+          {
+            "stage": "call.end",
+            "relative_ms": 2918.604850769043
+          },
+          {
+            "stage": "peer.answer.applied",
+            "relative_ms": 2954.4148445129395
+          },
+          {
+            "stage": "audio.track enabled=false volume=0.0",
+            "relative_ms": 2956.2301635742188
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=false output=0.0",
+            "relative_ms": 2956.876039505005
+          },
+          {
+            "stage": "network round_trip_ms=93",
+            "relative_ms": 3366.564989089966
+          },
+          {
+            "stage": "peer.connected",
+            "relative_ms": 3887.1560096740723
+          },
+          {
+            "stage": "audio.track enabled=false volume=0.0",
+            "relative_ms": 4028.925895690918
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=false output=0.0",
+            "relative_ms": 4029.697895050049
+          },
+          {
+            "stage": "data-channel.ready",
+            "relative_ms": 4134.842872619629
+          },
+          {
+            "stage": "playback enabled=true receivers=1",
+            "relative_ms": 4135.715961456299
+          },
+          {
+            "stage": "realtime.session.started",
+            "relative_ms": 4215.232849121094
+          },
+          {
+            "stage": "voice.ready",
+            "relative_ms": 4216.093063354492
+          },
+          {
+            "stage": "voice.tasks.ready",
+            "relative_ms": 4216.299057006836
+          },
+          {
+            "stage": "send type=session.update channel= bytes=38",
+            "relative_ms": 4232.63692855835
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 5149.436950683594
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 5150.32696723938
+          },
+          {
+            "stage": "realtime.session.updated",
+            "relative_ms": 5976.943016052246
+          },
+          {
+            "stage": "cleanup.admission.wait",
+            "relative_ms": 6009.812831878662
+          },
+          {
+            "stage": "events.cancelled agent_id=ce60649a-057c-81e7-96c7-d9e9840a0a4c",
+            "relative_ms": 6010.027885437012
+          },
+          {
+            "stage": "cleanup.routing.wait",
+            "relative_ms": 6010.23006439209
+          },
+          {
+            "stage": "cleanup.transcript.begin",
+            "relative_ms": 6010.578155517578
+          },
+          {
+            "stage": "lifecycle.stop.begin",
+            "relative_ms": 6010.802984237671
+          },
+          {
+            "stage": "http.begin stop",
+            "relative_ms": 6011.175155639648
+          },
+          {
+            "stage": "http stop status=200 reused=true connect_ms=0 server_ms=528 total_ms=529",
+            "relative_ms": 6540.718078613281
+          },
+          {
+            "stage": "lifecycle.stop.end",
+            "relative_ms": 6541.306018829346
+          },
+          {
+            "stage": "cleanup.end",
+            "relative_ms": 6541.54109954834
+          }
+        ]
+      },
+      {
+        "started_at": 1789601301.3512979,
+        "stages": [
+          {
+            "stage": "tap",
+            "relative_ms": 0.0
+          },
+          {
+            "stage": "configuration.ready",
+            "relative_ms": 0.2071857452392578
+          },
+          {
+            "stage": "transport.prepared",
+            "relative_ms": 0.5261898040771484
+          },
+          {
+            "stage": "peer.prepare.begin",
+            "relative_ms": 0.8840560913085938
+          },
+          {
+            "stage": "lifecycle.start.begin",
+            "relative_ms": 0.8821487426757812
+          },
+          {
+            "stage": "http.begin start",
+            "relative_ms": 1.4300346374511719
+          },
+          {
+            "stage": "peer.prepare.end",
+            "relative_ms": 5.620002746582031
+          },
+          {
+            "stage": "peer.offer.created",
+            "relative_ms": 6.314277648925781
+          },
+          {
+            "stage": "peer.local-description.set",
+            "relative_ms": 6.822109222412109
+          },
+          {
+            "stage": "call.begin",
+            "relative_ms": 7.23719596862793
+          },
+          {
+            "stage": "http.begin calls",
+            "relative_ms": 8.141040802001953
+          },
+          {
+            "stage": "events.cursor agent_id=ce60649a-057c-81e7-96c7-d9e9840a0a4c cursor=1",
+            "relative_ms": 547.6632118225098
+          },
+          {
+            "stage": "events.connect agent_id=ce60649a-057c-81e7-96c7-d9e9840a0a4c cursor=1",
+            "relative_ms": 547.9481220245361
+          },
+          {
+            "stage": "events.ready",
+            "relative_ms": 547.9722023010254
+          },
+          {
+            "stage": "http start status=200 reused=false connect_ms=85 server_ms=483 total_ms=578",
+            "relative_ms": 580.3489685058594
+          },
+          {
+            "stage": "lifecycle.start.end",
+            "relative_ms": 580.9292793273926
+          },
+          {
+            "stage": "events.opened agent_id=ce60649a-057c-81e7-96c7-d9e9840a0a4c cursor=1",
+            "relative_ms": 809.1051578521729
+          },
+          {
+            "stage": "events.control agent_id=ce60649a-057c-81e7-96c7-d9e9840a0a4c cursor=1",
+            "relative_ms": 809.4770908355713
+          },
+          {
+            "stage": "http calls status=201 reused=true connect_ms=0 server_ms=1179 total_ms=1265",
+            "relative_ms": 1274.510145187378
+          },
+          {
+            "stage": "call.end",
+            "relative_ms": 1274.9700546264648
+          },
+          {
+            "stage": "peer.answer.applied",
+            "relative_ms": 1291.7580604553223
+          },
+          {
+            "stage": "audio.track enabled=false volume=0.0",
+            "relative_ms": 1292.8111553192139
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=false output=0.0",
+            "relative_ms": 1293.532133102417
+          },
+          {
+            "stage": "network round_trip_ms=154",
+            "relative_ms": 1700.7391452789307
+          },
+          {
+            "stage": "peer.connected",
+            "relative_ms": 2205.381155014038
+          },
+          {
+            "stage": "audio.track enabled=false volume=0.0",
+            "relative_ms": 2323.69327545166
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=false output=0.0",
+            "relative_ms": 2324.674129486084
+          },
+          {
+            "stage": "data-channel.ready",
+            "relative_ms": 2460.339069366455
+          },
+          {
+            "stage": "playback enabled=true receivers=1",
+            "relative_ms": 2461.122989654541
+          },
+          {
+            "stage": "realtime.session.started",
+            "relative_ms": 2647.764205932617
+          },
+          {
+            "stage": "voice.ready",
+            "relative_ms": 2648.3020782470703
+          },
+          {
+            "stage": "voice.tasks.ready",
+            "relative_ms": 2648.515224456787
+          },
+          {
+            "stage": "send type=session.update channel= bytes=38",
+            "relative_ms": 2661.9482040405273
+          },
+          {
+            "stage": "realtime.session.updated",
+            "relative_ms": 2836.651086807251
+          },
+          {
+            "stage": "events.cancelled agent_id=ce60649a-057c-81e7-96c7-d9e9840a0a4c",
+            "relative_ms": 2881.899118423462
+          },
+          {
+            "stage": "cleanup.admission.wait",
+            "relative_ms": 2881.721019744873
+          },
+          {
+            "stage": "cleanup.routing.wait",
+            "relative_ms": 2883.5861682891846
+          },
+          {
+            "stage": "cleanup.transcript.begin",
+            "relative_ms": 2883.7599754333496
+          },
+          {
+            "stage": "lifecycle.stop.begin",
+            "relative_ms": 2883.899211883545
+          },
+          {
+            "stage": "http.begin stop",
+            "relative_ms": 2884.2172622680664
+          },
+          {
+            "stage": "http stop status=200 reused=true connect_ms=0 server_ms=530 total_ms=533",
+            "relative_ms": 3418.3661937713623
+          },
+          {
+            "stage": "lifecycle.stop.end",
+            "relative_ms": 3419.2252159118652
+          },
+          {
+            "stage": "cleanup.end",
+            "relative_ms": 3419.5351600646973
+          }
+        ]
+      },
+      {
+        "started_at": 1789601304.77139,
+        "stages": [
+          {
+            "stage": "tap",
+            "relative_ms": 0.0
+          },
+          {
+            "stage": "configuration.ready",
+            "relative_ms": 0.2799034118652344
+          },
+          {
+            "stage": "transport.prepared",
+            "relative_ms": 0.6060600280761719
+          },
+          {
+            "stage": "lifecycle.start.begin",
+            "relative_ms": 0.9479522705078125
+          },
+          {
+            "stage": "peer.prepare.begin",
+            "relative_ms": 0.9632110595703125
+          },
+          {
+            "stage": "http.begin start",
+            "relative_ms": 1.1692047119140625
+          },
+          {
+            "stage": "peer.prepare.end",
+            "relative_ms": 3.593921661376953
+          },
+          {
+            "stage": "peer.offer.created",
+            "relative_ms": 3.988027572631836
+          },
+          {
+            "stage": "peer.local-description.set",
+            "relative_ms": 4.498958587646484
+          },
+          {
+            "stage": "call.begin",
+            "relative_ms": 4.720211029052734
+          },
+          {
+            "stage": "http.begin calls",
+            "relative_ms": 9.428977966308594
+          },
+          {
+            "stage": "events.cursor agent_id=ce60649a-057c-81e7-96c7-d9e9840a0a4c cursor=1",
+            "relative_ms": 177.1559715270996
+          },
+          {
+            "stage": "events.ready",
+            "relative_ms": 177.4890422821045
+          },
+          {
+            "stage": "events.connect agent_id=ce60649a-057c-81e7-96c7-d9e9840a0a4c cursor=1",
+            "relative_ms": 177.48498916625977
+          },
+          {
+            "stage": "events.opened agent_id=ce60649a-057c-81e7-96c7-d9e9840a0a4c cursor=1",
+            "relative_ms": 501.4660358428955
+          },
+          {
+            "stage": "events.control agent_id=ce60649a-057c-81e7-96c7-d9e9840a0a4c cursor=1",
+            "relative_ms": 502.0110607147217
+          },
+          {
+            "stage": "http start status=200 reused=false connect_ms=44 server_ms=498 total_ms=557",
+            "relative_ms": 558.7739944458008
+          },
+          {
+            "stage": "lifecycle.start.end",
+            "relative_ms": 559.5932006835938
+          },
+          {
+            "stage": "http calls status=201 reused=true connect_ms=0 server_ms=1080 total_ms=1200",
+            "relative_ms": 1210.6220722198486
+          },
+          {
+            "stage": "call.end",
+            "relative_ms": 1211.1248970031738
+          },
+          {
+            "stage": "peer.answer.applied",
+            "relative_ms": 1226.1719703674316
+          },
+          {
+            "stage": "audio.track enabled=false volume=0.0",
+            "relative_ms": 1227.1320819854736
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=false output=0.0",
+            "relative_ms": 1227.6611328125
+          },
+          {
+            "stage": "network round_trip_ms=53",
+            "relative_ms": 1637.6690864562988
+          },
+          {
+            "stage": "peer.connected",
+            "relative_ms": 1680.7799339294434
+          },
+          {
+            "stage": "data-channel.ready",
+            "relative_ms": 1761.646032333374
+          },
+          {
+            "stage": "playback enabled=true receivers=1",
+            "relative_ms": 1762.5510692596436
+          },
+          {
+            "stage": "realtime.session.started",
+            "relative_ms": 1854.0868759155273
+          },
+          {
+            "stage": "voice.ready",
+            "relative_ms": 1854.4869422912598
+          },
+          {
+            "stage": "voice.tasks.ready",
+            "relative_ms": 1854.6218872070312
+          },
+          {
+            "stage": "send type=session.update channel= bytes=38",
+            "relative_ms": 1872.7900981903076
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 2251.439094543457
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 2252.1700859069824
+          },
+          {
+            "stage": "audio.track enabled=true volume=0.0",
+            "relative_ms": 3277.9719829559326
+          },
+          {
+            "stage": "audio sent=0 received=0 input=0.0 playback=true output=0.0",
+            "relative_ms": 3278.665065765381
+          },
+          {
+            "stage": "realtime.session.updated",
+            "relative_ms": 3739.716053009033
+          },
+          {
+            "stage": "cleanup.admission.wait",
+            "relative_ms": 3777.1120071411133
+          },
+          {
+            "stage": "events.cancelled agent_id=ce60649a-057c-81e7-96c7-d9e9840a0a4c",
+            "relative_ms": 3777.1120071411133
+          },
+          {
+            "stage": "cleanup.routing.wait",
+            "relative_ms": 3777.3590087890625
+          },
+          {
+            "stage": "cleanup.transcript.begin",
+            "relative_ms": 3777.5959968566895
+          },
+          {
+            "stage": "lifecycle.stop.begin",
+            "relative_ms": 3777.7271270751953
+          },
+          {
+            "stage": "http.begin stop",
+            "relative_ms": 3777.9510021209717
+          },
+          {
+            "stage": "http stop status=200 reused=true connect_ms=0 server_ms=572 total_ms=573",
+            "relative_ms": 4351.757049560547
+          },
+          {
+            "stage": "lifecycle.stop.end",
+            "relative_ms": 4352.610111236572
+          },
+          {
+            "stage": "cleanup.end",
+            "relative_ms": 4352.83899307251
+          }
+        ]
+      }
+    ],
+    "clock_note": "Native summary readiness uses ContinuousClock. Stage timestamps use Date wall clock; differences are diagnostic, not strictly monotonic.",
+    "server_requests": [
+      {
+        "envelope": {
+          "eventTimestamp": 1789601264714,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 803
+        },
+        "message": {
+          "type": "managed.auth",
+          "request_id": "97e741b3-5e25-4b87-9d47-f2303ef6bb3f",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "POST",
+          "path": "/v1/agents/9caf1d7b-b4bd-8fe8-bd17-d6a38305481f/realtime/start",
+          "status": 200
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601264714,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 803
+        },
+        "message": {
+          "type": "managed.request",
+          "request_id": "97e741b3-5e25-4b87-9d47-f2303ef6bb3f",
+          "method": "POST",
+          "path": "/v1/agents/9caf1d7b-b4bd-8fe8-bd17-d6a38305481f/realtime/start",
+          "status": 200,
+          "duration_ms": 803
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601264910,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 3,
+          "wallTime": 4077
+        },
+        "message": {
+          "type": "managed.auth",
+          "request_id": "fc57f9eb-1138-4897-b77a-7557251319a6",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "POST",
+          "path": "/v1/agents/9caf1d7b-b4bd-8fe8-bd17-d6a38305481f/realtime/calls",
+          "status": 201
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601264910,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 3,
+          "wallTime": 4077
+        },
+        "message": {
+          "type": "managed.request",
+          "request_id": "fc57f9eb-1138-4897-b77a-7557251319a6",
+          "method": "POST",
+          "path": "/v1/agents/9caf1d7b-b4bd-8fe8-bd17-d6a38305481f/realtime/calls",
+          "status": 201,
+          "duration_ms": 4077
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601287683,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 355
+        },
+        "message": {
+          "type": "managed.auth",
+          "request_id": "d290d611-8802-4391-9601-877474a0fbd6",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "POST",
+          "path": "/v1/agents/9caf1d7b-b4bd-8fe8-bd17-d6a38305481f/realtime/stop",
+          "status": 200
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601287683,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 355
+        },
+        "message": {
+          "type": "managed.request",
+          "request_id": "d290d611-8802-4391-9601-877474a0fbd6",
+          "method": "POST",
+          "path": "/v1/agents/9caf1d7b-b4bd-8fe8-bd17-d6a38305481f/realtime/stop",
+          "status": 200,
+          "duration_ms": 355
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601288386,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 7,
+          "wallTime": 379
+        },
+        "message": {
+          "type": "managed.auth",
+          "request_id": "af2eed41-ff37-4f82-9428-5a129136350f",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "POST",
+          "path": "/v1/agents/9caf1d7b-b4bd-8fe8-bd17-d6a38305481f/realtime/stop",
+          "status": 200
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601288386,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 7,
+          "wallTime": 379
+        },
+        "message": {
+          "type": "managed.request",
+          "request_id": "af2eed41-ff37-4f82-9428-5a129136350f",
+          "method": "POST",
+          "path": "/v1/agents/9caf1d7b-b4bd-8fe8-bd17-d6a38305481f/realtime/stop",
+          "status": 200,
+          "duration_ms": 374
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601264904,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 205
+        },
+        "message": {
+          "type": "managed.request",
+          "request_id": null,
+          "method": "GET",
+          "path": "/v1/agents/9caf1d7b-b4bd-8fe8-bd17-d6a38305481f/events",
+          "status": 200,
+          "duration_ms": 204
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601294927,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 1213
+        },
+        "message": {
+          "type": "managed.auth",
+          "request_id": "c95cf81d-3f93-4b8b-8f57-a62cf0dc819c",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/start",
+          "status": 200
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601294927,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 1213
+        },
+        "message": {
+          "type": "managed.request",
+          "request_id": "c95cf81d-3f93-4b8b-8f57-a62cf0dc819c",
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/start",
+          "status": 200,
+          "duration_ms": 1213
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601294926,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 2,
+          "wallTime": 2789
+        },
+        "message": {
+          "type": "managed.auth",
+          "request_id": "4644dd03-e279-4a86-98c8-65730a6cf864",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/calls",
+          "status": 201
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601294926,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 2,
+          "wallTime": 2789
+        },
+        "message": {
+          "type": "managed.request",
+          "request_id": "4644dd03-e279-4a86-98c8-65730a6cf864",
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/calls",
+          "status": 201,
+          "duration_ms": 2790
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601300851,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 465
+        },
+        "message": {
+          "type": "managed.auth",
+          "request_id": "b1aaab1f-0e59-402f-a1f2-87cbb078f40a",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/stop",
+          "status": 200
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601300851,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 465
+        },
+        "message": {
+          "type": "managed.request",
+          "request_id": "b1aaab1f-0e59-402f-a1f2-87cbb078f40a",
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/stop",
+          "status": 200,
+          "duration_ms": 465
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601301485,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 405
+        },
+        "message": {
+          "type": "managed.auth",
+          "request_id": "7460e581-4441-42cb-a504-245bedb44fd4",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/start",
+          "status": 200
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601301485,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 405
+        },
+        "message": {
+          "type": "managed.request",
+          "request_id": "7460e581-4441-42cb-a504-245bedb44fd4",
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/start",
+          "status": 200,
+          "duration_ms": 405
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601301489,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 3,
+          "wallTime": 1030
+        },
+        "message": {
+          "type": "managed.auth",
+          "request_id": "944e9e20-df06-4e83-9d08-d1e853cb0aa5",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/calls",
+          "status": 201
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601301489,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 3,
+          "wallTime": 1030
+        },
+        "message": {
+          "type": "managed.request",
+          "request_id": "944e9e20-df06-4e83-9d08-d1e853cb0aa5",
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/calls",
+          "status": 201,
+          "duration_ms": 1029
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601304300,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 399
+        },
+        "message": {
+          "type": "managed.auth",
+          "request_id": "85272ab6-5051-4ca4-a9d8-ac4bcc131893",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/stop",
+          "status": 200
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601304300,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 399
+        },
+        "message": {
+          "type": "managed.request",
+          "request_id": "85272ab6-5051-4ca4-a9d8-ac4bcc131893",
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/stop",
+          "status": 200,
+          "duration_ms": 399
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601304880,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 417
+        },
+        "message": {
+          "type": "managed.auth",
+          "request_id": "798aaf3c-b813-440a-bc73-f86b825fc72b",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/start",
+          "status": 200
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601304880,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 417
+        },
+        "message": {
+          "type": "managed.request",
+          "request_id": "798aaf3c-b813-440a-bc73-f86b825fc72b",
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/start",
+          "status": 200,
+          "duration_ms": 416
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601304878,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 2,
+          "wallTime": 837
+        },
+        "message": {
+          "type": "managed.auth",
+          "request_id": "0f8a0114-32f7-4cc9-b222-7c40937ab980",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/calls",
+          "status": 201
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601304878,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 2,
+          "wallTime": 837
+        },
+        "message": {
+          "type": "managed.request",
+          "request_id": "0f8a0114-32f7-4cc9-b222-7c40937ab980",
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/calls",
+          "status": 201,
+          "duration_ms": 837
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601308692,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 413
+        },
+        "message": {
+          "type": "managed.auth",
+          "request_id": "5e95801c-a78c-4385-9455-ff369f32df5b",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/stop",
+          "status": 200
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601308692,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 413
+        },
+        "message": {
+          "type": "managed.request",
+          "request_id": "5e95801c-a78c-4385-9455-ff369f32df5b",
+          "method": "POST",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/realtime/stop",
+          "status": 200,
+          "duration_ms": 413
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601294995,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 554
+        },
+        "message": {
+          "type": "managed.request",
+          "request_id": null,
+          "method": "GET",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/events",
+          "status": 200,
+          "duration_ms": 555
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601304978,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 207
+        },
+        "message": {
+          "type": "managed.request",
+          "request_id": null,
+          "method": "GET",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/events",
+          "status": 200,
+          "duration_ms": 206
+        }
+      },
+      {
+        "envelope": {
+          "eventTimestamp": 1789601301926,
+          "durableObjectId": null,
+          "scriptVersion": {
+            "id": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece"
+          },
+          "cpuTime": 1,
+          "wallTime": 202
+        },
+        "message": {
+          "type": "managed.request",
+          "request_id": null,
+          "method": "GET",
+          "path": "/v1/agents/ce60649a-057c-81e7-96c7-d9e9840a0a4c/events",
+          "status": 200,
+          "duration_ms": 201
+        }
+      }
+    ]
+  }
+}

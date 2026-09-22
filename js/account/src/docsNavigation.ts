@@ -30,6 +30,7 @@ export const docsNavigation: readonly DocsNavigationGroup[] = [
     items: [
       page("Quick start", "/docs"),
       page("Installation and auth", "/docs/getting-started"),
+      page("Scheduled prompts", "/docs/schedules"),
     ],
   },
   {

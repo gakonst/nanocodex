@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { responseControlsSocket } from "../runtime/response-controls.mjs";
+import { responseControlsBody, responseControlsSocket } from "../runtime/response-controls.mjs";
 import { multiplex } from "../browser/Transport.mjs";
 
 test("schema/cache controls affect provider creates and preserve continuation lineage", () => {
@@ -78,4 +78,45 @@ test("cache controls compose with a lane whose send property is immutable", () =
   assert.equal(socket.sent[0].stream_id, "cache");
   assert.equal(socket.sent[0].prompt_cache_options.mode, "implicit");
   pool.close();
+});
+
+test("startup developer context preserves cache keys, stable prefix, and continuation lineage", () => {
+  const socket = new Socket();
+  const controlled = responseControlsSocket(socket, { promptCacheKey: "owner-team-key", promptCache: "explicit" });
+  const stable = { role: "developer", content: [{ type: "input_text", text: "Baseline and static host instructions" }] };
+  const startup = { role: "developer", content: [{ type: "input_text", text: '<startup_context><time>2026-09-16T19:00:00Z</time></startup_context>' }] };
+  const first = { type: "response.create", input: [stable, startup, { role: "user", content: "first" }] };
+  controlled.send(JSON.stringify(first));
+  assert.deepEqual(socket.sent[0].input[0], stable);
+  assert.equal(socket.sent[0].input[1].content[0].text, startup.content[0].text);
+  assert.deepEqual(socket.sent[0].input[1].content[0].prompt_cache_breakpoint, { mode: "explicit" });
+  controlled.send(JSON.stringify({ type: "response.create", previous_response_id: "first-response", input: [{ role: "user", content: "next" }] }));
+  assert.equal(socket.sent[1].previous_response_id, "first-response");
+  assert.deepEqual(socket.sent[1].input, [{ role: "user", content: "next" }]);
+  assert.equal(socket.sent[0].prompt_cache_key, socket.sent[1].prompt_cache_key);
+  // A full replay has the identical cacheable prefix, including the frozen timestamp.
+  controlled.send(JSON.stringify({ ...first, input: [...first.input, { role: "user", content: "next" }] }));
+  assert.deepEqual(socket.sent[2].input.slice(0, 2), socket.sent[0].input.slice(0, 2));
+});
+
+
+test("HTTPS and WebSocket requests apply identical response controls", () => {
+  const controls = { promptCacheKey: "owner-team-key", promptCache: "explicit", outputSchema: { type: "object" } };
+  const input = [{ role: "developer", content: [{ type: "input_text", text: "stable" }] },
+    { role: "user", content: [{ type: "input_text", text: "question" }] }];
+  const request = { model: "model", stream: true, input, text: { verbosity: "low" } };
+  let sent;
+  responseControlsSocket({ send(data) { sent = JSON.parse(data); } }, controls)
+    .send(JSON.stringify({ ...request, type: "response.create" }));
+  delete sent.type;
+  const actual = JSON.parse(responseControlsBody(JSON.stringify(request), controls));
+  assert.deepEqual(actual, sent);
+  assert.equal(actual.prompt_cache_key, "owner-team-key");
+  assert.deepEqual(actual.input[0].content[0].prompt_cache_breakpoint, { mode: "explicit" });
+  assert.equal(actual.input[1].content[0].prompt_cache_breakpoint, undefined);
+  assert.equal(actual.text.verbosity, "low");
+  assert.equal(request.input[0].content[0].prompt_cache_breakpoint, undefined);
+  for (const invalid of [{ promptCacheKey: "" }, { promptCache: "other" }, { outputSchema: [] }]) {
+    assert.throws(() => responseControlsBody(JSON.stringify(request), invalid), TypeError);
+  }
 });

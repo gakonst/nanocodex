@@ -35,6 +35,7 @@ const SPLIT_HINT: &str = " mouse: focus · Ctrl+C: clear · Ctrl+C×2: close ";
 const MIN_SPLIT_HINT_WIDTH: u16 = 60;
 
 pub(crate) enum AppEvent {
+    Screen(crate::tui::screen::Snapshot),
     Terminal(Event),
     PasteImage(String),
     Transcript {
@@ -154,6 +155,13 @@ pub(crate) enum AppEvent {
         pane: PaneId,
         error: String,
     },
+    SessionSearchResults {
+        pane: PaneId,
+        picker_id: u64,
+        request_id: u64,
+        query: String,
+        result: Result<Vec<nanocodex_managed::SessionSearchHit>, String>,
+    },
     SessionsLoaded {
         pane: PaneId,
         request_id: u64,
@@ -188,6 +196,13 @@ pub(crate) enum AppEvent {
         model: Model,
         skills: Arc<[Skill]>,
     },
+    RoutingHydrated {
+        pane: PaneId,
+        enabled: bool,
+        provider: Option<String>,
+        model: Option<Model>,
+        effort: Option<ReasoningEffort>,
+    },
     SettingsHydrated {
         pane: PaneId,
         effort: ReasoningEffort,
@@ -198,9 +213,22 @@ pub(crate) enum AppEvent {
         pane: PaneId,
         projection: Box<RestoredSessionProjection>,
     },
+    VaultReceipt {
+        pane: PaneId,
+        receipt: String,
+    },
+    VaultReview {
+        pane: PaneId,
+        review: crate::tui::vault::Review,
+    },
     ShowAgentId {
         pane: PaneId,
         id: String,
+    },
+    VoiceStatus(Option<crate::voice_state::Status>),
+    VoiceOutput {
+        pane: PaneId,
+        text: String,
     },
     NotifyError {
         pane: PaneId,
@@ -229,6 +257,7 @@ pub(crate) enum AppEvent {
 }
 
 pub(crate) enum AppEffect {
+    Screen(crate::tui::screen::Command),
     Pane { pane: PaneId, effect: RootEffect },
     OpenFork { pane: PaneId, parent: PaneId },
     ClosePane(PaneId),
@@ -237,6 +266,10 @@ pub(crate) enum AppEffect {
 }
 
 pub(crate) struct AppNode {
+    screen: Option<super::screen::ScreenPane>,
+    screen_focused: bool,
+    screen_area: Rect,
+    zoomed: bool,
     theme: Theme,
     workspace: PathBuf,
     main: Option<(PaneId, Node<RootNode>)>,
@@ -251,6 +284,10 @@ impl AppNode {
     pub(crate) fn new(theme: Theme, workspace: PathBuf, mut root: RootNode) -> Self {
         root.set_theme_mode(theme.mode());
         Self {
+            screen: None,
+            screen_focused: false,
+            screen_area: Rect::default(),
+            zoomed: false,
             theme,
             workspace,
             main: Some((PaneId::Main, Node::new(root))),
@@ -273,9 +310,19 @@ impl AppNode {
 
     pub(crate) fn update(&mut self, event: AppEvent) -> ComponentUpdate<AppEffect> {
         match event {
+            AppEvent::Screen(snapshot) => {
+                if let Some(screen) = &mut self.screen {
+                    screen.snapshot = snapshot;
+                }
+                ComponentUpdate::render(RenderRequest::Streaming)
+            }
             AppEvent::Terminal(event) => self.update_terminal(event),
             AppEvent::PasteImage(data_url) => {
-                self.update_root(self.focus, RootEvent::PasteImage(data_url))
+                if self.screen_focused {
+                    ComponentUpdate::none()
+                } else {
+                    self.update_root(self.focus, RootEvent::PasteImage(data_url))
+                }
             }
             AppEvent::Transcript { pane, record } => {
                 self.update_root(pane, RootEvent::Transcript(record))
@@ -428,6 +475,21 @@ impl AppNode {
             AppEvent::NewSessionFailed { pane, error } => {
                 self.update_root(pane, RootEvent::NewSessionFailed(error))
             }
+            AppEvent::SessionSearchResults {
+                pane,
+                picker_id,
+                request_id,
+                query,
+                result,
+            } => self.update_root(
+                pane,
+                RootEvent::SessionSearchResults {
+                    picker_id,
+                    request_id,
+                    query,
+                    result,
+                },
+            ),
             AppEvent::SessionsLoaded {
                 pane,
                 request_id,
@@ -484,6 +546,21 @@ impl AppNode {
                     skills,
                 },
             ),
+            AppEvent::RoutingHydrated {
+                pane,
+                enabled,
+                provider,
+                model,
+                effort,
+            } => self.update_root(
+                pane,
+                RootEvent::RoutingHydrated {
+                    enabled,
+                    provider,
+                    model,
+                    effort,
+                },
+            ),
             AppEvent::SettingsHydrated {
                 pane,
                 effort,
@@ -500,11 +577,23 @@ impl AppNode {
             AppEvent::HistoryReplayed { pane, projection } => {
                 self.update_root(pane, RootEvent::HistoryReplayed { projection })
             }
+            AppEvent::VaultReceipt { pane, receipt } => {
+                self.update_root(pane, RootEvent::VaultReceipt(receipt))
+            }
+            AppEvent::VaultReview { pane, review } => {
+                self.update_root(pane, RootEvent::VaultReview(review))
+            }
             AppEvent::ShowAgentId { pane, id } => {
                 self.update_root(pane, RootEvent::ShowAgentId(id))
             }
+            AppEvent::VoiceStatus(status) => {
+                self.update_root(PaneId::Main, RootEvent::VoiceStatus(status))
+            }
             AppEvent::NotifyError { pane, error } => {
                 self.update_root(pane, RootEvent::NotifyError(error))
+            }
+            AppEvent::VoiceOutput { pane, text } => {
+                self.update_root(pane, RootEvent::VoiceOutput(text))
             }
             AppEvent::NotifySuccess { pane, message } => {
                 self.update_root(pane, RootEvent::NotifySuccess(message))
@@ -547,8 +636,103 @@ impl AppNode {
         }
     }
 
+    pub(crate) fn screen_size(&self) -> ratatui::layout::Size {
+        self.screen
+            .as_ref()
+            .map_or(ratatui::layout::Size::new(0, 0), |screen| {
+                screen.image_area.as_size()
+            })
+    }
+
     pub(crate) fn render(&mut self, frame: &mut Frame<'_>) {
-        let area = frame.area();
+        let mut area = frame.area();
+        self.main_area = Rect::default();
+        self.fork_area = Rect::default();
+        self.screen_area = Rect::default();
+        if let Some(screen) = &mut self.screen {
+            screen.image_area = Rect::default();
+        }
+        if self.screen.is_some() || self.fork.is_some() {
+            let tabs = format!(
+                "{} Chat  {}{}  · Tab: pane · /zoom{}",
+                if !self.screen_focused && self.main_pane() == Some(self.focus) {
+                    "›"
+                } else {
+                    " "
+                },
+                if self.fork.is_some() {
+                    if !self.screen_focused && self.main_pane() != Some(self.focus) {
+                        "› BTW  "
+                    } else {
+                        "  BTW  "
+                    }
+                } else {
+                    ""
+                },
+                if self.screen.is_some() {
+                    if self.screen_focused {
+                        "› Screen"
+                    } else {
+                        "  Screen"
+                    }
+                } else {
+                    ""
+                },
+                if self.zoomed { ": restore" } else { "" }
+            );
+            frame.render_widget(
+                ratatui::widgets::Paragraph::new(tabs)
+                    .style(Style::default().fg(self.theme.accent())),
+                Rect {
+                    height: 1.min(area.height),
+                    ..area
+                },
+            );
+            area.y = area.y.saturating_add(1);
+            area.height = area.height.saturating_sub(1);
+        }
+        if self.zoomed && !self.screen_focused {
+            let theme = self.theme.clone();
+            if self.main_pane() == Some(self.focus) {
+                self.main_area = area;
+            } else {
+                self.fork_area = area;
+            }
+            if let Some(root) = self.pane_mut(self.focus) {
+                root.component_mut()
+                    .render_focused(frame, area, &theme, true);
+            }
+            return;
+        }
+        if self.screen.is_some() {
+            let screen_area = if self.zoomed {
+                area
+            } else {
+                Rect {
+                    x: area.x + area.width / 2,
+                    width: area.width - area.width / 2,
+                    ..area
+                }
+            };
+            if !self.zoomed {
+                self.render_chat(
+                    frame,
+                    Rect {
+                        width: area.width / 2,
+                        ..area
+                    },
+                );
+            }
+            self.screen_area = screen_area;
+            if let Some(screen) = &mut self.screen {
+                screen.render(frame, screen_area, &self.theme);
+            }
+        } else {
+            self.render_chat(frame, area);
+        }
+    }
+
+    fn render_chat(&mut self, frame: &mut Frame<'_>, area: Rect) {
         if area.is_empty() {
             self.main_area = Rect::default();
             self.fork_area = Rect::default();
@@ -562,7 +746,7 @@ impl AppNode {
                     frame,
                     area,
                     &self.theme,
-                    self.focus == *main_pane,
+                    !self.screen_focused && self.focus == *main_pane,
                 );
             }
             return;
@@ -597,14 +781,14 @@ impl AppNode {
                 frame,
                 main_content,
                 &self.theme,
-                self.focus == *main_pane,
+                !self.screen_focused && self.focus == *main_pane,
             );
         }
         fork.component_mut().render_focused(
             frame,
             fork_content,
             &self.theme,
-            self.focus == *fork_pane,
+            !self.screen_focused && self.focus == *fork_pane,
         );
         frame.render_widget(
             Block::default()
@@ -634,6 +818,72 @@ impl AppNode {
     }
 
     fn update_terminal(&mut self, event: Event) -> ComponentUpdate<AppEffect> {
+        if self.screen_focused
+            && let Event::Paste(text) = &event
+        {
+            if let Some(screen) = &mut self.screen {
+                screen.paste(text);
+            }
+            return ComponentUpdate::render(RenderRequest::Immediate);
+        }
+        if let Event::Key(key) = &event {
+            if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) {
+                let switch = matches!(key.code, KeyCode::Tab | KeyCode::BackTab)
+                    && (self.screen.is_some() || self.fork.is_some())
+                    && (self.screen_focused
+                        || self
+                            .root(self.focus)
+                            .is_some_and(RootNode::allows_pane_switch));
+                if switch {
+                    self.cycle_focus(key.code == KeyCode::BackTab);
+                    return ComponentUpdate::render(RenderRequest::Immediate);
+                }
+                if self.screen_focused {
+                    let effect = self.screen.as_mut().and_then(|screen| screen.key(*key));
+                    let mut effects = Vec::new();
+                    match effect {
+                        Some(super::screen::Effect::Zoom) => self.zoomed = !self.zoomed,
+                        Some(super::screen::Effect::Command(command)) => {
+                            effects.push(AppEffect::Screen(command))
+                        }
+                        Some(super::screen::Effect::Close) => {
+                            self.screen = None;
+                            self.screen_focused = false;
+                            self.zoomed = false;
+                            effects.push(AppEffect::Screen(crate::tui::screen::Command::Close));
+                        }
+                        None => {}
+                    }
+                    return ComponentUpdate {
+                        effects,
+                        render: RenderRequest::Immediate,
+                    };
+                }
+            } else if self.screen_focused {
+                return ComponentUpdate::none();
+            }
+        }
+        if let Event::Mouse(mouse) = &event
+            && matches!(mouse.kind, MouseEventKind::Down(_))
+        {
+            let position = Position::new(mouse.column, mouse.row);
+            if self.screen_area.contains(position) {
+                self.screen_focused = true;
+                return ComponentUpdate::render(RenderRequest::Immediate);
+            }
+            if self.main_area.contains(position) || self.fork_area.contains(position) {
+                self.screen_focused = false;
+            }
+        }
+        if self.screen_focused
+            && !matches!(
+                event,
+                Event::Resize(_, _) | Event::FocusGained | Event::FocusLost
+            )
+        {
+            return ComponentUpdate::none();
+        }
+
         if matches!(event, Event::FocusGained) {
             self.refresh_terminal_images();
         }
@@ -732,6 +982,14 @@ impl AppNode {
         let mut effects = Vec::with_capacity(update.effects.len());
         for effect in update.effects {
             match effect {
+                RootEffect::Screen => {
+                    self.screen = Some(super::screen::ScreenPane::new());
+                    self.screen_focused = true;
+                    effects.push(AppEffect::Screen(crate::tui::screen::Command::List));
+                }
+                RootEffect::Zoom => {
+                    self.zoomed = !self.zoomed;
+                }
                 RootEffect::Fork => {
                     if self.fork.is_none() && self.main.is_some() {
                         let (pane, parent) = self.begin_fork();
@@ -751,6 +1009,31 @@ impl AppNode {
         ComponentUpdate {
             effects,
             render: update.render,
+        }
+    }
+
+    fn cycle_focus(&mut self, backwards: bool) {
+        let mut panes = vec![self.main_pane()];
+        if let Some((id, _)) = &self.fork {
+            panes.push(Some(*id));
+        }
+        if self.screen.is_some() {
+            panes.push(None);
+        }
+        let current = if self.screen_focused {
+            None
+        } else {
+            Some(self.focus)
+        };
+        let index = panes.iter().position(|pane| *pane == current).unwrap_or(0);
+        let next = if backwards {
+            (index + panes.len() - 1) % panes.len()
+        } else {
+            (index + 1) % panes.len()
+        };
+        self.screen_focused = panes[next].is_none();
+        if let Some(pane) = panes[next] {
+            self.focus = pane;
         }
     }
 
@@ -875,4 +1158,134 @@ fn is_control_c(event: &Event) -> bool {
     matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat)
         && key.code == KeyCode::Char('c')
         && key.modifiers.contains(KeyModifiers::CONTROL)
+}
+
+#[cfg(test)]
+mod screen_tests {
+    use super::*;
+    use crate::config::ReasoningEffort;
+    use crossterm::event::{KeyEvent, KeyModifiers};
+    use ratatui::{Terminal, backend::TestBackend};
+    fn app() -> AppNode {
+        AppNode::new(
+            Theme::default(),
+            PathBuf::from("/test"),
+            RootNode::new(std::path::Path::new("/test"), ReasoningEffort::Medium),
+        )
+    }
+    fn key(app: &mut AppNode, code: KeyCode) -> ComponentUpdate<AppEffect> {
+        app.update(AppEvent::Terminal(Event::Key(KeyEvent::new(
+            code,
+            KeyModifiers::NONE,
+        ))))
+    }
+    #[test]
+    fn routing_hydration_reaches_the_requested_pane() {
+        let mut app = app();
+        app.update(AppEvent::RoutingHydrated {
+            pane: PaneId::Main,
+            enabled: true,
+            provider: Some("Vercel".into()),
+            model: Some(Model::Glm53),
+            effort: Some(ReasoningEffort::Low),
+        });
+        let composer = app.root(PaneId::Main).unwrap().composer();
+        assert!(composer.auto_routing());
+        assert_eq!(composer.model(), Model::Glm53);
+        assert_eq!(composer.effort(), ReasoningEffort::Low);
+        // A late update for an absent pane cannot replace the visible route.
+        app.update(AppEvent::RoutingHydrated {
+            pane: PaneId::Fork(99),
+            enabled: true,
+            provider: Some("OpenRouter".into()),
+            model: Some(Model::Sol),
+            effort: Some(ReasoningEffort::High),
+        });
+        assert_eq!(
+            app.root(PaneId::Main).unwrap().composer().model(),
+            Model::Glm53
+        );
+    }
+
+    #[test]
+    fn screen_and_zoom_are_local_and_tab_cycles_without_changing_sessions() {
+        let mut app = app();
+        let update = app.map_root_update(
+            PaneId::Main,
+            ComponentUpdate {
+                effects: vec![RootEffect::Screen],
+                render: RenderRequest::Immediate,
+            },
+        );
+        assert!(matches!(
+            update.effects.as_slice(),
+            [AppEffect::Screen(crate::tui::screen::Command::List)]
+        ));
+        assert!(app.screen_focused);
+        let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        assert_eq!(app.screen_area.width, 80);
+        for c in "/zoom".chars() {
+            key(&mut app, KeyCode::Char(c));
+        }
+        key(&mut app, KeyCode::Enter);
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        assert_eq!(app.screen_area.width, 160);
+        key(&mut app, KeyCode::Tab);
+        assert!(!app.screen_focused);
+        assert!(app.zoomed);
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        assert_eq!(app.main_area.width, 160);
+        assert!(app.screen_area.is_empty());
+        key(&mut app, KeyCode::BackTab);
+        let close = key(&mut app, KeyCode::Esc);
+        assert!(matches!(
+            close.effects.as_slice(),
+            [AppEffect::Screen(crate::tui::screen::Command::Close)]
+        ));
+        assert!(app.screen.is_none());
+        assert!(!app.zoomed);
+        assert_eq!(app.main_pane(), Some(PaneId::Main));
+    }
+    #[test]
+    fn typed_screen_command_opens_picker_without_submitting_a_prompt() {
+        let mut app = app();
+        for character in "/screen".chars() {
+            key(&mut app, KeyCode::Char(character));
+        }
+        let update = key(&mut app, KeyCode::Enter);
+        assert!(matches!(
+            update.effects.as_slice(),
+            [AppEffect::Screen(crate::tui::screen::Command::List)]
+        ));
+        assert!(app.screen_focused);
+        assert!(
+            app.root(PaneId::Main)
+                .unwrap()
+                .composer()
+                .draft()
+                .is_empty()
+        );
+    }
+    #[test]
+    fn zoom_and_tab_include_btw_pane() {
+        let mut app = app();
+        let (fork, _) = app.begin_fork();
+        app.map_root_update(
+            fork,
+            ComponentUpdate {
+                effects: vec![RootEffect::Zoom],
+                render: RenderRequest::Immediate,
+            },
+        );
+        let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        assert_eq!(app.fork_area.width, 120);
+        assert!(app.main_area.is_empty());
+        key(&mut app, KeyCode::Tab);
+        assert_eq!(app.focus, PaneId::Main);
+        assert!(app.zoomed);
+        terminal.draw(|frame| app.render(frame)).unwrap();
+        assert_eq!(app.main_area.width, 120);
+    }
 }

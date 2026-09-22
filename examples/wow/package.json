@@ -1,0 +1,1 @@
+{"name":"nanocodex-wow","version":"0.1.0","private":true,"scripts":{"test:browser":"bun tests/browser.cjs"},"devDependencies":{"playwright":"1.63.0"}}

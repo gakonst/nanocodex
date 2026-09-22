@@ -67,6 +67,7 @@ commit_parsers = [
 protect_breaking_commits = false
 filter_commits = false
 tag_pattern = "v[0-9]*"
+# These two candidates were never published. Keep their tags out of release history.
 skip_tags = "beta|alpha"
-ignore_tags = "rc"
+ignore_tags = "rc|^v0[.]6[.][23]$"
 sort_commits = "newest"

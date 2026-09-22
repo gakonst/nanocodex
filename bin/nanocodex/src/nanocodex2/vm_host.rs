@@ -1309,13 +1309,15 @@ mod supported {
                             ProvisionFailure::stopped(VmHostError::Resource(error.to_string()))
                         })?;
                     let root = directory.path().join("root.ext4");
-                    clone_private_root(template, root.clone())
+                    config.overlay_lower = prepare_factory_root(template, root.clone())
                         .await
                         .map_err(ProvisionFailure::stopped)?;
+                    tracing::info!(target: "nanocodex2", stage = "vm.spare.root", elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
                     config.rootfs = root;
                     let mut hand = vm_hand::VmHand::start_config(&config)
                         .await
                         .map_err(vm_hand_start_failure)?;
+                    tracing::info!(target: "nanocodex2", stage = "vm.spare.guest", elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
                     if let Err(error) = hand.prepare_desktop().await {
                         let stopped = hand
                             .shutdown()
@@ -1373,14 +1375,34 @@ mod supported {
     /// Atomically refuse any existing durable root, including symlinks. A spare
     /// is consumed once; recovered allocations always boot their retained disk.
     fn adopt_spare_root(source: &Path, destination: &Path) -> Result<(), VmHostError> {
-        fs::hard_link(source, destination).map_err(|error| {
-            VmHostError::State(format!("failed to claim VM spare root: {error}"))
-        })?;
+        let source_lower = overlay_lower_path(source);
+        let destination_lower = overlay_lower_path(destination);
+        let has_lower = inspect_overlay_lower(&source_lower)?.is_some();
+        if has_lower {
+            fs::hard_link(&source_lower, &destination_lower)
+                .map_err(|error| VmHostError::State(error.to_string()))?;
+            sync_directory(destination.parent().expect("allocation directory"))?;
+        }
+        if let Err(error) = fs::hard_link(source, destination) {
+            if has_lower {
+                let _ = fs::remove_file(&destination_lower);
+            }
+            return Err(VmHostError::State(format!(
+                "failed to claim VM spare root: {error}"
+            )));
+        }
         if let Err(error) = fs::remove_file(source) {
             let _ = fs::remove_file(destination);
+            if has_lower {
+                let _ = fs::remove_file(&destination_lower);
+            }
             return Err(VmHostError::State(format!(
                 "failed to retire spare root name: {error}"
             )));
+        }
+        if has_lower {
+            fs::remove_file(&source_lower)
+                .map_err(|error| VmHostError::State(error.to_string()))?;
         }
         sync_directory(destination.parent().expect("allocation directory"))?;
         sync_directory(source.parent().expect("spare directory"))
@@ -1415,7 +1437,13 @@ mod supported {
                         )));
                     }
                 };
-                let spare = self.take_spare();
+                // Recovery must boot the retained upper. Keep the unrelated fresh
+                // spare available instead of shutting it down on this hot path.
+                let unstarted = fresh
+                    && inspect_overlay_lower(&overlay_lower_path(&private_root))
+                        .map_err(ProvisionFailure::stopped)?
+                        .is_none();
+                let spare = if unstarted { self.take_spare() } else { None };
                 let mut prepared = None;
                 if let Some(spare) = spare {
                     match spare.ready().await {
@@ -1469,9 +1497,10 @@ mod supported {
                 let mut hand = if let Some(hand) = prepared {
                     hand
                 } else {
-                    clone_private_root(self.template_root.clone(), private_root.clone())
-                        .await
-                        .map_err(ProvisionFailure::stopped)?;
+                    config.overlay_lower =
+                        prepare_factory_root(self.template_root.clone(), private_root.clone())
+                            .await
+                            .map_err(ProvisionFailure::stopped)?;
                     tracing::info!(target: "nanocodex2", stage = "vm.provision.root", %allocation_id, elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
                     cancellation.check().map_err(ProvisionFailure::stopped)?;
                     vm_hand::VmHand::start_config(&config)
@@ -1718,13 +1747,172 @@ mod supported {
         combine_failures([first, second])
     }
 
-    async fn clone_private_root(
+    #[cfg(target_os = "linux")]
+    fn cache_overlay_template(source: File, state: &Path) -> Result<File, VmHostError> {
+        let metadata = source
+            .metadata()
+            .map_err(|error| VmHostError::State(error.to_string()))?;
+        let identity = |metadata: &fs::Metadata| {
+            format!(
+                "{}-{}-{}-{}-{}-{}-{}",
+                metadata.dev(),
+                metadata.ino(),
+                metadata.len(),
+                metadata.mtime(),
+                metadata.mtime_nsec(),
+                metadata.ctime(),
+                metadata.ctime_nsec()
+            )
+        };
+        let source_identity = identity(&metadata);
+        let directory = state.join("images");
+        fs::create_dir_all(&directory).map_err(|error| VmHostError::State(error.to_string()))?;
+        let directory_metadata = fs::symlink_metadata(&directory)
+            .map_err(|error| VmHostError::State(error.to_string()))?;
+        if !directory_metadata.is_dir() || directory_metadata.file_type().is_symlink() {
+            return Err(VmHostError::State(
+                "VM image cache must be a real directory".into(),
+            ));
+        }
+        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))
+            .map_err(|error| VmHostError::State(error.to_string()))?;
+        let cached = directory.join(format!("{source_identity}.ext4"));
+        let started = Instant::now();
+        let fresh = match fs::symlink_metadata(&cached) {
+            Ok(existing) if existing.is_file() && existing.len() == metadata.len() => false,
+            Ok(_) => {
+                return Err(VmHostError::State(
+                    "VM cached base has invalid kind or length".into(),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
+            Err(error) => return Err(VmHostError::State(error.to_string())),
+        };
+        if fresh {
+            // Root-owned installed images cannot be hard-linked by the service
+            // under Linux protected_hardlinks. Copy once per stable image identity,
+            // then retain service-owned immutable bases across factory restarts.
+            clone_private_root_blocking(&locked_file_path(&source), &cached)?;
+            if identity(
+                &source
+                    .metadata()
+                    .map_err(|error| VmHostError::State(error.to_string()))?,
+            ) != source_identity
+            {
+                let _ = fs::remove_file(&cached);
+                return Err(VmHostError::State(
+                    "VM template changed while caching".into(),
+                ));
+            }
+            fs::set_permissions(&cached, fs::Permissions::from_mode(0o400))
+                .map_err(|error| VmHostError::State(error.to_string()))?;
+            File::open(&cached)
+                .and_then(|file| file.sync_all())
+                .map_err(|error| VmHostError::State(error.to_string()))?;
+            sync_directory(&directory)?;
+        }
+        let file = File::open(&cached).map_err(|error| VmHostError::State(error.to_string()))?;
+        fs2::FileExt::try_lock_shared(&file)
+            .map_err(|error| VmHostError::State(error.to_string()))?;
+        tracing::info!(target: "nanocodex2", stage = "vm.template.cached", fresh, elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
+        Ok(file)
+    }
+
+    fn overlay_lower_path(root: &Path) -> PathBuf {
+        root.with_extension("lower.ext4")
+    }
+
+    fn inspect_overlay_lower(path: &Path) -> Result<Option<PathBuf>, VmHostError> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_file() => Ok(Some(path.to_path_buf())),
+            Ok(_) => Err(VmHostError::State(
+                "overlay lower must be a regular file".into(),
+            )),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(VmHostError::State(error.to_string())),
+        }
+    }
+
+    async fn prepare_factory_root(
         template: PathBuf,
         destination: PathBuf,
-    ) -> Result<(), VmHostError> {
-        tokio::task::spawn_blocking(move || clone_private_root_blocking(&template, &destination))
+    ) -> Result<Option<PathBuf>, VmHostError> {
+        tokio::task::spawn_blocking(move || prepare_factory_root_blocking(&template, &destination))
             .await
-            .map_err(|error| VmHostError::Resource(format!("VM root clone task failed: {error}")))?
+            .map_err(|error| VmHostError::Resource(error.to_string()))?
+    }
+
+    fn prepare_factory_root_blocking(
+        template: &Path,
+        destination: &Path,
+    ) -> Result<Option<PathBuf>, VmHostError> {
+        let lower = overlay_lower_path(destination);
+        // Existing allocations retain their original disk layout and pinned base.
+        // Never reinterpret a retained writable disk after an application update.
+        match fs::symlink_metadata(destination) {
+            Ok(metadata) if metadata.is_file() && metadata.nlink() == 1 => {
+                return inspect_overlay_lower(&lower);
+            }
+            Ok(_) => {
+                return Err(VmHostError::State(
+                    "allocation root must be a private regular file".into(),
+                ));
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(VmHostError::State(error.to_string())),
+        }
+        #[cfg(target_os = "linux")]
+        {
+            let parent = destination
+                .parent()
+                .ok_or_else(|| VmHostError::State("allocation root has no parent".into()))?;
+            fs::create_dir_all(parent).map_err(|error| VmHostError::State(error.to_string()))?;
+            // The lower hard link pins the exact locked image inode across image
+            // replacement, installer cleanup, host restarts, and allocation recovery.
+            // Publish it before the upper so a crash cannot expose an ambiguous root.
+            if inspect_overlay_lower(&lower)?.is_none() {
+                let linked = nix::unistd::linkat(
+                    nix::fcntl::AT_FDCWD,
+                    template,
+                    nix::fcntl::AT_FDCWD,
+                    &lower,
+                    nix::fcntl::AtFlags::AT_SYMLINK_FOLLOW,
+                );
+                if linked == Err(nix::errno::Errno::EXDEV) {
+                    // Custom state directories may live on another filesystem.
+                    // Keep the existing portable copy path in that configuration.
+                    clone_private_root_blocking(template, destination)?;
+                    return Ok(None);
+                }
+                linked.map_err(|error| {
+                    VmHostError::State(format!("failed to pin overlay lower: {error}"))
+                })?;
+                sync_directory(parent)?;
+            }
+            let bytes = fs::metadata(&lower)
+                .map_err(|error| VmHostError::State(error.to_string()))?
+                .len();
+            let temporary = tempfile::Builder::new()
+                .prefix(".vm-upper-")
+                .tempdir_in(parent)
+                .map_err(|error| VmHostError::State(error.to_string()))?;
+            let upper = temporary.path().join("upper.ext4");
+            nanocodex_vm::host::create_sparse_overlay_disk(&upper, bytes)
+                .map_err(|error| VmHostError::Resource(error.to_string()))?;
+            File::open(&upper)
+                .and_then(|file| file.sync_all())
+                .map_err(|error| VmHostError::State(error.to_string()))?;
+            fs::hard_link(&upper, destination)
+                .map_err(|error| VmHostError::State(error.to_string()))?;
+            drop(temporary);
+            sync_directory(parent)?;
+            Ok(Some(lower))
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            clone_private_root_blocking(template, destination)?;
+            Ok(None)
+        }
     }
 
     fn clone_private_root_blocking(template: &Path, destination: &Path) -> Result<(), VmHostError> {
@@ -1831,7 +2019,7 @@ mod supported {
                         )));
                     }
                 }
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => {
                     return Err(VmHostError::State(format!(
                         "failed to inspect released VM root {}: {error}",
@@ -1840,13 +2028,22 @@ mod supported {
                 }
             }
             match fs::remove_file(&path) {
-                Ok(()) => sync_directory(parent),
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-                Err(error) => Err(VmHostError::State(format!(
-                    "failed to remove released VM root {}: {error}",
-                    path.display()
-                ))),
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(VmHostError::State(format!(
+                        "failed to remove released VM root {}: {error}",
+                        path.display()
+                    )));
+                }
             }
+            // The upper disappears durably before the lower; recovery can never
+            // mistake a retained overlay upper for a standalone root.
+            sync_directory(parent)?;
+            if let Some(lower) = inspect_overlay_lower(&overlay_lower_path(&path))? {
+                fs::remove_file(lower).map_err(|error| VmHostError::State(error.to_string()))?;
+            }
+            sync_directory(parent)
         })
         .await
         .map_err(|error| VmHostError::Resource(format!("VM root cleanup task failed: {error}")))?
@@ -1897,9 +2094,9 @@ mod supported {
                     template_root.display()
                 ))
             })?;
-            let locked_template_root = locked_file_path(&template_lock);
             let hand_template = vm_hand::VmHandConfig {
                 rootfs: config.vm_template.clone(),
+                overlay_lower: None,
                 docker: None,
                 vm_guest_runtime: Some(config.vm_guest_runtime.clone()),
                 vm_cache: config.vm_cache.clone(),
@@ -1917,6 +2114,9 @@ mod supported {
             };
             vm_hand::VmHand::preflight_host_config(&hand_template)
                 .map_err(|error| VmHostError::Configuration(error.to_string()))?;
+            #[cfg(target_os = "linux")]
+            let template_lock = cache_overlay_template(template_lock, &state.directory)?;
+            let locked_template_root = locked_file_path(&template_lock);
             let factory = VmAllocationFactory {
                 // Clone through the descriptor which owns the shared lock.
                 // Replacing the configured pathname cannot redirect a later
@@ -1986,8 +2186,9 @@ mod supported {
             let temporary = tempfile::tempdir_in(&self.state.directory)
                 .map_err(|error| ManagedError::Configuration(error.to_string()))?;
             let root = temporary.path().join("root.ext4");
-            clone_private_root(factory.template_root.clone(), root.clone()).await?;
             let mut config = factory.hand_template.clone();
+            config.overlay_lower =
+                prepare_factory_root(factory.template_root.clone(), root.clone()).await?;
             config.rootfs = root;
             config.vm_no_network = true;
             vm_hand::VmHand::start_config(&config)
@@ -3198,6 +3399,151 @@ mod supported {
                 explicit
             );
             assert!(VmHostState::open(directory.path(), Some(Uuid::new_v4())).is_err());
+        }
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn template_cache_reuses_exact_images_and_invalidates_replacements() {
+            let directory = tempfile::tempdir().unwrap();
+            let template = directory.path().join("template.ext4");
+            fs::write(&template, b"first template").unwrap();
+            let first =
+                cache_overlay_template(File::open(&template).unwrap(), directory.path()).unwrap();
+            let again =
+                cache_overlay_template(File::open(&template).unwrap(), directory.path()).unwrap();
+            assert_eq!(
+                first.metadata().unwrap().ino(),
+                again.metadata().unwrap().ino()
+            );
+            assert_eq!(
+                first.metadata().unwrap().permissions().mode() & 0o777,
+                0o400
+            );
+            let replacement = directory.path().join("replacement");
+            fs::write(&replacement, b"newer template").unwrap();
+            fs::rename(replacement, &template).unwrap();
+            let next =
+                cache_overlay_template(File::open(&template).unwrap(), directory.path()).unwrap();
+            assert_ne!(
+                first.metadata().unwrap().ino(),
+                next.metadata().unwrap().ino()
+            );
+            assert_eq!(
+                fs::read(locked_file_path(&first)).unwrap(),
+                b"first template"
+            );
+            assert_eq!(
+                fs::read(locked_file_path(&next)).unwrap(),
+                b"newer template"
+            );
+        }
+
+        #[cfg(target_os = "linux")]
+        #[tokio::test]
+        async fn overlay_roots_pin_the_base_and_keep_independent_writes_across_recovery() {
+            let directory = tempfile::tempdir().unwrap();
+            let template = directory.path().join("template.ext4");
+            let image = File::create(&template).unwrap();
+            image.set_len(512 * 1024 * 1024).unwrap();
+            let locked = File::open(&template).unwrap();
+            let first = directory.path().join("first.ext4");
+            let second = directory.path().join("second.ext4");
+            let first_lower = prepare_factory_root_blocking(&locked_file_path(&locked), &first)
+                .unwrap()
+                .unwrap();
+            prepare_factory_root_blocking(&locked_file_path(&locked), &second).unwrap();
+            assert_eq!(
+                fs::metadata(&template).unwrap().ino(),
+                fs::metadata(&first_lower).unwrap().ino()
+            );
+            assert_ne!(
+                fs::metadata(&first).unwrap().ino(),
+                fs::metadata(&second).unwrap().ino()
+            );
+            assert_eq!(fs::metadata(&first).unwrap().nlink(), 1);
+            assert!(fs::metadata(&first).unwrap().blocks() * 512 < 16 * 1024 * 1024);
+            let replacement = directory.path().join("replacement.ext4");
+            fs::write(&replacement, b"different image").unwrap();
+            fs::rename(&replacement, &template).unwrap();
+            assert_eq!(
+                prepare_factory_root_blocking(&template, &first).unwrap(),
+                Some(first_lower.clone())
+            );
+            assert_ne!(
+                fs::metadata(&template).unwrap().ino(),
+                fs::metadata(&first_lower).unwrap().ino()
+            );
+            remove_private_root(first.clone()).await.unwrap();
+            assert!(!first.exists());
+            assert!(!first_lower.exists());
+            assert!(second.exists());
+            remove_private_root(first).await.unwrap();
+        }
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn overlay_creation_keeps_cross_filesystem_state_directories_working() {
+            let directory = tempfile::tempdir().unwrap();
+            let Ok(other) = tempfile::tempdir_in("/dev/shm") else {
+                return;
+            };
+            if fs::metadata(directory.path()).unwrap().dev()
+                == fs::metadata(other.path()).unwrap().dev()
+            {
+                return;
+            }
+            let template = directory.path().join("template.ext4");
+            fs::write(&template, b"standalone root on another device").unwrap();
+            let root = other.path().join("root.ext4");
+            assert_eq!(
+                prepare_factory_root_blocking(&template, &root).unwrap(),
+                None
+            );
+            assert_eq!(fs::read(&root).unwrap(), fs::read(&template).unwrap());
+            assert!(!overlay_lower_path(&root).exists());
+        }
+
+        #[cfg(target_os = "linux")]
+        #[test]
+        fn overlay_preparation_recovers_an_interrupted_lower_publication() {
+            let directory = tempfile::tempdir().unwrap();
+            let template = directory.path().join("template.ext4");
+            File::create(&template)
+                .unwrap()
+                .set_len(512 * 1024 * 1024)
+                .unwrap();
+            let root = directory.path().join("root.ext4");
+            fs::hard_link(&template, overlay_lower_path(&root)).unwrap();
+            assert_eq!(
+                prepare_factory_root_blocking(&template, &root).unwrap(),
+                Some(overlay_lower_path(&root))
+            );
+            let old = directory.path().join("retained.ext4");
+            fs::write(&old, b"standalone root").unwrap();
+            assert_eq!(
+                prepare_factory_root_blocking(&template, &old).unwrap(),
+                None
+            );
+            assert_eq!(fs::read(&old).unwrap(), b"standalone root");
+        }
+
+        #[test]
+        fn spare_overlay_adoption_pins_lower_and_rolls_back_on_upper_conflict() {
+            let directory = tempfile::tempdir().unwrap();
+            let spare = directory.path().join("spare.ext4");
+            let target = directory.path().join("allocation.ext4");
+            fs::write(&spare, b"upper").unwrap();
+            fs::write(overlay_lower_path(&spare), b"lower").unwrap();
+            fs::write(&target, b"existing").unwrap();
+            assert!(adopt_spare_root(&spare, &target).is_err());
+            assert!(!overlay_lower_path(&target).exists());
+            assert_eq!(fs::read(&target).unwrap(), b"existing");
+            fs::remove_file(&target).unwrap();
+            adopt_spare_root(&spare, &target).unwrap();
+            assert_eq!(fs::read(&target).unwrap(), b"upper");
+            assert_eq!(fs::read(overlay_lower_path(&target)).unwrap(), b"lower");
+            assert!(!spare.exists());
+            assert!(!overlay_lower_path(&spare).exists());
         }
 
         #[test]

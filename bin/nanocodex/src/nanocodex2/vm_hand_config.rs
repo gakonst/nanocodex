@@ -6,6 +6,7 @@ use super::{Hand, HandNetwork};
 #[derive(Clone, Debug)]
 pub(crate) struct VmHandConfig {
     pub(crate) rootfs: PathBuf,
+    pub(crate) overlay_lower: Option<PathBuf>,
     pub(crate) docker: Option<DockerHandConfig>,
     pub(crate) vm_guest_runtime: Option<PathBuf>,
     pub(crate) vm_cache: PathBuf,
@@ -26,6 +27,7 @@ impl From<&Hand> for VmHandConfig {
     fn from(config: &Hand) -> Self {
         Self {
             rootfs: config.rootfs.clone().unwrap_or_default(),
+            overlay_lower: None,
             docker: config.docker.as_ref().map(|image| DockerHandConfig {
                 image: image.clone(),
                 volume: config.docker_volume.clone().unwrap_or_default(),
@@ -164,7 +166,7 @@ mod tests {
     }
 
     #[test]
-    fn browser_egress_is_an_explicit_hand_add_on() {
+    fn legacy_browser_options_are_preserved_for_startup_rejection() {
         let browser = config(&[
             "--docker",
             "image",

@@ -10,7 +10,7 @@ import { Agent } from "nanocodex/managed";
 import { createTools } from "nanocodex/tools";
 import * as Workspace from "nanocodex/node/workspace";
 import { createNodeProcessTools } from "nanocodex-tools/node";
-import { createComputerTools, discoverComputer } from "nanocodex-computer";
+import { connectComputerTools, ensureComputer } from "nanocodex-computer";
 import WebSocket from "ws";
 import { mergeAccountHands, restoredAccountHands } from "./account-hands.mjs";
 import { createVmTools, supportsLocalVms } from "./vm-tools.mjs";
@@ -435,10 +435,11 @@ export class DesktopRuntime extends EventEmitter {
     this.#requireConnection();
     const generation = this.#generation;
     const existing = this.#threads.get(id);
-    if (existing) { await existing.ready; this.#sameAccount(generation); existing.abort.signal.throwIfAborted(); return this.#snapshot(existing); }
+    if (existing) { void existing.agent.prepare({ signal: existing.abort.signal }).catch(() => {}); await existing.ready; this.#sameAccount(generation); existing.abort.signal.throwIfAborted(); return this.#snapshot(existing); }
     const agent = Agent.open(id, this.#options);
     const thread = { id, agent, abort: new AbortController(), events: [], cursors: new Set(), hasMore: false, connected: false, activeTurns: [], acceptedTurns: 0, settings: { ...DEFAULT_SETTINGS }, cursor: "0", stateCursor: "0" };
     this.#threads.set(id, thread);
+    void agent.prepare({ signal: thread.abort.signal }).catch(() => {});
     thread.ready = (async () => {
       const [page, state] = await Promise.all([agent.events.page({ limit: 256, signal: thread.abort.signal }), this.request(`/v1/agents/${encodeURIComponent(id)}`, { signal: thread.abort.signal })]);
       if (thread.abort.signal.aborted) throw new Error("Thread closed.");
@@ -780,6 +781,8 @@ export class DesktopRuntime extends EventEmitter {
     this.#log(hand, "This computer is connected. CLI and app share this Hand.");
   }
   async #startLocal(hand, resource) {
+    const computerExecutable = await ensureComputer({ binary: this.#state.defaults.deviceBinary || this.#state.defaults.binary });
+    resource.abort.signal.throwIfAborted();
     if (this.#state.defaults.deviceBinary && this.#isDefaultHand(hand.id)) return this.#startDevice(hand, resource);
     const processes = await createNodeProcessTools({ workspace: hand.workspace, onActivity: event => {
       if (event.type === "started") { hand.calls++; hand.activeCalls++; }
@@ -791,9 +794,7 @@ export class DesktopRuntime extends EventEmitter {
     const workspace = await Workspace.open({ path: hand.workspace, root: hand.workspace });
     resource.abort.signal.throwIfAborted();
     const vmTools = this.#localVmTools(hand, resource);
-    const computerExecutable = await discoverComputer({ binary: this.#state.defaults.binary });
-    const computer = computerExecutable ? createComputerTools({ executable: computerExecutable,
-      ...(process.platform === "linux" && !hand.agentId ? { desktopRuntime: join(this.#nativeScreenDirectory(hand), "desktop") } : {}) }) : undefined;
+    const computer = computerExecutable ? await connectComputerTools({ executable: computerExecutable }) : undefined;
     if (computer) resource.add(computer.close);
     const tools = await createTools({ tools: [...processes.tools, ...vmTools, ...(computer?.tools ?? [])], workspace, attachmentId: hand.id, machines: [{ id: hand.id, name: hand.name, workspace: hand.workspace, capabilities: ["native", "shell", "filesystem", "process", "pipes", ...(computer ? ["computer"] : []), ...(vmTools.length ? ["vm_host"] : [])] }] });
     resource.add(() => tools.close());

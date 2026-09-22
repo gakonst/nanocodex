@@ -31,6 +31,7 @@ jobs:
           test "$(node -p "require('./js/nanocodex/package.json').version")" = "$version"
           test "$(node -p "require('./js/nanocodex-tools/package.json').version")" = "$version"
           test "$(node -p "require('./js/nanocodex-vite/package.json').version")" = "$version"
+          node --input-type=module -e 'import {readFile} from "node:fs/promises"; import {checkDocumentedBrowserVersion} from "./js/nanocodex/scripts/check-package.mjs"; checkDocumentedBrowserVersion(await readFile("js/nanocodex/README.md", "utf8"), JSON.parse(await readFile("js/nanocodex/package.json", "utf8")).version);'
           test "$(cargo metadata --no-deps --format-version 1 | jq -er '.packages[] | select(.name == "nanocodex-python") | .version')" = "$version"
           grep -Fq 'dynamic = ["version"]' py/bindings/pyproject.toml
           grep -Fq "## [$version]" CHANGELOG.md
@@ -128,7 +129,7 @@ jobs:
             target: x86_64-unknown-linux-gnu
             artifact: nanocodex-x86_64-unknown-linux-gnu
             companion: nanocodex2-x86_64-unknown-linux-gnu
-          - os: macos-14
+          - os: macos-15
             target: aarch64-apple-darwin
             artifact: nanocodex-aarch64-apple-darwin
             companion: nanocodex2-aarch64-apple-darwin
@@ -156,12 +157,6 @@ jobs:
           cargo build --locked --release \
             --package nanocodex2-bin --bin nanocodex2 \
             --target ${{ matrix.target }}
-      - name: Install Linux computer dependencies
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install --yes pkg-config libpulse-dev libxkbcommon-dev
-      - name: Build computer companion
-        shell: bash
-        run: cargo build --locked --release --manifest-path crates/experimental/nanocodex-computer/runtime/Cargo.toml --target ${{ matrix.target }} --bin nanocodex-computer
       - name: Sign macOS VM hand host
         if: matrix.target == 'aarch64-apple-darwin'
         shell: bash
@@ -183,16 +178,69 @@ jobs:
           cp "voice-dist/nanocodex-voice-${{ matrix.target }}.tar.gz" dist/
           cp "target/${{ matrix.target }}/release/nanocodex" "dist/${{ matrix.artifact }}"
           cp "target/${{ matrix.target }}/release/nanocodex2" "dist/${{ matrix.companion }}"
-          cp "crates/experimental/nanocodex-computer/runtime/target/${{ matrix.target }}/release/nanocodex-computer" "dist/nanocodex-computer-${{ matrix.target }}"
           gzip -n -9 -c "dist/${{ matrix.artifact }}" \
             > "dist/${{ matrix.artifact }}.gz"
           gzip -n -9 -c "dist/${{ matrix.companion }}" \
             > "dist/${{ matrix.companion }}.gz"
-          gzip -n -9 -c "dist/nanocodex-computer-${{ matrix.target }}" > "dist/nanocodex-computer-${{ matrix.target }}.gz"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ${{ matrix.artifact }}
           path: dist/*
+          if-no-files-found: error
+
+  build-windows-hand:
+    name: build Windows Hand installer
+    needs: prepare-release
+    runs-on: windows-2025
+    timeout-minutes: 60
+    permissions:
+      contents: read
+    env:
+      WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+      WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          cache-on-failure: true
+      - name: Build Windows Hand payload
+        shell: pwsh
+        env:
+          TAG_NAME: ${{ github.ref_name }}
+          VERGEN_GIT_SHA: ${{ github.sha }}
+          STABLE_GIT_COMMIT: ${{ github.sha }}
+        run: |
+          cargo build --locked --release --package nanocodex2-bin --bin nanocodex2
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Sign payload when Authenticode is configured
+        shell: pwsh
+        run: >-
+          ./windows/hand/sign.ps1 -Path
+          ./target/release/nanocodex2.exe
+      - name: Build and sign one-click installer
+        shell: pwsh
+        env:
+          RELEASE_VERSION: ${{ github.ref_name }}
+        run: |
+          $version = $env:RELEASE_VERSION.TrimStart("v")
+          ./windows/hand/build.ps1 `
+            -Nanocodex2 ./target/release/nanocodex2.exe `
+            -Version $version `
+            -NumericVersion $version
+          ./windows/hand/sign.ps1 -Path ./dist/windows-hand/nanocodex-hand-setup-x86_64.exe
+      - name: Stage release assets
+        shell: pwsh
+        run: |
+          Copy-Item target/release/nanocodex2.exe dist/windows-hand/nanocodex2-x86_64-pc-windows-msvc.exe
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: nanocodex-hand-x86_64-pc-windows-msvc
+          path: dist/windows-hand/*
           if-no-files-found: error
 
   publish-crates:
@@ -306,10 +354,11 @@ jobs:
 
   finalize-release:
     name: attach GitHub release assets
-    needs: [build, publish-crates, publish-npm]
+    needs: [build, build-windows-hand, publish-crates, publish-npm]
     if: >-
       ${{ always() &&
           needs.build.result == 'success' &&
+          needs.build-windows-hand.result == 'success' &&
           needs.publish-crates.result == 'success' &&
           needs.publish-npm.result == 'success' }}
     runs-on: ubuntu-22.04

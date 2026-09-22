@@ -105,6 +105,7 @@ test("a long WASM turn resumes its current batch after a lost checkpoint acknowl
 
 for (const nested of [false, true]) {
   test(`a ${nested ? "nested" : "direct"} host interruption retains the unsettled effect`, { timeout: 60_000 }, async () => {
+    const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
     let generations = 0;
     let dispatched = 0;
     const receipts = new Map();
@@ -130,7 +131,7 @@ for (const nested of [false, true]) {
     }
     const durabilityId = `interrupted-${nested}`;
     const durability = createMemoryDurabilityStore(durabilityId);
-    const options = { harness: false, durability, durabilityId,
+    const options = { module, harness: false, durability, durabilityId,
       codeEvaluator: (source, { tools, text }) => {
         const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
         return new AsyncFunction("tools", "text", source)(tools, text);
@@ -149,14 +150,25 @@ for (const nested of [false, true]) {
     };
     let agent = await Agent.create(options);
     try {
-      await assert.rejects(agent.turn.prompt({ input: "run fixture" }).result(), /lost host response/);
+      await assert.rejects(agent.turn.prompt({ id: "older", input: "run fixture" }).result(), /lost host response/);
       assert.equal(generations, 1);
       const pending = Object.values(decode(durability.snapshot().payload).operations)[0];
       assert.ok(pending.continuation);
       assert.ok(Object.values(pending.steps).some((step) => step.output === undefined));
       await agent.session.shutdown().catch(() => {});
       agent = await Agent.create(options);
-      assert.equal((await agent.turn.prompt({ input: "run fixture" }).result()).finalMessage, "finished");
+      // Exercise the real WASM admission failure, not a mocked Worker error.
+      // The failed host attempt left "older" pending in the durable ledger.
+      await assert.rejects(agent.turn.prompt({ id: "later", input: "follow on" }).result(), error => {
+        assert.equal(error.code, "retryable");
+        assert.equal(error.blockedBy, "older");
+        assert.match(error.message, /blocked by unfinished operation/);
+        return true;
+      });
+      assert.equal(generations, 1, "blocked admission must not call the model");
+      await agent.session.shutdown().catch(() => {});
+      agent = await Agent.create(options);
+      assert.equal((await agent.turn.prompt({ id: "older", input: "run fixture" }).result()).finalMessage, "finished");
       assert.equal(generations, 2);
       assert.equal(dispatched, 1);
       assert.equal(observedIds.length, 2);

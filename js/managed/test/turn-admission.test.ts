@@ -1,5 +1,5 @@
 import { env, runInDurableObject } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 
 import type { DurableAgentSession } from "../src/index";
 import { ArchiveMaintenance } from "../src/archive-maintenance";
@@ -7,13 +7,67 @@ import { DurableEventLog } from "../src/durable-events";
 
 const FIXTURE_UNFINISHED_TURNS = 20;
 
+// Gate a mandatory startup step, not optional account-hand inventory.
+function admissionBinding(bind: () => Response | Promise<Response>) {
+  return { fetch: (input: RequestInfo | URL) => {
+    const url = new URL(input instanceof Request ? input.url : String(input));
+    if (url.pathname.startsWith("/subjects/")) return bind();
+    return Promise.resolve(Response.json({ connectors: {}, mcp_connections: [] }));
+  } };
+}
+
 describe("managed durable turn admission", () => {
+  it("continues cold admission while optional hand discovery is stalled or fails", async () => {
+    const sessions = (env as unknown as {
+      NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
+    }).NANOCODEX_SESSIONS;
+    await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
+      const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
+      const discovery = Promise.withResolvers<Response>();
+      const mandatoryStartup = Promise.withResolvers<void>();
+      const binding = Promise.withResolvers<Response>();
+      Object.defineProperty(session, "env", { value: {
+        ...runtimeEnv,
+        NANOCODEX_ACCOUNT_TOOLS: { getByName: () => ({ fetch: () => discovery.promise }) },
+        NANOCODEX: admissionBinding(() => {
+          mandatoryStartup.resolve();
+          return binding.promise;
+        }),
+      } });
+      state.storage.sql.exec(`INSERT INTO session_state (
+        singleton, session_id, owner_id, organization_id, team_id, authorization_epoch,
+        public_origin, runtime_profile, last_active
+      ) VALUES (1, ?, 'fixture-owner', 'fixture-organization', 'fixture-team', 1,
+        'https://nanocodex.example/', 'managed', ?)`, crypto.randomUUID(), Date.now());
+      try {
+        const response = await session.fetch(new Request("https://session.internal/turns", {
+          method: "POST", body: JSON.stringify({ id: "independent", input: "brain-only task" }),
+        }));
+        expect(response.status).toBe(202);
+        // This mandatory construction step was previously unreachable until
+        // account hand discovery completed, even for an unrelated task.
+        await mandatoryStartup.promise;
+        discovery.resolve(new Response(null, { status: 503 }));
+        await new Promise(resolve => setTimeout(resolve, 0));
+        expect(state.storage.sql.exec<{ state: string; error: string | null }>(
+          "SELECT state, error FROM managed_turns WHERE id = 'independent'",
+        ).one()).toEqual({ state: "accepted", error: null });
+      } finally {
+        discovery.resolve(Response.json({ tools: [], machines: [] }));
+        state.storage.sql.exec("UPDATE managed_turns SET state = 'cancelled', retry_at = NULL WHERE id = 'independent'");
+        // End before model execution: the test owns only the admission boundary.
+        binding.resolve(new Response(null, { status: 403 }));
+        await state.storage.deleteAlarm();
+      }
+    });
+  });
+
   it("retains more than 64 pre-admission cancellations and consumes only the matching turn", async () => {
     const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
     await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
       const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
       Object.defineProperty(session, "env", { value: { ...runtimeEnv,
-        NANOCODEX_ACCOUNT_TOOLS: { getByName: () => { throw Object.assign(new Error("fixture unavailable"), { code: "retryable" }); } },
+        NANOCODEX: admissionBinding(() => { throw Object.assign(new Error("fixture unavailable"), { code: "retryable" }); }),
       } });
       state.storage.sql.exec(`INSERT INTO session_state (
         singleton, session_id, owner_id, organization_id, team_id, authorization_epoch,
@@ -45,9 +99,9 @@ describe("managed durable turn admission", () => {
       const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
       Object.defineProperty(session, "env", { value: {
         ...runtimeEnv,
-        NANOCODEX_ACCOUNT_TOOLS: { getByName: () => {
+        NANOCODEX: admissionBinding(() => {
           throw Object.assign(new Error("fixture runtime temporarily unavailable"), { code: "retryable" });
-        } },
+        }),
       } });
       const now = Date.now();
       state.storage.sql.exec(
@@ -104,8 +158,70 @@ describe("managed durable turn admission", () => {
     });
   });
 
-  for (const prior of ["failed", "completed", "cancelled", "missing-dispatch"] as const) {
-    it(`reconciles a Rust pending identity against a ${prior} managed projection`, async () => {
+  it("stops cold cancellation retries after permanent restore failure", async () => {
+    const sessions = (env as unknown as {
+      NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
+    }).NANOCODEX_SESSIONS;
+    await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
+      const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
+      const message = "durability state at revision 353 is invalid: EOF while parsing a value at line 1 column 0";
+      let attempts = 0;
+      Object.defineProperty(session, "env", { value: {
+        ...runtimeEnv,
+        NANOCODEX: admissionBinding(() => {
+          attempts++;
+          throw Object.assign(new Error(message), { code: "failed" });
+        }),
+      } });
+      const now = Date.now();
+      state.storage.sql.exec(`INSERT INTO session_state (
+        singleton, session_id, owner_id, organization_id, team_id, authorization_epoch,
+        public_origin, runtime_profile, last_active
+      ) VALUES (1, ?, 'fixture-owner', 'fixture-organization', 'fixture-team', 1,
+        'https://nanocodex.example/', 'managed', ?)`, crypto.randomUUID(), now);
+      // Reproduce an old cancellation already trapped in the one-minute loop.
+      state.storage.sql.exec(`INSERT INTO managed_turns (
+        id, request_hash, input_json, authorization_json, state, accepted_cursor,
+        may_have_inner_operation, attempt_count, retry_at, created_at, accepted_at, updated_at
+      ) VALUES ('corrupt', 'hash', '"fixture"', '{"capabilities":[]}', 'cancelling',
+        0, 1, 10000, ?, ?, ?, ?)`, now - 1, now - 86400_000, now - 86400_000, now - 60_000);
+      const row = () => state.storage.sql.exec<{
+        state: string; retry_at: number | null; terminal_cursor: number | null;
+        terminal_json: string | null; attempt_count: number;
+      }>("SELECT state, retry_at, terminal_cursor, terminal_json, attempt_count FROM managed_turns WHERE id = 'corrupt'").one();
+      try {
+        await session.alarm();
+        const deadline = Date.now() + 3_000;
+        while (row().state === "cancelling" && Date.now() < deadline) {
+          await new Promise(resolve => setTimeout(resolve, 10));
+        }
+        const failed = row();
+        expect(failed).toMatchObject({ state: "failed", retry_at: null, attempt_count: 10000 });
+        expect(failed.terminal_cursor).not.toBeNull();
+        const receipt = await session.fetch(new Request("https://session.internal/turns/corrupt"));
+        expect(await receipt.json()).toMatchObject({
+          state: "failed", error: message, terminal: { type: "turn_failed", id: "corrupt", error: message },
+        });
+        const status = await session.fetch(new Request("https://session.internal/state"));
+        expect(await status.json()).toMatchObject({ active_turns: [] });
+        const attempted = attempts;
+        expect(attempted).toBeGreaterThan(0);
+        // Later alarms and repeated Stop must not restart or append failures.
+        await session.alarm();
+        await session.fetch(new Request("https://session.internal/turns/corrupt/cancel", { method: "POST" }));
+        await session.alarm();
+        expect(row()).toEqual(failed);
+        expect(attempts).toBe(attempted);
+      } finally {
+        state.storage.sql.exec("UPDATE managed_turns SET state = 'failed', retry_at = NULL WHERE id = 'corrupt'");
+        await state.storage.deleteAlarm();
+      }
+    });
+  });
+
+  for (const [prior, cancelling] of (["failed", "completed", "cancelled", "missing-dispatch"] as const)
+    .flatMap(prior => [false, true].map(cancelling => [prior, cancelling] as const))) {
+    it(`reconciles a Rust pending identity against a ${prior} managed projection while cancelling=${cancelling}`, async () => {
       const sessions = (env as unknown as {
         NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
       }).NANOCODEX_SESSIONS;
@@ -115,11 +231,11 @@ describe("managed durable turn admission", () => {
         // dispatch. The real Durable Object must reconcile its SQLite inbox.
         Object.defineProperty(session, "env", { value: {
           ...runtimeEnv,
-          NANOCODEX_ACCOUNT_TOOLS: { getByName: () => {
+          NANOCODEX: admissionBinding(() => {
             throw Object.assign(new Error("older durable operation is unfinished"), {
               code: "retryable", blockedBy: "older",
             });
-          } },
+          }),
         } });
         const now = Date.now();
         state.storage.sql.exec(
@@ -147,6 +263,9 @@ describe("managed durable turn admission", () => {
             JSON.stringify("original input"),
           );
         }
+        if (cancelling) {
+          expect((await session.fetch(new Request("https://session.internal/turns/later/cancel", { method: "POST" }))).status).toBe(202);
+        }
         const response = await session.fetch(new Request("https://session.internal/turns", {
           method: "POST", body: JSON.stringify({ id: "later", input: "follow on" }),
         }));
@@ -161,7 +280,7 @@ describe("managed durable turn admission", () => {
           id: string; state: string; terminal_json: string | null; terminal_cursor: number | null;
           retry_at: number | null;
         }>("SELECT id, state, terminal_json, terminal_cursor, retry_at FROM managed_turns ORDER BY created_at").toArray();
-        expect(rows[1]).toMatchObject({ id: "later", state: "accepted" });
+        expect(rows[1]).toMatchObject({ id: "later", state: cancelling ? "cancelling" : "accepted" });
         expect(rows[1]!.retry_at).not.toBeNull();
         expect(rows[0]).toMatchObject(prior === "missing-dispatch" ? {
           id: "older", state: "failed", terminal_json: "{}", terminal_cursor: 1,
@@ -182,15 +301,17 @@ describe("managed durable turn admission", () => {
         NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
       }).NANOCODEX_SESSIONS;
       await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
-        const discovery = Promise.withResolvers<Response>();
+        let bindingCalls = 0;
+        const binding = Promise.withResolvers<Response>();
         const entered = Promise.withResolvers<void>();
         const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
         Object.defineProperty(session, "env", { value: {
           ...runtimeEnv,
-          NANOCODEX_ACCOUNT_TOOLS: { getByName: () => ({ fetch: () => {
+          NANOCODEX: admissionBinding(() => {
+            bindingCalls++;
             entered.resolve();
-            return discovery.promise;
-          } }) },
+            return binding.promise;
+          }),
         } });
         const now = Date.now();
         state.storage.sql.exec(
@@ -245,8 +366,25 @@ describe("managed durable turn admission", () => {
           const alarm = await state.storage.getAlarm();
           expect(alarm).toBeGreaterThanOrEqual(Date.now() + 59_000);
           expect(alarm).toBeLessThanOrEqual(Date.now() + 60_000);
+          // Model three one-minute recovery leases passing while the same
+          // admitted owner is awaiting I/O. A lease is a reconstruction wakeup,
+          // not a timeout authorizing a second live admission.
+          const clock = vi.spyOn(Date, "now");
+          try {
+            for (let lease = 1; lease <= 3; lease++) {
+              clock.mockReturnValue(now + lease * 60_000);
+              await session.alarm();
+              await Promise.resolve();
+              expect(bindingCalls).toBe(1);
+              expect(state.storage.sql.exec<{ state: string; attempt_count: number; retry_at: number | null }>(
+                "SELECT state, attempt_count, retry_at FROM managed_turns WHERE id = 'stalled'",
+              ).one()).toEqual({ state: "accepted", attempt_count: 0, retry_at: null });
+              expect(await state.storage.getAlarm()).toBe(now + (lease + 1) * 60_000);
+            }
+          } finally { clock.mockRestore(); }
+
         } finally {
-          discovery.resolve(Response.json({ tools: [], machines: [] }));
+          binding.resolve(new Response(null, { status: 204 }));
           pair?.[0].close(1000, "test complete");
           pair?.[1].close(1000, "test complete");
         }
@@ -363,3 +501,79 @@ describe("managed steer withdrawal admission", () => {
     });
   });
 });
+
+it("keeps a real managed automatic compaction owned across three recovery alarms", async () => {
+  const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
+  await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
+    const entered = Promise.withResolvers<void>();
+    let finish!: () => void;
+    let requests = 0;
+    class ModelSocket extends EventTarget {
+      readyState = 1;
+      accept() {}
+      close() { this.readyState = 3; }
+      emit(value: unknown) { this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) })); }
+      send(data: string) {
+        const request = JSON.parse(data);
+        requests++;
+        if (requests === 2) {
+          expect(JSON.stringify(request)).toContain("compaction");
+          finish = () => {
+            this.emit({ type: "response.output_item.done", item: { id: "summary", type: "compaction", encrypted_content: "opaque-summary" } });
+            this.emit({ type: "response.completed", response: { id: "compact", status: "completed", output: [], usage: { input_tokens: 100, output_tokens: 1, total_tokens: 101 } } });
+          };
+          entered.resolve();
+          return;
+        }
+        queueMicrotask(() => this.emit({ type: "response.completed", response: {
+          id: `response-${requests}`, status: "completed", end_turn: true,
+          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Hello" }] }],
+          usage: { input_tokens: requests === 1 ? 300_000 : 100, output_tokens: 1, total_tokens: requests === 1 ? 300_001 : 101 },
+        } }));
+      }
+    }
+    const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
+    Object.defineProperty(session, "env", { value: { ...runtimeEnv,
+      NANOCODEX_MEMORY: { getByName: () => ({ fetch: async () => Response.json({}) }) },
+      NANOCODEX: { async fetch(input: RequestInfo | URL, init?: RequestInit) {
+        const request = new Request(input, init);
+        if (new Headers(init?.headers).get("upgrade") === "websocket" || request.headers.get("upgrade") === "websocket")
+          return { status: 101, headers: new Headers(), webSocket: new ModelSocket() };
+        return Response.json({ tools: [], machines: [], connections: [] });
+      } },
+    } });
+    const now = Date.now();
+    state.storage.sql.exec(`INSERT INTO session_state (singleton, session_id, owner_id, organization_id, team_id, authorization_epoch, public_origin, runtime_profile, last_active)
+      VALUES (1, ?, 'fixture-owner', 'fixture-org', 'fixture-team', 1, 'https://nanocodex.example/', 'managed', ?)`, crypto.randomUUID(), now);
+    state.storage.sql.exec("INSERT INTO managed_configuration VALUES (1, ?)", JSON.stringify({ tools: [], environment: { files: [], skills: [], setup_commands: [], network: { access: "disabled" } } }));
+    state.storage.sql.exec("UPDATE managed_agent_settings SET model = 'gpt-5.6-sol', thinking = 'low'");
+    const seed = (id: string) => {
+      state.storage.sql.exec(`INSERT INTO managed_turns (id, request_hash, input_json, authorization_json, state, accepted_cursor, dispatch_input_chunks, may_have_inner_operation, attempt_count, created_at, accepted_at, updated_at)
+        VALUES (?, 'hash', '"fixture"', '{"capabilities":[]}', 'accepted', 0, 1, 0, 0, ?, ?, ?)`, id, now, now, now);
+      state.storage.sql.exec("INSERT INTO managed_turn_dispatch_chunks VALUES (?, 0, '\"fixture\"')", id);
+    };
+    seed("first");
+    await session.alarm();
+    await expect.poll(() => state.storage.sql.exec("SELECT state, error FROM managed_turns WHERE id='first'").one()).toEqual({ state: "completed", error: null });
+    seed("second");
+    await session.alarm();
+    await entered.promise;
+    const clock = vi.spyOn(Date, "now");
+    try {
+      for (let lease = 1; lease <= 3; lease++) {
+        clock.mockReturnValue(now + lease * 60_000);
+        await session.alarm();
+        expect(requests).toBe(2);
+        expect(await state.storage.getAlarm()).toBe(now + (lease + 1) * 60_000);
+        expect(state.storage.sql.exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM managed_events WHERE turn_id = 'second' AND json_extract(message_json, '$.type') = 'turn_retryable'",
+        ).one().count).toBe(0);
+        expect(state.storage.sql.exec<{ state: string; attempt_count: number; retry_at: number | null }>("SELECT state, attempt_count, retry_at FROM managed_turns WHERE id='second'").one())
+          .toEqual({ state: "accepted", attempt_count: 0, retry_at: null });
+      }
+    } finally { clock.mockRestore(); finish(); }
+    await expect.poll(() => state.storage.sql.exec<{ state: string }>("SELECT state FROM managed_turns WHERE id='second'").one().state).toBe("completed");
+    expect(requests).toBe(3);
+    await state.storage.deleteAlarm();
+  });
+}, 30_000);

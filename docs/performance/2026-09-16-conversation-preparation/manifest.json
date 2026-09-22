@@ -1,0 +1,728 @@
+{
+  "source": {
+    "base": "68a7f4edc39dfdd35388270160c0ecf935848658",
+    "patch_sha256": "2d32f9c20f599a1237cdecd8ef92f08e5d8007bc1dd84777e8aa281203f1e216",
+    "committed": false
+  },
+  "latest_origin_master": "68a7f4edc39dfdd35388270160c0ecf935848658",
+  "production_managed_version": "4f6c836f-921d-475c-a4a5-64906c1a7bb9",
+  "client_hooks_installed": false,
+  "tail_collectors_stopped": true,
+  "valid_turns": 9,
+  "rejected_preparation_canary_turns": 1,
+  "cleanup": [
+    {
+      "cohort": "canary",
+      "agent": "01a0acd8-5674-7de3-aa10-d52f014d3266",
+      "deleted": true,
+      "get_after_delete": 404
+    },
+    {
+      "cohort": "canary-fixed",
+      "agent": "01a0acdb-0b66-7e91-b10b-cc79007cd43b",
+      "deleted": true,
+      "get_after_delete": 404
+    },
+    {
+      "cohort": "hosted",
+      "agent": "01a0acdb-7085-7d89-952c-71a46e9c7676",
+      "deleted": true,
+      "get_after_delete": 404
+    },
+    {
+      "cohort": "hosted",
+      "agent": "01a0acdb-ad90-7756-9901-269716bbeb11",
+      "deleted": true,
+      "get_after_delete": 404
+    },
+    {
+      "cohort": "hosted",
+      "agent": "01a0acdb-e818-734a-a22c-7b72beee2ef8",
+      "deleted": true,
+      "get_after_delete": 404
+    },
+    {
+      "cohort": "hosted",
+      "agent": "01a0acdc-2ba2-73e8-8d6b-be3198365dc6",
+      "deleted": true,
+      "get_after_delete": 404
+    },
+    {
+      "cohort": "hosted",
+      "agent": "01a0acdc-7d36-7689-bd47-05c32058c99f",
+      "deleted": true,
+      "get_after_delete": 404
+    },
+    {
+      "cohort": "hosted",
+      "agent": "01a0acdc-c3c5-7e20-8b19-e583a75076d5",
+      "deleted": true,
+      "get_after_delete": 404
+    },
+    {
+      "cohort": "boundaries",
+      "agent": "01a0acdd-2273-78d6-bab5-4f3ff733d087",
+      "deleted": true,
+      "get_after_delete": 404
+    },
+    {
+      "cohort": "boundaries",
+      "agent": "01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e",
+      "deleted": true,
+      "get_after_delete": 404
+    }
+  ],
+  "cohorts": {
+    "canary": {
+      "started_at": "2026-09-17T00:50:53.361Z",
+      "finished_at": "2026-09-17T00:51:17.588Z",
+      "settings": {
+        "model": "gpt-6-astra",
+        "thinking": "low",
+        "reasoning_mode": "standard",
+        "fast_mode": false
+      },
+      "versions_start": {
+        "nanocodex-durable-agent": {
+          "id": "ea42d3ba-a15a-40ed-a7d6-00a878f779dc",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Conversation preparation and bounded discovery ...",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "3eb962d5-6647-4f0c-bf71-a77c1b8b6ef6",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:50:44.447423Z"
+        },
+        "nanocodex-egress": {
+          "id": "fde2d429-9d37-4c37-bcc0-14a336d8884b",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "62da8fd7-f705-49a9-a903-449d9bc2360c",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:27.950644Z"
+        },
+        "nanocodex": {
+          "id": "7467041a-0c2b-40ce-b8d0-0bbc3304c420",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Automatic deployment on upload.",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "a6d8b881-ca3f-490a-9826-a1f20ee26b2a",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:36:13.767971Z"
+        },
+        "nanocodex-connect-api": {
+          "id": "8024f95d-e674-4deb-824e-c9a290cff46a",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "0e466332-5ee2-4ea1-a9ed-7e800c18ce10",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:54.602232Z"
+        }
+      },
+      "versions_end": {
+        "nanocodex-durable-agent": {
+          "id": "ea42d3ba-a15a-40ed-a7d6-00a878f779dc",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Conversation preparation and bounded discovery ...",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "3eb962d5-6647-4f0c-bf71-a77c1b8b6ef6",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:50:44.447423Z"
+        },
+        "nanocodex-egress": {
+          "id": "fde2d429-9d37-4c37-bcc0-14a336d8884b",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "62da8fd7-f705-49a9-a903-449d9bc2360c",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:27.950644Z"
+        },
+        "nanocodex": {
+          "id": "7467041a-0c2b-40ce-b8d0-0bbc3304c420",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Automatic deployment on upload.",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "a6d8b881-ca3f-490a-9826-a1f20ee26b2a",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:36:13.767971Z"
+        },
+        "nanocodex-connect-api": {
+          "id": "8024f95d-e674-4deb-824e-c9a290cff46a",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "0e466332-5ee2-4ea1-a9ed-7e800c18ce10",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:54.602232Z"
+        }
+      }
+    },
+    "canary-fixed": {
+      "started_at": "2026-09-17T00:53:49.270Z",
+      "finished_at": "2026-09-17T00:54:06.614Z",
+      "settings": {
+        "model": "gpt-6-astra",
+        "thinking": "low",
+        "reasoning_mode": "standard",
+        "fast_mode": false
+      },
+      "versions_start": {
+        "nanocodex-durable-agent": {
+          "id": "1e7097d7-1849-4855-a51a-79d0d33f539d",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Conversation preparation on 68a7f4ed; empty rel...",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:53:35.704837Z"
+        },
+        "nanocodex-egress": {
+          "id": "fde2d429-9d37-4c37-bcc0-14a336d8884b",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "62da8fd7-f705-49a9-a903-449d9bc2360c",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:27.950644Z"
+        },
+        "nanocodex": {
+          "id": "7467041a-0c2b-40ce-b8d0-0bbc3304c420",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Automatic deployment on upload.",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "a6d8b881-ca3f-490a-9826-a1f20ee26b2a",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:36:13.767971Z"
+        },
+        "nanocodex-connect-api": {
+          "id": "8024f95d-e674-4deb-824e-c9a290cff46a",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "0e466332-5ee2-4ea1-a9ed-7e800c18ce10",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:54.602232Z"
+        }
+      },
+      "versions_end": {
+        "nanocodex-durable-agent": {
+          "id": "1e7097d7-1849-4855-a51a-79d0d33f539d",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Conversation preparation on 68a7f4ed; empty rel...",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:53:35.704837Z"
+        },
+        "nanocodex-egress": {
+          "id": "fde2d429-9d37-4c37-bcc0-14a336d8884b",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "62da8fd7-f705-49a9-a903-449d9bc2360c",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:27.950644Z"
+        },
+        "nanocodex": {
+          "id": "7467041a-0c2b-40ce-b8d0-0bbc3304c420",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Automatic deployment on upload.",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "a6d8b881-ca3f-490a-9826-a1f20ee26b2a",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:36:13.767971Z"
+        },
+        "nanocodex-connect-api": {
+          "id": "8024f95d-e674-4deb-824e-c9a290cff46a",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "0e466332-5ee2-4ea1-a9ed-7e800c18ce10",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:54.602232Z"
+        }
+      }
+    },
+    "hosted": {
+      "started_at": "2026-09-17T00:54:16.729Z",
+      "finished_at": "2026-09-17T00:55:58.771Z",
+      "settings": {
+        "model": "gpt-6-astra",
+        "thinking": "low",
+        "reasoning_mode": "standard",
+        "fast_mode": false
+      },
+      "versions_start": {
+        "nanocodex-durable-agent": {
+          "id": "1e7097d7-1849-4855-a51a-79d0d33f539d",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Conversation preparation on 68a7f4ed; empty rel...",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:53:35.704837Z"
+        },
+        "nanocodex-egress": {
+          "id": "fde2d429-9d37-4c37-bcc0-14a336d8884b",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "62da8fd7-f705-49a9-a903-449d9bc2360c",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:27.950644Z"
+        },
+        "nanocodex": {
+          "id": "7467041a-0c2b-40ce-b8d0-0bbc3304c420",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Automatic deployment on upload.",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "a6d8b881-ca3f-490a-9826-a1f20ee26b2a",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:36:13.767971Z"
+        },
+        "nanocodex-connect-api": {
+          "id": "8024f95d-e674-4deb-824e-c9a290cff46a",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "0e466332-5ee2-4ea1-a9ed-7e800c18ce10",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:54.602232Z"
+        }
+      },
+      "versions_end": {
+        "nanocodex-durable-agent": {
+          "id": "1e7097d7-1849-4855-a51a-79d0d33f539d",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Conversation preparation on 68a7f4ed; empty rel...",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:53:35.704837Z"
+        },
+        "nanocodex-egress": {
+          "id": "fde2d429-9d37-4c37-bcc0-14a336d8884b",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "62da8fd7-f705-49a9-a903-449d9bc2360c",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:27.950644Z"
+        },
+        "nanocodex": {
+          "id": "7467041a-0c2b-40ce-b8d0-0bbc3304c420",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Automatic deployment on upload.",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "a6d8b881-ca3f-490a-9826-a1f20ee26b2a",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:36:13.767971Z"
+        },
+        "nanocodex-connect-api": {
+          "id": "8024f95d-e674-4deb-824e-c9a290cff46a",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "0e466332-5ee2-4ea1-a9ed-7e800c18ce10",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:54.602232Z"
+        }
+      }
+    },
+    "boundaries": {
+      "started_at": "2026-09-17T00:56:07.918Z",
+      "finished_at": "2026-09-17T00:57:12.992Z",
+      "settings": {
+        "model": "gpt-6-astra",
+        "thinking": "low",
+        "reasoning_mode": "standard",
+        "fast_mode": false
+      },
+      "versions_start": {
+        "nanocodex-durable-agent": {
+          "id": "1e7097d7-1849-4855-a51a-79d0d33f539d",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Conversation preparation on 68a7f4ed; empty rel...",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:53:35.704837Z"
+        },
+        "nanocodex-egress": {
+          "id": "fde2d429-9d37-4c37-bcc0-14a336d8884b",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "62da8fd7-f705-49a9-a903-449d9bc2360c",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:27.950644Z"
+        },
+        "nanocodex": {
+          "id": "7467041a-0c2b-40ce-b8d0-0bbc3304c420",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Automatic deployment on upload.",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "a6d8b881-ca3f-490a-9826-a1f20ee26b2a",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:36:13.767971Z"
+        },
+        "nanocodex-connect-api": {
+          "id": "8024f95d-e674-4deb-824e-c9a290cff46a",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "0e466332-5ee2-4ea1-a9ed-7e800c18ce10",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:54.602232Z"
+        }
+      },
+      "versions_end": {
+        "nanocodex-durable-agent": {
+          "id": "1e7097d7-1849-4855-a51a-79d0d33f539d",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Conversation preparation on 68a7f4ed; empty rel...",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:53:35.704837Z"
+        },
+        "nanocodex-egress": {
+          "id": "fde2d429-9d37-4c37-bcc0-14a336d8884b",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "62da8fd7-f705-49a9-a903-449d9bc2360c",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:27.950644Z"
+        },
+        "nanocodex": {
+          "id": "7467041a-0c2b-40ce-b8d0-0bbc3304c420",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Automatic deployment on upload.",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "a6d8b881-ca3f-490a-9826-a1f20ee26b2a",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:36:13.767971Z"
+        },
+        "nanocodex-connect-api": {
+          "id": "8024f95d-e674-4deb-824e-c9a290cff46a",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "0e466332-5ee2-4ea1-a9ed-7e800c18ce10",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:54.602232Z"
+        }
+      }
+    }
+  },
+  "validation": {
+    "managed_focused_suite": {
+      "result": "passed",
+      "files": 7,
+      "tests": 63,
+      "note": "Before final empty-POST fix; endpoint regression and typecheck rerun after fix."
+    },
+    "managed_empty_post_regression": {
+      "result": "passed",
+      "tests": 1,
+      "log": "managed_empty_post_regression.log"
+    },
+    "managed_account_info_preparation": {
+      "result": "passed",
+      "tests": 20,
+      "log": "managed_account_info_preparation.log"
+    },
+    "sdk_contracts": {
+      "result": "passed",
+      "tests": 59,
+      "note": "Managed Agent and transport tests; common transport hook subsequently rerun below."
+    },
+    "sdk_managed_transport": {
+      "result": "passed",
+      "tests": 10,
+      "log": "sdk_managed_transport.log"
+    },
+    "sdk_types_and_package": {
+      "result": "passed"
+    },
+    "web_managed_runtime": {
+      "result": "passed",
+      "tests": 10
+    },
+    "desktop_runtime": {
+      "result": "passed",
+      "passed": 53,
+      "skipped": 1
+    },
+    "rust_managed": {
+      "result": "passed",
+      "unit_tests": 44,
+      "public_lifecycle_tests": 4,
+      "log": "rust_managed_tests.log"
+    },
+    "swift_inbox_core": {
+      "result": "passed",
+      "executed": 173,
+      "skipped": 5
+    },
+    "ios_simulator_build": {
+      "result": "passed",
+      "log": "ios_simulator_build.log",
+      "installed": false
+    },
+    "managed_and_web_typecheck": {
+      "result": "passed"
+    },
+    "managed_worker_build": {
+      "result": "passed",
+      "note": "Dependencies/WASM built with root Turbo flow. Code-only dry-run/deploy used existing --containers-rollout=none because local Docker is stopped."
+    },
+    "full_vitest_suite": {
+      "result": "not_verified",
+      "note": "An initially misfiltered full-suite run hit an unrelated vm-host-pool cross-DurableObject SpanParent runner error. Focused suites were run correctly afterward."
+    }
+  }
+}

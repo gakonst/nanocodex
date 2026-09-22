@@ -1,0 +1,6 @@
+{"runner":"nanocodex-jev-ap-20260921","prompt_index":0,"arm":"global","started_at":"2026-09-21T23:33:07.946Z","classification_upper_bound":1,"downstream_upper_bound":1}
+{"runner":"nanocodex-jev-ap-20260921","prompt_index":0,"arm":"regional","started_at":"2026-09-21T23:33:19.976Z","classification_upper_bound":1,"downstream_upper_bound":1}
+{"runner":"nanocodex-jev-ap-20260921","prompt_index":1,"arm":"regional","started_at":"2026-09-21T23:33:29.562Z","classification_upper_bound":1,"downstream_upper_bound":1}
+{"runner":"nanocodex-jev-ap-20260921","prompt_index":1,"arm":"global","started_at":"2026-09-21T23:33:40.852Z","classification_upper_bound":1,"downstream_upper_bound":1}
+{"runner":"nanocodex-jev-ap-20260921","prompt_index":2,"arm":"global","started_at":"2026-09-21T23:33:48.351Z","classification_upper_bound":1,"downstream_upper_bound":1}
+{"runner":"nanocodex-jev-ap-20260921","prompt_index":2,"arm":"regional","started_at":"2026-09-21T23:33:55.852Z","classification_upper_bound":1,"downstream_upper_bound":1}

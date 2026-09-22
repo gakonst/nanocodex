@@ -1,5 +1,5 @@
 import type { ToolMap } from "nanocodex";
-import { CUA_JS_NAME, CUA_RESET_NAME, CUA_DESCRIPTION, CUA_PARAMETERS, CUA_RESET_DESCRIPTION, CUA_RESET_PARAMETERS, validateInput } from "nanocodex-computer/contract";
+import { CUA_JS_NAME, CUA_RESET_NAME } from "nanocodex-computer/contract";
 import {
   createNamespaceManifest,
   createNamespaceScope,
@@ -20,12 +20,14 @@ const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
 const DEFAULT_CWD = "/brain";
 
 export type RoutedTool = Readonly<{
+  definition?: Readonly<{ description?: string; parameters?: Record<string, unknown>; [key: string]: unknown }>;
   handler(input: unknown, context: ToolContext): unknown | Promise<unknown>;
 }>;
 
 export type NamespaceMachine = Readonly<{
   id: string;
   root?: string;
+  aliases?: readonly string[];
   workspace: string;
 }>;
 
@@ -34,6 +36,8 @@ export type MachineToolResolver = (
   name: HostedMachineToolName,
   context: ToolContext,
 ) => RoutedTool | undefined;
+
+export type ScreenToolResolver = (machineId: string, context: ToolContext) => RoutedTool | undefined;
 
 type MountedHand = Readonly<{
   mountId: string;
@@ -45,11 +49,13 @@ type MountedHand = Readonly<{
   preview?: RoutedTool;
   cua?: RoutedTool;
   cuaReset?: RoutedTool;
+  screen?: RoutedTool;
 }>;
 
 type CellBinding = Readonly<{
   scope: NamespaceScope;
   hands: ReadonlyMap<string, MountedHand>;
+  aliases: ReadonlyMap<string, string>;
 }>;
 
 type ProcessBinding = Readonly<{
@@ -58,9 +64,11 @@ type ProcessBinding = Readonly<{
   writeStdin: RoutedTool;
 }>;
 
+export type NamespaceCaptureFilter = (machine: NamespaceMachine) => boolean;
+
 export type NamespaceExecutionRuntime = Readonly<{
   tools: ToolMap;
-  capture(context: ToolContext): void;
+  capture(context: ToolContext, filter?: NamespaceCaptureFilter): void;
 }>;
 
 /**
@@ -72,6 +80,7 @@ export function createNamespaceExecutionRuntime(
   machines: (context: ToolContext) => readonly NamespaceMachine[],
   resolveMachineTool: MachineToolResolver = () => undefined,
   brainExec?: RoutedTool,
+  resolveScreenTool: ScreenToolResolver = () => undefined,
 ): NamespaceExecutionRuntime {
   const brain = Object.freeze({
     mountId: "mount:brain",
@@ -81,21 +90,20 @@ export function createNamespaceExecutionRuntime(
   }) satisfies MountedHand;
   const cells = new Map<string, CellBinding>();
   const sessions = new Map<number, ProcessBinding>();
-  const computers = new Map<string, MountedHand>();
+  const computerQueues = new Map<string, Promise<unknown>>();
 
-  const cell = (context: ToolContext): CellBinding => {
+  const cell = (context: ToolContext, filter?: NamespaceCaptureFilter): CellBinding => {
     // Direct tools have an empty parentCallId. Pin those to their own call,
     // while nested Code Mode tools keep sharing their parent's captured lease.
     const key = `${context.sessionId}\u0000${context.parentCallId || context.callId}`;
     const retained = cells.get(key);
     if (retained !== undefined) return retained;
-    const created = createCellBinding(brain, machines(context), resolveMachineTool, context, key);
+    const created = createCellBinding(brain, machines(context).filter(filter ?? (() => true)), resolveMachineTool, context, key, resolveScreenTool);
     cells.set(key, created);
     return created;
   };
 
   const releaseSession = (ownerSessionId: string): void => {
-    computers.delete(ownerSessionId);
     const cellPrefix = `${ownerSessionId}\u0000`;
     for (const key of cells.keys()) {
       if (key.startsWith(cellPrefix)) cells.delete(key);
@@ -107,57 +115,84 @@ export function createNamespaceExecutionRuntime(
   const dispose = (): void => {
     cells.clear();
     sessions.clear();
-    computers.clear();
   };
 
-  const computer = (context: ToolContext): MountedHand => {
-    const retained = computers.get(context.sessionId);
-    if (retained) return retained;
-    const available = [...cell(context).hands.values()].filter(hand => hand.cua && hand.cuaReset);
-    if (available.length !== 1) {
-      throw new Error(available.length === 0
-        ? "No computer is attached to this conversation"
-        : "Multiple computers are attached. Call select_computer with an explicit Hand workdir first.");
+  const computerParameters = {
+    type: "object",
+    properties: {
+      workdir: { type: "string", description: "Hand workdir from environment or mount. Its root routes this CUA call, like exec_command; it is not forwarded to the provider." },
+    },
+    required: ["workdir"],
+    additionalProperties: true,
+  };
+  const computerCall = async (name: string, input: unknown, context: ToolContext): Promise<unknown> => {
+    const value = record(input);
+    const workdir = optionalString(value.workdir, "workdir");
+    if (!workdir) throw new Error('CUA requires an explicit Hand workdir, like exec_command. First call mcp__cua_repl__js({workdir: "/<hand>"}) to read that provider’s contract, then add its arguments to each call.');
+    const binding = cell(context);
+    const route = routeNamespaceCwd(binding.scope, canonicalCwd(binding, workdir), "namespace.discover");
+    const hand = binding.hands.get(route.mount.mountId);
+    if (!hand?.cua || !hand.cuaReset) {
+      throw new Error(`namespace mount ${route.mount.root} has no CUA runtime; screen-only Hands are unsupported by cua_repl. Use environment to find a Hand with an attached CUA provider.`);
     }
-    const selected = available[0]!;
-    computers.set(context.sessionId, selected);
-    return selected;
+    const providerInput = without(value, "workdir");
+    // JS with only a workdir discovers the actual provider API without executing
+    // anything. Reset with only a workdir still invokes the provider's empty reset.
+    if (name === CUA_JS_NAME && Object.keys(providerInput).length === 0) {
+      const definitions = [hand.cua, hand.cuaReset].map((tool, index) => {
+        const toolName = index === 0 ? CUA_JS_NAME : CUA_RESET_NAME;
+        const definition = tool.definition;
+        if (!definition || typeof definition.description !== "string"
+          || !definition.parameters || typeof definition.parameters !== "object") {
+          throw new Error(`Hand ${hand.root} has no discovered ${toolName} contract; reconnect its CUA provider`);
+        }
+        return { ...definition, name: toolName };
+      });
+      return { workdir: hand.root, machine_id: hand.machineId,
+        tools: [CUA_JS_NAME, CUA_RESET_NAME], definitions,
+        browser_selection: "For providers exposing cua.createBrowserTab, browser display names are not necessarily accepted identifiers. OpenAI's provider accepts lowercase family aliases (for example 'brave', not 'Brave Browser') or exact discovered browser IDs. Reuse an ID from current provider state; when browser/profile selection is ambiguous, inspect the provider's browser inventory first and match the requested instance. Do not guess IDs or silently retry a browser action with a different target.",
+        native_app_recovery: "For native macOS providers exposing cua.getApp, app selection may launch only in the background. If its initial observation stalls, follow any required js_reset, then use supported CUA and an observed app launcher (for example its item in Finder) to open the intended app normally before selecting it again. After a transient menu or window closes, cgWindowNotFound can mean the bound window is gone; select the same app again and inspect fresh state. Do not replay input actions, modify permissions, or switch automation backends to recover.",
+        routing: "Add the Hand workdir to each provider call. Nanocodex consumes workdir for routing and forwards all other arguments unchanged. Use Promise.all for different Hands; JS and reset on the same Hand are ordered." };
+    }
+    const tool = name === CUA_JS_NAME ? hand.cua : hand.cuaReset;
+    // The router allows concurrency across Hands. Each session/Hand has one
+    // queue shared by JS and reset, independent of every other Hand's queue.
+    const key = `${context.sessionId}\u0000${hand.mountId}`;
+    const previous = computerQueues.get(key) ?? Promise.resolve();
+    const pending = previous.catch(() => {}).then(() => {
+      context.signal.throwIfAborted();
+      return tool.handler(providerInput, context);
+    });
+    computerQueues.set(key, pending);
+    const cleanup = () => { if (computerQueues.get(key) === pending) computerQueues.delete(key); };
+    // Cancellation releases the caller promptly, but the queue entry remains
+    // until its predecessor settles so later calls cannot overtake active work.
+    void pending.then(cleanup, cleanup);
+    return await new Promise((resolve, reject) => {
+      const abort = () => reject(context.signal.reason ?? new Error("CUA call cancelled"));
+      if (context.signal.aborted) { abort(); return; }
+      context.signal.addEventListener("abort", abort, { once: true });
+      void pending.then(resolve, reject).finally(() => context.signal.removeEventListener("abort", abort));
+    });
   };
 
   const tools: ToolMap = {
-    select_computer: {
-      description: "Select the mounted Hand for subsequent cua_repl.js and cua_repl.js_reset calls in this conversation. Use a workdir returned by mount or accountInfo. One available computer is selected automatically; multiple computers require an explicit selection. The selected connection remains pinned until you select again. /brain has no desktop.",
-      parameters: { type: "object", properties: { workdir: { type: "string", description: "Mounted Hand root selecting the computer." } }, required: ["workdir"], additionalProperties: false },
-      handler: async (input, context) => {
-        const value = record(input);
-        const workdir = optionalString(value.workdir, "workdir");
-        if (!workdir || Object.keys(value).some(key => key !== "workdir")) throw new Error("select_computer requires only an explicit Hand workdir");
-        const binding = cell(context);
-        const route = routeNamespaceCwd(binding.scope, workdir, "namespace.discover");
-        const hand = binding.hands.get(route.mount.mountId);
-        if (!hand?.cua || !hand.cuaReset) throw new Error(`namespace mount ${route.mount.root} has no CUA runtime`);
-        computers.set(context.sessionId, hand);
-        return { workdir: hand.root, machine_id: hand.machineId };
-      }, releaseSession, dispose,
-    },
     [CUA_JS_NAME]: {
-      description: `${CUA_DESCRIPTION} When multiple Hands are attached, choose one with select_computer first.`,
-      parameters: CUA_PARAMETERS,
-      handler: async (input, context) => {
-        validateInput(input);
-        return computer(context).cua!.handler(input, context);
-      }, releaseSession, dispose,
+      description: "Use a Hand's CUA MCP provider. Set workdir on every call, just like exec_command. First call with only {workdir} to read that provider's descriptions and schemas without executing code; then add its exact arguments alongside workdir. Nanocodex strips only workdir before forwarding. Use Promise.all for different workdirs in Code Mode; JS and reset calls to the same Hand are ordered. Each cell pins its Hand connections; there is no global computer selection. /brain and screen-only Hands have no CUA provider.",
+      parameters: computerParameters,
+      supportsParallelToolCalls: true,
+      handler: (input, context) => computerCall(CUA_JS_NAME, input, context),
+      releaseSession, dispose,
     },
     [CUA_RESET_NAME]: {
-      description: CUA_RESET_DESCRIPTION,
-      parameters: CUA_RESET_PARAMETERS,
-      handler: async (input, context) => {
-        validateInput(input, true);
-        return computer(context).cuaReset!.handler(input, context);
-      }, releaseSession, dispose,
+      description: "Reset the CUA provider on the Hand selected by this call's workdir. Read its reset contract using mcp__cua_repl__js({workdir}) first. Pass provider reset arguments alongside workdir; only workdir is consumed by Nanocodex. A workdir-only reset forwards {}. JS and reset calls to the same Hand are ordered; other Hands run independently.",
+      parameters: computerParameters,
+      supportsParallelToolCalls: true,
+      handler: (input, context) => computerCall(CUA_RESET_NAME, input, context),
+      releaseSession, dispose,
     },
     exec_command: {
-      description: "Run a command in durable /brain using bounded Just Bash by default. Use an explicit hand workdir returned by mount or accountInfo only for native binaries, builds, or process sessions. A hand mount already represents its advertised workspace: if /laptop maps to /Users/me/repo, use /laptop for that workspace or /laptop/src for its src directory, never /laptop/Users/me/repo. No execution hand is attached by default.",
+      description: "Run a command in durable /brain using bounded Just Bash by default. Use an explicit hand workdir returned by mount or environment only for native binaries, builds, or process sessions. A hand mount already represents its advertised workspace: if /laptop maps to /Users/me/repo, use /laptop for that workspace or /laptop/src for its src directory, never /laptop/Users/me/repo. No execution hand is attached by default.",
       parameters: EXEC_COMMAND_PARAMETERS,
       outputSchema: EXECUTION_OUTPUT_SCHEMA,
       supportsParallelToolCalls: true,
@@ -173,7 +208,7 @@ export function createNamespaceExecutionRuntime(
           }, context);
         }
         const binding = cell(context);
-        const route = routeNamespaceCwd(binding.scope, workdir);
+        const route = routeNamespaceCwd(binding.scope, canonicalCwd(binding, workdir));
         const hand = binding.hands.get(route.mount.mountId);
         if (hand?.exec === undefined) {
           throw new Error(`namespace mount ${route.mount.root} is not executable`);
@@ -249,7 +284,7 @@ export function createNamespaceExecutionRuntime(
         const binding = cell(context);
         const route = routeNamespaceCwd(
           binding.scope,
-          optionalString(value.workdir, "workdir"),
+          canonicalCwd(binding, optionalString(value.workdir, "workdir")),
           "network.preview",
         );
         const hand = binding.hands.get(route.mount.mountId);
@@ -264,7 +299,7 @@ export function createNamespaceExecutionRuntime(
   };
   return Object.freeze({
     tools,
-    capture: (context: ToolContext) => { void cell(context); },
+    capture: (context: ToolContext, filter?: NamespaceCaptureFilter) => { void cell(context, filter); },
   });
 }
 
@@ -289,9 +324,11 @@ function createCellBinding(
   resolveMachineTool: MachineToolResolver,
   context: ToolContext,
   key: string,
+  resolveScreenTool: ScreenToolResolver,
 ): CellBinding {
   const hands: MountedHand[] = [brain];
   const roots = new Set([brain.root]);
+  const aliases = new Map<string, string>();
   const keyHash = stableHash(key);
   for (const machine of sourceMachines) {
     const root = machine.root ?? machineMountRoot(machine.id);
@@ -307,6 +344,7 @@ function createCellBinding(
       preview: resolveMachineTool(machine.id, "preview", context),
       cua: resolveMachineTool(machine.id, CUA_JS_NAME, context),
       cuaReset: resolveMachineTool(machine.id, CUA_RESET_NAME, context),
+      screen: resolveScreenTool(machine.id, context),
     }));
   }
   const manifest = createNamespaceManifest({
@@ -320,11 +358,28 @@ function createCellBinding(
       rights: handRights(hand),
     })),
   });
+  for (const machine of sourceMachines) {
+    const root = machine.root ?? machineMountRoot(machine.id);
+    for (const alias of machine.aliases ?? []) {
+      if (alias === root) continue;
+      if (roots.has(alias) || aliases.has(alias) || !/^\/[a-z0-9][a-z0-9._-]*$/.test(alias))
+        throw new Error(`ambiguous or invalid namespace alias ${alias}`);
+      aliases.set(alias, root);
+    }
+  }
   const scope = createNamespaceScope(manifest, DEFAULT_CWD);
   return Object.freeze({
     scope,
     hands: new Map(hands.map((hand) => [hand.mountId, hand])),
+    aliases,
   });
+}
+
+function canonicalCwd(binding: CellBinding, workdir?: string): string {
+  const cwd = resolveNamespaceCwd(DEFAULT_CWD, workdir);
+  const root = `/${cwd.split("/")[1] ?? ""}`;
+  const canonical = binding.aliases.get(root);
+  return canonical === undefined ? cwd : canonical + cwd.slice(root.length);
 }
 
 function handRights(hand: MountedHand): readonly NamespaceRight[] {
@@ -416,4 +471,19 @@ function stableHash(value: string): string {
     hash = BigInt.asUintN(64, hash * 0x100000001b3n);
   }
   return hash.toString(16).padStart(16, "0");
+}
+
+/** Admit each retained VM independently, then capture all verified routes once.
+ * A rejected probe or a negative receipt excludes that VM, including cached routes.
+ */
+export async function prepareNamespaceHostMounts<T extends Readonly<{ id: string }>>(
+  mounts: readonly T[],
+  probe: (mount: T) => Promise<NamespaceCaptureFilter | undefined>,
+): Promise<NamespaceCaptureFilter> {
+  const results = await Promise.allSettled(mounts.map(probe));
+  const checks = new Map(mounts.map((mount, index) => {
+    const result = results[index]!;
+    return [mount.id, result.status === "fulfilled" ? result.value : undefined] as const;
+  }));
+  return machine => !checks.has(machine.id) || checks.get(machine.id)?.(machine) === true;
 }

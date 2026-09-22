@@ -46,7 +46,7 @@ public struct AgentThreadNotification: Equatable, Sendable, Identifiable {
 }
 
 /// Persist only IDs and hashes. Clearing a thread suppresses its current phase
-/// across polling and relaunch; a new turn or terminal outcome can notify again.
+/// across polling and relaunch; only a new terminal outcome can notify again.
 public struct AgentNotificationLedger: Codable, Sendable {
     public struct Receipt: Codable, Sendable {
         public var revision: String
@@ -68,8 +68,9 @@ public struct AgentNotificationLedger: Codable, Sendable {
     }
 
     public func shouldPublish(_ thread: AgentThreadNotification, foreground: Bool) -> Bool {
-        !foreground && tracked.contains(thread.id) && dismissed[thread.id] != thread.revision
-            && published[thread.id]?.fingerprint != thread.fingerprint
+        !foreground && !thread.isRunning && tracked.contains(thread.id)
+            && dismissed[thread.id] != thread.revision
+            && published[thread.id]?.revision != thread.revision
     }
 
     public mutating func didPublish(_ thread: AgentThreadNotification) {

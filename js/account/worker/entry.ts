@@ -10,3 +10,5 @@ export {
 } from "./index.ts";
 
 export default worker;
+
+export { ElevenLabsAccount } from "./elevenLabs.ts";

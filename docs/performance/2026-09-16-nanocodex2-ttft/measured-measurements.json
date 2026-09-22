@@ -1,0 +1,1352 @@
+{
+  "groups": {
+    "installed/turn1": {
+      "n": 3,
+      "terminal_first_text_ms": {
+        "median": 2929.246875050012,
+        "min": 2644.1483329981565,
+        "max": 3896.007124974858
+      },
+      "observer_first_text_ms": {
+        "median": 2855.7553750000006,
+        "min": 2644.0167089999886,
+        "max": 3887.260334000006
+      },
+      "admission_ms": {
+        "median": 211,
+        "min": 197,
+        "max": 217
+      },
+      "connection_ms": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "model_first_output_ms": {
+        "median": 2412.0,
+        "min": 2157.0,
+        "max": 3618.0
+      },
+      "terminal_minus_model_ms": {
+        "median": 487.14833299815655,
+        "min": 278.007124974858,
+        "max": 517.246875050012
+      },
+      "launch_to_ready_ms": {
+        "median": 829.6062920126133,
+        "min": 753.3485839958303,
+        "max": 1006.597250001505
+      }
+    },
+    "installed/turn2": {
+      "n": 3,
+      "terminal_first_text_ms": {
+        "median": 2474.3465000065044,
+        "min": 1656.9596249610186,
+        "max": 4425.763458013535
+      },
+      "observer_first_text_ms": {
+        "median": 2469.7300419999992,
+        "min": 1656.9855000000098,
+        "max": 4421.522457999992
+      },
+      "admission_ms": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "connection_ms": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "model_first_output_ms": {
+        "median": 2366.0,
+        "min": 1463.0,
+        "max": 4307.0
+      },
+      "terminal_minus_model_ms": {
+        "median": 118.76345801353455,
+        "min": 108.34650000650436,
+        "max": 193.95962496101856
+      },
+      "launch_to_ready_ms": {
+        "median": 829.6062920126133,
+        "min": 753.3485839958303,
+        "max": 1006.597250001505
+      }
+    },
+    "release/turn1": {
+      "n": 3,
+      "terminal_first_text_ms": {
+        "median": 2544.980457983911,
+        "min": 2120.790541986935,
+        "max": 4830.59512503678
+      },
+      "observer_first_text_ms": {
+        "median": 2538.790708000015,
+        "min": 2115.8362080000006,
+        "max": 4803.7073329999985
+      },
+      "admission_ms": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "connection_ms": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "model_first_output_ms": {
+        "median": 2383.0,
+        "min": 1912.0,
+        "max": 4670.0
+      },
+      "terminal_minus_model_ms": {
+        "median": 161.98045798391104,
+        "min": 160.5951250367798,
+        "max": 208.79054198693484
+      },
+      "launch_to_ready_ms": {
+        "median": 1209.9856669665314,
+        "min": 888.104333949741,
+        "max": 1408.7467920035124
+      }
+    },
+    "release/turn2": {
+      "n": 3,
+      "terminal_first_text_ms": {
+        "median": 2070.5213749897666,
+        "min": 1509.7017500083894,
+        "max": 2107.462125015445
+      },
+      "observer_first_text_ms": {
+        "median": 2068.8512499999997,
+        "min": 1521.4463749999995,
+        "max": 2108.1872500000027
+      },
+      "admission_ms": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "connection_ms": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "model_first_output_ms": {
+        "median": 1971.0,
+        "min": 1261.0,
+        "max": 2027.0
+      },
+      "terminal_minus_model_ms": {
+        "median": 99.52137498976663,
+        "min": 80.46212501544505,
+        "max": 248.70175000838935
+      },
+      "launch_to_ready_ms": {
+        "median": 1209.9856669665314,
+        "min": 888.104333949741,
+        "max": 1408.7467920035124
+      }
+    }
+  },
+  "samples": [
+    {
+      "arm": "installed",
+      "rep": 1,
+      "turn": 1,
+      "agent": "01a0acea-5b70-743c-9258-610295fb23fd",
+      "turn_id": "01a0acea-7d3c-75c3-a342-3aa33115f520",
+      "terminal_first_text_ms": 2929.246875050012,
+      "observer_first_text_ms": 2855.7553750000006,
+      "completion_ms": 3533.339709,
+      "first_delta": "Yo",
+      "text": "Yo Georgios\u2014what\u2019s up?",
+      "matched_lines": [
+        "Yo                                                                                                                      "
+      ],
+      "render_measurement_error": null,
+      "loadavg": [
+        239.94384765625,
+        188.1591796875,
+        194.876953125
+      ],
+      "cohort": "measured",
+      "launch_to_ready_ms": 753.3485839958303,
+      "model_first_output_ms": 2412.0,
+      "connection_ms": 0.0,
+      "response_retries": 0,
+      "input_tokens": 18819,
+      "cached_input_tokens": 0,
+      "tool_calls": 0,
+      "admission_ms": 197,
+      "admission_reads": {
+        "session_state": {
+          "count": 14,
+          "duration_ms": 0
+        }
+      },
+      "terminal_minus_model_ms": 517.246875050012,
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acea-7d3c-75c3-a342-3aa33115f520",
+          "stage": "account.hosted_tools",
+          "started_at": 1789607443805,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acea-7d3c-75c3-a342-3aa33115f520",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789607443805,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acea-7d3c-75c3-a342-3aa33115f520",
+          "stage": "account.vault",
+          "started_at": 1789607443805,
+          "duration_ms": 197,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acea-7d3c-75c3-a342-3aa33115f520",
+          "stage": "startup.environment",
+          "started_at": 1789607443805,
+          "duration_ms": 197,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acea-7d3c-75c3-a342-3aa33115f520",
+          "stage": "turn.admission",
+          "duration_ms": 197,
+          "reads": {
+            "session_state": {
+              "count": 14,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "prepare_requests": [],
+      "durable_object_ids": [
+        "4edc593e33f40230d4bed5d62bd4776bc8625eeba2dcb3713a5e5724ed7d7b0a"
+      ],
+      "admission_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "cleanup_status": 404
+    },
+    {
+      "arm": "installed",
+      "rep": 1,
+      "turn": 2,
+      "agent": "01a0acea-5b70-743c-9258-610295fb23fd",
+      "turn_id": "01a0acea-95b6-7563-a125-0cee12e93698",
+      "terminal_first_text_ms": 2474.3465000065044,
+      "observer_first_text_ms": 2469.7300419999992,
+      "completion_ms": 2935.444499999998,
+      "first_delta": "Yo",
+      "text": "Yo! What are we working on?",
+      "matched_lines": [
+        "Yo Georgios\u2014what\u2019s up?                                                                                                  ",
+        "Yo                                                                                                                      "
+      ],
+      "render_measurement_error": null,
+      "loadavg": [
+        242.5908203125,
+        189.5673828125,
+        195.33447265625
+      ],
+      "cohort": "measured",
+      "launch_to_ready_ms": 753.3485839958303,
+      "model_first_output_ms": 2366.0,
+      "connection_ms": 0.0,
+      "response_retries": 0,
+      "input_tokens": 18838,
+      "cached_input_tokens": 18688,
+      "tool_calls": 0,
+      "admission_ms": 0,
+      "admission_reads": {
+        "session_state": {
+          "count": 9,
+          "duration_ms": 0
+        }
+      },
+      "terminal_minus_model_ms": 108.34650000650436,
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acea-95b6-7563-a125-0cee12e93698",
+          "stage": "account.hosted_tools",
+          "started_at": 1789607450081,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acea-95b6-7563-a125-0cee12e93698",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789607450081,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acea-95b6-7563-a125-0cee12e93698",
+          "stage": "turn.admission",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 9,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "prepare_requests": [],
+      "durable_object_ids": [
+        "4edc593e33f40230d4bed5d62bd4776bc8625eeba2dcb3713a5e5724ed7d7b0a"
+      ],
+      "admission_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "cleanup_status": 404
+    },
+    {
+      "arm": "release",
+      "rep": 1,
+      "turn": 1,
+      "agent": "01a0acea-bacc-756e-80ab-b448a06fa445",
+      "turn_id": "01a0acea-dea2-7811-8068-c5ac044898f1",
+      "terminal_first_text_ms": 4830.59512503678,
+      "observer_first_text_ms": 4803.7073329999985,
+      "completion_ms": 5552.890749999999,
+      "first_delta": "Yo",
+      "text": "Yo Georgios \u2014 what\u2019s up?",
+      "matched_lines": [
+        "Yo                                                                                                                      "
+      ],
+      "render_measurement_error": null,
+      "loadavg": [
+        252.01025390625,
+        195.1611328125,
+        197.20703125
+      ],
+      "cohort": "measured",
+      "launch_to_ready_ms": 1408.7467920035124,
+      "model_first_output_ms": 4670.0,
+      "connection_ms": 0.0,
+      "response_retries": 0,
+      "input_tokens": 18666,
+      "cached_input_tokens": 15744,
+      "tool_calls": 0,
+      "admission_ms": 0,
+      "admission_reads": {
+        "session_state": {
+          "count": 14,
+          "duration_ms": 0
+        }
+      },
+      "terminal_minus_model_ms": 160.5951250367798,
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acea-dea2-7811-8068-c5ac044898f1",
+          "stage": "account.hosted_tools",
+          "started_at": 1789607468772,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acea-dea2-7811-8068-c5ac044898f1",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789607468772,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acea-dea2-7811-8068-c5ac044898f1",
+          "stage": "startup.environment",
+          "started_at": 1789607468772,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acea-dea2-7811-8068-c5ac044898f1",
+          "stage": "turn.admission",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 14,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "prepare_requests": [
+        {
+          "type": "managed.request",
+          "request_id": "2c5e8f2a-0e68-4ef0-b768-1467530706e1",
+          "method": "POST",
+          "path": "/v1/agents/01a0acea-bacc-756e-80ab-b448a06fa445/prepare",
+          "status": 202,
+          "duration_ms": 31
+        }
+      ],
+      "durable_object_ids": [
+        "3ffdf9a729a38e3b6dd7ca9145142140773c53a5a75c5790a5baad4343e5182c"
+      ],
+      "admission_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "cleanup_status": 404
+    },
+    {
+      "arm": "release",
+      "rep": 1,
+      "turn": 2,
+      "agent": "01a0acea-bacc-756e-80ab-b448a06fa445",
+      "turn_id": "01a0acea-fe73-7fb2-9a06-86c2ef34fc88",
+      "terminal_first_text_ms": 2070.5213749897666,
+      "observer_first_text_ms": 2068.8512499999997,
+      "completion_ms": 2552.8979590000017,
+      "first_delta": "Yo",
+      "text": "Yo! What are we working on?",
+      "matched_lines": [
+        "Yo Georgios \u2014 what\u2019s up?                                                                                                ",
+        "Yo                                                                                                                      "
+      ],
+      "render_measurement_error": null,
+      "loadavg": [
+        255.77294921875,
+        196.884765625,
+        197.80322265625
+      ],
+      "cohort": "measured",
+      "launch_to_ready_ms": 1408.7467920035124,
+      "model_first_output_ms": 1971.0,
+      "connection_ms": 0.0,
+      "response_retries": 0,
+      "input_tokens": 18685,
+      "cached_input_tokens": 18432,
+      "tool_calls": 0,
+      "admission_ms": 0,
+      "admission_reads": {
+        "session_state": {
+          "count": 9,
+          "duration_ms": 0
+        }
+      },
+      "terminal_minus_model_ms": 99.52137498976663,
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acea-fe73-7fb2-9a06-86c2ef34fc88",
+          "stage": "account.hosted_tools",
+          "started_at": 1789607476925,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acea-fe73-7fb2-9a06-86c2ef34fc88",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789607476925,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acea-fe73-7fb2-9a06-86c2ef34fc88",
+          "stage": "turn.admission",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 9,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "prepare_requests": [
+        {
+          "type": "managed.request",
+          "request_id": "2c5e8f2a-0e68-4ef0-b768-1467530706e1",
+          "method": "POST",
+          "path": "/v1/agents/01a0acea-bacc-756e-80ab-b448a06fa445/prepare",
+          "status": 202,
+          "duration_ms": 31
+        }
+      ],
+      "durable_object_ids": [
+        "3ffdf9a729a38e3b6dd7ca9145142140773c53a5a75c5790a5baad4343e5182c"
+      ],
+      "admission_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "cleanup_status": 404
+    },
+    {
+      "arm": "release",
+      "rep": 2,
+      "turn": 1,
+      "agent": "01a0aceb-2225-740f-b7e3-a38a9e3ba99e",
+      "turn_id": "01a0aceb-4034-7db1-9e7f-48deb95ecc6b",
+      "terminal_first_text_ms": 2120.790541986935,
+      "observer_first_text_ms": 2115.8362080000006,
+      "completion_ms": 2816.68275,
+      "first_delta": "Yo",
+      "text": "Yo Georgios \u2014 what\u2019s up?",
+      "matched_lines": [
+        "Yo                                                                                                                      "
+      ],
+      "render_measurement_error": null,
+      "loadavg": [
+        261.5673828125,
+        202.01025390625,
+        199.61962890625
+      ],
+      "cohort": "measured",
+      "launch_to_ready_ms": 888.104333949741,
+      "model_first_output_ms": 1912.0,
+      "connection_ms": 0.0,
+      "response_retries": 0,
+      "input_tokens": 18672,
+      "cached_input_tokens": 15744,
+      "tool_calls": 0,
+      "admission_ms": 0,
+      "admission_reads": {
+        "session_state": {
+          "count": 14,
+          "duration_ms": 0
+        }
+      },
+      "terminal_minus_model_ms": 208.79054198693484,
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-4034-7db1-9e7f-48deb95ecc6b",
+          "stage": "account.hosted_tools",
+          "started_at": 1789607493726,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-4034-7db1-9e7f-48deb95ecc6b",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789607493726,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-4034-7db1-9e7f-48deb95ecc6b",
+          "stage": "startup.environment",
+          "started_at": 1789607493726,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-4034-7db1-9e7f-48deb95ecc6b",
+          "stage": "turn.admission",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 14,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "prepare_requests": [
+        {
+          "type": "managed.request",
+          "request_id": "f1995b30-9d61-439e-8db3-d4a1aaba9207",
+          "method": "POST",
+          "path": "/v1/agents/01a0aceb-2225-740f-b7e3-a38a9e3ba99e/prepare",
+          "status": 202,
+          "duration_ms": 20
+        }
+      ],
+      "durable_object_ids": [
+        "47786878b730c5682d81067e41bc5e7b484e410585f9d71446e416244a52fd52"
+      ],
+      "admission_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "cleanup_status": 404
+    },
+    {
+      "arm": "release",
+      "rep": 2,
+      "turn": 2,
+      "agent": "01a0aceb-2225-740f-b7e3-a38a9e3ba99e",
+      "turn_id": "01a0aceb-5613-7512-8eba-4b5d917afc61",
+      "terminal_first_text_ms": 2107.462125015445,
+      "observer_first_text_ms": 2108.1872500000027,
+      "completion_ms": 2578.1953749999957,
+      "first_delta": "Yo",
+      "text": "Yo \u2014 what are we working on?",
+      "matched_lines": [
+        "Yo Georgios \u2014 what\u2019s up?                                                                                                ",
+        "Yo                                                                                                                      "
+      ],
+      "render_measurement_error": null,
+      "loadavg": [
+        265.845703125,
+        203.8857421875,
+        200.29541015625
+      ],
+      "cohort": "measured",
+      "launch_to_ready_ms": 888.104333949741,
+      "model_first_output_ms": 2027.0,
+      "connection_ms": 0.0,
+      "response_retries": 0,
+      "input_tokens": 18691,
+      "cached_input_tokens": 18560,
+      "tool_calls": 0,
+      "admission_ms": 0,
+      "admission_reads": {
+        "session_state": {
+          "count": 9,
+          "duration_ms": 0
+        }
+      },
+      "terminal_minus_model_ms": 80.46212501544505,
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-5613-7512-8eba-4b5d917afc61",
+          "stage": "account.hosted_tools",
+          "started_at": 1789607499320,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-5613-7512-8eba-4b5d917afc61",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789607499320,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-5613-7512-8eba-4b5d917afc61",
+          "stage": "turn.admission",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 9,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "prepare_requests": [
+        {
+          "type": "managed.request",
+          "request_id": "f1995b30-9d61-439e-8db3-d4a1aaba9207",
+          "method": "POST",
+          "path": "/v1/agents/01a0aceb-2225-740f-b7e3-a38a9e3ba99e/prepare",
+          "status": 202,
+          "duration_ms": 20
+        }
+      ],
+      "durable_object_ids": [
+        "47786878b730c5682d81067e41bc5e7b484e410585f9d71446e416244a52fd52"
+      ],
+      "admission_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "cleanup_status": 404
+    },
+    {
+      "arm": "installed",
+      "rep": 2,
+      "turn": 1,
+      "agent": "01a0aceb-7973-7f34-a951-215e0a51cfe4",
+      "turn_id": "01a0aceb-9cc8-7341-bb6e-b422cf81145d",
+      "terminal_first_text_ms": 2644.1483329981565,
+      "observer_first_text_ms": 2644.0167089999886,
+      "completion_ms": 3315.816500000001,
+      "first_delta": "Yo",
+      "text": "Yo Georgios \u2014 what\u2019s up?",
+      "matched_lines": [
+        "Yo                                                                                                                      "
+      ],
+      "render_measurement_error": null,
+      "loadavg": [
+        265.30078125,
+        206.78369140625,
+        201.390625
+      ],
+      "cohort": "measured",
+      "launch_to_ready_ms": 1006.597250001505,
+      "model_first_output_ms": 2157.0,
+      "connection_ms": 0.0,
+      "response_retries": 0,
+      "input_tokens": 18663,
+      "cached_input_tokens": 0,
+      "tool_calls": 0,
+      "admission_ms": 211,
+      "admission_reads": {
+        "session_state": {
+          "count": 14,
+          "duration_ms": 0
+        }
+      },
+      "terminal_minus_model_ms": 487.14833299815655,
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-9cc8-7341-bb6e-b422cf81145d",
+          "stage": "account.hosted_tools",
+          "started_at": 1789607517458,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-9cc8-7341-bb6e-b422cf81145d",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789607517458,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-9cc8-7341-bb6e-b422cf81145d",
+          "stage": "account.vault",
+          "started_at": 1789607517458,
+          "duration_ms": 211,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-9cc8-7341-bb6e-b422cf81145d",
+          "stage": "startup.environment",
+          "started_at": 1789607517458,
+          "duration_ms": 211,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-9cc8-7341-bb6e-b422cf81145d",
+          "stage": "turn.admission",
+          "duration_ms": 211,
+          "reads": {
+            "session_state": {
+              "count": 14,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "prepare_requests": [],
+      "durable_object_ids": [
+        "6fa8a20732aaf97338e83abbed4ad4a4bf662f6feb7d268b20ba71d8207f3d33"
+      ],
+      "admission_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "cleanup_status": 404
+    },
+    {
+      "arm": "installed",
+      "rep": 2,
+      "turn": 2,
+      "agent": "01a0aceb-7973-7f34-a951-215e0a51cfe4",
+      "turn_id": "01a0aceb-b455-7521-9e27-80d918fcb94b",
+      "terminal_first_text_ms": 1656.9596249610186,
+      "observer_first_text_ms": 1656.9855000000098,
+      "completion_ms": 2014.8062500000087,
+      "first_delta": "Yo",
+      "text": "Yo! What are we working on?",
+      "matched_lines": [
+        "Yo Georgios \u2014 what\u2019s up?                                                                                                ",
+        "Yo                                                                                                                      "
+      ],
+      "render_measurement_error": null,
+      "loadavg": [
+        261.14453125,
+        207.826171875,
+        201.82373046875
+      ],
+      "cohort": "measured",
+      "launch_to_ready_ms": 1006.597250001505,
+      "model_first_output_ms": 1463.0,
+      "connection_ms": 0.0,
+      "response_retries": 0,
+      "input_tokens": 18682,
+      "cached_input_tokens": 0,
+      "tool_calls": 0,
+      "admission_ms": 0,
+      "admission_reads": {
+        "session_state": {
+          "count": 9,
+          "duration_ms": 0
+        }
+      },
+      "terminal_minus_model_ms": 193.95962496101856,
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-b455-7521-9e27-80d918fcb94b",
+          "stage": "account.hosted_tools",
+          "started_at": 1789607523442,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-b455-7521-9e27-80d918fcb94b",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789607523442,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-b455-7521-9e27-80d918fcb94b",
+          "stage": "turn.admission",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 9,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "prepare_requests": [],
+      "durable_object_ids": [
+        "6fa8a20732aaf97338e83abbed4ad4a4bf662f6feb7d268b20ba71d8207f3d33"
+      ],
+      "admission_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "cleanup_status": 404
+    },
+    {
+      "arm": "installed",
+      "rep": 3,
+      "turn": 1,
+      "agent": "01a0aceb-d542-7a75-a63d-e798c6d3e648",
+      "turn_id": "01a0aceb-f7b9-7340-9e3f-464e942325cc",
+      "terminal_first_text_ms": 3896.007124974858,
+      "observer_first_text_ms": 3887.260334000006,
+      "completion_ms": 4575.430124999999,
+      "first_delta": "Yo",
+      "text": "Yo Georgios \u2014 what\u2019s up?",
+      "matched_lines": [
+        "Yo                                                                                                                      "
+      ],
+      "render_measurement_error": null,
+      "loadavg": [
+        256.8671875,
+        209.4716796875,
+        202.51416015625
+      ],
+      "cohort": "measured",
+      "launch_to_ready_ms": 829.6062920126133,
+      "model_first_output_ms": 3618.0,
+      "connection_ms": 0.0,
+      "response_retries": 0,
+      "input_tokens": 18663,
+      "cached_input_tokens": 15744,
+      "tool_calls": 0,
+      "admission_ms": 217,
+      "admission_reads": {
+        "session_state": {
+          "count": 14,
+          "duration_ms": 0
+        }
+      },
+      "terminal_minus_model_ms": 278.007124974858,
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-f7b9-7340-9e3f-464e942325cc",
+          "stage": "account.hosted_tools",
+          "started_at": 1789607540661,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-f7b9-7340-9e3f-464e942325cc",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789607540661,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-f7b9-7340-9e3f-464e942325cc",
+          "stage": "account.vault",
+          "started_at": 1789607540661,
+          "duration_ms": 217,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-f7b9-7340-9e3f-464e942325cc",
+          "stage": "startup.environment",
+          "started_at": 1789607540661,
+          "duration_ms": 217,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0aceb-f7b9-7340-9e3f-464e942325cc",
+          "stage": "turn.admission",
+          "duration_ms": 217,
+          "reads": {
+            "session_state": {
+              "count": 14,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "prepare_requests": [],
+      "durable_object_ids": [
+        "5cd62afdcd0c0702c6b0260d554d46b8f8941e1ae7d7f993ceacb5bfec6d3f9d"
+      ],
+      "admission_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "cleanup_status": 404
+    },
+    {
+      "arm": "installed",
+      "rep": 3,
+      "turn": 2,
+      "agent": "01a0aceb-d542-7a75-a63d-e798c6d3e648",
+      "turn_id": "01a0acec-13a1-75d2-8279-71d326ceb319",
+      "terminal_first_text_ms": 4425.763458013535,
+      "observer_first_text_ms": 4421.522457999992,
+      "completion_ms": 4967.055124999999,
+      "first_delta": "Yo",
+      "text": "Yo! What are we working on?",
+      "matched_lines": [
+        "Yo Georgios \u2014 what\u2019s up?                                                                                                ",
+        "Yo                                                                                                                      "
+      ],
+      "render_measurement_error": null,
+      "loadavg": [
+        255.67626953125,
+        210.01123046875,
+        202.7451171875
+      ],
+      "cohort": "measured",
+      "launch_to_ready_ms": 829.6062920126133,
+      "model_first_output_ms": 4307.0,
+      "connection_ms": 0.0,
+      "response_retries": 0,
+      "input_tokens": 18682,
+      "cached_input_tokens": 18432,
+      "tool_calls": 0,
+      "admission_ms": 0,
+      "admission_reads": {
+        "session_state": {
+          "count": 9,
+          "duration_ms": 0
+        }
+      },
+      "terminal_minus_model_ms": 118.76345801353455,
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acec-13a1-75d2-8279-71d326ceb319",
+          "stage": "account.hosted_tools",
+          "started_at": 1789607547856,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acec-13a1-75d2-8279-71d326ceb319",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789607547856,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acec-13a1-75d2-8279-71d326ceb319",
+          "stage": "turn.admission",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 9,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "prepare_requests": [],
+      "durable_object_ids": [
+        "5cd62afdcd0c0702c6b0260d554d46b8f8941e1ae7d7f993ceacb5bfec6d3f9d"
+      ],
+      "admission_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "cleanup_status": 404
+    },
+    {
+      "arm": "release",
+      "rep": 3,
+      "turn": 1,
+      "agent": "01a0acec-4130-768c-9dad-3ab442ab3c5d",
+      "turn_id": "01a0acec-6253-7640-b2ac-079d0cf6dd09",
+      "terminal_first_text_ms": 2544.980457983911,
+      "observer_first_text_ms": 2538.790708000015,
+      "completion_ms": 3210.2695830000157,
+      "first_delta": "Yo",
+      "text": "Yo Georgios \u2014 what\u2019s up?",
+      "matched_lines": [
+        "Yo                                                                                                                      "
+      ],
+      "render_measurement_error": null,
+      "loadavg": [
+        263.6875,
+        214.68505859375,
+        204.58349609375
+      ],
+      "cohort": "measured",
+      "launch_to_ready_ms": 1209.9856669665314,
+      "model_first_output_ms": 2383.0,
+      "connection_ms": 0.0,
+      "response_retries": 0,
+      "input_tokens": 18675,
+      "cached_input_tokens": 15744,
+      "tool_calls": 0,
+      "admission_ms": 0,
+      "admission_reads": {
+        "session_state": {
+          "count": 14,
+          "duration_ms": 0
+        }
+      },
+      "terminal_minus_model_ms": 161.98045798391104,
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acec-6253-7640-b2ac-079d0cf6dd09",
+          "stage": "account.hosted_tools",
+          "started_at": 1789607567995,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acec-6253-7640-b2ac-079d0cf6dd09",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789607567995,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acec-6253-7640-b2ac-079d0cf6dd09",
+          "stage": "startup.environment",
+          "started_at": 1789607567995,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acec-6253-7640-b2ac-079d0cf6dd09",
+          "stage": "turn.admission",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 14,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "prepare_requests": [
+        {
+          "type": "managed.request",
+          "request_id": "f8033e47-b3e5-4e51-8a1a-b92f5205112b",
+          "method": "POST",
+          "path": "/v1/agents/01a0acec-4130-768c-9dad-3ab442ab3c5d/prepare",
+          "status": 202,
+          "duration_ms": 21
+        }
+      ],
+      "durable_object_ids": [
+        "c33819ab5fa9eee5e2a086c17d2a9830d82b2a8d0577f9d483d44ac16ddf1e48"
+      ],
+      "admission_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "cleanup_status": 404
+    },
+    {
+      "arm": "release",
+      "rep": 3,
+      "turn": 2,
+      "agent": "01a0acec-4130-768c-9dad-3ab442ab3c5d",
+      "turn_id": "01a0acec-7981-7ec1-99aa-08102fedc01f",
+      "terminal_first_text_ms": 1509.7017500083894,
+      "observer_first_text_ms": 1521.4463749999995,
+      "completion_ms": 1935.449708,
+      "first_delta": "Yo",
+      "text": "Yo \u2014 what are we working on?",
+      "matched_lines": [
+        "Yo Georgios \u2014 what\u2019s up?                                                                                                ",
+        "Yo                                                                                                                      "
+      ],
+      "render_measurement_error": null,
+      "loadavg": [
+        277.787109375,
+        219.24169921875,
+        206.3134765625
+      ],
+      "cohort": "measured",
+      "launch_to_ready_ms": 1209.9856669665314,
+      "model_first_output_ms": 1261.0,
+      "connection_ms": 0.0,
+      "response_retries": 0,
+      "input_tokens": 18694,
+      "cached_input_tokens": 18560,
+      "tool_calls": 0,
+      "admission_ms": 0,
+      "admission_reads": {
+        "session_state": {
+          "count": 9,
+          "duration_ms": 0
+        }
+      },
+      "terminal_minus_model_ms": 248.70175000838935,
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acec-7981-7ec1-99aa-08102fedc01f",
+          "stage": "account.hosted_tools",
+          "started_at": 1789607573936,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acec-7981-7ec1-99aa-08102fedc01f",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789607573936,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "01a0acec-7981-7ec1-99aa-08102fedc01f",
+          "stage": "turn.admission",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 9,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "prepare_requests": [
+        {
+          "type": "managed.request",
+          "request_id": "f8033e47-b3e5-4e51-8a1a-b92f5205112b",
+          "method": "POST",
+          "path": "/v1/agents/01a0acec-4130-768c-9dad-3ab442ab3c5d/prepare",
+          "status": 202,
+          "duration_ms": 21
+        }
+      ],
+      "durable_object_ids": [
+        "c33819ab5fa9eee5e2a086c17d2a9830d82b2a8d0577f9d483d44ac16ddf1e48"
+      ],
+      "admission_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "cleanup_status": 404
+    }
+  ],
+  "manifests": {
+    "measured": {
+      "started_at": "2026-09-17T01:10:33.515Z",
+      "finished_at": "2026-09-17T01:13:02.581Z",
+      "settings": {
+        "model": "gpt-6-astra",
+        "thinking": "low",
+        "reasoning_mode": "standard",
+        "fast_mode": false
+      },
+      "binaries": {
+        "installed": {
+          "path": "/Users/georgios/.nanocodex/versions/nightly-92528e17b4feb63fed238abc2f2b766777fc24ff-568925652-568925862-c568925651/nanocodex2",
+          "version": "nanocodex2 0.6.1",
+          "sha256": "3e3ccc3e3093f9b7049b31e03d6fa1b6099bda356674b60d1b94993bdde35ad0"
+        },
+        "release": {
+          "path": "/Users/georgios/github/gakonst/nanocodex-master/target/release/nanocodex2",
+          "version": "nanocodex2 0.6.1",
+          "sha256": "f9a76391a2b491c95aaa65cc08cb4721da9096292bc38c74d49eddcaa3786117"
+        }
+      },
+      "versions_start": {
+        "nanocodex-durable-agent": {
+          "id": "1e7097d7-1849-4855-a51a-79d0d33f539d",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Conversation preparation on 68a7f4ed; empty rel...",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:53:35.704837Z"
+        },
+        "nanocodex-egress": {
+          "id": "fde2d429-9d37-4c37-bcc0-14a336d8884b",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "62da8fd7-f705-49a9-a903-449d9bc2360c",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:27.950644Z"
+        },
+        "nanocodex": {
+          "id": "c52be9a3-04f0-40ab-9af0-88180118a126",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Automatic deployment on upload.",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "976d52cc-01c3-42bc-96b5-d4df43c4f68b",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T01:09:07.79322Z"
+        },
+        "nanocodex-connect-api": {
+          "id": "8024f95d-e674-4deb-824e-c9a290cff46a",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "0e466332-5ee2-4ea1-a9ed-7e800c18ce10",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:54.602232Z"
+        }
+      },
+      "versions_end": {
+        "nanocodex-durable-agent": {
+          "id": "1e7097d7-1849-4855-a51a-79d0d33f539d",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Conversation preparation on 68a7f4ed; empty rel...",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:53:35.704837Z"
+        },
+        "nanocodex-egress": {
+          "id": "fde2d429-9d37-4c37-bcc0-14a336d8884b",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "62da8fd7-f705-49a9-a903-449d9bc2360c",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:27.950644Z"
+        },
+        "nanocodex": {
+          "id": "c52be9a3-04f0-40ab-9af0-88180118a126",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Automatic deployment on upload.",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "976d52cc-01c3-42bc-96b5-d4df43c4f68b",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T01:09:07.79322Z"
+        },
+        "nanocodex-connect-api": {
+          "id": "8024f95d-e674-4deb-824e-c9a290cff46a",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "0e466332-5ee2-4ea1-a9ed-7e800c18ce10",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:54.602232Z"
+        }
+      },
+      "complete": true,
+      "error": null
+    }
+  }
+}

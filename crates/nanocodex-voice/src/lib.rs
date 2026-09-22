@@ -28,8 +28,8 @@ use nanocodex_voice_protocol::{
 use tokio::sync::{mpsc, oneshot, watch};
 
 pub use nanocodex_voice_protocol::{
-    REALTIME_END_INSTRUCTIONS, REALTIME_START_INSTRUCTIONS, VoiceHandoffMode, VoicePace,
-    VoiceSettings, VoiceUpdates,
+    REALTIME_END_INSTRUCTIONS, REALTIME_START_INSTRUCTIONS, VoiceHandoffMode, VoiceOutputProvider,
+    VoicePace, VoiceSettings, VoiceUpdates,
 };
 
 #[cfg(any(target_os = "macos", target_os = "windows"))]
@@ -498,6 +498,11 @@ impl VoiceSessionBuilder {
         settings
             .validate_chatgpt()
             .map_err(RealtimeError::InvalidConfiguration)?;
+        if settings.output_provider != nanocodex_voice_protocol::VoiceOutputProvider::Openai {
+            return Err(RealtimeError::InvalidConfiguration(
+                "ElevenLabs output requires a browser or Apple synthesis transport".to_owned(),
+            ));
+        }
         self.voice = Some(settings.voice.parse()?);
         self.instructions = Arc::from(settings.instructions(&self.instructions));
         self.delegation_ack_filler = settings.acknowledgements;
@@ -1910,9 +1915,12 @@ mod tests {
     fn lifecycle_and_tail_flush_markers_match_codex() {
         assert!(
             REALTIME_START_INSTRUCTIONS
-                .starts_with("<realtime_conversation>\n\nRealtime conversation started.")
+                .starts_with("<realtime_conversation>\nRealtime conversation started.")
         );
-        assert!(REALTIME_END_INSTRUCTIONS.contains("Reason: inactive"));
+        assert!(
+            REALTIME_END_INSTRUCTIONS
+                .starts_with("<realtime_conversation>\nRealtime conversation ended.")
+        );
         assert_eq!(
             codex_realtime_tail_delegation(&[RealtimeTranscriptEntry {
                 role: "user".to_owned(),

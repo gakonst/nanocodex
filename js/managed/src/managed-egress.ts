@@ -45,7 +45,7 @@ export type ManagedEgressConnectorId =
   | "slack"
   | "x"
   | "spotify"
-  | "soundcloud";
+  | "soundcloud" | "link";
 
 /** True preserves the caller's selector; a connection id injects an authorized default. */
 export type ManagedEgressConnectorAccess = boolean | string;
@@ -115,6 +115,7 @@ const PROVIDERS = new Map<string, readonly ProviderPolicy[]>([
     path: (path) => /^\/api\/[A-Za-z0-9._-]+$/.test(path),
   }]],
   ["api.spotify.com", [{ connector: "spotify", path: (path) => /^\/v1(?:\/|$)/.test(path) }]],
+  ["api.link.com", [{ connector: "link", path: (path) => /^\/(?:userinfo|spend_requests(?:\/lsrq_[A-Za-z0-9]+(?:\/(?:request_approval|cancel))?)?)$/.test(path) }]],
   ["api.soundcloud.com", [{ connector: "soundcloud", path: (path) => /^\/(?:me|tracks|playlists|users|resolve|likes|reposts)(?:\/|$)/.test(path) }]],
   ["api.x.com", [{
     connector: "x",

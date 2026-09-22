@@ -23,7 +23,7 @@ const charlie = "c".repeat(43);
 test("capabilities stay provider-neutral while Google shares one OAuth control provider", () => {
   assert.deepEqual(connectorCapabilities, [
     "github", "gmail", "gdrive", "gcalendar", "gtasks", "gdocs",
-    "gsheets", "gslides", "gcontacts", "slack", "x", "spotify", "soundcloud", "chatgpt",
+    "gsheets", "gslides", "gcontacts", "slack", "x", "spotify", "soundcloud", "link", "chatgpt",
   ]);
   for (const capability of [
     "gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets", "gslides", "gcontacts",
@@ -326,5 +326,16 @@ test("music connectors route reads and writes only to their own resource APIs", 
     for (const path of ["//evil.test/me", "/oauth/token", "/sign-out", "/disconnect", "/me?access_token=secret", "/v1/%252e%252e/oauth/token"]) {
       assert.throws(() => connectorRequestTarget(provider, path), ConnectorPolicyFailure);
     }
+  }
+});
+
+test("ChatGPT account pools expose only bounded public metadata", () => {
+  const account = { account_id: "chatgpt-a", connected: true, active: false, limited_until: 1_900_000_000_000 };
+  assert.deepEqual(publicConnectorStatus({ connected: true, account_id: "chatgpt-b", accounts: [
+    { ...account, accessToken: "secret", refreshToken: "secret" },
+  ] }), { connected: true, connections: [], account_id: "chatgpt-b", accounts: [account] });
+  for (const accounts of ["bad", Array(21).fill(account), [{ ...account, limited_until: Infinity }],
+    [{ ...account, account_id: "" }], [{ ...account, active: "true" }]]) {
+    assert.throws(() => publicConnectorStatus({ connected: true, accounts }), ConnectorPolicyFailure);
   }
 });

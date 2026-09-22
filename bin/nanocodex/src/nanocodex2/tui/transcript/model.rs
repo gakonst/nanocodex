@@ -54,6 +54,7 @@ pub(crate) struct TranscriptModel {
     next_entry_id: usize,
     assistants: HashMap<AssistantKey, EntryId>,
     active_assistants: HashMap<AssistantCallKey, AssistantKey>,
+    voice_messages: HashMap<(String, String, u64), (EntryId, bool)>,
     managed_final_messages: HashMap<Arc<str>, EntryId>,
     managed_completed_turns: HashSet<String>,
     managed_stopped_turns: HashSet<String>,
@@ -100,6 +101,7 @@ impl RunScope {
 struct RunActivity {
     scope: RunScope,
     status: TransientStatus,
+    compacting: bool,
     retry_origin: Option<(u64, u64)>,
 }
 
@@ -246,15 +248,27 @@ impl TranscriptModel {
 
     fn set_run_status(&mut self, record: &TranscriptRecord, status: Option<TransientStatus>) {
         let scope = RunScope::new(record);
+        // Compaction owns its phase until its own terminal, independently of
+        // connection, retry, and generic thinking updates within the same run.
+        // Keeping the phase on RunActivity also gives it the run's cleanup rules.
+        let compacting = match record.kind() {
+            "model.compaction.started" => true,
+            "model.compaction.completed" | "model.compaction.failed" | "run.started" => false,
+            _ => self
+                .run_activity
+                .iter()
+                .any(|activity| activity.scope == scope && activity.compacting),
+        };
         self.run_activity.retain(|activity| activity.scope != scope);
         if !self.is_finished_managed_run(&scope)
-            && let Some(status) = status
+            && let Some(status) = status.or_else(|| compacting.then_some(TransientStatus::Thinking))
         {
             let retry_origin = matches!(status, TransientStatus::Retrying(_))
                 .then(|| (record.sequence(), record.recorded_at_unix_ms()));
             self.run_activity.push_back(RunActivity {
                 scope,
                 status,
+                compacting,
                 retry_origin,
             });
         }
@@ -267,12 +281,20 @@ impl TranscriptModel {
             .run_activity
             .iter()
             .rev()
-            .find(|activity| activity.status != TransientStatus::Thinking)
+            .find(|activity| activity.compacting || activity.status != TransientStatus::Thinking)
             .or_else(|| self.run_activity.back());
         self.transient = activity
-            .map(|activity| activity.status.clone())
+            .map(|activity| {
+                if activity.compacting {
+                    TransientStatus::Compacting
+                } else {
+                    activity.status.clone()
+                }
+            })
             .or_else(|| self.is_active().then_some(TransientStatus::Thinking));
-        self.transient_retry_origin = activity.and_then(|activity| activity.retry_origin);
+        self.transient_retry_origin = activity
+            .filter(|activity| !activity.compacting)
+            .and_then(|activity| activity.retry_origin);
     }
 
     pub(crate) fn is_active(&self) -> bool {
@@ -427,6 +449,7 @@ impl TranscriptModel {
                         });
                     })
             }
+            "voice.transcript" => self.voice_transcript(record),
             "managed.final_message" => self.managed_final_message(record),
             "managed.turn_stopped" => self.managed_turn_stopped(record),
             "display.error" => self.decode_local::<DisplayError>(record).map(|payload| {
@@ -717,6 +740,35 @@ impl TranscriptModel {
         Ok(())
     }
 
+    fn voice_transcript(&mut self, record: &TranscriptRecord) -> Result<(), serde_json::Error> {
+        let caption = record.decode_payload::<crate::voice_state::Transcript>()?;
+        if !matches!(caption.speaker.as_str(), "user" | "assistant") || caption.text.is_empty() {
+            return Ok(());
+        }
+        let key = (caption.session, caption.speaker.clone(), caption.id);
+        let kind = if caption.speaker == "user" {
+            EntryKind::User { text: caption.text }
+        } else {
+            EntryKind::Assistant {
+                text: format!("**Voice**\n\n{}", caption.text),
+                complete: !caption.is_partial,
+                agent_id: record.managed_agent_id(),
+            }
+        };
+        if let Some((id, complete)) = self.voice_messages.get(&key).copied() {
+            // A delayed partial cannot roll a finalized message backwards.
+            if complete && caption.is_partial {
+                return Ok(());
+            }
+            self.update(id, |entry| *entry = kind);
+            self.voice_messages.insert(key, (id, !caption.is_partial));
+        } else {
+            let id = self.push(kind);
+            self.voice_messages.insert(key, (id, !caption.is_partial));
+        }
+        Ok(())
+    }
+
     fn managed_final_message(
         &mut self,
         record: &TranscriptRecord,
@@ -749,7 +801,7 @@ impl TranscriptModel {
             .unwrap_or_default();
         let matching = candidates.iter().filter_map(|id| {
             let index = self.index_of(*id)?;
-            matches!(&self.entries[index].kind, EntryKind::Assistant { text, complete: true } if text == &payload.text).then_some((index, *id))
+            matches!(&self.entries[index].kind, EntryKind::Assistant { text, complete: true, .. } if text == &payload.text).then_some((index, *id))
         }).max_by_key(|(index, _)| *index).map(|(_, id)| id);
         let unfinished = candidates
             .iter()
@@ -770,10 +822,11 @@ impl TranscriptModel {
             self.push(EntryKind::Assistant {
                 text: String::new(),
                 complete: false,
+                agent_id: record.managed_agent_id(),
             })
         });
         self.update(id, |kind| {
-            if let EntryKind::Assistant { text, complete } = kind {
+            if let EntryKind::Assistant { text, complete, .. } = kind {
                 *text = payload.text;
                 *complete = true;
             }
@@ -802,6 +855,7 @@ impl TranscriptModel {
             let id = self.push(EntryKind::Assistant {
                 text: String::new(),
                 complete: false,
+                agent_id: record.managed_agent_id(),
             });
             self.assistants.insert(key.clone(), id);
             self.active_assistants.insert(key.call.clone(), key.clone());
@@ -862,6 +916,7 @@ impl TranscriptModel {
                 self.push(EntryKind::Assistant {
                     text: String::new(),
                     complete: false,
+                    agent_id: record.managed_agent_id(),
                 })
             });
         self.track_managed_answer(&key.call, id);
@@ -1004,7 +1059,7 @@ impl TranscriptModel {
         let resumed_result = resumed_shell.map(|_| result.clone());
         let nested_shell_followup = resumed_shell.is_some();
         let state = tool_result_state(&payload.tool, &payload.status, &result);
-        let entry_state = if resumed_shell.is_some() && state == ToolState::Running {
+        let entry_state = if resumed_shell.is_some() && state == ToolState::Yielded {
             ToolState::Succeeded
         } else {
             state
@@ -1117,11 +1172,11 @@ impl TranscriptModel {
                     tool.result = Some(merge_shell_result(tool.result.take(), resumed_result));
                 }
             });
-            if state != ToolState::Running {
+            if state != ToolState::Yielded {
                 self.shell_sessions.retain(|_, entry| *entry != shell);
-                self.running_tools.remove(&shell);
-                self.tool_owners.remove(&shell);
             }
+            self.running_tools.remove(&shell);
+            self.tool_owners.remove(&shell);
         }
         if payload.tool == "wait"
             && state == ToolState::Failed
@@ -1129,15 +1184,19 @@ impl TranscriptModel {
         {
             self.entries[index].hidden = false;
         }
-        if entry_state == ToolState::Running {
+        // Keep poll correlation independently of the RPC activity/timer.
+        if state == ToolState::Yielded {
             if let Some(session_id) = shell_session {
                 self.shell_sessions.insert(session_id, id);
             }
-            self.running_tools.insert(id);
-            self.tool_owners.insert(id, RunScope::new(record));
         } else {
             self.shell_sessions
                 .retain(|_, shell_entry| *shell_entry != id);
+        }
+        if entry_state == ToolState::Running {
+            self.running_tools.insert(id);
+            self.tool_owners.insert(id, RunScope::new(record));
+        } else {
             self.running_tools.remove(&id);
             self.tool_owners.remove(&id);
         }
@@ -1868,7 +1927,7 @@ fn tool_result_state(tool: &str, status: &str, result: &Value) -> ToolState {
     if tool_session_id(result).is_some()
         && result.get("exit_code").and_then(Value::as_i64).is_none()
     {
-        return ToolState::Running;
+        return ToolState::Yielded;
     }
     ToolState::Failed
 }
@@ -2109,6 +2168,51 @@ mod tests {
     use std::sync::Arc;
 
     #[test]
+    fn voice_snapshots_remain_inline_complete_and_distinct_across_speakers_and_calls() {
+        use crate::{tui::transcript::LocalEvent, voice_state::Transcript};
+        let mut model = TranscriptModel::default();
+        let long = "A long spoken answer. ".repeat(200);
+        for (seq, session, speaker, id, text, partial) in [
+            (1, "first", "user", 0, "Check", true),
+            (2, "first", "assistant", 0, "Checking", true),
+            (3, "first", "user", 0, "Check Omarchy", false),
+            (4, "first", "assistant", 0, long.as_str(), false),
+            (5, "first", "assistant", 0, "late partial", true),
+            (6, "first", "assistant", 0, long.as_str(), false),
+            (7, "first", "user", 1, "Check Omarchy", false),
+            (8, "second", "assistant", 0, "New call", false),
+        ] {
+            model.apply(
+                &TranscriptRecord::from_local(
+                    seq,
+                    0,
+                    LocalEvent::VoiceTranscript(Transcript {
+                        session: session.into(),
+                        speaker: speaker.into(),
+                        id,
+                        text: text.into(),
+                        is_partial: partial,
+                    }),
+                )
+                .unwrap(),
+            );
+        }
+        assert_eq!(model.entries().len(), 4);
+        assert!(
+            matches!(&model.entries()[0].kind, EntryKind::User { text } if text == "Check Omarchy")
+        );
+        assert!(
+            matches!(&model.entries()[1].kind, EntryKind::Assistant { text, complete: true, .. } if text.ends_with(&long))
+        );
+        assert!(
+            matches!(&model.entries()[2].kind, EntryKind::User { text } if text == "Check Omarchy")
+        );
+        assert!(
+            matches!(&model.entries()[3].kind, EntryKind::Assistant { text, complete: true, .. } if text.ends_with("New call"))
+        );
+    }
+
+    #[test]
     fn managed_failure_settles_once_with_or_without_nested_terminal() {
         use crate::tui::transcript::{LocalEvent, TurnId};
         for nested_terminal in [false, true] {
@@ -2298,7 +2402,7 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(
                 states,
-                [ToolState::Running, ToolState::Failed],
+                [ToolState::Yielded, ToolState::Failed],
                 "{terminal}"
             );
             model.apply(
@@ -2393,9 +2497,9 @@ mod tests {
             Value::Null,
             Value::Null,
         ));
-        assert_eq!(model.running_tool_ids().count(), 1);
+        assert_eq!(model.running_tool_ids().count(), 0);
         assert!(
-            matches!(&model.entries()[1].kind, EntryKind::Tool(tool) if tool.state == ToolState::Running)
+            matches!(&model.entries()[1].kind, EntryKind::Tool(tool) if tool.state == ToolState::Yielded)
         );
         assert!(
             matches!(&model.entries()[2].kind, EntryKind::Tool(tool) if tool.state == ToolState::Failed)
@@ -2418,6 +2522,197 @@ mod tests {
             "started\nfinished\n"
         );
         assert!(!model.has_running_tools());
+    }
+
+    #[test]
+    fn thread_repro_compaction_phase_survives_connection_completion() {
+        use super::TransientStatus;
+        let mut model = TranscriptModel::default();
+        for (seq, kind, payload) in [
+            (1, AgentEventKind::RunStarted, json!({})),
+            (2, AgentEventKind::ModelCompactionStarted, json!({})),
+        ] {
+            model.apply(&agent_record(seq, kind, payload).with_managed_turn_id(Some("repro")));
+        }
+        assert_eq!(model.transient(), Some(&TransientStatus::Compacting));
+        model.apply(
+            &agent_record(
+                3,
+                AgentEventKind::ModelConnectionStarted,
+                json!({"purpose": "initial", "attempt": 1, "connection_generation": 1}),
+            )
+            .with_managed_turn_id(Some("repro")),
+        );
+        model.apply(
+            &agent_record(
+                4,
+                AgentEventKind::ModelConnectionCompleted,
+                json!({"attempt": 1, "connection_generation": 1}),
+            )
+            .with_managed_turn_id(Some("repro")),
+        );
+        assert_eq!(
+            model.transient(),
+            Some(&TransientStatus::Compacting),
+            "connecting must not erase the still-running compaction phase"
+        );
+    }
+
+    #[test]
+    fn compaction_phase_survives_transport_and_clears_on_its_terminal() {
+        use super::TransientStatus;
+        for failed in [false, true] {
+            let mut model = TranscriptModel::default();
+            for (seq, kind, payload) in [
+                (1, AgentEventKind::RunStarted, json!({})),
+                (2, AgentEventKind::ModelCompactionStarted, json!({})),
+                (
+                    3,
+                    AgentEventKind::ModelConnectionStarted,
+                    json!({"purpose": "reconnect"}),
+                ),
+                (
+                    4,
+                    AgentEventKind::ModelConnectionFailed,
+                    json!({"error": "disconnected"}),
+                ),
+                (
+                    5,
+                    AgentEventKind::ModelAttemptRetrying,
+                    json!({"error": "retry", "delay_ns": 10}),
+                ),
+                (
+                    6,
+                    AgentEventKind::ModelConnectionStarted,
+                    json!({"purpose": "reconnect"}),
+                ),
+                (7, AgentEventKind::ModelConnectionCompleted, json!({})),
+            ] {
+                model.apply(&agent_record(seq, kind, payload).with_managed_turn_id(Some("turn")));
+                if seq >= 2 {
+                    assert_eq!(
+                        model.transient(),
+                        Some(&TransientStatus::Compacting),
+                        "seq={seq}"
+                    );
+                    assert_eq!(model.transient_retry_origin(), None);
+                }
+            }
+            model.apply(&agent_record(8,
+                if failed { AgentEventKind::ModelCompactionFailed } else { AgentEventKind::ModelCompactionCompleted },
+                json!({"after_model_call_index": 1, "attempt": 1, "connection_generation": 1, "status": "completed", "duration_ns": 1, "time_to_first_event_ns": 1, "error": "compaction failed"}))
+                .with_managed_turn_id(Some("turn")));
+            assert_eq!(model.transient(), Some(&TransientStatus::Thinking));
+            model.apply(
+                &agent_record(
+                    9,
+                    AgentEventKind::ModelConnectionStarted,
+                    json!({"purpose": "reconnect"}),
+                )
+                .with_managed_turn_id(Some("turn")),
+            );
+            assert_eq!(model.transient(), Some(&TransientStatus::Reconnecting));
+        }
+    }
+
+    #[test]
+    fn compaction_phase_is_cleared_by_run_and_stream_terminals() {
+        use super::TransientStatus;
+        use crate::tui::transcript::LocalEvent;
+        for terminal in ["completed", "failed", "answer", "stopped", "stream"] {
+            let mut model = TranscriptModel::default();
+            for (seq, kind) in [
+                (1, AgentEventKind::RunStarted),
+                (2, AgentEventKind::ModelCompactionStarted),
+            ] {
+                model.apply(&agent_record(seq, kind, json!({})).with_managed_turn_id(Some("turn")));
+            }
+            assert_eq!(model.transient(), Some(&TransientStatus::Compacting));
+            match terminal {
+                "stream" => {
+                    model.agent_stream_closed();
+                }
+                "answer" => {
+                    model.apply(&durable_answer(3, "turn", "done"));
+                }
+                "stopped" => {
+                    model.apply(
+                        &TranscriptRecord::from_local(
+                            3,
+                            30,
+                            LocalEvent::ManagedTurnStopped {
+                                turn_id: "turn".to_owned(),
+                                error: None,
+                            },
+                        )
+                        .unwrap(),
+                    );
+                }
+                _ => {
+                    model.apply(
+                        &agent_record(
+                            3,
+                            if terminal == "completed" {
+                                AgentEventKind::RunCompleted
+                            } else {
+                                AgentEventKind::RunFailed
+                            },
+                            json!({}),
+                        )
+                        .with_managed_turn_id(Some("turn")),
+                    );
+                }
+            }
+            assert_ne!(
+                model.transient(),
+                Some(&TransientStatus::Compacting),
+                "{terminal}"
+            );
+            assert!(!model.is_active(), "{terminal}");
+        }
+    }
+
+    #[test]
+    fn child_compaction_terminal_preserves_root_compaction() {
+        use super::TransientStatus;
+        let mut model = TranscriptModel::default();
+        for child in [None, Some(7)] {
+            for (seq, kind) in [
+                (1, AgentEventKind::RunStarted),
+                (2, AgentEventKind::ModelCompactionStarted),
+            ] {
+                model.apply(
+                    &agent_record(seq, kind, json!({}))
+                        .with_managed_turn_id(Some("turn"))
+                        .with_managed_agent_id(child),
+                );
+            }
+        }
+        model.apply(
+            &agent_record(
+                3,
+                AgentEventKind::ModelCompactionCompleted,
+                json!({"after_model_call_index": 1, "attempt": 1, "connection_generation": 1, "status": "completed", "duration_ns": 1, "time_to_first_event_ns": 1}),
+            )
+            .with_managed_turn_id(Some("turn"))
+            .with_managed_agent_id(Some(7)),
+        );
+        assert_eq!(model.transient(), Some(&TransientStatus::Compacting));
+        model.apply(
+            &agent_record(4, AgentEventKind::RunCompleted, json!({}))
+                .with_managed_turn_id(Some("turn"))
+                .with_managed_agent_id(Some(7)),
+        );
+        assert_eq!(model.transient(), Some(&TransientStatus::Compacting));
+        model.apply(
+            &agent_record(
+                5,
+                AgentEventKind::ModelCompactionCompleted,
+                json!({"after_model_call_index": 1, "attempt": 1, "connection_generation": 1, "status": "completed", "duration_ns": 1, "time_to_first_event_ns": 1}),
+            )
+            .with_managed_turn_id(Some("turn")),
+        );
+        assert_eq!(model.transient(), Some(&TransientStatus::Thinking));
     }
 
     #[test]
@@ -3274,7 +3569,7 @@ mod tests {
         model.apply(&stream(4, AgentEventKind::AssistantDelta, " stale"));
         assert_eq!(model.entries().len(), 1);
         assert!(
-            matches!(&model.entries()[0].kind, EntryKind::Assistant { text, complete: true } if text == "complete answer")
+            matches!(&model.entries()[0].kind, EntryKind::Assistant { text, complete: true, .. } if text == "complete answer")
         );
     }
 
@@ -3341,7 +3636,7 @@ mod tests {
         ));
         assert_eq!(model.entries().len(), 1);
         assert!(
-            matches!(&model.entries()[0].kind, EntryKind::Assistant { text, complete: true } if text == "complete answer")
+            matches!(&model.entries()[0].kind, EntryKind::Assistant { text, complete: true, .. } if text == "complete answer")
         );
     }
 
@@ -3366,10 +3661,10 @@ mod tests {
         ));
         assert_eq!(model.entries().len(), 2);
         assert!(
-            matches!(&model.entries()[0].kind, EntryKind::Assistant { text, complete: true } if text == "first complete")
+            matches!(&model.entries()[0].kind, EntryKind::Assistant { text, complete: true, .. } if text == "first complete")
         );
         assert!(
-            matches!(&model.entries()[1].kind, EntryKind::Assistant { text, complete: true } if text == "second complete")
+            matches!(&model.entries()[1].kind, EntryKind::Assistant { text, complete: true, .. } if text == "second complete")
         );
     }
 
@@ -3426,6 +3721,43 @@ mod tests {
     }
 
     #[test]
+    fn replayed_shell_session_is_pollable_without_active_rpc() {
+        let records = [
+            call(1, "shell", "exec_command", json!({"cmd": "sleep 1"})),
+            result(
+                2,
+                "shell",
+                "exec_command",
+                Value::Null,
+                json!({"session_id": 7, "output": "started"}),
+                Value::Null,
+            ),
+        ];
+        let mut model = TranscriptModel::default();
+        for record in records {
+            let replay = serde_json::from_str(&serde_json::to_string(&record).unwrap()).unwrap();
+            model.apply(&replay);
+        }
+        assert_eq!(model.running_tool_ids().count(), 0);
+        assert!(
+            matches!(&model.entries()[0].kind, EntryKind::Tool(tool) if tool.state == ToolState::Yielded)
+        );
+        model.apply(&call(3, "poll", "write_stdin", json!({"session_id": 7})));
+        model.apply(&result(
+            4,
+            "poll",
+            "write_stdin",
+            Value::Null,
+            json!({"exit_code": 0, "output": "done"}),
+            Value::Null,
+        ));
+        assert_eq!(model.entries().len(), 1);
+        assert_eq!(model.running_tool_ids().count(), 0);
+        assert!(matches!(&model.entries()[0].kind, EntryKind::Tool(tool)
+            if tool.state == ToolState::Succeeded && tool.result.as_ref().unwrap()["output"] == "starteddone"));
+    }
+
+    #[test]
     fn command_progress_survives_replayed_calls_and_missing_result_fields() {
         let mut model = TranscriptModel::default();
         let start = call(1, "build", "exec_command", json!({"cmd": "cargo test"}));
@@ -3439,6 +3771,10 @@ mod tests {
         );
         model.apply(&start);
         model.apply(&yielded);
+        assert_eq!(model.running_tool_ids().count(), 0);
+        assert!(
+            matches!(&model.entries()[0].kind, EntryKind::Tool(tool) if tool.state == ToolState::Yielded)
+        );
         model.apply(&call(3, "poll", "write_stdin", json!({"session_id": 7})));
         let progress = result(
             4,
@@ -3452,6 +3788,10 @@ mod tests {
         model.apply(&start);
         model.apply(&yielded);
         model.apply(&progress);
+        assert_eq!(model.running_tool_ids().count(), 0);
+        assert!(
+            matches!(&model.entries()[0].kind, EntryKind::Tool(tool) if tool.state == ToolState::Yielded)
+        );
         model.apply(&call(5, "exit", "write_stdin", json!({"session_id": 7})));
         model.apply(&agent_record(
             6,
@@ -3553,6 +3893,58 @@ mod tests {
         };
         assert_eq!(tool.state, ToolState::Succeeded);
         assert_eq!(tool.result, Some(json!("visible output")));
+    }
+
+    #[test]
+    fn nested_nonterminal_polls_leave_owning_shell_settled_and_pollable() {
+        let mut model = TranscriptModel::default();
+        model.apply(&call(
+            1,
+            "shell",
+            "exec_command",
+            json!({"cmd": "interactive"}),
+        ));
+        model.apply(&result(
+            2,
+            "shell",
+            "exec_command",
+            Value::Null,
+            json!({"session_id": 7, "output": "ready"}),
+            Value::Null,
+        ));
+        let shell_id = model.entries()[0].id;
+        model.apply(&call(3, "outer", "exec", json!("poll")));
+        for index in 0..2 {
+            let call_id = format!("outer/code-{index}");
+            model.apply(&call(
+                4 + index * 2,
+                &call_id,
+                "write_stdin",
+                json!({"session_id": 7}),
+            ));
+            model.apply(&result(
+                5 + index * 2,
+                &call_id,
+                "write_stdin",
+                Value::Null,
+                json!({"session_id": 7, "output": "tick"}),
+                Value::Null,
+            ));
+            assert!(!model.running_tool_ids().any(|id| id == shell_id));
+            assert!(matches!(&model.entries()[0].kind, EntryKind::Tool(tool)
+                if tool.state == ToolState::Yielded));
+        }
+        model.apply(&call(8, "done", "write_stdin", json!({"session_id": 7})));
+        model.apply(&result(
+            9,
+            "done",
+            "write_stdin",
+            Value::Null,
+            json!({"exit_code": 0, "output": "done"}),
+            Value::Null,
+        ));
+        assert!(matches!(&model.entries()[0].kind, EntryKind::Tool(tool)
+            if tool.state == ToolState::Succeeded && tool.result.as_ref().unwrap()["output"] == "readyticktickdone"));
     }
 
     #[test]

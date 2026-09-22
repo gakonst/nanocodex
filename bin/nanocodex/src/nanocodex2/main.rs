@@ -6,6 +6,8 @@
     reason = "preserve the reviewed Tact component ownership while adapting its engine boundary"
 )]
 
+#[path = "../computer.rs"]
+mod computer;
 #[allow(dead_code)]
 mod config;
 mod control;
@@ -20,10 +22,26 @@ mod host;
 #[allow(dead_code)]
 mod installation;
 mod native_hand;
+mod observation_providers;
+mod reload;
+mod screen_audio;
+mod screen_broadcast;
+#[cfg(target_os = "linux")]
+mod screen_gamepad;
+#[cfg(target_os = "linux")]
+mod screen_host;
+mod screen_ice;
 #[cfg(target_os = "macos")]
 mod screen_macos;
 mod screen_native;
 mod screen_publisher;
+mod screen_video;
+#[cfg(target_os = "linux")]
+mod screen_wayland;
+#[cfg(target_os = "linux")]
+mod screen_wayland_encoder;
+#[cfg(target_os = "linux")]
+mod screen_wayland_input;
 mod service;
 #[allow(dead_code)]
 mod skill;
@@ -42,6 +60,9 @@ mod vm_hand;
 mod vm_hand;
 mod vm_hand_config;
 mod vm_host;
+mod voice;
+mod voice_recording;
+mod voice_state;
 
 use std::{
     io::{self, Write},
@@ -84,6 +105,8 @@ struct Cli {
 enum Command {
     /// Discover and control a running interactive terminal.
     Tui(nanocodex_tui_control::Cli),
+    /// Install or refresh the upstream computer-use runtime.
+    Computer(computer::Computer),
     /// Sign in with an SMS code, or import an account API key from stdin.
     Login(nanocodex_cli_auth::Login),
     /// Verify the selected account credential without displaying secrets.
@@ -105,6 +128,16 @@ enum Command {
     #[cfg(target_os = "linux")]
     #[command(name = "__hand-desktop", hide = true)]
     HandDesktop(screen_native::DesktopCommand),
+    /// Share an existing Wayland session through the shared Rust publisher.
+    #[cfg(target_os = "linux")]
+    #[command(name = "wayland-host", hide = true)]
+    WaylandHost(screen_host::HostCommand),
+    #[cfg(target_os = "linux")]
+    #[command(name = "desktop-host", hide = true)]
+    DesktopHost(screen_host::HostCommand),
+    #[cfg(target_os = "linux")]
+    #[command(name = "server-host", hide = true)]
+    ServerHost(screen_host::HostCommand),
     /// Serve a bounded pool of on-demand libkrun VM hands.
     Host(Host),
     /// Create a managed agent and print its receipt as JSON.
@@ -123,6 +156,8 @@ enum Command {
     Delete(AgentId),
     /// Submit one prompt and stream durable managed events as JSONL.
     Run(Run),
+    /// Talk to a managed agent using native microphone and speaker audio.
+    Voice(voice::Args),
     /// Stream an owned agent's durable events from a cursor.
     Watch(Watch),
     /// Read one backward page of retained events.
@@ -246,11 +281,11 @@ struct Hand {
     #[arg(long, conflicts_with_all = ["rootfs", "docker"], help_heading = "Identity")]
     vm_provider: Option<String>,
 
-    /// Route managed browser work through this host alongside the VM or container Hand.
+    /// Legacy option (disabled); use the Hand's CUA tools for browser interactions.
     #[arg(long, help_heading = "Browser")]
     browser: bool,
 
-    /// Exact Chrome or Chromium executable used by this Hand's private browser.
+    /// Legacy browser executable option (disabled); use the Hand's CUA tools.
     #[arg(
         long,
         value_name = "PATH",
@@ -463,7 +498,7 @@ struct Run {
     #[arg(value_parser = NonEmptyStringValueParser::new())]
     prompt: String,
     /// Resume this account-owned agent. A new one is created when omitted.
-    #[arg(long, conflicts_with_all = ["model", "thinking", "reasoning_mode", "fast_mode"])]
+    #[arg(long, conflicts_with_all = ["model", "thinking", "reasoning_mode", "fast_mode", "chatgpt_account"])]
     agent: Option<String>,
     /// Stable idempotency key. The managed backend generates one when omitted.
     #[arg(long)]
@@ -514,12 +549,56 @@ fn main() -> ExitCode {
 
 fn try_main() -> Result<(), ManagedError> {
     let _ = dotenvy::dotenv();
+    #[cfg(target_os = "linux")]
+    if std::env::var(screen_wayland_encoder::HELPER_ENV).as_deref() == Ok("1") {
+        return tokio::runtime::Builder::new_multi_thread()
+            .enable_all()
+            .build()
+            .map_err(|e| ManagedError::Configuration(e.to_string()))?
+            .block_on(screen_wayland_encoder::run(
+                std::env::args().skip(1).collect(),
+            ))
+            .map_err(|e| ManagedError::Configuration(e.to_string()));
+    }
     let cli = Cli::parse();
+    #[cfg(target_os = "linux")]
+    let (cli, prepared) = {
+        let mut cli = cli;
+        let host = match cli.command.take() {
+            Some(Command::WaylandHost(args)) => Some(args.prepare(screen_host::Mode::Wayland)?),
+            Some(Command::DesktopHost(args)) => Some(args.prepare(screen_host::Mode::Desktop)?),
+            Some(Command::ServerHost(args)) => Some(args.prepare(screen_host::Mode::Server)?),
+            other => {
+                cli.command = other;
+                None
+            }
+        };
+        let prepared = if let Some((prepared, environment)) = host {
+            // SAFETY: only standalone process startup reaches this point. No
+            // Tokio, capture, audio, or provider threads have been started yet.
+            for (key, value) in environment {
+                #[allow(unsafe_code)]
+                unsafe {
+                    std::env::set_var(key, value);
+                }
+            }
+            Some(prepared)
+        } else {
+            None
+        };
+        (cli, prepared)
+    };
     tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .map_err(|error| ManagedError::Configuration(format!("failed to start Tokio: {error}")))?
-        .block_on(run(cli))
+        .block_on(async move {
+            #[cfg(target_os = "linux")]
+            if let Some(prepared) = prepared {
+                return screen_host::serve(prepared).await;
+            }
+            run(cli).await
+        })
 }
 
 async fn run(cli: Cli) -> Result<(), ManagedError> {
@@ -529,6 +608,15 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
                 .run()
                 .await
                 .map_err(|error| ManagedError::Configuration(error.to_string()));
+        }
+        #[cfg(target_os = "linux")]
+        Some(Command::WaylandHost(_) | Command::DesktopHost(_) | Command::ServerHost(_)) => {
+            return Err(ManagedError::Configuration(
+                "standalone host must initialize before runtime startup".into(),
+            ));
+        }
+        Some(Command::Computer(command)) => {
+            return command.run().await.map_err(ManagedError::Configuration);
         }
         Some(Command::Login(command)) => return command.run().await.map_err(auth_error),
         Some(Command::Status(command)) => {
@@ -590,8 +678,17 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         _ => None,
     };
     let client = client_from_environment(managed_origin)?;
-    let mut device = if matches!(&command, None | Some(Command::Attach(_) | Command::Run(_))) {
-        Some(device_hand::BackgroundHand::start(&client)?)
+    let mut device = if matches!(
+        &command,
+        None | Some(Command::Attach(_) | Command::Run(_) | Command::Voice(_))
+    ) {
+        match device_hand::BackgroundHand::start(&client).await {
+            Ok(device) => Some(device),
+            Err(error) => {
+                eprintln!("Warning: local computer Hand unavailable: {error}");
+                None
+            }
+        }
     } else {
         None
     };
@@ -605,9 +702,11 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         ) => {
             unreachable!("handled before managed client setup")
         }
+        Some(Command::Voice(command)) => voice::run(&client, command).await,
         Some(Command::Attach(command)) => {
             attach_tui(&client, command.agent.map(|agent| agent.agent_id)).await
         }
+        Some(Command::Computer(_)) => unreachable!("handled before managed client setup"),
         Some(Command::DeviceHand(_)) => unreachable!("handled before managed client setup"),
         Some(Command::Hand(_)) => unreachable!("handled before managed client setup"),
         Some(Command::HandScreen(command)) => screen_native::serve(&client, command).await,
@@ -615,7 +714,17 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         Some(Command::HandDesktop(_)) => unreachable!("handled before managed client setup"),
         Some(Command::Host(_)) => unreachable!("handled before managed client setup"),
         Some(Command::New(settings)) => {
-            write_json(&client.create_with_settings(settings.resolve()).await?)
+            let account = settings.chatgpt_account.clone();
+            let settings = settings.resolve();
+            let receipt = match account {
+                Some(account) => {
+                    client
+                        .create_with_chatgpt_account(settings, &account)
+                        .await?
+                }
+                None => client.create_with_settings(settings).await?,
+            };
+            write_json(&receipt)
         }
         Some(Command::Settings(command)) => command.run(&client).await,
         Some(Command::Cron(command)) => command.run(&client).await,
@@ -645,6 +754,10 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         ),
         Some(Command::Cancel(command)) => {
             write_json(&client.cancel(&command.agent_id, &command.turn_id).await?)
+        }
+        #[cfg(target_os = "linux")]
+        Some(Command::WaylandHost(_) | Command::DesktopHost(_) | Command::ServerHost(_)) => {
+            unreachable!("handled before runtime startup")
         }
         Some(Command::VmRunConfig(_)) => unreachable!("handled before managed client setup"),
         Some(Command::VmCloneImage { .. }) => unreachable!("handled before managed client setup"),
@@ -907,14 +1020,19 @@ fn supported_agent_page_origin(url: &Url) -> bool {
 
 async fn run_turn(client: &ManagedClient, command: Run) -> Result<(), ManagedError> {
     let created = command.agent.is_none();
-    let (agent, mut events, agent_id, _) = open_workspace_agent_with_settings(
-        client,
-        command.agent,
-        None,
-        command.settings.resolve(),
-        None,
-    )
-    .await?;
+    let account = command.settings.chatgpt_account.clone();
+    let settings = command.settings.resolve();
+    let requested_agent = match account {
+        Some(account) => Some(
+            client
+                .create_with_chatgpt_account(settings, &account)
+                .await?
+                .agent_id,
+        ),
+        None => command.agent,
+    };
+    let (agent, mut events, agent_id, _) =
+        open_workspace_agent_with_settings(client, requested_agent, None, settings, None).await?;
     if created {
         eprintln!("Managed agent: {agent_id}");
     }
@@ -976,12 +1094,25 @@ async fn open_workspace_agent_with_settings(
     let attachment_metadata = config
         .attachment_metadata()
         .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+    let hand_key = format!("user:{}", attachment_metadata.attachment_id());
+    let hand_cwd = format!("/{}", attachment_metadata.attachment_id());
+    let client =
+        client
+            .clone()
+            .with_request_origin("nanocodex2", Some(&hand_key), Some(&hand_cwd))?;
     let mut tools = Tools::builder()
         .without_defaults()
         .add(WorkspaceTools::new(&workspace));
-    if let Some(config) = nanocodex_computer::ComputerConfig::discover() {
-        let computer = nanocodex_computer::ComputerTools::local(config);
-        tools = tools.add(computer.js()).add(computer.reset());
+    if let Some(config) = nanocodex_computer::ComputerConfig::discover_or_install()
+        .await
+        .map_err(ManagedError::Configuration)?
+    {
+        let computer = nanocodex_computer::ComputerTools::connect(config)
+            .await
+            .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+        for tool in computer.tools() {
+            tools = tools.add(tool);
+        }
     }
     let tools = tools
         .build()

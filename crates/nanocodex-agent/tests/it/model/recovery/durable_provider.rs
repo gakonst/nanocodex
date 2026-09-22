@@ -2,7 +2,7 @@ use std::{
     future::{Ready, ready},
     sync::{
         Arc, Mutex,
-        atomic::{AtomicU32, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     task::{Context, Poll},
 };
@@ -31,6 +31,7 @@ use super::*;
 
 #[derive(Clone)]
 struct ProviderProbe {
+    compaction_response_id: &'static str,
     calls: Arc<AtomicU32>,
 }
 
@@ -69,7 +70,7 @@ impl Service<ResponsesAttempt> for ProviderProbe {
                 pipeline_stats: ResponsePipelineStats::default(),
             }),
             ResponsesAttemptKind::Compaction => ResponsesOutput::Compaction(CompactionOutput {
-                id: "resp-compaction".to_owned(),
+                id: self.compaction_response_id.to_owned(),
                 status: "completed".to_owned(),
                 item: ResponseItem::Compaction {
                     id: Some(ResponseItemId::from("cmp-provider")),
@@ -201,13 +202,21 @@ impl Tool for HostContextProbe {
 }
 
 struct ProviderSteps {
+    compaction_fault: Option<&'static str>,
     admissions: Mutex<Vec<String>>,
+    retain_continuation: bool,
+    continuation: Mutex<Option<nanocodex_agent::execution::ExecutionContinuation>>,
+    fail_next_model: AtomicBool,
 }
 
 impl ProviderSteps {
     const fn new() -> Self {
         Self {
+            compaction_fault: None,
             admissions: Mutex::new(Vec::new()),
+            retain_continuation: false,
+            continuation: Mutex::new(None),
+            fail_next_model: AtomicBool::new(false),
         }
     }
 
@@ -234,14 +243,19 @@ impl ExecutionPolicy for ProviderSteps {
         'a,
         nanocodex_agent::Result<Option<nanocodex_agent::execution::ExecutionContinuation>>,
     > {
-        Box::pin(async { Ok(None) })
+        Box::pin(async { Ok(self.continuation.lock().unwrap().take()) })
     }
     fn advance<'a>(
         &'a self,
         _operation_id: String,
-        _state: nanocodex_agent::execution::ExecutionContinuation,
+        state: nanocodex_agent::execution::ExecutionContinuation,
     ) -> ExecutionFuture<'a, nanocodex_agent::Result<()>> {
-        Box::pin(async { Ok(()) })
+        Box::pin(async move {
+            if self.retain_continuation {
+                *self.continuation.lock().unwrap() = Some(state);
+            }
+            Ok(())
+        })
     }
 
     fn admit<'a>(
@@ -264,6 +278,14 @@ impl ExecutionPolicy for ProviderSteps {
         Box::pin(async {})
     }
 
+    fn cancel<'a>(
+        &'a self,
+        _operation_id: String,
+        _snapshot: Option<SessionSnapshot>,
+    ) -> ExecutionFuture<'a, nanocodex_agent::Result<()>> {
+        Box::pin(async { Ok(()) })
+    }
+
     fn begin_attempt<'a>(
         &'a self,
         _operation_id: String,
@@ -279,7 +301,20 @@ impl ExecutionPolicy for ProviderSteps {
         _input_json: String,
     ) -> ExecutionFuture<'a, nanocodex_agent::Result<ExecutionStepAdmission>> {
         Box::pin(async move {
-            self.admissions.lock().unwrap().push(kind);
+            self.admissions.lock().unwrap().push(kind.clone());
+            if kind == "model_call" && self.fail_next_model.swap(false, Ordering::Relaxed) {
+                return Err(NanocodexError::InvalidExecutionPolicy(
+                    "interrupted before model call".into(),
+                ));
+            }
+            if kind == "compaction" && self.compaction_fault == Some("cancellation") {
+                return std::future::pending().await;
+            }
+            if kind == "compaction" && self.compaction_fault == Some("admission") {
+                return Err(NanocodexError::InvalidExecutionPolicy(
+                    "compaction admission unavailable".into(),
+                ));
+            }
             Ok(ExecutionStepAdmission::Execute)
         })
     }
@@ -287,10 +322,17 @@ impl ExecutionPolicy for ProviderSteps {
     fn complete_step<'a>(
         &'a self,
         _operation_id: String,
-        _step_id: String,
+        step_id: String,
         _output_json: String,
     ) -> ExecutionFuture<'a, nanocodex_agent::Result<()>> {
-        Box::pin(async { Ok(()) })
+        Box::pin(async move {
+            if step_id.starts_with("compaction-") && self.compaction_fault == Some("completion") {
+                return Err(NanocodexError::InvalidExecutionPolicy(
+                    "compaction completion unavailable".into(),
+                ));
+            }
+            Ok(())
+        })
     }
 
     fn complete<'a>(
@@ -330,6 +372,7 @@ async fn assert_provider_step_executes(
     let openai = OpenAi::builder("test-key")
         .transport(transport)
         .service(move || ProviderProbe {
+            compaction_response_id: "resp-compaction",
             calls: Arc::clone(&service_calls),
         })
         .build()?;
@@ -404,6 +447,7 @@ async fn compaction_admission_executes_the_provider() -> Result<()> {
     let openai = OpenAi::builder("test-key")
         .transport(ResponsesTransport::Https)
         .service(move || ProviderProbe {
+            compaction_response_id: "resp-compaction",
             calls: Arc::clone(&service_calls),
         })
         .build()?;
@@ -434,5 +478,260 @@ async fn compaction_admission_executes_the_provider() -> Result<()> {
     assert!(provider_calls.load(Ordering::Relaxed) >= 1);
     policy.assert_admitted("compaction");
     agent.shutdown().await?;
+    Ok(())
+}
+
+async fn assert_compaction_failure_terminal(fault: &'static str) -> Result<()> {
+    let provider_calls = Arc::new(AtomicU32::new(0));
+    let service_calls = Arc::clone(&provider_calls);
+    let policy = Arc::new(ProviderSteps {
+        compaction_fault: Some(fault),
+        ..ProviderSteps::new()
+    });
+    let openai = OpenAi::builder("test-key")
+        .transport(ResponsesTransport::Https)
+        .service(move || ProviderProbe {
+            compaction_response_id: if fault == "response_id" {
+                ""
+            } else {
+                "resp-compaction"
+            },
+            calls: Arc::clone(&service_calls),
+        })
+        .build()?;
+    let workspace = tempfile::tempdir()?;
+    let (agent, mut events) = Nanocodex::builder(openai)
+        .workspace(workspace.path())
+        .context_window_tokens(1)
+        .execution_policy(policy.clone())
+        .build()?;
+    agent.prompt("establish context").await?.await?;
+    while events.try_recv_timed().is_some() {}
+    provider_calls.store(0, Ordering::Relaxed);
+    let turn = agent.prompt("compact context").await?;
+    if fault == "cancellation" {
+        timeout(std::time::Duration::from_secs(5), async {
+            loop {
+                if policy
+                    .admissions
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|kind| kind == "compaction")
+                {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await?;
+        turn.control().cancel().await?;
+    }
+    let error = turn.await.expect_err("compaction must fail");
+    match fault {
+        "cancellation" => assert!(matches!(error, NanocodexError::TurnCancelled)),
+        "response_id" => assert!(matches!(error, NanocodexError::MalformedResponse { .. })),
+        _ => assert!(
+            error
+                .to_string()
+                .contains(&format!("compaction {fault} unavailable"))
+        ),
+    }
+    policy.assert_admitted("compaction");
+    assert_eq!(
+        provider_calls.load(Ordering::Relaxed),
+        u32::from(matches!(fault, "completion" | "response_id"))
+    );
+    let kinds: Vec<_> = std::iter::from_fn(|| events.try_recv_timed())
+        .map(|event| event.event.kind)
+        .collect();
+    let compaction: Vec<_> = kinds
+        .iter()
+        .copied()
+        .filter(|kind| {
+            matches!(
+                kind,
+                AgentEventKind::ModelCompactionStarted
+                    | AgentEventKind::ModelCompactionCompleted
+                    | AgentEventKind::ModelCompactionFailed
+            )
+        })
+        .collect();
+    assert_eq!(
+        compaction,
+        vec![
+            AgentEventKind::ModelCompactionStarted,
+            AgentEventKind::ModelCompactionFailed
+        ]
+    );
+    agent.shutdown().await?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn compaction_admission_failure_emits_terminal_event() -> Result<()> {
+    assert_compaction_failure_terminal("admission").await
+}
+
+#[tokio::test]
+async fn compaction_completion_failure_emits_terminal_event() -> Result<()> {
+    assert_compaction_failure_terminal("completion").await
+}
+
+#[tokio::test]
+async fn compaction_cancellation_emits_terminal_event() -> Result<()> {
+    assert_compaction_failure_terminal("cancellation").await
+}
+
+#[tokio::test]
+async fn compaction_invalid_response_id_emits_terminal_event() -> Result<()> {
+    assert_compaction_failure_terminal("response_id").await
+}
+
+#[derive(Clone)]
+struct RevisionRecoveryProvider {
+    generations: Arc<AtomicU32>,
+    compactions: Arc<AtomicU32>,
+}
+
+impl Service<ResponsesAttempt> for RevisionRecoveryProvider {
+    type Response = ResponsesServiceResponse;
+    type Error = ResponseError;
+    type Future = Ready<std::result::Result<Self::Response, Self::Error>>;
+
+    fn poll_ready(
+        &mut self,
+        _context: &mut Context<'_>,
+    ) -> Poll<std::result::Result<(), Self::Error>> {
+        Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, request: ResponsesAttempt) -> Self::Future {
+        if matches!(request.kind(), ResponsesAttemptKind::Compaction) {
+            self.compactions.fetch_add(1, Ordering::Relaxed);
+        }
+        if matches!(request.kind(), ResponsesAttemptKind::Generation) {
+            let index = self.generations.fetch_add(1, Ordering::Relaxed);
+            if index < 2 {
+                let ResponsesOutput::Generation(mut generation) = host_context_tool_generation()
+                else {
+                    unreachable!()
+                };
+                generation.id = format!("revision-response-{index}");
+                generation.code_calls[0].call_id = format!("revision-call-{index}");
+                generation.output_items = vec![
+                    serde_json::from_value(json!({
+                        "type": "function_call", "call_id": format!("revision-call-{index}"),
+                        "name": "host_context_probe", "arguments": "{}"
+                    }))
+                    .unwrap(),
+                ];
+                return ready(Ok(ResponsesServiceResponse::new(
+                    ResponsesOutput::Generation(generation),
+                )));
+            }
+        }
+        ProviderProbe {
+            compaction_response_id: "revision-compaction",
+            calls: Arc::new(AtomicU32::new(0)),
+        }
+        .call(request)
+    }
+}
+
+struct RecoveredRevisionProbe {
+    observations: Arc<Mutex<Vec<(Option<u64>, u32)>>>,
+    compactions: Arc<AtomicU32>,
+}
+
+#[async_trait]
+impl Tool for RecoveredRevisionProbe {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::function(
+            "host_context_probe",
+            "Record restored instruction revision.",
+            json!({
+                "type": "object", "properties": {}, "additionalProperties": false
+            }),
+        )
+    }
+    async fn execute(&self, _input: ToolInput, context: ToolContext<'_>) -> ToolResult {
+        self.observations.lock().unwrap().push((
+            context.instruction_revision(),
+            self.compactions.load(Ordering::Relaxed),
+        ));
+        Ok(ToolOutput::text("observed"))
+    }
+}
+
+#[tokio::test]
+async fn instruction_revision_survives_durable_recovery_and_mid_turn_compaction() -> Result<()> {
+    let workspace = tempfile::tempdir()?;
+    let policy = Arc::new(ProviderSteps {
+        retain_continuation: true,
+        fail_next_model: AtomicBool::new(true),
+        ..ProviderSteps::new()
+    });
+    let revisions = Arc::new(Mutex::new(Vec::new()));
+    let compactions = Arc::new(AtomicU32::new(0));
+    for revision in [7, 99] {
+        let service_compactions = compactions.clone();
+        let openai = OpenAi::builder("test-key")
+            .transport(ResponsesTransport::Https)
+            .service(move || RevisionRecoveryProvider {
+                generations: Arc::new(AtomicU32::new(0)),
+                compactions: service_compactions.clone(),
+            })
+            .build()?;
+        let tools = Tools::builder()
+            .without_defaults()
+            .tool(RecoveredRevisionProbe {
+                observations: revisions.clone(),
+                compactions: compactions.clone(),
+            })
+            .build()?;
+        let (agent, events) = Nanocodex::builder(openai)
+            .workspace(workspace.path())
+            .context_window_tokens(1)
+            .execution_policy(policy.clone())
+            .tools(tools)
+            .build()?;
+        drop(events);
+        let result = agent
+            .prompt(
+                PromptRequest::new(
+                    Prompt::new("recover the original operation")
+                        .with_instruction_revision(revision),
+                )
+                .request_id("revision-recovery-operation"),
+            )
+            .await?
+            .await;
+        if revision == 7 {
+            assert!(
+                result
+                    .unwrap_err()
+                    .to_string()
+                    .contains("interrupted before model call")
+            );
+            let retained = policy.continuation.lock().unwrap();
+            let saved: Value = serde_json::from_str(&retained.as_ref().unwrap().state_json)?;
+            assert_eq!(saved["instruction_revision"], 7);
+            assert_eq!(saved["phase"], "Generate");
+        } else {
+            result?;
+        }
+        agent.shutdown().await?;
+    }
+    let observations = revisions.lock().unwrap();
+    assert_eq!(
+        observations.iter().map(|entry| entry.0).collect::<Vec<_>>(),
+        vec![Some(7), Some(7)]
+    );
+    assert!(
+        observations[1].1 > observations[0].1,
+        "second tool must execute after compaction"
+    );
+    assert!(compactions.load(Ordering::Relaxed) > 0);
     Ok(())
 }

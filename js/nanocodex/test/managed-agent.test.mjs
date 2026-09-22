@@ -317,7 +317,7 @@ test("managed Agent covers account-scoped create, list, get, and delete", async 
   const listed = await Agent.list(clientOptions);
   assert.deepEqual(listed.map((agent) => agent.id), [agentId]);
   assert.deepEqual(listed[0].summary, {
-    title: "First task", createdAt: 10, updatedAt: 20, turnCount: 3,
+    title: "First task", createdAt: 10, updatedAt: 20, turnCount: 3, lastUserMessageAt: 20,
   });
   assert.equal(Agent.open(agentId, clientOptions).id, agentId);
   assert.equal((await Agent.get(agentId, clientOptions)).id, agentId);
@@ -469,7 +469,8 @@ test("managed server authentication sends only an ncx_live bearer and omits cook
   assert.deepEqual(agents, []);
   assert.equal(captured.credentials, "omit");
   assert.equal(captured.headers.get("authorization"), `Bearer ${apiKey}`);
-  assert.deepEqual([...captured.headers.keys()], ["authorization"]);
+  assert.deepEqual([...captured.headers.keys()], ["authorization", "x-nanocodex-client-context"]);
+  assert.equal(JSON.parse(captured.headers.get("x-nanocodex-client-context")).client, "javascript");
 
   await assert.rejects(
     Agent.list({ baseUrl: origin, apiKey: "sk-provider-secret" }),
@@ -2212,4 +2213,86 @@ test("managed memory preserves requested scan/read batches above former maxima",
   const read = await Agent.memory({ operation: "read", keys: scanned.candidates.map(({ key }) => key) }, options);
   assert.equal(read.memories.length, 30);
   assert.equal(read.memories[29].key.id, 30);
+});
+
+test("conversation preparation is explicit, bodyless, and resolves on acceptance", async () => {
+  const requests = [];
+  const controller = new AbortController();
+  const agent = Agent.open(agentId, { baseUrl: origin, apiKey, fetch: async (input, init) => {
+    const request = new Request(input, init);
+    requests.push(request);
+    return Response.json({ state: "preparing" }, { status: 202 });
+  } });
+  assert.equal(requests.length, 0);
+  await agent.prepare({ signal: controller.signal });
+  assert.equal(requests.length, 1);
+  assert.equal(new URL(requests[0].url).pathname, `/v1/agents/${agentId}/prepare`);
+  assert.equal(requests[0].method, "POST");
+  assert.equal(requests[0].body, null);
+});
+
+
+test("personal memory sends explicit scope without accepting caller-selected user identities", async () => {
+  const seen = [];
+  const options = { baseUrl: origin, apiKey, scope: "personal", fetch: async (url, init) => {
+    seen.push({ url: String(url), body: init.body && JSON.parse(init.body) });
+    if (init.method === "DELETE") return new Response(null, { status: 204 });
+    if (init.method === "POST") return Response.json({ operation: "read", memories: [] });
+    return Response.json({ memories: [] });
+  } };
+  await Agent.listMemories(options);
+  await Agent.memory({ operation: "read", keys: [{ id: 1, version: 1 }] }, options);
+  await Agent.deleteMemory({ id: 1, version: 1 }, options);
+  assert.equal(seen[0].url, origin + "/v1/memory?scope=personal");
+  assert.equal(seen[1].body.scope, "personal");
+  assert.equal(seen[2].url, origin + "/v1/memory/1?version=1&scope=personal");
+  await assert.rejects(Agent.listMemories({ ...options, scope: "other-user" }), /scope/);
+  await assert.rejects(Agent.listMemories({ ...options, userId: "other-user" }), /do not accept userId/);
+});
+
+test("managed clients freeze and send explicit Hand attribution separately from authentication", async () => {
+  const reported = { client: "desktop", hand: "user:laptop", cwd: "/laptop/repo", timezone: "America/Los_Angeles" };
+  let captured;
+  await Agent.list({ baseUrl: origin, apiKey, requestOrigin: reported, fetch: async (_url, init) => {
+    captured = new Headers(init.headers);
+    return Response.json({ data: [] });
+  } });
+  assert.deepEqual(JSON.parse(captured.get("x-nanocodex-client-context")), reported);
+  assert.equal(captured.get("authorization"), `Bearer ${apiKey}`);
+  await assert.rejects(Agent.list({ baseUrl: origin, apiKey, requestOrigin: { client: "desktop", user_id: "forged" } }), /invalid request origin/);
+});
+
+
+test("managed client carries a bounded optional location in the existing context header", async () => {
+  const location = { latitude: 37.5, longitude: -122.5, accuracy_meters: 25, timestamp_ms: Date.now(), approximate: false };
+  let captured;
+  await Agent.list({ baseUrl: origin, apiKey, requestOrigin: { client: "iphone", location }, fetch: async (_url, init) => {
+    captured = new Headers(init.headers);
+    return Response.json({ data: [] });
+  } });
+  assert.deepEqual(JSON.parse(captured.get("x-nanocodex-client-context")), { client: "iphone", location });
+});
+
+test("atomic create-and-prompt forwards caller location at first admission", async () => {
+  const location = { latitude: 37.5, longitude: -122.5, accuracy_meters: 25, timestamp_ms: Date.now(), approximate: true };
+  let captured;
+  const result = await Agent.createAndPrompt({ baseUrl: origin, apiKey, idempotencyKey: "location-start", input: "hello",
+    requestOrigin: { client: "iphone", location }, fetch: async (url, init) => {
+      assert.equal(new URL(url).pathname, "/v1/agent-runs");
+      captured = new Headers(init.headers);
+      return Response.json({ agent_id: agentId, turn_id: "turn-location", turn_idempotency_key: "turn-location", accepted_cursor: "1" });
+    } });
+  assert.equal(result.agent.id, agentId);
+  assert.deepEqual(JSON.parse(captured.get("x-nanocodex-client-context")), { client: "iphone", location });
+});
+
+test("agent listings retain bounded sidebar metadata and tolerate legacy summaries", async () => {
+  const presentation = { revision: 2, status: "running", activeTurnIds: ["turn"], activityTurnId: "turn", activity: "I'm checking sidebar state", updatedAt: 30 };
+  const fetch = async () => Response.json({ data: [agentId], summaries: {
+    [agentId]: { title: "Fix sidebar", created_at: 10, updated_at: 20, turn_count: 1, last_user_message_at: 15, presentation },
+  } });
+  const agents = await Agent.list({ baseUrl: "https://example.test", apiKey, fetch });
+  assert.equal(agents[0].summary.lastUserMessageAt, 15);
+  assert.deepEqual(agents[0].summary.presentation, presentation);
+  assert.equal(Object.isFrozen(agents[0].summary.presentation.activeTurnIds), true);
 });

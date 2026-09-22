@@ -2,9 +2,8 @@
 
 Nanocodex’s native CLI ports the subagent runtime from
 [`clabby/tact@1d9ccaefd1d8613dab020812af04a91cd9b4c52c`](https://github.com/clabby/tact/tree/1d9ccaefd1d8613dab020812af04a91cd9b4c52c)
-under Apache-2.0. The runtime source, schemas, prompts, lifecycle, messaging,
-capacity policy, and focused tests are retained 1:1. The integration changes
-are limited to Nanocodex module paths, removal of Tact’s separate memory-tool
+under Apache-2.0. The runtime adapts Tact’s lifecycle, messaging, capacity policy, and focused
+tests. Integration changes include Nanocodex module paths, removal of Tact’s separate memory-tool
 coupling, CLI configuration, event draining, shutdown wiring, and explicit
 propagation of Nanocodex’s originating tool span into the child harness.
 
@@ -34,7 +33,7 @@ An enabled runtime installs seven tools for root and child agents:
 | Tool | Contract |
 | --- | --- |
 | `spawn_agent` | Create a clean child session with a role, focused task, required output schema, and optional model/thinking overrides. |
-| `submit_result` | Submit the active child turn’s final JSON value against its schema and turn token. |
+| `submit_result` | Submit `{output}` against the child’s schema and the runtime’s trusted instruction revision. |
 | `send_agent_message` | Send a bounded directed message within the current task tree. |
 | `list_agents` | List visible agents, status, topology, and caller authority. |
 | `wait_agent` | Wait until any selected agent reaches a terminal state. |
@@ -42,11 +41,14 @@ An enabled runtime installs seven tools for root and child agents:
 | `close_agent` | Close an agent and its descendants permanently. |
 
 Each child starts without inherited conversation history. Its initial prompt
-contains its role, task, tree identity, coordination rules, output schema, and
-a monotonically changing turn token. A successful model turn must call
-`submit_result` exactly once with a schema-valid value and the current token.
-Steering rotates the token, preventing a superseded turn from submitting the
-new turn’s result.
+contains its role, task, tree identity, coordination rules, and output schema.
+Call `submit_result({output})` with a schema-valid value. The runtime binds the
+submission to the instruction revision of the model request; the model supplies
+no turn token. An accepted result returns `{accepted: true, status: "accepted"}`.
+If steering superseded that request, the tool returns
+`{accepted: false, status: "superseded"}` as a normal continuation, not an error.
+Incorporate the updated instructions and submit again. Only an accepted result
+satisfies the child’s completion contract.
 
 Model and thinking overrides apply only to the new child. When either is
 omitted, the child inherits the invoking agent’s current value at the spawn

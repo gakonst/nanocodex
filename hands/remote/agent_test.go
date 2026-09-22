@@ -46,3 +46,16 @@ func TestAgentSnapshotPipeIsBounded(t *testing.T) {
 		t.Fatal("snapshot escaped output bound")
 	}
 }
+
+func TestAgentKeyPressSpansPollingFrames(t *testing.T) {
+	steps, err := (agentInput{Action: "key", Key: pointer(uint16(40)), Modifiers: []uint16{224}}).steps("lease")
+	if err != nil || len(steps) != 4 {
+		t.Fatal("invalid key sequence", err)
+	}
+	if !*steps[1].input.Down || *steps[2].input.Down || steps[2].delay != 50*time.Millisecond {
+		t.Fatal("key press must have a bounded dwell before release")
+	}
+	if *steps[3].input.Key != 224 || *steps[3].input.Down || steps[3].delay != 0 {
+		t.Fatal("modifier must be released after the key")
+	}
+}

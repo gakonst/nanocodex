@@ -11,9 +11,12 @@ public struct ChatGeneratedOutput: Identifiable, Equatable, Hashable, Sendable {
     public let source: String?
     public let mimeType: String?
     public let title: String
+    /// Set only from an attributed computer tool result, never inferred from image bytes.
+    public let isComputerScreen: Bool
 
-    private init(kind: Kind, text: String = "", source: String? = nil, mimeType: String? = nil, title: String = "") {
+    private init(kind: Kind, text: String = "", source: String? = nil, mimeType: String? = nil, title: String = "", isComputerScreen: Bool = false) {
         self.kind = kind; self.text = text; self.source = source; self.mimeType = mimeType; self.title = title
+        self.isComputerScreen = kind == .image && isComputerScreen
         // Labels/metadata can differ between a nested tool and its outer exec.
         var hash = SHA256()
         hash.update(data: Data((kind.rawValue + "\n").utf8))
@@ -27,8 +30,8 @@ public struct ChatGeneratedOutput: Identifiable, Equatable, Hashable, Sendable {
         id = hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
 
-    public static func parse(results: [String], includeText: Bool = false) -> [Self] {
-        var parser = Parser(includesText: includeText)
+    public static func parse(results: [String], includeText: Bool = false, computerScreen: Bool = false) -> [Self] {
+        var parser = Parser(includesText: includeText, computerScreen: computerScreen)
         for source in results {
             parser.walk(decode(source) ?? source, includeText: includeText)
         }
@@ -103,6 +106,7 @@ public struct ChatGeneratedOutput: Identifiable, Equatable, Hashable, Sendable {
         // Tool content blocks and embedded resources are transport formats,
         // not permission to promote their text into the conversation.
         let includesText: Bool
+        var computerScreen = false
         var outputs: [ChatGeneratedOutput] = []
         var seen = Set<String>()
         var recognized = 0
@@ -229,12 +233,12 @@ public struct ChatGeneratedOutput: Identifiable, Equatable, Hashable, Sendable {
                 let actualMime = String(clean[clean.index(clean.startIndex, offsetBy: 5)..<comma]).lowercased().components(separatedBy: ";").first ?? mime
                 let safeKind: Kind = actualMime == "text/html" || actualMime == "image/svg+xml" ? .file : kind
                 let normalized = clean[..<comma].lowercased() + clean[comma...]
-                append(.init(kind: safeKind, source: normalized, mimeType: actualMime, title: label)); return
+                append(.init(kind: safeKind, source: normalized, mimeType: actualMime, title: label, isComputerScreen: computerScreen)); return
             }
             if let url = URL(string: clean), ["https", "http"].contains(url.scheme?.lowercased() ?? ""),
                url.host != nil, url.user == nil, url.password == nil {
                 let safeKind: Kind = mime == "text/html" || mime == "image/svg+xml" ? .file : kind
-                append(.init(kind: safeKind, source: url.absoluteString, mimeType: mime, title: label)); return
+                append(.init(kind: safeKind, source: url.absoluteString, mimeType: mime, title: label, isComputerScreen: computerScreen)); return
             }
             append(.init(kind: .unsupported, text: "This resource is not available on this device.", title: label))
         }

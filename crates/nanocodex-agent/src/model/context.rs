@@ -323,12 +323,18 @@ fn render_environment_diff(
     Some(output)
 }
 
+#[cfg(not(target_family = "wasm"))]
 fn push_filesystem(output: &mut String, cwd: &str) {
     output.push_str("  <filesystem><workspace_roots><root>");
     push_xml_escaped_text(output, cwd);
     output.push_str(
         "</root></workspace_roots><permission_profile type=\"disabled\"><file_system type=\"unrestricted\" /></permission_profile></filesystem>\n",
     );
+}
+
+#[cfg(target_family = "wasm")]
+fn push_filesystem(_output: &mut String, _cwd: &str) {
+    // The host supplies its actual grant; WASM has no unrestricted filesystem.
 }
 
 fn push_xml_line(output: &mut String, tag: &str, value: &str) {
@@ -423,9 +429,10 @@ mod tests {
         let rendered = text(&after.diff_item(&before).expect("environment diff"));
         assert!(rendered.contains("<current_date>2026-07-28</current_date>"));
         assert!(rendered.contains("<timezone>America/New_York</timezone>"));
-        assert!(
+        assert_eq!(
             rendered
-                .contains("<filesystem><workspace_roots><root>/workspace</root></workspace_roots>")
+                .contains("<filesystem><workspace_roots><root>/workspace</root></workspace_roots>"),
+            !cfg!(target_family = "wasm"),
         );
         assert!(!rendered.contains("keep the prefix"));
         assert!(!rendered.contains("<cwd>"));
@@ -478,7 +485,10 @@ mod tests {
         assert!(update.full);
         let rendered = text(&update.item);
         assert!(rendered.contains("cached"));
-        assert!(rendered.contains("<filesystem>"));
+        assert_eq!(
+            rendered.contains("<filesystem>"),
+            !cfg!(target_family = "wasm")
+        );
     }
 
     #[test]

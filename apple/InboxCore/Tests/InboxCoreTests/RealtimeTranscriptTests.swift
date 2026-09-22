@@ -48,4 +48,37 @@ final class RealtimeTranscriptTests: XCTestCase {
         XCTAssertNil(RealtimeTranscript.project("<strong> is an HTML tag", isPartial: true))
         XCTAssertNil(RealtimeTranscript.project("<r", isPartial: false))
     }
+
+    func testBootstrapInputWithoutTranscriptRemainsVisibleInNormalChat() throws {
+        let input = "<realtime_delegation><source>voice_bootstrap</source><input>Find &lt;this&gt;</input></realtime_delegation>"
+        XCTAssertEqual(RealtimeTranscript.project(input)?.map(\.text), ["Find <this>"])
+        let event = try AgentEvent(.object(["cursor": .string("1"), "type": .string("turn_accepted"), "turn_id": .string("t"), "input": .string(input)]))
+        XCTAssertEqual(transcript([event]).map(\.role), ["You"])
+        XCTAssertEqual(transcript([event]).map(\.text), ["Find <this>"])
+    }
+
+    func testStreamingHandoffNeverFlashesInputBeforeSpokenTranscript() {
+        let prefix = "<realtime_delegation><input>Summarized handoff instruction</input>"
+        let transcript = "<transcript_delta>user: Actual speech</transcript_delta>"
+        for suffix in ["", "<transcript_delta>", "<transcript_delta>user: Actual"] {
+            XCTAssertEqual(RealtimeTranscript.project(prefix + suffix, isPartial: true), [])
+        }
+        XCTAssertEqual(RealtimeTranscript.project(prefix + transcript, isPartial: true)?.map(\.text), ["Actual speech"])
+        XCTAssertEqual(RealtimeTranscript.project(prefix + "</realtime_delegation>", isPartial: true)?.map(\.text), ["Summarized handoff instruction"])
+        XCTAssertEqual(RealtimeTranscript.project(prefix + "<transcript_delta>unfinished"), [])
+    }
+
+    func testUnknownLifecycleSourceStillCannotExposeSyntheticInput() {
+        for source in ["transcript_tail_flush", "future_internal_source"] {
+            let input = "<realtime_delegation><source>\(source)</source><input>Synthetic instruction</input></realtime_delegation>"
+            XCTAssertEqual(RealtimeTranscript.project(input), [])
+        }
+        XCTAssertEqual(RealtimeTranscript.project("<realtime_delegation><input>Synthetic instruction</input><source>unfinished"), [])
+    }
+
+    func testCRLFTranscriptDoesNotLeaveCarriageReturnsInSpokenRows() {
+        let input = "<realtime_delegation><transcript_delta>user: First\r\nsecond\r\nassistant: Reply</transcript_delta></realtime_delegation>"
+        XCTAssertEqual(RealtimeTranscript.project(input)?.map(\.text), ["First\nsecond", "Reply"])
+        XCTAssertEqual(RealtimeTranscript.project(input)?.map(\.speaker), ["user", "assistant"])
+    }
 }

@@ -139,7 +139,7 @@ export function documentStatusForPath(pathname: string): 200 | 404 | null {
     || pathname === "/world" || pathname === "/artifact-runtime"
     || pathname === "/demos/chief-of-staff"
     || pathname === "/changelog" || pathname === "/code" || pathname === "/commits"
-    || pathname === "/requests" || pathname === "/connect"
+    || pathname === "/requests" || pathname === "/router" || pathname === "/connect"
     || pathname === "/connect/device" || pathname === "/connect/vault") return 200;
   if (Object.hasOwn(docsPreview, pathname) || isEvalDocumentPath(pathname)) return 200;
   if (pathname.startsWith("/docs/") || pathname.startsWith("/evals/")) return 404;
@@ -255,6 +255,7 @@ async function previewForUrl(url: URL, env: LinkPreviewEnv): Promise<Preview> {
       title: document?.[0] ?? fallbackTitle,
     };
   }
+  if (pathname === "/router") return fixed(pathname, "Router", "Compare provider latency, routing health and the retained inference benchmark.", "INFERENCE OPERATIONS");
   if (pathname === "/evals") {
     return fixed(pathname, "Evals", "Inspect retained, verifier-backed Nanocodex evaluation worksets and runs.", "EVALUATIONS");
   }

@@ -14,7 +14,7 @@ use nix::{
     unistd::Pid,
 };
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
-use tokio::process::{Child, ChildStderr, ChildStdout, Command};
+use tokio::process::{ChildStderr, ChildStdout, Command};
 use tokio::task::JoinHandle;
 
 use super::selection::Shell;
@@ -50,55 +50,103 @@ pub(super) struct SpawnedProcess {
     pub(super) child: ProcessChild,
     pub(super) stdin: Option<ProcessStdin>,
     pub(super) output: ProcessOutput,
-    pub(super) process_group: ProcessGroupGuard,
+    pub(super) process_group: SharedProcessGroup,
 }
 
-pub(super) enum ProcessChild {
-    Pipes {
-        child: Child,
-        exit_code: Option<i32>,
-    },
-    Pty {
-        wait: Option<JoinHandle<io::Result<i32>>>,
-        exit_code: Option<i32>,
-    },
+// The session owns this handle and its termination guard; the task owns the
+// OS child so it keeps reaping even while nobody polls the session.
+pub(super) struct ProcessChild {
+    wait: Option<JoinHandle<io::Result<i32>>>,
+    completed: Option<io::Result<i32>>,
+    process_group: SharedProcessGroup,
 }
 
 impl ProcessChild {
-    pub(super) async fn wait(&mut self) -> io::Result<i32> {
-        match self {
-            Self::Pipes {
-                child,
-                exit_code: cached,
-            } => {
-                if let Some(exit_code) = *cached {
-                    return Ok(exit_code);
+    fn new(
+        mut try_wait: impl FnMut() -> io::Result<Option<i32>> + Send + 'static,
+        process_group: SharedProcessGroup,
+    ) -> Self {
+        let group = process_group.clone();
+        let wait = tokio::spawn(async move {
+            loop {
+                // Serialize reaping and guard retirement with signals/drop.
+                // Never leave an exited child's guard armed until a later poll.
+                {
+                    let mut guard = group.0.lock().unwrap_or_else(|e| e.into_inner());
+                    // Observe exit without releasing the PID, clean up its
+                    // group, then reap. A mutex alone cannot prevent the OS
+                    // from recycling a PID between try_wait and killpg.
+                    let ready = guard.prepare_to_reap();
+                    match ready.and_then(|ready| if ready { try_wait() } else { Ok(None) }) {
+                        Ok(None) => {}
+                        Ok(Some(status)) => {
+                            guard.disarm();
+                            return Ok(status);
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::Interrupted => {}
+                        Err(error) => {
+                            // ECHILD can mean another waiter already reaped
+                            // this PID. Do not signal an unverified identity.
+                            guard.disarm();
+                            return Err(error);
+                        }
+                    }
                 }
-                let exit_code = child.wait().await.map(exit_code)?;
-                *cached = Some(exit_code);
-                Ok(exit_code)
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
             }
-            Self::Pty {
-                wait,
-                exit_code: cached,
-            } => {
-                if let Some(exit_code) = *cached {
-                    return Ok(exit_code);
-                }
-                // Await by mutable reference so a yield timeout can cancel
-                // this wait without detaching and losing the sole join handle.
-                let result = wait
-                    .as_mut()
-                    .ok_or_else(|| io::Error::other("PTY wait result is unavailable"))?
-                    .await;
-                let exit_code = result.map_err(|error| {
-                    io::Error::other(format!("PTY wait task failed: {error}"))
-                })??;
-                *wait = None;
-                *cached = Some(exit_code);
-                Ok(exit_code)
-            }
+        });
+        Self {
+            wait: Some(wait),
+            completed: None,
+            process_group,
         }
+    }
+
+    pub(super) async fn wait(&mut self) -> io::Result<i32> {
+        if self.completed.is_none() {
+            // Borrow the handle: cancelling a tool poll must not lose the result.
+            let result = self
+                .wait
+                .as_mut()
+                .ok_or_else(|| io::Error::other("shell wait result is unavailable"))?
+                .await
+                .map_err(|error| io::Error::other(format!("shell wait task failed: {error}")))
+                .and_then(|result| result);
+            self.wait = None;
+            self.completed = Some(result);
+        }
+        match self.completed.as_ref().expect("completed wait") {
+            Ok(status) => Ok(*status),
+            Err(error) => Err(io::Error::new(error.kind(), error.to_string())),
+        }
+    }
+}
+
+impl Drop for ProcessChild {
+    fn drop(&mut self) {
+        // Dropping a JoinHandle detaches it. Signal first, then let the waiter
+        // reap the child rather than aborting the task and abandoning ownership.
+        let _ = self.process_group.terminate_and_disarm();
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct SharedProcessGroup(Arc<StdMutex<ProcessGroupGuard>>);
+
+impl SharedProcessGroup {
+    fn new(pid: u32) -> Self {
+        Self(Arc::new(StdMutex::new(ProcessGroupGuard::new(pid))))
+    }
+
+    pub(super) fn interrupt(&self) -> io::Result<()> {
+        self.0.lock().unwrap_or_else(|e| e.into_inner()).interrupt()
+    }
+
+    pub(super) fn terminate_and_disarm(&self) -> io::Result<()> {
+        self.0
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .terminate_and_disarm()
     }
 }
 
@@ -173,17 +221,18 @@ fn spawn_pipes(
     let pid = child
         .id()
         .ok_or_else(|| io::Error::other("spawned shell without a process identifier"))?;
+    let process_group = SharedProcessGroup::new(pid);
     Ok(SpawnedProcess {
         stdin: None,
         output: ProcessOutput::Pipes {
             stdout: child.stdout.take(),
             stderr: child.stderr.take(),
         },
-        child: ProcessChild::Pipes {
-            child,
-            exit_code: None,
-        },
-        process_group: ProcessGroupGuard::new(pid),
+        child: ProcessChild::new(
+            move || child.try_wait().map(|status| status.map(exit_code)),
+            process_group.clone(),
+        ),
+        process_group,
     })
 }
 
@@ -213,26 +262,29 @@ fn spawn_pty(
         command.env(name, value);
     }
 
+    // Allocate fallible I/O handles before spawning so an allocation error
+    // cannot leave a child running without its termination guard and waiter.
+    let reader = pair.master.try_clone_reader().map_err(pty_error)?;
+    let writer = pair.master.take_writer().map_err(pty_error)?;
     let mut child = pair.slave.spawn_command(command).map_err(pty_error)?;
     let pid = child
         .process_id()
         .ok_or_else(|| io::Error::other("spawned PTY command without a process identifier"))?;
-    let reader = pair.master.try_clone_reader().map_err(pty_error)?;
-    let writer = pair.master.take_writer().map_err(pty_error)?;
-    let wait = tokio::task::spawn_blocking(move || {
-        child
-            .wait()
-            .map(|status| i32::try_from(status.exit_code()).unwrap_or(i32::MAX))
-    });
+    let process_group = SharedProcessGroup::new(pid);
+    let child = ProcessChild::new(
+        move || {
+            child.try_wait().map(|status| {
+                status.map(|status| i32::try_from(status.exit_code()).unwrap_or(i32::MAX))
+            })
+        },
+        process_group.clone(),
+    );
 
     Ok(SpawnedProcess {
-        child: ProcessChild::Pty {
-            wait: Some(wait),
-            exit_code: None,
-        },
+        child,
         stdin: Some(ProcessStdin::Pty(Arc::new(StdMutex::new(writer)))),
         output: ProcessOutput::Pty(reader),
-        process_group: ProcessGroupGuard::new(pid),
+        process_group,
     })
 }
 
@@ -271,10 +323,57 @@ impl ProcessGroupGuard {
         Self { process_group }
     }
 
+    // These Unix targets expose waitid through rustix. WNOWAIT keeps the
+    // exited leader waitable, reserving its PID until group cleanup finishes.
+    #[cfg(all(
+        unix,
+        not(any(
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "horizon",
+            target_os = "cygwin"
+        ))
+    ))]
+    fn prepare_to_reap(&mut self) -> io::Result<bool> {
+        use rustix::process::{WaitId, WaitIdOptions, waitid};
+
+        let Some(group) = self.process_group else {
+            return Ok(true);
+        };
+        let pid = rustix::process::Pid::from_raw(group.as_raw())
+            .ok_or_else(|| io::Error::other("invalid shell process identifier"))?;
+        match waitid(
+            WaitId::Pid(pid),
+            WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT,
+        ) {
+            Ok(None) => Ok(false),
+            Ok(Some(_)) => {
+                let _ = self.terminate_and_disarm();
+                Ok(true)
+            }
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    // Without a non-reaping exit observation, retire the guard on completion
+    // without sending a post-reap signal to a potentially recycled identifier.
+    #[cfg(not(all(
+        unix,
+        not(any(
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "horizon",
+            target_os = "cygwin"
+        ))
+    )))]
+    fn prepare_to_reap(&mut self) -> io::Result<bool> {
+        Ok(true)
+    }
+
     #[cfg(unix)]
     pub(super) fn interrupt(&self) -> io::Result<()> {
         let Some(process_group) = self.process_group else {
-            return Err(io::Error::other("process identifier exceeds i32::MAX"));
+            return Ok(());
         };
         match killpg(process_group, Signal::SIGINT) {
             Ok(()) | Err(Errno::ESRCH) => Ok(()),
@@ -290,7 +389,7 @@ impl ProcessGroupGuard {
     #[cfg(unix)]
     fn terminate(&self) -> io::Result<()> {
         let Some(process_group) = self.process_group else {
-            return Err(io::Error::other("process identifier exceeds i32::MAX"));
+            return Ok(());
         };
         match killpg(process_group, Signal::SIGKILL) {
             Ok(()) | Err(Errno::ESRCH) => Ok(()),
@@ -325,9 +424,9 @@ impl ProcessGroupGuard {
     }
 
     pub(crate) fn terminate_and_disarm(&mut self) -> io::Result<()> {
-        self.terminate()?;
+        let result = self.terminate();
         self.disarm();
-        Ok(())
+        result
     }
 }
 
@@ -420,6 +519,83 @@ mod tests {
     #[cfg(feature = "native")]
     use super::ambient_sensitive_environment;
     use super::{NORMALIZED_ENVIRONMENT, normalize_environment, sanitized_environment};
+
+    #[cfg(all(
+        unix,
+        not(any(
+            target_os = "openbsd",
+            target_os = "redox",
+            target_os = "horizon",
+            target_os = "cygwin"
+        ))
+    ))]
+    #[tokio::test]
+    async fn group_is_retired_before_the_leader_is_reaped() {
+        use rustix::process::{WaitId, WaitIdOptions, waitid};
+        use std::os::unix::process::CommandExt;
+
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 23"])
+            .process_group(0)
+            .spawn()
+            .expect("spawn group leader");
+        let pid = rustix::process::Pid::from_raw(i32::try_from(child.id()).unwrap()).unwrap();
+        let mut guard = super::ProcessGroupGuard::new(child.id());
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !guard.prepare_to_reap().expect("observe exit") {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("leader exits");
+        assert!(
+            guard.process_group.is_none(),
+            "group must already be retired"
+        );
+        assert!(
+            waitid(
+                WaitId::Pid(pid),
+                WaitIdOptions::EXITED | WaitIdOptions::NOHANG | WaitIdOptions::NOWAIT
+            )
+            .expect("leader identity is still retained")
+            .is_some()
+        );
+        assert_eq!(child.wait().expect("reap leader").code(), Some(23));
+        // Later session cleanup must be an inert operation after reaping.
+        guard.interrupt().unwrap();
+        guard.terminate_and_disarm().unwrap();
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn interrupted_reap_retries_and_caches_the_exit_status() {
+        use std::os::unix::process::CommandExt;
+        let mut child = std::process::Command::new("/bin/sh")
+            .args(["-c", "exit 23"])
+            .process_group(0)
+            .spawn()
+            .expect("spawn group leader");
+        let group = super::SharedProcessGroup::new(child.id());
+        let mut interrupted = false;
+        let mut child = super::ProcessChild::new(
+            move || {
+                if !interrupted {
+                    interrupted = true;
+                    return Err(std::io::ErrorKind::Interrupted.into());
+                }
+                child.try_wait().map(|status| status.map(super::exit_code))
+            },
+            group,
+        );
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_secs(5), child.wait())
+                .await
+                .unwrap()
+                .unwrap(),
+            23
+        );
+        assert_eq!(child.wait().await.unwrap(), 23);
+    }
 
     #[cfg(feature = "native")]
     #[test]

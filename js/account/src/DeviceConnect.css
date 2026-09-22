@@ -2008,3 +2008,32 @@
 .connect-wizard .wizard-review-page { padding-bottom: 32px; }
 .connect-wizard .wizard-actions { padding-bottom: max(24px, env(safe-area-inset-bottom)); }
 .connect-wizard .wizard-actions button { min-height: 46px; border-radius: 12px; }
+
+
+.vault-intake-card {
+  display: grid;
+  gap: 10px;
+  margin-block: 12px;
+  padding: 18px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--surface-raised);
+  color: var(--text);
+  max-width: 560px;
+  overflow-wrap: anywhere;
+}
+.vault-intake-card p { margin: 0; color: var(--text-muted); font-size: 13px; line-height: 1.5; }
+.vault-intake-card button, .vault-intake-card > a {
+  justify-self: start;
+  min-height: 44px;
+  padding: 10px 16px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  background: var(--surface);
+  cursor: pointer;
+}
+.vault-intake-card button:disabled { opacity: .55; cursor: default; }
+.vault-intake-card button:focus-visible { outline: 2px solid var(--text); outline-offset: 3px; }
+.vault-intake-approval { display: grid; gap: 12px; padding-top: 8px; }
+.vault-intake-card [role="alert"] { color: var(--text); }

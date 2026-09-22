@@ -1,8 +1,8 @@
+import { scopedMemoryOperation, type MemoryVisibility } from "./memory-target";
 import type { NamedTool, ToolContext } from "nanocodex";
 import {
   MEMORY_TOOL_DESCRIPTION,
   memoryToolInputSchema,
-  parseMemoryOperation,
   type MemoryOperation,
   type MemoryResult,
 } from "nanocodex-tools/memory";
@@ -31,7 +31,7 @@ export type MemorySessionToolCapability =
 export type MemorySessionToolOptions = Readonly<{
   findSessions(input: HistoryFindSessionsInput): Promise<HistoryFindSessionsResponse>;
   readSession(input: HistoryReadSessionInput): Promise<HistoryReadSessionResponse>;
-  memory(operation: MemoryOperation): Promise<MemoryResult>;
+  memory(operation: MemoryOperation, scope: MemoryVisibility, context: ToolContext): Promise<MemoryResult>;
   requireCapability(capability: MemorySessionToolCapability, context: ToolContext): void;
   requireRootMemoryMutation(context: ToolContext): void;
   recordCitations(citations: readonly HistoryCitation[]): void;
@@ -85,17 +85,19 @@ export function memorySessionTools(options: MemorySessionToolOptions): readonly 
     },
     {
       name: "memory",
-      description: MEMORY_TOOL_DESCRIPTION,
-      parameters: memoryToolInputSchema(),
+      description: MEMORY_TOOL_DESCRIPTION + " Choose scope personal for the current user's private preferences and facts; scope team (the default) is shared team knowledge. IDs and scan receipts belong to their scope: use the same scope for scan, read, put, and delete. Never copy personal facts into team memory without the user's request.",
+      parameters: { oneOf: memoryToolInputSchema().oneOf.map(variant => ({ ...variant,
+        properties: { ...variant.properties, scope: { type: "string", enum: ["team", "personal"] } },
+      })) },
       handler: async (input: unknown, context: ToolContext) => {
-        const operation = parseMemoryOperation(input);
+        const { operation, scope } = scopedMemoryOperation(input);
         if (operation.operation === "scan" || operation.operation === "read") {
           options.requireCapability("memory:read", context);
         } else {
           options.requireRootMemoryMutation(context);
           options.requireCapability("memory:write", context);
         }
-        return options.memory(operation);
+        return { ...await options.memory(operation, scope, context), scope };
       },
     },
   ];

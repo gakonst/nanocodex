@@ -39,6 +39,7 @@ use crate::{
 };
 
 mod webrtc;
+pub use webrtc::RealtimeMediaPeer;
 
 /// Sample rate required for GPT Realtime PCM audio.
 pub const REALTIME_SAMPLE_RATE: u32 = 24_000;

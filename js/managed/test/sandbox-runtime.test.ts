@@ -1,3 +1,4 @@
+import { CUA_JS_NAME } from "nanocodex-computer/contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ToolMap } from "nanocodex";
 
@@ -106,7 +107,8 @@ describe("sandbox runtime egress", () => {
 describe("managed sandbox preview wiring", () => {
   it("reads shared /brain files from the durable R2 prefix and preserves private fallback reads", async () => {
     const bucket = {
-      get: vi.fn(async () => ({ arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer })),
+      head: vi.fn(async () => ({ size: 3 })),
+      get: vi.fn(async () => ({ size: 3, body: new Response(new Uint8Array([1, 2, 3])).body })),
     } as unknown as R2Bucket;
     const fallback = { readFile: vi.fn(async () => new Uint8Array([9])) };
     const workspace = createSharedBrainReadWorkspace(bucket, "durable-agent", fallback);
@@ -175,20 +177,34 @@ describe("managed sandbox preview wiring", () => {
       (_machineId, name) => sourceTools[name],
     );
 
-    expect(tools.map(({ name }) => name)).toEqual(["exec_command", "write_stdin", "preview"]);
-    await expect(tools[0]!.handler(
+    expect(tools.map(({ name }) => name)).toEqual(["mcp__cua_repl__js", "mcp__cua_repl__js_reset", "exec_command", "write_stdin", "preview"]);
+    const exec = tools.find(({ name }) => name === "exec_command")!;
+    await expect(exec.handler(
       { cmd: "pwd", workdir: "/test" },
       toolContext(),
     )).resolves.toEqual({ ok: true });
     expect(sourceHandler).toHaveBeenCalledTimes(1);
 
     executionAuthorized = false;
-    await expect(tools[0]!.handler({}, toolContext())).rejects.toMatchObject({
+    await expect(exec.handler({}, toolContext())).rejects.toMatchObject({
       status: 403,
       code: "namespace_forbidden",
       message: "the current authorization cannot use execution hands",
     });
     expect(sourceHandler).toHaveBeenCalledTimes(1);
+  });
+
+  it("rechecks execution authority before invoking a captured CUA provider", async () => {
+    let allowed = true;
+    const invoke = vi.fn(async () => ({ content: [] }));
+    const tools = createManagedNamespaceTools(() => allowed,
+      () => [{ id: "desktop", workspace: "/" }],
+      (_id, name) => name.startsWith("mcp__cua_repl__") ? { handler: invoke, definition: { description: "Fixture CUA provider", parameters: { type: "object", additionalProperties: true } } } : undefined);
+    await tools.find(tool => tool.name === "mcp__cua_repl__js")!.handler({ workdir: "/desktop" }, toolContext());
+    allowed = false;
+    await expect(tools.find(tool => tool.name === "mcp__cua_repl__js")!.handler({ workdir: "/desktop", code: "1" }, toolContext()))
+      .rejects.toMatchObject({ status: 403, code: "namespace_forbidden" });
+    expect(invoke).not.toHaveBeenCalled();
   });
 
   it("refreshes an epoch-bound retained route once before a new subagent namespace snapshot", async () => {

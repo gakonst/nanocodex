@@ -474,3 +474,119 @@ async fn steer_withdrawal_only_removes_latest_unconsumed_input() -> Result<()> {
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
+
+struct RevisionProbe {
+    observed: tokio::sync::mpsc::UnboundedSender<Option<u64>>,
+    release: Arc<tokio::sync::Semaphore>,
+}
+
+#[nanocodex_tools::contract::async_trait]
+impl nanocodex_tools::Tool for RevisionProbe {
+    fn definition(&self) -> nanocodex_tools::ToolDefinition {
+        nanocodex_tools::ToolDefinition::function(
+            "revision_probe",
+            "Reports captured instruction revision.",
+            json!({"type":"object","properties":{},"additionalProperties":false}),
+        )
+    }
+
+    async fn execute(
+        &self,
+        _input: nanocodex_tools::ToolInput,
+        context: nanocodex_tools::ToolContext<'_>,
+    ) -> nanocodex_tools::ToolResult {
+        self.observed.send(context.instruction_revision()).unwrap();
+        self.release.acquire().await.unwrap().forget();
+        Ok(nanocodex_tools::ToolOutput::text("observed"))
+    }
+}
+
+#[tokio::test]
+async fn instruction_revision_follows_consumed_steering_and_resets_on_new_prompt() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let endpoint = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut socket = accept_async(stream).await?;
+        assert_eq!(next_json(&mut socket).await?["generate"], false);
+        send_warmup(&mut socket, "revision-warmup").await?;
+        for index in 0..5 {
+            let request = next_json(&mut socket).await?;
+            assert!(!request.to_string().contains("instruction_revision"));
+            if index == 3 {
+                send_final(&mut socket, "revision-final").await?;
+                continue;
+            }
+            let call = json!({
+                "id": format!("revision-item-{index}"), "type": "function_call",
+                "call_id": format!("revision-call-{index}"),
+                "name": "revision_probe", "arguments": "{}"
+            });
+            send_json(
+                &mut socket,
+                completed_response(&format!("revision-response-{index}"), &[call]),
+            )
+            .await?;
+        }
+        next_json(&mut socket).await?;
+        send_final(&mut socket, "revision-new-final").await
+    });
+    let workspace = temporary_workspace("instruction-revision")?;
+    let (observed, mut observations) = tokio::sync::mpsc::unbounded_channel();
+    let release = Arc::new(tokio::sync::Semaphore::new(0));
+    let tools = Tools::builder()
+        .without_defaults()
+        .tool(RevisionProbe {
+            observed,
+            release: release.clone(),
+        })
+        .build()?;
+    let openai = OpenAi::builder("test-key")
+        .websocket_url(endpoint)
+        .build()?;
+    let (agent, _events) = Nanocodex::builder(openai)
+        .thinking(Thinking::Low)
+        .workspace(&workspace)
+        .session_id(test_session_id())
+        .tools(tools)
+        .build()?;
+    let turn = agent
+        .prompt(Prompt::new("initial").with_instruction_revision(7))
+        .await?;
+    assert_eq!(
+        timeout(std::time::Duration::from_secs(5), observations.recv()).await?,
+        Some(Some(7))
+    );
+    turn.steer(Prompt::new("changed").with_instruction_revision(8))
+        .await?;
+    release.add_permits(1);
+    assert_eq!(
+        timeout(std::time::Duration::from_secs(5), observations.recv()).await?,
+        Some(Some(8))
+    );
+    turn.steer_with_id(
+        "withdrawn-revision".to_owned(),
+        Prompt::new("withdraw this change").with_instruction_revision(9),
+    )
+    .await?;
+    assert!(turn.withdraw_steer("withdrawn-revision".to_owned()).await?);
+    turn.steer("ordinary steering preserves revision").await?;
+    release.add_permits(1);
+    assert_eq!(
+        timeout(std::time::Duration::from_secs(5), observations.recv()).await?,
+        Some(Some(8))
+    );
+    release.add_permits(1);
+    turn.result().await?;
+    let next = agent.prompt("unrelated prompt").await?;
+    assert_eq!(
+        timeout(std::time::Duration::from_secs(5), observations.recv()).await?,
+        Some(None)
+    );
+    release.add_permits(1);
+    next.result().await?;
+    drop(agent);
+    timeout(std::time::Duration::from_secs(5), server).await???;
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}

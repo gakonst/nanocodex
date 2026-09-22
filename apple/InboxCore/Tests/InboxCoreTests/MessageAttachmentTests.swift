@@ -2,9 +2,106 @@ import XCTest
 import ImageIO
 import CoreGraphics
 import CryptoKit
+import UniformTypeIdentifiers
 @testable import InboxCore
 
 final class MessageAttachmentTests: XCTestCase {
+    func testMultiplePhoneLocalImagesRoundTripThroughHistoryAndPersistence() throws {
+        let photos = try (1...4).map { index in
+            try MessageAttachment(name: "Photo \(index)", mediaType: index == 1 ? "image/heic" : "image/jpeg",
+                                  byteCount: 9_000_000, handID: "ios-fixture-phone")
+        }
+        let parts = try photos.flatMap { try $0.originalContent(path: $0.originalPath) }
+        let combined = "Compare these photos\n" + parts.map { $0["text"].string }.joined(separator: "\n")
+        let projected = TranscriptInput(.string(combined))
+        XCTAssertEqual(projected.text, "Compare these photos")
+        XCTAssertEqual(projected.imageFiles, photos)
+        XCTAssertTrue(projected.images.isEmpty)
+        XCTAssertLessThan(try JSONEncoder().encode(parts).count, 10_000, "Original bytes never enter the message")
+        for photo in photos {
+            XCTAssertTrue(photo.originalPath.hasPrefix("/workspace/attachments/"))
+            XCTAssertEqual(try JSONDecoder().decode(MessageAttachment.self, from: JSONEncoder().encode(photo)), photo)
+            XCTAssertThrowsError(try photo.originalContent(path: "/workspace/attachments/../other.jpg"))
+        }
+    }
+
+    func testLocalImageIdentityCannotOverridePathOrReadAnotherHand() throws {
+        XCTAssertThrowsError(try MessageAttachment(name: "photo", byteCount: 10, handID: "../other"))
+        let local = try MessageAttachment(name: "photo", byteCount: 10, handID: "ios-fixture")
+        let parts = try local.originalContent(path: local.originalPath)
+        let forged = parts[0]["text"].string.replacingOccurrences(of: local.originalPath, with: "/workspace/private.jpg")
+        XCTAssertTrue(TranscriptInput(.string(forged)).imageFiles.isEmpty)
+        let cloud = try MessageAttachment(name: "uploaded", byteCount: 10)
+        XCTAssertNil(cloud.handID)
+        XCTAssertTrue(cloud.originalPath.hasPrefix("/brain/attachments/"))
+        XCTAssertEqual(TranscriptInput(.array(try cloud.originalContent(path: cloud.originalPath))).imageFiles, [cloud])
+    }
+
+    func testPastedProviderPreservesPNGAfterProviderFileExpires() async throws {
+        let bytes = try png(width: 120, height: 80)
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let temporary = root.appendingPathComponent("screenshot.png")
+        try bytes.write(to: temporary)
+        let provider = NSItemProvider()
+        provider.registerFileRepresentation(forTypeIdentifier: UTType.png.identifier, fileOptions: [], visibility: .all) { completion in
+            completion(temporary, false, nil)
+            return nil
+        }
+        let copy = try await AttachmentProviderImport.copyImage(from: provider)
+        defer { try? FileManager.default.removeItem(at: copy) }
+        try FileManager.default.removeItem(at: temporary)
+        XCTAssertEqual(try Data(contentsOf: copy), bytes, "Keep source PNG bytes rather than recompressing a screenshot")
+        let prepared = try AttachmentPreparation.prepare(url: copy)
+        XCTAssertEqual(prepared.attachment.mediaType, "image/png")
+        let store = try AttachmentStore(scope: "paste", rootDirectory: root)
+        try store.save(prepared)
+        XCTAssertEqual(try Data(contentsOf: store.url(for: prepared.attachment)), bytes)
+        XCTAssertEqual(TranscriptInput(.array(try store.content(for: [prepared.attachment]))).imageFiles, [prepared.attachment])
+    }
+
+    func testDataBackedImageProviderImportsAsAFile() async throws {
+        let bytes = try png()
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.png.identifier, visibility: .all) { completion in
+            completion(bytes, nil)
+            return nil
+        }
+        let copy = try await AttachmentProviderImport.copyImage(from: provider)
+        defer { try? FileManager.default.removeItem(at: copy) }
+        XCTAssertEqual(try Data(contentsOf: copy), bytes)
+        XCTAssertEqual(try AttachmentPreparation.prepare(url: copy).attachment.mediaType, "image/png")
+    }
+
+    func testCancellingAnImageProviderReleasesAnUnfinishedImport() async throws {
+        let started = expectation(description: "Provider started")
+        let cancelled = expectation(description: "Provider progress cancelled")
+        let provider = NSItemProvider()
+        provider.registerDataRepresentation(forTypeIdentifier: UTType.png.identifier, visibility: .all) { _ in
+            let progress = Progress(totalUnitCount: 1)
+            progress.cancellationHandler = { cancelled.fulfill() }
+            started.fulfill()
+            return progress
+        }
+        let task = Task { try await AttachmentProviderImport.copyImage(from: provider) }
+        await fulfillment(of: [started], timeout: 2)
+        task.cancel()
+        do {
+            _ = try await task.value
+            XCTFail("Expected cancellation without waiting for a provider callback")
+        } catch is CancellationError {}
+        await fulfillment(of: [cancelled], timeout: 2)
+    }
+
+    func testTextProviderIsRejectedAsAnAttachment() async throws {
+        let provider = NSItemProvider(object: "hello" as NSString)
+        do {
+            _ = try await AttachmentProviderImport.copyImage(from: provider)
+            XCTFail("Expected unsupported image")
+        } catch { XCTAssertEqual(error as? AttachmentError, .unsupportedImage) }
+    }
+
     func testImagePreparationPreservesOriginalAndCreatesAnOrientedPreview() throws {
         let original = try png(width: 2200, height: 1100, orientation: 6)
         let prepared = try AttachmentPreparation.prepare(data: original, name: "Camera.png", mediaType: "image/png")
@@ -17,12 +114,33 @@ final class MessageAttachmentTests: XCTestCase {
         XCTAssertFalse(prepared.content[0]["text"].string.contains("base64"))
         let source = try XCTUnwrap(CGImageSourceCreateWithData(prepared.preview as CFData, nil))
         let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
-        XCTAssertEqual(image.width, 320)
-        XCTAssertEqual(image.height, 640, "Only the preview is resized and oriented")
+        XCTAssertEqual(image.width, 1024)
+        XCTAssertEqual(image.height, 2048, "The inspection rendition retains readable detail and is oriented")
+        XCTAssertLessThanOrEqual(prepared.preview.count, AttachmentPreparation.inspectionMaxByteCount)
         let originalSource = try XCTUnwrap(CGImageSourceCreateWithData(retained as CFData, nil))
         let properties = try XCTUnwrap(CGImageSourceCopyPropertiesAtIndex(originalSource, 0, nil) as? [CFString: Any])
         XCTAssertEqual(properties[kCGImagePropertyPixelWidth] as? Int, 2200)
         XCTAssertEqual(properties[kCGImagePropertyPixelHeight] as? Int, 1100)
+    }
+
+    func testUnsupportedLargeOriginalHasBoundedModelViewableRendition() throws {
+        var original = try png(width: 2400, height: 1200, format: "public.tiff")
+        original.append(Data(repeating: 0, count: 11 * 1024 * 1024))
+        let prepared = try AttachmentPreparation.prepare(data: original, name: "scan.tiff", mediaType: "image/tiff")
+        XCTAssertEqual(prepared.attachment.mediaType, "image/tiff")
+        guard case .data(let retained) = prepared.source else { return XCTFail("Expected original data") }
+        XCTAssertEqual(retained, original)
+        XCTAssertLessThanOrEqual(prepared.preview.count, AttachmentPreparation.inspectionMaxByteCount)
+        let decoded = try XCTUnwrap(CGImageSourceCreateWithData(prepared.preview as CFData, nil))
+        XCTAssertEqual(CGImageSourceGetType(decoded) as String?, "public.jpeg")
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(decoded, 0, nil))
+        XCTAssertEqual(image.width, 2048)
+        XCTAssertEqual(image.height, 1024)
+        XCTAssertTrue(prepared.content[0]["text"].string.contains("Use view_image on path to inspect this image"))
+        // Descriptor wording must still disappear from flattened history prose.
+        let input = TranscriptInput(.string("Inspect this\n" + prepared.content[0]["text"].string))
+        XCTAssertEqual(input.text, "Inspect this")
+        XCTAssertEqual(input.imageFiles, [prepared.attachment])
     }
 
     func testLargeOriginalFileIsPreservedWithoutInlineHistoryBytes() throws {
@@ -162,14 +280,14 @@ final class MessageAttachmentTests: XCTestCase {
         XCTAssertEqual(try String(contentsOf: outside, encoding: .utf8), "preserve")
     }
 
-    private func png(width: Int = 48, height: Int = 32, orientation: Int = 1) throws -> Data {
+    private func png(width: Int = 48, height: Int = 32, orientation: Int = 1, format: String = "public.png") throws -> Data {
         let context = try XCTUnwrap(CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: width * 4,
                                              space: CGColorSpaceCreateDeviceRGB(), bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
         context.setFillColor(CGColor(red: 0.2, green: 0.5, blue: 0.8, alpha: 0.5))
         context.fill(CGRect(x: 0, y: 0, width: width, height: height))
         let image = try XCTUnwrap(context.makeImage())
         let data = NSMutableData()
-        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, "public.png" as CFString, 1, nil))
+        let destination = try XCTUnwrap(CGImageDestinationCreateWithData(data, format as CFString, 1, nil))
         CGImageDestinationAddImage(destination, image, [kCGImagePropertyOrientation: orientation] as CFDictionary)
         XCTAssertTrue(CGImageDestinationFinalize(destination))
         return data as Data

@@ -16,16 +16,17 @@ use nanocodex_oai_api::{Model, ReasoningMode, Thinking};
 
 use crate::{
     AgentList, AgentReceipt, AgentSettings, AgentSettingsPatch, AgentSettingsResponse, AgentState,
-    EventCursor, EventHistoryPage, FindSessionsRequest, FindSessionsResponse, ManagedApiKey,
-    ManagedError, ManagedEventStream, MemoryKey, MemoryListResponse, MemoryRecord, PromptInput,
-    ReadSessionBody, ReadSessionRequest, ReadSessionResponse, SteerWithdrawal, TurnAction,
-    TurnSteer, TurnSubmission, TurnView,
+    AutoRoutingStatus, EventCursor, EventHistoryPage, FindSessionsRequest, FindSessionsResponse,
+    ManagedApiKey, ManagedError, ManagedEventStream, MemoryKey, MemoryListResponse, MemoryRecord,
+    PromptInput, ReadSessionBody, ReadSessionRequest, ReadSessionResponse, RoutingStatus,
+    SteerWithdrawal, TurnAction, TurnSteer, TurnSubmission, TurnView,
 };
 
 const MAX_HISTORY_PAGE: u16 = 256;
 const SUBMIT_ATTEMPTS: usize = 3;
 const READ_ATTEMPTS: usize = 3;
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
+const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(10 * 60);
 
 /// Builder for a cloneable native managed HTTP client.
 ///
@@ -81,6 +82,7 @@ pub struct ManagedClient {
     pub(crate) http: reqwest::Client,
     pub(crate) base_url: Url,
     pub(crate) bearer: Arc<str>,
+    pub(crate) request_origin: Option<HeaderValue>,
     access: Arc<Mutex<Option<ManagedAccess>>>,
 }
 
@@ -121,6 +123,52 @@ impl ManagedClient {
         Self::builder(origin, api_key)?.build()
     }
 
+    /// Adds descriptive client and logical Hand context to HTTP and WebSocket requests.
+    /// This metadata never grants authority or changes command placement.
+    ///
+    /// # Errors
+    /// Returns a configuration error for oversized or invalid header data.
+    pub fn with_request_origin(
+        mut self,
+        client: &str,
+        hand: Option<&str>,
+        cwd: Option<&str>,
+    ) -> Result<Self, ManagedError> {
+        if client.is_empty()
+            || client.len() > 128
+            || !client
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || b"_.-".contains(&c))
+            || hand.is_some_and(|value| {
+                value.is_empty()
+                    || value.len() > 128
+                    || !value.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
+            })
+            || cwd.is_some_and(|value| {
+                value.len() > 512
+                    || !value.bytes().all(|byte| (0x20..=0x7e).contains(&byte))
+                    || !value.starts_with('/')
+                    || value.contains('\\')
+                    || value.split('/').any(|part| part == "." || part == "..")
+            })
+        {
+            return Err(ManagedError::Configuration(
+                "invalid request origin".to_owned(),
+            ));
+        }
+        let mut context = serde_json::json!({ "client": client });
+        if let Some(hand) = hand {
+            context["hand"] = hand.into();
+        }
+        if let Some(cwd) = cwd {
+            context["cwd"] = cwd.into();
+        }
+        self.request_origin = Some(HeaderValue::from_str(&context.to_string()).map_err(|_| {
+            ManagedError::Configuration("invalid request origin header".to_owned())
+        })?);
+        Ok(self)
+    }
+
     fn from_builder(mut builder: ManagedClientBuilder) -> Result<Self, ManagedError> {
         install_default_rustls_crypto_provider();
         validate_origin(&builder.origin)?;
@@ -152,6 +200,7 @@ impl ManagedClient {
             http,
             base_url: builder.origin,
             bearer: api_bearer,
+            request_origin: None,
             access: Arc::new(Mutex::new(None)),
         })
     }
@@ -178,6 +227,36 @@ impl ManagedClient {
         let settings = settings.validate()?;
         let body = serde_json::to_vec(&serde_json::json!({ "settings": settings }))
             .map_err(|_| ManagedError::InvalidResponse("failed to encode agent settings"))?;
+        let receipt = self
+            .json(Method::POST, "v1/agents", Some(&body), None)
+            .await?;
+        validate_agent_receipt(receipt)
+    }
+
+    /// Creates an agent pinned to one connected ChatGPT account.
+    ///
+    /// The pin is retained for the session and disables automatic account failover.
+    ///
+    /// # Errors
+    ///
+    /// Returns an identifier/settings-validation, transport, HTTP, or response-schema failure.
+    pub async fn create_with_chatgpt_account(
+        &self,
+        settings: AgentSettings,
+        account_id: &str,
+    ) -> Result<AgentReceipt, ManagedError> {
+        if account_id.is_empty()
+            || account_id.len() > 256
+            || !account_id.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+        {
+            return Err(ManagedError::InvalidResponse("invalid ChatGPT account ID"));
+        }
+        let settings = settings.validate()?;
+        let body = serde_json::to_vec(&serde_json::json!({
+            "settings": settings,
+            "configuration": { "chatgpt_account_id": account_id },
+        }))
+        .map_err(|_| ManagedError::InvalidResponse("failed to encode agent configuration"))?;
         let receipt = self
             .json(Method::POST, "v1/agents", Some(&body), None)
             .await?;
@@ -213,6 +292,54 @@ impl ManagedClient {
             ManagedError::InvalidResponse("agent state latest event cursor is invalid")
         })?;
         Ok(state)
+    }
+
+    /// Enables automatic routing on an empty managed session before its first message.
+    /// Repeating a successful opt-in leaves the retained route unchanged.
+    ///
+    /// # Errors
+    ///
+    /// Returns validation, transport, HTTP, or response-schema failures, including
+    /// rejection when routing is unavailable or the session already has history.
+    pub async fn enable_auto_routing(
+        &self,
+        agent_id: &str,
+    ) -> Result<AutoRoutingStatus, ManagedError> {
+        validate_id("agent", agent_id)?;
+        let status: AutoRoutingStatus = self
+            .json(
+                Method::POST,
+                &format!("{}/routing", agent_path(agent_id)),
+                None,
+                None,
+            )
+            .await?;
+        if !status.enabled || !status.settings.is_valid() {
+            return Err(ManagedError::InvalidResponse(
+                "invalid automatic routing receipt",
+            ));
+        }
+        Ok(status)
+    }
+
+    /// Reads the actual retained provider/model without altering the thread.
+    ///
+    /// # Errors
+    /// Returns validation, transport, HTTP, or malformed route failures.
+    pub async fn routing_status(&self, agent_id: &str) -> Result<RoutingStatus, ManagedError> {
+        validate_id("agent", agent_id)?;
+        let mut status: RoutingStatus = self
+            .json(Method::GET, &agent_path(agent_id), None, None)
+            .await?;
+        if let Some(route) = &status.route {
+            if !route.model.supports_thinking(route.thinking) {
+                return Err(ManagedError::InvalidResponse(
+                    "invalid routed thinking effort",
+                ));
+            }
+            status.enabled = true;
+        }
+        Ok(status)
     }
 
     /// Replaces the complete managed settings policy.
@@ -914,7 +1041,74 @@ impl ManagedClient {
         unreachable!("the last read attempt always returns")
     }
 
-    async fn request(
+    pub(crate) fn prepare_active_conversation(&self, agent_id: &str) {
+        let client = self.clone();
+        let path = format!("{}/prepare", agent_path(agent_id));
+        // Bound the best-effort activation request; submission never joins it.
+        tokio::spawn(async move {
+            let _ = tokio::time::timeout(
+                Duration::from_secs(3),
+                client.request(Method::POST, &path, None, None),
+            )
+            .await;
+        });
+    }
+
+    /// Downloads an agent's logical absolute file path into a new local file.
+    ///
+    /// Streams bytes without buffering the whole file. The destination is
+    /// published only after completion and is never overwritten. Failed or
+    /// cancelled downloads remove their temporary file.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error for invalid paths or identifiers, HTTP/transport
+    /// failures, or local filesystem failures (including an existing target).
+    pub async fn download_file(
+        &self,
+        agent_id: &str,
+        path: &str,
+        destination: &std::path::Path,
+    ) -> Result<(), ManagedError> {
+        use tokio::io::AsyncWriteExt;
+
+        validate_id("agent", agent_id)?;
+        if !path.starts_with('/') || path.contains('\0') {
+            return Err(ManagedError::Configuration(
+                "managed file path must be a logical absolute path without NUL".to_owned(),
+            ));
+        }
+        let mut url = self.url(&format!("{}/files", agent_path(agent_id)))?;
+        url.query_pairs_mut().append_pair("path", path);
+        let request = self.http.get(url.clone()).timeout(DOWNLOAD_TIMEOUT);
+        let mut response = self
+            .send_with_access(request, &url)
+            .await
+            .map_err(ManagedError::Transport)?;
+        if !response.status().is_success() {
+            return Err(response_error(response).await);
+        }
+        let parent = destination
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| std::path::Path::new("."));
+        let temporary = tempfile::NamedTempFile::new_in(parent)?.into_temp_path();
+        let mut file = tokio::fs::OpenOptions::new()
+            .write(true)
+            .open(&temporary)
+            .await?;
+        while let Some(chunk) = response.chunk().await.map_err(ManagedError::Transport)? {
+            file.write_all(&chunk).await?;
+        }
+        file.flush().await?;
+        drop(file);
+        temporary
+            .persist_noclobber(destination)
+            .map_err(|error| error.error)?;
+        Ok(())
+    }
+
+    pub(crate) async fn request(
         &self,
         method: Method,
         path: &str,
@@ -939,11 +1133,14 @@ impl ManagedClient {
             .map_err(ManagedError::Transport)
     }
 
-    async fn send_with_access(
+    pub(crate) async fn send_with_access(
         &self,
-        request: reqwest::RequestBuilder,
+        mut request: reqwest::RequestBuilder,
         url: &Url,
     ) -> Result<Response, reqwest::Error> {
+        if let Some(origin) = &self.request_origin {
+            request = request.header("x-nanocodex-client-context", origin.clone());
+        }
         let eligible = (url.path() == "/v1/agents" || url.path().starts_with("/v1/agents/"))
             && !["ws", "events", "tool-host", "device-host", "sideband"]
                 .contains(&url.path().rsplit('/').next().unwrap_or_default());
@@ -1172,6 +1369,175 @@ mod tests {
 
     fn key() -> String {
         format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43))
+    }
+
+    #[tokio::test]
+    async fn download_file_encodes_path_and_preserves_bytes_without_overwriting() {
+        use axum::{
+            extract::Query,
+            http::{HeaderMap, Uri},
+        };
+        let path = "/brain/outputs/a #?%&+ ü.bin";
+        let payload: Vec<u8> = (0..=255).cycle().take(1024 * 1024 + 19).collect();
+        let served = payload.clone();
+        let app = Router::new().route("/v1/agents/agent-1/files", get(
+            move |headers: HeaderMap, uri: Uri, Query(query): Query<std::collections::HashMap<String, String>>| {
+                let served = served.clone();
+                async move {
+                    assert_eq!(headers["authorization"], format!("Bearer {}", key()));
+                    assert_eq!(query.len(), 1);
+                    assert_eq!(query["path"], path);
+                    assert!(uri.query().unwrap().contains("%23%3F%25%26%2B"));
+                    Body::from(served)
+                }
+            }
+        ));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ManagedClient::new(
+            format!("http://{address}"),
+            ManagedApiKey::parse(key()).unwrap(),
+        )
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("download.bin");
+        client
+            .download_file("agent-1", path, &destination)
+            .await
+            .unwrap();
+        assert_eq!(std::fs::read(&destination).unwrap(), payload);
+        assert!(matches!(
+            client.download_file("agent-1", path, &destination).await,
+            Err(ManagedError::Io(_))
+        ));
+        assert_eq!(std::fs::read(&destination).unwrap(), payload);
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 1);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn download_file_returns_http_errors_and_rejects_invalid_inputs() {
+        let app = Router::new().route(
+            "/v1/agents/agent-1/files",
+            get(|| async {
+                (
+                    StatusCode::NOT_FOUND,
+                    axum::Json(
+                        serde_json::json!({"error":"file_not_found", "message":"missing file"}),
+                    ),
+                )
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = ManagedClient::new(
+            format!("http://{address}"),
+            ManagedApiKey::parse(key()).unwrap(),
+        )
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        let destination = directory.path().join("download.bin");
+        assert!(
+            matches!(client.download_file("agent-1", "/brain/missing", &destination).await,
+            Err(ManagedError::Http { status: StatusCode::NOT_FOUND, code, message }) if code == "file_not_found" && message == "missing file")
+        );
+        for (agent, path) in [
+            ("bad/id", "/brain/file"),
+            ("agent-1", "relative"),
+            ("agent-1", "/bad\0path"),
+        ] {
+            assert!(matches!(
+                client.download_file(agent, path, &destination).await,
+                Err(ManagedError::Configuration(_))
+            ));
+        }
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn download_file_cleans_up_incomplete_body() {
+        use tokio::io::AsyncWriteExt;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 4096];
+            // The fixture only needs a request to arrive before it sends the
+            // deliberately truncated response; EOF is not a valid request.
+            assert!(socket.read(&mut request).await.unwrap() > 0);
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\nConnection: close\r\n\r\nshort",
+                )
+                .await
+                .unwrap();
+        });
+        let client = ManagedClient::new(
+            format!("http://{address}"),
+            ManagedApiKey::parse(key()).unwrap(),
+        )
+        .unwrap();
+        let directory = tempfile::tempdir().unwrap();
+        assert!(matches!(
+            client
+                .download_file(
+                    "agent-1",
+                    "/brain/file",
+                    &directory.path().join("download.bin")
+                )
+                .await,
+            Err(ManagedError::Transport(_))
+        ));
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+        server.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn request_origin_is_descriptive_and_sent_over_http() {
+        use axum::http::{HeaderMap, header::AUTHORIZATION};
+        let expected =
+            serde_json::json!({ "client": "nanocodex2", "hand": "user:laptop", "cwd": "/laptop" });
+        let app = Router::new().route(
+            "/v1/agents",
+            get(move |headers: HeaderMap| async move {
+                assert!(headers.contains_key(AUTHORIZATION));
+                assert_eq!(
+                    serde_json::from_slice::<serde_json::Value>(
+                        headers["x-nanocodex-client-context"].as_bytes()
+                    )
+                    .unwrap(),
+                    expected
+                );
+                axum::Json(serde_json::json!({ "data": [] }))
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let key = ManagedApiKey::parse(format!("ncx_live_{}_{}", "k".repeat(12), "s".repeat(43)))
+            .unwrap();
+        let client = ManagedClient::new(format!("http://{address}"), key)
+            .unwrap()
+            .with_request_origin("nanocodex2", Some("user:laptop"), Some("/laptop"))
+            .unwrap();
+        assert!(client.list().await.unwrap().data.is_empty());
+        assert!(
+            client
+                .clone()
+                .with_request_origin("bad\nname", None, None)
+                .is_err()
+        );
+        assert!(
+            client
+                .with_request_origin("cli", None, Some("/laptop/../other"))
+                .is_err()
+        );
+        server.abort();
     }
 
     #[tokio::test]

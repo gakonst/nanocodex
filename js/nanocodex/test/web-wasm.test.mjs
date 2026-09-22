@@ -178,7 +178,9 @@ test("web-target WASM runs the shared model loop through the browser host", asyn
       /cannot reference local filesystem paths/,
     );
     const branchTurn = branch.turn.prompt({ input: [
-      { type: "image", image_url: "data:image/png;base64,iVBORw0KGgo=" },
+      { type: "image", image_url: "data:image/png;base64,YQ==" },
+      { type: "audio", audio_url: "data:audio/wav;base64,AAAA" },
+      { type: "image", image_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=" },
       { type: "text", text: "Reply with WEB_FORK_OK." },
     ] });
     const branchSocket = await branchConnection;
@@ -190,6 +192,10 @@ test("web-target WASM runs the shared model loop through the browser host", asyn
     assert.match(delta, /WEB_WASM_OK/);
     assert.match(delta, /WEB_FORK_OK/);
     assert.match(delta, /input_image/);
+    assert.match(delta, /image content omitted because it could not be processed/);
+    assert.doesNotMatch(delta, /data:image\/png;base64,YQ==/);
+    assert.match(delta, /input_audio/);
+    assert.match(delta, /data:audio\/wav;base64,AAAA/);
     send(branchSocket, {
       type: "response.completed",
       response: {
@@ -699,7 +705,7 @@ test("web-target WASM executes the complete browser harness tool contract", asyn
   });
   const connection = new Promise((resolve) => server.once("connection", resolve));
   const wasm = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
-  const png = Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const png = Uint8Array.from(Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=", "base64"));
   const datasetBytes = new TextEncoder().encode(
     '{"id":1,"label":"alpha"}\n{"id":2,"label":"beta"}\n',
   );
@@ -776,7 +782,7 @@ test("web-target WASM executes the complete browser harness tool contract", asyn
       fetch: async (url, init) => {
         effects.images.push({ url: String(url), body: JSON.parse(init.body) });
         return Response.json({
-          image_url: "data:image/png;base64,Z2VuZXJhdGVk",
+          image_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
           output_hint: "fixture image generated",
         });
       },
@@ -952,11 +958,11 @@ test("web-target WASM executes the complete browser harness tool contract", asyn
       output: "browser-shell:pwd",
       wall_time_seconds: 0,
     });
-    assert.deepEqual(JSON.parse(direct.input[1].output), { updated: true });
+    assert.equal(direct.input[1].output, "Plan updated");
     assert.match(direct.input[2].output, /Success.*M note\.txt/s);
     assert.deepEqual(direct.input[3].output, [{
       type: "input_image",
-      image_url: "data:image/png;base64,iVBORw0KGgo=",
+      image_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
     }]);
     assert.equal(await workspace.readText("/workspace/note.txt"), "after\n");
 
@@ -1036,7 +1042,7 @@ test("web-target WASM executes the complete browser harness tool contract", asyn
       executed.input[0].output.find((item) => item.type === "input_image"),
       {
         type: "input_image",
-        image_url: "data:image/png;base64,Z2VuZXJhdGVk",
+        image_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
       },
     );
     const summaryItem = executed.input[0].output.find((item) =>
@@ -1045,7 +1051,7 @@ test("web-target WASM executes the complete browser harness tool contract", asyn
       patched: true,
       viewed: "original",
       web: "fixture web result",
-      image: "data:image/png;base64,Z2VuZXJhdGVk",
+      image: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
       rows: [{ id: 2 }],
       closed: true,
       rendered: {
@@ -1128,7 +1134,7 @@ test("web-target WASM executes the complete browser harness tool contract", asyn
     }]);
     assert.deepEqual(effects.rememberedImages, [{
       sessionId: agent.sessionId,
-      imageUrl: "data:image/png;base64,Z2VuZXJhdGVk",
+      imageUrl: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=",
     }]);
     assert.equal(effects.artifacts.length, 1);
     assert.equal(effects.artifacts[0].id, "combined");

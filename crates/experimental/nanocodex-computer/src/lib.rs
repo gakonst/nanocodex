@@ -1,10 +1,13 @@
-//! Persistent CUA tools over the independent computer runtime.
+//! Persistent tools from an official external Sky MCP provider.
 //!
 //! Each conversation owns its JavaScript process. Conversations execute in
 //! parallel; calls within one persistent JavaScript scope remain ordered.
-//! Protocol, timeout and cancellation failures discard only the affected
-//! process. Model arguments cannot choose an executable, inherit credentials,
-//! or change trusted runtime configuration.
+//! Protocol and cancellation failures discard only the affected
+//! transport process. This does not prove upstream/native input stopped; effects
+//! may be uncertain and input must not be replayed. Model arguments cannot choose
+//! an executable, inherit credentials, or change trusted runtime configuration.
+
+pub mod provision;
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -26,8 +29,7 @@ use tokio::{
     sync::{mpsc, oneshot},
 };
 
-// The shared JSON contract cannot represent integers above JavaScript's range.
-const MAX_TIMEOUT_MS: u64 = 9_007_199_254_740_991;
+const PROVIDER_STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// Trusted launch configuration, supplied by the embedding application.
 #[derive(Clone, Debug)]
@@ -35,152 +37,165 @@ pub struct ComputerConfig {
     pub executable: PathBuf,
     pub args: Vec<OsString>,
     pub environment: BTreeMap<OsString, OsString>,
-    /// Private Linux Hand desktop directory; resolved when a session starts.
-    pub desktop_runtime: Option<PathBuf>,
+    provider_catalog: Option<Vec<ProviderTool>>,
 }
 
 impl ComputerConfig {
     pub fn new(executable: impl Into<PathBuf>) -> Self {
-        let mut args = Vec::new();
-        for (name, flag) in [
-            ("NANOCODEX_COMPUTER_SECURITY_CONFIG", "--security-config"),
-            ("NANOCODEX_COMPUTER_CDP", "--cdp"),
-            (
-                "NANOCODEX_COMPUTER_BROWSER_PREFERENCES",
-                "--browser-preferences",
-            ),
-            ("NANOCODEX_COMPUTER_IAB_CONFIG", "--iab-config"),
-            ("NANOCODEX_COMPUTER_RUNTIME_CONFIG", "--runtime-config"),
-            ("NANOCODEX_COMPUTER_PLATFORM_CONFIG", "--platform-config"),
-        ] {
-            if let Some(value) = std::env::var_os(name) {
-                args.extend([flag.into(), value]);
-            }
-        }
         Self {
             executable: executable.into(),
-            args,
+            args: Vec::new(),
             environment: BTreeMap::new(),
-            desktop_runtime: None,
+            provider_catalog: None,
         }
     }
 
-    /// Discover the installed companion. An explicit setting never silently
-    /// falls back to a different executable.
+    /// Configure an external CUA MCP provider with its exact host-supplied args.
+    pub fn mcp(executable: impl Into<PathBuf>) -> Self {
+        Self::new(executable)
+    }
+
+    /// Provision the platform's upstream runtime on first use, then discover it.
+    /// Explicit provider settings (including off) never trigger installation.
+    pub async fn discover_or_install() -> Result<Option<Self>, String> {
+        if std::env::var_os("NANOCODEX_COMPUTER").is_none_or(|value| value.is_empty())
+            && cfg!(any(target_os = "macos", target_os = "windows"))
+        {
+            return provision::provision_upstream(false)
+                .await
+                .and_then(|receipt| provision::config_from_receipt(&receipt))
+                .map(Some);
+        }
+        Ok(Self::discover())
+    }
+
+    /// Discover only an explicitly configured or managed upstream MCP launcher.
+    /// There is no custom runtime, sibling executable, or PATH fallback.
     pub fn discover() -> Option<Self> {
-        if let Some(path) = std::env::var_os("NANOCODEX_COMPUTER") {
+        if let Some(path) = std::env::var_os("NANOCODEX_COMPUTER").filter(|value| !value.is_empty())
+        {
             if path == "off" || path == "none" || path == "0" {
                 return None;
             }
-            return Some(Self::new(path));
+            return Some(Self::mcp(path));
         }
-        let name = if cfg!(windows) {
-            "nanocodex-computer.exe"
-        } else {
-            "nanocodex-computer"
-        };
-        let sibling = std::env::current_exe().ok()?.with_file_name(name);
-        if sibling.is_file() {
-            return Some(Self::new(sibling));
-        }
-        if cfg!(debug_assertions) {
-            // Source builds keep the isolated runtime in its own target directory.
-            for profile in ["debug", "release"] {
-                let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                    .join("runtime/target")
-                    .join(profile)
-                    .join(name);
-                if path.is_file() {
-                    return Some(Self::new(path));
-                }
-            }
-        }
-        std::env::var_os("PATH")
-            .and_then(|paths| {
-                std::env::split_paths(&paths)
-                    .map(|directory| directory.join(name))
-                    .find(|path| path.is_file())
-            })
-            .map(Self::new)
+        provision::managed_provider_path().map(Self::mcp)
     }
 }
 
-/// Serializable invocation shared by native and VM transports.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ComputerRequest {
-    pub code: String,
-    #[serde(default)]
-    pub title: Option<String>,
-    #[serde(default = "default_timeout", deserialize_with = "deserialize_timeout")]
-    pub timeout_ms: u64,
-}
-fn deserialize_timeout<'de, D: serde::Deserializer<'de>>(deserializer: D) -> Result<u64, D::Error> {
-    Ok(Option::<u64>::deserialize(deserializer)?.unwrap_or_else(default_timeout))
-}
-fn default_timeout() -> u64 {
-    MAX_TIMEOUT_MS
-}
-
-impl ComputerRequest {
-    pub fn validate(&self) -> Result<(), ToolError> {
-        if !(1..=MAX_TIMEOUT_MS).contains(&self.timeout_ms) {
-            return Err("CUA timeout must be a positive safe integer in milliseconds".into());
-        }
-        if self
-            .title
-            .as_ref()
-            .is_some_and(|title| title.trim().is_empty())
-        {
-            return Err("CUA title must be non-empty".into());
-        }
-        Ok(())
-    }
-}
-
-/// An execution capability bound by the host to one actual computer.
+/// An upstream execution capability bound by the host to one actual computer.
 #[async_trait]
 pub trait ComputerExecutor: Send + Sync + 'static {
-    async fn invoke(
+    async fn invoke_tool(
         &self,
-        request: Option<ComputerRequest>,
+        name: &str,
+        arguments: Value,
         context: ToolContext<'_>,
     ) -> ToolResult;
+}
+
+/// An MCP tool declaration. The provider owns its schema and documentation.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct ProviderTool {
+    pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+    /// Optional MCP metadata, including annotations, outputSchema and UI visibility.
+    #[serde(flatten)]
+    pub metadata: BTreeMap<String, Value>,
+    #[serde(rename = "inputSchema")]
+    pub input_schema: Value,
+}
+
+impl ProviderTool {
+    pub fn model_visible(&self) -> bool {
+        self.metadata
+            .get("_meta")
+            .and_then(|meta| meta.pointer("/ui/visibility"))
+            .and_then(Value::as_array)
+            .is_none_or(|visibility| visibility.iter().any(|value| value == "model"))
+    }
 }
 
 #[derive(Clone)]
 pub struct ComputerTools {
     executor: Arc<dyn ComputerExecutor>,
+    catalog: Arc<Vec<ProviderTool>>,
 }
 impl ComputerTools {
-    pub fn local(config: ComputerConfig) -> Self {
+    /// Discover every MCP tool before publishing its exact description and schema.
+    /// A trusted 120-second deadline bounds initialization and complete catalog
+    /// discovery together, independently of provider tool arguments.
+    pub async fn connect(mut config: ComputerConfig) -> Result<Self, ToolError> {
+        let process = Process::start(&config).await?;
+        config.provider_catalog = Some(process.catalog.clone());
+        Ok(Self::local(config))
+    }
+    fn local(config: ComputerConfig) -> Self {
+        let catalog = Arc::new(
+            config
+                .provider_catalog
+                .clone()
+                .expect("connect discovers the upstream catalog before registration"),
+        );
         let (dispatch, requests) = mpsc::unbounded_channel();
         tokio::spawn(route_sessions(config, requests));
-        Self::new(LocalComputer { dispatch })
+        Self {
+            executor: Arc::new(LocalComputer { dispatch }),
+            catalog,
+        }
     }
-    pub fn new(executor: impl ComputerExecutor) -> Self {
+    /// Bind a remote transport to its discovered upstream catalog.
+    pub fn new(executor: impl ComputerExecutor, catalog: Vec<ProviderTool>) -> Self {
         Self {
             executor: Arc::new(executor),
+            catalog: Arc::new(catalog),
         }
+    }
+    /// Complete provider catalog, including tools reserved for trusted lifecycle hooks.
+    pub fn catalog(&self) -> &[ProviderTool] {
+        &self.catalog
+    }
+    /// Model-visible tools only. Hidden hooks remain available through `tool`.
+    pub fn tools(&self) -> impl Iterator<Item = ComputerTool> + '_ {
+        self.catalog
+            .iter()
+            .filter(|definition| definition.model_visible())
+            .cloned()
+            .map(|definition| ComputerTool {
+                executor: self.executor.clone(),
+                definition,
+            })
+    }
+    pub fn tool(&self, name: &str) -> Option<ComputerTool> {
+        self.catalog
+            .iter()
+            .find(|definition| definition.name == name)
+            .cloned()
+            .map(|definition| ComputerTool {
+                executor: self.executor.clone(),
+                definition,
+            })
     }
     pub fn js(&self) -> ComputerTool {
-        ComputerTool {
-            executor: self.executor.clone(),
-            reset: false,
-        }
+        self.tool("js").expect("CUA provider does not publish js")
     }
     pub fn reset(&self) -> ComputerTool {
-        ComputerTool {
-            executor: self.executor.clone(),
-            reset: true,
-        }
+        self.tool("js_reset")
+            .expect("CUA provider does not publish js_reset")
     }
 }
 
 #[derive(Clone)]
 pub struct ComputerTool {
     executor: Arc<dyn ComputerExecutor>,
-    reset: bool,
+    definition: ProviderTool,
+}
+
+impl ComputerTool {
+    pub fn provider_definition(&self) -> &ProviderTool {
+        &self.definition
+    }
 }
 
 #[async_trait]
@@ -188,36 +203,25 @@ impl Tool for ComputerTool {
     fn supports_parallel_tool_calls(&self) -> bool {
         true
     }
-
     fn definition(&self) -> ToolDefinition {
-        if self.reset {
-            ToolDefinition::function(
-                "mcp__cua_repl__js_reset",
-                include_str!("reset_description.md"),
-                json!({"type":"object","properties":{},"additionalProperties":false}),
-            )
-        } else {
-            ToolDefinition::function(
-                "mcp__cua_repl__js",
-                include_str!("description.md"),
-                serde_json::from_str::<Value>(include_str!("js-schema.json"))
-                    .expect("embedded CUA schema is valid JSON"),
-            )
+        let definition = ToolDefinition::function(
+            format!("mcp__cua_repl__{}", self.definition.name),
+            self.definition.description.as_deref().unwrap_or(""),
+            self.definition.input_schema.clone(),
+        );
+        match self.definition.metadata.get("outputSchema") {
+            Some(schema) => definition.with_output_schema(schema.clone()),
+            None => definition,
         }
     }
     async fn execute(&self, input: ToolInput, context: ToolContext<'_>) -> ToolResult {
-        let request = if self.reset {
-            let value = input.decode_json::<Value>()?;
-            if !value.is_null() && !value.as_object().is_some_and(|object| object.is_empty()) {
-                return Err("cua_repl.js_reset expects an empty object".into());
-            }
-            None
-        } else {
-            let request = input.decode_json::<ComputerRequest>()?;
-            request.validate()?;
-            Some(request)
-        };
-        self.executor.invoke(request, context).await
+        self.executor
+            .invoke_tool(
+                &self.definition.name,
+                input.decode_json::<Value>()?,
+                context,
+            )
+            .await
     }
 }
 
@@ -227,30 +231,36 @@ struct LocalComputer {
 
 struct SessionRequest {
     session: String,
+    turn_id: Option<String>,
     call_id: String,
     model: String,
-    request: Option<ComputerRequest>,
+    name: String,
+    arguments: Value,
     response: oneshot::Sender<ToolResult>,
 }
 
 #[async_trait]
 impl ComputerExecutor for LocalComputer {
-    async fn invoke(
+    async fn invoke_tool(
         &self,
-        request: Option<ComputerRequest>,
+        name: &str,
+        arguments: Value,
         context: ToolContext<'_>,
     ) -> ToolResult {
-        if let Some(request) = &request {
-            request.validate()?;
-        }
+        // Provider arguments (including timeout_ms) are opaque. Queueing and
+        // startup must not consume the provider's execution budget. Dropping
+        // this caller future still closes the receiver and discards only its
+        // owned transport; it cannot establish that native input has stopped.
         let session = context.session_id().to_owned();
         let (response, result) = oneshot::channel();
         self.dispatch
             .send(SessionRequest {
                 session,
+                turn_id: context.turn_id().map(str::to_owned),
                 call_id: context.call_id().to_owned(),
                 model: context.model().to_owned(),
-                request,
+                name: name.into(),
+                arguments,
                 response,
             })
             .map_err(|_| "CUA attachment is closed")?;
@@ -287,6 +297,16 @@ async fn route_sessions(
     }
 }
 
+// Forward host context; never fabricate a turn from a per-call identifier.
+fn turn_metadata(session: &str, turn: Option<&str>, call: &str, model: &str) -> Value {
+    let mut metadata =
+        json!({"session_id":session,"thread_id":session,"call_id":call,"model":model});
+    if let Some(turn) = turn.filter(|turn| !turn.trim().is_empty()) {
+        metadata["turn_id"] = json!(turn);
+    }
+    metadata
+}
+
 async fn run_session(
     config: ComputerConfig,
     session: String,
@@ -296,36 +316,33 @@ async fn run_session(
     let mut interrupted = false;
     while let Some(request) = requests.recv().await {
         let SessionRequest {
+            turn_id,
             call_id,
             model,
-            request,
+            name,
+            arguments,
             mut response,
             ..
         } = request;
-        if interrupted && request.is_some() {
-            let _ = response.send(Err("CUA session ended during cancellation or transport failure. Call cua_repl.js_reset, then select the surface again.".into()));
+        // A caller cancelled while queued never owned the active scope.
+        if response.is_closed() {
             continue;
         }
-        let timeout = Duration::from_millis(
-            request
-                .as_ref()
-                .map_or(MAX_TIMEOUT_MS, |request| request.timeout_ms)
-                + 5_000,
-        );
-        // Taking ownership ensures cancellation drops and kills the process.
-        // The interrupted flag prevents continuation in a silently fresh scope.
+        if interrupted && name != "js_reset" {
+            let _ = response.send(Err("CUA session interrupted by caller cancellation or transport failure. Upstream/native input may still be running and effects are uncertain; do not replay uncertain input. Call cua_repl.js_reset, then inspect the surface before continuing. Reset does not prove earlier input stopped.".into()));
+            continue;
+        }
+        // Taking ownership ensures cancellation drops only this transport process.
+        // Upstream/native work may outlive it. The interrupted flag requires
+        // explicit recovery instead of continuation in a silently fresh scope.
         let previous = process.take();
         let execution = async {
             let mut process = match previous {
                 Some(process) => process,
                 None => Process::start(&config).await?,
             };
-            let (name, args) = match request {
-                Some(request) => ("js", serde_json::to_value(request)?),
-                None => ("js_reset", json!({})),
-            };
-            let value = process.rpc("tools/call", json!({"name":name,"arguments":args,
-                "_meta":{"x-codex-turn-metadata":{"thread_id":session,"call_id":call_id,"model":model}}})).await?;
+            let value = process.rpc("tools/call", json!({"name":name,"arguments":arguments,
+                "_meta":{"x-codex-turn-metadata":turn_metadata(&session, turn_id.as_deref(), &call_id, &model)}})).await?;
             let output = output(value)?;
             Ok::<_, ToolError>((process, output))
         };
@@ -335,14 +352,14 @@ async fn run_session(
                 interrupted = true;
                 continue;
             }
-            outcome = tokio::time::timeout(timeout, execution) => {
-                outcome.map_err(|_| "CUA runtime timed out; its process was stopped. Call cua_repl.js_reset before continuing.".into()).and_then(|result| result)
-            }
+            outcome = execution => outcome,
         };
         match outcome {
             Ok((owned, output)) => {
                 process = Some(owned);
-                interrupted = false;
+                if name == "js_reset" && output.success {
+                    interrupted = false;
+                }
                 if response.send(Ok(output)).is_err() {
                     // The caller disappeared at the completion boundary. Its
                     // state transition is ambiguous, so discard the process
@@ -364,15 +381,21 @@ struct Process {
     input: ChildStdin,
     output: BufReader<ChildStdout>,
     next_id: u64,
+    catalog: Vec<ProviderTool>,
 }
 impl Process {
     async fn start(config: &ComputerConfig) -> Result<Self, ToolError> {
+        // Startup has a trusted cumulative deadline; tool execution does not.
+        // Dropping this future discards its owned transport, not proof that any
+        // upstream/native work has stopped. No startup or input is replayed.
+        tokio::time::timeout(PROVIDER_STARTUP_TIMEOUT, Self::start_and_discover(config))
+            .await
+            .map_err(|_| "CUA provider startup timed out after 120 seconds during initialization or catalog discovery; owned transport discarded. Upstream/native work may continue.")?
+    }
+
+    async fn start_and_discover(config: &ComputerConfig) -> Result<Self, ToolError> {
         let mut command = Command::new(&config.executable);
-        command
-            .args(&config.args)
-            .arg("--allow-native-control")
-            .arg("serve")
-            .env_clear();
+        command.args(&config.args).env_clear();
         // Desktop connection and OS home variables only. Account/API tokens do
         // not cross into a model-controlled JavaScript process.
         for name in [
@@ -387,6 +410,7 @@ impl Process {
             "DISPLAY",
             "XAUTHORITY",
             "WAYLAND_DISPLAY",
+            "HYPRLAND_INSTANCE_SIGNATURE",
             "XDG_RUNTIME_DIR",
             "DBUS_SESSION_BUS_ADDRESS",
             "LANG",
@@ -397,20 +421,6 @@ impl Process {
             }
         }
         command.envs(&config.environment);
-        if let Some(directory) = &config.desktop_runtime {
-            let ready: Value =
-                serde_json::from_slice(&std::fs::read(directory.join("ready")).map_err(
-                    |_| "This Hand's desktop is unavailable; start its screen before using CUA.",
-                )?)?;
-            let display = ready["display"]
-                .as_str()
-                .filter(|display| display.starts_with(':'))
-                .ok_or("Hand desktop did not publish a local X display")?;
-            command
-                .env("DISPLAY", display)
-                .env("XAUTHORITY", directory.join("Xauthority"))
-                .env_remove("WAYLAND_DISPLAY");
-        }
         command
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -418,7 +428,7 @@ impl Process {
             .kill_on_drop(true);
         let mut child = command.spawn().map_err(|error| {
             format!(
-                "Cannot start CUA companion {}: {error}. Run pnpm build:computer first.",
+                "Cannot start upstream Sky MCP provider {}: {error}. Check the host provider installation.",
                 config.executable.display()
             )
         })?;
@@ -429,12 +439,73 @@ impl Process {
             input,
             output,
             next_id: 0,
+            catalog: Vec::new(),
         };
         process.rpc("initialize", json!({"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"nanocodex-computer","version":env!("CARGO_PKG_VERSION")}})).await?;
         process
             .send(json!({"jsonrpc":"2.0","method":"notifications/initialized"}))
             .await?;
+        let catalog = process.discover().await?;
+        if config
+            .provider_catalog
+            .as_ref()
+            .is_some_and(|expected| expected != &catalog)
+        {
+            return Err(
+                "CUA provider catalog changed; reconnect the attachment before invoking it".into(),
+            );
+        }
+        process.catalog = catalog;
         Ok(process)
+    }
+    async fn discover(&mut self) -> Result<Vec<ProviderTool>, ToolError> {
+        let mut tools = Vec::new();
+        let mut cursor: Option<String> = None;
+        let mut cursors = std::collections::BTreeSet::new();
+        loop {
+            let page = self
+                .rpc(
+                    "tools/list",
+                    cursor
+                        .as_ref()
+                        .map_or_else(|| json!({}), |cursor| json!({"cursor": cursor})),
+                )
+                .await?;
+            tools.extend(
+                page["tools"]
+                    .as_array()
+                    .ok_or("CUA provider did not return an MCP tools/list catalog")?
+                    .iter()
+                    .cloned(),
+            );
+            match page.get("nextCursor") {
+                None => break,
+                Some(value) => {
+                    let next = value
+                        .as_str()
+                        .filter(|value| !value.is_empty())
+                        .ok_or("CUA provider returned an invalid tools/list cursor")?;
+                    if !cursors.insert(next.to_owned()) {
+                        return Err("CUA provider returned a repeated tools/list cursor".into());
+                    }
+                    cursor = Some(next.to_owned());
+                }
+            }
+        }
+        let mut names = std::collections::BTreeSet::new();
+        let catalog: Vec<ProviderTool> = tools
+            .into_iter()
+            .map(serde_json::from_value)
+            .collect::<Result<_, _>>()?;
+        for tool in &catalog {
+            if tool.name.is_empty() || !names.insert(tool.name.clone()) {
+                return Err("CUA provider tool names must be non-empty and unique".into());
+            }
+            if !tool.input_schema.is_object() {
+                return Err("CUA provider tool inputSchema must be a JSON schema object".into());
+            }
+        }
+        Ok(catalog)
     }
     async fn send(&mut self, value: Value) -> Result<(), ToolError> {
         let mut bytes = serde_json::to_vec(&value)?;
@@ -448,17 +519,16 @@ impl Process {
         let id = self.next_id;
         self.send(json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
             .await?;
+        let mut line = Vec::new();
         loop {
-            let mut line = Vec::new();
             if self.output.read_until(b'\n', &mut line).await? == 0 {
                 return Err("CUA runtime closed its output".into());
             }
             let value: Value = serde_json::from_slice(&line)?;
+            line.clear();
             if value.get("method").is_some() {
-                // Approval requests need an embedding-owned approval channel;
-                // never synthesize acceptance from model or page content.
-                if let Some(id) = value.get("id") {
-                    self.send(json!({"jsonrpc":"2.0","id":id,"error":{"code":-32601,"message":"No interactive approval channel; configure host-approved surfaces."}})).await?;
+                if let Some(request_id) = value.get("id") {
+                    self.send(json!({"jsonrpc":"2.0","id":request_id,"error":{"code":-32601,"message":"Unsupported provider server request"}})).await?;
                 }
                 continue;
             }
@@ -535,4 +605,116 @@ pub fn output(value: Value) -> ToolResult {
     }
     output.success = success;
     Ok(output)
+}
+
+#[cfg(test)]
+mod provider_contract_tests {
+    use super::*;
+
+    #[test]
+    fn metadata_uses_host_turn_identity_instead_of_call_identity() {
+        for call in ["call-a", "call-b"] {
+            assert_eq!(
+                turn_metadata("session", Some("session:7"), call, "fixture"),
+                json!({"session_id":"session", "thread_id":"session", "turn_id":"session:7", "call_id":call, "model":"fixture"})
+            );
+        }
+        assert!(
+            turn_metadata("session", None, "call-a", "fixture")
+                .get("turn_id")
+                .is_none()
+        );
+        assert_eq!(
+            turn_metadata("session", Some("session:8"), "call-c", "fixture")["turn_id"],
+            "session:8"
+        );
+    }
+
+    #[test]
+    fn model_visibility_matches_pinned_codex_catalog_filter() {
+        // codex-mcp/src/connection_manager/tool_catalog.rs::tool_is_model_visible
+        for (metadata, expected) in [
+            (json!({}), true),
+            (json!({"_meta":{}}), true),
+            (json!({"_meta":{"ui":{}}}), true),
+            (json!({"_meta":{"ui":{"visibility":"model"}}}), true),
+            (json!({"_meta":{"ui":{"visibility":null}}}), true),
+            (json!({"_meta":{"ui":{"visibility":[]}}}), false),
+            (json!({"_meta":{"ui":{"visibility":["app"]}}}), false),
+            (json!({"_meta":{"ui":{"visibility":["model"]}}}), true),
+            (json!({"_meta":{"ui":{"visibility":["app","model"]}}}), true),
+            (
+                json!({"_meta":{"ui":{"visibility":[null,3,{"model":true}]}}}),
+                false,
+            ),
+        ] {
+            let mut raw = metadata;
+            raw["name"] = json!("fixture");
+            raw["inputSchema"] = json!({"type":"object"});
+            let definition: ProviderTool = serde_json::from_value(raw.clone()).unwrap();
+            assert_eq!(definition.model_visible(), expected, "{raw}");
+        }
+    }
+
+    struct EchoProvider;
+    #[async_trait]
+    impl ComputerExecutor for EchoProvider {
+        async fn invoke_tool(
+            &self,
+            name: &str,
+            arguments: Value,
+            _: ToolContext<'_>,
+        ) -> ToolResult {
+            output(
+                json!({"content": [{"type": "text", "text": name}], "structuredContent": arguments}),
+            )
+        }
+    }
+
+    #[tokio::test]
+    async fn preserves_arbitrary_provider_contracts_and_routes_hidden_hooks_only_for_trusted_callers()
+     {
+        let catalog_json = json!([
+            {"name":"js_add_node_module_dir", "description":"Provider-owned instructions", "inputSchema":{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}, "annotations":{"readOnlyHint":false}, "outputSchema":{"type":"object"}, "_meta":{"custom":[1,2]}},
+            {"name":"future_tool", "inputSchema":{"type":"object","additionalProperties":true}},
+            {"name":"turn_ended", "inputSchema":{"type":"object"}, "_meta":{"ui":{"visibility":[]}}},
+            {"name":"app_only", "inputSchema":{"type":"object"}, "_meta":{"ui":{"visibility":["app"]}}}
+        ]);
+        let catalog: Vec<ProviderTool> = serde_json::from_value(catalog_json.clone()).unwrap();
+        let tools = ComputerTools {
+            executor: Arc::new(EchoProvider),
+            catalog: Arc::new(catalog),
+        };
+        assert_eq!(serde_json::to_value(tools.catalog()).unwrap(), catalog_json);
+        assert_eq!(
+            tools
+                .tools()
+                .map(|tool| tool.definition().name().to_owned())
+                .collect::<Vec<_>>(),
+            [
+                "mcp__cua_repl__js_add_node_module_dir",
+                "mcp__cua_repl__future_tool"
+            ]
+        );
+        let module = tools.tool("js_add_node_module_dir").unwrap();
+        assert_eq!(
+            module.provider_definition().metadata["annotations"],
+            json!({"readOnlyHint":false})
+        );
+        assert!(module.definition().output_schema().is_some());
+        for name in ["js_add_node_module_dir", "future_tool", "turn_ended"] {
+            let args = json!({"path":"/fixture/node_modules", "timeout_ms":"provider-owned", "nested":{"value":1}});
+            let result = tools
+                .tool(name)
+                .unwrap()
+                .execute(
+                    ToolInput::Function(serde_json::value::to_raw_value(&args).unwrap()),
+                    ToolContext::new("fixture", "session", "call", &[], 16000),
+                )
+                .await
+                .unwrap();
+            assert_eq!(result.structured_result()["structuredContent"], args);
+            assert_eq!(result.structured_result()["content"][0]["text"], name);
+        }
+    }
 }

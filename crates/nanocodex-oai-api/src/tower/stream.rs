@@ -16,8 +16,6 @@ use crate::{
     telemetry::{ApiEvent, elapsed_ns},
 };
 
-const INVALID_IMAGE_ERROR: &str = "The image data you provided does not represent a valid image";
-
 /// Complete provider output from one `response.create` operation.
 #[derive(Deserialize, Serialize)]
 pub struct GenerationOutput {
@@ -488,13 +486,10 @@ where
         .await?;
         match received.event {
             ServerEvent::OutputItemDone { item, .. } => done_items.push(item),
-            ServerEvent::Completed { mut response } => {
-                let output_items = if response.output.is_empty() {
-                    done_items
-                } else {
-                    std::mem::take(&mut response.output)
-                };
-                let mut compactions = output_items
+            ServerEvent::Completed { response } => {
+                // Pinned Codex counts streamed output_item.done compactions only.
+                // The completion envelope must not replace or manufacture them.
+                let mut compactions = done_items
                     .into_iter()
                     .filter(|item| matches!(item, ResponseItem::Compaction { .. }));
                 let item = compactions.next();
@@ -605,12 +600,6 @@ where
         event,
         ServerEvent::Error | ServerEvent::Failed | ServerEvent::Incomplete
     ) {
-        if raw_event.get().contains(INVALID_IMAGE_ERROR) {
-            return Err(ResponsesError::InvalidImageRequest {
-                event: raw_event.get().to_owned(),
-            }
-            .into());
-        }
         return Err(ResponsesError::api_event(raw_event.get().to_owned()).into());
     }
     Ok(ReceivedServerEvent {

@@ -1,0 +1,24 @@
+{
+  "name": "conversation-projects-test",
+  "main": "test/conversation-project-worker.ts",
+  "compatibility_date": "2026-07-29",
+  "compatibility_flags": [
+    "nodejs_compat"
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "NANOCODEX_USERS",
+        "class_name": "UserAccount"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "UserAccount"
+      ]
+    }
+  ]
+}

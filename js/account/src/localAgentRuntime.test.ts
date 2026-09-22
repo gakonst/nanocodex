@@ -75,7 +75,9 @@ test("a competing tab's terminal winner is absorbed if it leaves the pending ind
   result.dispose();
 });
 
-test("recovery drains more than one pending cursor page even when unfinished turns precede old completed history", { timeout: 10_000 }, async (t) => {
+// This 450-entry recovery took 7.9s locally and exceeded 10s on concurrent CI runners.
+// Keep the full pagination assertions while allowing scheduler/IndexedDB variance.
+test("recovery drains more than one pending cursor page even when unfinished turns precede old completed history", { timeout: 30_000 }, async (t) => {
   const journal = createLocalTranscriptJournal({ indexedDB: new IDBFactory(), keyRange: IDBKeyRange, databaseName: crypto.randomUUID(), broadcastChannel: null });
   const entries = Array.from({ length: 450 }, (_, index): LocalTranscriptTurn => ({
     threadId: "thread", turnId: `turn-${index}`, createdAt: index, prompt: `prompt-${index}`,

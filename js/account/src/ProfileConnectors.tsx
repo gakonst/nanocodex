@@ -88,6 +88,7 @@ const accountConnectorCapabilities = [
   "x",
   "spotify",
   "soundcloud",
+  "link",
 ] as const satisfies readonly AccountConnectorCapability[];
 
 const connectorDefinitions = [
@@ -95,6 +96,7 @@ const connectorDefinitions = [
   { provider: "google", capabilities: googleConnectorCapabilities, label: "Google Workspace", description: "Mail, Drive, Calendar, Tasks, Docs, Sheets, Slides, and Contacts" },
   { provider: "slack", capabilities: ["slack"], label: "Slack", description: "Read and send messages as you in connected workspaces" },
   { provider: "spotify", capabilities: ["spotify"], label: "Spotify", description: "Read and manage playlists, library, follows, and playback" },
+  { provider: "link", capabilities: ["link"], label: "Stripe Link", description: "Request spend approvals in your Link wallet" },
   { provider: "soundcloud", capabilities: ["soundcloud"], label: "SoundCloud", description: "Read and manage tracks, playlists, likes, reposts, and follows" },
   { provider: "x", capabilities: ["x"], label: "X", description: "Read and publish posts; manage follows, likes, bookmarks, lists, and messages" },
 ] as const satisfies ReadonlyArray<{
@@ -393,6 +395,19 @@ export function ProfileConnectors({
       if (authorizationUrl.protocol !== "https:") throw new Error("Invalid connector authorization URL.");
       if (popup.closed) throw new Error("The account authorization popup was closed before it started.");
       popup.location.href = authorizationUrl.href;
+      if (provider === "link") {
+        window.clearInterval(attempt.popupCheck);
+        const expiresAt = typeof body.expires_at === "number" ? body.expires_at : Date.now() + 10 * 60_000;
+        while (activeConnector.current === attempt && Date.now() < expiresAt) {
+          await new Promise(resolve => window.setTimeout(resolve, 5_000));
+          if (activeConnector.current !== attempt) return;
+          const polled = await connectorRequest(`/v1/connectors/link?attempt=${encodeURIComponent(String(body.attempt))}`, { signal: attempt.abort.signal });
+          const result = await polled.json() as { state?: string };
+          if (!polled.ok || result.state === "denied" || result.state === "expired") throw new Error("The Link connection was declined or expired. Try connecting again.");
+          if (result.state === "connected") { await refreshConnectors(attempt.abort.signal); finishConnectorAttempt(attempt); return; }
+        }
+        if (activeConnector.current === attempt) throw new Error("The Link connection expired. Try connecting again.");
+      }
     } catch (cause) {
       if (finishConnectorAttempt(attempt) && !isAbortError(cause)) {
         setError(failureMessage(cause, `Couldn’t connect ${connectorLabel(provider)}.`));

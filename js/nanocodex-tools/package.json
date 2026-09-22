@@ -1,6 +1,6 @@
 {
   "name": "nanocodex-tools",
-  "version": "0.6.1",
+  "version": "0.6.4",
   "description": "Platform-neutral JavaScript tools for Nanocodex agents",
   "type": "module",
   "sideEffects": false,
@@ -68,6 +68,7 @@
     },
     "./standard": "./tools/standard.mjs",
     "./standard-descriptions": "./tools/standardDescriptions.mjs",
+    "./runtime/code-values": "./runtime/code-values.mjs",
     "./runtime/code-runtime": "./runtime/code-runtime.mjs",
     "./runtime/tool-configuration": "./runtime/tool-configuration.mjs",
     "./runtime/tool-router": "./runtime/tool-router.mjs",
@@ -79,6 +80,10 @@
     "./x": {
       "types": "./tools/x.d.mts",
       "import": "./tools/x.mjs"
+    },
+    "./extensions": {
+      "types": "./tools/extensions.d.mts",
+      "import": "./tools/extensions.mjs"
     }
   },
   "files": [

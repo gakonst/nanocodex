@@ -216,15 +216,21 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
       return new Response(null, { status: 101, webSocket: client });
     }
     if (request.method === "POST" && url.pathname === "/acquire") {
+      const started = Date.now();
       const body = await readObject(request);
       const acquire = body && acquireRequest(body);
       if (!acquire) return notFound();
       const claim = this.#poolClaim();
       if (!claim) {
+        console.info({ type: "vm.pool.stage", stage: "acquire_absent", mount_id: acquire.mount_id,
+          timestamp: Date.now(), duration_ms: Date.now() - started });
         return Response.json({ error: "factory_not_found" }, { status: 404 });
       }
       if (!this.#allows(acquire)) return notFound();
-      return this.#acquire(acquire);
+      const response = await this.#acquire(acquire);
+      console.info({ type: "vm.pool.stage", stage: "acquire_response", mount_id: acquire.mount_id,
+        timestamp: Date.now(), duration_ms: Date.now() - started, status: response.status });
+      return response;
     }
     if (request.method === "POST" && url.pathname === "/release") {
       const body = await readObject(request);
@@ -561,6 +567,9 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
     const allocation = this.#allocation(identity.allocation_id);
     if (!allocation || !sameIdentity(allocation, identity)) return notFound();
     const routeId = this.#currentRouteId(allocation);
+    console.info({ type: "vm.pool.stage", stage: "readiness_response", mount_id: allocation.mount_id,
+      allocation_id: allocation.allocation_id, timestamp: Date.now(),
+      ready: allocation.state === "ready" && routeId !== undefined });
     return Response.json({
       ...publicAllocation(allocation, routeId),
       ready: allocation.state === "ready" && routeId !== undefined,
@@ -770,6 +779,8 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
       throw new VmHostProtocolError("unknown_allocation", "allocation is not provisionable by this host");
     }
     if (allocation.state === "releasing") return;
+    console.info({ type: "vm.pool.stage", stage: "provisioned", mount_id: allocation.mount_id,
+      allocation_id: allocation.allocation_id, timestamp: Date.now() });
     this.#markReady(allocation);
   }
 
@@ -821,6 +832,8 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
   }
 
   #sendProvision(socket: WebSocket, host: HostRow, allocation: AllocationRow): void {
+    console.info({ type: "vm.pool.stage", stage: "provision_dispatch", mount_id: allocation.mount_id,
+      allocation_id: allocation.allocation_id, timestamp: Date.now() });
     this.#send(socket, {
       type: "provision",
       lease_id: host.lease_id!,

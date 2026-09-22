@@ -1,3 +1,5 @@
+import type { AgentPresentation } from "./agent-presentation";
+import { retireAccountProjects } from "./retired-projects";
 import { recordHandTiming } from "./hand-timing";
 import { configurationCatalog } from "./agent-configuration";
 import { performanceState } from "./performance";
@@ -139,6 +141,7 @@ export type Principal = Readonly<{
 }>;
 
 export function forwardPrincipalAssertions(headers: Headers, principal: Principal): void {
+  headers.set("x-nanocodex-request-principal", JSON.stringify({ kind: principal.kind, user_id: principal.userId }));
   headers.set(SESSION_OWNER_ASSERTION, principal.userId);
   headers.set(SESSION_ORGANIZATION_ASSERTION, principal.organizationId);
   headers.set(SESSION_TEAM_ASSERTION, principal.teamId);
@@ -273,6 +276,7 @@ export type AgentSummary = Readonly<{
   updatedAt: number;
   turnCount: number;
   mayHaveScheduledJobs: boolean;
+  presentation?: AgentPresentation;
 }>;
 
 type AgentRegistryRow = Readonly<{
@@ -283,6 +287,7 @@ type AgentRegistryRow = Readonly<{
   turn_count: number;
   deleted_at: number | null;
   cron_candidate: number | null;
+  presentation: string | null;
 }>;
 
 export async function routeAccountRequest(
@@ -837,6 +842,19 @@ export async function authenticatePersistentAccount(
 ): Promise<Principal | undefined> {
   const principal = await authenticate(request, env, url);
   if (!principal || principal.kind !== "account_session") return undefined;
+  const account = await readAccount(env, principal.userId);
+  return account?.persistent === true ? principal : undefined;
+}
+
+/** Native Vault forms use an account-owned API key, never a Connect grant. */
+export async function authenticateVaultAccount(
+  request: Request, env: AccountAuthEnv, url = new URL(request.url),
+): Promise<Principal | undefined> {
+  const principal = await authenticate(request, env, url);
+  if (!principal || (principal.kind !== "account_session" && principal.kind !== "api_key")
+    || principal.connectGrant
+    || !principal.capabilities.includes("agents:write")
+    || !principal.capabilities.includes("tools:use")) return undefined;
   const account = await readAccount(env, principal.userId);
   return account?.persistent === true ? principal : undefined;
 }
@@ -1720,9 +1738,11 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
       CREATE INDEX IF NOT EXISTS agent_registry_active_created
         ON agent_registry (created_at, id) WHERE deleted_at IS NULL;
     `);
+    retireAccountProjects(ctx.storage);
     // Existing agents stay candidates until their first schedule read. New
     // registrations supply their actual presence; omitted legacy values stay unknown.
     const columns = new Set(ctx.storage.sql.exec<{ name: string }>("PRAGMA table_info(agent_registry)").toArray().map(({ name }) => name));
+    if (!columns.has("presentation")) ctx.storage.sql.exec("ALTER TABLE agent_registry ADD COLUMN presentation TEXT");
     if (!columns.has("cron_candidate")) {
       ctx.storage.sql.exec("ALTER TABLE agent_registry ADD COLUMN cron_candidate INTEGER CHECK (cron_candidate IN (0, 1))");
     }
@@ -1824,7 +1844,7 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
     if (url.pathname === "/agents") {
       if (request.method === "GET") {
         return json(this.ctx.storage.sql.exec<AgentRegistryRow>(
-          `SELECT id, title, created_at, updated_at, turn_count, deleted_at, cron_candidate
+          `SELECT id, title, created_at, updated_at, turn_count, deleted_at, cron_candidate, presentation
            FROM agent_registry
            WHERE deleted_at IS NULL
            ORDER BY created_at, id`,
@@ -1872,6 +1892,26 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
         Number(present), cronMatch[1]!,
       );
       if (updated.rowsWritten === 0) return json({ error: "not_found" }, { status: 404 });
+      return new Response(null, { status: 204 });
+    }
+    const presentationMatch = url.pathname.match(/^\/agents\/([0-9a-f-]{36})\/presentation$/);
+    if (presentationMatch && request.method === "POST") {
+      const value = await request.json<AgentPresentation>();
+      if (!Number.isSafeInteger(value.revision) || value.revision < 1
+        || !["running", "stopping", "completed", "cancelled", "failed", "idle"].includes(value.status)
+        || !Array.isArray(value.activeTurnIds) || !value.activeTurnIds.every(id => typeof id === "string")
+        || !Number.isFinite(value.updatedAt)
+        || (value.lastUserMessageAt !== undefined && (!Number.isFinite(value.lastUserMessageAt) || value.lastUserMessageAt < 0))
+        || (value.title !== undefined && (typeof value.title !== "string" || value.title.length > 56))
+        || (value.activity !== undefined && (typeof value.activity !== "string" || value.activity.length > 90))) {
+        return json({ error: "invalid_presentation" }, { status: 400 });
+      }
+      this.ctx.storage.sql.exec(`UPDATE agent_registry SET presentation = json_set(?, '$.lastUserMessageAt',
+        COALESCE(?, json_extract(presentation, '$.lastUserMessageAt'), CASE WHEN turn_count > 0 THEN updated_at ELSE 0 END)),
+        title = COALESCE(?, title)
+        WHERE id = ? AND deleted_at IS NULL
+          AND COALESCE(json_extract(presentation, '$.revision'), 0) < ?`,
+        JSON.stringify(value), value.lastUserMessageAt ?? null, value.title ?? null, presentationMatch[1]!, value.revision);
       return new Response(null, { status: 204 });
     }
     const activityMatch = url.pathname.match(/^\/agents\/([0-9a-f-]{36})\/activity$/);
@@ -1925,6 +1965,8 @@ function agentSummary(row: AgentRegistryRow): AgentSummary {
     updatedAt: row.updated_at,
     turnCount: row.turn_count,
     mayHaveScheduledJobs: row.cron_candidate !== 0,
+    ...(row.presentation ? { presentation: JSON.parse(row.presentation) as AgentPresentation } : {}),
+
   };
 }
 

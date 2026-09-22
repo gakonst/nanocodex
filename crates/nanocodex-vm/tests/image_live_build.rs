@@ -128,7 +128,7 @@ async fn guest_overlay_resets_to_an_immutable_base_without_host_reflinks() {
     .await;
     let first_output = first
         .command(VmCommand::new("/bin/sh").arg("-c").arg(
-            "set -eu; grep -qw overlay /proc/filesystems; \
+            "set -eu; test -x /run/nanocodex/nanocodex-vm-guest; grep -qw overlay /proc/filesystems; \
                  test \"$(cat /nanocodex-overlay-base)\" = immutable-base; \
                  mkdir -p /mnt/nanocodex-additional; \
                  mount -t ext4 -o ro /dev/vdd /mnt/nanocodex-additional; \

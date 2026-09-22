@@ -34,7 +34,7 @@ final class ContextUITests: XCTestCase {
             throw XCTSkip("Requires a signed-in phone and NANOCODEX_CONTEXT_LIVE=1.")
         }
         let app = XCUIApplication(); app.launch()
-        XCTAssertTrue(app.buttons["tab-overview"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 30))
         openContext(app)
         if app.switches["context-enabled"].value as? String != "1" { toggleCapture(app) }
         let message = "museum" + String(UUID().uuidString.lowercased().filter { $0.isLetter }.prefix(10))
@@ -125,6 +125,9 @@ final class ContextUITests: XCTestCase {
     }
     func testCaptureSearchSelectAndDurableRetry() {
         let app = launch()
+        // Exercise durable submission retry on an idle conversation. Sending
+        // to the running demo now steers directly and has different retry rules.
+        app.buttons["new-conversation"].tap()
         openContext(app)
         toggleCapture(app)
         capture(app, source: "Instagram", text: "Dinner with Alex on Friday")
@@ -151,10 +154,9 @@ final class ContextUITests: XCTestCase {
         app.buttons["retry-pending"].tap()
         // A restored demo intentionally fails once again, then succeeds.
         if app.buttons["retry-pending"].waitForExistence(timeout: 3) { app.buttons["retry-pending"].tap() }
-        // Admission preserves the follow-up behind the active demo turn. Steer
-        // it into that turn before asserting its transcript representation.
-        XCTAssertTrue(app.buttons["steer-now"].waitForExistence(timeout: 10))
-        app.buttons["steer-now"].tap()
+        let delivered = XCTNSPredicateExpectation(
+            predicate: NSPredicate(format: "exists == false"), object: app.buttons["retry-pending"])
+        XCTAssertEqual(XCTWaiter.wait(for: [delivered], timeout: 10), .completed)
         let conversation = app.scrollViews["conversation"]
         let request = conversation.staticTexts["Help me plan Friday"]
         for _ in 0..<12 {
@@ -266,7 +268,7 @@ final class ContextUITests: XCTestCase {
         }
         let app = XCUIApplication()
         app.launch()
-        XCTAssertTrue(app.buttons["tab-overview"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 30))
         app.buttons["new-conversation"].tap()
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             app.staticTexts["agent-title"].label == "New agent" && app.textViews["composer"].isEnabled

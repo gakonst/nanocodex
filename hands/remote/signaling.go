@@ -28,23 +28,28 @@ type remoteSignal struct {
 	SDPMLineIndex *uint16 `json:"sdpMLineIndex,omitempty"`
 }
 type remoteMessage struct {
-	Type         string          `json:"type"`
-	ConnectionID string          `json:"connection_id,omitempty"`
-	ViewerID     string          `json:"viewer_id,omitempty"`
-	SurfaceID    string          `json:"surface_id,omitempty"`
-	MachineID    string          `json:"machine_id,omitempty"`
-	MachineName  string          `json:"machine_name,omitempty"`
-	Generation   string          `json:"generation,omitempty"`
-	Surfaces     []remoteSurface `json:"surfaces,omitempty"`
-	Signal       *remoteSignal   `json:"signal,omitempty"`
-	RequestID    string          `json:"request_id,omitempty"`
-	AgentID      string          `json:"agent_id,omitempty"`
-	DeadlineAt   int64           `json:"deadline_at,omitempty"`
-	Input        *agentInput     `json:"input,omitempty"`
-	Data         json.RawMessage `json:"data,omitempty"`
+	Action          string           `json:"action,omitempty"`
+	URL             string           `json:"url,omitempty"`
+	Preset          string           `json:"preset,omitempty"`
+	BroadcastResult *broadcastResult `json:"-"`
+	Type            string           `json:"type"`
+	ConnectionID    string           `json:"connection_id,omitempty"`
+	ViewerID        string           `json:"viewer_id,omitempty"`
+	SurfaceID       string           `json:"surface_id,omitempty"`
+	MachineID       string           `json:"machine_id,omitempty"`
+	MachineName     string           `json:"machine_name,omitempty"`
+	Generation      string           `json:"generation,omitempty"`
+	Surfaces        []remoteSurface  `json:"surfaces,omitempty"`
+	Signal          *remoteSignal    `json:"signal,omitempty"`
+	RequestID       string           `json:"request_id,omitempty"`
+	AgentID         string           `json:"agent_id,omitempty"`
+	DeadlineAt      int64            `json:"deadline_at,omitempty"`
+	Input           *agentInput      `json:"input,omitempty"`
+	Data            json.RawMessage  `json:"data,omitempty"`
 	*agentResult
 }
 type remoteSurface struct {
+	Broadcast    bool   `json:"broadcast,omitempty"`
 	ID           string `json:"id"`
 	Name         string `json:"name"`
 	Kind         string `json:"kind"`
@@ -111,6 +116,22 @@ func newRemoteService(origin, credentialPath string) (*remoteService, error) {
 	return &remoteService{base: base, token: token, client: &http.Client{Timeout: 10 * time.Second,
 		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}}, nil
 }
+
+// Keep transport details (including credential-bearing URLs) out of errors.
+var errRemoteRequestTransport = errors.New("remote service request failed")
+
+type remoteHTTPError struct{ status int }
+
+func (err *remoteHTTPError) Error() string {
+	return fmt.Sprintf("remote service refused request (%d)", err.status)
+}
+
+func retryableRenewal(err error) bool {
+	var status *remoteHTTPError
+	return errors.Is(err, errRemoteRequestTransport) ||
+		(errors.As(err, &status) && (status.status == 408 || status.status == 429 || status.status >= 500 && status.status <= 599))
+}
+
 func (service *remoteService) request(ctx context.Context, suffix string, body any, result any) error {
 	data, err := json.Marshal(body)
 	if err != nil {
@@ -125,14 +146,17 @@ func (service *remoteService) request(ctx context.Context, suffix string, body a
 	request.Header.Set("Content-Type", "application/json")
 	response, err := service.client.Do(request)
 	if err != nil {
-		return errors.New("remote service request failed")
+		return errRemoteRequestTransport
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("remote service refused request (%d)", response.StatusCode)
+		return &remoteHTTPError{status: response.StatusCode}
 	}
 	data, err = io.ReadAll(io.LimitReader(response.Body, 131073))
-	if err != nil || len(data) > 131072 {
+	if err != nil {
+		return errRemoteRequestTransport
+	}
+	if len(data) > 131072 {
 		return errors.New("invalid remote service response")
 	}
 	if result != nil {
@@ -178,4 +202,30 @@ func (service *remoteService) socket(ctx context.Context) (*websocket.Conn, erro
 	}
 	connection.SetReadLimit(70_000)
 	return connection, nil
+}
+
+// Broadcast and agent results have overlapping names. Merge explicitly so Go's
+// embedded-field ambiguity cannot silently omit status or dimensions.
+func (message remoteMessage) MarshalJSON() ([]byte, error) {
+	type wire remoteMessage
+	data, err := json.Marshal(wire(message))
+	if err != nil || message.BroadcastResult == nil {
+		return data, err
+	}
+	var values map[string]json.RawMessage
+	if err = json.Unmarshal(data, &values); err != nil {
+		return nil, err
+	}
+	result, err := json.Marshal(message.BroadcastResult)
+	if err != nil {
+		return nil, err
+	}
+	var broadcast map[string]json.RawMessage
+	if err = json.Unmarshal(result, &broadcast); err != nil {
+		return nil, err
+	}
+	for key, value := range broadcast {
+		values[key] = value
+	}
+	return json.Marshal(values)
 }

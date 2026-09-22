@@ -56,7 +56,11 @@ describe("Service-Binding-only ChatGPT credential import", () => {
     const first = await stub.resolveModelCredential(false);
     expect(first).toMatchObject({ status: 200, credential: { kind: "chatgpt", accountId: "rpc-account" } });
     expect(first.resolve_id).toMatch(/^[0-9a-f-]{36}$/);
-    expect(info).toHaveBeenCalledWith({ type: "egress.credential.rpc", resolve_id: first.resolve_id, status: 200 });
+    expect(info).toHaveBeenCalledWith({
+      type: "egress.credential.rpc", resolve_id: first.resolve_id, status: 200,
+      queue_ms: expect.any(Number), operation_ms: expect.any(Number),
+      activation_ms: expect.any(Number), activation_age_ms: expect.any(Number),
+    });
     expect(first.credential).toEqual((await internalCredential(stub)).body);
     // A recovery for an old revision must use the newer credential, not refresh it.
     expect((await stub.resolveModelCredential(true, -1)).credential).toEqual(first.credential);
@@ -198,37 +202,108 @@ describe("Service-Binding-only ChatGPT credential import", () => {
     });
   });
 
-  it("rejects a healthy different account without reflecting either credential", async () => {
-    const user = "conflicting-import";
-    const first = importedCredential("first-account", { marker: "first-secret" });
-    const conflicting = importedCredential("second-account", { marker: "second-secret" });
-    expect((await importThroughControl(user, first)).status).toBe(204);
-
-    const response = await importThroughControl(user, conflicting);
-    expect(response.status).toBe(409);
-    const body = await response.text();
-    expect(JSON.parse(body)).toEqual({ error: "chatgpt_account_conflict" });
-    expect(body).not.toMatch(/first-secret|second-secret|first-account|second-account/);
-    expect(await internalCredential(workerEnv.USER_CREDENTIALS.getByName(user)))
-      .toMatchObject({ body: { secret: first.access_token, revision: 0 } });
-  });
-
-  it("serializes concurrent imports so exactly one different account wins", async () => {
+  it("retains different accounts and deduplicates concurrent imports", async () => {
     const user = "concurrent-import";
     const first = importedCredential("concurrent-a", { marker: "concurrent-secret-a" });
     const second = importedCredential("concurrent-b", { marker: "concurrent-secret-b" });
     const responses = await Promise.all([
-      importThroughControl(user, first),
-      importThroughControl(user, second),
+      importThroughControl(user, first), importThroughControl(user, second), importThroughControl(user, first),
     ]);
-    expect(responses.map((response) => response.status).sort()).toEqual([204, 409]);
-    for (const response of responses) {
-      const body = await response.text();
-      expect(body).not.toMatch(/concurrent-secret|concurrent-a|concurrent-b/);
+    expect(responses.map((response) => response.status)).toEqual([204, 204, 204]);
+    const status = await SELF.fetch(`https://broker.internal/users/${user}/credentials`);
+    const body = await status.text();
+    expect(body).not.toMatch(/concurrent-secret|refreshToken|accessToken/);
+    expect(JSON.parse(body).chatgpt.accounts.map((account: { account_id: string }) => account.account_id).sort())
+      .toEqual(["concurrent-a", "concurrent-b"]);
+  });
+
+  it("switches once for concurrent limit reports, persists cooldowns, and recovers after reset", async () => {
+    const user = "cooldown-import";
+    const stub = workerEnv.USER_CREDENTIALS.getByName(user);
+    const apiKey = await stub.fetch("https://credentials.internal/v1/openai-key", {
+      method: "PUT", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ api_key: "sk-do-not-use-paid-fallback" }),
+    });
+    expect(apiKey.status).toBe(204);
+    const first = importedCredential("cooldown-a");
+    const second = importedCredential("cooldown-b");
+    await importThroughControl(user, first);
+    await importThroughControl(user, second);
+    const resetAt = Date.now() + 60_000;
+    const report = (account: string, revision: number) => stub.fetch("https://credentials.internal/v1/chatgpt/limit", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ account_id: account, revision, reset_at: resetAt }),
+    });
+    for (const response of await Promise.all([report("cooldown-b", 1), report("cooldown-b", 1)])) {
+      expect(await response.json()).toEqual({ available: true });
     }
-    const snapshot = await internalCredential(workerEnv.USER_CREDENTIALS.getByName(user));
-    expect([first.access_token, second.access_token]).toContain(snapshot.body.secret);
-    expect(snapshot.body.revision).toBe(0);
+    expect(await internalCredential(stub)).toMatchObject({ body: { accountId: "cooldown-a" } });
+    // Reimporting a live auth file must not clear the account's cooldown.
+    await importThroughControl(user, second);
+    expect(await internalCredential(stub)).toMatchObject({ body: { accountId: "cooldown-a" } });
+    expect(await (await report("cooldown-a", 0)).json()).toEqual({ available: false });
+    expect(await internalCredential(stub)).toEqual({ status: 429, body: { error: "chatgpt_accounts_exhausted" } });
+    await runInDurableObject(stub, async (_instance: UserCredentialBroker, state) => {
+      const row = await state.storage.get<{ envelope: EncryptedEnvelope }>("credential-state");
+      const vault = new CredentialVault(workerEnv, `user/${state.id.toString()}`);
+      const stored = (await vault.open<{ chatgpt: { limitedUntil: number }; chatgptBackups: { limitedUntil: number }[] }>(row!.envelope)).value;
+      expect(stored.chatgpt.limitedUntil).toBe(resetAt);
+      expect(stored.chatgptBackups[0].limitedUntil).toBe(resetAt);
+    });
+    vi.spyOn(Date, "now").mockReturnValue(resetAt + 1);
+    expect(await internalCredential(stub)).toMatchObject({ status: 200, body: { accountId: "cooldown-a" } });
+  });
+
+  it("refreshes every account independently and accepts limits from an older live socket", async () => {
+    const user = "refresh-pool";
+    const stub = workerEnv.USER_CREDENTIALS.getByName(user);
+    const first = importedCredential("refresh-a", { expiresInMs: 10 * 60_000, refreshToken: "refresh-a-token" });
+    const second = importedCredential("refresh-b", { expiresInMs: 10 * 60_000, refreshToken: "refresh-b-token" });
+    await importThroughControl(user, first);
+    await importThroughControl(user, second);
+    vi.spyOn(Date, "now").mockReturnValue(first.expires_at - 4 * 60_000);
+    const refreshed: string[] = [];
+    vi.spyOn(globalThis, "fetch").mockImplementation(async (_input, init) => {
+      const body = JSON.parse(String(init?.body));
+      refreshed.push(body.refresh_token);
+      return Response.json({
+        access_token: jwt({ exp: Math.ceil(Date.now() / 1_000) + 3600 }),
+        refresh_token: `${body.refresh_token}-rotated`,
+      });
+    });
+    await runInDurableObject(stub, async (instance: UserCredentialBroker) => instance.alarm());
+    expect(refreshed.sort()).toEqual(["refresh-a-token", "refresh-b-token"]);
+    expect(await internalCredential(stub)).toMatchObject({ body: { accountId: "refresh-b", revision: 2 } });
+    const report = await stub.fetch("https://credentials.internal/v1/chatgpt/limit", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ account_id: "refresh-b", revision: 1, reset_at: Date.now() + 60_000 }),
+    });
+    expect(await report.json()).toEqual({ available: true });
+    expect(await internalCredential(stub)).toMatchObject({ body: { accountId: "refresh-a", revision: 3 } });
+  });
+
+  it("ignores stale limit reports and disconnects the whole pool", async () => {
+    const user = "stale-limit-import";
+    const stub = workerEnv.USER_CREDENTIALS.getByName(user);
+    await importThroughControl(user, importedCredential("stale-a"));
+    await importThroughControl(user, importedCredential("stale-b"));
+    const response = await stub.fetch("https://credentials.internal/v1/chatgpt/limit", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ account_id: "stale-b", revision: 0, reset_at: Date.now() + 60_000 }),
+    });
+    expect(await response.json()).toEqual({ available: false });
+    expect(await internalCredential(stub)).toMatchObject({ body: { accountId: "stale-b" } });
+    expect((await stub.fetch("https://credentials.internal/v1/chatgpt", { method: "DELETE" })).status).toBe(204);
+    expect(await internalCredential(stub)).toMatchObject({ status: 404 });
+    const status = await SELF.fetch(`https://broker.internal/users/${user}/credentials`);
+    expect(await status.json()).toMatchObject({ chatgpt: { connected: false, accounts: [] } });
+    await importThroughControl(user, importedCredential("stale-b"));
+    const stale = await stub.fetch("https://credentials.internal/v1/chatgpt/limit", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ account_id: "stale-b", revision: 1, reset_at: Date.now() + 60_000 }),
+    });
+    expect(await stale.json()).toEqual({ available: false });
+    expect(await internalCredential(stub)).toMatchObject({ status: 200, body: { accountId: "stale-b", revision: 2 } });
   });
 
   it("replaces dead state, including a credential from a different account", async () => {

@@ -1,0 +1,151 @@
+{
+  "upstream": "36430b36881cf5c289cb48e671cfc9e8b542ae7b",
+  "sources": [
+    {
+      "path": "core/src/context/realtime_end_instructions.rs",
+      "sha256": "bae14d05e5191d3eed5417af14cb05e0264004be3c9f36c20d442edf1b3c3201",
+      "bytes": 1372,
+      "role": "composition reference (external only)"
+    },
+    {
+      "path": "core/src/context/realtime_start_instructions.rs",
+      "sha256": "0d93f87bdb20f4a3335cb73536c2971c1c17ef90796831c0d86cb22f9e968d9c",
+      "bytes": 951,
+      "role": "composition reference (external only)"
+    },
+    {
+      "path": "ext/goal/src/runtime.rs",
+      "sha256": "59a8c65a5b0d65bea5fab63d2eb3c4c17431d1c8eaf91891563e95657267f04c",
+      "bytes": 24248,
+      "role": "composition reference (external only)"
+    },
+    {
+      "path": "ext/goal/templates/goals/continuation.md",
+      "sha256": "764b9c26b36013a21b687d74597e303be9bbf13776c359ec1fb185dbc0e7eac7",
+      "bytes": 6451,
+      "role": "consumed prompt source"
+    },
+    {
+      "path": "models-manager/models.json",
+      "sha256": "868826c1d240ef9fe9ffd6803677c5e48a3794c4ce133bcecced365a9fde815d",
+      "bytes": 294361,
+      "role": "consumed prompt source"
+    },
+    {
+      "path": "prompts/src/permissions_instructions.rs",
+      "sha256": "76333484859962611bb3d6962539e26b74756676df61fd43aada7829da0ec38f",
+      "bytes": 15702,
+      "role": "composition reference (external only)"
+    },
+    {
+      "path": "prompts/src/realtime.rs",
+      "sha256": "c8b6dfa108776798fdd7c430c3f4207d49e42b286c7caa8e38cd4cafa9099754",
+      "bytes": 274,
+      "role": "composition reference (external only)"
+    },
+    {
+      "path": "prompts/templates/permissions/approval_policy/never.md",
+      "sha256": "41c7931bac2391a24046362bd07615d5a3e73dca4672b911516fac99646be8c4",
+      "bytes": 120,
+      "role": "consumed prompt source"
+    },
+    {
+      "path": "prompts/templates/permissions/sandbox_mode/danger_full_access.md",
+      "sha256": "0d887cb1eaba21a6cade67ab958a6ffee00f671c46f8cf29c83706e397942dbf",
+      "bytes": 201,
+      "role": "consumed prompt source"
+    },
+    {
+      "path": "prompts/templates/realtime/backend_prompt.md",
+      "sha256": "94c279f8b40900e5f2ace13db09bc096ccc99cc72ffb051a126f98df94c6997d",
+      "bytes": 4913,
+      "role": "consumed prompt source"
+    },
+    {
+      "path": "prompts/templates/realtime/realtime_end.md",
+      "sha256": "95dbde1501871117f96d45f95cb501abbbc25464eab1ae5ed689e110e1849036",
+      "bytes": 223,
+      "role": "consumed prompt source"
+    },
+    {
+      "path": "prompts/templates/realtime/realtime_start.md",
+      "sha256": "424ebda35f115edff812596b70d7bf56431e7917b7398ccb4abb270b67a50fc2",
+      "bytes": 796,
+      "role": "consumed prompt source"
+    },
+    {
+      "path": "utils/template/src/lib.rs",
+      "sha256": "f930640a38e4ed882274397f6f2ac2105c3aac7891269b7b1edf39393b5d80cf",
+      "bytes": 13066,
+      "role": "composition reference (external only)"
+    }
+  ],
+  "model_fields": [
+    {
+      "model": "gpt-6-astra",
+      "field": "model_messages.instructions_template",
+      "target": "crates/nanocodex-oai-api/prompts/astra.md",
+      "sha256": "152dfaeeb552876190962be1c12c93d426840ff12691f648261554a7675a6698"
+    },
+    {
+      "model": "gpt-5.6-sol",
+      "field": "model_messages.instructions_template",
+      "target": "crates/nanocodex-oai-api/prompts/system.md",
+      "sha256": "cbefa6b0bede0e332d957fca70ccacf9f12f4c0ecdf81b819e5cbe1a3b16e265"
+    },
+    {
+      "model": "gpt-5.6-terra",
+      "field": "model_messages.instructions_template",
+      "target": "crates/nanocodex-oai-api/prompts/system.md",
+      "sha256": "cbefa6b0bede0e332d957fca70ccacf9f12f4c0ecdf81b819e5cbe1a3b16e265"
+    },
+    {
+      "model": "gpt-5.6-luna",
+      "field": "model_messages.instructions_template",
+      "target": "crates/nanocodex-oai-api/prompts/system.md",
+      "sha256": "cbefa6b0bede0e332d957fca70ccacf9f12f4c0ecdf81b819e5cbe1a3b16e265"
+    }
+  ],
+  "outputs": [
+    {
+      "path": "crates/nanocodex-agent/src/model/prompts/danger_full_access.md",
+      "sha256": "0d887cb1eaba21a6cade67ab958a6ffee00f671c46f8cf29c83706e397942dbf",
+      "bytes": 201
+    },
+    {
+      "path": "crates/nanocodex-agent/src/model/prompts/never.md",
+      "sha256": "41c7931bac2391a24046362bd07615d5a3e73dca4672b911516fac99646be8c4",
+      "bytes": 120
+    },
+    {
+      "path": "crates/nanocodex-oai-api/prompts/astra.md",
+      "sha256": "152dfaeeb552876190962be1c12c93d426840ff12691f648261554a7675a6698",
+      "bytes": 21269
+    },
+    {
+      "path": "crates/nanocodex-oai-api/prompts/system.md",
+      "sha256": "cbefa6b0bede0e332d957fca70ccacf9f12f4c0ecdf81b819e5cbe1a3b16e265",
+      "bytes": 17766
+    },
+    {
+      "path": "crates/nanocodex-voice-protocol/src/backend_prompt.md",
+      "sha256": "94c279f8b40900e5f2ace13db09bc096ccc99cc72ffb051a126f98df94c6997d",
+      "bytes": 4913
+    },
+    {
+      "path": "crates/nanocodex-voice-protocol/src/realtime_end.md",
+      "sha256": "95dbde1501871117f96d45f95cb501abbbc25464eab1ae5ed689e110e1849036",
+      "bytes": 223
+    },
+    {
+      "path": "crates/nanocodex-voice-protocol/src/realtime_start.md",
+      "sha256": "424ebda35f115edff812596b70d7bf56431e7917b7398ccb4abb270b67a50fc2",
+      "bytes": 796
+    },
+    {
+      "path": "js/managed/src/goal-continuation.ts",
+      "sha256": "9b19843185f902211bea8a00535c6a01b677fc296bdd8a12809f8b46f79b0aad",
+      "bytes": 6592
+    }
+  ]
+}

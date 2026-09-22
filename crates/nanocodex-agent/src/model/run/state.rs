@@ -74,11 +74,26 @@ impl ConversationState {
         assign_missing_response_item_id(&mut canonical_context);
         let managed = ManagedSessionState::resume(history)
             .map_err(|error| NanocodexError::InvalidSessionSnapshot(error.to_string()))?;
-        Ok(Self {
+        let mut state = Self {
             canonical_context: Arc::new(canonical_context),
             managed,
             continuation_policy: None,
-        })
+        };
+        state.prepare_replay_images();
+        Ok(state)
+    }
+
+    pub(super) fn prepare_replay_images(&mut self) -> bool {
+        let mut history = self.managed.flattened_history();
+        let history_changed = nanocodex_tools::image::prepare_history_images(&mut history);
+        let context_changed = nanocodex_tools::image::prepare_history_images(std::slice::from_mut(
+            Arc::make_mut(&mut self.canonical_context),
+        ));
+        let changed = history_changed || context_changed;
+        if changed {
+            self.managed.replace_prepared_history(history);
+        }
+        changed
     }
 
     pub(super) fn flattened_history(&self) -> Vec<ResponseItem> {
@@ -93,6 +108,10 @@ impl ConversationState {
         self.managed.append(items);
     }
 
+    pub(super) fn append_client(&mut self, items: impl IntoIterator<Item = ResponseItem>) {
+        self.managed.append_client(items);
+    }
+
     pub(super) fn update_token_info(&mut self, usage: Option<&Usage>) {
         self.managed.update_token_info(usage);
     }
@@ -103,10 +122,6 @@ impl ConversationState {
 
     pub(super) fn active_context_tokens(&self) -> u64 {
         self.managed.active_context_tokens()
-    }
-
-    pub(super) fn prompt_history(&self) -> nanocodex_oai_api::responses::ResponseHistory {
-        self.managed.prompt_history()
     }
 
     pub(super) fn prompt_history_with_repair(
@@ -214,5 +229,37 @@ impl ConversationState {
 
     pub(super) fn commit_tail(&mut self) {
         self.managed.commit_tail();
+    }
+}
+
+#[cfg(test)]
+mod image_replay_tests {
+    use super::*;
+
+    #[test]
+    fn checkpoint_image_preparation_replaces_history_once() {
+        let history: Vec<ResponseItem> = serde_json::from_value(serde_json::json!([
+            {"type":"message", "role":"user", "content":[
+                {"type":"input_text", "text":"context"},
+                {"type":"input_image", "image_url":"data:image/png;base64,YQ=="}]}
+        ]))
+        .unwrap();
+        // Exact in-memory checkpoints can bypass the serialized resume constructor.
+        let mut state = ConversationState::new(history).unwrap();
+        let revision = state.managed.history_revision();
+        assert!(state.prepare_replay_images());
+        assert_eq!(state.managed.history_revision(), revision + 1);
+        assert!(
+            !serde_json::to_string(&state.flattened_history())
+                .unwrap()
+                .contains("input_image")
+        );
+        assert!(
+            !serde_json::to_string(&state.canonical_context)
+                .unwrap()
+                .contains("input_image")
+        );
+        assert!(!state.prepare_replay_images());
+        assert_eq!(state.managed.history_revision(), revision + 1);
     }
 }

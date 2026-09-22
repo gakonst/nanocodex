@@ -139,3 +139,88 @@ test("cancelling a never-settling QuickJS cell leaves its serialized evaluator r
   assert.equal(recovered.success, true);
   assert.match(JSON.stringify(recovered.output), /RECOVERED/);
 });
+
+test("QuickJS preserves structured tool error messages, codes, and details", async () => {
+  const failure = Object.assign(new Error("desktop capture failed"), {
+    code: "SCREEN_CAPTURE_FAILED",
+    details: { displayId: 7, retryable: false },
+  });
+  const runtime = createCodeRuntime({
+    screenshot: { handler() { throw failure; } },
+  }, { evaluate: createQuickJsEvaluator(quickJs) });
+
+  const caught = JSON.parse(await runtime.executeCode(`
+    try {
+      await tools.screenshot({});
+    } catch (error) {
+      text({ isError: error instanceof Error, message: error.message,
+        code: error.code, details: error.details, stack: error.stack });
+    }
+  `));
+  assert.equal(caught.success, true);
+  assert.deepEqual(JSON.parse(caught.output.at(-1).text), {
+    isError: true,
+    message: failure.message,
+    code: failure.code,
+    details: failure.details,
+    stack: failure.stack,
+  });
+
+  const uncaught = JSON.parse(await runtime.executeCode("await tools.screenshot({});"));
+  assert.equal(uncaught.success, false);
+  assert.match(uncaught.output, /desktop capture failed/);
+  assert.ok(uncaught.output.includes(failure.stack));
+  assert.doesNotMatch(uncaught.output, /\[object Object\]/);
+});
+
+for (const failure of [
+  "legacy tool failure",
+  { message: "structured tool failure", code: 0, details: null },
+  { code: "UNAVAILABLE", details: { reason: "no display" } },
+]) {
+  test(`QuickJS decodes tool failure ${JSON.stringify(failure)}`, async () => {
+    const runtime = createCodeRuntime({
+      fail: { handler() { throw failure; } },
+    }, { evaluate: createQuickJsEvaluator(quickJs) });
+    const result = JSON.parse(await runtime.executeCode(`
+      try { await tools.fail({}); }
+      catch (error) { text({ message: error.message, code: error.code, details: error.details }); }
+    `));
+    assert.equal(result.success, true);
+    assert.deepEqual(JSON.parse(result.output.at(-1).text), typeof failure === "string"
+      ? { message: failure }
+      : { ...failure, message: failure.message ?? JSON.stringify(failure) });
+  });
+}
+
+
+test("QuickJS safely serializes BigInt and circular tool error metadata", async () => {
+  const shared = { displayId: 7n };
+  const details = { first: shared, second: shared };
+  details.self = details;
+  const failure = Object.assign(new Error("desktop capture failed with metadata"), {
+    code: 42n,
+    details,
+  });
+  const runtime = createCodeRuntime({
+    fail: { handler() { throw failure; } },
+  }, { evaluate: createQuickJsEvaluator(quickJs) });
+
+  const result = JSON.parse(await runtime.executeCode(`
+    try { await tools.fail({}); }
+    catch (error) { text({ message: error.message, code: error.code, details: error.details }); }
+  `));
+  assert.equal(result.success, true);
+  assert.deepEqual(JSON.parse(result.output.at(-1).text), {
+    message: failure.message,
+    code: "42",
+    details: {
+      first: { displayId: "7" },
+      second: { displayId: "7" },
+      self: "[Circular]",
+    },
+  });
+  const uncaught = JSON.parse(await runtime.executeCode("await tools.fail({});"));
+  assert.equal(uncaught.success, false);
+  assert.ok(uncaught.output.includes(failure.stack));
+});

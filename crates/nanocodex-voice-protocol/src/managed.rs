@@ -287,6 +287,12 @@ fn memory_update(result: &Value) -> Option<String> {
         return None;
     }
     let mut data = json!({ "operation": operation, "key": { "id": id, "version": version } });
+    let scope = match result.get("scope").and_then(Value::as_str) {
+        None | Some("team") => "team",
+        Some("personal") => "personal",
+        _ => return None,
+    };
+    data["scope"] = json!(scope);
     if operation == "put" {
         let content = result["memory"]["content"].as_str()?;
         if content.trim().is_empty() || content.len() > 1024 {
@@ -569,11 +575,13 @@ mod tests {
         }}});
         assert!(voice.managed_event(&event).frames.is_empty());
         event["event"]["payload"]["voice_session_id"] = json!("call-1");
+        event["event"]["payload"]["result"]["scope"] = json!("personal");
         let update = voice.managed_event(&event);
         assert_eq!(update.frames.len(), 1);
         assert_eq!(update.playback_enabled, None);
         assert!(update.transcripts.is_empty());
         assert!(update.frames[0].contains("u003c"));
+        assert!(update.frames[0].contains("personal"));
         assert_eq!(voice.sideband_opened().playback_enabled, Some(true));
         assert_eq!(voice.sideband_opened().frames, update.frames);
         assert!(voice.managed_event(&event).frames.is_empty());

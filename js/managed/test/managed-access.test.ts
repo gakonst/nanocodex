@@ -53,13 +53,41 @@ describe("short-lived managed request authority", () => {
     expect(await readManagedAccess(request("/v1/agents", token, { authorization: "Bearer different" }), env)).toBeUndefined();
     expect(await readManagedAccess(request("/v1/agents", token), { NANOCODEX_ACCESS_SECRET: "different-test-key-at-least-thirty-two-bytes" })).toBeUndefined();
   });
-  it("never accepts the snapshot for sockets, streams, or account administration", async () => {
+  it("never accepts the snapshot for agent sockets, streams, or account administration", async () => {
     const token = await issued();
     for (const path of ["/v1/auth/logout", "/v1/api-keys", "/v1/agents/a/ws", "/v1/agents/a/events", "/v1/agents/a/tool-host"]) {
       expect(await readManagedAccess(request(path, token), env)).toBeUndefined();
     }
     expect(await readManagedAccess(request("/v1/agents/a", token, { upgrade: "websocket" }), env)).toBeUndefined();
     expect(await readManagedAccess(request("/v1/agents/a", token, { accept: "text/event-stream" }), env)).toBeUndefined();
+  });
+  it("reuses authority for screen discovery, ICE and viewer admission but not publication or renewal", async () => {
+    const source = request("/v1/account/hands/screens");
+    const token = await issued(source);
+    expect(token).toMatch(/^ncx_access_v1\./);
+    for (const next of [request("/v1/account/hands/screens", token),
+      new Request(request("/v1/account/hands/ice", token), { method: "POST" }),
+      request("/v1/account/hands/view?machine_id=mac&surface_id=display&generation=one", token, { upgrade: "websocket" })]) {
+      expect(await readManagedAccess(next, env)).toEqual(principal);
+      expect(await readManagedAccess(next, env, Date.now() + 120_001)).toBeUndefined();
+    }
+    for (const path of ["/v1/account/hands/host", "/v1/account/hands/renew", "/v1/account/tool-host", "/v1/account/vm-host"]) {
+      expect(await readManagedAccess(request(path, token, { upgrade: "websocket" }), env)).toBeUndefined();
+      expect(await readManagedAccess(new Request(request(path, token), { method: "POST" }), env)).toBeUndefined();
+    }
+    expect(await readManagedAccess(request("/v1/account/hands/view", token), env)).toBeUndefined();
+    expect(await readManagedAccess(request("/v1/account/hands/ice", token), env)).toBeUndefined();
+  });
+  it("preserves the upgraded viewer socket while exposing its authentication timing", async () => {
+    const source = request("/v1/account/hands/view", await issued(), { upgrade: "websocket" });
+    await observeManagedAccess(source, env, principal, "access", 0.2);
+    const pair = new WebSocketPair();
+    const upgraded = new Response(null, { status: 101, webSocket: pair[0] });
+    const result = await managedAccessResponse(source, upgraded, env);
+    expect(result.status).toBe(101);
+    expect(result.webSocket).toBe(pair[0]);
+    expect(result.headers.get("server-timing")).toContain('desc="access"');
+    expect(result.headers.has(MANAGED_ACCESS_HEADER)).toBe(false);
   });
   it("binds browser reuse to its current cookie while preserving CSRF identity", async () => {
     const browser = { ...principal, kind: "account_session" as const };

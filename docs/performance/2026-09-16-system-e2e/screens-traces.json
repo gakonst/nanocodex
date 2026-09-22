@@ -1,0 +1,2173 @@
+{
+  "provenance": {
+    "recorded_at": "2026-09-16T23:21:37.240619+00:00",
+    "load_average": [
+      395.89697265625,
+      176.93798828125,
+      106.12255859375
+    ],
+    "test_client": {
+      "binary": "/Users/georgios/github/gakonst/nanocodex-cross-platform-hands/output/cross-platform-hands/swift-remote/arm64-apple-macosx/debug/NanocodexRemotePackageTests.xctest/Contents/MacOS/NanocodexRemotePackageTests",
+      "sha256": "ab1978395667349ee0be860efb431c30472b4c2e9e53aff8f81aa3221d524264",
+      "mtime_utc": "2026-09-16T21:53:04.590411+00:00",
+      "mode": "debug",
+      "build_source_revision": "not recorded in binary provenance; reused unchanged from prior paired cohorts"
+    },
+    "probe": {
+      "monotonic": "ProcessInfo.processInfo.systemUptime",
+      "metadata_fixture": "three live + three cached viewer admissions, one live renewal after10s"
+    },
+    "worktree_source": "ec39fab53b51a7f51599b5e878ab8eecee940c56",
+    "physical_phone": {
+      "device": "iPhone17Pro",
+      "read_only_lock_state": "timed out after5seconds",
+      "automation_run": false
+    },
+    "deployed": {
+      "source": "c0d049f68",
+      "managed": "e1877ce4-0170-4de6-9cf9-ccfc003b7ece",
+      "account": "83d1e7ce-0db2-4637-9de8-8e9fd5f6968f",
+      "verified_by": "root provenance-start.json"
+    }
+  },
+  "clock_caveat": "Worker timers advance on I/O. Zero is not zeroCPU. Do not subtract cross-isolate epochs or add overlapping intervals.",
+  "metadata_admission": {
+    "run": {
+      "started_at": "2026-09-16T23:26:31.102440+00:00",
+      "load_average": [
+        285.39599609375,
+        264.9658203125,
+        170.173828125
+      ],
+      "mode": "admission",
+      "label": "admission",
+      "finished_at": "2026-09-16T23:26:55.187747+00:00",
+      "exit_code": 0
+    },
+    "samples": [
+      {
+        "status": 200,
+        "request_id": "d67b03a5-ddfc-4e69-8445-a78f4dd44e79",
+        "sample": "catalog-0-live",
+        "server_timing": "managed_auth;dur=207.0;desc=\"live\", hand_auth;dur=207.0, hand_route;dur=161.0, hand_total;dur=368.0, cfExtPri",
+        "elapsed_ms": 1112.3563749715686,
+        "account": {
+          "event_at_ms": 1789601194133,
+          "cpu_ms": 0,
+          "wall_ms": 372,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "d67b03a5-ddfc-4e69-8445-a78f4dd44e79",
+            "method": "GET",
+            "path": "/v1/account/hands/screens",
+            "status": 200,
+            "route": "managed",
+            "backend_ms": 372,
+            "started_at_ms": 1789601194133,
+            "finished_at_ms": 1789601194505,
+            "request_colo": "SJC"
+          }
+        },
+        "managed": {
+          "event_at_ms": 1789601194135,
+          "cpu_ms": 1,
+          "wall_ms": 368,
+          "log": {
+            "type": "hand.request",
+            "request_id": "d67b03a5-ddfc-4e69-8445-a78f4dd44e79",
+            "method": "GET",
+            "path": "/v1/account/hands/screens",
+            "status": 200,
+            "timings_ms": {
+              "auth": 207,
+              "route": 161,
+              "total": 368
+            },
+            "started_at_ms": 1789601194135,
+            "finished_at_ms": 1789601194503,
+            "request_colo": "SJC"
+          }
+        }
+      },
+      {
+        "status": 101,
+        "connect_ms": 264.99998569488525,
+        "reuse": false,
+        "dns_ms": 0,
+        "fetch_to_request_ms": 265.68496227264404,
+        "protocol": "http/1.1",
+        "tls_ms": 80.00004291534424,
+        "wait_ms": 1027.1379947662354,
+        "sample": "viewer-0-live",
+        "total_ms": 1298.9929914474487,
+        "server_timing": "managed_auth;dur=187.0;desc=\"live\", hand_auth;dur=187.0, hand_route;dur=178.0, hand_total;dur=365.0",
+        "request_id": "01e475eb-fa9a-4591-a479-2ebe967a5e1a",
+        "request_ms": 0.5030632019042969,
+        "account": {
+          "event_at_ms": 1789601195335,
+          "cpu_ms": 2,
+          "wall_ms": 893,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "01e475eb-fa9a-4591-a479-2ebe967a5e1a",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "route": "managed",
+            "backend_ms": 879,
+            "started_at_ms": 1789601195407,
+            "finished_at_ms": 1789601196286,
+            "request_colo": "SJC"
+          }
+        },
+        "managed": {
+          "event_at_ms": 1789601195409,
+          "cpu_ms": 10,
+          "wall_ms": 376,
+          "log": {
+            "type": "hand.request",
+            "request_id": "01e475eb-fa9a-4591-a479-2ebe967a5e1a",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "timings_ms": {
+              "auth": 187,
+              "route": 178,
+              "total": 365
+            },
+            "started_at_ms": 1789601195921,
+            "finished_at_ms": 1789601196286,
+            "request_colo": "SJC"
+          }
+        },
+        "ready_ms": 1302.1907500224188
+      },
+      {
+        "status": 200,
+        "request_id": "286cfd6a-3d73-4905-82c9-85cc8fb04aa5",
+        "sample": "catalog-1-access",
+        "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=176.0, hand_total;dur=176.0, cfExtPri",
+        "elapsed_ms": 376.42779166344553,
+        "account": {
+          "event_at_ms": 1789601196583,
+          "cpu_ms": 0,
+          "wall_ms": 180,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "286cfd6a-3d73-4905-82c9-85cc8fb04aa5",
+            "method": "GET",
+            "path": "/v1/account/hands/screens",
+            "status": 200,
+            "route": "managed",
+            "backend_ms": 180,
+            "started_at_ms": 1789601196583,
+            "finished_at_ms": 1789601196763,
+            "request_colo": "SJC"
+          }
+        },
+        "managed": {
+          "event_at_ms": 1789601196585,
+          "cpu_ms": 2,
+          "wall_ms": 177,
+          "log": {
+            "type": "hand.request",
+            "request_id": "286cfd6a-3d73-4905-82c9-85cc8fb04aa5",
+            "method": "GET",
+            "path": "/v1/account/hands/screens",
+            "status": 200,
+            "timings_ms": {
+              "auth": 0,
+              "route": 176,
+              "total": 176
+            },
+            "started_at_ms": 1789601196585,
+            "finished_at_ms": 1789601196761,
+            "request_colo": "SJC"
+          }
+        }
+      },
+      {
+        "protocol": "http/1.1",
+        "request_ms": 0.07903575897216797,
+        "status": 101,
+        "server_timing": "managed_auth;dur=0.0;desc=\"access\", screen_route;dur=164.0, screen_total;dur=164.0",
+        "connect_ms": 559.0000152587891,
+        "total_ms": 892.043948173523,
+        "dns_ms": 0,
+        "reuse": false,
+        "wait_ms": 327.3090124130249,
+        "tls_ms": 162.00006008148193,
+        "request_id": "edadea95-d897-4894-a747-a7105f99a333",
+        "sample": "viewer-1-access",
+        "fetch_to_request_ms": 561.242938041687,
+        "account": {
+          "event_at_ms": 1789601197419,
+          "cpu_ms": 3,
+          "wall_ms": 168,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "edadea95-d897-4894-a747-a7105f99a333",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "route": "local_access",
+            "backend_ms": 164,
+            "started_at_ms": 1789601197480,
+            "finished_at_ms": 1789601197644,
+            "request_colo": "SJC"
+          }
+        },
+        "managed": null,
+        "ready_ms": 893.2013333542272
+      },
+      {
+        "server_timing": "managed_auth;dur=192.0;desc=\"live\", hand_auth;dur=192.0, hand_route;dur=170.0, hand_total;dur=362.0, cfExtPri",
+        "sample": "catalog-2-live",
+        "elapsed_ms": 456.37970831012353,
+        "status": 200,
+        "request_id": "81648da6-de9c-404b-b87a-f276bd0ad07d",
+        "account": {
+          "event_at_ms": 1789601197888,
+          "cpu_ms": 0,
+          "wall_ms": 366,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "81648da6-de9c-404b-b87a-f276bd0ad07d",
+            "method": "GET",
+            "path": "/v1/account/hands/screens",
+            "status": 200,
+            "route": "managed",
+            "backend_ms": 366,
+            "started_at_ms": 1789601197888,
+            "finished_at_ms": 1789601198254,
+            "request_colo": "SJC"
+          }
+        },
+        "managed": {
+          "event_at_ms": 1789601197889,
+          "cpu_ms": 2,
+          "wall_ms": 364,
+          "log": {
+            "type": "hand.request",
+            "request_id": "81648da6-de9c-404b-b87a-f276bd0ad07d",
+            "method": "GET",
+            "path": "/v1/account/hands/screens",
+            "status": 200,
+            "timings_ms": {
+              "auth": 192,
+              "route": 170,
+              "total": 362
+            },
+            "started_at_ms": 1789601197889,
+            "finished_at_ms": 1789601198251,
+            "request_colo": "SJC"
+          }
+        }
+      },
+      {
+        "server_timing": "managed_auth;dur=182.0;desc=\"live\", hand_auth;dur=182.0, hand_route;dur=184.0, hand_total;dur=366.0",
+        "dns_ms": 0,
+        "reuse": false,
+        "request_id": "ac9dfce9-2b64-4038-88ed-17dcf0e284dd",
+        "status": 101,
+        "request_ms": 0.054001808166503906,
+        "sample": "viewer-2-live",
+        "tls_ms": 118.00003051757812,
+        "wait_ms": 1111.2209558486938,
+        "connect_ms": 207.0000171661377,
+        "total_ms": 1325.5349397659302,
+        "fetch_to_request_ms": 207.66198635101318,
+        "protocol": "http/1.1",
+        "account": {
+          "event_at_ms": 1789601198523,
+          "cpu_ms": 2,
+          "wall_ms": 967,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "ac9dfce9-2b64-4038-88ed-17dcf0e284dd",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "route": "managed",
+            "backend_ms": 955,
+            "started_at_ms": 1789601198588,
+            "finished_at_ms": 1789601199543,
+            "request_colo": "SJC"
+          }
+        },
+        "managed": {
+          "event_at_ms": 1789601198591,
+          "cpu_ms": 9,
+          "wall_ms": 376,
+          "log": {
+            "type": "hand.request",
+            "request_id": "ac9dfce9-2b64-4038-88ed-17dcf0e284dd",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "timings_ms": {
+              "auth": 182,
+              "route": 184,
+              "total": 366
+            },
+            "started_at_ms": 1789601199177,
+            "finished_at_ms": 1789601199543,
+            "request_colo": "SJC"
+          }
+        },
+        "ready_ms": 1327.137791668065
+      },
+      {
+        "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=162.0, hand_total;dur=162.0, cfExtPri",
+        "sample": "catalog-3-access",
+        "elapsed_ms": 255.2364583243616,
+        "status": 200,
+        "request_id": "28b798dc-5de5-4b6c-bddd-7e03e1ebb1e6",
+        "account": {
+          "event_at_ms": 1789601199760,
+          "cpu_ms": 0,
+          "wall_ms": 168,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "28b798dc-5de5-4b6c-bddd-7e03e1ebb1e6",
+            "method": "GET",
+            "path": "/v1/account/hands/screens",
+            "status": 200,
+            "route": "managed",
+            "backend_ms": 168,
+            "started_at_ms": 1789601199760,
+            "finished_at_ms": 1789601199928,
+            "request_colo": "SJC"
+          }
+        },
+        "managed": {
+          "event_at_ms": 1789601199763,
+          "cpu_ms": 1,
+          "wall_ms": 164,
+          "log": {
+            "type": "hand.request",
+            "request_id": "28b798dc-5de5-4b6c-bddd-7e03e1ebb1e6",
+            "method": "GET",
+            "path": "/v1/account/hands/screens",
+            "status": 200,
+            "timings_ms": {
+              "auth": 0,
+              "route": 162,
+              "total": 162
+            },
+            "started_at_ms": 1789601199763,
+            "finished_at_ms": 1789601199925,
+            "request_colo": "SJC"
+          }
+        }
+      },
+      {
+        "dns_ms": 0,
+        "connect_ms": 194.0000057220459,
+        "tls_ms": 116.99998378753662,
+        "total_ms": 511.9830369949341,
+        "status": 101,
+        "fetch_to_request_ms": 195.1080560684204,
+        "reuse": false,
+        "request_ms": 0.04589557647705078,
+        "wait_ms": 313.4061098098755,
+        "server_timing": "managed_auth;dur=0.0;desc=\"access\", screen_route;dur=179.0, screen_total;dur=179.0",
+        "protocol": "http/1.1",
+        "sample": "viewer-3-access",
+        "request_id": "36137e47-f7aa-411e-b312-89b0f7db040b",
+        "account": {
+          "event_at_ms": 1789601200184,
+          "cpu_ms": 4,
+          "wall_ms": 183,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "36137e47-f7aa-411e-b312-89b0f7db040b",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "route": "local_access",
+            "backend_ms": 179,
+            "started_at_ms": 1789601200255,
+            "finished_at_ms": 1789601200434,
+            "request_colo": "SJC"
+          }
+        },
+        "managed": null,
+        "ready_ms": 514.0630833338946
+      },
+      {
+        "server_timing": "managed_auth;dur=199.0;desc=\"live\", hand_auth;dur=199.0, hand_route;dur=163.0, hand_total;dur=362.0, cfExtPri",
+        "sample": "catalog-4-live",
+        "elapsed_ms": 466.28204168519005,
+        "status": 200,
+        "request_id": "6fe2f887-cdde-4086-bb58-4c2319bae1e4",
+        "account": {
+          "event_at_ms": 1789601200639,
+          "cpu_ms": 0,
+          "wall_ms": 366,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "6fe2f887-cdde-4086-bb58-4c2319bae1e4",
+            "method": "GET",
+            "path": "/v1/account/hands/screens",
+            "status": 200,
+            "route": "managed",
+            "backend_ms": 365,
+            "started_at_ms": 1789601200639,
+            "finished_at_ms": 1789601201004,
+            "request_colo": "SJC"
+          }
+        },
+        "managed": {
+          "event_at_ms": 1789601200640,
+          "cpu_ms": 1,
+          "wall_ms": 363,
+          "log": {
+            "type": "hand.request",
+            "request_id": "6fe2f887-cdde-4086-bb58-4c2319bae1e4",
+            "method": "GET",
+            "path": "/v1/account/hands/screens",
+            "status": 200,
+            "timings_ms": {
+              "auth": 199,
+              "route": 163,
+              "total": 362
+            },
+            "started_at_ms": 1789601200640,
+            "finished_at_ms": 1789601201002,
+            "request_colo": "SJC"
+          }
+        }
+      },
+      {
+        "dns_ms": 0,
+        "total_ms": 1975.8861064910889,
+        "sample": "viewer-4-live",
+        "tls_ms": 119.00007724761963,
+        "wait_ms": 1729.6069860458374,
+        "reuse": false,
+        "request_ms": 0.05805492401123047,
+        "request_id": "e114a319-2b8b-40b1-a3f2-54539285679b",
+        "server_timing": "managed_auth;dur=204.0;desc=\"live\", hand_auth;dur=204.0, hand_route;dur=178.0, hand_total;dur=382.0",
+        "fetch_to_request_ms": 243.52502822875977,
+        "connect_ms": 243.00003051757812,
+        "protocol": "http/1.1",
+        "status": 101,
+        "account": {
+          "event_at_ms": 1789601201337,
+          "cpu_ms": 5,
+          "wall_ms": 1518,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "e114a319-2b8b-40b1-a3f2-54539285679b",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "route": "managed",
+            "backend_ms": 1479,
+            "started_at_ms": 1789601201451,
+            "finished_at_ms": 1789601202930,
+            "request_colo": "SJC"
+          }
+        },
+        "managed": {
+          "event_at_ms": 1789601201457,
+          "cpu_ms": 27,
+          "wall_ms": 420,
+          "log": {
+            "type": "hand.request",
+            "request_id": "e114a319-2b8b-40b1-a3f2-54539285679b",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "timings_ms": {
+              "auth": 204,
+              "route": 178,
+              "total": 382
+            },
+            "started_at_ms": 1789601202548,
+            "finished_at_ms": 1789601202930,
+            "request_colo": "SJC"
+          }
+        },
+        "ready_ms": 1976.67875001207
+      },
+      {
+        "server_timing": "managed_auth;dur=0.0;desc=\"access\", hand_auth;dur=0.0, hand_route;dur=178.0, hand_total;dur=178.0, cfExtPri",
+        "sample": "catalog-5-access",
+        "elapsed_ms": 236.5591666311957,
+        "status": 200,
+        "request_id": "fadb9cc1-4482-4793-b57d-c0b1aa09c34a",
+        "account": {
+          "event_at_ms": 1789601203154,
+          "cpu_ms": 0,
+          "wall_ms": 182,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "fadb9cc1-4482-4793-b57d-c0b1aa09c34a",
+            "method": "GET",
+            "path": "/v1/account/hands/screens",
+            "status": 200,
+            "route": "managed",
+            "backend_ms": 181,
+            "started_at_ms": 1789601203154,
+            "finished_at_ms": 1789601203335,
+            "request_colo": "SJC"
+          }
+        },
+        "managed": {
+          "event_at_ms": 1789601203155,
+          "cpu_ms": 2,
+          "wall_ms": 179,
+          "log": {
+            "type": "hand.request",
+            "request_id": "fadb9cc1-4482-4793-b57d-c0b1aa09c34a",
+            "method": "GET",
+            "path": "/v1/account/hands/screens",
+            "status": 200,
+            "timings_ms": {
+              "auth": 0,
+              "route": 178,
+              "total": 178
+            },
+            "started_at_ms": 1789601203155,
+            "finished_at_ms": 1789601203333,
+            "request_colo": "SJC"
+          }
+        }
+      },
+      {
+        "reuse": false,
+        "tls_ms": 207.0000171661377,
+        "server_timing": "managed_auth;dur=0.0;desc=\"access\", screen_route;dur=172.0, screen_total;dur=172.0",
+        "sample": "viewer-5-access",
+        "request_ms": 0.13399124145507812,
+        "protocol": "http/1.1",
+        "total_ms": 556.0770034790039,
+        "status": 101,
+        "connect_ms": 233.99996757507324,
+        "wait_ms": 313.63701820373535,
+        "dns_ms": 1.000046730041504,
+        "fetch_to_request_ms": 238.3040189743042,
+        "request_id": "880e7a3d-a71e-48a1-b7ef-fae2afd89c0f",
+        "account": {
+          "event_at_ms": 1789601203624,
+          "cpu_ms": 3,
+          "wall_ms": 176,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "880e7a3d-a71e-48a1-b7ef-fae2afd89c0f",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "route": "local_access",
+            "backend_ms": 172,
+            "started_at_ms": 1789601203694,
+            "finished_at_ms": 1789601203866,
+            "request_colo": "SJC"
+          }
+        },
+        "managed": null,
+        "ready_ms": 556.9640416651964
+      },
+      {
+        "lease_extended": true,
+        "elapsed_ms": 528.393333312124,
+        "server_timing": "hand_auth;dur=198.0, hand_route;dur=163.0, hand_total;dur=361.0, cfExtPri",
+        "acknowledged": true,
+        "sample": "viewer-renewal",
+        "status": 200,
+        "request_id": "4fc5c638-5b5a-49e1-91da-b60c16a80142",
+        "account": {
+          "event_at_ms": 1789601214586,
+          "cpu_ms": 0,
+          "wall_ms": 365,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "4fc5c638-5b5a-49e1-91da-b60c16a80142",
+            "method": "POST",
+            "path": "/v1/account/hands/renew",
+            "status": 200,
+            "route": "managed",
+            "backend_ms": 365,
+            "started_at_ms": 1789601214586,
+            "finished_at_ms": 1789601214951,
+            "request_colo": "SJC"
+          }
+        },
+        "managed": {
+          "event_at_ms": 1789601214588,
+          "cpu_ms": 1,
+          "wall_ms": 362,
+          "log": {
+            "type": "hand.request",
+            "request_id": "4fc5c638-5b5a-49e1-91da-b60c16a80142",
+            "method": "POST",
+            "path": "/v1/account/hands/renew",
+            "status": 200,
+            "timings_ms": {
+              "auth": 198,
+              "route": 163,
+              "total": 361
+            },
+            "started_at_ms": 1789601214588,
+            "finished_at_ms": 1789601214949,
+            "request_colo": "SJC"
+          }
+        }
+      }
+    ]
+  },
+  "frame_journeys": [
+    {
+      "label": "vm",
+      "run": {
+        "started_at": "2026-09-16T23:26:00.091611+00:00",
+        "load_average": [
+          309.40966796875,
+          266.19970703125,
+          167.1640625
+        ],
+        "mode": "wan",
+        "label": "vm",
+        "finished_at": "2026-09-16T23:26:09.102996+00:00",
+        "exit_code": 0
+      },
+      "transport": "frames-v1",
+      "catalog_ms": 502.76750000193715,
+      "publication_ms": null,
+      "samples": [
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "501",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "910",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 910,
+            "height": 800,
+            "width": 1280
+          },
+          "state": "no peer ready=true/true retries=0 last=",
+          "sample": 1,
+          "catalog_plus_frame_ms": 1412.7675000019372,
+          "sequential_stages_ms": {
+            "connect_to_signaling_ready": 501.0,
+            "ready_to_first_frame": 409.0
+          }
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "359",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "778",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 778,
+            "height": 800,
+            "width": 1280
+          },
+          "state": "no peer ready=true/true retries=0 last=",
+          "sample": 2,
+          "catalog_plus_frame_ms": null,
+          "sequential_stages_ms": {
+            "connect_to_signaling_ready": 359.0,
+            "ready_to_first_frame": 419.0
+          }
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "359",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "767",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 767,
+            "height": 800,
+            "width": 1280
+          },
+          "state": "no peer ready=true/true retries=0 last=",
+          "sample": 3,
+          "catalog_plus_frame_ms": null,
+          "sequential_stages_ms": {
+            "connect_to_signaling_ready": 359.0,
+            "ready_to_first_frame": 408.0
+          }
+        }
+      ],
+      "server_trace_correlation": "Temporal candidates only: nativeframeclient does not export response request IDs; unrelated publisher renewals may coexist. Do not join individual frame stages by these timestamps.",
+      "server_window": {
+        "account": [
+          {
+            "event_at_ms": 1789601161420,
+            "cpu_ms": 0,
+            "wall_ms": 250,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "413e1a62-2e7e-4145-8464-6c280dc10438",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 251,
+              "started_at_ms": 1789601161420,
+              "finished_at_ms": 1789601161671,
+              "request_colo": "IAD"
+            }
+          },
+          {
+            "event_at_ms": 1789601161644,
+            "cpu_ms": 0,
+            "wall_ms": 380,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "ad7c671f-6daf-4ca0-9e4b-88d3ac6686ba",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 379,
+              "started_at_ms": 1789601161644,
+              "finished_at_ms": 1789601162023,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601163499,
+            "cpu_ms": 0,
+            "wall_ms": 365,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "33128cdf-7a0b-4a92-b0f7-00c3cdb7f0f5",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 363,
+              "started_at_ms": 1789601163499,
+              "finished_at_ms": 1789601163862,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601166081,
+            "cpu_ms": 0,
+            "wall_ms": 380,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "5d48bb41-b9a4-470b-b6d0-cd0b020817c0",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 380,
+              "started_at_ms": 1789601166081,
+              "finished_at_ms": 1789601166461,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601166714,
+            "cpu_ms": 4,
+            "wall_ms": 185,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "d5ce412d-40b7-4436-ac6e-f94a94869787",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "local_access",
+              "backend_ms": 180,
+              "started_at_ms": 1789601166781,
+              "finished_at_ms": 1789601166961,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601167495,
+            "cpu_ms": 3,
+            "wall_ms": 183,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "33879583-8a54-436a-ba65-f206505c3a7b",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "local_access",
+              "backend_ms": 180,
+              "started_at_ms": 1789601167551,
+              "finished_at_ms": 1789601167731,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601168272,
+            "cpu_ms": 4,
+            "wall_ms": 180,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "949e4319-81de-40c4-a3c7-711553536101",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "local_access",
+              "backend_ms": 176,
+              "started_at_ms": 1789601168341,
+              "finished_at_ms": 1789601168517,
+              "request_colo": "SJC"
+            }
+          }
+        ],
+        "managed": [
+          {
+            "event_at_ms": 1789601161424,
+            "cpu_ms": 1,
+            "wall_ms": 247,
+            "log": {
+              "type": "hand.request",
+              "request_id": "413e1a62-2e7e-4145-8464-6c280dc10438",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "timings_ms": {
+                "auth": 129,
+                "route": 117,
+                "total": 246
+              },
+              "started_at_ms": 1789601161424,
+              "finished_at_ms": 1789601161670,
+              "request_colo": "IAD"
+            }
+          },
+          {
+            "event_at_ms": 1789601161644,
+            "cpu_ms": 1,
+            "wall_ms": 379,
+            "log": {
+              "type": "hand.request",
+              "request_id": "ad7c671f-6daf-4ca0-9e4b-88d3ac6686ba",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "timings_ms": {
+                "auth": 197,
+                "route": 182,
+                "total": 379
+              },
+              "started_at_ms": 1789601161644,
+              "finished_at_ms": 1789601162023,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601163129,
+            "cpu_ms": 2,
+            "wall_ms": 134,
+            "log": {
+              "type": "hand.request",
+              "request_id": "5a5e202e-c373-4780-9c7b-8feab69098bc",
+              "method": "POST",
+              "path": "/v1/vm-host-attachments/:pool/:allocation/hands/renew",
+              "status": 200,
+              "timings_ms": {
+                "grant_headers": 18,
+                "grant_body": 0,
+                "total": 133
+              },
+              "started_at_ms": 1789601163129,
+              "finished_at_ms": 1789601163262,
+              "request_colo": "IAD"
+            }
+          },
+          {
+            "event_at_ms": 1789601163130,
+            "cpu_ms": 2,
+            "wall_ms": 373,
+            "log": {
+              "type": "hand.request",
+              "request_id": "36295641-220b-4d02-9385-d71933cf5e99",
+              "method": "GET",
+              "path": "/v1/account/hands",
+              "status": 200,
+              "timings_ms": {
+                "auth": 202,
+                "route": 169,
+                "total": 371
+              },
+              "started_at_ms": 1789601163130,
+              "finished_at_ms": 1789601163501,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601163499,
+            "cpu_ms": 1,
+            "wall_ms": 364,
+            "log": {
+              "type": "hand.request",
+              "request_id": "33128cdf-7a0b-4a92-b0f7-00c3cdb7f0f5",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "timings_ms": {
+                "auth": 197,
+                "route": 166,
+                "total": 363
+              },
+              "started_at_ms": 1789601163499,
+              "finished_at_ms": 1789601163862,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601166083,
+            "cpu_ms": 3,
+            "wall_ms": 377,
+            "log": {
+              "type": "hand.request",
+              "request_id": "5d48bb41-b9a4-470b-b6d0-cd0b020817c0",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 203,
+                "route": 172,
+                "total": 375
+              },
+              "started_at_ms": 1789601166083,
+              "finished_at_ms": 1789601166458,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601169026,
+            "cpu_ms": 1,
+            "wall_ms": 366,
+            "log": {
+              "type": "hand.request",
+              "request_id": "ad807ada-66c4-4c5f-8dfe-421565542d35",
+              "method": "GET",
+              "path": "/v1/account/hands",
+              "status": 200,
+              "timings_ms": {
+                "auth": 185,
+                "route": 181,
+                "total": 366
+              },
+              "started_at_ms": 1789601169026,
+              "finished_at_ms": 1789601169392,
+              "request_colo": "SJC"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "linux-native",
+      "run": {
+        "started_at": "2026-09-16T23:26:09.184488+00:00",
+        "load_average": [
+          306.84130859375,
+          267.080078125,
+          168.6337890625
+        ],
+        "mode": "wan",
+        "label": "linux-native",
+        "finished_at": "2026-09-16T23:26:17.826521+00:00",
+        "exit_code": 0
+      },
+      "transport": "frames-v1",
+      "catalog_ms": 600.9887083200738,
+      "publication_ms": null,
+      "samples": [
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "392",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "668",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 668,
+            "height": 800,
+            "width": 1280
+          },
+          "state": "no peer ready=true/true retries=0 last=",
+          "sample": 1,
+          "catalog_plus_frame_ms": 1268.9887083200738,
+          "sequential_stages_ms": {
+            "connect_to_signaling_ready": 392.0,
+            "ready_to_first_frame": 276.0
+          }
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "380",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "607",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 607,
+            "height": 800,
+            "width": 1280
+          },
+          "state": "no peer ready=true/true retries=0 last=",
+          "sample": 2,
+          "catalog_plus_frame_ms": null,
+          "sequential_stages_ms": {
+            "connect_to_signaling_ready": 380.0,
+            "ready_to_first_frame": 227.0
+          }
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "341",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "568",
+              "event": "first frame decoded"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 568,
+            "height": 800,
+            "width": 1280
+          },
+          "state": "no peer ready=true/true retries=0 last=",
+          "sample": 3,
+          "catalog_plus_frame_ms": null,
+          "sequential_stages_ms": {
+            "connect_to_signaling_ready": 341.0,
+            "ready_to_first_frame": 227.0
+          }
+        }
+      ],
+      "server_trace_correlation": "Temporal candidates only: nativeframeclient does not export response request IDs; unrelated publisher renewals may coexist. Do not join individual frame stages by these timestamps.",
+      "server_window": {
+        "account": [
+          {
+            "event_at_ms": 1789601171420,
+            "cpu_ms": 0,
+            "wall_ms": 234,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "6439b219-707d-4c3c-9127-0c4b9fa0a764",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 234,
+              "started_at_ms": 1789601171420,
+              "finished_at_ms": 1789601171654,
+              "request_colo": "IAD"
+            }
+          },
+          {
+            "event_at_ms": 1789601171550,
+            "cpu_ms": 0,
+            "wall_ms": 372,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "5c1ff6a6-6a96-4e75-b021-3027f56a41b0",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 370,
+              "started_at_ms": 1789601171550,
+              "finished_at_ms": 1789601171920,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601173415,
+            "cpu_ms": 0,
+            "wall_ms": 375,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "55388f82-51cc-46b1-a737-d9eb2848a525",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 374,
+              "started_at_ms": 1789601173415,
+              "finished_at_ms": 1789601173789,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601175277,
+            "cpu_ms": 0,
+            "wall_ms": 375,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "979b8751-a0f4-43c5-883f-40c70edb9264",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 373,
+              "started_at_ms": 1789601175277,
+              "finished_at_ms": 1789601175650,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601175872,
+            "cpu_ms": 3,
+            "wall_ms": 185,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "95d5a618-f93b-43d0-8e37-552f60135c78",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "local_access",
+              "backend_ms": 181,
+              "started_at_ms": 1789601175939,
+              "finished_at_ms": 1789601176120,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601176515,
+            "cpu_ms": 4,
+            "wall_ms": 190,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "aabd20d0-9287-45af-944c-cfe4d83978af",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "local_access",
+              "backend_ms": 186,
+              "started_at_ms": 1789601176595,
+              "finished_at_ms": 1789601176781,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601177111,
+            "cpu_ms": 3,
+            "wall_ms": 178,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "a47d7abd-7403-4d12-827d-d44327910e25",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "local_access",
+              "backend_ms": 175,
+              "started_at_ms": 1789601177175,
+              "finished_at_ms": 1789601177350,
+              "request_colo": "SJC"
+            }
+          }
+        ],
+        "managed": [
+          {
+            "event_at_ms": 1789601171423,
+            "cpu_ms": 1,
+            "wall_ms": 231,
+            "log": {
+              "type": "hand.request",
+              "request_id": "6439b219-707d-4c3c-9127-0c4b9fa0a764",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "timings_ms": {
+                "auth": 128,
+                "route": 102,
+                "total": 230
+              },
+              "started_at_ms": 1789601171423,
+              "finished_at_ms": 1789601171653,
+              "request_colo": "IAD"
+            }
+          },
+          {
+            "event_at_ms": 1789601171550,
+            "cpu_ms": 2,
+            "wall_ms": 371,
+            "log": {
+              "type": "hand.request",
+              "request_id": "5c1ff6a6-6a96-4e75-b021-3027f56a41b0",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "timings_ms": {
+                "auth": 191,
+                "route": 179,
+                "total": 370
+              },
+              "started_at_ms": 1789601171550,
+              "finished_at_ms": 1789601171920,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601173415,
+            "cpu_ms": 1,
+            "wall_ms": 374,
+            "log": {
+              "type": "hand.request",
+              "request_id": "55388f82-51cc-46b1-a737-d9eb2848a525",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "timings_ms": {
+                "auth": 196,
+                "route": 178,
+                "total": 374
+              },
+              "started_at_ms": 1789601173415,
+              "finished_at_ms": 1789601173789,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601174132,
+            "cpu_ms": 1,
+            "wall_ms": 133,
+            "log": {
+              "type": "hand.request",
+              "request_id": "9abb72aa-a602-42ad-9492-eb79d008f3cb",
+              "method": "POST",
+              "path": "/v1/vm-host-attachments/:pool/:allocation/hands/renew",
+              "status": 200,
+              "timings_ms": {
+                "grant_headers": 26,
+                "grant_body": 0,
+                "total": 132
+              },
+              "started_at_ms": 1789601174132,
+              "finished_at_ms": 1789601174264,
+              "request_colo": "IAD"
+            }
+          },
+          {
+            "event_at_ms": 1789601175277,
+            "cpu_ms": 2,
+            "wall_ms": 374,
+            "log": {
+              "type": "hand.request",
+              "request_id": "979b8751-a0f4-43c5-883f-40c70edb9264",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 201,
+                "route": 172,
+                "total": 373
+              },
+              "started_at_ms": 1789601175277,
+              "finished_at_ms": 1789601175650,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601174840,
+            "cpu_ms": 9,
+            "wall_ms": 376,
+            "log": {
+              "type": "hand.request",
+              "request_id": "efc91786-889e-48f2-bbac-1f64cf0d2469",
+              "method": "GET",
+              "path": "/v1/account/hands",
+              "status": 200,
+              "timings_ms": {
+                "auth": 200,
+                "route": 170,
+                "total": 370
+              },
+              "started_at_ms": 1789601175442,
+              "finished_at_ms": 1789601175812,
+              "request_colo": "SJC"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "label": "mac-native",
+      "run": {
+        "started_at": "2026-09-16T23:26:17.919706+00:00",
+        "load_average": [
+          301.5771484375,
+          267.28515625,
+          169.85791015625
+        ],
+        "mode": "mac",
+        "label": "mac-native",
+        "finished_at": "2026-09-16T23:26:31.016041+00:00",
+        "exit_code": 0
+      },
+      "transport": "webrtc",
+      "catalog_ms": 214.97916663065553,
+      "publication_ms": 2439.17470832821,
+      "samples": [
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "46",
+              "event": "initial ICE ready"
+            },
+            {
+              "elapsed_ms": "358",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "562",
+              "event": "receive offer"
+            },
+            {
+              "elapsed_ms": "570",
+              "event": "send answer"
+            },
+            {
+              "elapsed_ms": "570",
+              "event": "peer state 1"
+            },
+            {
+              "elapsed_ms": "874",
+              "event": "peer state 2"
+            },
+            {
+              "elapsed_ms": "880",
+              "event": "channels ready"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1471,
+            "height": 800,
+            "width": 1920
+          },
+          "state": "2/2 channels=1,1 ICE=11/23/23 SDP=true/true ready=true/true retries=0 last=",
+          "control_ms": 102.1699583507143,
+          "sample": 1,
+          "catalog_plus_frame_ms": 1685.9791666306555,
+          "sequential_stages_ms": {
+            "connect_to_signaling_ready": 358.0,
+            "ready_to_offer": 204.0,
+            "offer_to_answer": 8.0,
+            "answer_to_channels": 310.0,
+            "channels_to_first_frame": 591.0
+          }
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "53",
+              "event": "initial ICE ready"
+            },
+            {
+              "elapsed_ms": "340",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "552",
+              "event": "receive offer"
+            },
+            {
+              "elapsed_ms": "556",
+              "event": "send answer"
+            },
+            {
+              "elapsed_ms": "558",
+              "event": "peer state 1"
+            },
+            {
+              "elapsed_ms": "753",
+              "event": "peer state 2"
+            },
+            {
+              "elapsed_ms": "756",
+              "event": "channels ready"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 954,
+            "height": 800,
+            "width": 1920
+          },
+          "state": "2/2 channels=1,1 ICE=11/23/23 SDP=true/true ready=true/true retries=0 last=",
+          "control_ms": 153.01791665842757,
+          "sample": 2,
+          "catalog_plus_frame_ms": null,
+          "sequential_stages_ms": {
+            "connect_to_signaling_ready": 340.0,
+            "ready_to_offer": 212.0,
+            "offer_to_answer": 4.0,
+            "answer_to_channels": 200.0,
+            "channels_to_first_frame": 198.0
+          }
+        },
+        {
+          "events": [
+            {
+              "elapsed_ms": "0",
+              "event": "connect"
+            },
+            {
+              "elapsed_ms": "45",
+              "event": "initial ICE ready"
+            },
+            {
+              "elapsed_ms": "337",
+              "event": "signaling ready"
+            },
+            {
+              "elapsed_ms": "771",
+              "event": "receive offer"
+            },
+            {
+              "elapsed_ms": "779",
+              "event": "send answer"
+            },
+            {
+              "elapsed_ms": "782",
+              "event": "peer state 1"
+            },
+            {
+              "elapsed_ms": "1173",
+              "event": "peer state 2"
+            },
+            {
+              "elapsed_ms": "1174",
+              "event": "channels ready"
+            }
+          ],
+          "first_frame": {
+            "elapsed_ms": 1323,
+            "height": 800,
+            "width": 1920
+          },
+          "state": "2/2 channels=1,1 ICE=11/23/23 SDP=true/true ready=true/true retries=0 last=",
+          "control_ms": 105.12237501097843,
+          "sample": 3,
+          "catalog_plus_frame_ms": null,
+          "sequential_stages_ms": {
+            "connect_to_signaling_ready": 337.0,
+            "ready_to_offer": 434.0,
+            "offer_to_answer": 8.0,
+            "answer_to_channels": 395.0,
+            "channels_to_first_frame": 149.0
+          }
+        }
+      ],
+      "server_trace_correlation": "Temporal candidates only: nativeframeclient does not export response request IDs; unrelated publisher renewals may coexist. Do not join individual frame stages by these timestamps.",
+      "server_window": {
+        "account": [
+          {
+            "event_at_ms": 1789601182418,
+            "cpu_ms": 0,
+            "wall_ms": 251,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "13ea25d1-34cb-4be5-894c-94c128fa626a",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 251,
+              "started_at_ms": 1789601182418,
+              "finished_at_ms": 1789601182669,
+              "request_colo": "IAD"
+            }
+          },
+          {
+            "event_at_ms": 1789601182559,
+            "cpu_ms": 0,
+            "wall_ms": 379,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "8fc222d0-4fc8-477f-ab41-38a953147e76",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 378,
+              "started_at_ms": 1789601182559,
+              "finished_at_ms": 1789601182937,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601184197,
+            "cpu_ms": 0,
+            "wall_ms": 212,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "58a8a40a-a2fa-4c55-8b81-61991862ff59",
+              "method": "POST",
+              "path": "/v1/account/hands/ice",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 209,
+              "started_at_ms": 1789601184197,
+              "finished_at_ms": 1789601184406,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601184404,
+            "cpu_ms": 0,
+            "wall_ms": 388,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "7ca36be5-81bc-4ba1-88b7-d2e459417e7e",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 384,
+              "started_at_ms": 1789601184404,
+              "finished_at_ms": 1789601184788,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601186250,
+            "cpu_ms": 0,
+            "wall_ms": 188,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "c6d24ebd-d8a0-4004-b421-2cf963b6288c",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 185,
+              "started_at_ms": 1789601186250,
+              "finished_at_ms": 1789601186435,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601186480,
+            "cpu_ms": 0,
+            "wall_ms": 2,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "d3cc75f9-28b5-4b74-9a0f-46cf0c224621",
+              "method": "POST",
+              "path": "/v1/account/hands/ice",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 0,
+              "started_at_ms": 1789601186480,
+              "finished_at_ms": 1789601186480,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601186534,
+            "cpu_ms": 3,
+            "wall_ms": 183,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "c7046b18-36bf-42b5-b228-b5f1cb080997",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "local_access",
+              "backend_ms": 179,
+              "started_at_ms": 1789601186612,
+              "finished_at_ms": 1789601186791,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601188199,
+            "cpu_ms": 0,
+            "wall_ms": 2,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "55849c46-4e4c-4a27-ac82-4c7352c18513",
+              "method": "POST",
+              "path": "/v1/account/hands/ice",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 0,
+              "started_at_ms": 1789601188199,
+              "finished_at_ms": 1789601188199,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601188242,
+            "cpu_ms": 10,
+            "wall_ms": 180,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "9eb72dd5-4c8d-48ef-9ca3-83015cb1afb1",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "local_access",
+              "backend_ms": 171,
+              "started_at_ms": 1789601188309,
+              "finished_at_ms": 1789601188480,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601189411,
+            "cpu_ms": 0,
+            "wall_ms": 2,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "d04c3aa6-4a8c-4f5e-89de-f539388c7957",
+              "method": "POST",
+              "path": "/v1/account/hands/ice",
+              "status": 200,
+              "route": "managed",
+              "backend_ms": 0,
+              "started_at_ms": 1789601189411,
+              "finished_at_ms": 1789601189411,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601189460,
+            "cpu_ms": 3,
+            "wall_ms": 188,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "4105c6e3-16ed-46bb-9990-acf4a837ef6f",
+              "method": "GET",
+              "path": "/v1/account/hands/view",
+              "status": 101,
+              "route": "local_access",
+              "backend_ms": 185,
+              "started_at_ms": 1789601189520,
+              "finished_at_ms": 1789601189705,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601184226,
+            "cpu_ms": 3,
+            "wall_ms": 1616,
+            "log": {
+              "type": "hand.proxy",
+              "request_id": "23a91164-467e-4649-8a41-b6a4dff25288",
+              "method": "GET",
+              "path": "/v1/account/hands/host",
+              "status": 101,
+              "route": "managed",
+              "backend_ms": 1600,
+              "started_at_ms": 1789601184313,
+              "finished_at_ms": 1789601185913,
+              "request_colo": "SJC"
+            }
+          }
+        ],
+        "managed": [
+          {
+            "event_at_ms": 1789601181219,
+            "cpu_ms": 1,
+            "wall_ms": 379,
+            "log": {
+              "type": "hand.request",
+              "request_id": "679f92ad-16cb-44f2-a315-05cba35f4423",
+              "method": "GET",
+              "path": "/v1/account/hands",
+              "status": 200,
+              "timings_ms": {
+                "auth": 199,
+                "route": 180,
+                "total": 379
+              },
+              "started_at_ms": 1789601181219,
+              "finished_at_ms": 1789601181598,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601182420,
+            "cpu_ms": 1,
+            "wall_ms": 248,
+            "log": {
+              "type": "hand.request",
+              "request_id": "13ea25d1-34cb-4be5-894c-94c128fa626a",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "timings_ms": {
+                "auth": 134,
+                "route": 113,
+                "total": 247
+              },
+              "started_at_ms": 1789601182420,
+              "finished_at_ms": 1789601182667,
+              "request_colo": "IAD"
+            }
+          },
+          {
+            "event_at_ms": 1789601182559,
+            "cpu_ms": 1,
+            "wall_ms": 379,
+            "log": {
+              "type": "hand.request",
+              "request_id": "8fc222d0-4fc8-477f-ab41-38a953147e76",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "timings_ms": {
+                "auth": 205,
+                "route": 173,
+                "total": 378
+              },
+              "started_at_ms": 1789601182559,
+              "finished_at_ms": 1789601182937,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601184197,
+            "cpu_ms": 1,
+            "wall_ms": 211,
+            "log": {
+              "type": "hand.request",
+              "request_id": "58a8a40a-a2fa-4c55-8b81-61991862ff59",
+              "method": "POST",
+              "path": "/v1/account/hands/ice",
+              "status": 200,
+              "timings_ms": {
+                "auth": 209,
+                "total": 209
+              },
+              "started_at_ms": 1789601184197,
+              "finished_at_ms": 1789601184406,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601184404,
+            "cpu_ms": 2,
+            "wall_ms": 387,
+            "log": {
+              "type": "hand.request",
+              "request_id": "7ca36be5-81bc-4ba1-88b7-d2e459417e7e",
+              "method": "POST",
+              "path": "/v1/account/hands/renew",
+              "status": 200,
+              "timings_ms": {
+                "auth": 201,
+                "route": 183,
+                "total": 384
+              },
+              "started_at_ms": 1789601184404,
+              "finished_at_ms": 1789601184788,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601186250,
+            "cpu_ms": 2,
+            "wall_ms": 187,
+            "log": {
+              "type": "hand.request",
+              "request_id": "c6d24ebd-d8a0-4004-b421-2cf963b6288c",
+              "method": "GET",
+              "path": "/v1/account/hands/screens",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "route": 185,
+                "total": 185
+              },
+              "started_at_ms": 1789601186250,
+              "finished_at_ms": 1789601186435,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601186480,
+            "cpu_ms": 1,
+            "wall_ms": 1,
+            "log": {
+              "type": "hand.request",
+              "request_id": "d3cc75f9-28b5-4b74-9a0f-46cf0c224621",
+              "method": "POST",
+              "path": "/v1/account/hands/ice",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "total": 0
+              },
+              "started_at_ms": 1789601186480,
+              "finished_at_ms": 1789601186480,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601187080,
+            "cpu_ms": 2,
+            "wall_ms": 394,
+            "log": {
+              "type": "hand.request",
+              "request_id": "478119d6-c248-4896-a25e-95ae08a9db38",
+              "method": "GET",
+              "path": "/v1/account/hands",
+              "status": 200,
+              "timings_ms": {
+                "auth": 206,
+                "route": 186,
+                "total": 392
+              },
+              "started_at_ms": 1789601187080,
+              "finished_at_ms": 1789601187472,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601188199,
+            "cpu_ms": 0,
+            "wall_ms": 1,
+            "log": {
+              "type": "hand.request",
+              "request_id": "55849c46-4e4c-4a27-ac82-4c7352c18513",
+              "method": "POST",
+              "path": "/v1/account/hands/ice",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "total": 0
+              },
+              "started_at_ms": 1789601188199,
+              "finished_at_ms": 1789601188199,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601189411,
+            "cpu_ms": 0,
+            "wall_ms": 1,
+            "log": {
+              "type": "hand.request",
+              "request_id": "d04c3aa6-4a8c-4f5e-89de-f539388c7957",
+              "method": "POST",
+              "path": "/v1/account/hands/ice",
+              "status": 200,
+              "timings_ms": {
+                "auth": 0,
+                "total": 0
+              },
+              "started_at_ms": 1789601189411,
+              "finished_at_ms": 1789601189411,
+              "request_colo": "SJC"
+            }
+          },
+          {
+            "event_at_ms": 1789601184316,
+            "cpu_ms": 14,
+            "wall_ms": 400,
+            "log": {
+              "type": "hand.request",
+              "request_id": "23a91164-467e-4649-8a41-b6a4dff25288",
+              "method": "GET",
+              "path": "/v1/account/hands/host",
+              "status": 101,
+              "timings_ms": {
+                "auth": 195,
+                "route": 189,
+                "total": 384
+              },
+              "started_at_ms": 1789601185529,
+              "finished_at_ms": 1789601185913,
+              "request_colo": "SJC"
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "rejected_snapshot": {
+    "run": {
+      "started_at": "2026-09-16T23:26:55.247443+00:00",
+      "load_average": [
+        267.0654296875,
+        262.38818359375,
+        171.99365234375
+      ],
+      "mode": "rejection",
+      "label": "rejection",
+      "finished_at": "2026-09-16T23:27:01.045385+00:00",
+      "exit_code": 0
+    },
+    "test": "RemoteAccessTests.testLiveRejectedViewerSnapshotRetriesBeforeAdmission",
+    "outcome": "passed",
+    "coverage": "One injectedinvalidsnapshot then actual nativeclient livecredentialretry beforeadmission; not natural120sexpiry",
+    "server_trace_correlation": "Temporal candidates only; exactclient responseIDs unavailable",
+    "server_window": {
+      "account": [
+        {
+          "event_at_ms": 1789601216395,
+          "cpu_ms": 0,
+          "wall_ms": 375,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "93c46264-6c4d-4d79-a5b1-cd37cb235d6f",
+            "method": "POST",
+            "path": "/v1/account/hands/renew",
+            "status": 200,
+            "route": "managed",
+            "backend_ms": 374,
+            "started_at_ms": 1789601216395,
+            "finished_at_ms": 1789601216769,
+            "request_colo": "SJC"
+          }
+        },
+        {
+          "event_at_ms": 1789601219103,
+          "cpu_ms": 0,
+          "wall_ms": 387,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "ec3c428f-3786-47f6-a6fd-15f07c6df372",
+            "method": "GET",
+            "path": "/v1/account/hands/screens",
+            "status": 200,
+            "route": "managed",
+            "backend_ms": 386,
+            "started_at_ms": 1789601219103,
+            "finished_at_ms": 1789601219489,
+            "request_colo": "SJC"
+          }
+        },
+        {
+          "event_at_ms": 1789601219634,
+          "cpu_ms": 1,
+          "wall_ms": 9,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "8b9182f5-a2a5-4848-a8d6-b7aa5f4a5458",
+            "method": "POST",
+            "path": "/v1/account/hands/ice",
+            "status": 401,
+            "route": "managed",
+            "backend_ms": 9,
+            "started_at_ms": 1789601219634,
+            "finished_at_ms": 1789601219643,
+            "request_colo": "SJC"
+          }
+        },
+        {
+          "event_at_ms": 1789601219864,
+          "cpu_ms": 2,
+          "wall_ms": 521,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "090791f1-96e9-444a-ab78-785ead9087b9",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 401,
+            "route": "managed",
+            "backend_ms": 511,
+            "started_at_ms": 1789601219927,
+            "finished_at_ms": 1789601220438,
+            "request_colo": "SJC"
+          }
+        },
+        {
+          "event_at_ms": 1789601220544,
+          "cpu_ms": 0,
+          "wall_ms": 368,
+          "log": {
+            "type": "hand.proxy",
+            "request_id": "05905715-d296-49fc-818f-5b812b7b28b9",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "route": "managed",
+            "backend_ms": 361,
+            "started_at_ms": 1789601220544,
+            "finished_at_ms": 1789601220905,
+            "request_colo": "SJC"
+          }
+        }
+      ],
+      "managed": [
+        {
+          "event_at_ms": 1789601216395,
+          "cpu_ms": 1,
+          "wall_ms": 374,
+          "log": {
+            "type": "hand.request",
+            "request_id": "93c46264-6c4d-4d79-a5b1-cd37cb235d6f",
+            "method": "POST",
+            "path": "/v1/account/hands/renew",
+            "status": 200,
+            "timings_ms": {
+              "auth": 199,
+              "route": 175,
+              "total": 374
+            },
+            "started_at_ms": 1789601216395,
+            "finished_at_ms": 1789601216769,
+            "request_colo": "SJC"
+          }
+        },
+        {
+          "event_at_ms": 1789601216913,
+          "cpu_ms": 1,
+          "wall_ms": 388,
+          "log": {
+            "type": "hand.request",
+            "request_id": "4746580c-c873-4bbf-a93c-21c9274ec579",
+            "method": "GET",
+            "path": "/v1/account/hands",
+            "status": 200,
+            "timings_ms": {
+              "auth": 202,
+              "route": 186,
+              "total": 388
+            },
+            "started_at_ms": 1789601216913,
+            "finished_at_ms": 1789601217301,
+            "request_colo": "SJC"
+          }
+        },
+        {
+          "event_at_ms": 1789601219103,
+          "cpu_ms": 1,
+          "wall_ms": 386,
+          "log": {
+            "type": "hand.request",
+            "request_id": "ec3c428f-3786-47f6-a6fd-15f07c6df372",
+            "method": "GET",
+            "path": "/v1/account/hands/screens",
+            "status": 200,
+            "timings_ms": {
+              "auth": 193,
+              "route": 193,
+              "total": 386
+            },
+            "started_at_ms": 1789601219103,
+            "finished_at_ms": 1789601219489,
+            "request_colo": "SJC"
+          }
+        },
+        {
+          "event_at_ms": 1789601219637,
+          "cpu_ms": 3,
+          "wall_ms": 4,
+          "log": {
+            "type": "hand.request",
+            "request_id": "8b9182f5-a2a5-4848-a8d6-b7aa5f4a5458",
+            "method": "POST",
+            "path": "/v1/account/hands/ice",
+            "status": 401,
+            "timings_ms": {
+              "auth": 0,
+              "total": 0
+            },
+            "started_at_ms": 1789601219637,
+            "finished_at_ms": 1789601219637,
+            "request_colo": "SJC"
+          }
+        },
+        {
+          "event_at_ms": 1789601219929,
+          "cpu_ms": 6,
+          "wall_ms": 10,
+          "log": {
+            "type": "hand.request",
+            "request_id": "090791f1-96e9-444a-ab78-785ead9087b9",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 401,
+            "timings_ms": {
+              "auth": 0,
+              "total": 0
+            },
+            "started_at_ms": 1789601220438,
+            "finished_at_ms": 1789601220438,
+            "request_colo": "SJC"
+          }
+        },
+        {
+          "event_at_ms": 1789601220544,
+          "cpu_ms": 3,
+          "wall_ms": 364,
+          "log": {
+            "type": "hand.request",
+            "request_id": "05905715-d296-49fc-818f-5b812b7b28b9",
+            "method": "GET",
+            "path": "/v1/account/hands/view",
+            "status": 101,
+            "timings_ms": {
+              "auth": 193,
+              "route": 168,
+              "total": 361
+            },
+            "started_at_ms": 1789601220544,
+            "finished_at_ms": 1789601220905,
+            "request_colo": "SJC"
+          }
+        }
+      ]
+    }
+  }
+}

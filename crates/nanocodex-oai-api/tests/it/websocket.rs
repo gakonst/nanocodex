@@ -165,6 +165,63 @@ async fn reconnect_replays_the_turn_state_in_the_websocket_handshake() -> Result
     Ok(())
 }
 
+#[tokio::test]
+async fn account_switch_error_reconnects_with_full_conversation_history() -> Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:0").await?;
+    let websocket_url = format!("ws://{}", listener.local_addr()?);
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await?;
+        let mut first = accept_async(stream).await?;
+        drop(next_ws_json(&mut first).await?);
+        send_ws_json(
+            &mut first,
+            completed_response("resp-account-a", "Earlier answer."),
+        )
+        .await?;
+        let continuation = next_ws_json(&mut first).await?;
+        assert_eq!(continuation["previous_response_id"], "resp-account-a");
+        // This is the exact retry signal emitted by the hosted credential broker.
+        send_ws_json(&mut first, json!({
+            "type": "error",
+            "error": {
+                "type": "server_error",
+                "code": "server_error",
+                "retry_after": 0,
+                "message": "ChatGPT account switched after reaching its subscription limit. Reconnect and retry with full history."
+            }
+        })).await?;
+        let (stream, _) = listener.accept().await?;
+        let mut second = accept_async(stream).await?;
+        let replay = next_ws_json(&mut second).await?;
+        assert!(replay.get("previous_response_id").is_none());
+        let history = replay["input"].to_string();
+        assert!(history.contains("Remember the first question."));
+        assert!(history.contains("Earlier answer."));
+        assert!(history.contains("Continue on another account."));
+        send_ws_json(
+            &mut second,
+            completed_response("resp-account-b", "Continued answer."),
+        )
+        .await
+    });
+    let openai = OpenAi::builder("test-api-key")
+        .websocket_url(websocket_url)
+        .build()?;
+    let mut session = openai
+        .instructions("Preserve the conversation across accounts.")
+        .build()?;
+    let mut turn = session.turn();
+    turn.create("Remember the first question.").await?;
+    let completed = timeout(
+        std::time::Duration::from_secs(10),
+        turn.create("Continue on another account."),
+    )
+    .await??;
+    assert_eq!(completed.output_text(), "Continued answer.");
+    timeout(std::time::Duration::from_secs(5), server).await???;
+    Ok(())
+}
+
 async fn next_ws_json<S>(socket: &mut WebSocketStream<S>) -> Result<Value>
 where
     S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,

@@ -36,8 +36,80 @@ on:
         type: choice
         options: [preview, production]
 
+env:
+  # Bump this repository variable to refresh mutable upstream base images or
+  # recover a receipt whose registry image was explicitly deleted.
+  MANAGED_IMAGE_CACHE_EPOCH: ${{ vars.MANAGED_IMAGE_CACHE_EPOCH || '1' }}
+
 jobs:
+  # Compile independently of image publication; deployment still requires both.
+  worker-build:
+    name: build Cloudflare Worker artifacts
+    if: >-
+      vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
+      ((github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
+       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+       github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    concurrency:
+      group: cloudflare-worker-build-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          cache-on-failure: true
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+      - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
+        with:
+          tool: wasm-bindgen-cli@0.2.126
+      - name: Test Wrangler image cache boundary
+        run: node --test scripts/cloudflare/*.test.mjs
+      - name: Install deployment packages
+        run: pnpm install --frozen-lockfile
+      - name: Install Astra trial package
+        run: npm ci --prefix examples/astra-mpp-trial
+      - name: Prepare managed evaluator asset
+        working-directory: js/managed
+        run: npm run prepare:code-evaluator
+      - name: Build deployable applications
+        run: |
+          pnpm exec turbo run build \
+            --filter nanocodex-terminal \
+            --filter @nanocodex/connect-api \
+            --filter @nanocodex/connect-dialog \
+            --filter @nanocodex/connect-playground \
+            --filter nanocodex-web
+      - name: Build Astra trial application
+        run: npm run build:client --prefix examples/astra-mpp-trial
+      - name: Package same-revision Worker outputs
+        run: node scripts/cloudflare/worker-build.mjs pack
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: cloudflare-worker-build
+          path: .ci-worker-build/
+          include-hidden-files: true
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 3
+
   preview:
+    needs: worker-build
     if: >-
       vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
       ((github.event_name == 'pull_request' &&
@@ -72,27 +144,23 @@ jobs:
               js/managed/Dockerfile js/managed/wrangler.jsonc js/managed/.dockerignore \
               js/managed/scripts/prepare-hand-image.mjs js/managed/scripts/bundle-hand-desktop.sh \
               hands/remote crates/nanocodex-vm/image/toolkit \
-              js/managed/scripts/check-dev-stack.sh; then
+              js/managed/scripts/check-dev-stack.sh \
+              .dockerignore js/phone-cloud Cargo.toml Cargo.lock bin crates examples \
+              js/nanocodex py/bindings third_party \
+              js/managed/scripts/phone-bridge.mjs js/managed/scripts/phone-delegation.mjs \
+              js/managed/src/twilio-voice.ts; then
               rollout=none
             fi
           fi
           echo "rollout=$rollout" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
-        with:
-          toolchain: stable
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
-        with:
-          cache-on-failure: true
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
-        with:
-          tool: wasm-bindgen-cli@0.2.126
+      - name: Test Wrangler image cache boundary
+        run: node --test scripts/cloudflare/*.test.mjs
       - name: Install deployment packages
         run: pnpm install --frozen-lockfile
       - name: Install Astra trial package
@@ -100,16 +168,12 @@ jobs:
       - name: Prepare managed evaluator asset
         working-directory: js/managed
         run: npm run prepare:code-evaluator
-      - name: Build deployable applications
-        run: |
-          pnpm exec turbo run build \
-            --filter nanocodex-terminal \
-            --filter @nanocodex/connect-api \
-            --filter @nanocodex/connect-dialog \
-            --filter @nanocodex/connect-playground \
-            --filter nanocodex-web
-      - name: Build Astra trial application
-        run: npm run build:client --prefix examples/astra-mpp-trial
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: cloudflare-worker-build
+          path: .ci-worker-build
+      - name: Restore same-revision Worker outputs
+        run: node scripts/cloudflare/worker-build.mjs restore
       # Cloudflare does not issue preview URLs for Durable Object or container
       # Workers. Dry-run those and publish previews only for asset Workers.
       - name: Validate egress Worker
@@ -117,8 +181,20 @@ jobs:
         run: npx wrangler deploy --dry-run --config wrangler.broker.jsonc
       - name: Validate X Worker
         run: pnpm --filter @nanocodex/x-api run build
+      # Wrangler invokes plain `docker build`; the CLI override adds GHA cache
+      # import/export to the actual build and preserves its loaded image for push.
+      - name: Set up managed image builder
+        if: steps.managed-container.outputs.rollout != 'none'
+        id: managed-builder
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Expose BuildKit cache runtime
+        if: steps.managed-container.outputs.rollout != 'none'
+        uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
       - name: Validate managed Worker
         working-directory: js/managed
+        env:
+          WRANGLER_DOCKER_BIN: ${{ github.workspace }}/scripts/cloudflare/wrangler-docker.mjs
+          BUILDX_BUILDER: ${{ steps.managed-builder.outputs.name }}
         run: npx wrangler deploy --dry-run --config wrangler.jsonc --containers-rollout "${{ steps.managed-container.outputs.rollout }}"
       - name: Upload Connect dialog preview version
         working-directory: js/connect-dialog
@@ -139,7 +215,79 @@ jobs:
         working-directory: js/connect-playground
         run: npx wrangler versions upload --config wrangler.jsonc --preview-alias "pr-${{ github.event.pull_request.number || github.run_id }}" --message "$DEPLOY_MESSAGE"
 
+  managed-images:
+    name: publish managed image (${{ matrix.image }})
+    if: >-
+      vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+       (github.event_name == 'workflow_dispatch' && inputs.target == 'production'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    environment: cloudflare-production
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        image: [phone, sandbox]
+    env:
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Test image publication boundaries
+        run: node --test scripts/cloudflare/*.test.mjs
+      - name: Fingerprint committed image inputs
+        id: image-input
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: node scripts/cloudflare/managed-images.mjs fingerprint "$IMAGE"
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: receipt
+        with:
+          path: .ci-images/${{ matrix.image }}.json
+          key: managed-image-v1-${{ steps.image-input.outputs.input }}
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        if: steps.receipt.outputs.cache-hit != 'true'
+      - name: Install image publication tooling
+        if: steps.receipt.outputs.cache-hit != 'true'
+        run: pnpm install --frozen-lockfile
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        if: steps.receipt.outputs.cache-hit != 'true'
+        id: builder
+      - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
+        if: steps.receipt.outputs.cache-hit != 'true'
+      - name: Build, verify, and publish changed image
+        if: steps.receipt.outputs.cache-hit != 'true'
+        env:
+          IMAGE: ${{ matrix.image }}
+          BUILDX_BUILDER: ${{ steps.builder.outputs.name }}
+        run: node scripts/cloudflare/managed-images.mjs publish "$IMAGE"
+      - name: Verify immutable image receipt
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: node scripts/cloudflare/managed-images.mjs verify "$IMAGE"
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.receipt.outputs.cache-hit != 'true'
+        continue-on-error: true
+        with:
+          path: .ci-images/${{ matrix.image }}.json
+          key: managed-image-v1-${{ steps.image-input.outputs.input }}
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: managed-image-${{ matrix.image }}
+          path: .ci-images/${{ matrix.image }}.json
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 3
+
   production:
+    needs: [managed-images, worker-build]
     if: >-
       vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
@@ -157,78 +305,87 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       DEPLOY_MESSAGE: GitHub Actions production ${{ github.sha }}
+      GH_TOKEN: ${{ github.token }}
+      DEPLOY_TARGET: ${{ inputs.target }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - name: Select managed container rollout
-        id: managed-container
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          rollout=immediate
-          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
-            git fetch --no-tags --depth=1 origin "$BASE_SHA"
-            if git diff --quiet "$BASE_SHA" "$GITHUB_SHA" -- \
-              js/managed/Dockerfile js/managed/wrangler.jsonc js/managed/.dockerignore \
-              js/managed/scripts/prepare-hand-image.mjs js/managed/scripts/bundle-hand-desktop.sh \
-              hands/remote crates/nanocodex-vm/image/toolkit \
-              js/managed/scripts/check-dev-stack.sh; then
-              rollout=none
-            fi
-          fi
-          echo "rollout=$rollout" >> "$GITHUB_OUTPUT"
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+      - name: Skip a push superseded while its images were building
+        id: current-release
+        run: node scripts/cloudflare/current-production-release.mjs
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: steps.current-release.outputs.active == 'true'
         with:
-          toolchain: stable
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
-        with:
-          cache-on-failure: true
+          pattern: managed-image-*
+          merge-multiple: true
+          path: .ci-images
+      - name: Select immutable managed images
+        if: steps.current-release.outputs.active == 'true'
+        run: node scripts/cloudflare/managed-images.mjs config
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        if: steps.current-release.outputs.active == 'true'
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        if: steps.current-release.outputs.active == 'true'
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
-        with:
-          tool: wasm-bindgen-cli@0.2.126
+      - name: Test Wrangler image cache boundary
+        if: steps.current-release.outputs.active == 'true'
+        run: node --test scripts/cloudflare/*.test.mjs
       - name: Install deployment packages
+        if: steps.current-release.outputs.active == 'true'
         run: pnpm install --frozen-lockfile
       - name: Install Astra trial package
+        if: steps.current-release.outputs.active == 'true'
         run: npm ci --prefix examples/astra-mpp-trial
       - name: Prepare managed evaluator asset
+        if: steps.current-release.outputs.active == 'true'
         working-directory: js/managed
         run: npm run prepare:code-evaluator
-      - name: Build deployable applications
-        run: |
-          pnpm exec turbo run build \
-            --filter nanocodex-terminal \
-            --filter @nanocodex/connect-api \
-            --filter @nanocodex/connect-dialog \
-            --filter @nanocodex/connect-playground \
-            --filter nanocodex-web
-      - name: Build Astra trial application
-        run: npm run build:client --prefix examples/astra-mpp-trial
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        if: steps.current-release.outputs.active == 'true'
+        with:
+          name: cloudflare-worker-build
+          path: .ci-worker-build
+      - name: Restore same-revision Worker outputs
+        if: steps.current-release.outputs.active == 'true'
+        run: node scripts/cloudflare/worker-build.mjs restore
+      - name: Build agent email service
+        if: steps.current-release.outputs.active == 'true'
+        run: pnpm --filter nanocodex-email-service run build
+      # Recheck actual master immediately before every production mutation. A
+      # passing early check cannot authorize a checkout superseded during builds.
+      # Explicit production dispatch still permits an intentional rollback.
       - name: Deploy egress broker
+        if: steps.current-release.outputs.active == 'true'
         working-directory: js/egress
-        run: npx wrangler deploy --config wrangler.broker.jsonc --message "$DEPLOY_MESSAGE"
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.broker.jsonc --message "$DEPLOY_MESSAGE"
       - name: Deploy X Worker
-        run: pnpm deploy:x
+        if: steps.current-release.outputs.active == 'true'
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- pnpm deploy:x
       - name: Deploy managed agent service
+        if: steps.current-release.outputs.active == 'true'
         working-directory: js/managed
-        run: npx wrangler deploy --config wrangler.jsonc --containers-rollout "${{ steps.managed-container.outputs.rollout }}" --message "$DEPLOY_MESSAGE"
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.ci.jsonc --containers-rollout immediate --message "$DEPLOY_MESSAGE"
+      - name: Deploy agent email service
+        if: steps.current-release.outputs.active == 'true'
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- pnpm --filter nanocodex-email-service run deploy
       - name: Deploy Connect dialog assets
+        if: steps.current-release.outputs.active == 'true'
         working-directory: js/connect-dialog
-        run: npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
       - name: Deploy Connect API
+        if: steps.current-release.outputs.active == 'true'
         working-directory: js/connect-api
-        run: npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
       - name: Deploy Astra trial application
+        if: steps.current-release.outputs.active == 'true'
         working-directory: examples/astra-mpp-trial
-        run: npx wrangler deploy --env="" --message "$DEPLOY_MESSAGE"
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --env="" --message "$DEPLOY_MESSAGE"
       - name: Configure Astra trial secrets
+        if: steps.current-release.outputs.active == 'true'
         working-directory: examples/astra-mpp-trial
         env:
           ASTRA_MANAGED_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
@@ -250,55 +407,35 @@ jobs:
                 ["TEMPO_MPP_API_KEY", process.env.TEMPO_API_KEY],
               ].filter(([, value]) => value);
               process.stdout.write(JSON.stringify(Object.fromEntries(entries)));
-            ' | npx wrangler secret bulk --env=""
+            ' | node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler secret bulk --env=""
           fi
       - name: Deploy Chief of Staff integration
+        if: steps.current-release.outputs.active == 'true'
         working-directory: js/chief-of-staff
-        run: npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
       - name: Deploy Connect playground
+        if: steps.current-release.outputs.active == 'true'
         working-directory: js/connect-playground
-        run: npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
       - name: Deploy account application
+        id: account-release
+        if: steps.current-release.outputs.active == 'true'
         working-directory: js/account
-        run: npx wrangler deploy --config dist/nanocodex/wrangler.json --message "$DEPLOY_MESSAGE"
+        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config dist/nanocodex/wrangler.json --message "$DEPLOY_MESSAGE"
 
-  cron-live:
-    name: exercise deployed cron schedules
-    needs: production
-    runs-on: ubuntu-latest
-    timeout-minutes: 12
-    environment: cloudflare-production
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-      - name: Exercise a real scheduled turn and schedule management
-        env:
-          NANOCODEX_CRON_TEST_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
-        run: node --test js/managed/test/live-cron.test.mjs
-
-  durability-live:
-    name: exercise deployed durable threads
-    needs: production
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    environment: cloudflare-production
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        with:
-          node-version: 24
-      - name: Exercise long conversations through the deployed managed API
-        env:
-          NANOCODEX_DURABILITY_TEST_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
-          NANOCODEX_DURABILITY_RECOVERY_AGENTS: ${{ vars.NANOCODEX_DURABILITY_RECOVERY_AGENTS || '[]' }}
-        run: node --test js/managed/test/live-durability.test.mjs js/managed/test/live-large-input.test.mjs
+      - name: Verify deployed account Worker health
+        if: steps.account-release.outputs.active == 'true'
+        timeout-minutes: 1
+        run: |
+          node --input-type=module <<'JS'
+          import assert from 'node:assert/strict';
+          const response = await fetch('https://nanocodex.gakonst.workers.dev/api/health', {
+            signal: AbortSignal.timeout(20_000),
+          });
+          assert.equal(response.status, 200, 'account Worker health HTTP status');
+          const health = await response.json();
+          assert.equal(health.service, 'nanocodex');
+          assert.equal(health.runtime, 'cloudflare-workers');
+          assert.equal(health.status, 'ok');
+          console.log('Account Worker health passed');
+          JS

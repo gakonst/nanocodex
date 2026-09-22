@@ -1,0 +1,20 @@
+{
+  "matching": "Hand/VM report exact session scopes identify six scratch-agent Durable Objects; warnings matched only by those objects",
+  "agent_ids": [
+    "01a0ac86-034b-7077-b936-33ec4985fc5d",
+    "01a0ac86-5e4f-7a06-9c4d-022983751666",
+    "01a0ac86-c1be-7b90-96f9-38dd7731d7e0",
+    "01a0ac87-2be5-7bbc-948e-fe1758b23c01",
+    "01a0ac88-160c-7169-92eb-89ef5dc2a303",
+    "01a0ac88-c2d9-7a76-9ab2-49b644d1ea60"
+  ],
+  "object_ids": [
+    "25699e1400861afe848a947a32201e67aa5ad97e4ea58dc93b5fb0844aabaaa9",
+    "35d9be2f7827b22f4dd7e2f5e2c9bc6439b2f9ce81a1dd5c9c7fa546588c5a71",
+    "9e9ccb6bb9ae7015bf0a1bbe52b7458c2c9c4572a5af6d34e8225b1387922842",
+    "bcccdd18013253dd3603d7bc306dcd8d18d9c93b3b5f3d67c6099430d1a2bdad",
+    "e39f6c828bd244be5e7ee37dbd30cb884d364ef97f4a82eab54fd63cf6e53bd6",
+    "fbb888b3d818b601a3d26a4ac4d22339d2b2130a3f3493fc6116af82d0ee758a"
+  ],
+  "events": []
+}

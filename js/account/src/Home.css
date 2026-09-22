@@ -961,3 +961,11 @@ html[data-theme="light"] .chat-workspace {
     animation-duration: 0.01ms !important;
   }
 }
+
+.agent-navigation-thread .agent-navigation-copy { display: flex; flex: 1; min-width: 0; flex-direction: column; gap: 4px; }
+.agent-navigation-thread .agent-navigation-title { font-weight: 500; }
+.agent-navigation-thread .agent-navigation-status { display: flex; align-items: center; gap: 6px; color: var(--chat-muted); font-size: 11px; }
+.agent-navigation-status i { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex: none; }
+.agent-navigation-status[data-status="running"], .agent-navigation-status[data-status="stopping"] { color: var(--chat-positive) !important; }
+.agent-navigation-status[data-status="failed"] { color: #c54c45 !important; }
+.agent-navigation-thread .agent-navigation-activity { color: var(--chat-muted); font-size: 12px; line-height: 1.4; }

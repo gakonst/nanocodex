@@ -63,3 +63,5 @@ __pycache__/
 /js/bindings/pkg-web/
 /web/dist/
 /web/.repository-data/
+
+/js/managed/.media-build/

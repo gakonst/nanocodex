@@ -3,7 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	_ "embed"
 	"encoding/base64"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"image/jpeg"
@@ -13,19 +15,39 @@ import (
 	"time"
 )
 
+//go:embed capture_policy.json
+var capturePolicyJSON []byte
+
+var capturePolicy = func() struct {
+	MaxDimension   int   `json:"max_dimension"`
+	MaxBase64Bytes int   `json:"max_base64_bytes"`
+	JPEGQualities  []int `json:"jpeg_qualities"`
+} {
+	var policy struct {
+		MaxDimension   int   `json:"max_dimension"`
+		MaxBase64Bytes int   `json:"max_base64_bytes"`
+		JPEGQualities  []int `json:"jpeg_qualities"`
+	}
+	if err := json.Unmarshal(capturePolicyJSON, &policy); err != nil {
+		panic(err)
+	}
+	return policy
+}()
+
 type agentInput struct {
-	Action     string   `json:"action"`
-	X          *float64 `json:"x,omitempty"`
-	Y          *float64 `json:"y,omitempty"`
-	EndX       *float64 `json:"endX,omitempty"`
-	EndY       *float64 `json:"endY,omitempty"`
-	Button     *int     `json:"button,omitempty"`
-	Text       *string  `json:"text,omitempty"`
-	Key        *uint16  `json:"key,omitempty"`
-	Modifiers  []uint16 `json:"modifiers,omitempty"`
-	DeltaX     *float64 `json:"deltaX,omitempty"`
-	DeltaY     *float64 `json:"deltaY,omitempty"`
-	DurationMS *int     `json:"durationMs,omitempty"`
+	Context    json.RawMessage `json:"context,omitempty"`
+	Action     string          `json:"action"`
+	X          *float64        `json:"x,omitempty"`
+	Y          *float64        `json:"y,omitempty"`
+	EndX       *float64        `json:"endX,omitempty"`
+	EndY       *float64        `json:"endY,omitempty"`
+	Button     *int            `json:"button,omitempty"`
+	Text       *string         `json:"text,omitempty"`
+	Key        *uint16         `json:"key,omitempty"`
+	Modifiers  []uint16        `json:"modifiers,omitempty"`
+	DeltaX     *float64        `json:"deltaX,omitempty"`
+	DeltaY     *float64        `json:"deltaY,omitempty"`
+	DurationMS *int            `json:"durationMs,omitempty"`
 }
 type agentStep struct {
 	delay time.Duration
@@ -37,19 +59,24 @@ type agentJob struct {
 	steps                 []agentStep
 	next                  int
 	snapshotStarted       bool
+	observationContext    *observationContext
 	ctx                   context.Context
 	cancel                context.CancelFunc
 }
 type agentResult struct {
-	Status string `json:"status,omitempty"`
-	JPEG   string `json:"jpeg,omitempty"`
-	Width  int    `json:"width,omitempty"`
-	Height int    `json:"height,omitempty"`
+	Observation map[string]any `json:"observation,omitempty"`
+	Status      string         `json:"status,omitempty"`
+	JPEG        string         `json:"jpeg,omitempty"`
+	Width       int            `json:"width,omitempty"`
+	Height      int            `json:"height,omitempty"`
 }
 
 func pointer[T any](value T) *T { return &value }
 
 func (action agentInput) steps(generation string) ([]agentStep, error) {
+	if _, err := action.validateContext(); err != nil {
+		return nil, err
+	}
 	var steps []agentStep
 	add := func(event remoteInput, delay time.Duration) {
 		event.Generation = generation
@@ -80,9 +107,10 @@ func (action agentInput) steps(generation string) ([]agentStep, error) {
 			seen[key] = true
 			add(remoteInput{Kind: "key", Key: pointer(key), Down: pointer(true)}, 0)
 		}
-		for _, down := range []bool{true, false} {
-			add(remoteInput{Kind: "key", Key: action.Key, Down: pointer(down)}, 0)
-		}
+		// Applications that poll keyboard state can miss a press and release
+		// delivered in the same host tick. Keep a bounded dwell between them.
+		add(remoteInput{Kind: "key", Key: action.Key, Down: pointer(true)}, 0)
+		add(remoteInput{Kind: "key", Key: action.Key, Down: pointer(false)}, 50*time.Millisecond)
 		for i := len(action.Modifiers) - 1; i >= 0; i-- {
 			add(remoteInput{Kind: "key", Key: pointer(action.Modifiers[i]), Down: pointer(false)}, 0)
 		}
@@ -122,7 +150,7 @@ type boundedSnapshot struct {
 func (output *boundedSnapshot) Write(data []byte) (int, error) {
 	limit := output.limit
 	if limit == 0 {
-		limit = 500_000
+		limit = capturePolicy.MaxBase64Bytes / 4 * 3
 	}
 	if output.buffer.Len()+len(data) > limit {
 		return 0, errors.New("screen snapshot exceeds limit")
@@ -135,11 +163,26 @@ func (output *boundedSnapshot) Write(data []byte) (int, error) {
 func snapshotDesktop(parent context.Context, width, height int) agentResult {
 	ctx, cancel := context.WithTimeout(parent, 3*time.Second)
 	defer cancel()
-	scale := math.Min(1, 1280/float64(max(width, height)))
+	if width < 1 || height < 1 || width > 65536 || height > 65536 {
+		return agentResult{Status: "unavailable"}
+	}
+	scale := math.Min(1, float64(capturePolicy.MaxDimension)/float64(max(width, height)))
+	// Use grim's JPEG encoder when available: avoid PNG compression, a full
+	// decode, and a second encode on every relay/agent observation.
+	direct := &boundedSnapshot{}
+	command := exec.CommandContext(ctx, "grim", "-t", "jpeg", "-q", fmt.Sprint(capturePolicy.JPEGQualities[0]), "-s", fmt.Sprintf("%.6f", scale), "-")
+	command.Stdout = direct
+	command.WaitDelay = time.Second
+	if command.Run() == nil {
+		config, err := jpeg.DecodeConfig(bytes.NewReader(direct.buffer.Bytes()))
+		if err == nil && ctx.Err() == nil && config.Width > 0 && config.Height > 0 && config.Width <= capturePolicy.MaxDimension && config.Height <= capturePolicy.MaxDimension {
+			return agentResult{Status: "ok", JPEG: base64.StdEncoding.EncodeToString(direct.buffer.Bytes()), Width: config.Width, Height: config.Height}
+		}
+	}
 	// Distribution builds of grim may advertise JPEG while disabling it at
 	// compile time. PNG is its baseline format; encode a bounded JPEG here only
 	// when the agent asks for an observation. The live H.264 path is unaffected.
-	command := exec.CommandContext(ctx, "grim", "-t", "png", "-l", "1", "-s", fmt.Sprintf("%.6f", scale), "-")
+	command = exec.CommandContext(ctx, "grim", "-t", "png", "-l", "1", "-s", fmt.Sprintf("%.6f", scale), "-")
 	captured := &boundedSnapshot{limit: 8_000_000}
 	command.Stdout = captured
 	command.WaitDelay = time.Second
@@ -147,16 +190,28 @@ func snapshotDesktop(parent context.Context, width, height int) agentResult {
 		return agentResult{Status: "unavailable"}
 	}
 	config, err := png.DecodeConfig(bytes.NewReader(captured.buffer.Bytes()))
-	if err != nil || config.Width < 1 || config.Height < 1 || config.Width > 1280 || config.Height > 1280 {
+	if err != nil || config.Width < 1 || config.Height < 1 || config.Width > capturePolicy.MaxDimension || config.Height > capturePolicy.MaxDimension {
 		return agentResult{Status: "unavailable"}
 	}
 	frame, err := png.Decode(bytes.NewReader(captured.buffer.Bytes()))
 	if err != nil || ctx.Err() != nil {
 		return agentResult{Status: "unavailable"}
 	}
-	output := &boundedSnapshot{}
-	if jpeg.Encode(output, frame, &jpeg.Options{Quality: 65}) != nil || ctx.Err() != nil {
-		return agentResult{Status: "unavailable"}
+	for _, quality := range capturePolicy.JPEGQualities {
+		output := &boundedSnapshot{}
+		if ctx.Err() != nil {
+			break
+		}
+		if jpeg.Encode(output, frame, &jpeg.Options{Quality: quality}) == nil && ctx.Err() == nil {
+			return agentResult{Status: "ok", JPEG: base64.StdEncoding.EncodeToString(output.buffer.Bytes()), Width: config.Width, Height: config.Height}
+		}
 	}
-	return agentResult{Status: "ok", JPEG: base64.StdEncoding.EncodeToString(output.buffer.Bytes()), Width: config.Width, Height: config.Height}
+	return agentResult{Status: "unavailable"}
+}
+
+func (action agentInput) validateContext() (*observationContext, error) {
+	if len(action.Context) > 0 && action.Action != "observe" {
+		return nil, errors.New("context requires observe")
+	}
+	return parseObservationContext(action.Context)
 }

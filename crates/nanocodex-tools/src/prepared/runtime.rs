@@ -141,6 +141,7 @@ pub(crate) struct PreparedToolCatalogEntry {
 pub(crate) struct PreparedToolCall {
     model: String,
     session_id: String,
+    turn_id: Option<String>,
     call_id: String,
     name: String,
     input: Value,
@@ -161,11 +162,17 @@ impl PreparedToolCall {
         Self {
             model: model.into(),
             session_id: session_id.into(),
+            turn_id: None,
             call_id: call_id.into(),
             name: name.into(),
             input,
             output_token_budget,
         }
+    }
+
+    pub(crate) fn with_turn_id(mut self, turn_id: Option<String>) -> Self {
+        self.turn_id = turn_id;
+        self
     }
 }
 
@@ -278,7 +285,8 @@ impl PreparedToolRuntime {
             &call.call_id,
             &[],
             call.output_token_budget,
-        );
+        )
+        .with_turn_id(call.turn_id.as_deref());
         let started_at = std::time::Instant::now();
         let span = tracing::info_span!(
             target: "nanocodex_tools",
@@ -307,7 +315,7 @@ impl PreparedToolRuntime {
                     .unwrap_or_else(|error| ToolOutput::error(error.to_string())),
                 #[cfg(feature = "native")]
                 (PreparedToolHandler::Mcp(tool), PreparedToolInput::Mcp(input)) => {
-                    tool.execute(input).await
+                    tool.execute(input, context).await
                 }
                 #[cfg(feature = "workspace-runtime")]
                 (PreparedToolHandler::Workspace(workspace), PreparedToolInput::Contract(input)) => {

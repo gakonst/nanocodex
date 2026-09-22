@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Agent, type ManagedAgent } from "nanocodex/managed";
+import type { ToolContext } from "nanocodex/host";
 import { createTools, type Tools } from "nanocodex/tools";
 import { useAccountSession } from "./AccountSession";
 import { clientFailureMessage } from "./clientFailure";
@@ -113,7 +114,7 @@ export function HostedToolsDemo() {
             required: ["echoed", "executed_by", "host_generation"],
             additionalProperties: false,
           },
-          handler(input, context) {
+          handler(input: unknown, context: ToolContext) {
             const message = echoMessage(input);
             const execution = Object.freeze({
               callId: context.callId,

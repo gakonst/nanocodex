@@ -27,7 +27,7 @@ it("lists only the owner's live Hands without private routing metadata", async (
       socket.addEventListener("close", event => reject(new Error(`Hand closed: ${event.code} ${event.reason}`)), { once: true });
       socket.addEventListener("error", () => reject(new Error("Hand socket failed")), { once: true });
     });
-    socket.send(JSON.stringify({ type: "catalog", attachment_id: "ios-phone", machines: [{
+    socket.send(JSON.stringify({ type: "catalog", capabilities: ["turn_metadata"], attachment_id: "ios-phone", machines: [{
       id: "ios-phone", name: "iPhone", workspace: "/private/device/workspace", capabilities: ["native", "background_limited"],
     }], tools: [{ provider: "native", remote_name: "device_info", parallel_safe: true, timeout_ms: 15000,
       definition: { type: "function", name: "device_info", description: "Device info", strict: false,
@@ -35,13 +35,13 @@ it("lists only the owner's live Hands without private routing metadata", async (
     }] }));
     expect(await ready).toEqual({ type: "ready" });
     expect(await namespace.getByName(owner).listMachines(owner)).toEqual([{
-      id: "ios-phone", name: "iPhone", capabilities: ["native", "background_limited"],
+      id: "ios-phone", name: "iPhone", workspace: "/iphone", capabilities: ["native", "background_limited"],
     }]);
     expect(await namespace.getByName(owner).listMachines(other)).toEqual([]);
     const response = await call();
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(await response.json()).toEqual({ data: [{
-      id: "ios-phone", name: "iPhone", workspace: "/ios-phone", capabilities: ["native", "background_limited"],
+      id: "ios-phone", name: "iPhone", workspace: "/iphone", capabilities: ["native", "background_limited"],
     }] });
     expect(await (await call({ ...principal, userId: other })).json()).toEqual({ data: [] });
     expect((await call({ ...principal, capabilities: ["agents:read"] })).status).toBe(403);

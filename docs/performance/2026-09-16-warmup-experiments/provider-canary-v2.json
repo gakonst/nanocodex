@@ -1,0 +1,68 @@
+{
+  "started_at": "2026-09-16T23:59:37.362Z",
+  "model": "gpt-6-astra",
+  "effort": "low",
+  "tier": "default",
+  "endpoint": "wss://chatgpt.com/backend-api/codex/responses",
+  "lead_ms": 2000,
+  "rows": [
+    {
+      "arm": "cold",
+      "size": "small",
+      "rep": 1,
+      "block_id": "400c4603-6d81-4e3b-9192-edbc57d94424",
+      "prefix_bytes": 127,
+      "prefix_sha256": "28647f8d454990fb5289c55f64094c64e70f3dd596bb3543a21ea4569d8d55ad",
+      "started_at": "2026-09-16T23:59:37.363Z",
+      "loadavg": [
+        31.6005859375,
+        29.02734375,
+        58.271484375
+      ],
+      "submit_at_ms": 2003.347917,
+      "prepared_before_submit": false,
+      "socket_ms": 460.9646660000001,
+      "preparation_ms": 2465.2699589999997,
+      "error": "Error: Provider error unsupported_value: X-OpenAI-Internal-Codex-Responses-Lite requires `parallel_tool_calls` to be false."
+    },
+    {
+      "arm": "socket",
+      "size": "small",
+      "rep": 1,
+      "block_id": "400c4603-6d81-4e3b-9192-edbc57d94424",
+      "prefix_bytes": 127,
+      "prefix_sha256": "28647f8d454990fb5289c55f64094c64e70f3dd596bb3543a21ea4569d8d55ad",
+      "started_at": "2026-09-16T23:59:40.590Z",
+      "loadavg": [
+        31.6005859375,
+        29.02734375,
+        58.271484375
+      ],
+      "socket_ms": 648.4153329999999,
+      "preparation_ms": 648.4505419999996,
+      "submit_at_ms": 2001.5763339999999,
+      "prepared_before_submit": true,
+      "error": "Error: Provider error unsupported_value: X-OpenAI-Internal-Codex-Responses-Lite requires `parallel_tool_calls` to be false."
+    },
+    {
+      "arm": "request",
+      "size": "small",
+      "rep": 1,
+      "block_id": "400c4603-6d81-4e3b-9192-edbc57d94424",
+      "prefix_bytes": 127,
+      "prefix_sha256": "28647f8d454990fb5289c55f64094c64e70f3dd596bb3543a21ea4569d8d55ad",
+      "started_at": "2026-09-16T23:59:42.904Z",
+      "loadavg": [
+        32.27294921875,
+        29.20947265625,
+        58.1640625
+      ],
+      "socket_ms": 1199.5294169999997,
+      "submit_at_ms": 1999.6717499999995,
+      "prepared_before_submit": false,
+      "error": "Error: Provider error unsupported_value: X-OpenAI-Internal-Codex-Responses-Lite requires `parallel_tool_calls` to be false."
+    }
+  ],
+  "credential_source": "existing Codex subscription; credentials omitted",
+  "finished_at": "2026-09-16T23:59:44.906Z"
+}

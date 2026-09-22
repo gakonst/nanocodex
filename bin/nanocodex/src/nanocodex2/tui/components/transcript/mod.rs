@@ -41,7 +41,7 @@ use ratatui::{
 };
 use ratatui_image::sliced::{SignedPosition, SlicedImage};
 use std::{
-    collections::{HashMap, hash_map::Entry},
+    collections::{HashMap, VecDeque, hash_map::Entry},
     ops::Range,
     path::Path,
     sync::Arc,
@@ -79,7 +79,7 @@ pub(crate) struct Transcript {
     model: TranscriptModel,
     cache: LayoutCache,
     scroll: ScrollState,
-    pending_scroll: ScrollCommand,
+    pending_scroll: VecDeque<ScrollCommand>,
     last_top: Option<Anchor>,
     viewport_height: u16,
     new_updates: u64,
@@ -244,6 +244,39 @@ pub(super) enum ScrollCommand {
 }
 
 impl Transcript {
+    pub(crate) fn latest_vault_command(&self) -> Option<crate::tui::vault::Command> {
+        let mut receipts = Vec::new();
+        for entry in self.model.entries().iter().rev() {
+            match &entry.kind {
+                EntryKind::User { text } => receipts.push(text),
+                EntryKind::Tool(tool)
+                    if matches!(tool.family(), "request_vault_intake" | "exec" | "wait") =>
+                {
+                    if let Some(command) = tool
+                        .result
+                        .as_ref()
+                        .and_then(crate::tui::vault::intake_command)
+                    {
+                        if let crate::tui::vault::Command::Review { id, origin } = &command
+                            && receipts.iter().any(|text| {
+                                text.contains(id)
+                                    && text.contains(origin)
+                                    && (text.contains("vault_intake_receipt")
+                                        || text.starts_with("Vault website approval saved.")
+                                        || text.starts_with("Website approved for "))
+                            })
+                        {
+                            continue;
+                        }
+                        return Some(command);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+
     #[cfg(test)]
     pub(crate) fn new() -> Self {
         Self::with_effort(ReasoningEffort::default())
@@ -254,7 +287,7 @@ impl Transcript {
             model: TranscriptModel::default(),
             cache: LayoutCache::default(),
             scroll: ScrollState::Follow,
-            pending_scroll: ScrollCommand::None,
+            pending_scroll: VecDeque::new(),
             last_top: None,
             viewport_height: 0,
             new_updates: 0,
@@ -768,14 +801,18 @@ impl Transcript {
     }
 
     fn update_scroll(&mut self, command: ScrollCommand) -> ComponentUpdate<TranscriptEffect> {
-        self.pending_scroll = command;
+        // Preserve input order, including reversals at the transcript boundaries.
+        // Multiple wheel events can arrive before the next frame is rendered.
+        if command != ScrollCommand::None {
+            self.pending_scroll.push_back(command);
+        }
         ComponentUpdate::render(RenderRequest::Immediate)
     }
 
     fn follow_tail(&mut self) -> ComponentUpdate<TranscriptEffect> {
         let was_detached = matches!(self.scroll, ScrollState::Detached(_));
         self.scroll = ScrollState::Follow;
-        self.pending_scroll = ScrollCommand::None;
+        self.pending_scroll.clear();
         self.new_updates = 0;
 
         if was_detached {
@@ -892,7 +929,9 @@ impl Transcript {
     }
 
     fn wheel_size(&self) -> i32 {
-        (self.page_size() + 2) / 3
+        // Terminals already generate repeated events for trackpad motion.
+        // Scaling each event by viewport height skips unread lines.
+        1
     }
 
     fn render_plan(&mut self, width: u16, height: u16, theme: &Theme) -> RenderPlan {
@@ -986,7 +1025,32 @@ impl Transcript {
     }
 
     fn apply_pending_scroll(&mut self, width: u16, height: u16, theme: &Theme) {
-        let command = std::mem::take(&mut self.pending_scroll);
+        while let Some(command) = self.pending_scroll.pop_front() {
+            self.apply_scroll(command, width, height, theme);
+            // Normalize between events just as rendering would. Reversing at
+            // an edge must not depend on whether a frame landed in between.
+            if !self.pending_scroll.is_empty() {
+                let tail = self.tail_top(width, height, theme);
+                let top = match self.scroll {
+                    ScrollState::Follow => tail,
+                    ScrollState::Detached(anchor) => self
+                        .resolve_anchor(anchor, width, theme)
+                        .map(|anchor| self.fill_viewport_from(anchor, height, width, theme)),
+                };
+                self.last_top = top;
+                if let Some(top) = top {
+                    if Some(top) == tail {
+                        self.scroll = ScrollState::Follow;
+                        self.new_updates = 0;
+                    } else {
+                        self.scroll = ScrollState::Detached(top);
+                    }
+                }
+            }
+        }
+    }
+
+    fn apply_scroll(&mut self, command: ScrollCommand, width: u16, height: u16, theme: &Theme) {
         match command {
             ScrollCommand::None => {}
             ScrollCommand::End => {
@@ -1265,7 +1329,12 @@ fn is_running_tool(entry: &TranscriptEntry) -> bool {
 fn is_expandable(entry: &TranscriptEntry) -> bool {
     matches!(
         entry.kind,
-        EntryKind::Tool(_) | EntryKind::DirectedMessage(_)
+        EntryKind::Tool(_)
+            | EntryKind::DirectedMessage(_)
+            | EntryKind::Assistant {
+                agent_id: Some(_),
+                ..
+            }
     )
 }
 
@@ -1755,6 +1824,28 @@ fn render_entry(
 ) -> markdown::Layout {
     let mut layout = match &entry.kind {
         EntryKind::User { text, .. } => render_user(text, width, theme),
+        EntryKind::Assistant {
+            text,
+            agent_id: Some(agent_id),
+            ..
+        } => {
+            // Child JSON and prose remain inspectable, but never masquerade as
+            // the root answer in either live or replayed managed transcripts.
+            if expanded {
+                markdown::render_cached(
+                    &format!("**Agent {agent_id} activity**\n\n{text}"),
+                    width,
+                    theme,
+                    workspace,
+                    images,
+                )
+            } else {
+                layout_without_links(vec![Line::from(Span::styled(
+                    format!("▸ Agent {agent_id} activity"),
+                    Style::default().fg(theme.muted()),
+                ))])
+            }
+        }
         EntryKind::Assistant { text, .. } => {
             markdown::render_cached(text, width, theme, workspace, images)
         }
@@ -1971,7 +2062,9 @@ fn layout_without_links(lines: Vec<Line<'static>>) -> markdown::Layout {
 }
 
 fn render_user(text: &str, width: u16, theme: &Theme) -> markdown::Layout {
-    let text = normalize_line_endings(text);
+    let readable = crate::tui::vault::receipt_summary(text);
+    let text = normalize_line_endings(readable.as_deref().unwrap_or(text)).into_owned();
+    let text: std::borrow::Cow<'_, str> = std::borrow::Cow::Owned(text);
     let color = theme.thinking_medium();
     let content_width = width.saturating_sub(2).max(1);
     let mut lines = Vec::new();
@@ -2044,6 +2137,51 @@ mod history_tests {
                 payload: serde_json::value::to_raw_value(&payload).unwrap().into(),
             },
         ));
+    }
+
+    #[test]
+    fn child_json_is_collapsed_and_inspectable_while_root_json_remains_visible() {
+        use nanocodex::agent::events::{AgentEvent, AgentEventKind};
+        let mut t = Transcript::new();
+        for (sequence, child) in [(1, Some(7_u64)), (2, None)] {
+            let payload = serde_json::json!({"text": "{\"report\":\"private-child-result\"}", "model_call_index": 0, "managed_agent_id": child});
+            t.model.apply(&TranscriptRecord::from_agent(
+                sequence,
+                0,
+                AgentEvent {
+                    protocol_version: 1,
+                    request_id: Arc::from("test"),
+                    seq: sequence,
+                    kind: AgentEventKind::AssistantMessage,
+                    payload: serde_json::value::to_raw_value(&payload).unwrap().into(),
+                },
+            ));
+        }
+        let theme = Theme::default();
+        let child = &t.model.entries()[0];
+        assert!(super::is_expandable(child));
+        let collapsed = t.cache.layout(child, &t.model, 80, &theme);
+        let text = collapsed
+            .iter()
+            .map(ToString::to_string)
+            .collect::<String>();
+        assert!(text.contains("Agent 7 activity"));
+        assert!(!text.contains("private-child-result"));
+        t.cache.toggle(child);
+        let expanded = t.cache.layout(child, &t.model, 80, &theme);
+        assert!(
+            expanded
+                .iter()
+                .any(|line| line.to_string().contains("private-child-result"))
+        );
+        let root = &t.model.entries()[1];
+        assert!(!super::is_expandable(root));
+        let root_layout = t.cache.layout(root, &t.model, 80, &theme);
+        assert!(
+            root_layout
+                .iter()
+                .any(|line| line.to_string().contains("private-child-result"))
+        );
     }
 
     #[test]
@@ -2271,18 +2409,72 @@ mod history_tests {
     }
 
     #[test]
-    fn wheel_scroll_uses_one_third_of_the_viewport() {
+    fn wheel_scroll_moves_one_line_independent_of_viewport_height() {
         let mut transcript = Transcript::new();
         transcript.viewport_height = 32;
 
         assert_eq!(
             transcript.scroll_command(&wheel(MouseEventKind::ScrollUp)),
-            Some(ScrollCommand::Rows(-10))
+            Some(ScrollCommand::Rows(-1))
         );
         assert_eq!(
             transcript.scroll_command(&wheel(MouseEventKind::ScrollDown)),
-            Some(ScrollCommand::Rows(10))
+            Some(ScrollCommand::Rows(1))
         );
+    }
+
+    #[test]
+    fn scroll_burst_preserves_every_event_and_direction_change() {
+        let theme = Theme::default();
+        let make_transcript = || {
+            let mut transcript = Transcript::new();
+            for sequence in 1..=40 {
+                let _ = transcript.update(TranscriptEvent::Record(user(sequence, "message")));
+            }
+            let _ = transcript.render_plan(80, 10, &theme);
+            let _ = transcript.update_scroll(ScrollCommand::Rows(-5));
+            let _ = transcript.render_plan(80, 10, &theme);
+            transcript
+        };
+        for commands in [
+            vec![ScrollCommand::Rows(-1); 8],
+            vec![
+                ScrollCommand::Rows(-2),
+                ScrollCommand::Rows(1000),
+                ScrollCommand::Rows(-1),
+            ],
+            vec![
+                ScrollCommand::Rows(-1),
+                ScrollCommand::Rows(8),
+                ScrollCommand::Rows(-1),
+            ],
+            vec![
+                ScrollCommand::Home,
+                ScrollCommand::Rows(-1),
+                ScrollCommand::Rows(1),
+            ],
+            vec![
+                ScrollCommand::Rows(-5),
+                ScrollCommand::End,
+                ScrollCommand::Rows(-1),
+            ],
+        ] {
+            let mut batched = make_transcript();
+            let mut sequential = make_transcript();
+            for command in commands {
+                let _ = batched.update_scroll(command);
+                let _ = sequential.update_scroll(command);
+                let _ = sequential.render_plan(80, 10, &theme);
+            }
+            let actual = batched.render_plan(80, 10, &theme);
+            let expected = sequential.render_plan(80, 10, &theme);
+            assert_eq!(actual.anchors, expected.anchors);
+            assert_eq!(batched.new_updates, sequential.new_updates);
+            assert_eq!(
+                matches!(batched.scroll, ScrollState::Follow),
+                matches!(sequential.scroll, ScrollState::Follow)
+            );
+        }
     }
 
     #[test]

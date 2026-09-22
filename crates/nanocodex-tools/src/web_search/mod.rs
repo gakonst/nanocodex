@@ -70,70 +70,28 @@ impl WebSearchHandler {
                 }
             }
         };
-        if let Err(error) = commands.validate() {
-            return ToolOutput::error(error);
-        }
-
-        let commands = commands.into_requests();
-        let request_count = commands.len();
         let input = recent_input(context.history());
-        let mut outputs = Vec::with_capacity(request_count);
-        let mut failures = Vec::new();
-        let mut results = Vec::new();
-        let mut saw_results = false;
-
-        for (index, commands) in commands.iter().enumerate() {
-            let request = SearchRequest {
-                id: context.session_id(),
-                model: context.model(),
-                input: input.as_deref(),
-                commands,
-                settings: SearchSettings {
-                    allowed_callers: ["direct"],
-                    external_web_access: true,
-                },
-                max_output_tokens: request_token_budget(
-                    context.output_token_budget(),
-                    index,
-                    request_count,
-                ),
-            };
-            let response = match self.search(&request).await {
-                Ok(response) => response,
-                Err(error) => {
-                    failures.push(format!("web search request {} failed: {error}", index + 1));
-                    continue;
-                }
-            };
-            let SearchResponse {
-                output,
-                results: response_results,
-                _encrypted_output: _,
-            } = response;
-            if let Some(response_results) = response_results {
-                saw_results = true;
-                results.extend(response_results);
-            }
-            if !output.is_empty() {
-                outputs.push(output);
-            }
-        }
-
-        let output = outputs.join("\n");
-        let mut execution = if failures.is_empty() {
-            ToolOutput::text(output)
-        } else {
-            let mut error = failures.join("\n");
-            if !output.is_empty() {
-                error.push_str("\n\nWeb search output:\n");
-                error.push_str(&output);
-            }
-            ToolOutput::error(error)
+        let request = SearchRequest {
+            id: context.session_id(),
+            model: context.model(),
+            input: input.as_deref(),
+            commands: &commands,
+            settings: SearchSettings {
+                allowed_callers: ["direct"],
+                external_web_access: true,
+            },
+            max_output_tokens: u64::try_from(context.output_token_budget()).unwrap_or(u64::MAX),
         };
-        if saw_results {
-            execution = execution.with_metadata(json!({ "results": results }));
+        match self.search(&request).await {
+            Ok(response) => {
+                let mut output = ToolOutput::text(response.output);
+                if let Some(results) = response.results {
+                    output = output.with_metadata(json!({ "results": results }));
+                }
+                output
+            }
+            Err(error) => ToolOutput::error(error),
         }
-        execution
     }
 
     async fn search(&self, request: &SearchRequest<'_>) -> Result<SearchResponse, String> {
@@ -301,14 +259,6 @@ fn response_too_large() -> RequestFailure {
     }
 }
 
-fn request_token_budget(total: usize, index: usize, request_count: usize) -> u64 {
-    let base = total / request_count;
-    let remainder = total % request_count;
-    u64::try_from(base + usize::from(index < remainder))
-        .unwrap_or(u64::MAX)
-        .max(1)
-}
-
 #[cfg(test)]
 mod tests {
     use nanocodex_oai_api::tools::{ToolContext, ToolOutputBody};
@@ -339,6 +289,14 @@ mod tests {
                 .as_str()
                 .is_some_and(|description| description.contains("turn2search5"))
         );
+    }
+
+    #[test]
+    fn web_schema_matches_pinned_upstream_fixture() {
+        let expected: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/fixtures/codex-parity/web.json"))
+                .unwrap();
+        assert_eq!(super::schema::commands_schema(), expected);
     }
 
     #[tokio::test]

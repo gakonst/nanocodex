@@ -20,17 +20,24 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
-const ACTIONS: [Action; 10] = [
+const ACTIONS: [Action; 17] = [
     Action::Effort,
     Action::FastMode,
+    Action::Goal,
     Action::Theme,
     Action::NewSession,
     Action::ResumeSession,
     Action::Keybindings,
     Action::DebugContext,
+    Action::Bug,
     Action::Reflection,
     Action::Model,
+    Action::AutoRoute,
     Action::AgentId,
+    Action::Voice,
+    Action::Screen,
+    Action::Zoom,
+    Action::Reload,
 ];
 const KEY_BINDINGS: [(&str, &str); 3] = [("↑↓", "move"), ("enter/tab", "open"), ("esc", "close")];
 const SEARCH_LABEL: &str = "Search: ";
@@ -45,21 +52,29 @@ pub(super) struct ActionAvailability {
     pub(super) fork: bool,
     pub(super) fast_mode: bool,
     pub(super) model: bool,
+    pub(super) auto_route: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) enum Action {
+    Goal,
+    Bug,
+    Screen,
+    Zoom,
+    Voice,
     AgentId,
     Handoff,
     Review,
     Effort,
     Model,
+    AutoRoute,
     FastMode,
     Theme,
     NewSession,
     ResumeSession,
     Fork,
     Keybindings,
+    Reload,
     ReloadConfig,
     EditConfig,
     DebugContext,
@@ -70,6 +85,7 @@ pub(super) enum Action {
 pub(super) enum ActionsEffect {
     Dismiss,
     Trigger(Action),
+    Submit(String),
     Settings(SettingsCommand),
 }
 
@@ -177,6 +193,14 @@ impl ActionsMenu {
     }
 
     fn trigger_selected(&self) -> ComponentUpdate<ActionsEffect> {
+        // Managed goal commands are interpreted by the server. Preserve their
+        // arguments and send them through the ordinary prompt submission path.
+        if self.query.split_whitespace().next() == Some("goal") {
+            return ComponentUpdate {
+                effects: vec![ActionsEffect::Submit(format!("/{}", self.query))],
+                render: RenderRequest::Immediate,
+            };
+        }
         if let Some(command) = SettingsCommand::parse(&format!("/{}", self.query)) {
             return ComponentUpdate {
                 effects: vec![ActionsEffect::Settings(command)],
@@ -265,18 +289,21 @@ impl ActionsMenu {
 
     const fn is_enabled(&self, action: Action) -> bool {
         match action {
-            Action::AgentId => true,
+            Action::Screen | Action::Zoom | Action::AgentId | Action::Voice => true,
             Action::Handoff | Action::Review | Action::Reflection => self.availability.new_session,
             Action::Effort | Action::FastMode => true,
             Action::Model => self.availability.model,
+            Action::AutoRoute => self.availability.auto_route,
             Action::Theme => true,
             Action::NewSession => self.availability.new_session,
             Action::ResumeSession => self.availability.new_session,
             Action::Fork => self.availability.fork,
             Action::Keybindings => true,
+            Action::Reload => true,
             Action::ReloadConfig => true,
             Action::EditConfig => true,
             Action::DebugContext => true,
+            Action::Bug | Action::Goal => true,
         }
     }
 
@@ -298,6 +325,9 @@ impl ActionsMenu {
             Action::Reflection if !self.availability.new_session => {
                 "Reflect on session · finish active work first"
             }
+            Action::AutoRoute if !self.availability.auto_route => {
+                "Enable auto routing · before first prompt only"
+            }
             Action::FastMode if self.availability.fast_mode => "Disable fast mode",
             Action::Model if !self.availability.model => "Select model · start a new session first",
             _ => action.label(),
@@ -308,17 +338,24 @@ impl ActionsMenu {
 impl Action {
     const fn label(self) -> &'static str {
         match self {
+            Self::Goal => "Goal",
+            Self::Bug => "Debug a bug",
+            Self::Screen => "Watch Hand screen",
+            Self::Zoom => "Zoom focused pane",
+            Self::Voice => "Voice menu · providers and cloning",
             Self::AgentId => "Show agent ID",
             Self::Handoff => "Prepare handoff",
             Self::Review => "Review changes",
             Self::Effort => "Change effort",
             Self::Model => "Select model",
+            Self::AutoRoute => "Enable auto routing",
             Self::FastMode => "Enable fast mode",
             Self::Theme => "Select theme",
             Self::NewSession => "New session",
             Self::ResumeSession => "Resume session",
             Self::Fork => "Fork session",
             Self::Keybindings => "Keyboard shortcuts",
+            Self::Reload => "Reload local terminals",
             Self::ReloadConfig => "Reload config",
             Self::EditConfig => "Edit config",
             Self::DebugContext => "Debug context",
@@ -328,16 +365,23 @@ impl Action {
 
     const fn alias(self) -> Option<&'static str> {
         match self {
+            Self::Goal => Some("goal"),
+            Self::Bug => Some("bug"),
+            Self::Screen => Some("screen"),
+            Self::Zoom => Some("zoom"),
+            Self::Voice => Some("voice"),
             Self::AgentId => Some("id"),
             Self::Handoff => Some("handoff"),
             Self::Review => Some("review"),
             Self::Effort => Some("thinking"),
             Self::Model => Some("intelligence"),
+            Self::AutoRoute => Some("autoroute"),
             Self::FastMode => Some("priority"),
             Self::Theme => Some("appearance"),
             Self::NewSession => Some("clear"),
-            Self::ResumeSession => Some("restore"),
+            Self::ResumeSession => Some("attach restore"),
             Self::Fork => Some("btw"),
+            Self::Reload => Some("reload"),
             Self::ReloadConfig => Some("refresh"),
             Self::Reflection => Some("reflection"),
             Self::Keybindings | Self::EditConfig | Self::DebugContext => None,
@@ -427,7 +471,39 @@ mod tests {
             fork: true,
             fast_mode,
             model,
+            auto_route: model,
         }
+    }
+
+    #[test]
+    fn goal_action_is_discoverable_and_forwards_literal_commands() {
+        let mut menu = ActionsMenu::new(availability(false, false));
+        menu.availability.new_session = false;
+        assert!(super::ACTIONS.contains(&Action::Goal));
+        assert_eq!(menu.display_label(Action::Goal), "Goal");
+        assert!(menu.is_enabled(Action::Goal));
+        assert_eq!(
+            menu.trigger(Action::Goal).effects,
+            [ActionsEffect::Trigger(Action::Goal)]
+        );
+        for query in [
+            "goal",
+            "goal status",
+            "goal pause",
+            "goal resume",
+            "goal clear",
+            "goal build  a better TUI",
+        ] {
+            menu.query = query.to_owned();
+            menu.refresh_matches();
+            assert_eq!(
+                menu.trigger_selected().effects,
+                [ActionsEffect::Submit(format!("/{query}"))]
+            );
+        }
+        menu.query = "goalpost".to_owned();
+        menu.refresh_matches();
+        assert!(menu.trigger_selected().effects.is_empty());
     }
 
     #[test]
@@ -478,6 +554,27 @@ mod tests {
     }
 
     #[test]
+    fn bug_action_is_discoverable_and_enabled_during_active_work() {
+        let mut menu = ActionsMenu::new(availability(false, false));
+        menu.availability.new_session = false;
+        menu.insert_paste("Debug a bug");
+        assert_eq!(
+            menu.trigger_selected().effects,
+            [ActionsEffect::Trigger(Action::Bug)]
+        );
+
+        let mut menu = ActionsMenu::new(availability(false, false));
+        menu.availability.new_session = false;
+        menu.insert_paste("bug rendering breaks");
+        assert_eq!(
+            menu.trigger_selected().effects,
+            [ActionsEffect::Settings(SettingsCommand::Bug(
+                "rendering breaks".to_owned()
+            ))]
+        );
+    }
+
+    #[test]
     fn direct_settings_queries_trigger_even_without_an_action_match() {
         let mut menu = ActionsMenu::new(availability(false, true));
         menu.update(ActionsEvent::Terminal(Event::Paste(
@@ -511,14 +608,95 @@ mod tests {
     }
 
     #[test]
-    fn only_model_action_is_disabled_after_session_starts() {
+    fn model_and_auto_route_actions_are_disabled_after_session_starts() {
         let menu = ActionsMenu::new(availability(false, false));
         assert_eq!(
             menu.display_label(Action::Model),
             "Select model · start a new session first"
         );
         assert!(!menu.is_enabled(Action::Model));
+        assert!(!menu.is_enabled(Action::AutoRoute));
         assert!(menu.is_enabled(Action::Effort));
         assert!(menu.is_enabled(Action::FastMode));
+    }
+
+    #[test]
+    fn autoroute_action_is_discoverable_and_requires_an_empty_idle_thread() {
+        assert!(super::ACTIONS.contains(&Action::AutoRoute));
+        assert_eq!(Action::AutoRoute.alias(), Some("autoroute"));
+        for enabled in [false, true] {
+            let mut menu = ActionsMenu::new(availability(false, enabled));
+            menu.insert_paste("Enable auto routing");
+            assert_eq!(menu.is_enabled(Action::AutoRoute), enabled);
+            if enabled {
+                assert_eq!(
+                    menu.trigger_selected().effects,
+                    [ActionsEffect::Trigger(Action::AutoRoute)]
+                );
+            } else {
+                assert!(menu.trigger_selected().effects.is_empty());
+                assert!(
+                    menu.display_label(Action::AutoRoute)
+                        .contains("before first prompt")
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn autoroute_menu_commands_always_use_the_guarded_settings_path() {
+        for enabled in [false, true] {
+            for code in [KeyCode::Enter, KeyCode::Tab] {
+                for (query, expected) in [
+                    ("autoroute", SettingsCommand::AutoRoute),
+                    (
+                        "autoroute extra",
+                        SettingsCommand::Invalid("Usage: /autoroute".to_owned()),
+                    ),
+                ] {
+                    let mut menu = ActionsMenu::new(availability(false, enabled));
+                    menu.insert_paste(query);
+                    let update = menu.update(ActionsEvent::Terminal(Event::Key(KeyEvent::new(
+                        code,
+                        KeyModifiers::NONE,
+                    ))));
+                    assert_eq!(update.effects, [ActionsEffect::Settings(expected)]);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn reload_action_is_discoverable_during_active_work() {
+        let mut menu = ActionsMenu::new(availability(false, false));
+        menu.availability.new_session = false;
+        assert!(super::ACTIONS.contains(&Action::Reload));
+        assert!(menu.is_enabled(Action::Reload));
+        menu.insert_paste("Reload local terminals");
+        assert_eq!(
+            menu.trigger_selected().effects,
+            [ActionsEffect::Trigger(Action::Reload)]
+        );
+    }
+
+    #[test]
+    fn reload_menu_commands_never_submit_prompts() {
+        for code in [KeyCode::Enter, KeyCode::Tab] {
+            for (query, expected) in [
+                ("reload", SettingsCommand::Reload),
+                (
+                    "reload extra",
+                    SettingsCommand::Invalid("Usage: /reload".to_owned()),
+                ),
+            ] {
+                let mut menu = ActionsMenu::new(availability(false, false));
+                menu.insert_paste(query);
+                let update = menu.update(ActionsEvent::Terminal(Event::Key(KeyEvent::new(
+                    code,
+                    KeyModifiers::NONE,
+                ))));
+                assert_eq!(update.effects, [ActionsEffect::Settings(expected)]);
+            }
+        }
     }
 }

@@ -263,7 +263,7 @@ struct Session {
     interaction: Mutex<()>,
     child: Mutex<process::ProcessChild>,
     stdin: Mutex<Option<process::ProcessStdin>>,
-    process_group: Mutex<process::ProcessGroupGuard>,
+    process_group: process::SharedProcessGroup,
     drains: Mutex<Option<Vec<JoinHandle<()>>>>,
     captured: Arc<Mutex<CapturedOutput>>,
     secrets: Vec<String>,
@@ -298,7 +298,7 @@ impl Session {
             interaction: Mutex::new(()),
             child: Mutex::new(spawned.child),
             stdin: Mutex::new(spawned.stdin),
-            process_group: Mutex::new(spawned.process_group),
+            process_group: spawned.process_group,
             drains: Mutex::new(Some(drains)),
             captured,
             secrets,
@@ -309,7 +309,7 @@ impl Session {
         // Signal first: a direct caller can hold the interaction lock while
         // awaiting this child, and waiting for that lock before terminating
         // would make cancellation wait for the command's full yield timeout.
-        if let Err(error) = self.process_group.lock().await.terminate_and_disarm() {
+        if let Err(error) = self.process_group.terminate_and_disarm() {
             tracing::warn!(
                 shell.session.id = self.id,
                 %error,
@@ -334,7 +334,7 @@ impl Session {
     }
 
     async fn interrupt(&self) -> std::io::Result<()> {
-        self.process_group.lock().await.interrupt()
+        self.process_group.interrupt()
     }
 
     async fn write(&self, chars: &str) -> std::io::Result<()> {
@@ -357,12 +357,12 @@ impl Session {
         };
         let exit_code = match status {
             Ok(Ok(exit_code)) => {
-                let _ = self.process_group.lock().await.terminate_and_disarm();
+                let _ = self.process_group.terminate_and_disarm();
                 self.finish_drains().await;
                 Some(exit_code)
             }
             Ok(Err(error)) => {
-                let _ = self.process_group.lock().await.terminate_and_disarm();
+                let _ = self.process_group.terminate_and_disarm();
                 let message = format!("failed to wait for shell command: {error}");
                 self.captured
                     .lock()
@@ -622,6 +622,116 @@ mod tests {
             result.output,
             "injected|http://nanocodex:[REDACTED]@127.0.0.1:1234"
         );
+    }
+
+    // Yield is an observation deadline, not a promise that a scheduled child
+    // has produced output. Wait for its explicit readiness before releasing it.
+    #[cfg(unix)]
+    async fn ready_child(
+        sessions: &ShellSessions,
+        mut result: super::ExecCommandResult,
+    ) -> super::ExecCommandResult {
+        tokio::time::timeout(Duration::from_secs(30), async {
+            while !result.output.contains('\n') {
+                let id = i32::try_from(
+                    result
+                        .session_id
+                        .expect("child must remain active before readiness"),
+                )
+                .unwrap();
+                let next = sessions
+                    .write_stdin(WriteStdin::new(id, String::new(), Some(100), None))
+                    .await;
+                result.output.push_str(&next.output);
+                result.session_id = next.session_id;
+                result.exit_code = next.exit_code;
+            }
+            result
+        })
+        .await
+        .expect("child must announce readiness")
+    }
+
+    #[cfg(unix)]
+    async fn assert_unpolled_child_is_reaped(tty: bool) {
+        use nix::{errno::Errno, sys::signal::kill, unistd::Pid};
+
+        let directory = tempfile::tempdir().expect("temporary directory");
+        let release = directory.path().join("release");
+        let sessions = ShellSessions::new();
+        let first = sessions.execute(
+            ExecCommand::new(
+                format!("printf '%s\\n' \"$$\"; while [ ! -f '{}' ]; do sleep 0.02; done; printf 'retained-output'; exit 23", release.display()),
+                None, Some("/bin/sh".to_owned()), Some(false), tty, Some(250), None,
+            ),
+            std::path::Path::new("/"),
+        ).await;
+        assert_eq!(first.session_id, Some(1));
+        let first = ready_child(&sessions, first).await;
+        let pid = Pid::from_raw(first.output.trim().parse().expect("shell PID"));
+        std::fs::write(&release, "exit").expect("release child");
+        // kill(pid, 0) still succeeds for a zombie: ESRCH proves the child was
+        // reaped, without a tool poll (or waitpid in the test) doing that work.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            while kill(pid, None) != Err(Errno::ESRCH) {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .expect("unpolled child should be reaped");
+        let later = sessions
+            .write_stdin(WriteStdin::new(1, String::new(), Some(5_000), None))
+            .await;
+        assert_eq!(later.exit_code, Some(23));
+        assert_eq!(later.session_id, None);
+        assert_eq!(later.output, "retained-output");
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unpolled_pipe_child_is_reaped_and_retains_output_and_status() {
+        assert_unpolled_child_is_reaped(false).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn unpolled_pty_child_is_reaped_and_retains_output_and_status() {
+        assert_unpolled_child_is_reaped(true).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn dropping_unpolled_sessions_terminates_and_reaps_children() {
+        use nix::{errno::Errno, sys::signal::kill, unistd::Pid};
+
+        for tty in [false, true] {
+            let sessions = ShellSessions::new();
+            let first = sessions
+                .execute(
+                    ExecCommand::new(
+                        "printf '%s\\n' \"$$\"; sleep 30".to_owned(),
+                        None,
+                        Some("/bin/sh".to_owned()),
+                        Some(false),
+                        tty,
+                        Some(250),
+                        None,
+                    ),
+                    std::path::Path::new("/"),
+                )
+                .await;
+            assert_eq!(first.session_id, Some(1));
+            let first = ready_child(&sessions, first).await;
+            let pid = Pid::from_raw(first.output.trim().parse().expect("shell PID"));
+            drop(sessions);
+            tokio::time::timeout(Duration::from_secs(5), async {
+                while kill(pid, None) != Err(Errno::ESRCH) {
+                    tokio::time::sleep(Duration::from_millis(20)).await;
+                }
+            })
+            .await
+            .expect("dropped session child should terminate and be reaped");
+        }
     }
 
     #[cfg(unix)]
@@ -1027,7 +1137,8 @@ mod tests {
                 futures_util::future::join_all((0..16).map(|_| {
                     sessions.execute(
                         ExecCommand::new(
-                            "stty -echo; read value; printf 'got:%s' \"$value\"".to_owned(),
+                            "stty -echo; printf 'ready\\n'; read value; printf 'got:%s' \"$value\""
+                                .to_owned(),
                             None,
                             Some("/bin/sh".to_owned()),
                             Some(false),
@@ -1041,13 +1152,37 @@ mod tests {
                 .await,
             );
         }
+        let started = futures_util::future::join_all(
+            started
+                .into_iter()
+                .map(|result| ready_child(&sessions, result)),
+        )
+        .await;
         let finished = futures_util::future::join_all((1..=80).map(|id| {
-            sessions.write_stdin(WriteStdin::new(
-                id,
-                format!("release-{id}\n"),
-                Some(1_000),
-                None,
-            ))
+            let sessions = &sessions;
+            async move {
+                tokio::time::timeout(Duration::from_secs(30), async {
+                    let mut result = sessions
+                        .write_stdin(WriteStdin::new(
+                            id,
+                            format!("release-{id}\n"),
+                            Some(100),
+                            None,
+                        ))
+                        .await;
+                    while result.exit_code.is_none() {
+                        let next = sessions
+                            .write_stdin(WriteStdin::new(id, String::new(), Some(100), None))
+                            .await;
+                        result.output.push_str(&next.output);
+                        result.exit_code = next.exit_code;
+                        result.session_id = next.session_id;
+                    }
+                    result
+                })
+                .await
+                .expect("released child must terminate")
+            }
         }))
         .await;
         sessions.terminate_all().await;

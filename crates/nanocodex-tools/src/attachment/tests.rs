@@ -154,7 +154,8 @@ async fn catalog_call_result_and_drain_use_exact_frames() {
         let mut socket = accept(&listener).await;
         let catalog = recv_json(&mut socket).await;
         assert_eq!(catalog["type"], "catalog");
-        assert_eq!(catalog.as_object().unwrap().len(), 4);
+        assert_eq!(catalog.as_object().unwrap().len(), 5);
+        assert_eq!(catalog["capabilities"], json!(["turn_metadata"]));
         assert_eq!(catalog["tools"][0]["definition"]["name"], "echo");
         assert_eq!(catalog["attachment_id"], "machine-1");
         assert_eq!(
@@ -287,7 +288,7 @@ async fn disconnect_after_dispatch_does_not_replay_receipts_into_a_new_socket() 
 }
 
 #[tokio::test]
-async fn graceful_drain_keeps_the_attachment_alive_until_calls_are_acknowledged() {
+async fn detach_cancels_execution_and_waits_until_results_are_acknowledged() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("ws://{}/tools", listener.local_addr().unwrap());
     let server = tokio::spawn(async move {
@@ -296,16 +297,9 @@ async fn graceful_drain_keeps_the_attachment_alive_until_calls_are_acknowledged(
         assert_eq!(recv_json(&mut socket).await, json!({"type":"drain"}));
         send_json(&mut socket, json!({"type":"draining"})).await;
 
-        let ping = recv_json(&mut socket).await;
-        assert_eq!(ping["type"], "ping");
-        send_json(&mut socket, json!({"type":"pong","nonce":ping["nonce"]})).await;
-        send_json(
-            &mut socket,
-            json!({"type":"cancel","call_id":"draining-call"}),
-        )
-        .await;
         let result = recv_json(&mut socket).await;
         assert_eq!(result["call_id"], "draining-call");
+        assert_eq!(result["outcome"]["status"], "ambiguous");
         send_json(&mut socket, json!({"type":"ack","call_id":"draining-call"})).await;
     });
     let tools = Tools::builder()
@@ -313,12 +307,21 @@ async fn graceful_drain_keeps_the_attachment_alive_until_calls_are_acknowledged(
         .tool(BlockingTool)
         .build()
         .unwrap();
-    let (attachment, _) = tools
+    let (attachment, mut events) = tools
         .attach(AttachmentTarget::new(endpoint, "bearer").unwrap())
         .connect()
         .await
         .unwrap();
-    tokio::time::sleep(Duration::from_millis(10)).await;
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while let Some(event) = events.recv().await {
+            if matches!(event, AttachmentEvent::CallStarted { .. }) {
+                return;
+            }
+        }
+        panic!("attachment closed before admitting the call");
+    })
+    .await
+    .expect("call admission");
     attachment.detach().await.unwrap();
     server.await.unwrap();
 }
@@ -387,6 +390,7 @@ async fn ready(listener: &TcpListener) -> WebSocketStream<TcpStream> {
     let mut socket = accept(listener).await;
     let catalog = recv_json(&mut socket).await;
     assert_eq!(catalog["type"], "catalog");
+    assert_eq!(catalog["capabilities"], json!(["turn_metadata"]));
     send_json(&mut socket, json!({"type":"ready"})).await;
     socket
 }
@@ -441,4 +445,167 @@ fn machine_metadata(id: &str, workspace: &str) -> AttachmentMetadata {
         )
         .unwrap(),
     )
+}
+
+struct TurnIdentityTool;
+
+#[async_trait]
+impl Tool for TurnIdentityTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::function(
+            "turn_identity",
+            "returns invocation identity",
+            json!({"type":"object"}),
+        )
+    }
+    async fn execute(&self, _input: ToolInput, context: ToolContext<'_>) -> ToolResult {
+        Ok(ToolOutput::json(
+            &json!({"turn_id":context.turn_id(), "call_id":context.call_id(), "session_id":context.session_id()}),
+        ))
+    }
+}
+
+#[tokio::test]
+async fn native_attachment_preserves_turn_identity_through_prepared_runtime() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("ws://{}/tools", listener.local_addr().unwrap());
+    let (completed_tx, completed_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let mut socket = ready(&listener).await;
+        for (id, turn) in [
+            ("one", Some("session-1:7")),
+            ("two", Some("session-1:7")),
+            ("three", Some("session-1:8")),
+            ("legacy", None),
+        ] {
+            let mut frame = call(id, "turn_identity");
+            if let Some(turn) = turn {
+                frame["turn_id"] = json!(turn);
+            }
+            send_json(&mut socket, frame).await;
+            let result = recv_json(&mut socket).await;
+            assert_eq!(result["outcome"]["status"], "completed");
+            let output = &result["outcome"]["output"];
+            let identity: Value = serde_json::from_str(output["output"].as_str().unwrap()).unwrap();
+            assert_eq!(
+                identity,
+                json!({"session_id":"session-1", "call_id":id, "turn_id":turn})
+            );
+            send_json(&mut socket, json!({"type":"ack", "call_id":id})).await;
+        }
+        completed_tx.send(()).unwrap();
+        assert_eq!(recv_json(&mut socket).await, json!({"type":"drain"}));
+        send_json(&mut socket, json!({"type":"draining"})).await;
+    });
+    let tools = Tools::builder()
+        .without_defaults()
+        .tool(TurnIdentityTool)
+        .build()
+        .unwrap();
+    let (attachment, _) = tools
+        .attach(AttachmentTarget::new(endpoint, "bearer").unwrap())
+        .connect()
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(5), completed_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    attachment.detach().await.unwrap();
+    server.await.unwrap();
+}
+
+struct GatedTool {
+    started: tokio::sync::mpsc::UnboundedSender<String>,
+    release: std::sync::Arc<tokio::sync::Semaphore>,
+    parallel: bool,
+}
+
+#[async_trait]
+impl Tool for GatedTool {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::function("gated", "wait for release", json!({"type":"object"}))
+    }
+
+    fn supports_parallel_tool_calls(&self) -> bool {
+        self.parallel
+    }
+
+    async fn execute(&self, _input: ToolInput, context: ToolContext<'_>) -> ToolResult {
+        self.started.send(context.call_id().to_owned()).unwrap();
+        self.release.acquire().await.unwrap().forget();
+        Ok(ToolOutput::json(&json!({"finished":true})))
+    }
+}
+
+#[tokio::test]
+async fn reconnect_preserves_running_calls_capacity_and_socket_local_results() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        for (parallel, count) in [(false, 1), (true, 32)] {
+            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let endpoint = format!("ws://{}/tools", listener.local_addr().unwrap());
+            let (started, mut starts) = tokio::sync::mpsc::unbounded_channel();
+            let release = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+            let tools = Tools::builder()
+                .without_defaults()
+                .tool(EchoTool)
+                .tool(GatedTool {
+                    started,
+                    release: release.clone(),
+                    parallel,
+                })
+                .build()
+                .unwrap();
+            let (attachment, mut events) = tools
+                .attach(AttachmentTarget::new(endpoint, "bearer").unwrap())
+                .start()
+                .unwrap();
+            let mut first = ready(&listener).await;
+            for id in 0..count {
+                send_json(&mut first, call(&format!("old-{id}"), "gated")).await;
+                assert_eq!(starts.recv().await.unwrap(), format!("old-{id}"));
+            }
+            first.close(None).await.unwrap();
+            let mut second = ready(&listener).await;
+            send_json(&mut second, call("busy", "echo")).await;
+            let busy = recv_json(&mut second).await;
+            assert_eq!(busy["call_id"], "busy");
+            assert_eq!(busy["outcome"]["status"], "unavailable");
+            send_json(&mut second, json!({"type":"ack","call_id":"busy"})).await;
+
+            // Let the replacement loop wait with the old calls still active.
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            release.add_permits(count);
+            let mut finished = 0;
+            while finished < count {
+                if let AttachmentEvent::CallCompleted { call_id, outcome } =
+                    events.recv().await.unwrap()
+                    && call_id.starts_with("old-")
+                {
+                    assert_eq!(outcome, AttachmentCallOutcome::Completed);
+                    finished += 1;
+                }
+            }
+            // Old completions do not wake the replacement socket.
+            tokio::time::sleep(Duration::from_millis(25)).await;
+            // Reusing an ID belongs to this socket; no old result may precede it.
+            send_json(&mut second, call("old-0", "echo")).await;
+            let result = recv_json(&mut second).await;
+            assert_eq!(result["call_id"], "old-0");
+            assert_eq!(result["outcome"]["status"], "completed");
+            assert!(
+                result["outcome"]["output"]["output"]
+                    .as_str()
+                    .unwrap()
+                    .contains("hello")
+            );
+            send_json(&mut second, json!({"type":"ack","call_id":"old-0"})).await;
+            let detach = tokio::spawn(async move { attachment.detach().await });
+            assert_eq!(recv_json(&mut second).await, json!({"type":"drain"}));
+            send_json(&mut second, json!({"type":"draining"})).await;
+            detach.await.unwrap().unwrap();
+        }
+    })
+    .await
+    .unwrap();
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/binary"
 	"errors"
@@ -9,6 +10,8 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -21,6 +24,7 @@ import (
 // Waymote owns the wlroots capture and input protocols. Pion forwards its H.264
 // pipe directly into WebRTC: no decoded frames or JPEGs cross the VM boundary.
 type waymoteCapture struct {
+	gamepad  *gamepadController
 	track    *webrtc.TrackLocalStaticRTP
 	input    io.WriteCloser
 	video    io.ReadCloser
@@ -46,7 +50,18 @@ func startWaymoteWithDiagnostics(ctx context.Context, executable string, diagnos
 	ctx, cancel := context.WithCancel(ctx)
 	// libkrun TSI cannot listen on guest UDP sockets. Waymote's native Annex-B
 	// stdout also avoids packet loss and a network hop between local processes.
-	command := exec.CommandContext(ctx, executable, "--frame-rate", "60", "--bitrate", "6000", "--xkb-layout", "us")
+	helper, err := os.Executable()
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	bitrate, err := screenBitrate(os.Getenv("NANOCODEX_SCREEN_BITRATE_KBPS"))
+	if err != nil {
+		cancel()
+		return nil, err
+	}
+	command := exec.CommandContext(ctx, executable, "--frame-rate", "60", "--bitrate", strconv.Itoa(bitrate), "--xkb-layout", "us", "--ffmpeg", helper)
+	command.Env = append(os.Environ(), encoderHelperEnv+"=1")
 	command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	command.Cancel = func() error {
 		if command.Process == nil {
@@ -78,13 +93,21 @@ func startWaymoteWithDiagnostics(ctx context.Context, executable string, diagnos
 		return nil, err
 	}
 	capture := &waymoteCapture{track: track, input: input, video: video, cancel: cancel, done: make(chan struct{})}
+	if controller, gamepadErr := configuredGamepad(openGamepad); gamepadErr == nil {
+		capture.gamepad = controller
+	} else {
+		fmt.Fprintf(diagnostics, "Native gamepad unavailable: %v\n", gamepadErr)
+	}
 	go func() {
 		forwarder := h264Forwarder{}
-		_ = forwarder.read(video, func(out *rtp.Packet) error {
+		err := forwarder.read(video, func(out *rtp.Packet) error {
 			// A viewer can unbind during a write without stopping other viewers.
 			_ = track.WriteRTP(out)
 			return nil
 		})
+		if err != nil && ctx.Err() == nil {
+			fmt.Fprintf(diagnostics, "Wayland video forwarding failed: %v\n", err)
+		}
 		cancel()
 		_ = command.Wait()
 		close(capture.done)
@@ -97,6 +120,9 @@ func (capture *waymoteCapture) close() {
 	if capture.closed {
 		capture.mu.Unlock()
 		return
+	}
+	if capture.gamepad != nil {
+		capture.gamepad.close()
 	}
 	_ = capture.record(5, 0, 0, 0, 0)
 	capture.closed = true
@@ -113,7 +139,11 @@ func (capture *waymoteCapture) releaseAll() error {
 	if capture.closed {
 		return nil
 	}
-	return capture.record(5, 0, 0, 0, 0)
+	var gamepadErr error
+	if capture.gamepad != nil {
+		gamepadErr = capture.gamepad.release()
+	}
+	return errors.Join(gamepadErr, capture.record(5, 0, 0, 0, 0))
 }
 
 // Input is already account/control-lease checked by the host session. Keep the
@@ -142,8 +172,15 @@ func (capture *waymoteCapture) apply(event remoteInput) error {
 		down = 1
 	}
 	switch event.Kind {
+	case "gamepad":
+		if capture.gamepad == nil {
+			return errors.New("native gamepad unavailable")
+		}
+		return capture.gamepad.apply(*event.Gamepad)
 	case "move":
 		return nil
+	case "relativeMove":
+		return capture.record(8, 0, math.Float32bits(float32(*event.DeltaX)), math.Float32bits(float32(*event.DeltaY)), sequence)
 	case "button":
 		return capture.record(2, down, 0x110+uint32(*event.Button), 0, sequence)
 	case "scroll":
@@ -155,8 +192,19 @@ func (capture *waymoteCapture) apply(event remoteInput) error {
 		}
 		return capture.record(4, down, key, 0, sequence)
 	case "releaseAll":
-		return capture.record(5, 0, 0, 0, 0)
+		var gamepadErr error
+		if capture.gamepad != nil {
+			gamepadErr = capture.gamepad.release()
+		}
+		return errors.Join(gamepadErr, capture.record(5, 0, 0, 0, 0))
 	case "text":
+		if os.Getenv("NANOCODEX_WAYLAND_TEXT_X11") == "1" || os.Getenv("NANOCODEX_WAYLAND_TEXT_WTYPE") == "1" {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if handled, err := typeWaylandText(ctx, *event.Text); handled || err != nil {
+				return err
+			}
+		}
 		// Waymote limits each UTF-8 composition commit to 4000 bytes.
 		remaining := []byte(*event.Text)
 		for len(remaining) > 0 {
@@ -183,6 +231,75 @@ func (capture *waymoteCapture) apply(event remoteInput) error {
 	default:
 		return errors.New("unsupported input")
 	}
+}
+
+// typeWaylandText selects a backend before sending any text. A failed typing
+// command may have delivered a prefix, so it must never trigger another backend.
+func typeWaylandText(ctx context.Context, text string) (bool, error) {
+	if os.Getenv("NANOCODEX_WAYLAND_TEXT_X11") == "1" && os.Getenv("DISPLAY") != "" {
+		path, err := exec.LookPath("xdotool")
+		if err == nil {
+			focused, err := focusedXApplication(ctx, path)
+			if err != nil {
+				return false, err
+			}
+			if focused {
+				// XTEST follows the live keyboard focus, including changes after the
+				// probe. Do not pin a window with XSendEvent or steal focus.
+				command := exec.CommandContext(ctx, path, "type", "--clearmodifiers", "--delay", "1", "--file", "-")
+				command.Stdin = strings.NewReader(text)
+				command.WaitDelay = 25 * time.Millisecond
+				return true, command.Run()
+			}
+		} else if !errors.Is(err, exec.ErrNotFound) {
+			return false, err
+		}
+	}
+	// Compositors with an existing input-method owner may reject Waymote's
+	// IME commits. Keep the virtual-keyboard fallback independently opt-in.
+	if os.Getenv("NANOCODEX_WAYLAND_TEXT_WTYPE") == "1" {
+		command := exec.CommandContext(ctx, "wtype", "-")
+		command.Stdin = strings.NewReader(text)
+		command.WaitDelay = 25 * time.Millisecond
+		return true, command.Run()
+	}
+	return false, nil
+}
+
+func focusedXApplication(ctx context.Context, executable string) (bool, error) {
+	ctx, cancel := context.WithTimeout(ctx, 250*time.Millisecond)
+	defer cancel()
+	// Chaining resolves the PID from the actual keyboard focus, rather than
+	// the window manager's active-window hint. Root/None have no client PID.
+	command := exec.CommandContext(ctx, executable, "getwindowfocus", "getwindowpid")
+	var output, diagnostics bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &diagnostics
+	// A descendant inheriting stdout must not keep the probe blocked.
+	command.WaitDelay = 25 * time.Millisecond
+	err := command.Run()
+	if ctx.Err() != nil {
+		return false, fmt.Errorf("X11 focus probe: %w", ctx.Err())
+	}
+	if err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 1 {
+			message := diagnostics.String()
+			// Exit 1 alone can also mean a broken display connection. Only
+			// recognized absent-focus/PID diagnostics permit another backend.
+			if strings.Contains(message, "has no pid associated with it.") ||
+				strings.Contains(message, "xdo_focus_window reported an error") ||
+				strings.Contains(message, "XGetInputFocus returned the focused window of 1.") {
+				return false, nil
+			}
+		}
+		return false, fmt.Errorf("X11 focus probe: %w", err)
+	}
+	pid, err := strconv.ParseInt(strings.TrimSpace(output.String()), 10, 32)
+	if err != nil {
+		return false, errors.New("X11 focus probe returned an invalid PID")
+	}
+	return pid > 0, nil
 }
 
 func (capture *waymoteCapture) record(kind, state byte, a, b, sequence uint32) error {
@@ -219,4 +336,16 @@ var hidToEvdev = map[uint16]uint32{
 	73: 110, 74: 102, 75: 104, 76: 111, 77: 107, 78: 109, 79: 106, 80: 105, 81: 108, 82: 103,
 	83: 69, 84: 98, 85: 55, 86: 74, 87: 78, 88: 96, 89: 79, 90: 80, 91: 81, 92: 75, 93: 76, 94: 77, 95: 71, 96: 72, 97: 73, 98: 82, 99: 83, 100: 86, 103: 117,
 	224: 29, 225: 42, 226: 56, 227: 125, 228: 97, 229: 54, 230: 100, 231: 126,
+}
+
+// Shared desktop quality setting, in kbit/s; bounds avoid accidental unbounded traffic.
+func screenBitrate(value string) (int, error) {
+	if value == "" {
+		return 6000, nil
+	}
+	bitrate, err := strconv.Atoi(value)
+	if err != nil || bitrate < 1000 || bitrate > 100000 {
+		return 0, errors.New("NANOCODEX_SCREEN_BITRATE_KBPS must be 1000 through 100000")
+	}
+	return bitrate, nil
 }

@@ -521,18 +521,47 @@ async fn workspace_tool_source_overrides_the_runtime_root_and_retains_shell_sess
         .await
         .unwrap();
     assert!(output.success);
-    assert!(
-        output.structured_result()["output"]
-            .as_str()
-            .is_some_and(|stdout| stdout.contains(source_workspace.path().to_str().unwrap()))
-    );
     let session_id = output
         .process_trace()
         .and_then(|process| process.session_id)
         .expect("long-running workspace command should retain a shell session");
     assert!(runtime.has_shell_session(session_id).await);
-
+    let mut stdout = output.structured_result()["output"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned();
+    let observed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        while !stdout.contains(source_workspace.path().to_str().unwrap()) {
+            let output = runtime
+                .execute_tool(
+                    "write_stdin",
+                    ToolInput::Function(
+                        to_raw_value(&json!({
+                            "session_id": session_id, "chars": "", "yield_time_ms": 100,
+                        }))
+                        .unwrap(),
+                    ),
+                    ToolContext::new(
+                        "test-model",
+                        "test-session",
+                        "poll-ready",
+                        &[],
+                        DEFAULT_TOOL_OUTPUT_TOKENS,
+                    ),
+                )
+                .await
+                .unwrap();
+            assert!(output.success);
+            stdout.push_str(
+                output.structured_result()["output"]
+                    .as_str()
+                    .unwrap_or_default(),
+            );
+        }
+    })
+    .await;
     runtime.control().cancel().await;
+    observed.expect("workspace command must report its working directory");
 }
 
 #[test]

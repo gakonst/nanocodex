@@ -25,15 +25,38 @@ impl SessionTransport {
         }
     }
 
-    #[cfg(not(target_family = "wasm"))]
     pub(crate) fn activate_https_fallback(&self) -> bool {
         self.fallback_to_https
             .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
             .is_ok()
     }
+}
 
-    #[cfg(target_family = "wasm")]
-    pub(crate) const fn activate_https_fallback(&self) -> bool {
-        false
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn fallback_is_one_way_and_scoped_to_the_session() {
+        let session = SessionTransport::new();
+        let other = SessionTransport::new();
+        assert_eq!(
+            session.effective(ResponsesTransport::WebSocket),
+            ResponsesTransport::WebSocket
+        );
+        assert!(session.activate_https_fallback());
+        assert!(!session.activate_https_fallback());
+        assert_eq!(
+            session.effective(ResponsesTransport::WebSocket),
+            ResponsesTransport::Https
+        );
+        assert_eq!(
+            session.effective(ResponsesTransport::Https),
+            ResponsesTransport::Https
+        );
+        assert_eq!(
+            other.effective(ResponsesTransport::WebSocket),
+            ResponsesTransport::WebSocket
+        );
     }
 }

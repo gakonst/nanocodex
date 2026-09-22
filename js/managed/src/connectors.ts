@@ -290,7 +290,7 @@ export async function routeConnectorRequest(
     || (callback && request.method !== "GET")
     || (connectionId && request.method !== "DELETE")
     || (!callback && !connectionId
-      && request.method !== "POST" && request.method !== "DELETE")) {
+      && request.method !== "POST" && request.method !== "DELETE" && !(provider === "link" && request.method === "GET"))) {
     return json({ error: "method_not_allowed" }, 405);
   }
 
@@ -298,7 +298,7 @@ export async function routeConnectorRequest(
     ? await authenticatePersistentAccount(request, env, url)
     : await authenticateConnectorManagement(request, env, url);
   if (!principal) return json({ error: "unauthorized" }, 401);
-  if (!callback) {
+  if (!callback && request.method !== "GET") {
     const originFailure = requireSameOriginMutation(request, url, principal);
     if (originFailure) return originFailure;
   }
@@ -315,6 +315,10 @@ export async function routeConnectorRequest(
     }),
   }), url, routeConnector);
 
+  if (provider === "link" && request.method === "GET") {
+    if (!/^[A-Za-z0-9_-]{43}$/.test(url.searchParams.get("attempt") ?? "") || [...url.searchParams.keys()].some(key => key !== "attempt")) return json({ error: "invalid_request" }, 400);
+    return env.NANOCODEX.fetch(target + url.search);
+  }
   if (url.search) return json({ error: "invalid_request" }, 400);
   if (connectionId) return env.NANOCODEX.fetch(target, { method: "DELETE" });
   // Backward-compatible singleton control: old clients revoke the provider
@@ -325,7 +329,7 @@ export async function routeConnectorRequest(
 
   const returnTo = await decodeReturnTo(request, url);
   if (!returnTo) return json({ error: "invalid_return_to" }, 400);
-  const local = localConnectorAuthorization(url.origin, routeConnector, "managed");
+  const local = routeConnector === "link" ? undefined : localConnectorAuthorization(url.origin, routeConnector, "managed");
   const response = await env.NANOCODEX.fetch(target, {
     method: "POST",
     headers: { "content-type": "application/json" },

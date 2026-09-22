@@ -1,0 +1,2357 @@
+[
+  {
+    "wallTime": 1526,
+    "cpuTime": 5,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606568371,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789606568563,
+        "message": {
+          "type": "managed.agent.create_requested",
+          "method": "POST"
+        }
+      },
+      {
+        "timestamp": 1789606569895,
+        "message": {
+          "type": "managed.agent.created",
+          "outcome": "success",
+          "auth_ms": 192,
+          "session_create_ms": 1332,
+          "session_prepare_ms": 0,
+          "session_initialize_ms": 0,
+          "session_commit_ms": 261,
+          "create_ms": 1524
+        }
+      },
+      {
+        "timestamp": 1789606569895,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "c3252fef-06bf-4980-b44a-d3bf2d1c393b",
+          "mode": "live",
+          "auth_ms": 192,
+          "method": "POST",
+          "path": "/v1/agents",
+          "status": 201
+        }
+      },
+      {
+        "timestamp": 1789606569895,
+        "message": {
+          "type": "managed.request",
+          "request_id": "c3252fef-06bf-4980-b44a-d3bf2d1c393b",
+          "method": "POST",
+          "path": "/v1/agents",
+          "status": 201,
+          "duration_ms": 1524
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1416,
+    "cpuTime": 37,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606569580,
+    "outcome": "ok",
+    "durableObjectId": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+    "logs": [
+      {
+        "timestamp": 1789606569842,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "session.POST /create",
+          "duration_ms": 261,
+          "reads": {
+            "session_state": {
+              "count": 4,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 60,
+    "cpuTime": 3,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606571159,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789606571159,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "POST"
+        }
+      },
+      {
+        "timestamp": 1789606571216,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "439c8e95-8960-4ae2-86f1-3f46de638295",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "POST",
+          "path": "/v1/agents/01a0acdd-2273-78d6-bab5-4f3ff733d087/prepare",
+          "status": 202
+        }
+      },
+      {
+        "timestamp": 1789606571216,
+        "message": {
+          "type": "managed.request",
+          "request_id": "439c8e95-8960-4ae2-86f1-3f46de638295",
+          "method": "POST",
+          "path": "/v1/agents/01a0acdd-2273-78d6-bab5-4f3ff733d087/prepare",
+          "status": 202,
+          "duration_ms": 57
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 699,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606571271,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789606571271,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "POST"
+        }
+      },
+      {
+        "timestamp": 1789606571782,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "794d7bf3-4318-4d0e-a677-2f8908f5de57",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "POST",
+          "path": "/v1/agents/01a0acdd-2273-78d6-bab5-4f3ff733d087/turns",
+          "status": 202
+        }
+      },
+      {
+        "timestamp": 1789606571782,
+        "message": {
+          "type": "managed.request",
+          "request_id": "794d7bf3-4318-4d0e-a677-2f8908f5de57",
+          "method": "POST",
+          "path": "/v1/agents/01a0acdd-2273-78d6-bab5-4f3ff733d087/turns",
+          "status": 202,
+          "duration_ms": 511
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 544,
+    "cpuTime": 7,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606571186,
+    "outcome": "ok",
+    "durableObjectId": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+    "logs": [
+      {
+        "timestamp": 1789606571186,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "session.POST /prepare",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 5,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606573204,
+    "outcome": "ok",
+    "durableObjectId": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+    "logs": [
+      {
+        "timestamp": 1789606573204,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606573944,
+    "outcome": "ok",
+    "durableObjectId": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+    "logs": [
+      {
+        "timestamp": 1789606573944,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 38,
+    "cpuTime": 4,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606573599,
+    "outcome": "ok",
+    "durableObjectId": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+    "logs": [
+      {
+        "timestamp": 1789606573599,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 4,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606574017,
+    "outcome": "ok",
+    "durableObjectId": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+    "logs": [
+      {
+        "timestamp": 1789606574017,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 318,
+    "cpuTime": 37,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606573630,
+    "outcome": "ok",
+    "durableObjectId": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+    "logs": [
+      {
+        "timestamp": 1789606573630,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789606573684,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.connection.completed",
+          "request_id": "01a0acdd-2f7d-7edc-bab2-4d1e31257252",
+          "turn_id": "audit-d58e904f-91ab-4003-ab8a-fef9f3cf5728",
+          "outcome": "success",
+          "transport": "responses_websocket_v2",
+          "operation_kind": "initial",
+          "attempt_count": 1,
+          "connection_generation": 1,
+          "duration_ms": 1767
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 69,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606573946,
+    "outcome": "ok",
+    "durableObjectId": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+    "logs": [
+      {
+        "timestamp": 1789606573946,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 28,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606577747,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789606577747,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789606577774,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "1a3bd45f-cc85-4deb-9131-9c38375557ad",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "GET",
+          "path": "/v1/agents/01a0acdd-2273-78d6-bab5-4f3ff733d087/events/history",
+          "status": 200
+        }
+      },
+      {
+        "timestamp": 1789606577774,
+        "message": {
+          "type": "managed.request",
+          "request_id": "1a3bd45f-cc85-4deb-9131-9c38375557ad",
+          "method": "GET",
+          "path": "/v1/agents/01a0acdd-2273-78d6-bab5-4f3ff733d087/events/history",
+          "status": 200,
+          "duration_ms": 27
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 23,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606577833,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789606577833,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET",
+          "turn_id": "audit-d58e904f-91ab-4003-ab8a-fef9f3cf5728"
+        }
+      },
+      {
+        "timestamp": 1789606577854,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "1033ab77-e3db-465d-be64-56c06db51c50",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "GET",
+          "path": "/v1/agents/01a0acdd-2273-78d6-bab5-4f3ff733d087/turns/audit-d58e904f-91ab-4003-ab8a-fef9f3cf5728",
+          "status": 200
+        }
+      },
+      {
+        "timestamp": 1789606577854,
+        "message": {
+          "type": "managed.request",
+          "request_id": "1033ab77-e3db-465d-be64-56c06db51c50",
+          "method": "GET",
+          "path": "/v1/agents/01a0acdd-2273-78d6-bab5-4f3ff733d087/turns/audit-d58e904f-91ab-4003-ab8a-fef9f3cf5728",
+          "status": 200,
+          "duration_ms": 21
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 82,
+    "cpuTime": 7,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606577702,
+    "outcome": "ok",
+    "durableObjectId": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+    "logs": [
+      {
+        "timestamp": 1789606577702,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "session.GET /events/history",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 20,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606577996,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789606577996,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789606578015,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "9a69e3cd-ca80-48fc-a8f6-cb91be217f23",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "GET",
+          "path": "/v1/agents/01a0acdd-2273-78d6-bab5-4f3ff733d087",
+          "status": 200
+        }
+      },
+      {
+        "timestamp": 1789606578015,
+        "message": {
+          "type": "managed.request",
+          "request_id": "9a69e3cd-ca80-48fc-a8f6-cb91be217f23",
+          "method": "GET",
+          "path": "/v1/agents/01a0acdd-2273-78d6-bab5-4f3ff733d087",
+          "status": 200,
+          "duration_ms": 19
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 164,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606577781,
+    "outcome": "ok",
+    "durableObjectId": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+    "logs": [
+      {
+        "timestamp": 1789606577781,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "session.GET /turns/audit-d58e904f-91ab-4003-ab8a-fef9f3cf5728",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 812,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606577954,
+    "outcome": "ok",
+    "durableObjectId": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+    "logs": [
+      {
+        "timestamp": 1789606577954,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "session.GET /state",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 3389,
+    "cpuTime": 141,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606574020,
+    "outcome": "ok",
+    "durableObjectId": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+    "logs": [
+      {
+        "timestamp": 1789606574020,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789606577472,
+        "message": {
+          "type": "managed.turn.transition",
+          "turn_id": "audit-d58e904f-91ab-4003-ab8a-fef9f3cf5728",
+          "status": "completed",
+          "outcome": "success",
+          "message_type": "turn_completed",
+          "attempt_count": 0
+        }
+      },
+      {
+        "timestamp": 1789606577472,
+        "message": {
+          "type": "managed.capacity",
+          "reason": "terminal_milestone",
+          "session_id": "01a0acdd-2273-78d6-bab5-4f3ff733d087"
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1630,
+    "cpuTime": 427,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606571729,
+    "outcome": "ok",
+    "durableObjectId": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+    "logs": [
+      {
+        "timestamp": 1789606571729,
+        "message": {
+          "type": "managed.personalization.pinned",
+          "turn_id": "audit-d58e904f-91ab-4003-ab8a-fef9f3cf5728",
+          "agent_id": "01a0acdd-2273-78d6-bab5-4f3ff733d087",
+          "cache_hit": true,
+          "fact_count": 18
+        }
+      },
+      {
+        "timestamp": 1789606571729,
+        "message": {
+          "type": "managed.turn.accepted",
+          "turn_id": "audit-d58e904f-91ab-4003-ab8a-fef9f3cf5728",
+          "transport": "managed"
+        }
+      },
+      {
+        "timestamp": 1789606571729,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "session.POST /turns",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 6,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789606571729,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "account.hosted_tools",
+          "started_at": 1789606571186,
+          "duration_ms": 543,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606571729,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "audit-d58e904f-91ab-4003-ab8a-fef9f3cf5728",
+          "stage": "account.hosted_tools",
+          "started_at": 1789606571729,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606571901,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "account.catalog",
+          "started_at": 1789606571186,
+          "duration_ms": 715,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606571901,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789606571186,
+          "duration_ms": 715,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606571901,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "audit-d58e904f-91ab-4003-ab8a-fef9f3cf5728",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789606571729,
+          "duration_ms": 172,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606571901,
+        "message": {
+          "type": "managed.capacity",
+          "reason": "agent_constructed",
+          "session_id": "01a0acdd-2273-78d6-bab5-4f3ff733d087",
+          "account_mcp_refresh_ms": 715,
+          "credential_binding_ms": 0,
+          "browser_runtime_ms": 0,
+          "workspace_ms": 0,
+          "computer_runtime_ms": 0,
+          "code_evaluator_ms": 0,
+          "managed_tools_ms": 0,
+          "cloudflare_agent_ms": 0,
+          "construction_ms": 0,
+          "runtime_ready_ms": 715
+        }
+      },
+      {
+        "timestamp": 1789606571917,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "account.vault",
+          "started_at": 1789606571186,
+          "duration_ms": 731,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606571917,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "conversation.prepare",
+          "started_at": 1789606571186,
+          "duration_ms": 731,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606571917,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "audit-d58e904f-91ab-4003-ab8a-fef9f3cf5728",
+          "stage": "startup.environment",
+          "started_at": 1789606571729,
+          "duration_ms": 188,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606571917,
+        "message": {
+          "type": "managed.turn.dispatch",
+          "turn_id": "audit-d58e904f-91ab-4003-ab8a-fef9f3cf5728",
+          "runtime_ready_ms": 172,
+          "bootstrap_ready_ms": 188,
+          "inject_ms": 0,
+          "admission_ms": 188,
+          "accepted_to_dispatch_ms": 188
+        }
+      },
+      {
+        "timestamp": 1789606571917,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "audit-d58e904f-91ab-4003-ab8a-fef9f3cf5728",
+          "stage": "turn.admission",
+          "duration_ms": 188,
+          "reads": {
+            "session_state": {
+              "count": 14,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789606571917,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.attempt.started",
+          "request_id": "01a0acdd-2f7d-7edc-bab2-4d1e31257252",
+          "turn_id": "audit-d58e904f-91ab-4003-ab8a-fef9f3cf5728",
+          "outcome": "observed",
+          "replay_mode": "full_history",
+          "operation_kind": "generation",
+          "attempt_count": 1,
+          "max_attempts": 5,
+          "connection_generation": 0,
+          "model_call_index": 1
+        }
+      },
+      {
+        "timestamp": 1789606571917,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.connection.started",
+          "request_id": "01a0acdd-2f7d-7edc-bab2-4d1e31257252",
+          "turn_id": "audit-d58e904f-91ab-4003-ab8a-fef9f3cf5728",
+          "outcome": "observed",
+          "transport": "responses_websocket_v2",
+          "operation_kind": "initial",
+          "attempt_count": 1,
+          "connection_generation": 1
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 369,
+    "cpuTime": 20,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606573205,
+    "outcome": "ok",
+    "durableObjectId": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+    "logs": [
+      {
+        "timestamp": 1789606573205,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2680,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606578834,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789606578834,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "DELETE"
+        }
+      },
+      {
+        "timestamp": 1789606581513,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "500e1706-1ba0-4d82-b010-e5908a4d2944",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "DELETE",
+          "path": "/v1/agents/01a0acdd-2273-78d6-bab5-4f3ff733d087",
+          "status": 204
+        }
+      },
+      {
+        "timestamp": 1789606581513,
+        "message": {
+          "type": "managed.request",
+          "request_id": "500e1706-1ba0-4d82-b010-e5908a4d2944",
+          "method": "DELETE",
+          "path": "/v1/agents/01a0acdd-2273-78d6-bab5-4f3ff733d087",
+          "status": 204,
+          "duration_ms": 2679
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2638,
+    "cpuTime": 44,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606578842,
+    "outcome": "ok",
+    "durableObjectId": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+    "logs": [
+      {
+        "timestamp": 1789606579067,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "delete.registry_initial",
+          "started_at": 1789606578814,
+          "duration_ms": 253,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606579067,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "delete.runtime",
+          "started_at": 1789606579067,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606579067,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "delete.attachments",
+          "started_at": 1789606579067,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606579801,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "delete.memory",
+          "started_at": 1789606579067,
+          "duration_ms": 734,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606580761,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "delete.containers",
+          "started_at": 1789606579801,
+          "duration_ms": 960,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606580975,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "delete.sandbox_workspaces",
+          "started_at": 1789606580761,
+          "duration_ms": 214,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606580975,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "delete.brain",
+          "started_at": 1789606580975,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606581152,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "delete.registry_final",
+          "started_at": 1789606580975,
+          "duration_ms": 177,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606581447,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "delete.archives",
+          "started_at": 1789606581152,
+          "duration_ms": 295,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606581447,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "session.DELETE /session",
+          "duration_ms": 2633,
+          "reads": {
+            "session_state": {
+              "count": 2,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1,
+    "cpuTime": 0,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606581662,
+    "outcome": "ok",
+    "durableObjectId": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+    "logs": [
+      {
+        "timestamp": 1789606581662,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "session.GET /state",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 204,
+    "cpuTime": 6,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606570986,
+    "outcome": "responseStreamDisconnected",
+    "durableObjectId": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+    "logs": [
+      {
+        "timestamp": 1789606570986,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "f4684c8edd542cc708cbae00c2cf4b7a95656d2d6ba413fa68b16f22d37bdc8f",
+          "stage": "session.GET /socket",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1772,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606583782,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789606583975,
+        "message": {
+          "type": "managed.agent.create_requested",
+          "method": "POST"
+        }
+      },
+      {
+        "timestamp": 1789606585554,
+        "message": {
+          "type": "managed.agent.created",
+          "outcome": "success",
+          "auth_ms": 193,
+          "session_create_ms": 1579,
+          "session_prepare_ms": 0,
+          "session_initialize_ms": 0,
+          "session_commit_ms": 298,
+          "create_ms": 1772
+        }
+      },
+      {
+        "timestamp": 1789606585554,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "eaecbb8f-0e98-47f5-b50b-586347d3f5fd",
+          "mode": "live",
+          "auth_ms": 193,
+          "method": "POST",
+          "path": "/v1/agents",
+          "status": 201
+        }
+      },
+      {
+        "timestamp": 1789606585554,
+        "message": {
+          "type": "managed.request",
+          "request_id": "eaecbb8f-0e98-47f5-b50b-586347d3f5fd",
+          "method": "POST",
+          "path": "/v1/agents",
+          "status": 201,
+          "duration_ms": 1772
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1568,
+    "cpuTime": 65,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606585169,
+    "outcome": "ok",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606585471,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "session.POST /create",
+          "duration_ms": 298,
+          "reads": {
+            "session_state": {
+              "count": 4,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 18,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606586872,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789606586872,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "POST"
+        }
+      },
+      {
+        "timestamp": 1789606586889,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "dd9f89ea-170f-413a-b405-908bbda8065f",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "POST",
+          "path": "/v1/agents/01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e/prepare",
+          "status": 202
+        }
+      },
+      {
+        "timestamp": 1789606586889,
+        "message": {
+          "type": "managed.request",
+          "request_id": "dd9f89ea-170f-413a-b405-908bbda8065f",
+          "method": "POST",
+          "path": "/v1/agents/01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e/prepare",
+          "status": 202,
+          "duration_ms": 17
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 29982,
+    "cpuTime": 309,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606586863,
+    "outcome": "ok",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606586863,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "session.POST /prepare",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 5,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789606587393,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "account.hosted_tools",
+          "started_at": 1789606586863,
+          "duration_ms": 530,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606587565,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "account.catalog",
+          "started_at": 1789606586863,
+          "duration_ms": 702,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606587565,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789606586863,
+          "duration_ms": 702,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606587565,
+        "message": {
+          "type": "managed.capacity",
+          "reason": "agent_constructed",
+          "session_id": "01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e",
+          "account_mcp_refresh_ms": 702,
+          "credential_binding_ms": 0,
+          "browser_runtime_ms": 0,
+          "workspace_ms": 0,
+          "computer_runtime_ms": 0,
+          "code_evaluator_ms": 0,
+          "managed_tools_ms": 0,
+          "cloudflare_agent_ms": 0,
+          "construction_ms": 0,
+          "runtime_ready_ms": 702
+        }
+      },
+      {
+        "timestamp": 1789606587605,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "account.vault",
+          "started_at": 1789606586863,
+          "duration_ms": 742,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606587605,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "conversation.prepare",
+          "started_at": 1789606586863,
+          "duration_ms": 742,
+          "success": true
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 261,
+    "cpuTime": 3,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606622089,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789606622089,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "POST"
+        }
+      },
+      {
+        "timestamp": 1789606622155,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "6b237fda-cab5-4b63-9b63-22073fc974e6",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "POST",
+          "path": "/v1/agents/01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e/turns",
+          "status": 202
+        }
+      },
+      {
+        "timestamp": 1789606622155,
+        "message": {
+          "type": "managed.request",
+          "request_id": "6b237fda-cab5-4b63-9b63-22073fc974e6",
+          "method": "POST",
+          "path": "/v1/agents/01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e/turns",
+          "status": 202,
+          "duration_ms": 66
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 85,
+    "cpuTime": 24,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606616864,
+    "outcome": "ok",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606616864,
+        "message": {
+          "type": "managed.capacity",
+          "reason": "idle_shutdown",
+          "session_id": "01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e"
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 13,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606623779,
+    "outcome": "ok",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606623779,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 345,
+    "cpuTime": 39,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606623789,
+    "outcome": "ok",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606623789,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606624460,
+    "outcome": "ok",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606624460,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 99,
+    "cpuTime": 5,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606624122,
+    "outcome": "ok",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606624122,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 6,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606624616,
+    "outcome": "ok",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606624616,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 252,
+    "cpuTime": 27,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606624220,
+    "outcome": "ok",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606624220,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789606624245,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.connection.completed",
+          "request_id": "01a0acdd-6cad-7f6b-a6ec-2b0f5d663898",
+          "turn_id": "audit-3e1616e1-d149-43d9-ae1c-a6b5ddbfaa8d",
+          "outcome": "success",
+          "transport": "responses_websocket_v2",
+          "operation_kind": "initial",
+          "attempt_count": 1,
+          "connection_generation": 1,
+          "duration_ms": 1826
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 147,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606624460,
+    "outcome": "ok",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606624460,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2604,
+    "cpuTime": 91,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606624622,
+    "outcome": "ok",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606624622,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "session.GET /credential-owner",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789606627249,
+        "message": {
+          "type": "managed.turn.transition",
+          "turn_id": "audit-3e1616e1-d149-43d9-ae1c-a6b5ddbfaa8d",
+          "status": "completed",
+          "outcome": "success",
+          "message_type": "turn_completed",
+          "attempt_count": 0
+        }
+      },
+      {
+        "timestamp": 1789606627249,
+        "message": {
+          "type": "managed.capacity",
+          "reason": "terminal_milestone",
+          "session_id": "01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e"
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 25,
+    "cpuTime": 3,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606627801,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789606627801,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789606627823,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "df5f6c0f-ba36-4836-aa33-30de33f7dce0",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "GET",
+          "path": "/v1/agents/01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e/events/history",
+          "status": 200
+        }
+      },
+      {
+        "timestamp": 1789606627823,
+        "message": {
+          "type": "managed.request",
+          "request_id": "df5f6c0f-ba36-4836-aa33-30de33f7dce0",
+          "method": "GET",
+          "path": "/v1/agents/01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e/events/history",
+          "status": 200,
+          "duration_ms": 22
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 204,
+    "cpuTime": 5,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606627779,
+    "outcome": "ok",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606627779,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "session.GET /events/history",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 19,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606628007,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789606628007,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET",
+          "turn_id": "audit-3e1616e1-d149-43d9-ae1c-a6b5ddbfaa8d"
+        }
+      },
+      {
+        "timestamp": 1789606628024,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "5290481b-8088-4ad2-a3c3-18b95b8b181e",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "GET",
+          "path": "/v1/agents/01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e/turns/audit-3e1616e1-d149-43d9-ae1c-a6b5ddbfaa8d",
+          "status": 200
+        }
+      },
+      {
+        "timestamp": 1789606628024,
+        "message": {
+          "type": "managed.request",
+          "request_id": "5290481b-8088-4ad2-a3c3-18b95b8b181e",
+          "method": "GET",
+          "path": "/v1/agents/01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e/turns/audit-3e1616e1-d149-43d9-ae1c-a6b5ddbfaa8d",
+          "status": 200,
+          "duration_ms": 17
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 26,
+    "cpuTime": 4,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606628124,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789606628124,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "GET"
+        }
+      },
+      {
+        "timestamp": 1789606628146,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "df804e94-f14e-4857-a6dd-58976f72badd",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "GET",
+          "path": "/v1/agents/01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e",
+          "status": 200
+        }
+      },
+      {
+        "timestamp": 1789606628146,
+        "message": {
+          "type": "managed.request",
+          "request_id": "df804e94-f14e-4857-a6dd-58976f72badd",
+          "method": "GET",
+          "path": "/v1/agents/01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e",
+          "status": 200,
+          "duration_ms": 22
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 122,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606627986,
+    "outcome": "ok",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606627986,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "session.GET /turns/audit-3e1616e1-d149-43d9-ae1c-a6b5ddbfaa8d",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1405,
+    "cpuTime": 2,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606628110,
+    "outcome": "ok",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606628110,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "session.GET /state",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 1768,
+    "cpuTime": 283,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606622105,
+    "outcome": "ok",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606622105,
+        "message": {
+          "type": "managed.personalization.pinned",
+          "turn_id": "audit-3e1616e1-d149-43d9-ae1c-a6b5ddbfaa8d",
+          "agent_id": "01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e",
+          "cache_hit": true,
+          "fact_count": 18
+        }
+      },
+      {
+        "timestamp": 1789606622105,
+        "message": {
+          "type": "managed.turn.accepted",
+          "turn_id": "audit-3e1616e1-d149-43d9-ae1c-a6b5ddbfaa8d",
+          "transport": "managed"
+        }
+      },
+      {
+        "timestamp": 1789606622105,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "session.POST /turns",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 6,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789606622300,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "audit-3e1616e1-d149-43d9-ae1c-a6b5ddbfaa8d",
+          "stage": "account.catalog",
+          "started_at": 1789606622105,
+          "duration_ms": 195,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606622300,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "audit-3e1616e1-d149-43d9-ae1c-a6b5ddbfaa8d",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789606622105,
+          "duration_ms": 195,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606622321,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "audit-3e1616e1-d149-43d9-ae1c-a6b5ddbfaa8d",
+          "stage": "account.vault",
+          "started_at": 1789606622105,
+          "duration_ms": 216,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606622419,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "audit-3e1616e1-d149-43d9-ae1c-a6b5ddbfaa8d",
+          "stage": "account.hosted_tools",
+          "started_at": 1789606622105,
+          "duration_ms": 314,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606622419,
+        "message": {
+          "type": "managed.capacity",
+          "reason": "agent_constructed",
+          "session_id": "01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e",
+          "account_mcp_refresh_ms": 314,
+          "credential_binding_ms": 0,
+          "browser_runtime_ms": 0,
+          "workspace_ms": 0,
+          "computer_runtime_ms": 0,
+          "code_evaluator_ms": 0,
+          "managed_tools_ms": 0,
+          "cloudflare_agent_ms": 0,
+          "construction_ms": 0,
+          "runtime_ready_ms": 314
+        }
+      },
+      {
+        "timestamp": 1789606622419,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "audit-3e1616e1-d149-43d9-ae1c-a6b5ddbfaa8d",
+          "stage": "startup.environment",
+          "started_at": 1789606622105,
+          "duration_ms": 314,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606622419,
+        "message": {
+          "type": "managed.turn.dispatch",
+          "turn_id": "audit-3e1616e1-d149-43d9-ae1c-a6b5ddbfaa8d",
+          "runtime_ready_ms": 314,
+          "bootstrap_ready_ms": 314,
+          "inject_ms": 0,
+          "admission_ms": 314,
+          "accepted_to_dispatch_ms": 314
+        }
+      },
+      {
+        "timestamp": 1789606622419,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "audit-3e1616e1-d149-43d9-ae1c-a6b5ddbfaa8d",
+          "stage": "turn.admission",
+          "duration_ms": 314,
+          "reads": {
+            "session_state": {
+              "count": 17,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      },
+      {
+        "timestamp": 1789606622419,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.attempt.started",
+          "request_id": "01a0acdd-6cad-7f6b-a6ec-2b0f5d663898",
+          "turn_id": "audit-3e1616e1-d149-43d9-ae1c-a6b5ddbfaa8d",
+          "outcome": "observed",
+          "replay_mode": "full_history",
+          "operation_kind": "generation",
+          "attempt_count": 1,
+          "max_attempts": 5,
+          "connection_generation": 0,
+          "model_call_index": 1
+        }
+      },
+      {
+        "timestamp": 1789606622419,
+        "message": {
+          "type": "managed.agent.transport",
+          "message_type": "model.connection.started",
+          "request_id": "01a0acdd-6cad-7f6b-a6ec-2b0f5d663898",
+          "turn_id": "audit-3e1616e1-d149-43d9-ae1c-a6b5ddbfaa8d",
+          "outcome": "observed",
+          "transport": "responses_websocket_v2",
+          "operation_kind": "initial",
+          "attempt_count": 1,
+          "connection_generation": 1
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2921,
+    "cpuTime": 4,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606629251,
+    "outcome": "ok",
+    "durableObjectId": null,
+    "logs": [
+      {
+        "timestamp": 1789606629251,
+        "message": {
+          "type": "managed.agent.request",
+          "method": "DELETE"
+        }
+      },
+      {
+        "timestamp": 1789606632171,
+        "message": {
+          "type": "managed.auth",
+          "request_id": "eeb2a0ab-5592-423d-8a71-39dc798dbd9d",
+          "mode": "access",
+          "auth_ms": 0,
+          "method": "DELETE",
+          "path": "/v1/agents/01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e",
+          "status": 204
+        }
+      },
+      {
+        "timestamp": 1789606632171,
+        "message": {
+          "type": "managed.request",
+          "request_id": "eeb2a0ab-5592-423d-8a71-39dc798dbd9d",
+          "method": "DELETE",
+          "path": "/v1/agents/01a0acdd-5ea7-7ee9-b559-5dc83a2ed26e",
+          "status": 204,
+          "duration_ms": 2920
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2581,
+    "cpuTime": 29,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606629573,
+    "outcome": "ok",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606629800,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "delete.registry_initial",
+          "started_at": 1789606629540,
+          "duration_ms": 260,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606629800,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "delete.runtime",
+          "started_at": 1789606629800,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606629800,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "delete.attachments",
+          "started_at": 1789606629800,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606630021,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "delete.memory",
+          "started_at": 1789606629800,
+          "duration_ms": 221,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606631476,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "delete.containers",
+          "started_at": 1789606630021,
+          "duration_ms": 1455,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606631665,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "delete.sandbox_workspaces",
+          "started_at": 1789606631476,
+          "duration_ms": 189,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606631665,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "delete.brain",
+          "started_at": 1789606631665,
+          "duration_ms": 0,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606631841,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "delete.registry_final",
+          "started_at": 1789606631665,
+          "duration_ms": 176,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606632112,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "delete.archives",
+          "started_at": 1789606631841,
+          "duration_ms": 271,
+          "success": true
+        }
+      },
+      {
+        "timestamp": 1789606632112,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "session.DELETE /session",
+          "duration_ms": 2572,
+          "reads": {
+            "session_state": {
+              "count": 2,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 2,
+    "cpuTime": 1,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606632221,
+    "outcome": "ok",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606632221,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "session.GET /state",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 1,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  },
+  {
+    "wallTime": 143,
+    "cpuTime": 5,
+    "scriptName": "nanocodex-durable-agent",
+    "scriptVersion": {
+      "id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+    },
+    "eventTimestamp": 1789606586722,
+    "outcome": "responseStreamDisconnected",
+    "durableObjectId": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+    "logs": [
+      {
+        "timestamp": 1789606586722,
+        "message": {
+          "type": "managed.performance",
+          "trace_id": "bebe24b871a88014bf5582035520c64b471830d07c5088a98343d62081725391",
+          "stage": "session.GET /socket",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      }
+    ]
+  }
+]

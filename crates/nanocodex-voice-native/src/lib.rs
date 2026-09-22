@@ -21,3 +21,5 @@ pub use session::RealtimeWebrtcSessionHandle;
 pub use session::StartedRealtimeWebrtcSession;
 
 pub use package::VoicePackage;
+
+pub use protocol::{MAX_PCM_SAMPLES, PcmStatus};

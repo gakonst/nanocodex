@@ -1,6 +1,6 @@
 {
   "name": "nanocodex",
-  "version": "0.6.1",
+  "version": "0.6.4",
   "description": "Viem-style Node and browser bindings for the Nanocodex WASM agent",
   "type": "module",
   "sideEffects": [
@@ -50,6 +50,14 @@
     "./cloudflare": {
       "types": "./cloudflare/index.d.mts",
       "import": "./cloudflare/index.mjs"
+    },
+    "./cloudflare/workers-ai-responses": {
+      "types": "./cloudflare/workers-ai-responses.d.mts",
+      "import": "./cloudflare/workers-ai-responses.mjs"
+    },
+    "./cloudflare/managed-access": {
+      "types": "./cloudflare/managed-access.d.mts",
+      "import": "./cloudflare/managed-access.mjs"
     },
     "./cloudflare/egress": {
       "types": "./cloudflare/egress.d.mts",
@@ -126,6 +134,14 @@
     "./wasm": {
       "types": "./wasm.d.mts",
       "import": "./pkg-web/nanocodex_bg.wasm"
+    },
+    "./tools/environment": {
+      "types": "./tools/environment.d.mts",
+      "import": "./tools/environment.mjs"
+    },
+    "./cloudflare/gateway-responses": {
+      "types": "./cloudflare/gateway-responses.d.mts",
+      "import": "./cloudflare/gateway-responses.mjs"
     }
   },
   "files": [
@@ -184,6 +200,7 @@
   "devDependencies": {
     "@jitl/quickjs-wasmfile-release-asyncify": "0.32.0",
     "binaryen": "132.0.0",
+    "esbuild": "0.28.1",
     "hyparquet-writer": "0.16.6",
     "pkg-pr-new": "0.0.79",
     "quickjs-emscripten-core": "0.32.0",

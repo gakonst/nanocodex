@@ -62,7 +62,7 @@ export async function handleSandboxEgress(
   if (url.hostname === "nanocodex-hand.internal") {
     const params = context?.params as { hand?: { owner?: string; id?: string } } | undefined;
     const hand = params?.hand;
-    const match = /^\/v1\/hand-hosts\/([^/]+)\/([^/]+)\/hands\/(host|renew)$/.exec(url.pathname);
+    const match = /^\/v1\/hand-hosts\/([^/]+)\/([^/]+)\/hands\/(host|renew|ice)$/.exec(url.pathname);
     if (url.origin !== "https://nanocodex-hand.internal" || url.search || !match || !hand
       || match[1] !== hand.owner || match[2] !== hand.id || !env.NANOCODEX_ACCOUNT_TOOLS
       || (match[3] === "host" ? request.method !== "GET" || request.headers.get("upgrade")?.toLowerCase() !== "websocket" : request.method !== "POST")) {

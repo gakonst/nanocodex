@@ -12,6 +12,9 @@ import { DesktopRuntime } from "../src/runtime.mjs";
 import { createVmTools, supportsLocalVms } from "../src/vm-tools.mjs";
 import { desktopDefaults, desktopDataDirectory } from "../src/configuration.mjs";
 
+// Synthetic VM fixtures must never discover or install the real host provider.
+process.env.NANOCODEX_COMPUTER = "off";
+
 test("VM callers cannot supply paths or override a host recipe; unsupported platforms do not advertise hosting", () => {
   const tools = createVmTools({ hostName: "Mac", list() {}, start() {}, stop() {} });
   for (const input of [{ name: "../other" }, { name: "fine", binary: "/tmp/evil" }, { name: "" }, { name: "a".repeat(41) }]) {

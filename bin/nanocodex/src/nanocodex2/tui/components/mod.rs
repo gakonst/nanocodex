@@ -17,6 +17,7 @@ mod queue;
 mod recent_prompt_picker;
 mod review_confirmation;
 mod root;
+mod screen;
 mod selection;
 mod session_picker;
 mod skill_picker;
@@ -32,4 +33,8 @@ pub(crate) use queue::QueueId;
 pub(crate) use root::{
     DraftReset, RecentPromptDraft, RestoredSessionProjection, RootEffect, RootNode, SessionListKind,
 };
-pub(crate) use transcript::image::initialize as initialize_image_renderer;
+pub(crate) use transcript::image::{initialize as initialize_image_renderer, video_picker};
+
+mod voice;
+
+mod voice_menu;

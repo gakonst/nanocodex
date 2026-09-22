@@ -11,6 +11,9 @@ import { WebSocketServer } from "ws";
 import { DesktopRuntime, managedOrigin, validateHand, validateSettings, compareCursor, restoredLayout } from "../src/runtime.mjs";
 import { desktopPreferences } from "../src/configuration.mjs";
 
+// Synthetic desktop fixtures must never discover or install a host provider.
+process.env.NANOCODEX_COMPUTER = "off";
+
 const key = `ncx_live_${"a".repeat(12)}_${"b".repeat(43)}`;
 const secondKey = `ncx_live_${"c".repeat(12)}_${"d".repeat(43)}`;
 const deferred = () => { let resolve; const promise = new Promise(done => { resolve = done; }); return { promise, resolve }; };

@@ -12,7 +12,7 @@ public enum ChatPalette {
     public static let composer = Color(nsColor: .controlBackgroundColor)
     public static let userBubble = Color(nsColor: .quaternaryLabelColor).opacity(0.5)
     #else
-    public static let background = adaptive(light: 0xffffff, dark: 0x212121)
+    public static let background = adaptive(light: 0xf7f7f8, dark: 0x171719)
     public static let sidebar = adaptive(light: 0xf9f9f9, dark: 0x191919)
     public static let composer = adaptive(light: 0xffffff, dark: 0x303030)
     public static let userBubble = adaptive(light: 0xf4f4f4, dark: 0x303030)

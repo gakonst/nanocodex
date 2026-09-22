@@ -1,0 +1,5598 @@
+{
+  "receipts": {
+    "hosted": {
+      "started_at": "2026-09-17T00:54:16.729Z",
+      "finished_at": "2026-09-17T00:55:58.771Z",
+      "versions_start": {
+        "nanocodex-durable-agent": {
+          "id": "1e7097d7-1849-4855-a51a-79d0d33f539d",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Conversation preparation on 68a7f4ed; empty rel...",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:53:35.704837Z"
+        },
+        "nanocodex-egress": {
+          "id": "fde2d429-9d37-4c37-bcc0-14a336d8884b",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "62da8fd7-f705-49a9-a903-449d9bc2360c",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:27.950644Z"
+        },
+        "nanocodex": {
+          "id": "7467041a-0c2b-40ce-b8d0-0bbc3304c420",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Automatic deployment on upload.",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "a6d8b881-ca3f-490a-9826-a1f20ee26b2a",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:36:13.767971Z"
+        },
+        "nanocodex-connect-api": {
+          "id": "8024f95d-e674-4deb-824e-c9a290cff46a",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "0e466332-5ee2-4ea1-a9ed-7e800c18ce10",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:54.602232Z"
+        }
+      },
+      "versions_end": {
+        "nanocodex-durable-agent": {
+          "id": "1e7097d7-1849-4855-a51a-79d0d33f539d",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Conversation preparation on 68a7f4ed; empty rel...",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "4f6c836f-921d-475c-a4a5-64906c1a7bb9",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:53:35.704837Z"
+        },
+        "nanocodex-egress": {
+          "id": "fde2d429-9d37-4c37-bcc0-14a336d8884b",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "62da8fd7-f705-49a9-a903-449d9bc2360c",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:27.950644Z"
+        },
+        "nanocodex": {
+          "id": "7467041a-0c2b-40ce-b8d0-0bbc3304c420",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "author_email": "gakonst@protonmail.com",
+          "annotations": {
+            "workers/message": "Automatic deployment on upload.",
+            "workers/triggered_by": "upload"
+          },
+          "versions": [
+            {
+              "version_id": "a6d8b881-ca3f-490a-9826-a1f20ee26b2a",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-17T00:36:13.767971Z"
+        },
+        "nanocodex-connect-api": {
+          "id": "8024f95d-e674-4deb-824e-c9a290cff46a",
+          "source": "wrangler",
+          "strategy": "percentage",
+          "annotations": {
+            "workers/message": "GitHub Actions production 68a7f4edc39dfdd35388270160c0ecf935848658",
+            "workers/triggered_by": "deployment"
+          },
+          "versions": [
+            {
+              "version_id": "0e466332-5ee2-4ea1-a9ed-7e800c18ce10",
+              "percentage": 100
+            }
+          ],
+          "created_on": "2026-09-16T23:57:54.602232Z"
+        }
+      }
+    }
+  },
+  "groups": {
+    "events_only_5s": {
+      "n": 3,
+      "ttft_ms": {
+        "median": 5781.636375000002,
+        "min": 4449.029957999999,
+        "max": 8356.74925
+      },
+      "lead_to_text_ms": {
+        "median": 10782.779125000001,
+        "min": 9450.411499999998,
+        "max": 13356.875958999997
+      },
+      "create_to_text_ms": {
+        "median": 13723.238333000001,
+        "min": 11836.876457999999,
+        "max": 16250.058249999995
+      },
+      "connection_ms": {
+        "median": 1435.0,
+        "min": 1375.0,
+        "max": 1759.0
+      },
+      "admission_ms": {
+        "median": 610,
+        "min": 528,
+        "max": 697
+      },
+      "model_first_output_ms": {
+        "median": 4888.0,
+        "min": 3541.0,
+        "max": 7090.0
+      },
+      "outside_model_ms": {
+        "median": 908.0299579999992,
+        "min": 893.6363750000019,
+        "max": 1266.7492500000008
+      }
+    },
+    "prepare_5s": {
+      "n": 3,
+      "ttft_ms": {
+        "median": 2427.194208000001,
+        "min": 2416.0884579999984,
+        "max": 3841.975666999999
+      },
+      "lead_to_text_ms": {
+        "median": 7427.877499999999,
+        "min": 7416.939792000005,
+        "max": 8842.586457999998
+      },
+      "create_to_text_ms": {
+        "median": 10263.022833,
+        "min": 9864.961708000003,
+        "max": 11601.199417
+      },
+      "connection_ms": {
+        "median": 0.0,
+        "min": 0.0,
+        "max": 0.0
+      },
+      "admission_ms": {
+        "median": 0,
+        "min": 0,
+        "max": 0
+      },
+      "model_first_output_ms": {
+        "median": 2204.0,
+        "min": 1999.0,
+        "max": 3472.0
+      },
+      "outside_model_ms": {
+        "median": 369.9756669999988,
+        "min": 223.1942080000008,
+        "max": 417.08845799999835
+      }
+    }
+  },
+  "samples": [
+    {
+      "cohort": "hosted",
+      "arm": "events_only_5s",
+      "sample": 1,
+      "agent": "01a0acdb-7085-7d89-952c-71a46e9c7676",
+      "turn": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+      "durable_object_ids": [
+        "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531"
+      ],
+      "ttft_ms": 4449.029957999999,
+      "create_to_text_ms": 11836.876457999999,
+      "lead_to_text_ms": 9450.411499999998,
+      "completion_ms": 4903.172375,
+      "connection_ms": 1375.0,
+      "model_first_output_ms": 3541.0,
+      "model_first_event_ms": 2021.0,
+      "outside_model_ms": 908.0299579999992,
+      "admission_ms": 528,
+      "admission_worker_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "admission_reads": {
+        "session_state": {
+          "count": 17,
+          "duration_ms": 0
+        },
+        "session_initialization_ownership": {
+          "count": 2,
+          "duration_ms": 0
+        }
+      },
+      "preparation": null,
+      "intentional_idle_ms": 5001.381542,
+      "cache_tokens": 15744,
+      "input_tokens": 18554,
+      "warmup_ms": 0.0,
+      "correct": true,
+      "tools": 0,
+      "deleted": true,
+      "cleanup_status": 404,
+      "response_retries": 0,
+      "retry_backoff_ms": 0.0,
+      "loadavg": [
+        177.4296875,
+        252.85400390625,
+        251.4384765625
+      ],
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+          "stage": "account.hosted_tools",
+          "started_at": 1789606464811,
+          "duration_ms": 349,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+          "stage": "account.catalog",
+          "started_at": 1789606464811,
+          "duration_ms": 515,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789606464811,
+          "duration_ms": 515,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+          "stage": "account.vault",
+          "started_at": 1789606464811,
+          "duration_ms": 528,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+          "stage": "startup.environment",
+          "started_at": 1789606464811,
+          "duration_ms": 528,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+          "stage": "turn.admission",
+          "duration_ms": 528,
+          "reads": {
+            "session_state": {
+              "count": 17,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "idle_shutdown_logs": [],
+      "trace_logs": [
+        {
+          "timestamp": 1789606457477,
+          "message": {
+            "type": "managed.agent.create_requested",
+            "method": "POST"
+          }
+        },
+        {
+          "timestamp": 1789606458576,
+          "message": {
+            "type": "managed.agent.created",
+            "outcome": "success",
+            "auth_ms": 198,
+            "session_create_ms": 1099,
+            "session_prepare_ms": 0,
+            "session_initialize_ms": 0,
+            "session_commit_ms": 316,
+            "create_ms": 1297
+          }
+        },
+        {
+          "timestamp": 1789606458576,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "e8f3c366-648c-4aed-8d46-4f931c70c5db",
+            "mode": "live",
+            "auth_ms": 198,
+            "method": "POST",
+            "path": "/v1/agents",
+            "status": 201
+          }
+        },
+        {
+          "timestamp": 1789606458576,
+          "message": {
+            "type": "managed.request",
+            "request_id": "e8f3c366-648c-4aed-8d46-4f931c70c5db",
+            "method": "POST",
+            "path": "/v1/agents",
+            "status": 201,
+            "duration_ms": 1297
+          }
+        },
+        {
+          "timestamp": 1789606458523,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "session.POST /create",
+            "duration_ms": 316,
+            "reads": {
+              "session_state": {
+                "count": 4,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606464795,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "POST"
+          }
+        },
+        {
+          "timestamp": 1789606464852,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "c4f0273a-f9e4-438e-a53f-e37aac84cb71",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "POST",
+            "path": "/v1/agents/01a0acdb-7085-7d89-952c-71a46e9c7676/turns",
+            "status": 202
+          }
+        },
+        {
+          "timestamp": 1789606464852,
+          "message": {
+            "type": "managed.request",
+            "request_id": "c4f0273a-f9e4-438e-a53f-e37aac84cb71",
+            "method": "POST",
+            "path": "/v1/agents/01a0acdb-7085-7d89-952c-71a46e9c7676/turns",
+            "status": 202,
+            "duration_ms": 57
+          }
+        },
+        {
+          "timestamp": 1789606466101,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606466813,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606466468,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606466879,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606466814,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606466500,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606466714,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.connection.completed",
+            "request_id": "01a0acdb-8f2e-7613-be70-fe7d4998f2d5",
+            "turn_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+            "outcome": "success",
+            "transport": "responses_websocket_v2",
+            "operation_kind": "initial",
+            "attempt_count": 1,
+            "connection_generation": 1,
+            "duration_ms": 1375
+          }
+        },
+        {
+          "timestamp": 1789606466880,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606469316,
+          "message": {
+            "type": "managed.turn.transition",
+            "turn_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+            "status": "completed",
+            "outcome": "success",
+            "message_type": "turn_completed",
+            "attempt_count": 0
+          }
+        },
+        {
+          "timestamp": 1789606469316,
+          "message": {
+            "type": "managed.capacity",
+            "reason": "terminal_milestone",
+            "session_id": "01a0acdb-7085-7d89-952c-71a46e9c7676"
+          }
+        },
+        {
+          "timestamp": 1789606469580,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET"
+          }
+        },
+        {
+          "timestamp": 1789606469603,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "ea6cbc1c-39a6-4d53-8fff-04a2505bbf18",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-7085-7d89-952c-71a46e9c7676/events/history",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606469603,
+          "message": {
+            "type": "managed.request",
+            "request_id": "ea6cbc1c-39a6-4d53-8fff-04a2505bbf18",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-7085-7d89-952c-71a46e9c7676/events/history",
+            "status": 200,
+            "duration_ms": 23
+          }
+        },
+        {
+          "timestamp": 1789606469556,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "session.GET /events/history",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606469655,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET",
+            "turn_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30"
+          }
+        },
+        {
+          "timestamp": 1789606469690,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "d42556d2-6b34-4978-b3da-2f174572f5b4",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-7085-7d89-952c-71a46e9c7676/turns/audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606469690,
+          "message": {
+            "type": "managed.request",
+            "request_id": "d42556d2-6b34-4978-b3da-2f174572f5b4",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-7085-7d89-952c-71a46e9c7676/turns/audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+            "status": 200,
+            "duration_ms": 35
+          }
+        },
+        {
+          "timestamp": 1789606469626,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "session.GET /turns/audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606469748,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET"
+          }
+        },
+        {
+          "timestamp": 1789606469759,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "f090244b-e8db-4b8b-8540-c12d0d2189ed",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-7085-7d89-952c-71a46e9c7676",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606469759,
+          "message": {
+            "type": "managed.request",
+            "request_id": "f090244b-e8db-4b8b-8540-c12d0d2189ed",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-7085-7d89-952c-71a46e9c7676",
+            "status": 200,
+            "duration_ms": 11
+          }
+        },
+        {
+          "timestamp": 1789606469714,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "session.GET /state",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606466101,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606464811,
+          "message": {
+            "type": "managed.personalization.pinned",
+            "turn_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+            "agent_id": "01a0acdb-7085-7d89-952c-71a46e9c7676",
+            "cache_hit": true,
+            "fact_count": 18
+          }
+        },
+        {
+          "timestamp": 1789606464811,
+          "message": {
+            "type": "managed.turn.accepted",
+            "turn_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+            "transport": "managed"
+          }
+        },
+        {
+          "timestamp": 1789606464811,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "session.POST /turns",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 6,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606465160,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+            "stage": "account.hosted_tools",
+            "started_at": 1789606464811,
+            "duration_ms": 349,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606465326,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+            "stage": "account.catalog",
+            "started_at": 1789606464811,
+            "duration_ms": 515,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606465326,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+            "stage": "account.mcp_discovery",
+            "started_at": 1789606464811,
+            "duration_ms": 515,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606465326,
+          "message": {
+            "type": "managed.capacity",
+            "reason": "agent_constructed",
+            "session_id": "01a0acdb-7085-7d89-952c-71a46e9c7676",
+            "account_mcp_refresh_ms": 515,
+            "credential_binding_ms": 0,
+            "browser_runtime_ms": 0,
+            "workspace_ms": 0,
+            "computer_runtime_ms": 0,
+            "code_evaluator_ms": 0,
+            "managed_tools_ms": 0,
+            "cloudflare_agent_ms": 0,
+            "construction_ms": 0,
+            "runtime_ready_ms": 515
+          }
+        },
+        {
+          "timestamp": 1789606465339,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+            "stage": "account.vault",
+            "started_at": 1789606464811,
+            "duration_ms": 528,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606465339,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+            "stage": "startup.environment",
+            "started_at": 1789606464811,
+            "duration_ms": 528,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606465339,
+          "message": {
+            "type": "managed.turn.dispatch",
+            "turn_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+            "runtime_ready_ms": 515,
+            "bootstrap_ready_ms": 528,
+            "inject_ms": 0,
+            "admission_ms": 528,
+            "accepted_to_dispatch_ms": 528
+          }
+        },
+        {
+          "timestamp": 1789606465339,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+            "stage": "turn.admission",
+            "duration_ms": 528,
+            "reads": {
+              "session_state": {
+                "count": 17,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 2,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606465339,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.attempt.started",
+            "request_id": "01a0acdb-8f2e-7613-be70-fe7d4998f2d5",
+            "turn_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+            "outcome": "observed",
+            "replay_mode": "full_history",
+            "operation_kind": "generation",
+            "attempt_count": 1,
+            "max_attempts": 5,
+            "connection_generation": 0,
+            "model_call_index": 1
+          }
+        },
+        {
+          "timestamp": 1789606465339,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.connection.started",
+            "request_id": "01a0acdb-8f2e-7613-be70-fe7d4998f2d5",
+            "turn_id": "audit-e647aa6c-d6cc-4fc0-9285-d06fe700ce30",
+            "outcome": "observed",
+            "transport": "responses_websocket_v2",
+            "operation_kind": "initial",
+            "attempt_count": 1,
+            "connection_generation": 1
+          }
+        },
+        {
+          "timestamp": 1789606470781,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "delete.registry_initial",
+            "started_at": 1789606470507,
+            "duration_ms": 274,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606470781,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "delete.runtime",
+            "started_at": 1789606470781,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606470781,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "delete.attachments",
+            "started_at": 1789606470781,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606470994,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "delete.memory",
+            "started_at": 1789606470781,
+            "duration_ms": 213,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606472019,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "delete.containers",
+            "started_at": 1789606470994,
+            "duration_ms": 1025,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606472207,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "delete.sandbox_workspaces",
+            "started_at": 1789606472019,
+            "duration_ms": 188,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606472207,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "delete.brain",
+            "started_at": 1789606472207,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606472383,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "delete.registry_final",
+            "started_at": 1789606472207,
+            "duration_ms": 176,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606472696,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "delete.archives",
+            "started_at": 1789606472383,
+            "duration_ms": 313,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606472696,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "session.DELETE /session",
+            "duration_ms": 2189,
+            "reads": {
+              "session_state": {
+                "count": 2,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 2,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606470515,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "DELETE"
+          }
+        },
+        {
+          "timestamp": 1789606472760,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "35bee92e-e81a-4a25-8b92-1811d9fe9504",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "DELETE",
+            "path": "/v1/agents/01a0acdb-7085-7d89-952c-71a46e9c7676",
+            "status": 204
+          }
+        },
+        {
+          "timestamp": 1789606472760,
+          "message": {
+            "type": "managed.request",
+            "request_id": "35bee92e-e81a-4a25-8b92-1811d9fe9504",
+            "method": "DELETE",
+            "path": "/v1/agents/01a0acdb-7085-7d89-952c-71a46e9c7676",
+            "status": 204,
+            "duration_ms": 2245
+          }
+        },
+        {
+          "timestamp": 1789606472838,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "session.GET /state",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606459516,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "0ac06f1e2fe22cbbf28c42306d39b8b91d6ec37a92c726c4bb4e5d440281c531",
+            "stage": "session.GET /socket",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 2,
+                "duration_ms": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "cohort": "hosted",
+      "arm": "prepare_5s",
+      "sample": 1,
+      "agent": "01a0acdb-ad90-7756-9901-269716bbeb11",
+      "turn": "audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+      "durable_object_ids": [
+        "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669"
+      ],
+      "ttft_ms": 2427.194208000001,
+      "create_to_text_ms": 10263.022833,
+      "lead_to_text_ms": 7427.877499999999,
+      "completion_ms": 2960.333208,
+      "connection_ms": 0.0,
+      "model_first_output_ms": 2204.0,
+      "model_first_event_ms": 930.0,
+      "outside_model_ms": 223.1942080000008,
+      "admission_ms": 0,
+      "admission_worker_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "admission_reads": {
+        "session_state": {
+          "count": 14,
+          "duration_ms": 0
+        }
+      },
+      "preparation": {
+        "started_at": 1789606475688,
+        "accepted_ms": 68.90462499999921,
+        "status": 202,
+        "request_id": "e39aaedd-4777-4248-b49b-073cf9671825"
+      },
+      "intentional_idle_ms": 5000.683291999998,
+      "cache_tokens": 0,
+      "input_tokens": 18554,
+      "warmup_ms": 0.0,
+      "correct": true,
+      "tools": 0,
+      "deleted": true,
+      "cleanup_status": 404,
+      "response_retries": 0,
+      "retry_backoff_ms": 0.0,
+      "loadavg": [
+        180.275390625,
+        249.77734375,
+        250.3642578125
+      ],
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+          "stage": "account.hosted_tools",
+          "started_at": 1789606480816,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789606480816,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+          "stage": "startup.environment",
+          "started_at": 1789606480816,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+          "stage": "turn.admission",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 14,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "idle_shutdown_logs": [],
+      "trace_logs": [
+        {
+          "timestamp": 1789606473104,
+          "message": {
+            "type": "managed.agent.create_requested",
+            "method": "POST"
+          }
+        },
+        {
+          "timestamp": 1789606474702,
+          "message": {
+            "type": "managed.agent.created",
+            "outcome": "success",
+            "auth_ms": 206,
+            "session_create_ms": 1598,
+            "session_prepare_ms": 0,
+            "session_initialize_ms": 0,
+            "session_commit_ms": 319,
+            "create_ms": 1804
+          }
+        },
+        {
+          "timestamp": 1789606474702,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "a76c53d0-3713-4652-88ea-9d54e39e733d",
+            "mode": "live",
+            "auth_ms": 206,
+            "method": "POST",
+            "path": "/v1/agents",
+            "status": 201
+          }
+        },
+        {
+          "timestamp": 1789606474702,
+          "message": {
+            "type": "managed.request",
+            "request_id": "a76c53d0-3713-4652-88ea-9d54e39e733d",
+            "method": "POST",
+            "path": "/v1/agents",
+            "status": 201,
+            "duration_ms": 1804
+          }
+        },
+        {
+          "timestamp": 1789606474649,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "session.POST /create",
+            "duration_ms": 319,
+            "reads": {
+              "session_state": {
+                "count": 4,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606475735,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "POST"
+          }
+        },
+        {
+          "timestamp": 1789606475762,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "e39aaedd-4777-4248-b49b-073cf9671825",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "POST",
+            "path": "/v1/agents/01a0acdb-ad90-7756-9901-269716bbeb11/prepare",
+            "status": 202
+          }
+        },
+        {
+          "timestamp": 1789606475762,
+          "message": {
+            "type": "managed.request",
+            "request_id": "e39aaedd-4777-4248-b49b-073cf9671825",
+            "method": "POST",
+            "path": "/v1/agents/01a0acdb-ad90-7756-9901-269716bbeb11/prepare",
+            "status": 202,
+            "duration_ms": 27
+          }
+        },
+        {
+          "timestamp": 1789606480806,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "POST"
+          }
+        },
+        {
+          "timestamp": 1789606481057,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "0b92a8d0-58e9-4fb0-b6ea-4ca1217524c7",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "POST",
+            "path": "/v1/agents/01a0acdb-ad90-7756-9901-269716bbeb11/turns",
+            "status": 202
+          }
+        },
+        {
+          "timestamp": 1789606481057,
+          "message": {
+            "type": "managed.request",
+            "request_id": "0b92a8d0-58e9-4fb0-b6ea-4ca1217524c7",
+            "method": "POST",
+            "path": "/v1/agents/01a0acdb-ad90-7756-9901-269716bbeb11/turns",
+            "status": 202,
+            "duration_ms": 251
+          }
+        },
+        {
+          "timestamp": 1789606481914,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606480816,
+          "message": {
+            "type": "managed.personalization.pinned",
+            "turn_id": "audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+            "agent_id": "01a0acdb-ad90-7756-9901-269716bbeb11",
+            "cache_hit": true,
+            "fact_count": 18
+          }
+        },
+        {
+          "timestamp": 1789606480816,
+          "message": {
+            "type": "managed.turn.accepted",
+            "turn_id": "audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+            "transport": "managed"
+          }
+        },
+        {
+          "timestamp": 1789606480816,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+            "stage": "account.hosted_tools",
+            "started_at": 1789606480816,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606480816,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "session.POST /turns",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 6,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606480816,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+            "stage": "account.mcp_discovery",
+            "started_at": 1789606480816,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606480816,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+            "stage": "startup.environment",
+            "started_at": 1789606480816,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606480816,
+          "message": {
+            "type": "managed.turn.dispatch",
+            "turn_id": "audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+            "runtime_ready_ms": 0,
+            "bootstrap_ready_ms": 0,
+            "inject_ms": 0,
+            "admission_ms": 0,
+            "accepted_to_dispatch_ms": 0
+          }
+        },
+        {
+          "timestamp": 1789606480816,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+            "stage": "turn.admission",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 14,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606480816,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.attempt.started",
+            "request_id": "01a0acdb-ba36-7cfc-a89d-407a2f1ecaad",
+            "turn_id": "audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+            "outcome": "observed",
+            "replay_mode": "full_history",
+            "operation_kind": "generation",
+            "attempt_count": 1,
+            "max_attempts": 5,
+            "connection_generation": 0,
+            "model_call_index": 1
+          }
+        },
+        {
+          "timestamp": 1789606480816,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.connection.started",
+            "request_id": "01a0acdb-ba36-7cfc-a89d-407a2f1ecaad",
+            "turn_id": "audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+            "outcome": "observed",
+            "transport": "responses_websocket_v2",
+            "operation_kind": "initial",
+            "attempt_count": 1,
+            "connection_generation": 1
+          }
+        },
+        {
+          "timestamp": 1789606480816,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.connection.completed",
+            "request_id": "01a0acdb-ba36-7cfc-a89d-407a2f1ecaad",
+            "turn_id": "audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+            "outcome": "success",
+            "transport": "responses_websocket_v2",
+            "operation_kind": "initial",
+            "attempt_count": 1,
+            "connection_generation": 1,
+            "duration_ms": 0
+          }
+        },
+        {
+          "timestamp": 1789606481918,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606482643,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606482278,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606482739,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606482345,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606482643,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606482740,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606483437,
+          "message": {
+            "type": "managed.turn.transition",
+            "turn_id": "audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+            "status": "completed",
+            "outcome": "success",
+            "message_type": "turn_completed",
+            "attempt_count": 0
+          }
+        },
+        {
+          "timestamp": 1789606483437,
+          "message": {
+            "type": "managed.capacity",
+            "reason": "terminal_milestone",
+            "session_id": "01a0acdb-ad90-7756-9901-269716bbeb11"
+          }
+        },
+        {
+          "timestamp": 1789606483935,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET"
+          }
+        },
+        {
+          "timestamp": 1789606483961,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "b2c79659-dc55-4bd7-9aec-4befd05e8e0e",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-ad90-7756-9901-269716bbeb11/events/history",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606483961,
+          "message": {
+            "type": "managed.request",
+            "request_id": "b2c79659-dc55-4bd7-9aec-4befd05e8e0e",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-ad90-7756-9901-269716bbeb11/events/history",
+            "status": 200,
+            "duration_ms": 26
+          }
+        },
+        {
+          "timestamp": 1789606484038,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET",
+            "turn_id": "audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39"
+          }
+        },
+        {
+          "timestamp": 1789606484064,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "70af7c31-58ae-4c8c-8936-5873390f15ee",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-ad90-7756-9901-269716bbeb11/turns/audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606484064,
+          "message": {
+            "type": "managed.request",
+            "request_id": "70af7c31-58ae-4c8c-8936-5873390f15ee",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-ad90-7756-9901-269716bbeb11/turns/audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+            "status": 200,
+            "duration_ms": 26
+          }
+        },
+        {
+          "timestamp": 1789606483849,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "session.GET /events/history",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606484207,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET"
+          }
+        },
+        {
+          "timestamp": 1789606484238,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "1679038e-29e7-418a-8a75-12aca5b3cb08",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-ad90-7756-9901-269716bbeb11",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606484238,
+          "message": {
+            "type": "managed.request",
+            "request_id": "1679038e-29e7-418a-8a75-12aca5b3cb08",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-ad90-7756-9901-269716bbeb11",
+            "status": 200,
+            "duration_ms": 31
+          }
+        },
+        {
+          "timestamp": 1789606483955,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "session.GET /turns/audit-56c2f55b-0686-4a6a-8d59-72a9f71e6f39",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606484146,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "session.GET /state",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606475735,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "session.POST /prepare",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 5,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606476171,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "account.hosted_tools",
+            "started_at": 1789606475735,
+            "duration_ms": 436,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606476342,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "account.catalog",
+            "started_at": 1789606475735,
+            "duration_ms": 607,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606476342,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "account.mcp_discovery",
+            "started_at": 1789606475735,
+            "duration_ms": 607,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606476342,
+          "message": {
+            "type": "managed.capacity",
+            "reason": "agent_constructed",
+            "session_id": "01a0acdb-ad90-7756-9901-269716bbeb11",
+            "account_mcp_refresh_ms": 607,
+            "credential_binding_ms": 0,
+            "browser_runtime_ms": 0,
+            "workspace_ms": 0,
+            "computer_runtime_ms": 0,
+            "code_evaluator_ms": 0,
+            "managed_tools_ms": 0,
+            "cloudflare_agent_ms": 0,
+            "construction_ms": 0,
+            "runtime_ready_ms": 607
+          }
+        },
+        {
+          "timestamp": 1789606476350,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "account.vault",
+            "started_at": 1789606475735,
+            "duration_ms": 615,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606476350,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "conversation.prepare",
+            "started_at": 1789606475735,
+            "duration_ms": 615,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606485438,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "DELETE"
+          }
+        },
+        {
+          "timestamp": 1789606487698,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "aa3c0f3b-3553-4bf8-b917-9796318c4250",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "DELETE",
+            "path": "/v1/agents/01a0acdb-ad90-7756-9901-269716bbeb11",
+            "status": 204
+          }
+        },
+        {
+          "timestamp": 1789606487698,
+          "message": {
+            "type": "managed.request",
+            "request_id": "aa3c0f3b-3553-4bf8-b917-9796318c4250",
+            "method": "DELETE",
+            "path": "/v1/agents/01a0acdb-ad90-7756-9901-269716bbeb11",
+            "status": 204,
+            "duration_ms": 2260
+          }
+        },
+        {
+          "timestamp": 1789606485709,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "delete.registry_initial",
+            "started_at": 1789606485436,
+            "duration_ms": 273,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606485709,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "delete.runtime",
+            "started_at": 1789606485709,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606485709,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "delete.attachments",
+            "started_at": 1789606485709,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606485933,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "delete.memory",
+            "started_at": 1789606485709,
+            "duration_ms": 224,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606486922,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "delete.containers",
+            "started_at": 1789606485933,
+            "duration_ms": 989,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606487126,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "delete.sandbox_workspaces",
+            "started_at": 1789606486922,
+            "duration_ms": 204,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606487126,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "delete.brain",
+            "started_at": 1789606487126,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606487315,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "delete.registry_final",
+            "started_at": 1789606487126,
+            "duration_ms": 189,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606487642,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "delete.archives",
+            "started_at": 1789606487315,
+            "duration_ms": 327,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606487642,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "session.DELETE /session",
+            "duration_ms": 2206,
+            "reads": {
+              "session_state": {
+                "count": 2,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 2,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606487822,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "session.GET /state",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606475665,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "d66c971981d93a3add607e825e72ba5252d5e5e241e9b34ad889f5665821e669",
+            "stage": "session.GET /socket",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 2,
+                "duration_ms": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "cohort": "hosted",
+      "arm": "prepare_5s",
+      "sample": 2,
+      "agent": "01a0acdb-e818-734a-a22c-7b72beee2ef8",
+      "turn": "audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+      "durable_object_ids": [
+        "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413"
+      ],
+      "ttft_ms": 3841.975666999999,
+      "create_to_text_ms": 11601.199417,
+      "lead_to_text_ms": 8842.586457999998,
+      "completion_ms": 4364.078958999999,
+      "connection_ms": 0.0,
+      "model_first_output_ms": 3472.0,
+      "model_first_event_ms": 1148.0,
+      "outside_model_ms": 369.9756669999988,
+      "admission_ms": 0,
+      "admission_worker_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "admission_reads": {
+        "session_state": {
+          "count": 14,
+          "duration_ms": 0
+        }
+      },
+      "preparation": {
+        "started_at": 1789606490603,
+        "accepted_ms": 79.50670900000114,
+        "status": 202,
+        "request_id": "912b6815-2127-4b12-8daa-e274ee24b2de"
+      },
+      "intentional_idle_ms": 5000.610790999999,
+      "cache_tokens": 0,
+      "input_tokens": 18554,
+      "warmup_ms": 0.0,
+      "correct": true,
+      "tools": 0,
+      "deleted": true,
+      "cleanup_status": 404,
+      "response_retries": 0,
+      "retry_backoff_ms": 0.0,
+      "loadavg": [
+        180.0615234375,
+        246.3515625,
+        249.1328125
+      ],
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+          "stage": "account.hosted_tools",
+          "started_at": 1789606495710,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789606495710,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+          "stage": "startup.environment",
+          "started_at": 1789606495710,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+          "stage": "turn.admission",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 14,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "idle_shutdown_logs": [],
+      "trace_logs": [
+        {
+          "timestamp": 1789606488088,
+          "message": {
+            "type": "managed.agent.create_requested",
+            "method": "POST"
+          }
+        },
+        {
+          "timestamp": 1789606489436,
+          "message": {
+            "type": "managed.agent.created",
+            "outcome": "success",
+            "auth_ms": 195,
+            "session_create_ms": 1348,
+            "session_prepare_ms": 0,
+            "session_initialize_ms": 0,
+            "session_commit_ms": 300,
+            "create_ms": 1543
+          }
+        },
+        {
+          "timestamp": 1789606489436,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "23fde954-8e02-4303-9729-e91ca12ed9a7",
+            "mode": "live",
+            "auth_ms": 195,
+            "method": "POST",
+            "path": "/v1/agents",
+            "status": 201
+          }
+        },
+        {
+          "timestamp": 1789606489436,
+          "message": {
+            "type": "managed.request",
+            "request_id": "23fde954-8e02-4303-9729-e91ca12ed9a7",
+            "method": "POST",
+            "path": "/v1/agents",
+            "status": 201,
+            "duration_ms": 1543
+          }
+        },
+        {
+          "timestamp": 1789606489376,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "session.POST /create",
+            "duration_ms": 300,
+            "reads": {
+              "session_state": {
+                "count": 4,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606490663,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "POST"
+          }
+        },
+        {
+          "timestamp": 1789606490681,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "912b6815-2127-4b12-8daa-e274ee24b2de",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "POST",
+            "path": "/v1/agents/01a0acdb-e818-734a-a22c-7b72beee2ef8/prepare",
+            "status": 202
+          }
+        },
+        {
+          "timestamp": 1789606490681,
+          "message": {
+            "type": "managed.request",
+            "request_id": "912b6815-2127-4b12-8daa-e274ee24b2de",
+            "method": "POST",
+            "path": "/v1/agents/01a0acdb-e818-734a-a22c-7b72beee2ef8/prepare",
+            "status": 202,
+            "duration_ms": 18
+          }
+        },
+        {
+          "timestamp": 1789606495705,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "POST"
+          }
+        },
+        {
+          "timestamp": 1789606495984,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "90ebd854-5525-4956-85cf-70293134ac77",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "POST",
+            "path": "/v1/agents/01a0acdb-e818-734a-a22c-7b72beee2ef8/turns",
+            "status": 202
+          }
+        },
+        {
+          "timestamp": 1789606495984,
+          "message": {
+            "type": "managed.request",
+            "request_id": "90ebd854-5525-4956-85cf-70293134ac77",
+            "method": "POST",
+            "path": "/v1/agents/01a0acdb-e818-734a-a22c-7b72beee2ef8/turns",
+            "status": 202,
+            "duration_ms": 279
+          }
+        },
+        {
+          "timestamp": 1789606496863,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606495710,
+          "message": {
+            "type": "managed.personalization.pinned",
+            "turn_id": "audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+            "agent_id": "01a0acdb-e818-734a-a22c-7b72beee2ef8",
+            "cache_hit": true,
+            "fact_count": 18
+          }
+        },
+        {
+          "timestamp": 1789606495710,
+          "message": {
+            "type": "managed.turn.accepted",
+            "turn_id": "audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+            "transport": "managed"
+          }
+        },
+        {
+          "timestamp": 1789606495710,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+            "stage": "account.hosted_tools",
+            "started_at": 1789606495710,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606495710,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "session.POST /turns",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 6,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606495710,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+            "stage": "account.mcp_discovery",
+            "started_at": 1789606495710,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606495710,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+            "stage": "startup.environment",
+            "started_at": 1789606495710,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606495710,
+          "message": {
+            "type": "managed.turn.dispatch",
+            "turn_id": "audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+            "runtime_ready_ms": 0,
+            "bootstrap_ready_ms": 0,
+            "inject_ms": 0,
+            "admission_ms": 0,
+            "accepted_to_dispatch_ms": 0
+          }
+        },
+        {
+          "timestamp": 1789606495710,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+            "stage": "turn.admission",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 14,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606495710,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.attempt.started",
+            "request_id": "01a0acdb-f45f-7615-a410-e426de72e8ed",
+            "turn_id": "audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+            "outcome": "observed",
+            "replay_mode": "full_history",
+            "operation_kind": "generation",
+            "attempt_count": 1,
+            "max_attempts": 5,
+            "connection_generation": 0,
+            "model_call_index": 1
+          }
+        },
+        {
+          "timestamp": 1789606495710,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.connection.started",
+            "request_id": "01a0acdb-f45f-7615-a410-e426de72e8ed",
+            "turn_id": "audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+            "outcome": "observed",
+            "transport": "responses_websocket_v2",
+            "operation_kind": "initial",
+            "attempt_count": 1,
+            "connection_generation": 1
+          }
+        },
+        {
+          "timestamp": 1789606495710,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.connection.completed",
+            "request_id": "01a0acdb-f45f-7615-a410-e426de72e8ed",
+            "turn_id": "audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+            "outcome": "success",
+            "transport": "responses_websocket_v2",
+            "operation_kind": "initial",
+            "attempt_count": 1,
+            "connection_generation": 1,
+            "duration_ms": 0
+          }
+        },
+        {
+          "timestamp": 1789606496863,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606497598,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606497229,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606497671,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606497275,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606497602,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606497671,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606499742,
+          "message": {
+            "type": "managed.turn.transition",
+            "turn_id": "audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+            "status": "completed",
+            "outcome": "success",
+            "message_type": "turn_completed",
+            "attempt_count": 0
+          }
+        },
+        {
+          "timestamp": 1789606499742,
+          "message": {
+            "type": "managed.capacity",
+            "reason": "terminal_milestone",
+            "session_id": "01a0acdb-e818-734a-a22c-7b72beee2ef8"
+          }
+        },
+        {
+          "timestamp": 1789606500107,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET"
+          }
+        },
+        {
+          "timestamp": 1789606500145,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "34b9b53c-57b0-4ed2-bcab-3d9346aa85c8",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-e818-734a-a22c-7b72beee2ef8/events/history",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606500145,
+          "message": {
+            "type": "managed.request",
+            "request_id": "34b9b53c-57b0-4ed2-bcab-3d9346aa85c8",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-e818-734a-a22c-7b72beee2ef8/events/history",
+            "status": 200,
+            "duration_ms": 38
+          }
+        },
+        {
+          "timestamp": 1789606500208,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET",
+            "turn_id": "audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa"
+          }
+        },
+        {
+          "timestamp": 1789606500225,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "4f2f931b-e7ce-4104-92ea-8973d6c788b6",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-e818-734a-a22c-7b72beee2ef8/turns/audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606500225,
+          "message": {
+            "type": "managed.request",
+            "request_id": "4f2f931b-e7ce-4104-92ea-8973d6c788b6",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-e818-734a-a22c-7b72beee2ef8/turns/audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+            "status": 200,
+            "duration_ms": 17
+          }
+        },
+        {
+          "timestamp": 1789606500091,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "session.GET /events/history",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606500170,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "session.GET /turns/audit-c1dee2eb-c9cd-4692-a008-da18b43b4aaa",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606500375,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET"
+          }
+        },
+        {
+          "timestamp": 1789606500400,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "47b56f51-01cb-4fed-a6df-665004a81581",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-e818-734a-a22c-7b72beee2ef8",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606500400,
+          "message": {
+            "type": "managed.request",
+            "request_id": "47b56f51-01cb-4fed-a6df-665004a81581",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdb-e818-734a-a22c-7b72beee2ef8",
+            "status": 200,
+            "duration_ms": 25
+          }
+        },
+        {
+          "timestamp": 1789606500348,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "session.GET /state",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606490661,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "session.POST /prepare",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 5,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606491067,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "account.hosted_tools",
+            "started_at": 1789606490661,
+            "duration_ms": 406,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606491231,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "account.catalog",
+            "started_at": 1789606490661,
+            "duration_ms": 570,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606491231,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "account.mcp_discovery",
+            "started_at": 1789606490661,
+            "duration_ms": 570,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606491231,
+          "message": {
+            "type": "managed.capacity",
+            "reason": "agent_constructed",
+            "session_id": "01a0acdb-e818-734a-a22c-7b72beee2ef8",
+            "account_mcp_refresh_ms": 570,
+            "credential_binding_ms": 0,
+            "browser_runtime_ms": 0,
+            "workspace_ms": 0,
+            "computer_runtime_ms": 0,
+            "code_evaluator_ms": 0,
+            "managed_tools_ms": 0,
+            "cloudflare_agent_ms": 0,
+            "construction_ms": 0,
+            "runtime_ready_ms": 570
+          }
+        },
+        {
+          "timestamp": 1789606491234,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "account.vault",
+            "started_at": 1789606490661,
+            "duration_ms": 573,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606491234,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "conversation.prepare",
+            "started_at": 1789606490661,
+            "duration_ms": 573,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606501621,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "DELETE"
+          }
+        },
+        {
+          "timestamp": 1789606504945,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "1f76fe94-d8b5-4a1e-9714-e42e16788f75",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "DELETE",
+            "path": "/v1/agents/01a0acdb-e818-734a-a22c-7b72beee2ef8",
+            "status": 204
+          }
+        },
+        {
+          "timestamp": 1789606504945,
+          "message": {
+            "type": "managed.request",
+            "request_id": "1f76fe94-d8b5-4a1e-9714-e42e16788f75",
+            "method": "DELETE",
+            "path": "/v1/agents/01a0acdb-e818-734a-a22c-7b72beee2ef8",
+            "status": 204,
+            "duration_ms": 3324
+          }
+        },
+        {
+          "timestamp": 1789606501946,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "delete.registry_initial",
+            "started_at": 1789606501632,
+            "duration_ms": 314,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606501946,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "delete.runtime",
+            "started_at": 1789606501946,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606501946,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "delete.attachments",
+            "started_at": 1789606501946,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606502150,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "delete.memory",
+            "started_at": 1789606501946,
+            "duration_ms": 204,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606504208,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "delete.containers",
+            "started_at": 1789606502150,
+            "duration_ms": 2058,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606504408,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "delete.sandbox_workspaces",
+            "started_at": 1789606504208,
+            "duration_ms": 200,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606504408,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "delete.brain",
+            "started_at": 1789606504408,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606504588,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "delete.registry_final",
+            "started_at": 1789606504408,
+            "duration_ms": 180,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606504884,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "delete.archives",
+            "started_at": 1789606504588,
+            "duration_ms": 296,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606504884,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "session.DELETE /session",
+            "duration_ms": 3252,
+            "reads": {
+              "session_state": {
+                "count": 2,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 2,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606505105,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "session.GET /state",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606490282,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "3d2b2ea63b37ef7b65f2b4582cd2287a6a2f4030c104475f68608eb9e3665413",
+            "stage": "session.GET /socket",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 2,
+                "duration_ms": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "cohort": "hosted",
+      "arm": "events_only_5s",
+      "sample": 2,
+      "agent": "01a0acdc-2ba2-73e8-8d6b-be3198365dc6",
+      "turn": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+      "durable_object_ids": [
+        "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf"
+      ],
+      "ttft_ms": 8356.74925,
+      "create_to_text_ms": 16250.058249999995,
+      "lead_to_text_ms": 13356.875958999997,
+      "completion_ms": 8419.686625000002,
+      "connection_ms": 1435.0,
+      "model_first_output_ms": 7090.0,
+      "model_first_event_ms": 2116.0,
+      "outside_model_ms": 1266.7492500000008,
+      "admission_ms": 610,
+      "admission_worker_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "admission_reads": {
+        "session_state": {
+          "count": 17,
+          "duration_ms": 0
+        },
+        "session_initialization_ownership": {
+          "count": 2,
+          "duration_ms": 0
+        }
+      },
+      "preparation": null,
+      "intentional_idle_ms": 5000.1267089999965,
+      "cache_tokens": 18176,
+      "input_tokens": 18554,
+      "warmup_ms": 0.0,
+      "correct": true,
+      "tools": 0,
+      "deleted": true,
+      "cleanup_status": 404,
+      "response_retries": 0,
+      "retry_backoff_ms": 0.0,
+      "loadavg": [
+        181.775390625,
+        242.4560546875,
+        247.6708984375
+      ],
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+          "stage": "account.hosted_tools",
+          "started_at": 1789606513204,
+          "duration_ms": 419,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+          "stage": "account.catalog",
+          "started_at": 1789606513204,
+          "duration_ms": 580,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789606513204,
+          "duration_ms": 580,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+          "stage": "account.vault",
+          "started_at": 1789606513204,
+          "duration_ms": 610,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+          "stage": "startup.environment",
+          "started_at": 1789606513204,
+          "duration_ms": 610,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+          "stage": "turn.admission",
+          "duration_ms": 610,
+          "reads": {
+            "session_state": {
+              "count": 17,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "idle_shutdown_logs": [],
+      "trace_logs": [
+        {
+          "timestamp": 1789606505378,
+          "message": {
+            "type": "managed.agent.create_requested",
+            "method": "POST"
+          }
+        },
+        {
+          "timestamp": 1789606506916,
+          "message": {
+            "type": "managed.agent.created",
+            "outcome": "success",
+            "auth_ms": 197,
+            "session_create_ms": 1538,
+            "session_prepare_ms": 0,
+            "session_initialize_ms": 0,
+            "session_commit_ms": 342,
+            "create_ms": 1735
+          }
+        },
+        {
+          "timestamp": 1789606506916,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "37c00e50-a693-4216-897e-a1620ce4ad7d",
+            "mode": "live",
+            "auth_ms": 197,
+            "method": "POST",
+            "path": "/v1/agents",
+            "status": 201
+          }
+        },
+        {
+          "timestamp": 1789606506916,
+          "message": {
+            "type": "managed.request",
+            "request_id": "37c00e50-a693-4216-897e-a1620ce4ad7d",
+            "method": "POST",
+            "path": "/v1/agents",
+            "status": 201,
+            "duration_ms": 1735
+          }
+        },
+        {
+          "timestamp": 1789606506849,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "session.POST /create",
+            "duration_ms": 342,
+            "reads": {
+              "session_state": {
+                "count": 4,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606513191,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "POST"
+          }
+        },
+        {
+          "timestamp": 1789606513252,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "539dc15f-112a-47e9-8a11-0541efb70b33",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "POST",
+            "path": "/v1/agents/01a0acdc-2ba2-73e8-8d6b-be3198365dc6/turns",
+            "status": 202
+          }
+        },
+        {
+          "timestamp": 1789606513252,
+          "message": {
+            "type": "managed.request",
+            "request_id": "539dc15f-112a-47e9-8a11-0541efb70b33",
+            "method": "POST",
+            "path": "/v1/agents/01a0acdc-2ba2-73e8-8d6b-be3198365dc6/turns",
+            "status": 202,
+            "duration_ms": 61
+          }
+        },
+        {
+          "timestamp": 1789606515258,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606515260,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606516084,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606515674,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606516154,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606515726,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606516084,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606516154,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606521300,
+          "message": {
+            "type": "managed.turn.transition",
+            "turn_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+            "status": "completed",
+            "outcome": "success",
+            "message_type": "turn_completed",
+            "attempt_count": 0
+          }
+        },
+        {
+          "timestamp": 1789606521300,
+          "message": {
+            "type": "managed.capacity",
+            "reason": "terminal_milestone",
+            "session_id": "01a0acdc-2ba2-73e8-8d6b-be3198365dc6"
+          }
+        },
+        {
+          "timestamp": 1789606521668,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET"
+          }
+        },
+        {
+          "timestamp": 1789606521686,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "45af7199-52d8-4992-a151-436397dc7483",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-2ba2-73e8-8d6b-be3198365dc6/events/history",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606521686,
+          "message": {
+            "type": "managed.request",
+            "request_id": "45af7199-52d8-4992-a151-436397dc7483",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-2ba2-73e8-8d6b-be3198365dc6/events/history",
+            "status": 200,
+            "duration_ms": 18
+          }
+        },
+        {
+          "timestamp": 1789606521641,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "session.GET /events/history",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606521863,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET",
+            "turn_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10"
+          }
+        },
+        {
+          "timestamp": 1789606521883,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "cf796b5d-f5a9-4eeb-986a-d2ddd1672444",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-2ba2-73e8-8d6b-be3198365dc6/turns/audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606521883,
+          "message": {
+            "type": "managed.request",
+            "request_id": "cf796b5d-f5a9-4eeb-986a-d2ddd1672444",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-2ba2-73e8-8d6b-be3198365dc6/turns/audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+            "status": 200,
+            "duration_ms": 20
+          }
+        },
+        {
+          "timestamp": 1789606521839,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "session.GET /turns/audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606522123,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET"
+          }
+        },
+        {
+          "timestamp": 1789606522143,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "68d63844-3de5-4f78-9abd-a6106e4cde95",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-2ba2-73e8-8d6b-be3198365dc6",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606522143,
+          "message": {
+            "type": "managed.request",
+            "request_id": "68d63844-3de5-4f78-9abd-a6106e4cde95",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-2ba2-73e8-8d6b-be3198365dc6",
+            "status": 200,
+            "duration_ms": 20
+          }
+        },
+        {
+          "timestamp": 1789606522105,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "session.GET /state",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606513204,
+          "message": {
+            "type": "managed.personalization.pinned",
+            "turn_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+            "agent_id": "01a0acdc-2ba2-73e8-8d6b-be3198365dc6",
+            "cache_hit": true,
+            "fact_count": 18
+          }
+        },
+        {
+          "timestamp": 1789606513204,
+          "message": {
+            "type": "managed.turn.accepted",
+            "turn_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+            "transport": "managed"
+          }
+        },
+        {
+          "timestamp": 1789606513204,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "session.POST /turns",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 6,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606513623,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+            "stage": "account.hosted_tools",
+            "started_at": 1789606513204,
+            "duration_ms": 419,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606513784,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+            "stage": "account.catalog",
+            "started_at": 1789606513204,
+            "duration_ms": 580,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606513784,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+            "stage": "account.mcp_discovery",
+            "started_at": 1789606513204,
+            "duration_ms": 580,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606513784,
+          "message": {
+            "type": "managed.capacity",
+            "reason": "agent_constructed",
+            "session_id": "01a0acdc-2ba2-73e8-8d6b-be3198365dc6",
+            "account_mcp_refresh_ms": 580,
+            "credential_binding_ms": 0,
+            "browser_runtime_ms": 0,
+            "workspace_ms": 0,
+            "computer_runtime_ms": 0,
+            "code_evaluator_ms": 0,
+            "managed_tools_ms": 0,
+            "cloudflare_agent_ms": 0,
+            "construction_ms": 0,
+            "runtime_ready_ms": 580
+          }
+        },
+        {
+          "timestamp": 1789606513814,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+            "stage": "account.vault",
+            "started_at": 1789606513204,
+            "duration_ms": 610,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606513814,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+            "stage": "startup.environment",
+            "started_at": 1789606513204,
+            "duration_ms": 610,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606513814,
+          "message": {
+            "type": "managed.turn.dispatch",
+            "turn_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+            "runtime_ready_ms": 580,
+            "bootstrap_ready_ms": 610,
+            "inject_ms": 0,
+            "admission_ms": 610,
+            "accepted_to_dispatch_ms": 610
+          }
+        },
+        {
+          "timestamp": 1789606513814,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+            "stage": "turn.admission",
+            "duration_ms": 610,
+            "reads": {
+              "session_state": {
+                "count": 17,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 2,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606513814,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.attempt.started",
+            "request_id": "01a0acdc-4c78-73cd-b0fe-949990a2dfec",
+            "turn_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+            "outcome": "observed",
+            "replay_mode": "full_history",
+            "operation_kind": "generation",
+            "attempt_count": 1,
+            "max_attempts": 5,
+            "connection_generation": 0,
+            "model_call_index": 1
+          }
+        },
+        {
+          "timestamp": 1789606513814,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.connection.started",
+            "request_id": "01a0acdc-4c78-73cd-b0fe-949990a2dfec",
+            "turn_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+            "outcome": "observed",
+            "transport": "responses_websocket_v2",
+            "operation_kind": "initial",
+            "attempt_count": 1,
+            "connection_generation": 1
+          }
+        },
+        {
+          "timestamp": 1789606515249,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.connection.completed",
+            "request_id": "01a0acdc-4c78-73cd-b0fe-949990a2dfec",
+            "turn_id": "audit-807114f9-53a5-4d1c-a924-286b8951aa10",
+            "outcome": "success",
+            "transport": "responses_websocket_v2",
+            "operation_kind": "initial",
+            "attempt_count": 1,
+            "connection_generation": 1,
+            "duration_ms": 1435
+          }
+        },
+        {
+          "timestamp": 1789606523326,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "DELETE"
+          }
+        },
+        {
+          "timestamp": 1789606525848,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "dba46e9e-be20-4c2b-880e-75d591e24daa",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "DELETE",
+            "path": "/v1/agents/01a0acdc-2ba2-73e8-8d6b-be3198365dc6",
+            "status": 204
+          }
+        },
+        {
+          "timestamp": 1789606525848,
+          "message": {
+            "type": "managed.request",
+            "request_id": "dba46e9e-be20-4c2b-880e-75d591e24daa",
+            "method": "DELETE",
+            "path": "/v1/agents/01a0acdc-2ba2-73e8-8d6b-be3198365dc6",
+            "status": 204,
+            "duration_ms": 2522
+          }
+        },
+        {
+          "timestamp": 1789606523597,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "delete.registry_initial",
+            "started_at": 1789606523327,
+            "duration_ms": 270,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606523597,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "delete.runtime",
+            "started_at": 1789606523597,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606523597,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "delete.attachments",
+            "started_at": 1789606523597,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606523802,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "delete.memory",
+            "started_at": 1789606523597,
+            "duration_ms": 205,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606525047,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "delete.containers",
+            "started_at": 1789606523802,
+            "duration_ms": 1245,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606525245,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "delete.sandbox_workspaces",
+            "started_at": 1789606525047,
+            "duration_ms": 198,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606525245,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "delete.brain",
+            "started_at": 1789606525245,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606525422,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "delete.registry_final",
+            "started_at": 1789606525245,
+            "duration_ms": 177,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606525788,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "delete.archives",
+            "started_at": 1789606525422,
+            "duration_ms": 366,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606525788,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "session.DELETE /session",
+            "duration_ms": 2461,
+            "reads": {
+              "session_state": {
+                "count": 2,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 2,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606525912,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "session.GET /state",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606508003,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "dc30752b4158fe269abb85c5871ef2040f7e01128706ddd786713fd9bd8123bf",
+            "stage": "session.GET /socket",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 2,
+                "duration_ms": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "cohort": "hosted",
+      "arm": "events_only_5s",
+      "sample": 3,
+      "agent": "01a0acdc-7d36-7689-bd47-05c32058c99f",
+      "turn": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+      "durable_object_ids": [
+        "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9"
+      ],
+      "ttft_ms": 5781.636375000002,
+      "create_to_text_ms": 13723.238333000001,
+      "lead_to_text_ms": 10782.779125000001,
+      "completion_ms": 6257.951375000004,
+      "connection_ms": 1759.0,
+      "model_first_output_ms": 4888.0,
+      "model_first_event_ms": 2416.0,
+      "outside_model_ms": 893.6363750000019,
+      "admission_ms": 697,
+      "admission_worker_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "admission_reads": {
+        "session_state": {
+          "count": 17,
+          "duration_ms": 0
+        },
+        "session_initialization_ownership": {
+          "count": 2,
+          "duration_ms": 0
+        }
+      },
+      "preparation": null,
+      "intentional_idle_ms": 5001.142749999999,
+      "cache_tokens": 18176,
+      "input_tokens": 18554,
+      "warmup_ms": 0.0,
+      "correct": true,
+      "tools": 0,
+      "deleted": true,
+      "cleanup_status": 404,
+      "response_retries": 0,
+      "retry_backoff_ms": 0.0,
+      "loadavg": [
+        187.4697265625,
+        239.76806640625,
+        246.58154296875
+      ],
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+          "stage": "account.hosted_tools",
+          "started_at": 1789606534105,
+          "duration_ms": 438,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+          "stage": "account.vault",
+          "started_at": 1789606534105,
+          "duration_ms": 614,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+          "stage": "account.catalog",
+          "started_at": 1789606534105,
+          "duration_ms": 697,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789606534105,
+          "duration_ms": 697,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+          "stage": "startup.environment",
+          "started_at": 1789606534105,
+          "duration_ms": 697,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+          "stage": "turn.admission",
+          "duration_ms": 697,
+          "reads": {
+            "session_state": {
+              "count": 17,
+              "duration_ms": 0
+            },
+            "session_initialization_ownership": {
+              "count": 2,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "idle_shutdown_logs": [],
+      "trace_logs": [
+        {
+          "timestamp": 1789606526262,
+          "message": {
+            "type": "managed.agent.create_requested",
+            "method": "POST"
+          }
+        },
+        {
+          "timestamp": 1789606527414,
+          "message": {
+            "type": "managed.agent.created",
+            "outcome": "success",
+            "auth_ms": 193,
+            "session_create_ms": 1152,
+            "session_prepare_ms": 0,
+            "session_initialize_ms": 0,
+            "session_commit_ms": 268,
+            "create_ms": 1345
+          }
+        },
+        {
+          "timestamp": 1789606527414,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "fe8a5ee8-18aa-4210-aeea-adb3ebeaf6ca",
+            "mode": "live",
+            "auth_ms": 193,
+            "method": "POST",
+            "path": "/v1/agents",
+            "status": 201
+          }
+        },
+        {
+          "timestamp": 1789606527414,
+          "message": {
+            "type": "managed.request",
+            "request_id": "fe8a5ee8-18aa-4210-aeea-adb3ebeaf6ca",
+            "method": "POST",
+            "path": "/v1/agents",
+            "status": 201,
+            "duration_ms": 1345
+          }
+        },
+        {
+          "timestamp": 1789606527353,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "session.POST /create",
+            "duration_ms": 268,
+            "reads": {
+              "session_state": {
+                "count": 4,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606534097,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "POST"
+          }
+        },
+        {
+          "timestamp": 1789606534132,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "1f29e95e-d356-4681-b63b-d1694380acae",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "POST",
+            "path": "/v1/agents/01a0acdc-7d36-7689-bd47-05c32058c99f/turns",
+            "status": 202
+          }
+        },
+        {
+          "timestamp": 1789606534132,
+          "message": {
+            "type": "managed.request",
+            "request_id": "1f29e95e-d356-4681-b63b-d1694380acae",
+            "method": "POST",
+            "path": "/v1/agents/01a0acdc-7d36-7689-bd47-05c32058c99f/turns",
+            "status": 202,
+            "duration_ms": 35
+          }
+        },
+        {
+          "timestamp": 1789606535970,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606536688,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606536330,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606536773,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606536373,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606536561,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.connection.completed",
+            "request_id": "01a0acdc-9e92-7de6-9800-99081326154a",
+            "turn_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+            "outcome": "success",
+            "transport": "responses_websocket_v2",
+            "operation_kind": "initial",
+            "attempt_count": 1,
+            "connection_generation": 1,
+            "duration_ms": 1759
+          }
+        },
+        {
+          "timestamp": 1789606536688,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606536773,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606540115,
+          "message": {
+            "type": "managed.turn.transition",
+            "turn_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+            "status": "completed",
+            "outcome": "success",
+            "message_type": "turn_completed",
+            "attempt_count": 0
+          }
+        },
+        {
+          "timestamp": 1789606540115,
+          "message": {
+            "type": "managed.capacity",
+            "reason": "terminal_milestone",
+            "session_id": "01a0acdc-7d36-7689-bd47-05c32058c99f"
+          }
+        },
+        {
+          "timestamp": 1789606540334,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET"
+          }
+        },
+        {
+          "timestamp": 1789606540359,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "b96acd23-b64e-4594-b893-7b39a1c2c5a5",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-7d36-7689-bd47-05c32058c99f/events/history",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606540359,
+          "message": {
+            "type": "managed.request",
+            "request_id": "b96acd23-b64e-4594-b893-7b39a1c2c5a5",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-7d36-7689-bd47-05c32058c99f/events/history",
+            "status": 200,
+            "duration_ms": 25
+          }
+        },
+        {
+          "timestamp": 1789606540301,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "session.GET /events/history",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606540397,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET",
+            "turn_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406"
+          }
+        },
+        {
+          "timestamp": 1789606540417,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "8e2b7325-5523-4ea4-92a6-f7d105d8f112",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-7d36-7689-bd47-05c32058c99f/turns/audit-71551167-5f00-42ce-a6ea-5583e6975406",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606540417,
+          "message": {
+            "type": "managed.request",
+            "request_id": "8e2b7325-5523-4ea4-92a6-f7d105d8f112",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-7d36-7689-bd47-05c32058c99f/turns/audit-71551167-5f00-42ce-a6ea-5583e6975406",
+            "status": 200,
+            "duration_ms": 20
+          }
+        },
+        {
+          "timestamp": 1789606540357,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "session.GET /turns/audit-71551167-5f00-42ce-a6ea-5583e6975406",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606540458,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET"
+          }
+        },
+        {
+          "timestamp": 1789606540471,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "a23eb480-02bc-4af3-a224-713eb229b4bf",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-7d36-7689-bd47-05c32058c99f",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606540471,
+          "message": {
+            "type": "managed.request",
+            "request_id": "a23eb480-02bc-4af3-a224-713eb229b4bf",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-7d36-7689-bd47-05c32058c99f",
+            "status": 200,
+            "duration_ms": 13
+          }
+        },
+        {
+          "timestamp": 1789606540412,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "session.GET /state",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606535972,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606534105,
+          "message": {
+            "type": "managed.personalization.pinned",
+            "turn_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+            "agent_id": "01a0acdc-7d36-7689-bd47-05c32058c99f",
+            "cache_hit": true,
+            "fact_count": 18
+          }
+        },
+        {
+          "timestamp": 1789606534105,
+          "message": {
+            "type": "managed.turn.accepted",
+            "turn_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+            "transport": "managed"
+          }
+        },
+        {
+          "timestamp": 1789606534105,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "session.POST /turns",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 6,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606534543,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+            "stage": "account.hosted_tools",
+            "started_at": 1789606534105,
+            "duration_ms": 438,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606534719,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+            "stage": "account.vault",
+            "started_at": 1789606534105,
+            "duration_ms": 614,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606534802,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+            "stage": "account.catalog",
+            "started_at": 1789606534105,
+            "duration_ms": 697,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606534802,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+            "stage": "account.mcp_discovery",
+            "started_at": 1789606534105,
+            "duration_ms": 697,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606534802,
+          "message": {
+            "type": "managed.capacity",
+            "reason": "agent_constructed",
+            "session_id": "01a0acdc-7d36-7689-bd47-05c32058c99f",
+            "account_mcp_refresh_ms": 697,
+            "credential_binding_ms": 0,
+            "browser_runtime_ms": 0,
+            "workspace_ms": 0,
+            "computer_runtime_ms": 0,
+            "code_evaluator_ms": 0,
+            "managed_tools_ms": 0,
+            "cloudflare_agent_ms": 0,
+            "construction_ms": 0,
+            "runtime_ready_ms": 697
+          }
+        },
+        {
+          "timestamp": 1789606534802,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+            "stage": "startup.environment",
+            "started_at": 1789606534105,
+            "duration_ms": 697,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606534802,
+          "message": {
+            "type": "managed.turn.dispatch",
+            "turn_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+            "runtime_ready_ms": 697,
+            "bootstrap_ready_ms": 697,
+            "inject_ms": 0,
+            "admission_ms": 697,
+            "accepted_to_dispatch_ms": 697
+          }
+        },
+        {
+          "timestamp": 1789606534802,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+            "stage": "turn.admission",
+            "duration_ms": 697,
+            "reads": {
+              "session_state": {
+                "count": 17,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 2,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606534802,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.attempt.started",
+            "request_id": "01a0acdc-9e92-7de6-9800-99081326154a",
+            "turn_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+            "outcome": "observed",
+            "replay_mode": "full_history",
+            "operation_kind": "generation",
+            "attempt_count": 1,
+            "max_attempts": 5,
+            "connection_generation": 0,
+            "model_call_index": 1
+          }
+        },
+        {
+          "timestamp": 1789606534802,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.connection.started",
+            "request_id": "01a0acdc-9e92-7de6-9800-99081326154a",
+            "turn_id": "audit-71551167-5f00-42ce-a6ea-5583e6975406",
+            "outcome": "observed",
+            "transport": "responses_websocket_v2",
+            "operation_kind": "initial",
+            "attempt_count": 1,
+            "connection_generation": 1
+          }
+        },
+        {
+          "timestamp": 1789606541421,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "DELETE"
+          }
+        },
+        {
+          "timestamp": 1789606543920,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "d9b1c801-466c-4586-a4b7-39a28bbe495d",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "DELETE",
+            "path": "/v1/agents/01a0acdc-7d36-7689-bd47-05c32058c99f",
+            "status": 204
+          }
+        },
+        {
+          "timestamp": 1789606543920,
+          "message": {
+            "type": "managed.request",
+            "request_id": "d9b1c801-466c-4586-a4b7-39a28bbe495d",
+            "method": "DELETE",
+            "path": "/v1/agents/01a0acdc-7d36-7689-bd47-05c32058c99f",
+            "status": 204,
+            "duration_ms": 2499
+          }
+        },
+        {
+          "timestamp": 1789606541640,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "delete.registry_initial",
+            "started_at": 1789606541410,
+            "duration_ms": 230,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606541640,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "delete.runtime",
+            "started_at": 1789606541640,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606541640,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "delete.attachments",
+            "started_at": 1789606541640,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606541848,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "delete.memory",
+            "started_at": 1789606541640,
+            "duration_ms": 208,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606543183,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "delete.containers",
+            "started_at": 1789606541848,
+            "duration_ms": 1335,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606543373,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "delete.sandbox_workspaces",
+            "started_at": 1789606543183,
+            "duration_ms": 190,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606543373,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "delete.brain",
+            "started_at": 1789606543373,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606543545,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "delete.registry_final",
+            "started_at": 1789606543373,
+            "duration_ms": 172,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606543832,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "delete.archives",
+            "started_at": 1789606543545,
+            "duration_ms": 287,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606543832,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "session.DELETE /session",
+            "duration_ms": 2422,
+            "reads": {
+              "session_state": {
+                "count": 2,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 2,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606544017,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "session.GET /state",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606528931,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "e302e0cf7957f778b3842fa1c7d2b5005a6d6935f781d7db0ef49831e7cfc0e9",
+            "stage": "session.GET /socket",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 2,
+                "duration_ms": 0
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "cohort": "hosted",
+      "arm": "prepare_5s",
+      "sample": 3,
+      "agent": "01a0acdc-c3c5-7e20-8b19-e583a75076d5",
+      "turn": "audit-daf6c24b-2a3d-4358-941b-676060193da9",
+      "durable_object_ids": [
+        "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b"
+      ],
+      "ttft_ms": 2416.0884579999984,
+      "create_to_text_ms": 9864.961708000003,
+      "lead_to_text_ms": 7416.939792000005,
+      "completion_ms": 2867.9978330000013,
+      "connection_ms": 0.0,
+      "model_first_output_ms": 1999.0,
+      "model_first_event_ms": 1032.0,
+      "outside_model_ms": 417.08845799999835,
+      "admission_ms": 0,
+      "admission_worker_versions": [
+        "4f6c836f-921d-475c-a4a5-64906c1a7bb9"
+      ],
+      "admission_reads": {
+        "session_state": {
+          "count": 14,
+          "duration_ms": 0
+        }
+      },
+      "preparation": {
+        "started_at": 1789606546512,
+        "accepted_ms": 83.09987499999988,
+        "status": 202,
+        "request_id": "9f486267-c289-48b4-a1df-c74b4bb6011b"
+      },
+      "intentional_idle_ms": 5000.851334000006,
+      "cache_tokens": 0,
+      "input_tokens": 18554,
+      "warmup_ms": 0.0,
+      "correct": true,
+      "tools": 0,
+      "deleted": true,
+      "cleanup_status": 404,
+      "response_retries": 0,
+      "retry_backoff_ms": 0.0,
+      "loadavg": [
+        179.62060546875,
+        235.53369140625,
+        244.955078125
+      ],
+      "stages": [
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-daf6c24b-2a3d-4358-941b-676060193da9",
+          "stage": "account.hosted_tools",
+          "started_at": 1789606551832,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-daf6c24b-2a3d-4358-941b-676060193da9",
+          "stage": "account.mcp_discovery",
+          "started_at": 1789606551832,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-daf6c24b-2a3d-4358-941b-676060193da9",
+          "stage": "startup.environment",
+          "started_at": 1789606551832,
+          "duration_ms": 0,
+          "success": true
+        },
+        {
+          "type": "managed.performance",
+          "trace_id": "audit-daf6c24b-2a3d-4358-941b-676060193da9",
+          "stage": "turn.admission",
+          "duration_ms": 0,
+          "reads": {
+            "session_state": {
+              "count": 14,
+              "duration_ms": 0
+            }
+          }
+        }
+      ],
+      "idle_shutdown_logs": [],
+      "trace_logs": [
+        {
+          "timestamp": 1789606544325,
+          "message": {
+            "type": "managed.agent.create_requested",
+            "method": "POST"
+          }
+        },
+        {
+          "timestamp": 1789606545584,
+          "message": {
+            "type": "managed.agent.created",
+            "outcome": "success",
+            "auth_ms": 196,
+            "session_create_ms": 1259,
+            "session_prepare_ms": 0,
+            "session_initialize_ms": 0,
+            "session_commit_ms": 259,
+            "create_ms": 1455
+          }
+        },
+        {
+          "timestamp": 1789606545584,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "b5459969-be93-4e0d-bc18-10be232e1ea1",
+            "mode": "live",
+            "auth_ms": 196,
+            "method": "POST",
+            "path": "/v1/agents",
+            "status": 201
+          }
+        },
+        {
+          "timestamp": 1789606545584,
+          "message": {
+            "type": "managed.request",
+            "request_id": "b5459969-be93-4e0d-bc18-10be232e1ea1",
+            "method": "POST",
+            "path": "/v1/agents",
+            "status": 201,
+            "duration_ms": 1455
+          }
+        },
+        {
+          "timestamp": 1789606545518,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "session.POST /create",
+            "duration_ms": 259,
+            "reads": {
+              "session_state": {
+                "count": 4,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606546559,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "POST"
+          }
+        },
+        {
+          "timestamp": 1789606546579,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "9f486267-c289-48b4-a1df-c74b4bb6011b",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "POST",
+            "path": "/v1/agents/01a0acdc-c3c5-7e20-8b19-e583a75076d5/prepare",
+            "status": 202
+          }
+        },
+        {
+          "timestamp": 1789606546579,
+          "message": {
+            "type": "managed.request",
+            "request_id": "9f486267-c289-48b4-a1df-c74b4bb6011b",
+            "method": "POST",
+            "path": "/v1/agents/01a0acdc-c3c5-7e20-8b19-e583a75076d5/prepare",
+            "status": 202,
+            "duration_ms": 20
+          }
+        },
+        {
+          "timestamp": 1789606551823,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "POST"
+          }
+        },
+        {
+          "timestamp": 1789606552082,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "f6e49364-e105-41c5-b4e5-1895d48928c5",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "POST",
+            "path": "/v1/agents/01a0acdc-c3c5-7e20-8b19-e583a75076d5/turns",
+            "status": 202
+          }
+        },
+        {
+          "timestamp": 1789606552082,
+          "message": {
+            "type": "managed.request",
+            "request_id": "f6e49364-e105-41c5-b4e5-1895d48928c5",
+            "method": "POST",
+            "path": "/v1/agents/01a0acdc-c3c5-7e20-8b19-e583a75076d5/turns",
+            "status": 202,
+            "duration_ms": 259
+          }
+        },
+        {
+          "timestamp": 1789606552871,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606551832,
+          "message": {
+            "type": "managed.personalization.pinned",
+            "turn_id": "audit-daf6c24b-2a3d-4358-941b-676060193da9",
+            "agent_id": "01a0acdc-c3c5-7e20-8b19-e583a75076d5",
+            "cache_hit": true,
+            "fact_count": 18
+          }
+        },
+        {
+          "timestamp": 1789606551832,
+          "message": {
+            "type": "managed.turn.accepted",
+            "turn_id": "audit-daf6c24b-2a3d-4358-941b-676060193da9",
+            "transport": "managed"
+          }
+        },
+        {
+          "timestamp": 1789606551832,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-daf6c24b-2a3d-4358-941b-676060193da9",
+            "stage": "account.hosted_tools",
+            "started_at": 1789606551832,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606551832,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "session.POST /turns",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 6,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606551832,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-daf6c24b-2a3d-4358-941b-676060193da9",
+            "stage": "account.mcp_discovery",
+            "started_at": 1789606551832,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606551832,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-daf6c24b-2a3d-4358-941b-676060193da9",
+            "stage": "startup.environment",
+            "started_at": 1789606551832,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606551832,
+          "message": {
+            "type": "managed.turn.dispatch",
+            "turn_id": "audit-daf6c24b-2a3d-4358-941b-676060193da9",
+            "runtime_ready_ms": 0,
+            "bootstrap_ready_ms": 0,
+            "inject_ms": 0,
+            "admission_ms": 0,
+            "accepted_to_dispatch_ms": 0
+          }
+        },
+        {
+          "timestamp": 1789606551832,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "audit-daf6c24b-2a3d-4358-941b-676060193da9",
+            "stage": "turn.admission",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 14,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606551832,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.attempt.started",
+            "request_id": "01a0acdc-ceba-7353-b5ff-aa7ed53dd7f6",
+            "turn_id": "audit-daf6c24b-2a3d-4358-941b-676060193da9",
+            "outcome": "observed",
+            "replay_mode": "full_history",
+            "operation_kind": "generation",
+            "attempt_count": 1,
+            "max_attempts": 5,
+            "connection_generation": 0,
+            "model_call_index": 1
+          }
+        },
+        {
+          "timestamp": 1789606551832,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.connection.started",
+            "request_id": "01a0acdc-ceba-7353-b5ff-aa7ed53dd7f6",
+            "turn_id": "audit-daf6c24b-2a3d-4358-941b-676060193da9",
+            "outcome": "observed",
+            "transport": "responses_websocket_v2",
+            "operation_kind": "initial",
+            "attempt_count": 1,
+            "connection_generation": 1
+          }
+        },
+        {
+          "timestamp": 1789606551832,
+          "message": {
+            "type": "managed.agent.transport",
+            "message_type": "model.connection.completed",
+            "request_id": "01a0acdc-ceba-7353-b5ff-aa7ed53dd7f6",
+            "turn_id": "audit-daf6c24b-2a3d-4358-941b-676060193da9",
+            "outcome": "success",
+            "transport": "responses_websocket_v2",
+            "operation_kind": "initial",
+            "attempt_count": 1,
+            "connection_generation": 1,
+            "duration_ms": 0
+          }
+        },
+        {
+          "timestamp": 1789606552872,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606553596,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606553242,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606553659,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606553274,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606553596,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606553659,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "session.GET /credential-owner",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606554199,
+          "message": {
+            "type": "managed.turn.transition",
+            "turn_id": "audit-daf6c24b-2a3d-4358-941b-676060193da9",
+            "status": "completed",
+            "outcome": "success",
+            "message_type": "turn_completed",
+            "attempt_count": 0
+          }
+        },
+        {
+          "timestamp": 1789606554199,
+          "message": {
+            "type": "managed.capacity",
+            "reason": "terminal_milestone",
+            "session_id": "01a0acdc-c3c5-7e20-8b19-e583a75076d5"
+          }
+        },
+        {
+          "timestamp": 1789606554520,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET"
+          }
+        },
+        {
+          "timestamp": 1789606554539,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "c5fd6440-fc7b-4c65-bd0a-6f78e21c34d2",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-c3c5-7e20-8b19-e583a75076d5/events/history",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606554539,
+          "message": {
+            "type": "managed.request",
+            "request_id": "c5fd6440-fc7b-4c65-bd0a-6f78e21c34d2",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-c3c5-7e20-8b19-e583a75076d5/events/history",
+            "status": 200,
+            "duration_ms": 19
+          }
+        },
+        {
+          "timestamp": 1789606554424,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "session.GET /events/history",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606554836,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET",
+            "turn_id": "audit-daf6c24b-2a3d-4358-941b-676060193da9"
+          }
+        },
+        {
+          "timestamp": 1789606554852,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "91e3d542-939c-4204-85b6-006501b0e83c",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-c3c5-7e20-8b19-e583a75076d5/turns/audit-daf6c24b-2a3d-4358-941b-676060193da9",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606554852,
+          "message": {
+            "type": "managed.request",
+            "request_id": "91e3d542-939c-4204-85b6-006501b0e83c",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-c3c5-7e20-8b19-e583a75076d5/turns/audit-daf6c24b-2a3d-4358-941b-676060193da9",
+            "status": 200,
+            "duration_ms": 16
+          }
+        },
+        {
+          "timestamp": 1789606554982,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "GET"
+          }
+        },
+        {
+          "timestamp": 1789606554993,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "e1032543-b032-4d58-996d-ca218607f5ed",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-c3c5-7e20-8b19-e583a75076d5",
+            "status": 200
+          }
+        },
+        {
+          "timestamp": 1789606554993,
+          "message": {
+            "type": "managed.request",
+            "request_id": "e1032543-b032-4d58-996d-ca218607f5ed",
+            "method": "GET",
+            "path": "/v1/agents/01a0acdc-c3c5-7e20-8b19-e583a75076d5",
+            "status": 200,
+            "duration_ms": 11
+          }
+        },
+        {
+          "timestamp": 1789606554765,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "session.GET /turns/audit-daf6c24b-2a3d-4358-941b-676060193da9",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606554915,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "session.GET /state",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606546555,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "session.POST /prepare",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 5,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606546969,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "account.hosted_tools",
+            "started_at": 1789606546555,
+            "duration_ms": 414,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606547130,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "account.catalog",
+            "started_at": 1789606546555,
+            "duration_ms": 575,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606547130,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "account.mcp_discovery",
+            "started_at": 1789606546555,
+            "duration_ms": 575,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606547130,
+          "message": {
+            "type": "managed.capacity",
+            "reason": "agent_constructed",
+            "session_id": "01a0acdc-c3c5-7e20-8b19-e583a75076d5",
+            "account_mcp_refresh_ms": 575,
+            "credential_binding_ms": 0,
+            "browser_runtime_ms": 0,
+            "workspace_ms": 0,
+            "computer_runtime_ms": 0,
+            "code_evaluator_ms": 0,
+            "managed_tools_ms": 0,
+            "cloudflare_agent_ms": 0,
+            "construction_ms": 0,
+            "runtime_ready_ms": 575
+          }
+        },
+        {
+          "timestamp": 1789606547165,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "account.vault",
+            "started_at": 1789606546555,
+            "duration_ms": 610,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606547165,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "conversation.prepare",
+            "started_at": 1789606546555,
+            "duration_ms": 610,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606556601,
+          "message": {
+            "type": "managed.agent.request",
+            "method": "DELETE"
+          }
+        },
+        {
+          "timestamp": 1789606558286,
+          "message": {
+            "type": "managed.auth",
+            "request_id": "6e18d1cd-d55e-4271-aea1-a302b1df8d1d",
+            "mode": "access",
+            "auth_ms": 0,
+            "method": "DELETE",
+            "path": "/v1/agents/01a0acdc-c3c5-7e20-8b19-e583a75076d5",
+            "status": 204
+          }
+        },
+        {
+          "timestamp": 1789606558286,
+          "message": {
+            "type": "managed.request",
+            "request_id": "6e18d1cd-d55e-4271-aea1-a302b1df8d1d",
+            "method": "DELETE",
+            "path": "/v1/agents/01a0acdc-c3c5-7e20-8b19-e583a75076d5",
+            "status": 204,
+            "duration_ms": 1685
+          }
+        },
+        {
+          "timestamp": 1789606556941,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "delete.registry_initial",
+            "started_at": 1789606556594,
+            "duration_ms": 347,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606556941,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "delete.runtime",
+            "started_at": 1789606556941,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606556941,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "delete.attachments",
+            "started_at": 1789606556941,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606557146,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "delete.memory",
+            "started_at": 1789606556941,
+            "duration_ms": 205,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606557582,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "delete.containers",
+            "started_at": 1789606557146,
+            "duration_ms": 436,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606557787,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "delete.sandbox_workspaces",
+            "started_at": 1789606557582,
+            "duration_ms": 205,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606557787,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "delete.brain",
+            "started_at": 1789606557787,
+            "duration_ms": 0,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606557973,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "delete.registry_final",
+            "started_at": 1789606557787,
+            "duration_ms": 186,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606558239,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "delete.archives",
+            "started_at": 1789606557973,
+            "duration_ms": 266,
+            "success": true
+          }
+        },
+        {
+          "timestamp": 1789606558239,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "session.DELETE /session",
+            "duration_ms": 1645,
+            "reads": {
+              "session_state": {
+                "count": 2,
+                "duration_ms": 0
+              },
+              "session_initialization_ownership": {
+                "count": 2,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606558317,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "session.GET /state",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 1,
+                "duration_ms": 0
+              }
+            }
+          }
+        },
+        {
+          "timestamp": 1789606546493,
+          "message": {
+            "type": "managed.performance",
+            "trace_id": "cb694aa9fbf71720332efe6d1ec898554260a2911c3e0b2c79e909f999d6333b",
+            "stage": "session.GET /socket",
+            "duration_ms": 0,
+            "reads": {
+              "session_state": {
+                "count": 2,
+                "duration_ms": 0
+              }
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "trace_caveat": "Exact turn/request IDs and same Durable Object invocation correlation. Nested spans overlap. Named read counters are not a complete SQL statement audit."
+}

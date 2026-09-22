@@ -24,6 +24,7 @@ const CLOUD_ACCOUNT_PROVIDERS = Object.freeze([
   "x",
   "spotify",
   "soundcloud",
+  "link",
   "chatgpt",
 ]);
 const CONNECTOR_RESOURCE_PREFIX = "urn:nanocodex:connector:";

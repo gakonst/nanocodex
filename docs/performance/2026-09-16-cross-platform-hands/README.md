@@ -1,10 +1,46 @@
 # Computer Hands and VM startup — 2026-09-16
 
+## Latest component measurements
+
+The subsequent [VM mount path investigation](vm-mount-path.md) removes a measured
+1.3–1.7-second empty agent-pool lookup; complete after mounts were 2.94/1.83/1.60 s.
+The [local viewer authority report](screen-local-authority.md) records cached
+viewer readiness falling from 1,058 ms to 366 ms median by verifying existing bounded
+authority locally before the broker upgrade. Two earlier routing variants were
+measured and reverted because they did not improve startup.
+
+The [Hand call and attachment report](hand-call-latency.md) records the deployed
+SQL/read reduction, router reuse, and the remaining transport/durability waits.
+The [screen admission report](screen-admission.md) records short-lived authority
+reuse, decoded WAN frames, and request-ID-correlated account proxy spans.
+
+| Component | Before | After | What the evidence supports |
+| --- | ---: | ---: | --- |
+| Linux spare replenishment | 10.3–10.9 s | 0.87–1.04 s | Cached immutable base plus private overlay; first base copy is still 7.2 s |
+| Native Hand call median | 407 ms | 446 ms | Two fewer SELECT queries; no demonstrated end-to-end speedup |
+| Warm VM WebSocket connection | 1,305–1,368 ms | 979–983 ms | Repeated catalog discovery removed from attachment |
+| Fresh-agent mount of a prepared VM, median | 3,178 ms | 1,832 ms | Three samples each; removes a traced 1.3–1.7 s empty-pool lookup; first after sample remained 2,937 ms |
+| Screen authentication | 189–196 ms live | No observed I/O wait with snapshot | Reuses credential-bound, 120-second authority; live renewal remains |
+| Cached screen viewer ready, median | 1,058 ms | 366 ms | Four interleaved samples each; local verification removes the managed call before the existing broker upgrade |
+| Linux native first decoded frame, median | 1,423 ms | 1,253 ms | Three-sample WAN cohorts, affected by host/network variation |
+| Linux VM first decoded frame, median | 1,530 ms | 1,182 ms | Three-sample WAN cohorts, affected by host/network variation |
+
+These are separate, nested measurements, not additive intervals or percentile
+estimates. Same-Mac WebRTC did not improve under heavy concurrent build load.
+See each report for exact deployment versions, trace IDs, timer limitations,
+validation, and unresolved intervals. [Installed Apple app verification](installed-apps.md)
+records the real Mac host/VM journey and signed iPhone build.
+[Nightly publication and updater checks](nightly-publication.md) record the
+released artifact hashes and installed CLI bundle. No real Windows
+latency or physical phone first-frame result is claimed.
+
 See the [native screen startup follow-up](screen-startup.md) for ICE prefetch,
 initial frame delivery and bitrate controls. The subsequent
 [Linux recovery](linux-recovery.md) resolves the stale publisher call rejection.
 The [installer and release repair](linux-installer-fix.md) fixes fresh-image
 packaging and VM teardown, with live installation and deletion evidence.
+[Linux overlay disks](vm-overlays.md) reduce repeated spare preparation from
+10.3–10.9 seconds to 0.87–1.04 seconds and verify retained writes across restart.
 
 See [further Hand component measurements](hands-components.md) for the inventory
 and Mac capture improvements, native WebRTC startup breakdown, and remaining

@@ -21,7 +21,7 @@ const active = {
 };
 
 describe("Session-owned credential authority", () => {
-  it("checks local lifecycle authority on every private model connection and keeps other egress untrusted", async () => {
+  it.each(["GET", "POST"])("checks local lifecycle authority on every private %s model request and keeps other egress untrusted", async (method) => {
     const general = { fetch: vi.fn(async () => new Response(null, { status: 204 })) } as unknown as Fetcher;
     const requests: Request[] = [];
     const model = { fetch: vi.fn(async (request: Request) => { requests.push(request); return new Response(null, { status: 204 }); }) } as unknown as Fetcher;
@@ -29,17 +29,35 @@ describe("Session-owned credential authority", () => {
     const owner = vi.fn(() => available ? sessionCredentialOwner(active) : undefined);
     const scoped = scopedManagedModelEgress(general, storageId, active.subject, { binding: model, owner });
     const headers = { "x-nanocodex-subject": storageId, upgrade: "websocket" };
-    await scoped.fetch("https://nanocodex.internal/v1/responses", { headers });
+    await scoped.fetch("https://nanocodex.internal/v1/responses", { method, headers });
     expect(requests[0]?.headers.get("x-nanocodex-session-model-owner")).toBe(ownerId);
     expect(requests[0]?.headers.get("x-nanocodex-subject")).toBe(active.subject);
     expect(general.fetch).not.toHaveBeenCalled();
     available = false;
-    expect(() => scoped.fetch("https://nanocodex.internal/v1/responses", { headers })).toThrow(/ownership is unavailable/);
+    expect(() => scoped.fetch("https://nanocodex.internal/v1/responses", { method, headers })).toThrow(/ownership is unavailable/);
     expect(model.fetch).toHaveBeenCalledTimes(1);
     expect(owner).toHaveBeenCalledTimes(2);
     await scoped.fetch("https://nanocodex.internal/v1/search", { method: "POST", headers });
     expect(general.fetch).toHaveBeenCalledTimes(1);
     expect(model.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses retained pins for both subject strategies and rejects caller overrides", async () => {
+    for (const subject of [storageId, active.subject]) {
+      for (const pin of [undefined, "account-a"]) {
+        const received: Request[] = [];
+        const binding = { fetch: async (request: Request) => {
+          received.push(request);
+          return new Response(null, { status: 204 });
+        } } as unknown as Fetcher;
+        const scoped = scopedManagedModelEgress(binding, storageId, subject, undefined, pin);
+        await scoped.fetch("https://nanocodex.internal/v1/responses", { headers: {
+          "x-nanocodex-subject": storageId, "x-nanocodex-chatgpt-account-id": "spoofed",
+        } });
+        expect(received[0]!.headers.get("x-nanocodex-chatgpt-account-id")).toBe(pin ?? null);
+        expect(received[0]!.headers.get("x-nanocodex-subject")).toBe(subject);
+      }
+    }
   });
 
   it("reads the persisted voice strategy and rejects mismatched identities", async () => {
@@ -148,6 +166,8 @@ describe("Session-owned credential authority", () => {
             singleton, session_id, owner_id, runtime_profile, state
           ) VALUES (1, ?, ?, 'managed', ?)`, sessionId, ownerId,
           lifecycle === "deleted" ? "deleted" : "active");
+          state.storage.sql.exec("INSERT INTO managed_configuration (singleton, body) VALUES (1, ?)",
+            JSON.stringify({ chatgpt_account_id: "account-a" }));
           await state.storage.put("nanocodex:credential-binding", {
             owner_id: ownerId, session_id: sessionId, subject: state.id.toString(),
             cleanup_at: Date.now(), state: "active", ...(direct ? { strategy: "session_v1" } : {}),
@@ -174,6 +194,7 @@ describe("Session-owned credential authority", () => {
         };
         const expected = lifecycle === "active" ? {
           subject: direct ? subject : stub.id.toString(), strategy: direct ? "session_v1" : "directory_v1",
+          chatgpt_account_id: "account-a",
         } : undefined;
         expect(await stub.resolveCredentialSubject(assertions)).toEqual(expected);
         if (voice.ok) expect(await voice.json()).toEqual(expected);

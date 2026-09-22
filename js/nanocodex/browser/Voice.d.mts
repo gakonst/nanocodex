@@ -51,6 +51,8 @@ export type Event =
   | Readonly<{ type: "stopped" }>;
 export type Settings = Readonly<{
   voice?: VoiceName | undefined;
+  outputProvider?: "openai" | "elevenlabs" | undefined;
+  elevenLabsVoiceId?: string | undefined;
   /** Additional speaking preferences; base assistant instructions are retained. */
   instructions?: string | undefined;
   pace?: "slow" | "natural" | "fast" | undefined;
@@ -59,6 +61,8 @@ export type Settings = Readonly<{
   acknowledgements?: boolean | undefined;
 }>;
 export type Options = Settings & Readonly<{
+  /** Authenticated synthesis transport returning mono signed 16-bit little-endian PCM at 24 kHz. */
+  synthesize?(text: string, signal: AbortSignal): Promise<Response>;
   callUrl?: string | URL | undefined;
   sidebandUrl?(callId: string, sessionId: string): string | URL | Promise<string | URL>;
   captureMicrophone?(): Promise<MediaStream>;

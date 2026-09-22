@@ -4,6 +4,7 @@ import type {
 } from "../types.mjs";
 import type { Options as ManagedClientOptions } from "../managed/Agent.mjs";
 import type {
+  BrowserHttpRequest,
   BrowserWebSocketConnection,
   BrowserWebSocketRequest,
 } from "./host.mjs";
@@ -25,6 +26,8 @@ export type WorkerTransport = ResponsesTransport & Readonly<{
 
 type SharedEndpointOptions = Readonly<{
   apiBaseUrl?: string | undefined;
+  /** Use HTTPS with full history replay, no stored responses, and no WebSocket warmup or preconnect. */
+  stateless?: boolean | undefined;
   websocketUrl?: string | undefined;
   /** Open the persistent socket as soon as Agent.create returns. Defaults to true for hostManaged. */
   websocketPreconnect?: boolean | undefined;
@@ -34,9 +37,11 @@ type SharedEndpointOptions = Readonly<{
 type WorkerEndpointOptions = SharedEndpointOptions & Readonly<{
   WebSocketImpl?: never;
   createWebSocket?: never;
+  createResponse?: never;
 }>;
 
 type EndpointOptions = SharedEndpointOptions & Readonly<{
+  createResponse?(endpoint: string, sessionId: string, request: BrowserHttpRequest): Promise<Response>;
   WebSocketImpl?: typeof WebSocket | undefined;
   createWebSocket?(
     endpoint: string,

@@ -22,7 +22,9 @@ it("starts after binding, keeps credentials out of argv, reuses a running proces
   expect(f.bind).toHaveBeenCalledWith(scope);
   expect(f.runtime.writeFile).toHaveBeenCalledWith("/run/nanocodex-hand/credential.next", "a".repeat(43) + "\n");
   const command = f.runtime.startProcess.mock.calls[0] as unknown as [string, unknown];
-  expect(command[0]).toContain("'server-host' '--frames'");
+  expect(command[0]).toContain("'server-host' '--frames' '--width' '1920' '--height' '1080' '--url'");
+  expect(command[0]).toContain("NANOCODEX_SCREEN_BITRATE_KBPS=24000");
+  expect(command[0]).toContain("'--frames'");
   expect(command[0]).not.toContain("a".repeat(43));
   expect(command[0]).toContain("'cf:mount-test'");
   f.runtime.getProcess.mockResolvedValue({ status: "running" });
@@ -37,6 +39,19 @@ it("starts after binding, keeps credentials out of argv, reuses a running proces
   expect(f.fetch.mock.calls.at(-1)?.[1].method).toBe("DELETE");
   expect(f.runtime.killProcess).toHaveBeenCalledTimes(1);
   expect(f.values.size).toBe(0);
+});
+
+it("restores the restricted sandbox preview transport once", async () => {
+  const f = fixture();
+  await f.desktop.configure(scope);
+  const state = f.values.get("nanocodex-desktop") as Record<string, unknown>;
+  state.transport = "webrtc";
+  f.runtime.getProcess.mockResolvedValue({ status: "running" });
+  await f.desktop.ensure();
+  expect(f.runtime.killProcess).toHaveBeenCalledTimes(1);
+  expect(f.runtime.startProcess).toHaveBeenCalledTimes(2);
+  await f.desktop.ensure();
+  expect(f.runtime.startProcess).toHaveBeenCalledTimes(2);
 });
 
 it("fences mount ownership, coalesces starts and refuses an unavailable image before enrollment", async () => {
@@ -75,11 +90,16 @@ it("routes only the trusted sandbox publisher and strips caller routing assertio
   expect(requests[0]!.headers.get("x-nanocodex-owner-id")).toBe(scope.owner);
   expect(requests[0]!.headers.get("x-nanocodex-subject")).toBeNull();
   expect(requests[0]!.headers.get("authorization")).toBe("Bearer scoped-token");
-  for (const url of [base.replace(scope.owner, crypto.randomUUID()) + "/host", base.replace(scope.id, crypto.randomUUID()) + "/host", base + "/host?other=1", base + "/ice", base.replace("https:", "http:") + "/host"]) {
+  for (const url of [base.replace(scope.owner, crypto.randomUUID()) + "/host", base.replace(scope.id, crypto.randomUUID()) + "/host", base + "/host?other=1", base.replace("https:", "http:") + "/host"]) {
     expect((await handleSandboxEgress(new Request(url, { headers: { upgrade: "websocket" } }), env, { params })).status).toBe(403);
   }
   expect((await handleSandboxEgress(new Request(base + "/host", { headers: { upgrade: "websocket" } }), env)).status).toBe(403);
-  expect(fetch).toHaveBeenCalledTimes(1);
+  const ice = await handleSandboxEgress(new Request(base + "/ice", { method: "POST", headers: { authorization: "Bearer scoped-token" } }), env, { params });
+  expect(ice.status).toBe(200);
+  expect(requests[1]!.url).toBe(`https://account-tools.internal/hand-hosts/${scope.id}/hands/ice`);
+  expect(requests[1]!.headers.get("authorization")).toBe("Bearer scoped-token");
+  expect((await handleSandboxEgress(new Request(base + "/ice"), env, { params })).status).toBe(403);
+  expect(fetch).toHaveBeenCalledTimes(2);
   expect(broker.fetch).not.toHaveBeenCalled();
 });
 
@@ -96,9 +116,10 @@ it("enrolls and publishes a Cloudflare surface through the real account broker a
   const next = () => new Promise<any>(resolve => host.addEventListener("message", event => resolve(JSON.parse(String(event.data))), { once: true }));
   const ready = next(); host.accept(); await ready;
   const published = next();
-  host.send(JSON.stringify({ type: "catalog", machine_id: "cf:runtime-fixture", machine_name: "Sandbox", surfaces: [{ id: "desktop", kind: "desktop", name: "Desktop", transport: "frames-v1", width: 1600, height: 900, controllable: true }] }));
+  host.send(JSON.stringify({ type: "catalog", machine_id: "cf:runtime-fixture", machine_name: "Sandbox", surfaces: [{ id: "desktop", kind: "desktop", name: "Desktop", width: 1600, height: 900, controllable: true }] }));
   expect((await published).type).toBe("published");
   const catalog = await (await account.fetch("https://account-tools.internal/hands/screens", { headers })).json<{ surfaces: unknown[] }>();
-  expect(catalog.surfaces).toMatchObject([{ machine_id: "cf:runtime-fixture", transport: "frames-v1" }]);
+  expect(catalog.surfaces).toMatchObject([{ machine_id: "cf:runtime-fixture" }]);
+  expect(catalog.surfaces[0]).not.toHaveProperty("transport");
   expect((await account.fetch(`https://account-tools.internal/sandbox-hand-hosts/${id}`, { method: "DELETE", headers })).status).toBe(204);
 });

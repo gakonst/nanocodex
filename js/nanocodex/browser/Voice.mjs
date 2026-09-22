@@ -91,6 +91,11 @@ export function create(agent, options = {}) {
     if (destroyed) throw new Error("voice resource is destroyed");
     const selectedVoice = parameters.voice ?? options.voice ?? defaultVoice;
     if (!voices.includes(selectedVoice)) throw new TypeError(`unsupported ChatGPT voice: ${selectedVoice}`);
+    const settings = voiceSettings({ ...options, ...parameters, voice: selectedVoice });
+    validateOutputSettings(settings);
+    if (agent.type === "connect" && settings.outputProvider === "elevenlabs" && !options.synthesize) {
+      throw new TypeError("Connect ElevenLabs output requires an explicit authorized synthesis transport");
+    }
     if (session) return startPromise;
     if (stopPromise) await stopPromise.catch(() => {});
     if (destroyed) throw new Error("voice resource is destroyed");
@@ -125,7 +130,14 @@ export function create(agent, options = {}) {
       core,
       sessionId,
       voice: selectedVoice,
-      settings: voiceSettings({ ...options, ...parameters, voice: selectedVoice }),
+      synthesize: options.synthesize ?? (transport?.synthesize
+        ? (text, signal) => transport.synthesize(text, signal, settings.elevenLabsVoiceId)
+        : (text, signal) => fetch("/api/voice/elevenlabs/speech", {
+          method: "POST", credentials: "same-origin", signal,
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ voice_id: settings.elevenLabsVoiceId, text, output_format: "pcm_24000" }),
+        })),
+      settings,
       ...(transport?.call === undefined ? {} : { call: transport.call }),
       ...(transport?.sidebandUrl === undefined ? {} : { sidebandUrl: transport.sidebandUrl }),
       ...(options.callUrl === undefined ? {} : { callUrl: options.callUrl }),
@@ -299,6 +311,9 @@ function validateOptions(options) {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
     throw new TypeError("Voice.create options must be an object");
   }
+  if (options.synthesize !== undefined && typeof options.synthesize !== "function") {
+    throw new TypeError("voice synthesize must be a function");
+  }
   if (options.captureMicrophone !== undefined && typeof options.captureMicrophone !== "function") {
     throw new TypeError("voice captureMicrophone must be a function");
   }
@@ -317,6 +332,16 @@ function browserLocationOrigin() {
 }
 
 function voiceSettings(options) {
-  return Object.fromEntries(["voice", "instructions", "pace", "updates", "handoffMode", "acknowledgements"]
+  return Object.fromEntries(["voice", "instructions", "pace", "updates", "handoffMode", "acknowledgements", "outputProvider", "elevenLabsVoiceId"]
     .filter((key) => options[key] !== undefined).map((key) => [key, options[key]]));
+}
+
+function validateOutputSettings(settings) {
+  if (settings.outputProvider !== undefined && !["openai", "elevenlabs"].includes(settings.outputProvider)) {
+    throw new TypeError("unsupported voice output provider");
+  }
+  if (settings.outputProvider === "elevenlabs"
+    && (typeof settings.elevenLabsVoiceId !== "string" || !/^[A-Za-z0-9_-]{1,128}$/.test(settings.elevenLabsVoiceId))) {
+    throw new TypeError("ElevenLabs output requires a valid voice ID");
+  }
 }

@@ -18,6 +18,7 @@ export function managedControlTransitionForResolution(
   id: string,
   cancelling: boolean,
   resolution: TurnResolution,
+  source: "admission" | "control" = "control",
 ): ManagedTurnTransition {
   const error = resolution.kind === "retry"
     ? resolution.error
@@ -40,7 +41,10 @@ export function managedControlTransitionForResolution(
     };
   }
   const terminal = resolution.terminal;
-  if (cancelling && terminal.type !== "turn_cancelled") {
+  // A failed cancel request does not prove that live work has stopped. A
+  // terminal admission failure does: no turn can run, and retrying permanent
+  // restore failures only leaves the inbox stuck in cancellation forever.
+  if (source === "control" && cancelling && terminal.type !== "turn_cancelled") {
     return {
       type: "turn_cancelling",
       id,
@@ -121,6 +125,7 @@ export function classifyTurnFailure(id: string, error: unknown): TurnResolution 
       error: selected.message,
       ...(selected.blockedBy === undefined ? {} : { blockedBy: selected.blockedBy }),
       reopenAgent: selected.code === "reopen_required"
+        || selected.code === "host_interrupted"
         || /\bagent (?:has been |was |is )?(?:already )?disposed\b/i.test(selected.message),
     };
   }
@@ -162,6 +167,8 @@ function selectFailure(failures: readonly ClassifiedError[]): ClassifiedError {
   const terminal = failures.find((failure) =>
     failure.code === "failed" || failure.code === "invalid_request" || failure.code === "conflict");
   if (terminal) return terminal;
+  const interrupted = failures.find((failure) => failure.code === "host_interrupted");
+  if (interrupted) return interrupted;
   return failures.find((failure) => isRetryable(failure))
     ?? failures.find((failure) => /\bturn was cancelled\b/i.test(failure.message))
     ?? failures.find((failure) => failure.code === "failed")
@@ -173,7 +180,8 @@ function isRetryable(failure: ClassifiedError): boolean {
   // Rust's operation settlement is authoritative. Text from a committed
   // failure may mention a transport, a cancelled tool, or an old retry.
   if (failure.code !== undefined) {
-    return failure.code === "reopen_required" || failure.code === "retryable";
+    return failure.code === "reopen_required" || failure.code === "retryable"
+      || failure.code === "host_interrupted";
   }
   return /\bagent (?:has been |was |is )?(?:already )?disposed\b|already active|agent stopped|turn completed|durability (?:store|driver)|transport|websocket|startup (?:validation )?timed out|connection rejected with HTTP 5\d\d/i.test(failure.message);
 }

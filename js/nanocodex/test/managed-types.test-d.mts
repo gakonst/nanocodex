@@ -74,6 +74,9 @@ async function checkManaged() {
   void mode; void runAgent;
   await opened.triggers.put(cron.id, { cron: cron.cron, input: cron.input, enabled: false, session_mode: "continue" });
   await opened.triggers.get(cron.id);
+  await opened.triggers.update(cron.id, { enabled: false });
+  // @ts-expect-error updates still validate setting types.
+  await opened.triggers.update(cron.id, { enabled: "yes" });
   await opened.triggers.delete(cron.id);
   const schedules: readonly import("nanocodex/managed").ManagedCronTrigger[] = await opened.triggers.list();
   void nextRun; void schedules;
@@ -204,3 +207,12 @@ async function configurationContracts() {
   await Agent.environments.put("bad", { network: { access: "wildcard" } });
 }
 void configurationContracts;
+
+void Agent.create({ baseUrl: "https://managed.example", configuration: { chatgpt_account_id: "account-a" } });
+
+await Agent.listMemories({ scope: "personal" });
+await Agent.memory({ operation: "scan", query: "my preferences" }, { scope: "personal" });
+await Agent.deleteMemory({ id: 1, version: 1 }, { scope: "personal" });
+Agent.open("0198d3f0-8844-7000-8000-000000000001", {
+  requestOrigin: { client: "web", timezone: "America/Los_Angeles" },
+});

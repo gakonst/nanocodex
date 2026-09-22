@@ -17,6 +17,14 @@ const context = () => ({
 });
 
 describe("managed mount protocol", () => {
+  it("names new VM and sandbox roots by provider and purpose with collision handling", () => {
+    const id = "01234567-89ab-7def-8123-456789abcdef";
+    expect(managedMountRoot("demo", id, "omarchy-desktop")).toBe("/vm-omarchy-desktop-demo");
+    expect(managedMountRoot("demo", id, "linux-paradigm")).toBe("/vm-linux-paradigm-demo");
+    expect(managedMountRoot("demo", id, "cf_sandbox")).toBe("/cloudflare-demo");
+    expect(managedMountRoot("demo", id, "cf_sandbox", ["/cloudflare-demo"])).toBe("/cloudflare-demo-2");
+    expect(managedMountRoot("x".repeat(63), id, "y".repeat(63)).length).toBeLessThanOrEqual(64);
+  });
   it("keeps a provider-neutral strict schema and dispatches the current provider", async () => {
     const handler = vi.fn(async (request: ManagedMountRequest) => ({
       id: "mount-id",

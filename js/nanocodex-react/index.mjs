@@ -107,6 +107,8 @@ export function useVoice(agent, parameters = {}) {
     () => agent && enabled
       ? Actions.voice.create(agent, {
           ...(parameters.voice === undefined ? {} : { voice: parameters.voice }),
+          synthesize: parameters.synthesize,
+          outputProvider: parameters.outputProvider, elevenLabsVoiceId: parameters.elevenLabsVoiceId,
           instructions: parameters.instructions, pace: parameters.pace, updates: parameters.updates,
           handoffMode: parameters.handoffMode, acknowledgements: parameters.acknowledgements,
           ...(parameters.callUrl === undefined ? {} : { callUrl: parameters.callUrl }),
@@ -127,6 +129,8 @@ export function useVoice(agent, parameters = {}) {
       parameters.captureMicrophone,
       parameters.sidebandUrl,
       parameters.voice,
+      parameters.synthesize,
+      parameters.outputProvider, parameters.elevenLabsVoiceId,
       parameters.instructions, parameters.pace, parameters.updates, parameters.handoffMode, parameters.acknowledgements,
     ],
   );
@@ -232,4 +236,39 @@ function useExternalStoreSelector(
     committed.current = { hasValue: true, value: selection };
   }, [selection]);
   return selection;
+}
+
+/** Account-scoped management; credentials are sent only to the authenticated service. */
+export function createElevenLabsManager({ baseUrl = "/api/voice/elevenlabs", fetch: request = globalThis.fetch } = {}) {
+  async function call(path, init = {}) {
+    const response = await request(`${baseUrl}${path}`, { credentials: "include", ...init });
+    if (!response.ok) throw new Error(`ElevenLabs request failed (${response.status}). Check your account connection and try again.`);
+    return response.json();
+  }
+  return {
+    async listVoices() {
+      const voices = [];
+      let cursor;
+      const seen = new Set();
+      do {
+        const data = await call(`/voices${cursor ? `?next_page_token=${encodeURIComponent(cursor)}` : ""}`);
+        for (const item of data.voices) voices.push({ voiceId: item.voice_id, name: item.name, category: item.category ?? undefined });
+        cursor = data.has_more ? data.next_page_token : undefined;
+        if (cursor && seen.has(cursor)) throw new Error("ElevenLabs returned a repeated page. Refresh voices to retry.");
+        if (cursor) seen.add(cursor);
+      } while (cursor);
+      return voices;
+    },
+    async saveApiKey(apiKey) {
+      await call("", { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ api_key: apiKey }) });
+    },
+    async cloneVoice({ name, files, consent }) {
+      if (consent !== true) throw new Error("Voice cloning requires explicit consent.");
+      const body = new FormData();
+      body.set("name", name); body.set("consent", "true");
+      for (const file of files) body.append("files", file);
+      const data = await call("/voices", { method: "POST", body });
+      return { voiceId: data.voice_id, name, category: "cloned", requiresVerification: data.requires_verification };
+    },
+  };
 }

@@ -367,6 +367,8 @@ fn durable_command_for_request(
     command
         .current_dir(workspace)
         .env_clear()
+        // Durable replay tests never install or launch a desktop provider.
+        .env("NANOCODEX_COMPUTER", "off")
         .env("CODEX_HOME", workspace.join("codex-home"))
         .arg("run")
         .arg("--api-key")

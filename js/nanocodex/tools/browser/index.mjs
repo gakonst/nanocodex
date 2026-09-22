@@ -7,12 +7,12 @@ import {
 } from "./browserEgress.mjs";
 import {
   browserAccountConnectionTool,
-  browserAccountInfoTool,
+  browserEnvironmentTool,
   browserRuntimeInfoTool,
 } from "./accountInfo.mjs";
 
 const preparedBrowsers = new Map();
-const ACCOUNT_CONNECTION_INSTRUCTIONS = "Use requestAccountConnection when the user asks to connect or authenticate GitHub, a Google Workspace service, Slack, X, Spotify, or SoundCloud. For authorization_required results, return the exact authorization_url as a Markdown link. Never claim the account is connected until a later accountInfo call reports it as authenticated.";
+const ACCOUNT_CONNECTION_INSTRUCTIONS = "Use requestAccountConnection when the user asks to connect or authenticate GitHub, a Google Workspace service, Slack, X, Spotify, or SoundCloud. For authorization_required results, return the exact authorization_url as a Markdown link. Never claim the account is connected until a later environment call confirms the connection.";
 
 export {
   createOpfsGitFs,
@@ -131,7 +131,7 @@ export function bindBrowser(prepared, options = {}) {
     tools: Object.freeze([
       standard.namedTool("exec_command", shell.execTool),
       browserRuntimeInfoTool(account, shell.descriptor),
-      browserAccountInfoTool(account),
+      browserEnvironmentTool(account, shell.descriptor),
       ...(options.accountConnectionRequests ? [browserAccountConnectionTool(account)] : []),
       browseX({
         fetch: (input, init) => {

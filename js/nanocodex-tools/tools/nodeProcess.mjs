@@ -61,9 +61,10 @@ export async function createNodeProcessTools({
         kill(record, signal);
         return;
       } catch (error) {
-        // Darwin can briefly return EPERM for a group whose last member is
-        // being reaped. Retry that transition; still report a real refusal.
-        if (error.code !== "EPERM" || !record.done || attempt === 4)
+        // Darwin can briefly return EPERM during process-group startup/reaping
+        // before Node has delivered the close event. Bound retries regardless
+        // of that event's timing; still report a persistent permission refusal.
+        if (process.platform !== "darwin" || error.code !== "EPERM" || attempt === 4)
           throw error;
         await delay(25);
       }
@@ -82,7 +83,12 @@ export async function createNodeProcessTools({
       await record.output.close();
       sessions.delete(record.id);
       processes.delete(record);
-    })());
+    })().catch(error => {
+      // Keep the ownership record and allow cleanup to be attempted again after
+      // a transient refusal; never acknowledge stopped work on a failed kill.
+      record.stopping = undefined;
+      throw error;
+    }));
   const collect = () => {
     for (const record of processes)
       if (record.done) {

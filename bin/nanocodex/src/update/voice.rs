@@ -110,9 +110,10 @@ fn required_files(names: &BTreeSet<String>) -> bool {
     ]
     .iter()
     .all(|name| names.contains(&format!("{ROOT}{name}")))
-        && names
-            .iter()
-            .any(|name| name.starts_with(&format!("{ROOT}lib/")))
+        && (names.contains(&format!("{ROOT}libwebrtc.json"))
+            || names
+                .iter()
+                .any(|name| name.starts_with(&format!("{ROOT}lib/"))))
         && names
             .iter()
             .any(|name| name.starts_with(&format!("{ROOT}licenses/")))
@@ -234,6 +235,31 @@ pub(super) fn fixture(extra: Option<(&str, tar::EntryType)>) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn static_engine_packages_require_helper_metadata_and_licenses() {
+        let names: BTreeSet<_> = [
+            "bin/nanocodex-voice-host",
+            "runtime.json",
+            "NOTICE.md",
+            "sources.json",
+            "manifest.json",
+            "libwebrtc.json",
+            "licenses/libwebrtc.md",
+        ]
+        .into_iter()
+        .map(|name| format!("{ROOT}{name}"))
+        .collect();
+        assert!(required_files(&names));
+        for name in &names {
+            let mut incomplete = names.clone();
+            incomplete.remove(name);
+            assert!(
+                !required_files(&incomplete),
+                "accepted package missing {name}"
+            );
+        }
+    }
 
     #[test]
     fn runtime_integrity_and_archive_identity_are_required_for_cache_hits() {

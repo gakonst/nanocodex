@@ -13,6 +13,8 @@ import {
   googleConnectorCapabilities,
 } from "nanocodex-connect-ui/connectorPolicy.mjs";
 
+import { publicConnectorStatus } from "../../connect-api/src/connectorPolicy.mts";
+
 const GOOGLE_ID = "g".repeat(43);
 const SLACK_ID = "s".repeat(43);
 
@@ -163,4 +165,40 @@ test("status projection rejects secrets, malformed identities, duplicates, and u
 
 test("the generic runtime selector has one exact public header name", () => {
   assert.equal(connectorConnectionHeader, "X-Nanocodex-Connector-Connection");
+});
+
+
+test("Connect accepts the broker's multi-account ChatGPT projection during DJ Booth login", () => {
+  const accounts = [
+    { account_id: "chatgpt-active", connected: true, active: true },
+    { account_id: "chatgpt-limited", connected: true, active: false, limited_until: 1_900_000_000_000 },
+    { account_id: "chatgpt-disconnected", connected: false, active: false },
+  ];
+  const projected = publicConnectorStatus({ connected: true, account_id: "chatgpt-active", accounts });
+  const statuses = connectorStatusesFromWire({
+    chatgpt: projected,
+    spotify: publicConnectorStatus({ connected: false }),
+    soundcloud: publicConnectorStatus({ connected: false }),
+  });
+  assert.deepEqual(statuses.chatgpt.accounts, accounts);
+  assert.equal(Object.isFrozen(statuses.chatgpt.accounts), true);
+  assert.equal(Object.isFrozen(statuses.chatgpt.accounts[0]), true);
+  assert.deepEqual(connectorStatusesFromWire(statuses), statuses, "UI controls decode statuses again");
+  const controls = connectorControlsForCapabilities(["chatgpt", "spotify", "soundcloud"], statuses);
+  assert.equal(controls[0].connected, true);
+  assert.deepEqual(controls[0].connections, [], "ChatGPT account metadata cannot become connector grants");
+  assert.equal(controls[1].connected, false);
+  assert.equal(controls[2].connected, false);
+  assert.equal(connectorStatusesFromWire({ chatgpt: { connected: false, accounts } }).chatgpt.connected, false);
+});
+
+test("account status metadata remains bounded and rejects credentials or malformed fields", () => {
+  const valid = { account_id: "chatgpt-one", connected: true, active: true };
+  for (const accounts of [
+    null, {}, "invalid", Array(21).fill(valid), [null],
+    [{ ...valid, account_id: "" }], [{ ...valid, account_id: "a".repeat(257) }],
+    [{ ...valid, connected: "true" }], [{ ...valid, active: 1 }],
+    [{ ...valid, limited_until: -1 }], [{ ...valid, limited_until: Infinity }],
+    [{ ...valid, limited_until: 1.5 }], [{ ...valid, token: "secret" }],
+  ]) assert.throws(() => connectorStatusesFromWire({ chatgpt: { connected: true, accounts } }), /invalid connector statuses/);
 });

@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"net"
 	"regexp"
 	"strings"
 	"sync"
@@ -20,12 +21,29 @@ type hostConfig struct {
 	Origin, CredentialFile, MachineID, Name, Waymote string
 	IncludeLoopback                                  bool
 	Frames                                           bool
+	Interface                                        string
+	IPv4Only                                         bool
+	UDPPortMin, UDPPortMax                           uint
 	Width, Height                                    int
 	ICERenewalInterval                               time.Duration
 	quiet                                            bool
 	published                                        func()
 	capture                                          *waymoteCapture
+	broadcast                                        hostBroadcaster
 }
+
+func (config hostConfig) validateNetwork() error {
+	if (config.UDPPortMin == 0) != (config.UDPPortMax == 0) || config.UDPPortMax > 65535 || config.UDPPortMin > config.UDPPortMax {
+		return errors.New("invalid WebRTC UDP port range")
+	}
+	if config.Interface != "" {
+		if _, err := net.InterfaceByName(config.Interface); err != nil {
+			return errors.New("WebRTC network interface unavailable")
+		}
+	}
+	return nil
+}
+
 type hostEvent struct {
 	viewer         string
 	input          []byte
@@ -41,6 +59,7 @@ type hostEvent struct {
 	agentRequest   string
 	agentResult    *agentResult
 	frame          *agentResult
+	broadcast      *remoteMessage
 }
 type hostPeer struct {
 	viewerID       string
@@ -55,14 +74,19 @@ type hostPeer struct {
 	renewal        context.CancelFunc
 }
 type controlMessage struct {
-	Type       string `json:"type"`
-	Generation string `json:"generation,omitempty"`
+	Type            string `json:"type"`
+	Generation      string `json:"generation,omitempty"`
+	RelativePointer bool   `json:"relativePointer,omitempty"`
+	Gamepad         bool   `json:"gamepad,omitempty"`
 }
 
 // All peer, lease and input state changes are serialized by the host loop.
 // Motion has a replaceable slot per viewer; reliable input cannot queue behind
 // an old stream of mouse movements.
 func serveWayland(parent context.Context, config hostConfig) error {
+	if err := config.validateNetwork(); err != nil {
+		return err
+	}
 	if config.ICERenewalInterval <= 0 {
 		config.ICERenewalInterval = 20 * time.Minute
 	}
@@ -87,6 +111,15 @@ func serveWayland(parent context.Context, config hostConfig) error {
 			return err
 		}
 		defer capture.close()
+	}
+	var audio *audioCapture
+	if config.capture == nil {
+		audio, err = startDesktopAudio(ctx, diagnostics)
+		if err != nil {
+			logger.Printf("Desktop audio unavailable: %v", err)
+		} else {
+			defer audio.close()
+		}
 	}
 	socket, err := service.socket(ctx)
 	if err != nil {
@@ -121,6 +154,12 @@ func serveWayland(parent context.Context, config hostConfig) error {
 			fail(errors.New("remote signaling capacity exceeded"))
 		}
 	}
+	broadcaster := config.broadcast
+	if broadcaster == nil {
+		broadcaster = newDesktopBroadcast()
+	}
+	broadcast := newHostBroadcast(ctx, broadcaster, config, emit)
+	defer broadcast.close()
 	go func() {
 		for {
 			select {
@@ -173,6 +212,7 @@ func serveWayland(parent context.Context, config hostConfig) error {
 	}
 	peers := map[string]*hostPeer{}
 	preparations := map[string]context.CancelFunc{}
+	initialICE := newICEPreparation(ctx, service.ice)
 	lease := controlLease{}
 	var agent *agentJob
 	finishAgent := func(result agentResult) {
@@ -243,6 +283,8 @@ func serveWayland(parent context.Context, config hostConfig) error {
 		motionMu.Unlock()
 	}
 	defer func() {
+		// End session work before input release or peer teardown can block.
+		cancel()
 		finishAgent(agentResult{Status: "cancelled"})
 		release()
 		for id := range peers {
@@ -294,7 +336,7 @@ func serveWayland(parent context.Context, config hostConfig) error {
 		}
 		switch message.Type {
 		case "acquire":
-			if message.Generation != "" {
+			if message.Generation != "" || message.RelativePointer || message.Gamepad {
 				remove(event.viewer)
 				return
 			}
@@ -309,7 +351,7 @@ func serveWayland(parent context.Context, config hostConfig) error {
 				fail(err)
 				return
 			}
-			if sendControl(peer, controlMessage{Type: "granted", Generation: lease.acquire(event.viewer, now)}) != nil {
+			if sendControl(peer, controlMessage{Type: "granted", Generation: lease.acquire(event.viewer, now), RelativePointer: true, Gamepad: capture.gamepad.available()}) != nil {
 				remove(event.viewer)
 			}
 		case "renew":
@@ -347,25 +389,46 @@ func serveWayland(parent context.Context, config hostConfig) error {
 		}
 		settings := webrtc.SettingEngine{}
 		settings.SetIncludeLoopbackCandidate(config.IncludeLoopback)
-		connection, err := webrtc.NewAPI(webrtc.WithSettingEngine(settings)).NewPeerConnection(webrtc.Configuration{ICEServers: ice})
+		if config.Interface != "" {
+			settings.SetInterfaceFilter(func(name string) bool { return name == config.Interface })
+		}
+		if config.IPv4Only {
+			settings.SetNetworkTypes([]webrtc.NetworkType{webrtc.NetworkTypeUDP4})
+		}
+		if config.UDPPortMin != 0 {
+			if err := settings.SetEphemeralUDPPortRange(uint16(config.UDPPortMin), uint16(config.UDPPortMax)); err != nil {
+				return err
+			}
+		}
+		api, err := screenPeerAPI(settings)
+		if err != nil {
+			return err
+		}
+		connection, err := api.NewPeerConnection(webrtc.Configuration{ICEServers: ice})
 		if err != nil {
 			return err
 		}
 		peer := &hostPeer{connection: connection}
 		peers[id] = peer
-		sender, err := connection.AddTrack(capture.track)
-		if err != nil {
-			remove(id)
-			return err
+		tracks := []webrtc.TrackLocal{capture.track}
+		if audio != nil {
+			tracks = append(tracks, audio.track)
 		}
-		go func() {
-			buffer := make([]byte, 1500)
-			for {
-				if _, _, err := sender.Read(buffer); err != nil {
-					return
-				}
+		for _, track := range tracks {
+			sender, err := connection.AddTrack(track)
+			if err != nil {
+				remove(id)
+				return err
 			}
-		}()
+			go func() {
+				buffer := make([]byte, 1500)
+				for {
+					if _, _, err := sender.Read(buffer); err != nil {
+						return
+					}
+				}
+			}()
+		}
 		ordered := false
 		retransmits := uint16(0)
 		peer.control, err = connection.CreateDataChannel("remote-control-v1", nil)
@@ -422,11 +485,15 @@ func serveWayland(parent context.Context, config hostConfig) error {
 	defer tick.Stop()
 	agentTick := time.NewTicker(16 * time.Millisecond)
 	defer agentTick.Stop()
-	frameTick := time.NewTicker(100 * time.Millisecond)
+	frameTick := time.NewTicker(time.Second / 30)
 	defer frameTick.Stop()
 	frameInFlight := false
 	lastAuthorization := time.Now()
-	lastRenewal := time.Now()
+	nextRenewal := time.Now().Add(10 * time.Second)
+	renewalDone := make(chan error, 1)
+	renewalInFlight := false
+	authorizationTimer := time.NewTimer(25 * time.Second)
+	defer authorizationTimer.Stop()
 	connectionID := ""
 	publication := ""
 	for {
@@ -443,6 +510,18 @@ func serveWayland(parent context.Context, config hostConfig) error {
 				return err
 			default:
 				return ctx.Err()
+			}
+		case <-authorizationTimer.C:
+			return errors.New("remote authorization expired")
+		case err := <-renewalDone:
+			renewalInFlight = false
+			if err != nil {
+				if !retryableRenewal(err) {
+					return err
+				}
+				// Retry only this idempotent authorization operation. Failed
+				// attempts never change lastAuthorization or its deadline.
+				nextRenewal = time.Now().Add(time.Second)
 			}
 		case <-capture.done:
 			return errors.New("Wayland capture stopped")
@@ -497,7 +576,7 @@ func serveWayland(parent context.Context, config hostConfig) error {
 							return
 						}
 					}
-					result := snapshotDesktop(job.ctx, config.Width, config.Height)
+					result := snapshotAgent(job.ctx, config.Width, config.Height, job.observationContext, localObservationRegistry())
 					emit(hostEvent{agentRequest: job.id, agentResult: &result})
 				}()
 			}
@@ -525,12 +604,17 @@ func serveWayland(parent context.Context, config hostConfig) error {
 			if time.Since(lastAuthorization) > 25*time.Second {
 				return errors.New("remote authorization expired")
 			}
-			if connectionID != "" && time.Since(lastRenewal) >= 10*time.Second {
-				lastRenewal = time.Now()
+			if connectionID != "" && !renewalInFlight && !time.Now().Before(nextRenewal) {
+				renewalInFlight = true
+				nextRenewal = time.Now().Add(10 * time.Second)
 				id := connectionID
+				renewContext, done := context.WithDeadline(ctx, lastAuthorization.Add(25*time.Second))
 				go func() {
-					if err := service.request(ctx, "/renew", map[string]string{"connection_id": id}, nil); err != nil {
-						fail(err)
+					defer done()
+					err := service.request(renewContext, "/renew", map[string]string{"connection_id": id}, nil)
+					select {
+					case renewalDone <- err:
+					case <-ctx.Done():
 					}
 				}()
 			}
@@ -543,6 +627,10 @@ func serveWayland(parent context.Context, config hostConfig) error {
 				apply(event)
 			}
 		case event := <-events:
+			if event.broadcast != nil {
+				send(*event.broadcast)
+				continue
+			}
 			if event.frame != nil {
 				frameInFlight = false
 				for id, peer := range peers {
@@ -610,7 +698,11 @@ func serveWayland(parent context.Context, config hostConfig) error {
 					return errors.New("invalid remote connection")
 				}
 				connectionID = message.ConnectionID
+				if !config.Frames {
+					initialICE.prefetch()
+				}
 				lastAuthorization = time.Now()
+				authorizationTimer.Reset(25 * time.Second)
 				kind := "vm"
 				if strings.HasPrefix(service.base.Path, "/v1/hand-hosts/") {
 					kind = "desktop"
@@ -619,9 +711,13 @@ func serveWayland(parent context.Context, config hostConfig) error {
 				if config.Frames {
 					transport = "frames-v1"
 				}
-				send(remoteMessage{Type: "catalog", MachineID: config.MachineID, MachineName: config.Name, Surfaces: []remoteSurface{{ID: "desktop", Name: "Desktop", Kind: kind, Width: config.Width, Height: config.Height, Controllable: true, AgentTools: true, Transport: transport}}})
+				send(remoteMessage{Type: "catalog", MachineID: config.MachineID, MachineName: config.Name, Surfaces: []remoteSurface{{ID: "desktop", Name: "Desktop", Kind: kind, Width: config.Width, Height: config.Height, Controllable: true, AgentTools: true, Broadcast: true, Transport: transport}}})
 			case "renewed":
+				if connectionID == "" || time.Since(lastAuthorization) >= 25*time.Second {
+					return errors.New("remote authorization expired")
+				}
 				lastAuthorization = time.Now()
+				authorizationTimer.Reset(25 * time.Second)
 			case "published":
 				publication = message.Generation
 				if config.published != nil {
@@ -651,6 +747,10 @@ func serveWayland(parent context.Context, config hostConfig) error {
 					continue
 				}
 				owner := "agent:" + message.AgentID
+				if _, err := message.Input.validateContext(); err != nil {
+					reply("invalid")
+					continue
+				}
 				if message.Input.Action == "release" {
 					if lease.owner == owner {
 						release()
@@ -681,8 +781,9 @@ func serveWayland(parent context.Context, config hostConfig) error {
 						steps[i].input.Generation = generation
 					}
 				}
+				selector, _ := message.Input.validateContext()
 				jobCtx, cancelJob := context.WithDeadline(ctx, time.UnixMilli(message.DeadlineAt))
-				agent = &agentJob{id: message.RequestID, owner: owner, generation: generation, steps: steps,
+				agent = &agentJob{id: message.RequestID, owner: owner, generation: generation, steps: steps, observationContext: selector,
 					deadline: time.UnixMilli(message.DeadlineAt), nextAt: now, ctx: jobCtx, cancel: cancelJob}
 			case "viewer":
 				if !config.quiet {
@@ -702,15 +803,28 @@ func serveWayland(parent context.Context, config hostConfig) error {
 					peers[message.ViewerID] = &hostPeer{viewerID: message.ViewerID, frames: true, answered: true}
 					continue
 				}
-				// Fetch fresh TURN credentials without blocking input from existing
-				// viewers. A departing viewer cancels its pending request.
+				// Reuse this host session's bounded ICE preparation without blocking
+				// input. A departing viewer cancels only its wait; peer renewals
+				// continue to fetch fresh credentials directly.
 				prepareContext, cancel := context.WithCancel(ctx)
 				id := message.ViewerID
 				preparations[id] = cancel
 				go func() {
-					ice, err := service.ice(prepareContext)
+					ice, err := initialICE.get(prepareContext)
 					emit(hostEvent{viewer: id, prepared: true, ice: ice, err: err})
 				}()
+			case "broadcast":
+				result := broadcastResult{Status: "failed", Error: "invalid_request"}
+				if message.ViewerID != "" && message.RequestID != "" && message.SurfaceID == "desktop" {
+					switch message.Action {
+					case "start", "stop", "status":
+						if broadcast.enqueue(*message) {
+							continue
+						}
+						result = broadcastResult{Status: "failed", Error: "busy"}
+					}
+				}
+				send(remoteMessage{Type: "broadcast_result", ViewerID: message.ViewerID, RequestID: message.RequestID, BroadcastResult: &result})
 			case "viewer_left":
 				remove(message.ViewerID)
 			case "frame_request":

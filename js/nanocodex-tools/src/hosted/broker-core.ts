@@ -33,11 +33,10 @@ export const HOSTED_MACHINE_TOOL_NAMES = Object.freeze([
   "mcp__cua_repl__js_reset",
 ] as const);
 const MACHINE_TOOL_NAMES: ReadonlySet<string> = new Set(HOSTED_MACHINE_TOOL_NAMES);
-// Placement overlays deliberately retain their canonical cloud name. The
-// owning ToolRouter admits them only when the callable contract is identical,
-// then prefers the live attachment with the cloud tool as a pre-dispatch-only
-// fallback. Every other machine-local tool remains namespaced by machine ID.
-const ATTACHED_OVERLAY_TOOL_NAMES: ReadonlySet<string> = new Set(["browser_execute"]);
+// Older attachments and persisted catalogs must not restore hosted browser tools.
+function disabledBrowserTool(name: string): boolean {
+  return name === "browser_execute" || name.startsWith("browser_vault_");
+}
 const encoder = new TextEncoder();
 
 /**
@@ -73,6 +72,7 @@ export type HostedToolsCallRow = {
   call_id: string;
   session_id: string;
   source_call_id: string;
+  turn_id?: string | null;
   host_id: string;
   lease_id: string;
   generation: number;
@@ -107,6 +107,8 @@ type HostedToolsSocketAttachment = {
 };
 
 type PendingCall = {
+  receivedAt: number;
+  dispatchedAt: number;
   leaseId: string;
   generation: number;
   deadlineAt: number;
@@ -134,6 +136,7 @@ export type HostedToolsProviderDefinition = Readonly<HostedToolCatalogEntry>;
 export type HostedToolsInvokeRequest = Readonly<{
   sessionId: string;
   callId: string;
+  turnId?: string;
   model: string;
   input: Record<string, unknown> | string;
   outputTokenBudget: number;
@@ -147,6 +150,7 @@ export type HostedToolsPreparedTool = Readonly<{
   connectGrantId?: string;
   appToolCatalogDigest?: string;
   canonicalName: string;
+  providerDefinition: HostedToolCatalogEntry["definition"];
   machine?: HostedMachine;
   entry: HostedToolCatalogEntry;
   invoke(request: HostedToolsInvokeRequest): Promise<HostedToolsInvocationOutcome>;
@@ -160,6 +164,7 @@ type HostedToolsCatalogBinding = Readonly<{
   leaseId: string;
   generation: number;
   wireName: string;
+  providerDefinition: HostedToolCatalogEntry["definition"];
   machine?: HostedMachine;
   entry: HostedToolCatalogEntry;
 }>;
@@ -179,6 +184,8 @@ export type HostedToolsCatalogValidator = (
 export type HostedToolsCodeTool = Readonly<{
   name: string;
   parallelSafe: boolean;
+  /** The admitted provider declaration, before namespace routing. */
+  definition?: HostedToolsCodeDefinition;
   /** Opaque immutable route identity for trusted broker-to-broker relays. */
   routeToken?: string;
   handler(
@@ -189,12 +196,12 @@ export type HostedToolsCodeTool = Readonly<{
 
 export type HostedToolsInvocationContext = Readonly<
   Pick<ToolContext, "sessionId" | "callId">
-  & Partial<Pick<ToolContext, "parentCallId" | "model" | "signal" | "subagent">>
+  & Partial<Pick<ToolContext, "parentCallId" | "turnId" | "model" | "signal" | "subagent">>
 >;
 
 export type HostedToolsAuthorizationContext = Pick<ToolContext, "sessionId" | "subagent">;
 
-export type HostedMachineToolName = (typeof HOSTED_MACHINE_TOOL_NAMES)[number];
+export type HostedMachineToolName = (typeof HOSTED_MACHINE_TOOL_NAMES)[number] | `mcp__cua_repl__${string}`;
 
 export interface HostedToolsDynamicProvider {
   definitions(): readonly HostedToolsCodeDefinition[];
@@ -237,6 +244,8 @@ export type HostedToolsBrokerCoreOptions = Readonly<{
   persistence: HostedToolsBrokerPersistence;
   /** Resume exact live hibernated sockets instead of forcing every route to reconnect. */
   resumeRetainedSockets?: boolean;
+  /** Correlated call boundaries only; inputs, outputs, and credentials are omitted. */
+  onCallTiming?: (timing: Readonly<{ session_id: string; source_call_id: string; transport_call_id: string; admission_ms: number; roundtrip_ms: number; settlement_ms: number }>) => void;
   onCatalogChanged?: (definitions: readonly HostedToolsProviderDefinition[]) => void;
   entryAllowed?: (
     entry: HostedToolCatalogEntry,
@@ -267,6 +276,7 @@ export class HostedToolsBrokerCore {
   readonly #provider: HostedToolsDynamicProvider;
   readonly #pending = new Map<string, PendingCall>();
   readonly #now: () => number;
+  readonly #onCallTiming: HostedToolsBrokerCoreOptions["onCallTiming"];
   readonly #randomUUID: () => string;
   readonly #maxInFlight: number;
   readonly #maxCallsPerGeneration: number;
@@ -289,8 +299,9 @@ export class HostedToolsBrokerCore {
     options: HostedToolsBrokerCoreOptions,
   ) {
     this.#now = options.now ?? Date.now;
+    this.#onCallTiming = options.onCallTiming;
     this.#randomUUID = options.randomUUID ?? (() => crypto.randomUUID());
-    this.#maxInFlight = options.maxInFlight ?? Number.MAX_SAFE_INTEGER;
+    this.#maxInFlight = options.maxInFlight ?? 32;
     if (!Number.isSafeInteger(this.#maxInFlight) || this.#maxInFlight < 1) {
       throw new TypeError("maxInFlight must be a positive safe integer");
     }
@@ -421,7 +432,7 @@ export class HostedToolsBrokerCore {
     name: HostedMachineToolName,
     context?: HostedToolsAuthorizationContext,
   ): HostedToolsCodeTool | undefined {
-    if (!MACHINE_TOOL_NAMES.has(name)) return undefined;
+    if (!MACHINE_TOOL_NAMES.has(name) && !name.startsWith("mcp__cua_repl__")) return undefined;
     const binding = this.#catalogBindings().find((candidate) => (
       candidate.machine?.id === machineId && candidate.wireName === name
     ));
@@ -443,7 +454,7 @@ export class HostedToolsBrokerCore {
     name: HostedMachineToolName,
     context?: HostedToolsAuthorizationContext,
   ): HostedToolsCodeTool | undefined {
-    if (!MACHINE_TOOL_NAMES.has(name)) return undefined;
+    if (!MACHINE_TOOL_NAMES.has(name) && !name.startsWith("mcp__cua_repl__")) return undefined;
     const binding = this.#catalogBindings(undefined, true).find((candidate) => (
       candidate.routeId === routeId
       && candidate.machine?.id === machineId
@@ -542,7 +553,8 @@ export class HostedToolsBrokerCore {
       const protocol = error instanceof HostedToolsProtocolError
         ? error
         : new HostedToolsProtocolError("broker_failure", errorMessage(error));
-      this.#fence(socket, `${protocol.code}: ${protocol.message}`);
+      this.#fence(socket, `${protocol.code}: ${protocol.message}`,
+        protocol.code === "broker_failure" || protocol.code === "lease_validation_unavailable" ? 1011 : 1008);
     }
   }
 
@@ -563,7 +575,7 @@ export class HostedToolsBrokerCore {
     for (const state of this.#persistence.states()) {
       if (!state.lease_id || state.lease_expires_at > this.#now()) continue;
       const socket = this.#socketForState(state);
-      if (socket) this.#fence(socket, "Hosted Tools lease expired");
+      if (socket) this.#fence(socket, "Hosted Tools lease expired", 1012);
       else this.#retireState(state, "Hosted Tools lease expired");
     }
   }
@@ -674,6 +686,8 @@ export class HostedToolsBrokerCore {
     socket: HostedToolsSocket,
     frame: Extract<HostedToolsHostFrame, { type: "catalog" }>,
   ): Promise<void> {
+    // Keep exec and CUA available when an older Hand still advertises browser tools.
+    frame = { ...frame, tools: frame.tools.filter((entry) => !disabledBrowserTool(entry.definition.name)) };
     const initial = this.#attachment(socket);
     if (!initial || initial.leaseId || initial.generation !== undefined || initial.active) {
       throw new HostedToolsProtocolError("catalog_immutable", "one immutable catalog is allowed per socket");
@@ -716,7 +730,7 @@ export class HostedToolsBrokerCore {
     }
     if (state.lease_id && state.lease_expires_at <= this.#now()) {
       const expiredSocket = this.#socketForState(state);
-      if (expiredSocket) this.#fence(expiredSocket, "Hosted Tools lease expired");
+      if (expiredSocket) this.#fence(expiredSocket, "Hosted Tools lease expired", 1012);
       else this.#retireState(state, "Hosted Tools lease expired");
       state = this.#persistence.state(routeId) ?? emptyState(routeId);
     }
@@ -773,11 +787,11 @@ export class HostedToolsBrokerCore {
       if (initial.expectedAttachmentId !== undefined) {
         const extra = frame.tools.find((entry) => (
           !MACHINE_TOOL_NAMES.has(entry.definition.name)
-          && !ATTACHED_OVERLAY_TOOL_NAMES.has(entry.definition.name)
+          && !entry.definition.name.startsWith("mcp__cua_repl__")
         ));
         if (extra !== undefined) {
           throw new Error(
-            "leased tool attachments may publish only canonical machine primitives or placement overlays",
+            "leased tool attachments may publish only canonical machine primitives",
           );
         }
       }
@@ -902,6 +916,7 @@ export class HostedToolsBrokerCore {
     socket: HostedToolsSocket,
     frame: Extract<HostedToolsHostFrame, { type: "result" }>,
   ): void {
+    const resultAt = performance.now();
     const attachment = this.#activeAttachment(socket);
     const row = this.#persistence.call(frame.call_id);
     const stored = JSON.stringify(frame.outcome);
@@ -956,6 +971,13 @@ export class HostedToolsBrokerCore {
     const pending = this.#takePending(row.call_id);
     this.#ackResult(socket, frame);
     pending?.resolve(frame.outcome);
+    if (pending && this.#onCallTiming) {
+      try {
+        this.#onCallTiming({ session_id: row.session_id, source_call_id: row.source_call_id,
+          transport_call_id: row.call_id, admission_ms: pending.dispatchedAt - pending.receivedAt,
+          roundtrip_ms: resultAt - pending.dispatchedAt, settlement_ms: performance.now() - resultAt });
+      } catch { /* Diagnostics must never change a durable call outcome. */ }
+    }
   }
 
   #ackResult(socket: HostedToolsSocket, frame: Extract<HostedToolsHostFrame, { type: "result" }>): void {
@@ -994,6 +1016,7 @@ export class HostedToolsBrokerCore {
         ? {}
         : { appToolCatalogDigest: binding.appToolCatalogDigest }),
       canonicalName: binding.wireName,
+      providerDefinition: binding.providerDefinition,
       ...(binding.machine === undefined ? {} : { machine: binding.machine }),
       entry: binding.entry,
       invoke: (request: HostedToolsInvokeRequest) => this.#invoke(binding, request),
@@ -1004,6 +1027,7 @@ export class HostedToolsBrokerCore {
     return Object.freeze({
       name,
       parallelSafe: prepared.entry.parallel_safe,
+      definition: { ...prepared.providerDefinition, defer_loading: true as const },
       routeToken: prepared.routeToken,
       provider: prepared.entry.provider,
       remoteName: prepared.entry.remote_name,
@@ -1027,6 +1051,7 @@ export class HostedToolsBrokerCore {
         const outcome = await prepared.invoke({
           sessionId: context.sessionId,
           callId: context.callId,
+          ...(context.turnId === undefined ? {} : { turnId: context.turnId }),
           model: context.model ?? "unknown",
           input: input as Record<string, unknown> | string,
           outputTokenBudget: 10_000,
@@ -1054,6 +1079,7 @@ export class HostedToolsBrokerCore {
     binding: HostedToolsCatalogBinding,
     request: HostedToolsInvokeRequest,
   ): Promise<HostedToolsInvocationOutcome> {
+    const receivedAt = performance.now();
     const retained = this.#persistence.callBySource(request.sessionId, request.callId);
     if (!retained && !this.#routingSocketForState(this.#persistence.state(binding.routeId))) {
       return Promise.resolve(preAdmissionUnavailable("Hosted machine is reconnecting"));
@@ -1077,6 +1103,7 @@ export class HostedToolsBrokerCore {
       call = parseHostedToolsManagedFrame(JSON.stringify({
         type: "call",
         session_id: request.sessionId,
+        ...(request.turnId === undefined ? {} : { turn_id: request.turnId }),
         call_id: transportCallId,
         model: request.model,
         name: binding.wireName,
@@ -1093,6 +1120,7 @@ export class HostedToolsBrokerCore {
       call_id: call.call_id,
       session_id: call.session_id,
       source_call_id: request.callId,
+      turn_id: call.turn_id ?? null,
       host_id: hostId,
       lease_id: pinnedLeaseId,
       generation,
@@ -1177,6 +1205,8 @@ export class HostedToolsBrokerCore {
     let resolve!: (outcome: HostedToolCallOutcome) => void;
     const promise = new Promise<HostedToolCallOutcome>((completed) => { resolve = completed; });
     const pending: PendingCall = {
+      receivedAt,
+      dispatchedAt: performance.now(),
       leaseId,
       generation: binding.generation,
       deadlineAt,
@@ -1254,7 +1284,7 @@ export class HostedToolsBrokerCore {
         && state.generation === pending.generation
         && state.lease_expires_at <= now) {
         const socket = this.#socketForState(state);
-        if (socket) this.#fence(socket, "Hosted Tools lease expired during a call");
+        if (socket) this.#fence(socket, "Hosted Tools lease expired during a call", 1012);
         else this.#retireState(state, "Hosted Tools lease expired during a call");
         return;
       }
@@ -1350,7 +1380,7 @@ export class HostedToolsBrokerCore {
   #liveRoutingSocketForState(state: HostedToolsStateRow): HostedToolsSocket | undefined {
     if (state.lease_id && state.lease_expires_at <= this.#now()) {
       const socket = this.#socketForState(state);
-      if (socket) this.#fence(socket, "Hosted Tools lease expired");
+      if (socket) this.#fence(socket, "Hosted Tools lease expired", 1012);
       else this.#retireState(state, "Hosted Tools lease expired");
       return undefined;
     }
@@ -1401,6 +1431,7 @@ export class HostedToolsBrokerCore {
         continue;
       }
       for (const entry of entries) {
+        if (disabledBrowserTool(entry.definition.name)) continue;
         const machine = attachment?.machines?.[0] ?? savedMachines[0];
         bindings.push(Object.freeze({
           routeId: state.route_id,
@@ -1408,6 +1439,7 @@ export class HostedToolsBrokerCore {
           leaseId: state.lease_id ?? "offline",
           generation: state.generation,
           wireName: entry.definition.name,
+          providerDefinition: entry.definition,
           ...(machine === undefined ? {} : { machine }),
           entry: exposedEntry(entry, machine),
           ...(connectGrantId === undefined ? {} : { connectGrantId }),
@@ -1482,11 +1514,13 @@ function reservedMachineEntry(
   entry: HostedToolCatalogEntry,
   machine: HostedMachine | undefined,
 ): boolean {
-  return machine !== undefined && MACHINE_TOOL_NAMES.has(entry.definition.name);
+  return machine !== undefined && MACHINE_TOOL_NAMES.has(entry.definition.name)
+    && !entry.definition.name.startsWith("mcp__cua_repl__");
 }
 
 function reservedMachineBinding(binding: HostedToolsCatalogBinding): boolean {
-  return binding.machine !== undefined && MACHINE_TOOL_NAMES.has(binding.wireName);
+  return binding.machine !== undefined && MACHINE_TOOL_NAMES.has(binding.wireName)
+    && !binding.wireName.startsWith("mcp__cua_repl__");
 }
 
 function validateMachineToolContracts(entries: readonly HostedToolCatalogEntry[]): void {
@@ -1578,7 +1612,7 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
 }
 
 function exposedEntry(entry: HostedToolCatalogEntry, machine: HostedMachine | undefined): HostedToolCatalogEntry {
-  if (machine === undefined || ATTACHED_OVERLAY_TOOL_NAMES.has(entry.definition.name)) return entry;
+  if (machine === undefined) return entry;
   const routeName = `user:${machine.id}:${entry.definition.name}`;
   const candidate = `user_${machine.id}_${entry.definition.name}`;
   const safeCandidate = candidate.replace(/[^A-Za-z0-9_-]/g, "_");
@@ -1588,7 +1622,9 @@ function exposedEntry(entry: HostedToolCatalogEntry, machine: HostedMachine | un
   const definition = {
     ...entry.definition,
     name: exposedName,
-    description: `Routes to ${routeName}. ${entry.definition.description}`,
+    description: entry.definition.name.startsWith("mcp__cua_repl__")
+      ? entry.definition.description
+      : `Routes to ${routeName}. ${entry.definition.description}`,
   };
   return Object.freeze({
     ...entry,
@@ -1660,6 +1696,7 @@ function sameImmutableCall(left: HostedToolsCallRow, right: HostedToolsCallRow):
   return left.call_id === right.call_id
     && left.session_id === right.session_id
     && left.source_call_id === right.source_call_id
+    && (left.turn_id ?? null) === (right.turn_id ?? null)
     && left.host_id === right.host_id
     && left.lease_id === right.lease_id
     && left.generation === right.generation

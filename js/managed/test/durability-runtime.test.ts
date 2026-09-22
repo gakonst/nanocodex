@@ -193,3 +193,146 @@ it("retains interrupted children and bounds new delegation after Worker SQLite r
     } finally { await (reopened ?? agent).session.shutdown(); }
   });
 }, 30_000);
+
+it("keeps a delayed compaction owned until its checkpoint survives SQLite reconstruction", async () => {
+  const namespace = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace }).NANOCODEX_MEMORY;
+  await runInDurableObject(namespace.getByName(crypto.randomUUID()), async (_instance, ctx) => {
+    const compactStarted = Promise.withResolvers<void>();
+    let completeCompaction: (() => void) | undefined;
+    let requests = 0;
+    class ModelSocket extends EventTarget {
+      readyState = 1;
+      accept() {}
+      close() { this.readyState = 3; }
+      emit(value: unknown) {
+        this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) }));
+      }
+      send(_data: string) {
+        requests++;
+        if (requests === 1) {
+          queueMicrotask(() => this.emit({ type: "response.completed", response: {
+            id: "before-compaction", status: "completed", end_turn: true,
+            output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Hello" }] }],
+            usage: { input_tokens: 100, output_tokens: 1, total_tokens: 101 },
+          } }));
+          return;
+        }
+        completeCompaction = () => {
+          this.emit({ type: "response.output_item.done", item: {
+            id: "delayed-summary", type: "compaction", encrypted_content: "opaque-summary",
+          } });
+          this.emit({ type: "response.completed", response: {
+            id: "after-compaction", status: "completed", output: [],
+            usage: { input_tokens: 100, output_tokens: 1, total_tokens: 101 },
+          } });
+        };
+        compactStarted.resolve();
+      }
+    }
+    const owner = { ctx, env: { NANOCODEX: { async fetch() {
+      return { status: 101, headers: new Headers(), webSocket: new ModelSocket() };
+    } } } };
+    const options = { eventPersistence: "caller" as const };
+    const agent = await Agent.create(owner, options);
+    let restored: Awaited<ReturnType<typeof Agent.create>> | undefined;
+    try {
+      await agent.turn.prompt({ input: "retain this before compaction" }).result();
+      let settled = false;
+      const compact = agent.session.compact().finally(() => { settled = true; });
+      ctx.waitUntil(compact);
+      await compactStarted.promise;
+      // The provider response is explicitly controlled: no sleeps or network
+      // timing determine whether the operation is still owned.
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(requests).toBe(2);
+      completeCompaction!();
+      await compact;
+      const compacted = await agent.session.context();
+      expect(JSON.stringify(compacted)).toContain("opaque-summary");
+      restored = await Agent.create({ ...owner, ctx: {
+        id: ctx.id, storage: ctx.storage,
+        acceptWebSocket: ctx.acceptWebSocket.bind(ctx), getWebSockets: ctx.getWebSockets.bind(ctx),
+      } }, options);
+      agent.dispose();
+      expect(await restored.session.context()).toEqual(compacted);
+      expect(requests).toBe(2);
+    } finally { await (restored ?? agent).session.shutdown(); }
+  });
+}, 20_000);
+
+it("reconstructs SQLite ownership while provider compaction is pending and completes a replacement compact", async () => {
+  const namespace = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace }).NANOCODEX_MEMORY;
+  await runInDurableObject(namespace.getByName(crypto.randomUUID()), async (_instance, ctx) => {
+    let compactStarted = Promise.withResolvers<void>();
+    let completeCompaction: (() => void) | undefined;
+    let requests = 0;
+    class ModelSocket extends EventTarget {
+      readyState = 1;
+      accept() {}
+      close() { this.readyState = 3; }
+      emit(value: unknown) {
+        this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(value) }));
+      }
+      send(_data: string) {
+        requests++;
+        if (requests === 1) {
+          queueMicrotask(() => this.emit({ type: "response.completed", response: {
+            id: "before-compaction", status: "completed", end_turn: true,
+            output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "Hello" }] }],
+            usage: { input_tokens: 100, output_tokens: 1, total_tokens: 101 },
+          } }));
+          return;
+        }
+        completeCompaction = () => {
+          this.emit({ type: "response.output_item.done", item: {
+            id: "delayed-summary", type: "compaction", encrypted_content: "opaque-summary",
+          } });
+          this.emit({ type: "response.completed", response: {
+            id: "after-compaction", status: "completed", output: [],
+            usage: { input_tokens: 100, output_tokens: 1, total_tokens: 101 },
+          } });
+        };
+        compactStarted.resolve();
+      }
+    }
+    const owner = { ctx, env: { NANOCODEX: { async fetch() {
+      return { status: 101, headers: new Headers(), webSocket: new ModelSocket() };
+    } } } };
+    const options = { eventPersistence: "caller" as const };
+    const agent = await Agent.create(owner, options);
+    let restored: Awaited<ReturnType<typeof Agent.create>> | undefined;
+    try {
+      await agent.turn.prompt({ input: "retain this before compaction" }).result();
+      let settled = false;
+      const compact = agent.session.compact().finally(() => { settled = true; });
+      ctx.waitUntil(compact.catch(() => {}));
+      const interrupted = compact.catch(error => error);
+      await compactStarted.promise;
+      // The provider response is explicitly controlled: no sleeps or network
+      // timing determine whether the operation is still owned.
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      expect(requests).toBe(2);
+      const originalHistory = await agent.session.context();
+      const staleCompletion = completeCompaction!;
+      restored = await Agent.create({ ...owner, ctx: {
+        id: ctx.id, storage: ctx.storage,
+        acceptWebSocket: ctx.acceptWebSocket.bind(ctx), getWebSockets: ctx.getWebSockets.bind(ctx),
+      } }, options);
+      expect(await restored.session.context()).toEqual(originalHistory);
+      compactStarted = Promise.withResolvers<void>();
+      const replacementCompact = restored.session.compact();
+      await compactStarted.promise;
+      expect(requests).toBe(3);
+      // A late response from the retired transport cannot own the replacement
+      // checkpoint. Complete it before the replacement's response on purpose.
+      staleCompletion();
+      completeCompaction!();
+      await replacementCompact;
+      await interrupted;
+      agent.dispose();
+      expect(JSON.stringify(await restored.session.context())).toContain("opaque-summary");
+    } finally { await (restored ?? agent).session.shutdown(); }
+  });
+}, 20_000);

@@ -30,6 +30,7 @@ const PROVIDER_CAPABILITIES: Readonly<Record<ConnectorProviderId, readonly Conne
   x: ["x"],
   spotify: ["spotify"],
   soundcloud: ["soundcloud"],
+  link: ["link"],
 };
 const CONNECTOR_NAMES: Readonly<Record<ConnectorProviderId, string>> = Object.freeze({
   github: "GitHub",
@@ -38,12 +39,14 @@ const CONNECTOR_NAMES: Readonly<Record<ConnectorProviderId, string>> = Object.fr
   x: "X",
   spotify: "Spotify",
   soundcloud: "SoundCloud",
+  link: "Stripe Link",
 });
 const AUTHORIZATION_ENDPOINTS: Readonly<Record<ConnectorProviderId, {
   origin: string;
   pathname: string;
   pkce: boolean;
 }>> = {
+  link: { origin: "https://link.com", pathname: "/verify", pkce: false },
   github: { origin: "https://github.com", pathname: "/login/oauth/authorize", pkce: true },
   google: { origin: "https://accounts.google.com", pathname: "/o/oauth2/v2/auth", pkce: true },
   slack: { origin: "https://slack.com", pathname: "/oauth/v2/authorize", pkce: false },
@@ -91,7 +94,7 @@ export function accountConnectorsTool(
     description: [
       "List, connect, reconnect, or disconnect account connectors without exposing credentials.",
       "Google Workspace is one authorization identity whose connections list the exact Gmail, Drive, Calendar, Tasks, Docs, Sheets, Slides, and Contacts capabilities granted.",
-      "Supports GitHub, Google Workspace, Slack, X, Spotify and SoundCloud. Use tool_search for each service’s read and write API tools. Spotify and SoundCloud connect open the native Nanocodex app; other providers return authorization URLs.",
+      "Supports GitHub, Google Workspace, Slack, X, Spotify, SoundCloud and Stripe Link. Use tool_search for each service’s API tools. Stripe Link requests user spend approvals. Spotify and SoundCloud connect open the native Nanocodex app; other providers return authorization URLs.",
       "Connect returns a provider authorization URL. Give that exact URL to the user as a link; the provider may still require consent.",
       "Disconnect revokes one exact listed connection_id and is allowed only when the user explicitly asks to remove or replace it.",
     ].join(" "),
@@ -219,7 +222,9 @@ export async function manageAccountConnectors(
     ...(operation.accountHint === undefined ? {} : { account: operation.accountHint }),
     authorization_url: authorization.href,
     expires_in_seconds: 600,
-    message: `Authorize ${CONNECTOR_NAMES[operation.provider]} to finish connecting it.`,
+    message: operation.provider === "link"
+      ? "Open the Link authorization URL, approve the connection, then use list to finish connecting. Spend approvals remain in Link."
+      : `Authorize ${CONNECTOR_NAMES[operation.provider]} to finish connecting it.`,
   };
 }
 
@@ -228,6 +233,8 @@ function safeAuthorizationUrl(
   callback: string,
   provider: ConnectorProviderId,
 ): boolean {
+  if (provider === "link") return ["https://link.com", "https://app.link.com", "https://login.link.com"].includes(authorization.origin)
+    && !authorization.username && !authorization.password && !authorization.hash;
   const endpoint = AUTHORIZATION_ENDPOINTS[provider];
   if (authorization.origin !== endpoint.origin || authorization.pathname !== endpoint.pathname
     || authorization.username || authorization.password || authorization.hash

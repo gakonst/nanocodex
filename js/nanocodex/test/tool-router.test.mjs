@@ -272,8 +272,8 @@ test("overlay keeps cloud fallback but only uses the typed pre-dispatch sentinel
   assert.equal(cloudCalls, 1);
 });
 
-test("browser_execute prefers a live Hand and falls back only before dispatch", async () => {
-  const browser = contract("browser_execute", {
+test("retained_execute prefers a live Hand and falls back only before dispatch", async () => {
+  const retained = contract("retained_execute", {
     strict: false,
     output_schema: undefined,
     parameters: {
@@ -286,14 +286,14 @@ test("browser_execute prefers a live Hand and falls back only before dispatch", 
   const calls = [];
   let handAvailable = true;
   const router = new ToolRouter([
-    source("cloudflare-browser", [{
-      definition: browser,
+    source("cloud-runtime", [{
+      definition: retained,
       parallelSafe: false,
       handler: ({ code }) => { calls.push(["cloudflare", code]); return "cloudflare"; },
     }], { kind: "cloud" }),
   ]);
   await router.attachSource(source("account-hands", [{
-    definition: { ...browser, description: "Run through the attached residential browser." },
+    definition: { ...retained, description: "Run through the attached retained runtime." },
     parallelSafe: false,
     handler: ({ code }) => {
       calls.push(["hand", code]);
@@ -302,10 +302,10 @@ test("browser_execute prefers a live Hand and falls back only before dispatch", 
   }], { kind: "attached" }));
   const context = { signal: new AbortController().signal };
 
-  assert.equal(await router.execute("browser_execute", { code: "return 1" }, context), "hand");
+  assert.equal(await router.execute("retained_execute", { code: "return 1" }, context), "hand");
   handAvailable = false;
   assert.equal(
-    await router.execute("browser_execute", { code: "return 2" }, context),
+    await router.execute("retained_execute", { code: "return 2" }, context),
     "cloudflare",
   );
   assert.deepEqual(calls, [

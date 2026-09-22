@@ -28,7 +28,7 @@ if ! docker exec "$container" sh -ec '
   status=0
   # Waymote keeps its control pipe open for the owning daemon. An immediate
   # stdin EOF would stop capture before the first frame in a noninteractive exec.
-  timeout 4s sh -c "sleep 30 | waymote-streamd --frame-rate 5 --bitrate 1000" > /tmp/hand-smoke.h264 || status=$?
+  timeout 4s sh -c "sleep 30 | NANOCODEX_SCREEN_ENCODER_HELPER=1 NANOCODEX_SCREEN_FRAME_BOUNDARIES=annexb waymote-streamd --frame-rate 5 --bitrate 1000 --ffmpeg /usr/local/bin/nanocodex-remote" > /tmp/hand-smoke.h264 || status=$?
   test "$status" = 0 || test "$status" = 124
   test -s /tmp/hand-smoke.h264
   ffmpeg -hide_banner -loglevel error -i /tmp/hand-smoke.h264 -frames:v 1 -f null -

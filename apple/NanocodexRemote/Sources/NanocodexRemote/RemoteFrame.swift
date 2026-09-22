@@ -29,8 +29,25 @@ enum RemoteFrame {
               let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
               (properties[kCGImagePropertyPixelWidth] as? Int) == width,
               (properties[kCGImagePropertyPixelHeight] as? Int) == height,
-              let image = CGImageSourceCreateImageAtIndex(source, 0, nil)
+              let image = CGImageSourceCreateImageAtIndex(source, 0, [
+                  kCGImageSourceShouldCache: true, kCGImageSourceShouldCacheImmediately: true
+              ] as CFDictionary)
         else { throw RemoteError.invalidMessage }
+        return image
+    }
+}
+
+/// One worker survives connection epochs. Its synchronous operation cannot
+/// reenter, so cancellation/reconnect never starts overlapping ImageIO work.
+actor RemoteFrameDecoder {
+    private let operation: @Sendable (RemoteMessage) throws -> CGImage
+    init(operation: @escaping @Sendable (RemoteMessage) throws -> CGImage = { try RemoteFrame.decode($0) }) {
+        self.operation = operation
+    }
+    func decode(_ message: RemoteMessage) throws -> CGImage {
+        try Task.checkCancellation()
+        let image = try operation(message)
+        try Task.checkCancellation()
         return image
     }
 }

@@ -22,25 +22,54 @@ final class InboxModel: ObservableObject {
     // App Intents and windows share the same account and Hand connection.
     static let shared = InboxModel()
     enum Filter: String, CaseIterable { case inbox = "Inbox", running = "Running", all = "All" }
-    @Published var cards: [AgentCard] = [] { didSet { scheduleAgentNotifications() } }
-    @Published var deck = InboxDeck()
-    @Published var filter: Filter = .all { didSet { reconcile() } }
+    @Published var cards: [AgentCard] = [] {
+        didSet {
+            rosterRevision = UUID()
+            let previous = focusedCardCache.card(id: deck.focusedID, in: oldValue)
+            focusedCardCache.invalidate()
+            let current = focusedCardCache.card(id: deck.focusedID, in: cards)
+            if previous?.id != current?.id || previous?.activeTurns != current?.activeTurns { queueProjection.invalidate() }
+            scheduleAgentNotifications()
+        }
+    }
+    private var focusedCardCache = FocusedCardCache()
+    private var rosterRevision = UUID()
+    @Published var deck = InboxDeck() {
+        didSet {
+            rosterRevision = UUID()
+            if oldValue.focusedID != deck.focusedID { queueProjection.invalidate() }
+        }
+    }
+    @Published var filter: Filter = .all { didSet { rosterRevision = UUID(); reconcile() } }
     @Published var drafts: [String: String] = [:]
-    @Published var rows: [TranscriptRow] = [] { didSet { mediaProjection.update(rows) } }
-    private var mediaProjection = InboxMediaProjection()
+    @Published var rows: [TranscriptRow] = [] {
+        didSet {
+            rowsRevision = UUID(); queueProjection.invalidate()
+            if !publishingPreparedRows { scheduleMediaPreparation() }
+        }
+    }
+    private var rowsRevision = UUID()
+    private var publishingPreparedRows = false
+    private var mediaPreparation: Task<Void, Never>?
+    private var queueProjection = MessageQueueProjectionCache()
+    /// Changes only when transcript/queue inputs mutate, never for composer edits.
+    var focusedTranscriptRevision: UUID { queueProjection.revision }
+    private var mediaProjection = InboxMediaProjection() { didSet { queueProjection.invalidate() } }
     var generatedOutputsByRow: [String: [ChatGeneratedOutput]] { mediaProjection.outputs }
+    var latestScreenOutput: ChatGeneratedOutput? { mediaProjection.latestScreen }
     @Published var threadLoading = false
     @Published var threadError: String?
     private var observedAgentID: String?
-    private var tabOrder: [String] = []
-    @Published private(set) var closedConversationIDs = Set<String>()
-    @Published private var openedConversations = Set<String>()
+    private var tabOrder: [String] = [] { didSet { rosterRevision = UUID() } }
+    @Published private(set) var closedConversationIDs = Set<String>() { didSet { rosterRevision = UUID() } }
+    @Published private var openedConversations = Set<String>() { didSet { rosterRevision = UUID() } }
     @Published private var olderConversationLimit = 0
     private struct TabHistory {
         var events: [AgentEvent]
         var cursor: Cursor
         var hasOlder: Bool
         var hasNewer: Bool = false
+        var newerAfter: Cursor?
         var bytes: [Int]
         var rows: [TranscriptRow]
         var retainedBytes: Int
@@ -67,7 +96,7 @@ final class InboxModel: ObservableObject {
     @Published var connected = false
     @Published private(set) var restoringAccount = true
     @Published private(set) var restorationError: String?
-    @Published private(set) var isDemo = false
+    @Published private(set) var isDemo = false { didSet { queueProjection.invalidate() } }
     @Published var refreshing = false
     @Published private(set) var scheduledJobs: [ScheduledJob] = []
     @Published private(set) var scheduledJobAgents: [String: String] = [:]
@@ -81,6 +110,9 @@ final class InboxModel: ObservableObject {
     @Published var hasNewer = false
     @Published var loadingNewer = false
     private var followingLatest = true
+    private(set) var historyMutationRevision = UUID()
+    private(set) var newerAfter: Cursor?
+    private var latestJumpEvents: [(event: AgentEvent, bytes: Int)]?
     private var protectedHistoryCursors: ClosedRange<Cursor>?
     private var protectedHistorySelection: (ids: Set<String>, revision: UUID)?
     @Published var selectedTurn = ""
@@ -88,15 +120,27 @@ final class InboxModel: ObservableObject {
     @Published private var creationErrors: [String: String] = [:]
     private var creationTasks: [String: Task<String, Error>] = [:]
     private var createdAgentIDs: [String: String] = [:]
-    @Published var pending: [PendingMessage] = [] { didSet { scheduleAgentNotifications() } }
+    @Published var pending: [PendingMessage] = [] {
+        didSet {
+            let id = deck.focusedID
+            if oldValue.filter({ $0.agentID == id }) != pending.filter({ $0.agentID == id }) { queueProjection.invalidate() }
+            scheduleAgentNotifications()
+        }
+    }
     @Published private(set) var cancellations: [PendingTurnCancellation] = []
     private let cancellationTasks = TurnCancellationTasks()
     private let steeringTasks = TurnCancellationTasks()
-    @Published var steeringTransfers: [SteeringTransfer] = []
+    @Published var steeringTransfers: [SteeringTransfer] = [] {
+        didSet {
+            let id = deck.focusedID
+            if oldValue.filter({ $0.agentID == id }) != steeringTransfers.filter({ $0.agentID == id }) { queueProjection.invalidate() }
+        }
+    }
     @Published private(set) var attachmentDrafts: [String: [MessageAttachment]] = [:]
     private var attachmentURLs: [String: URL] = [:]
     private var attachmentMovieURLs: [String: URL] = [:]
-    @Published private var attachmentImports = Set<String>()
+    @Published private var attachmentImports: [String: Int] = [:]
+    private var attachmentProviderTasks: [UUID: Task<Void, Never>] = [:]
     @Published private var attachmentErrors: [String: String] = [:]
     @Published var contextItems: [CapturedContext] = []
     @Published var contextEnabled = false
@@ -113,7 +157,7 @@ final class InboxModel: ObservableObject {
     private var smsAuth: SMSAuth?
     private var smsOrigin: String?
     private var authGeneration = UUID()
-    private var pinnedThreadID: String?
+    private var pinnedThreadID: String? { didSet { rosterRevision = UUID() } }
     private var demoRows: [String: [TranscriptRow]] = [:]
     private var demoFaults = Set<String>()
     #if DEBUG
@@ -122,6 +166,10 @@ final class InboxModel: ObservableObject {
     private var client: ManagedClient?
     let voice = VoiceSession()
     private var accountCredential: AccountCredential?
+    var chatGptAccountsURL: URL? {
+        guard connected, !isDemo, let accountCredential else { return nil }
+        return URL(string: "/connect#chatgpt-accounts", relativeTo: URL(string: accountCredential.origin))?.absoluteURL
+    }
     private var deviceHand: HandSession?
     private let flipperZero = FlipperZeroBridge.shared
     private let bluetoothLE = BluetoothLEBridge.shared
@@ -154,7 +202,7 @@ final class InboxModel: ObservableObject {
     private var streamReceivedFrame = false
     private var generation = UUID()
     private var observation = UUID() { didSet { cancelOlderHistoryPrefetch() } }
-    private var events: [AgentEvent] = [] { didSet { eventsRevision = UUID() } }
+    private var events: [AgentEvent] = [] { didSet { eventsRevision = UUID(); queueProjection.invalidateHistory() } }
     private var eventsRevision = UUID()
     private var projectedFirstCursor: Cursor?
     private let preferences = InboxPreferencesWriter()
@@ -162,14 +210,30 @@ final class InboxModel: ObservableObject {
     private var retainedBytes = 0
     private var projection: Task<Void, Never>?
     @Published private var navigation: [(id: String, seen: String?, deferred: Cursor?, filter: Filter)] = []
-    private var deferred: [String: Cursor] = [:] { didSet { scheduleAgentNotifications() } }
+    private var deferred: [String: Cursor] = [:] { didSet { rosterRevision = UUID(); scheduleAgentNotifications() } }
     private var cursor = Cursor.zero
     private var olderBefore: Cursor? {
         didSet { if olderBefore != oldValue { cancelOlderHistoryPrefetch() } }
     }
     private var olderHistoryPrefetch: (id: String, before: Cursor, task: Task<(EventPage, [Int]), Error>)?
-    private var seen: [String: String] = [:] { didSet { scheduleAgentNotifications() } }
-    private var scope = "" { didSet { scheduleAgentNotifications() } }
+    private var seen: [String: String] = [:] { didSet { rosterRevision = UUID(); scheduleAgentNotifications() } }
+    var quickVoiceGeneration: UUID { generation }
+    // Keep retries on the same newly created conversation, including after ID remapping.
+    func sendQuickVoice(_ text: String, generation expected: UUID, targetID: inout String?) -> Bool {
+        guard connected, !isDemo, generation == expected else { return false }
+        if let id = targetID {
+            let resolved = createdAgentIDs[id] ?? id
+            guard cards.contains(where: { $0.id == resolved }) else { return false }
+            select(resolved)
+        } else {
+            newAgent()
+            targetID = focused?.id
+        }
+        guard targetID != nil else { return false }
+        draft = text
+        return send()
+    }
+    private var scope = "" { didSet { restoreThreadScreens(); scheduleAgentNotifications() } }
     private lazy var agentNotifications = AgentNotificationController(open: { [weak self] url in self?.openAgentActivity(url) })
     private var agentNotificationUpdate: Task<Void, Never>?
     private var pendingActivityURL: URL?
@@ -190,16 +254,32 @@ final class InboxModel: ObservableObject {
             self.updateAgentNotifications()
         }
     }
+    private var agentNotificationPreparation: Task<Void, Never>?
     private func updateAgentNotifications() {
         guard connected || !restoringAccount else { return }
-        let threads = AgentThreadNotification.make(cards: cards,
-            seen: seen.compactMapValues { Cursor(rawValue: $0) }, deferred: deferred, pending: pending)
+        agentNotificationPreparation?.cancel()
+        let snapshot = cards, seenSnapshot = seen, deferredSnapshot = deferred, pendingSnapshot = pending
+        let epoch = generation, accountScope = scope
         // Existing demo journeys do not create system UI unless explicitly requested.
         let enabled = !isDemo || ProcessInfo.processInfo.environment["NANOCODEX_DEMO_ACTIVITY"] == "1"
-        agentNotifications.update(account: connected && enabled ? scope : "", threads: threads,
-            unchecked: Set(cards.filter { !$0.checked }.map(\.id)), foreground: isActive)
+        let account = connected && enabled ? scope : ""
+        let worker = Task.detached(priority: .utility) {
+            let threads = AgentThreadNotification.make(cards: snapshot,
+                seen: seenSnapshot.compactMapValues { Cursor(rawValue: $0) }, deferred: deferredSnapshot, pending: pendingSnapshot)
+            return (threads, Set(snapshot.filter { !$0.checked }.map(\.id)))
+        }
+        agentNotificationPreparation = Task { [weak self] in
+            let prepared = await withTaskCancellationHandler(operation: { await worker.value }, onCancel: { worker.cancel() })
+            guard let self, !Task.isCancelled, self.generation == epoch, self.scope == accountScope else { return }
+            self.agentNotifications.update(account: account, threads: prepared.0,
+                unchecked: prepared.1, foreground: self.isActive)
+            self.agentNotificationPreparation = nil
+        }
     }
-    func configureAgentNotifications() { _ = agentNotifications }
+    func configureAgentNotifications() {
+        let notifications = agentNotifications
+        Task { await notifications.removeLegacyActivities() }
+    }
     func openAgentActivity(_ url: URL) {
         guard url.scheme == "nanocodex", url.host == "activity" else { return }
         if restoringAccount { pendingActivityURL = url; return }
@@ -208,9 +288,25 @@ final class InboxModel: ObservableObject {
         select(id)
     }
 
+    @Published private var threadScreens: [String: RemoteScreenSelection] = [:]
+    var screenScope: String { scope }
+    func screenSelection(agentID: String) -> RemoteScreenSelection? { threadScreens[agentID] }
+    func selectScreen(_ selection: RemoteScreenSelection?, agentID: String) {
+        threadScreens[agentID] = selection
+        persistThreadScreens()
+    }
+    private func persistThreadScreens() {
+        guard !scope.isEmpty, let data = try? JSONEncoder().encode(threadScreens) else { return }
+        let key = "inbox.threadScreens." + scope
+        preferences.enqueue { $0.set(data, forKey: key) }
+    }
+    private func restoreThreadScreens() {
+        threadScreens = UserDefaults.standard.data(forKey: "inbox.threadScreens." + scope)
+            .flatMap { try? JSONDecoder().decode([String: RemoteScreenSelection].self, from: $0) } ?? [:]
+    }
+
     var focused: AgentCard? {
-        let id = deck.focusedID
-        return cards.first { $0.id == id }
+        focusedCardCache.card(id: deck.focusedID, in: cards)
     }
     var focusedConversationIdentity: String? {
         focused.map { card in createdAgentIDs.first(where: { $0.value == card.id })?.key ?? card.id }
@@ -240,32 +336,30 @@ final class InboxModel: ObservableObject {
         guard let head = focused?.activeTurns.first else { return [] }
         return pending.contains { $0.agentID == focused?.id && $0.id == head } ? [] : [head]
     }
-    func queuePresentation(agentID: String, rows: [TranscriptRow]) -> MessageQueuePresentation {
-        let history = agentID == focused?.id ? events : tabHistories[agentID]?.events ?? []
-        let cancelled = Set(history.filter { $0.type == "turn_cancelled" }.map(\.turnID))
-        let started = Set(history.filter { event in
-            event.type == "event" && ["run.started", "assistant.delta", "assistant.message", "reasoning.summary.delta", "tool.call", "tool.result"].contains(event.data["event"]["type"].string)
-        }.map(\.turnID))
-        let transfers = steeringTransfers.filter { $0.agentID == agentID }
-        let transferred = Set(transfers.map(\.sourceTurnID))
-        let displayed = rows.compactMap { row -> TranscriptRow? in
-            guard let transfer = transfers.first(where: { $0.sourceTurnID == (row.turnID ?? row.id) }) else { return row }
-            guard transfer.wasAccepted || transfer.phase == .withdrawn
-                || (transfer.phase == .unconfirmed && !pending.contains(where: { $0.id == transfer.id })) else { return nil }
-            guard row.role == "You" else { return nil }
-            var row = row
-            if transfer.phase == .withdrawn { row.role = "Status"; row.text = "Steering withdrawn: " + row.text }
-            else if !transfer.wasAccepted { row.role = "Status"; row.text = "Steering delivery unconfirmed: " + row.text; row.detail = transfer.error ?? "" }
-            else { row.detail = transfer.error ?? (transfer.phase == .withdrawing ? transfer.title : "Steering sent to the active turn") }
-            return row
-        }
-        let active = (cards.first { $0.id == agentID }?.activeTurns ?? []).filter { !transferred.contains($0) }
-        return MessageQueuePresentation(agentID: agentID, rows: displayed, pending: pending,
-            activeTurns: active, cancelledTurns: cancelled.subtracting(transferred),
-            executingTurns: (isDemo ? Set(active.prefix(1)) : started).subtracting(transferred))
-    }
     var focusedQueue: MessageQueuePresentation {
-        queuePresentation(agentID: focused?.id ?? "", rows: rows)
+        let card = focused
+        return queueProjection.presentation(agentID: card?.id ?? "", events: events, rows: rows,
+            pending: pending, steeringTransfers: steeringTransfers, activeTurns: card?.activeTurns ?? [], isDemo: isDemo)
+    }
+    /// Renderers await this snapshot so history scans and queue projection never
+    /// run on the main actor. Synchronous action handlers retain focusedQueue.
+    func prepareFocusedQueue() async -> MessageQueuePresentation? {
+        let card = focused, revision = queueProjection.revision, epoch = generation
+        let identity = focusedConversationIdentity
+        let cached = queueProjection, history = events, transcript = rows
+        let messages = pending, transfers = steeringTransfers, demo = isDemo
+        let task = Task.detached(priority: .userInitiated) {
+            var prepared = cached
+            let value = prepared.presentation(agentID: card?.id ?? "", events: history, rows: transcript,
+                pending: messages, steeringTransfers: transfers, activeTurns: card?.activeTurns ?? [], isDemo: demo)
+            return (prepared, value)
+        }
+        let (prepared, value) = await withTaskCancellationHandler(operation: { await task.value }, onCancel: { task.cancel() })
+        guard !Task.isCancelled, generation == epoch, focusedConversationIdentity == identity else { return nil }
+        // A renderer may publish this coherent snapshot while a newer revision
+        // is arriving. Never overwrite the newer revision's queue cache.
+        if queueProjection.revision == revision { queueProjection = prepared }
+        return value
     }
     private func retainQueuedMessage(_ id: String) {
         guard !pending.contains(where: { $0.id == id }),
@@ -307,15 +401,38 @@ final class InboxModel: ObservableObject {
     func openThread() {
         pinnedThreadID = focused?.id
         #if DEBUG
+        if isDemo, ProcessInfo.processInfo.environment["NANOCODEX_DEMO_TOOL_ARRIVALS"] == "1", let id = focused?.id,
+           !rows.contains(where: { $0.id == "demo-tool-history-1" }) {
+            // Start beyond one viewport so every arrival exercises tail following.
+            rows = (1...20).map {
+                .init(id: "demo-tool-history-\($0)", role: "Agent", text: "Earlier synthetic progress note \($0).")
+            }
+            let epoch = generation
+            Task {
+                try? await Task.sleep(for: .seconds(3))
+                for index in 1...6 {
+                    guard !Task.isCancelled, generation == epoch, focused?.id == id else { return }
+                    var activity = ToolPresentation(name: "exec_command", arguments: .object([
+                        "cmd": .string("echo synthetic-tool-\(index)")
+                    ]))
+                    activity.finish(.object(["output": .string("Synthetic result \(index); no command was executed."),
+                                             "exit_code": .number(0)]))
+                    rows.append(.init(id: "demo-tool-arrival-\(index)", role: "Tool", text: activity.title, tool: activity))
+                    demoRows[id] = rows
+                    if index < 6 { try? await Task.sleep(for: .seconds(1)) }
+                }
+            }
+        }
         if isDemo, ProcessInfo.processInfo.environment["NANOCODEX_DEMO_STREAMING_GROWTH"] == "1", let id = focused?.id {
             let epoch = generation
+            let interval = min(1_000, max(50, Int(ProcessInfo.processInfo.environment["NANOCODEX_DEMO_STREAM_INTERVAL_MS"] ?? "") ?? 180))
             Task {
                 try? await Task.sleep(for: .seconds(3))
                 guard !Task.isCancelled, generation == epoch, focused?.id == id,
                       !rows.contains(where: { $0.id == "demo-streaming-growth" }) else { return }
                 rows.append(.init(id: "demo-streaming-growth", role: "Agent", text: "Streaming response begins.", running: true))
                 for index in 1...60 {
-                    try? await Task.sleep(for: .milliseconds(180))
+                    try? await Task.sleep(for: .milliseconds(interval))
                     guard !Task.isCancelled, generation == epoch, focused?.id == id,
                           let row = rows.firstIndex(where: { $0.id == "demo-streaming-growth" }) else { return }
                     rows[row].text += "\n\nStream paragraph \(index). A steadily growing response keeps the live tail visible while preserving the reader's chosen position."
@@ -371,7 +488,7 @@ final class InboxModel: ObservableObject {
         fileprivate let scope: String
     }
     var focusedAttachments: [MessageAttachment] { attachmentDrafts[focused?.id ?? ""] ?? [] }
-    var preparingAttachments: Bool { attachmentImports.contains(focused?.id ?? "") }
+    var preparingAttachments: Bool { (attachmentImports[focused?.id ?? ""] ?? 0) > 0 }
     var attachmentError: String? { attachmentErrors[focused?.id ?? ""] }
     var canSend: Bool {
         focused != nil && !hasUnconfirmedMessage && !preparingAttachments
@@ -379,19 +496,21 @@ final class InboxModel: ObservableObject {
             && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !focusedAttachments.isEmpty)
     }
     func captureAttachmentTarget() -> AttachmentTarget? {
-        guard let id = focused?.id, connected, !isDemo, !preparingAttachments else { return nil }
+        guard let id = focused?.id, connected, !isDemo else { return nil }
         attachmentErrors[id] = nil
         return AttachmentTarget(agentID: id, generation: generation, scope: scope)
     }
     func attachmentURL(_ attachment: MessageAttachment) -> URL? {
-        attachmentURLs[attachment.id]
+        attachmentURLs[attachment.id] ?? deviceHand?.localImageURL(attachment: attachment, preview: true)
     }
     func attachmentOriginalURL(_ attachment: MessageAttachment) -> URL? {
+        if let local = deviceHand?.localImageURL(attachment: attachment, preview: false) { return local }
         guard let store = try? AttachmentStore(scope: scope) else { return nil }
         return try? store.url(for: attachment)
     }
     func attachmentMovieURL(_ attachment: MessageAttachment) -> URL? { attachmentMovieURLs[attachment.id] }
     func downloadAttachment(_ attachment: MessageAttachment, agentID: String) async throws -> URL {
+        if attachment.handID != nil { throw AttachmentError.localImageUnavailable }
         guard let client else { throw APIError.invalidCredential }
         let epoch = generation
         let url = try await client.downloadAttachment(agentID: agentID, attachment: attachment)
@@ -412,6 +531,13 @@ final class InboxModel: ObservableObject {
         return url
     }
     func attachmentPreview(_ attachment: MessageAttachment, agentID: String) async throws -> Data {
+        if let local = attachmentURL(attachment) {
+            let epoch = generation
+            let data = try await Task.detached(priority: .userInitiated) { try Data(contentsOf: local) }.value
+            guard epoch == generation, !Task.isCancelled else { throw CancellationError() }
+            return data
+        }
+        if attachment.handID != nil { throw AttachmentError.localImageUnavailable }
         guard let client else { throw APIError.invalidCredential }
         let epoch = generation
         let data = try await client.attachmentPreview(agentID: agentID, attachmentID: attachment.id)
@@ -431,18 +557,56 @@ final class InboxModel: ObservableObject {
         persist(); releaseAttachments([attachment])
     }
     private func beginAttachmentImport(count: Int, target: AttachmentTarget) -> Bool {
-        guard generation == target.generation, !attachmentImports.contains(resolvedAgentID(target.agentID)) else { return false }
+        guard generation == target.generation else { return false }
         guard count > 0 else { return false }
-        attachmentImports.insert(resolvedAgentID(target.agentID)); attachmentErrors[resolvedAgentID(target.agentID)] = nil
+        attachmentImports[resolvedAgentID(target.agentID), default: 0] += 1; attachmentErrors[resolvedAgentID(target.agentID)] = nil
         return true
+    }
+    private func endAttachmentImport(target: AttachmentTarget) {
+        guard generation == target.generation else { return }
+        let id = resolvedAgentID(target.agentID)
+        let remaining = (attachmentImports[id] ?? 1) - 1
+        attachmentImports[id] = remaining > 0 ? remaining : nil
+    }
+    func importAttachmentProviders(_ providers: [NSItemProvider], target: AttachmentTarget) {
+        guard beginAttachmentImport(count: providers.count, target: target) else { return }
+        let importID = UUID()
+        attachmentProviderTasks[importID] = Task {
+            defer { endAttachmentImport(target: target); attachmentProviderTasks[importID] = nil }
+            for (index, provider) in providers.enumerated() {
+                do {
+                    let source = try await AttachmentProviderImport.copyImage(from: provider)
+                    defer { try? FileManager.default.removeItem(at: source) }
+                    guard generation == target.generation else { return }
+                    let attachment = try await Task.detached(priority: .userInitiated) {
+                        let prepared = try AttachmentPreparation.prepare(url: source, name: "Pasted image \(index + 1)." + source.pathExtension)
+                        try AttachmentStore(scope: target.scope).save(prepared)
+                        return prepared.attachment
+                    }.value
+                    guard generation == target.generation else {
+                        try? AttachmentStore(scope: target.scope).remove(attachment)
+                        return
+                    }
+                    cacheAttachment(attachment, scope: target.scope)
+                    attachmentDrafts[resolvedAgentID(target.agentID), default: []].append(attachment); persist()
+                } catch {
+                    guard generation == target.generation else { return }
+                    attachmentErrors[resolvedAgentID(target.agentID)] = error.localizedDescription
+                }
+            }
+        }
     }
     func importAttachmentFiles(_ urls: [URL], target: AttachmentTarget) {
         guard beginAttachmentImport(count: urls.count, target: target) else { return }
         Task {
-            defer { if generation == target.generation { attachmentImports.remove(resolvedAgentID(target.agentID)) } }
+            defer { endAttachmentImport(target: target) }
             for url in urls {
                 do {
                     let attachment = try await Task.detached(priority: .userInitiated) {
+                        // Keep Files-provider access alive until its original has
+                        // been copied into the account's attachment store.
+                        let access = url.startAccessingSecurityScopedResource()
+                        defer { if access { url.stopAccessingSecurityScopedResource() } }
                         if UTType(filenameExtension: url.pathExtension)?.conforms(to: .movie) == true {
                             let prepared = try await VideoAttachmentPreparation.prepare(url: url)
                             try AttachmentStore(scope: target.scope).save(prepared)
@@ -468,7 +632,7 @@ final class InboxModel: ObservableObject {
     func importAttachmentPhotos(_ items: [PhotosPickerItem], target: AttachmentTarget) {
         guard beginAttachmentImport(count: items.count, target: target) else { return }
         Task {
-            defer { if generation == target.generation { attachmentImports.remove(resolvedAgentID(target.agentID)) } }
+            defer { endAttachmentImport(target: target) }
             for (index, item) in items.enumerated() {
                 do {
                     let attachment: MessageAttachment
@@ -508,7 +672,7 @@ final class InboxModel: ObservableObject {
     func importCameraPhoto(_ image: UIImage, target: AttachmentTarget) {
         guard beginAttachmentImport(count: 1, target: target) else { return }
         Task {
-            defer { if generation == target.generation { attachmentImports.remove(resolvedAgentID(target.agentID)) } }
+            defer { endAttachmentImport(target: target) }
             do {
                 let attachment = try await Task.detached(priority: .userInitiated) {
                     guard let data = image.jpegData(compressionQuality: 0.95) else { throw AttachmentError.unsupportedImage }
@@ -534,6 +698,158 @@ final class InboxModel: ObservableObject {
         for attachment in attachments { attachmentURLs[attachment.id] = nil; attachmentMovieURLs[attachment.id] = nil }
         Task.detached(priority: .utility) {
             for attachment in attachments { try? store.remove(attachment) }
+        }
+    }
+
+    // Synchronous identity lookup never presents sign-in and does no network work.
+    // Pin this before recording so restoration cannot redirect a captured request.
+    func lockedVoiceAccountScope() throws -> String {
+        guard !isDemo else { throw APIError.invalidCredential }
+        if connected { return scope }
+        guard let credential = try KeychainAccount.read() else { throw APIError.invalidCredential }
+        return SHA256.hash(data: Data((credential.origin + ":" + String(credential.apiKey.prefix(21))).utf8)).map { String(format: "%02x", $0) }.joined()
+    }
+
+    func restoreLockedVoiceAccount(scope expected: String) async throws {
+        // An app launch may already be restoring. Do not race a second adoption.
+        while signingIn {
+            try await Task.sleep(for: .milliseconds(50))
+        }
+        try Task.checkCancellation()
+        guard try lockedVoiceAccountScope() == expected else { throw APIError.invalidCredential }
+        if !connected { await restoreSavedAccount() }
+        try Task.checkCancellation()
+        guard connected, !isDemo, scope == expected else { throw APIError.invalidCredential }
+    }
+
+    // Recovery has its own account-scoped journal until it can enter normal drafts.
+    // It is never rendered by the Live Activity or exposed to another account.
+    func retainLockedVoiceRecovery(_ text: String, captureID: String, accountScope: String) {
+        guard let text = QuickVoiceInput.finalText(text) else { return }
+        // Once queued, recovery belongs permanently to that stable message ID.
+        // Reconciliation may already have removed an admitted turn from pending.
+        if let target = lockedVoiceOwnedTarget(captureID, accountScope: accountScope) {
+            UserDefaults.standard.set(target, forKey: "inbox.lockedVoiceLastTarget." + accountScope)
+            return
+        }
+        let key = "inbox.lockedVoiceRecovery." + accountScope
+        var saved = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
+        saved[captureID] = text
+        UserDefaults.standard.set(saved, forKey: key)
+        if connected, scope == accountScope { restoreLockedVoiceRecovery() }
+    }
+
+    private func restoreLockedVoiceRecovery() {
+        let key = "inbox.lockedVoiceRecovery." + scope
+        let saved = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
+        guard !saved.isEmpty else { return }
+        for (captureID, text) in saved {
+            // A pending message already owns retries and its stable admission ID.
+            guard lockedVoiceOwnedTarget(captureID, accountScope: scope) == nil,
+                  !pending.contains(where: { $0.id == captureID }) else { continue }
+            let id = resolvedAgentID("draft-" + captureID)
+            if !cards.contains(where: { $0.id == id }) {
+                pendingCreations.insert(id)
+                cards.insert(newConversationCard(id), at: 0)
+            }
+            drafts[id] = text
+            UserDefaults.standard.set(id, forKey: "inbox.lockedVoiceLastTarget." + scope)
+        }
+        persist()
+        // Keep the journal until the normal preferences write has completed.
+        Task { [preferences] in
+            await preferences.flush()
+            if UserDefaults.standard.dictionary(forKey: key) as? [String: String] == saved {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
+        }
+    }
+
+    private func lockedVoiceOwnedTarget(_ captureID: String, accountScope: String) -> String? {
+        (UserDefaults.standard.dictionary(forKey: "inbox.lockedVoiceOwnership." + accountScope) as? [String: String])?[captureID]
+    }
+
+    private func ownLockedVoice(_ captureID: String, target: String, accountScope: String) {
+        let key = "inbox.lockedVoiceOwnership." + accountScope
+        var owned = UserDefaults.standard.dictionary(forKey: key) as? [String: String] ?? [:]
+        owned[captureID] = target
+        UserDefaults.standard.set(owned, forKey: key)
+        UserDefaults.standard.set(target, forKey: "inbox.lockedVoiceLastTarget." + accountScope)
+    }
+
+    func openLockedVoiceRecovery() async {
+        while signingIn {
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+        }
+        if !connected { await restoreSavedAccount() }
+        guard connected, !isDemo else { return }
+        restoreLockedVoiceRecovery()
+        guard let target = UserDefaults.standard.string(forKey: "inbox.lockedVoiceLastTarget." + scope),
+              cards.contains(where: { $0.id == resolvedAgentID(target) }) else { return }
+        select(resolvedAgentID(target))
+    }
+
+    /// Return only after cloud admission. Never route locked capture to deviceHand.
+    /// The capture UUID is both the persisted message ID and cloud idempotency key.
+    func submitLockedVoice(_ text: String, captureID: String, accountScope expected: String,
+                           generation epoch: UUID) async throws {
+        try Task.checkCancellation()
+        guard connected, !isDemo, scope == expected, generation == epoch, let client,
+              let input = QuickVoiceInput.finalText(text), UUID(uuidString: captureID) != nil else {
+            throw APIError.invalidCredential
+        }
+        let localID = "draft-" + captureID
+        if let existing = pending.first(where: { $0.id == captureID }) {
+            guard existing.input == input else { throw APIError.invalidResponse }
+            if existing.phase == .queued || existing.remoteAdmission == true { return }
+            // An ambiguous attempt must be retried explicitly from the ordinary queue.
+            throw APIError.invalidResponse
+        }
+        guard lockedVoiceOwnedTarget(captureID, accountScope: expected) == nil else { throw APIError.invalidResponse }
+        if !cards.contains(where: { $0.id == resolvedAgentID(localID) }) {
+            pendingCreations.insert(localID)
+            cards.insert(newConversationCard(localID), at: 0)
+        }
+        let message = PendingMessage(agentID: resolvedAgentID(localID), input: input, predecessor: "", id: captureID)
+        pending.append(message); drafts[message.agentID] = ""; busy.insert(message.agentID); persist()
+        ownLockedVoice(captureID, target: message.agentID, accountScope: expected)
+        defer { if generation == epoch { busy.remove(resolvedAgentID(localID)) } }
+        do {
+            await preferences.flush()
+            try Task.checkCancellation()
+            guard generation == epoch, scope == expected else { throw APIError.invalidCredential }
+            _ = try await readyAgent(message.agentID)
+            try Task.checkCancellation()
+            guard generation == epoch, scope == expected,
+                  let current = pending.first(where: { $0.id == captureID }), current.phase == .submitting else {
+                throw CancellationError()
+            }
+            // Persist the remote conversation binding before admitting its first turn.
+            await preferences.flush()
+            try Task.checkCancellation()
+            guard generation == epoch, scope == expected,
+                  pending.first(where: { $0.id == captureID })?.phase == .submitting else { throw CancellationError() }
+            let receipt = try await client.command(current.submission)
+            guard generation == epoch, scope == expected else { throw APIError.invalidCredential }
+            guard receipt["turn_id"].string == captureID,
+                  ["accepted", "queued", "running", "completed", "cancelled", "failed"].contains(receipt["state"].string) else {
+                throw APIError.invalidResponse
+            }
+            if let index = pending.firstIndex(where: { $0.id == captureID }) {
+                try pending[index].acknowledge(receipt)
+                persist()
+                await preferences.flush()
+            }
+            try Task.checkCancellation()
+        } catch {
+            if generation == epoch, let index = pending.firstIndex(where: { $0.id == captureID }),
+               pending[index].phase == .submitting {
+                pending[index].phase = .failed
+                pending[index].error = "Delivery unconfirmed. Retry keeps the same message ID."
+                persist()
+                await preferences.flush()
+            }
+            throw error
         }
     }
 
@@ -637,14 +953,21 @@ final class InboxModel: ObservableObject {
             return false
         }
     }
+    /// Optional sensor context must never prompt or prevent a task from starting.
+    private static func promptLocationContext() async -> JSON? {
+        let provider = HandLocationProvider.shared
+        if let recent = provider.cachedSnapshot(maxAgeSeconds: 60) { return recent.json }
+        return try? await provider.currentSnapshot(timeoutSeconds: 2).json
+    }
+
     func connect(origin: String, key: String, saveCredential: Bool = true) async throws {
         let attempt = UUID(); connectionAttempt = attempt
         let credential = try AccountCredential(origin: origin.trimmingCharacters(in: .whitespacesAndNewlines), apiKey: key.trimmingCharacters(in: .whitespacesAndNewlines))
         let candidate: ManagedClient
         #if DEBUG && targetEnvironment(simulator)
-        candidate = ManagedClient(credential: credential, configuration: StartupFixture.enabled ? StartupFixture.configuration : nil)
+        candidate = ManagedClient(credential: credential, configuration: StartupFixture.enabled ? StartupFixture.configuration : nil, locationContext: { await Self.promptLocationContext() })
         #else
-        candidate = ManagedClient(credential: credential)
+        candidate = ManagedClient(credential: credential, locationContext: { await Self.promptLocationContext() })
         #endif
         let accountScope = SHA256.hash(data: Data((credential.origin + ":" + String(credential.apiKey.prefix(21))).utf8)).map { String(format: "%02x", $0) }.joined()
         let previousID = UserDefaults.standard.string(forKey: "inbox.selectedTab." + accountScope)
@@ -688,6 +1011,7 @@ final class InboxModel: ObservableObject {
         }
         cards = initial
         restoreCreations()
+        restoreLockedVoiceRecovery()
         if let previousID, !closedConversationIDs.contains(previousID), cards.contains(where: { $0.id == previousID }) {
             deck.reconcile(cards.filter { !closedConversationIDs.contains($0.id) }.map(\.id)); deck.focus(previousID)
             if let openingRequest {
@@ -700,7 +1024,7 @@ final class InboxModel: ObservableObject {
     }
     func musicConnectorClient() -> ManagedClient? {
         guard connected, !isDemo, let accountCredential else { return nil }
-        return ManagedClient(credential: accountCredential)
+        return ManagedClient(credential: accountCredential, locationContext: { await Self.promptLocationContext() })
     }
 
     func disconnect() throws {
@@ -711,6 +1035,63 @@ final class InboxModel: ObservableObject {
         agentNotifications.update(account: "", threads: [], foreground: false)
         reset()
     }
+    private var presentedBrowserRequests: Set<String> = []
+    func claimBrowserRequestPresentation(_ intake: VaultIntake) -> Bool {
+        guard connected, intake.isCurrentBrowserRequest(agentID: focused?.id ?? ""),
+              let id = intake.challengeID else { return false }
+        return presentedBrowserRequests.insert("\(generation):\(id)").inserted
+    }
+    var vaultIntakeAccount: UUID { generation }
+    func vaultLoginMetadata(id: String, account: UUID) async throws -> VaultIntakeReceipt {
+        guard let client, connected, !isDemo, generation == account else { throw APIError.invalidCredential }
+        let item = try await client.vaultLoginMetadata(id: id)
+        guard generation == account, !Task.isCancelled else { throw APIError.invalidCredential }
+        return item
+    }
+    func authorizeVaultOrigin(id: String, origin: String, name: String, account: UUID) async throws -> VaultIntakeReceipt {
+        guard let client, connected, !isDemo, generation == account else { throw APIError.invalidCredential }
+        let receipt = try await client.authorizeVaultOrigin(id: id, origin: origin, name: name)
+        guard generation == account, connected, !Task.isCancelled else { throw APIError.invalidCredential }
+        return receipt
+    }
+    func saveVaultItem(kind: String, values: [String: String], account: UUID) async throws -> VaultIntakeReceipt {
+        guard let client, connected, !isDemo, generation == account else { throw APIError.invalidCredential }
+        let receipt = try await client.saveVaultItem(kind: kind, values: values)
+        guard generation == account, connected, !Task.isCancelled else { throw APIError.invalidCredential }
+        return receipt
+    }
+    func browserTakeover(intake: VaultIntake, action: [String: JSON], account: UUID) async throws -> BrowserTakeoverFrame {
+        guard let client, connected, !isDemo, generation == account else { throw APIError.invalidCredential }
+        let frame = try await client.browserTakeover(intake: intake, action: action)
+        guard generation == account, connected, !Task.isCancelled else { throw APIError.invalidCredential }
+        return frame
+    }
+    func submitBrowserVerification(intake: VaultIntake, code: String, account: UUID) async throws {
+        guard let client, connected, !isDemo, generation == account else { throw APIError.invalidCredential }
+        try await client.submitBrowserVerification(intake: intake, code: code)
+        guard generation == account, connected, !Task.isCancelled else { throw APIError.invalidCredential }
+    }
+    func publishBrowserVerificationReceipt(intake: VaultIntake, agentID: String, account: UUID) {
+        guard generation == account, connected, !isDemo, intake.agentID == agentID,
+              let challenge = intake.challengeID, cards.contains(where: { $0.id == agentID }) else { return }
+        let value: JSON = .object(["type": .string(intake.operation == "browser_takeover" ? "browser_vault_takeover_receipt" : "browser_vault_challenge_receipt"),
+            "status": .string(intake.operation == "browser_takeover" ? "finished" : "submitted"), "challenge_id": .string(challenge)])
+        let predecessor = pending.last(where: { $0.agentID == agentID })?.id ?? (focused?.id == agentID ? focusedTurn : "")
+        let message = PendingMessage(agentID: agentID, input: value.pretty, predecessor: predecessor)
+        pending.append(message); busy.insert(agentID); persist()
+        Task { await submit(message, epoch: account) }
+    }
+    func publishVaultReceipt(_ receipt: VaultIntakeReceipt, intake: VaultIntake, agentID: String, account: UUID) {
+        guard generation == account, connected, !isDemo, cards.contains(where: { $0.id == agentID }) else { return }
+        var value: [String: JSON] = ["type": .string("vault_intake_receipt"), "status": .string("saved"),
+            "id": .string(receipt.id), "kind": .string(receipt.kind), "name": .string(receipt.name),
+            "operation": .string(intake.operation ?? "create")]
+        if let origin = intake.origin { value["browser_origin"] = .string(origin) }
+        let predecessor = pending.last(where: { $0.agentID == agentID })?.id ?? (focused?.id == agentID ? focusedTurn : "")
+        let message = PendingMessage(agentID: agentID, input: JSON.object(value).pretty, predecessor: predecessor)
+        pending.append(message); busy.insert(agentID); persist()
+        Task { await submit(message, epoch: account) }
+    }
     func connectorOverview() async throws -> ConnectorOverview {
         guard let client, connected, !isDemo else { throw APIError.invalidResponse }
         return try await client.connectorOverview()
@@ -718,6 +1099,10 @@ final class InboxModel: ObservableObject {
     func beginConnectorAuthorization(_ provider: String) async throws -> ConnectorAuthorization {
         guard let client, connected, !isDemo else { throw APIError.invalidResponse }
         return try await client.beginConnectorAuthorization(provider: provider)
+    }
+    func pollLinkAuthorization(attemptID: String) async throws -> String {
+        guard let client, connected, !isDemo else { throw APIError.invalidResponse }
+        return try await client.pollLinkAuthorization(attemptID: attemptID)
     }
     func disconnectConnector(_ provider: String, connectionID: String) async throws {
         guard let client, connected, !isDemo else { throw APIError.invalidResponse }
@@ -765,9 +1150,12 @@ final class InboxModel: ObservableObject {
         projection?.cancel(); projection = nil; eventBytes = []; retainedBytes = 0; navigation = []; deferred = [:]
         observedAgentID = nil; threadLoading = false; threadError = nil
         connected = false; restoringAccount = false; restorationError = nil
-        isDemo = false; cards = []; deck = InboxDeck(); rows = []; events = []; drafts = [:]; seen = [:]
-        attachmentDrafts = [:]; attachmentURLs = [:]; attachmentMovieURLs = [:]; attachmentImports = []; attachmentErrors = [:]
+        isDemo = false; cards = []; deck = InboxDeck(); mediaProjection = InboxMediaProjection(); rows = []; events = []; drafts = [:]; seen = [:]
+        for task in attachmentProviderTasks.values { task.cancel() }
+        attachmentProviderTasks = [:]
+        attachmentDrafts = [:]; attachmentURLs = [:]; attachmentMovieURLs = [:]; attachmentImports = [:]; attachmentErrors = [:]
         scope = ""; error = nil; notice = nil; busy = []; retries = [:]; refreshing = false
+        newerAfter = nil; latestJumpEvents = nil
         hasOlder = false; hasNewer = false; loadingOlder = false; loadingNewer = false; followingLatest = true; connection = "Disconnected"; pending = []; pinnedThreadID = nil; demoRows = [:]; demoFaults = []
     }
     func setActive(_ active: Bool) {
@@ -956,11 +1344,19 @@ final class InboxModel: ObservableObject {
             let merged = listing.map { summary in
                 var card = retained[summary.id] ?? summary
                 card.title = summary.title; card.updatedAt = max(card.updatedAt, summary.updatedAt); card.turnCount = summary.turnCount
+                card.lastUserMessageAt = max(card.lastUserMessageAt, summary.lastUserMessageAt)
                 card.mayHaveScheduledJobs = summary.mayHaveScheduledJobs
+                if summary.presentationUpdatedAt >= card.presentationUpdatedAt {
+                    card.presentationStatus = summary.presentationStatus
+                    card.presentationActivity = summary.presentationActivity
+                    card.presentationTurnID = summary.presentationTurnID
+                    card.presentationUpdatedAt = summary.presentationUpdatedAt
+                }
                 return card
             } + created
             if cards != merged { cards = merged }
-            reconcile()
+            await reconcileInBackground()
+            guard generation == epoch, !Task.isCancelled else { return }
             // Keep state coverage for running work, but fetch older history only
             // when the user opens the conversation or reveals its overview.
             let pendingIDs = Set(pending.map(\.agentID) + cancellations.map(\.agentID)).union(busy)
@@ -1021,7 +1417,7 @@ final class InboxModel: ObservableObject {
         }
         // Unchanged roster reads must not re-sort every conversation or publish
         // the same error again. Both invalidate the entire visible SwiftUI tree.
-        if changed { reconcile() }
+        if changed { await reconcileInBackground() }
     }
     private func seenCursor(_ id: String) -> Cursor? { seen[id].flatMap { Cursor(rawValue: $0) } }
     private func forgetUnavailableAgent(_ id: String) {
@@ -1036,28 +1432,25 @@ final class InboxModel: ObservableObject {
         if pinnedThreadID == id { pinnedThreadID = nil }
         reconcile()
     }
-    private func reconcile() {
-        openedConversations.formIntersection(Set(cards.map(\.id)))
-        let available = recentConversationIDs
-        var unique = Set<String>()
-        tabOrder.removeAll { !available.contains($0) || !unique.insert($0).inserted }
-        let known = Set(tabOrder)
-        tabOrder.append(contentsOf: cards.sorted(by: AgentCard.mostRecentFirst).map(\.id).filter { available.contains($0) && !known.contains($0) })
+    private var rosterSnapshot: InboxRosterProjection {
+        InboxRosterProjection(cards: cards, focusedID: deck.focusedID, opened: openedConversations,
+            closed: closedConversationIDs, tabOrder: tabOrder, pinnedID: pinnedThreadID,
+            filter: InboxRosterProjection.Filter(rawValue: filter.rawValue) ?? .all, seen: seen, deferred: deferred)
+    }
+    private func reconcileInBackground() async {
+        let snapshot = rosterSnapshot, revision = rosterRevision, epoch = generation
+        let task = Task.detached(priority: .userInitiated) { snapshot.resolve() }
+        let result = await withTaskCancellationHandler(operation: { await task.value }, onCancel: { task.cancel() })
+        guard !Task.isCancelled, epoch == generation, revision == rosterRevision else { return }
+        publishRoster(result)
+    }
+    private func reconcile() { publishRoster(rosterSnapshot.resolve()) }
+    private func publishRoster(_ result: InboxRosterProjection.Result) {
+        if openedConversations != result.opened { openedConversations = result.opened }
+        if tabOrder != result.tabs { tabOrder = result.tabs }
         let previous = deck.focusedID
-        let eligible = cards.filter { card in
-            guard !closedConversationIDs.contains(card.id), available.contains(card.id) else { return false }
-            if card.id == pinnedThreadID { return true }
-            switch filter {
-            case .inbox: return card.isInInbox(seen: seenCursor(card.id), deferred: deferred[card.id])
-            case .running: return card.isRunning
-            case .all: return true
-            }
-        }.sorted { a, b in
-            let ar = a.needsAttention(seen: seenCursor(a.id)), br = b.needsAttention(seen: seenCursor(b.id))
-            return ar != br ? ar : a.updatedAt != b.updatedAt ? a.updatedAt > b.updatedAt : a.id < b.id
-        }
         var nextDeck = deck
-        nextDeck.reconcile(eligible.map(\.id))
+        nextDeck.reconcile(result.eligible)
         if nextDeck != deck { deck = nextDeck }
         if previous != deck.focusedID { observeFocused() }
         if !restoringAccount, let url = pendingActivityURL {
@@ -1068,13 +1461,13 @@ final class InboxModel: ObservableObject {
     private func prioritizeNext() {
         let order = Dictionary(uniqueKeysWithValues: deck.order.enumerated().map { ($0.element, $0.offset) })
         let visible = Set(order.keys)
-        let ranked = cards.filter { visible.contains($0.id) }.sorted { a, b in
-            let ad = deferred[a.id] == a.latestCursor, bd = deferred[b.id] == b.latestCursor
-            if ad != bd { return !ad }
-            let ar = a.needsAttention(seen: seenCursor(a.id)), br = b.needsAttention(seen: seenCursor(b.id))
-            if ar != br { return ar }
-            let ai = order[a.id] ?? 0, bi = order[b.id] ?? 0
-            return ai < bi
+        let ranked = cards.filter { visible.contains($0.id) }.map { card in
+            (id: card.id, deferred: deferred[card.id] == card.latestCursor,
+             attention: card.needsAttention(seen: seenCursor(card.id)), order: order[card.id] ?? 0)
+        }.sorted { a, b in
+            if a.deferred != b.deferred { return !a.deferred }
+            if a.attention != b.attention { return a.attention }
+            return a.order < b.order
         }
         var nextDeck = deck
         nextDeck.prioritize(ranked.map(\.id))
@@ -1104,11 +1497,40 @@ final class InboxModel: ObservableObject {
             return
         }
     }
+    private var schedulesMutating = false
+
+    func updateScheduledJob(_ job: ScheduledJob, cron: String, timezone: String, input: String,
+                            enabled: Bool, startsNewConversation: Bool) async throws {
+        guard !isDemo, !schedulesMutating, let client else { throw APIError.invalidCredential }
+        schedulesMutating = true
+        defer { schedulesMutating = false }
+        let epoch = generation
+        await schedulesTask?.value
+        guard generation == epoch else { throw CancellationError() }
+        let updated = try await client.updateScheduledJob(job, cron: cron, timezone: timezone, input: input,
+                                                         enabled: enabled, startsNewConversation: startsNewConversation)
+        guard generation == epoch else { throw CancellationError() }
+        scheduledJobs = scheduledJobs.map { $0.id == updated.id ? updated : $0 }
+    }
+
+    func cancelScheduledJob(_ job: ScheduledJob) async throws {
+        guard !isDemo, !schedulesMutating, let client else { throw APIError.invalidCredential }
+        schedulesMutating = true
+        defer { schedulesMutating = false }
+        let epoch = generation
+        await schedulesTask?.value
+        guard generation == epoch else { throw CancellationError() }
+        try await client.cancelScheduledJob(job)
+        guard generation == epoch else { throw CancellationError() }
+        scheduledJobs.removeAll { $0.id == job.id }
+    }
+
     func refreshScheduledJobs() async {
         await startScheduledJobsRefresh()?.value
     }
 
     @discardableResult private func startScheduledJobsRefresh(initialListing: [AgentCard]? = nil) -> Task<Void, Never>? {
+        guard !schedulesMutating else { return nil }
         guard connected else { return nil }
         // The model owns the read: opening the screen joins an existing prefetch,
         // and pushing a detail view does not cancel useful work for this account.
@@ -1257,7 +1679,7 @@ final class InboxModel: ObservableObject {
         guard changed || restart else { return }
         if changed, let previous = observedAgentID, !isDemo, focusedHistoryLoaded {
             // Preserve loaded history along with each tab's draft.
-            tabHistories[previous] = TabHistory(events: events, cursor: cursor, hasOlder: hasOlder, hasNewer: hasNewer,
+            tabHistories[previous] = TabHistory(events: events, cursor: cursor, hasOlder: hasOlder, hasNewer: hasNewer, newerAfter: newerAfter,
                                                 bytes: eventBytes, rows: rows, retainedBytes: retainedBytes, projector: streamProjector, media: mediaProjection)
             recentTabs.removeAll { $0 == previous }; recentTabs.append(previous)
             trimTabCache()
@@ -1266,15 +1688,16 @@ final class InboxModel: ObservableObject {
         if let id = observedAgentID { cancelOverview(id) }
         focusedState?.cancel(); focusedState = nil
         focusedHistoryRequest?.cancel(); focusedHistoryRequest = nil
-        streaming?.cancel(); streaming = nil; projection?.cancel(); projection = nil; observation = UUID(); projectedFirstCursor = nil; loadingOlder = false; loadingNewer = false
+        streaming?.cancel(); streaming = nil; projection?.cancel(); projection = nil; observation = UUID(); projectedFirstCursor = nil; loadingOlder = false; loadingNewer = false; latestJumpEvents = nil
         threadError = nil
         if changed {
             // Each cached reading window keeps its incremental projection. Tab
             // switches and foregrounding only need to apply newly received events.
             streamProjector = deck.focusedID.flatMap { tabHistories[$0]?.projector } ?? TranscriptStreamProjection()
             focusedHistoryLoaded = false
+            mediaProjection = InboxMediaProjection()
             rows = []; events = []; eventBytes = []; retainedBytes = 0; cursor = .zero
-            olderBefore = nil; hasOlder = false; hasNewer = false; followingLatest = true; protectedHistoryCursors = nil; selectedTurn = ""
+            olderBefore = nil; newerAfter = nil; hasOlder = false; hasNewer = false; followingLatest = true; protectedHistoryCursors = nil; selectedTurn = ""
         }
         resumeOverview()
         guard let id = deck.focusedID else {
@@ -1291,13 +1714,15 @@ final class InboxModel: ObservableObject {
         if changed, let cached = tabHistories.removeValue(forKey: id) {
             recentTabs.removeAll { $0 == id }
             focusedHistoryLoaded = true
-            events = cached.events; cursor = cached.cursor; hasOlder = cached.hasOlder; hasNewer = cached.hasNewer
+            events = cached.events; cursor = cached.cursor; hasOlder = cached.hasOlder; newerAfter = cached.newerAfter; hasNewer = cached.hasNewer
             eventBytes = cached.bytes; retainedBytes = cached.retainedBytes
-            olderBefore = events.first?.cursor; mediaProjection = cached.media; rows = cached.rows
+            olderBefore = events.first?.cursor; publishPreparedRows(cached.rows, media: cached.media)
+            os_signpost(.event, log: accountPerformanceLog, name: "CachedHistoryRowsPublished", "rows=%d", rows.count)
         }
         threadLoading = !focusedHistoryLoaded
         guard let client, isActive else { return }
         let epoch = generation, token = observation
+        if !isDemo { Task { try? await client.prepare(id) } }
         if !focusedHistoryLoaded {
             if let opening = openingHistory, opening.id == id {
                 focusedHistoryRequest = opening.request
@@ -1342,13 +1767,13 @@ final class InboxModel: ObservableObject {
                         }
                         guard self.generation == epoch, self.observation == token, !Task.isCancelled else { return }
                         self.focusedHistoryRequest = nil
-                        self.events = prepared.events; self.hasOlder = prepared.hasMore; self.hasNewer = prepared.hasNewer
+                        self.events = prepared.events; self.newerAfter = prepared.hasNewer ? prepared.events.last?.cursor : nil; self.hasOlder = prepared.hasMore; self.hasNewer = prepared.hasNewer
                         self.eventBytes = prepared.byteCounts; self.retainedBytes = prepared.byteCounts.reduce(0, +)
                         self.cursor = prepared.latest; self.olderBefore = self.events.first?.cursor
                         let media = await self.prepareMedia(prepared.rows)
                         guard self.generation == epoch, self.observation == token, !Task.isCancelled else { return }
-                        self.mediaProjection = media
-                        self.rows = prepared.rows; self.projectedFirstCursor = self.events.first?.cursor
+                        self.streamProjector = prepared.projector
+                        self.publishPreparedRows(prepared.rows, media: media); self.projectedFirstCursor = self.events.first?.cursor
                         self.focusedHistoryLoaded = true
                         if let index = self.cards.firstIndex(where: { $0.id == id }) {
                             var card = self.cards[index]
@@ -1358,6 +1783,7 @@ final class InboxModel: ObservableObject {
                             self.reconcilePending(id: id, events: self.events, state: card)
                         }
                         self.threadLoading = false; loaded = true
+                        os_signpost(.event, log: accountPerformanceLog, name: "HistoryRowsPublished", "rows=%d", self.rows.count)
                     }
                     self.streamReceivedFrame = false
                     try await client.stream(id, after: self.cursor) { [weak self] frame in
@@ -1509,7 +1935,7 @@ final class InboxModel: ObservableObject {
                 if cards[index] != card { cards[index] = card }
                 reconcilePending(id: id, events: history, state: card)
                 historyCursors[id] = max(historyCursors[id] ?? .zero, card.appliedHistoryCursor)
-                reconcile()
+                await reconcileInBackground()
             }
             if overviewEvents[id]?.last?.cursor == history.last?.cursor { return }
             do { try await Task.sleep(for: .milliseconds(100)) } catch { return }
@@ -1519,22 +1945,15 @@ final class InboxModel: ObservableObject {
         guard generation == epoch, observation == token else { return }
         if let event = frame.event, event.cursor > cursor {
             reconcilePending(id: id, events: [event])
-            if hasNewer || !followingLatest || loadingOlder || loadingNewer {
-                // Keep the reader's window stationary. The live cursor advances
-                // independently; forward paging recovers every skipped event.
-                hasNewer = true
-                if let index = cards.firstIndex(where: { $0.id == id }) {
-                    var card = cards[index]; card.apply(events: [event])
-                    if cards[index] != card { cards[index] = card }
-                }
-            } else {
-                protectedHistoryCursors = nil
-                events.append(event)
-                eventBytes.append(frame.payloadBytes); retainedBytes += frame.payloadBytes
-                trimMeasuredEvents(towardOlder: false)
-                olderBefore = events.first?.cursor
-                scheduleProjection(id: id, epoch: epoch, token: token)
-            }
+            latestJumpEvents?.append((event, frame.payloadBytes))
+            // Reading older messages affects scrolling, never live admission.
+            // newerAfter separately tracks any omitted historical range.
+            if followingLatest { protectedHistoryCursors = nil }
+            events.append(event)
+            eventBytes.append(frame.payloadBytes); retainedBytes += frame.payloadBytes
+            trimMeasuredEvents(towardOlder: false)
+            olderBefore = events.first?.cursor
+            scheduleProjection(id: id, epoch: epoch, token: token)
         }
         if let position = frame.cursor { cursor = max(cursor, position) }
         // After a failure, the initial cursor alone does not establish a healthy
@@ -1557,7 +1976,29 @@ final class InboxModel: ObservableObject {
             }
         }
     }
+    private func publishPreparedRows(_ projected: [TranscriptRow], media: InboxMediaProjection) {
+        mediaPreparation?.cancel(); mediaPreparation = nil
+        publishingPreparedRows = true
+        rows = projected
+        mediaProjection = media
+        publishingPreparedRows = false
+    }
+    private func scheduleMediaPreparation() {
+        mediaPreparation?.cancel()
+        let snapshot = rows, revision = rowsRevision, epoch = generation
+        mediaPreparation = Task { [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            let prepared = await self.prepareMedia(snapshot)
+            guard !Task.isCancelled, self.generation == epoch, self.rowsRevision == revision else { return }
+            self.mediaProjection = prepared
+            self.objectWillChange.send()
+            self.mediaPreparation = nil
+        }
+    }
     private func prepareMedia(_ rows: [TranscriptRow]) async -> InboxMediaProjection {
+        let signpostID = OSSignpostID(log: accountPerformanceLog)
+        os_signpost(.begin, log: accountPerformanceLog, name: "HistoryMediaPreparation", signpostID: signpostID, "rows=%d", rows.count)
+        defer { os_signpost(.end, log: accountPerformanceLog, name: "HistoryMediaPreparation", signpostID: signpostID) }
         let previous = mediaProjection
         let task = Task.detached(priority: .userInitiated) {
             var next = previous
@@ -1571,24 +2012,46 @@ final class InboxModel: ObservableObject {
         let history = events, revision = eventsRevision
         guard let projected = try? await streamProjector.rows(history),
               generation == epoch, observation == token, !Task.isCancelled else { return false }
-        let media = await prepareMedia(projected)
+        // The retained window can exceed its byte target while an active turn or
+        // reading anchor protects it. Keep every history-sized operation off the
+        // main actor, including equality and the card's event/preview scans.
+        let previousRows = rows, previousRowsRevision = rowsRevision
+        let previousMedia = mediaProjection
+        let previousCard = cards.first(where: { $0.id == id })
+        let task = Task.detached(priority: .userInitiated) {
+            let signpostID = OSSignpostID(log: accountPerformanceLog)
+            os_signpost(.begin, log: accountPerformanceLog, name: "HistoryPublicationPreparation", signpostID: signpostID, "events=%d rows=%d", history.count, projected.count)
+            defer { os_signpost(.end, log: accountPerformanceLog, name: "HistoryPublicationPreparation", signpostID: signpostID) }
+            let prepared = TranscriptPublicationPreparation(events: history, rows: projected,
+                previousRows: previousRows, card: previousCard, rowsRevision: previousRowsRevision)
+            var media = previousMedia
+            if prepared.rowsChanged { media.update(projected) }
+            return (media, prepared)
+        }
+        let (media, prepared) = await withTaskCancellationHandler(
+            operation: { await task.value }, onCancel: { task.cancel() })
         guard generation == epoch, observation == token, !Task.isCancelled else { return false }
+        // State refreshes and history navigation may run while preparation is
+        // suspended. Retry against their latest inputs instead of restoring an
+        // old card or publishing equality computed against different rows.
+        guard prepared.isCurrent(rowsRevision: rowsRevision,
+            card: cards.first(where: { $0.id == id })) else { return true }
         // Rows and media become visible together. A second asynchronous media
         // insertion after a history prepend would invalidate its reading anchor.
         if history.first?.cursor == events.first?.cursor {
-            mediaProjection = media
-            if rows != projected { rows = projected }
+            if prepared.rowsChanged { publishPreparedRows(projected, media: media) }
             projectedFirstCursor = history.first?.cursor
-            if let index = cards.firstIndex(where: { $0.id == id }) {
-                var card = cards[index]
-                card.apply(events: history, transcriptRows: projected)
+            if let card = prepared.card, let index = cards.firstIndex(where: { $0.id == id }) {
                 historyCursors[id] = max(historyCursors[id] ?? .zero, history.last?.cursor ?? .zero)
                 if cards[index] != card { cards[index] = card }
             }
         }
         return revision != eventsRevision
     }
-    func setHistoryAtLatest(_ atLatest: Bool) { followingLatest = atLatest && !hasNewer }
+    var newerHistoryBoundary: Cursor? { hasNewer ? newerAfter : nil }
+    var needsLatestHistory: Bool { hasNewer && events.last?.cursor == newerAfter }
+
+    func setHistoryAtLatest(_ atLatest: Bool) { followingLatest = atLatest && !needsLatestHistory }
 
     func protectHistoryRows(_ ids: Set<String>) {
         if let previous = protectedHistorySelection, previous.ids == ids, previous.revision == eventsRevision { return }
@@ -1622,7 +2085,8 @@ final class InboxModel: ObservableObject {
         guard removed > 0 else { return }
         if towardOlder {
             retainedBytes -= eventBytes.suffix(removed).reduce(0, +)
-            events.removeLast(removed); eventBytes.removeLast(removed); hasNewer = true
+            events.removeLast(removed); eventBytes.removeLast(removed)
+            newerAfter = min(newerAfter ?? events.last!.cursor, events.last!.cursor); hasNewer = true
         } else {
             retainedBytes -= eventBytes.prefix(removed).reduce(0, +)
             events.removeFirst(removed); eventBytes.removeFirst(removed); hasOlder = true
@@ -1631,36 +2095,64 @@ final class InboxModel: ObservableObject {
 
     func loadNewer(latest: Bool = false) async {
         guard let client, let id = focused?.id, !loadingOlder, !loadingNewer,
-              latest || hasNewer, let after = events.last?.cursor else { return }
+              latest || hasNewer, let after = newerAfter ?? events.last?.cursor else { return }
         cancelOlderHistoryPrefetch()
         let token = observation, epoch = generation
         loadingNewer = true
-        defer { if token == observation { loadingNewer = false } }
+        latestJumpEvents = latest ? [] : nil
+        defer {
+            if token == observation {
+                loadingNewer = false
+                latestJumpEvents = nil
+            }
+        }
         do {
+            // Keep readable context, then fetch the actual tail: opening-history
+            // recovery can retain an older readable window when its tail is large.
             let opening = latest ? try await client.conversationHistory(id) : nil
-            let page = latest ? nil : try await client.history(id, after: after)
-            let loadedEvents = opening?.events ?? page!.events
-            let loadedLatest = opening?.latest ?? page!.latest
-            let loadedMore = opening?.hasMore ?? page!.hasMore
+            let page = try await client.history(id, after: latest ? nil : after)
+            let loadedEvents = page.events
+            let loadedLatest = page.latest
+            let loadedMore = page.hasMore
             let bytes = try await TranscriptPreparation.byteCounts(loadedEvents)
             guard token == observation, generation == epoch, !Task.isCancelled else { return }
+            historyMutationRevision = UUID()
             if latest {
-                events = loadedEvents; eventBytes = bytes; hasOlder = loadedMore
-                hasNewer = opening!.hasNewer || loadedLatest < cursor
-                followingLatest = !hasNewer
+                let context = opening!
+                let existing = Set(context.events.map { $0.cursor.rawValue })
+                let added = loadedEvents.indices.filter { !existing.contains(loadedEvents[$0].cursor.rawValue) }
+                let merged = (Array(zip(context.events, context.byteCounts)) + added.map { (loadedEvents[$0], bytes[$0]) })
+                    .sorted { $0.0.cursor < $1.0.cursor }
+                events = merged.map { $0.0 }; eventBytes = merged.map { $0.1 }; hasOlder = context.hasMore
+                // The snapshot covers events through loadedLatest. Preserve SSE
+                // events received after it while the request was in flight.
+                let tail = (latestJumpEvents ?? []).filter { $0.event.cursor > loadedLatest }
+                events.append(contentsOf: tail.map(\.event))
+                eventBytes.append(contentsOf: tail.map(\.bytes))
+                let gap = context.hasNewer || (page.hasMore && loadedEvents.first.map { $0.cursor > context.latest } == true)
+                newerAfter = gap ? context.events.last?.cursor : nil
+                hasNewer = gap
+                followingLatest = true
+                protectedHistoryCursors = nil
+                protectedHistorySelection = nil
             } else {
                 guard !loadedMore || loadedEvents.last.map({ $0.cursor > after }) == true else { throw APIError.invalidResponse }
-                let added = loadedEvents.indices.filter { loadedEvents[$0].cursor > after }
-                let overlap = min(1, events.count)
-                events.append(contentsOf: added.map { loadedEvents[$0] })
-                eventBytes.append(contentsOf: added.map { bytes[$0] })
-                retainedBytes += added.reduce(0) { $0 + bytes[$1] }
-                hasNewer = loadedMore || (events.last?.cursor ?? .zero) < max(cursor, loadedLatest)
-                trimMeasuredEvents(towardOlder: false, keeping: added.count + overlap)
+                let existing = Set(events.map { $0.cursor.rawValue })
+                let added = loadedEvents.indices.filter { !existing.contains(loadedEvents[$0].cursor.rawValue) }
+                let merged = (Array(zip(events, eventBytes)) + added.map { (loadedEvents[$0], bytes[$0]) })
+                    .sorted { $0.0.cursor < $1.0.cursor }
+                events = merged.map { $0.0 }; eventBytes = merged.map { $0.1 }
+                newerAfter = loadedMore ? loadedEvents.last?.cursor : nil
+                // Live events are already rendered. A terminal page closes the
+                // historical gap even when its event array is empty.
+                hasNewer = loadedMore
             }
-            cursor = max(cursor, latest ? loadedLatest : (events.last?.cursor ?? .zero))
+
+            latestJumpEvents = nil
+            cursor = max(cursor, loadedMore && !latest ? (events.last?.cursor ?? .zero) : loadedLatest)
             reconcilePending(id: id, events: loadedEvents)
             retainedBytes = eventBytes.reduce(0, +)
+            trimMeasuredEvents(towardOlder: false)
             olderBefore = events.first?.cursor
             scheduleProjection(id: id, epoch: epoch, token: token, delay: .zero)
             repeat { await projection?.value }
@@ -1697,6 +2189,7 @@ final class InboxModel: ObservableObject {
             let delay = Int(ProcessInfo.processInfo.environment["NANOCODEX_DEMO_HISTORY_DELAY_MS"] ?? "600") ?? 600
             try? await Task.sleep(for: .milliseconds(max(0, delay)))
             guard focused?.id == id else { return }
+            historyMutationRevision = UUID()
             rows.insert(contentsOf: (-12..<0).map { .init(id: "older-\($0)", role: "Agent", text: "Earlier note \($0 + 13). Context retained before the current work.") }, at: 0)
             demoRows[id] = rows; hasOlder = false; loadingOlder = false
             return
@@ -1722,6 +2215,7 @@ final class InboxModel: ObservableObject {
             }
             guard token == observation, generation == epoch, !Task.isCancelled else { return }
             guard !page.hasMore || page.events.first.map({ $0.cursor < before }) == true else { throw APIError.invalidResponse }
+            historyMutationRevision = UUID()
             let inserted = page.events.indices.filter { page.events[$0].cursor < before }
             let overlap = min(1, events.count)
             events.insert(contentsOf: inserted.map { page.events[$0] }, at: 0)
@@ -1766,11 +2260,21 @@ final class InboxModel: ObservableObject {
         catch { self.error = error.localizedDescription; return false }
         let attachments = focusedAttachments
         let predecessor = focusedQueue.messages.last?.id ?? focusedTurn
-        let message = PendingMessage(agentID: card.id, input: input, predecessor: predecessor, contextIDs: captured.map(\.id), attachments: attachments.isEmpty ? nil : attachments)
+        var message = PendingMessage(agentID: card.id, input: input, predecessor: predecessor, contextIDs: captured.map(\.id), attachments: attachments.isEmpty ? nil : attachments)
+        // Capture the running target at Send, before focus or roster can change.
+        let target = card.activeTurns.first
+        if let target {
+            message.predecessor = ""
+            message.phase = .starting
+            steeringTransfers.append(.init(agentID: card.id, sourceTurnID: message.id, targetTurnID: target, direct: true, sourceInput: input,
+                sourceCursor: max(cursor, card.latestCursor), sourceRowID: hasNewer ? nil : rows.last?.id))
+        }
         attachmentDrafts[card.id] = nil; attachmentErrors[card.id] = nil
+        if let index = cards.firstIndex(where: { $0.id == card.id }) { cards[index].lastUserMessageAt = Date().timeIntervalSince1970 * 1000 }
         pending.append(message); drafts[card.id] = ""; selectedContext[card.id] = nil; excludedContext[card.id] = nil; busy.insert(card.id); notice = nil; persist()
         let epoch = generation
-        if deviceHandEnabled, !isDemo { startHandTask(message, epoch: epoch) }
+        if target != nil { startSteering(message.id) }
+        else if deviceHandEnabled, !isDemo { startHandTask(message, epoch: epoch) }
         else { Task { await submit(message, epoch: epoch) } }
         return true
     }
@@ -1886,6 +2390,56 @@ final class InboxModel: ObservableObject {
         handTasks.endObservation(id: id, outcome: stopTurn ? .stopped : .paused)
     }
 
+    private func submissionWithAttachments(_ message: PendingMessage, epoch: UUID) async throws -> AgentCommand {
+            var command = message.submission
+            if let attachments = message.attachments, !attachments.isEmpty {
+                let store = try AttachmentStore(scope: scope)
+                guard let client else { throw APIError.invalidCredential }
+                guard generation == epoch,
+                      let pendingIndex = pending.firstIndex(where: { $0.id == message.id }),
+                      pending[pendingIndex].phase != .cancelling else { throw CancellationError() }
+                let usePhone = pending[pendingIndex].resolveAttachmentTransport(phoneEnabled: deviceHandEnabled)
+                persist()
+                await preferences.flush()
+                guard generation == epoch, !Task.isCancelled else { throw CancellationError() }
+                var retained = attachments
+                // Verify saved drafts before publishing or uploading, including legacy drafts.
+                _ = try await Task.detached(priority: .userInitiated) { try store.content(for: attachments) }.value
+                for (index, attachment) in attachments.enumerated() {
+                    let source = try store.url(for: attachment)
+                    let preview = attachment.isVideo ? nil : (try store.previewURL(for: attachment))
+                    if attachment.handID != nil || (!attachment.isVideo && usePhone) {
+                        guard let hand = deviceHand, let preview,
+                              attachment.handID == nil || attachment.handID == hand.workspaceID else { throw AttachmentError.unavailable }
+                        let path = try await hand.publishImage(attachment: attachment, source: source, preview: preview)
+                        guard generation == epoch, !Task.isCancelled else { throw CancellationError() }
+                        let local = try MessageAttachment(id: attachment.id, name: attachment.name,
+                            mediaType: attachment.mediaType, byteCount: attachment.byteCount, handID: hand.workspaceID)
+                        command.images += try local.originalContent(path: path)
+                        retained[index] = local
+                        continue
+                    }
+                    let path = try await client.uploadAttachment(agentID: message.agentID, attachment: attachment, source: source, preview: preview) { [weak self] in
+                        await MainActor.run {
+                            guard let self else { return true }
+                            return self.generation != epoch || self.pending.first(where: { $0.id == message.id }).map { $0.phase == .cancelling } != false
+                        }
+                    }
+                    command.images += try attachment.originalContent(path: path)
+                }
+                guard generation == epoch, !Task.isCancelled else { throw CancellationError() }
+                if let index = pending.firstIndex(where: { $0.id == message.id }) {
+                    guard pending[index].phase != .cancelling else { throw CancellationError() }
+                    // Keep the same device/path identity for retries and optimistic thumbnails.
+                    pending[index].attachments = retained
+                    persist()
+                    await preferences.flush()
+                    guard generation == epoch, !Task.isCancelled else { throw CancellationError() }
+                }
+            }
+            return command
+    }
+
     private func submit(_ message: PendingMessage, epoch: UUID) async {
         guard message.remoteAdmission != true else { return }
         defer {
@@ -1899,24 +2453,7 @@ final class InboxModel: ObservableObject {
         do {
             _ = try await readyAgent(message.agentID)
             guard generation == epoch, let message = pending.first(where: { $0.id == message.id }), message.phase != .cancelling else { return }
-            var command = message.submission
-            if let attachments = message.attachments, !attachments.isEmpty {
-                let store = try AttachmentStore(scope: scope)
-                guard let client else { throw APIError.invalidCredential }
-                // Verify saved drafts before uploading, including legacy drafts.
-                _ = try await Task.detached(priority: .userInitiated) { try store.content(for: attachments) }.value
-                for attachment in attachments {
-                    let source = try store.url(for: attachment)
-                    let preview = attachment.isVideo ? nil : (try store.previewURL(for: attachment))
-                    let path = try await client.uploadAttachment(agentID: message.agentID, attachment: attachment, source: source, preview: preview) { [weak self] in
-                        await MainActor.run {
-                            guard let self else { return true }
-                            return self.generation != epoch || self.pending.first(where: { $0.id == message.id }).map { $0.phase == .cancelling } != false
-                        }
-                    }
-                    command.images += try attachment.originalContent(path: path)
-                }
-            }
+            let command = try await submissionWithAttachments(message, epoch: epoch)
             guard generation == epoch, let current = pending.first(where: { $0.id == message.id }), current.phase != .cancelling else { return }
             let receipt = try await execute(command)
             guard generation == epoch else { return }
@@ -1984,9 +2521,11 @@ final class InboxModel: ObservableObject {
         persist()
     }
     private func startSteering(_ id: String) {
+        guard connected else { return }
         let epoch = generation
         steeringTasks.start(id) { [self] in
             guard let initial = steeringTransfer(id), generation == epoch else { return }
+            defer { if generation == epoch { busy.remove(initial.agentID) } }
             prepareHandForBackground()
             do {
                 var input: JSON = .null
@@ -1994,7 +2533,11 @@ final class InboxModel: ObservableObject {
                     // Re-read the exact admitted payload, including remote image/video
                     // references. A transcript excerpt is never steering input.
                     let source: JSON
-                    if isDemo { source = .object(["turn_id": .string(id), "input": .string(pending.first { $0.id == id }?.input ?? ""), "state": .string("accepted")]) }
+                    if initial.direct == true {
+                        guard let message = pending.first(where: { $0.id == id }) else { return }
+                        let command = try await submissionWithAttachments(message, epoch: epoch)
+                        source = .object(["turn_id": .string(id), "input": try command.requestSpec().body?["input"] ?? .null])
+                    } else if isDemo { source = .object(["turn_id": .string(id), "input": .string(pending.first { $0.id == id }?.input ?? ""), "state": .string("accepted")]) }
                     else {
                         guard let client else { throw APIError.invalidCredential }
                         source = try await client.turn(agentID: initial.agentID, turnID: id)
@@ -2002,7 +2545,7 @@ final class InboxModel: ObservableObject {
                     guard generation == epoch, !Task.isCancelled else { return }
                     guard source["turn_id"].string == id, source["input"] != .null else { throw APIError.invalidResponse }
                     input = source["input"]
-                    if initial.phase != .ready {
+                    if initial.direct != true && initial.phase != .ready {
                         guard ["accepted", "cancelling", "cancelled"].contains(source["state"].string) else { throw APIError.http(409) }
                         changeSteering(id) { $0.phase = .removingQueued }
                         await preferences.flush()
@@ -2019,13 +2562,17 @@ final class InboxModel: ObservableObject {
                         changeSteering(id) { $0.phase = .withdrawn }
                         completeSteering(id); return
                     }
-                    changeSteering(id) { $0.phase = .sending }
+                    changeSteering(id) { $0.phase = .sending; if $0.direct == true { $0.sourcePayload = input } }
                     await preferences.flush()
                     guard generation == epoch, !Task.isCancelled else { return }
                     let receipt = try await execute(initial.command(input: input))
                     guard generation == epoch, !Task.isCancelled else { return }
                     guard initial.isAccepted(receipt) else { throw APIError.invalidResponse }
                     changeSteering(id) { $0.phase = .accepted; $0.wasAccepted = true; $0.error = nil }
+                    if let message = pending.first(where: { $0.id == id }) {
+                        do { try recordContextDelivery(message) }
+                        catch { self.error = error.localizedDescription }
+                    }
                     completeSteering(id)
                 }
                 guard let current = steeringTransfer(id), current.withdrawRequested else { return }
@@ -2050,9 +2597,19 @@ final class InboxModel: ObservableObject {
                 }
             } catch {
                 guard generation == epoch, !Task.isCancelled else { return }
+                if let api = error as? APIError, let transfer = steeringTransfer(id), transfer.canStartFollowUp(after: api),
+                   let index = pending.firstIndex(where: { $0.id == id }), !transfer.withdrawRequested {
+                    // Only a definitive pre-admission terminal rejection permits fallback.
+                    // Persist the original ID/payload as a normal send before dispatch.
+                    steeringTransfers.removeAll { $0.id == id }
+                    pending[index].phase = .submitting; pending[index].predecessor = ""
+                    persist()
+                    await submit(pending[index], epoch: epoch)
+                    return
+                }
                 changeSteering(id) { transfer in
                     if transfer.phase == .sending {
-                        if let api = error as? APIError, [.http(401), .http(403), .http(404), .http(409)].contains(api) {
+                        if let api = error as? APIError, [.http(401), .http(403), .http(404), .http(409), .steeringTargetFinished].contains(api) {
                             transfer.phase = .ready
                             transfer.error = "Steering was rejected by the target turn. The message is retained; no replacement turn was started."
                         } else {
@@ -2240,7 +2797,7 @@ final class InboxModel: ObservableObject {
         }
         for index in pending.indices where pending[index].phase == .starting && steeringTransfer(pending[index].id) == nil {
             pending[index].phase = .queued
-            pending[index].error = "Steering has not been sent. Tap Steer now to update the active turn."
+            pending[index].error = "Steering has not been sent. Retry sending the retained message."
         }
         // Restore explicit queued cancellation, never infer a stop of the active
         // turn from the old cancel-and-continue presentation phase.
@@ -2256,7 +2813,7 @@ final class InboxModel: ObservableObject {
             let delayKey = command.kind == .stop ? "NANOCODEX_DEMO_CANCEL_DELAY_MS" : command.kind == .steer ? "NANOCODEX_DEMO_STEER_DELAY_MS" : "NANOCODEX_DEMO_DELAY_MS"
             let delay = Int(ProcessInfo.processInfo.environment[delayKey] ?? ProcessInfo.processInfo.environment["NANOCODEX_DEMO_DELAY_MS"] ?? "200") ?? 200
             try await Task.sleep(for: .milliseconds(delay))
-            let fault = command.kind == .stop ? "cancel" : command.kind == .steer ? "steer" : "submit"
+            let fault = command.kind == .stop ? "cancel" : command.kind == .steer ? "steer" : command.kind == .withdrawSteer ? "withdraw" : "submit"
             if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_FAIL_ONCE"] == fault, demoFaults.insert(fault).inserted {
                 throw APIError.http(503)
             }
@@ -2343,7 +2900,7 @@ final class InboxModel: ObservableObject {
             if isDemo, command.kind == .stop { demoFinish(agentID: command.agentID, turnID: command.turnID) }
             if command.kind != .stop, drafts[command.agentID] == command.input { drafts[command.agentID] = ""; persist() }
             retries.removeValue(forKey: command.agentID)
-            notice = command.kind == .steer ? "Direction sent" : command.kind == .stop ? "Stop requested" : "Follow-up accepted"
+            notice = command.kind == .steer ? nil : command.kind == .stop ? "Stop requested" : "Follow-up accepted"
             await refresh()
         } catch {
             guard generation == epoch else { return }
@@ -2362,7 +2919,7 @@ final class InboxModel: ObservableObject {
         prepareAgent(id)
     }
     private func newConversationCard(_ id: String) -> AgentCard {
-        var card = AgentCard(id: id, title: "New agent", updatedAt: Date().timeIntervalSince1970 * 1000)
+        var card = AgentCard(id: id, title: "New agent", updatedAt: Date().timeIntervalSince1970 * 1000, lastUserMessageAt: 0)
         card.checked = true; card.status = "Idle"; card.preview = "Send a message to begin."
         return card
     }
@@ -2411,6 +2968,14 @@ final class InboxModel: ObservableObject {
     private func bindCreatedAgent(_ localID: String, to id: String) {
         let wasFocused = deck.focusedID == localID
         createdAgentIDs[localID] = id
+        let ownershipKey = "inbox.lockedVoiceOwnership." + scope
+        if var owned = UserDefaults.standard.dictionary(forKey: ownershipKey) as? [String: String] {
+            for captureID in owned.keys where owned[captureID] == localID { owned[captureID] = id }
+            UserDefaults.standard.set(owned, forKey: ownershipKey)
+        }
+        let recoveryKey = "inbox.lockedVoiceLastTarget." + scope
+        if UserDefaults.standard.string(forKey: recoveryKey) == localID { UserDefaults.standard.set(id, forKey: recoveryKey) }
+        if let screen = threadScreens.removeValue(forKey: localID) { threadScreens[id] = screen; persistThreadScreens() }
         if closedConversationIDs.remove(localID) != nil { closedConversationIDs.insert(id) }
         if openedConversations.remove(localID) != nil { openedConversations.insert(id) }
         // A concurrent roster can list the real agent before create returns.
@@ -2421,7 +2986,7 @@ final class InboxModel: ObservableObject {
         if let value = drafts.removeValue(forKey: localID) { drafts[id] = value }
         if let value = attachmentDrafts.removeValue(forKey: localID) { attachmentDrafts[id] = value }
         if let value = attachmentErrors.removeValue(forKey: localID) { attachmentErrors[id] = value }
-        if attachmentImports.remove(localID) != nil { attachmentImports.insert(id) }
+        if let count = attachmentImports.removeValue(forKey: localID) { attachmentImports[id, default: 0] += count }
         if let value = selectedContext.removeValue(forKey: localID) { selectedContext[id] = value }
         if let value = excludedContext.removeValue(forKey: localID) { excludedContext[id] = value }
         if busy.remove(localID) != nil { busy.insert(id) }
@@ -2493,6 +3058,16 @@ final class InboxModel: ObservableObject {
         scope = "demo." + (ProcessInfo.processInfo.environment["NANOCODEX_DEMO_PROFILE"] ?? "default")
         closedConversationIDs = Set(UserDefaults.standard.stringArray(forKey: "inbox.closedTabs." + scope) ?? [])
         cards = DemoContent.cards()
+        #if DEBUG
+        if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_COMPOSER_PHOTOS"] == "1",
+           let prepared = try? DemoContent.composerPhotoFixtures(), let store = try? AttachmentStore(scope: scope) {
+            for item in prepared {
+                try? store.save(item)
+                attachmentDrafts["inbox", default: []].append(item.attachment)
+                cacheAttachment(item.attachment, scope: scope)
+            }
+        }
+        #endif
         if let profile = ProcessInfo.processInfo.environment["NANOCODEX_DEMO_PROFILE"] {
             scope = "demo." + profile
             restorePending()
@@ -2501,6 +3076,93 @@ final class InboxModel: ObservableObject {
             if let turns = UserDefaults.standard.dictionary(forKey: "inbox.demoTurns." + scope) as? [String: [String]] {
                 for index in cards.indices { cards[index].activeTurns = turns[cards[index].id] ?? cards[index].activeTurns }
             }
+        }
+        if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_COMMAND_CARD"] == "1" {
+            // Presentation-only fixture: these arguments and results never execute.
+            let command = """
+            printf '%s\\n' 'Inspect the complete synthetic command, including this deliberately long first line beyond the old 140 character preview boundary.'
+            swift test --package-path 'apple/InboxCore' --filter CommandPresentationTests
+            exit 7
+            """
+            var activity = ToolPresentation(name: "exec_command", arguments: .object([
+                "cmd": .string(command), "workdir": .string("/workspace/demo project")
+            ]))
+            activity.finish(.object([
+                "stderr": .string("Synthetic command failed with exit 7. No command was executed."),
+                "exit_code": .number(7)
+            ]))
+            demoRows["inbox"] = [.init(id: "demo-command-card", role: "Tool", text: activity.title, tool: activity)]
+        }
+        if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_OVERSIZED_COMMAND"] == "1" {
+            // Presentation-only fixture: the synthetic base64 and shell source never execute.
+            let command = "printf '%s' '"
+                + String(repeating: "QUJD", count: 47_279)
+                + "' | base64 -d > /workspace/synthetic.png"
+            var activity = ToolPresentation(name: "exec_command", arguments: .object([
+                "cmd": .string(command)
+            ]))
+            activity.finish(.object([
+                "stdout": .string("Synthetic oversized command completed. No command was executed."),
+                "exit_code": .number(0)
+            ]))
+            demoRows["inbox"] = [
+                .init(id: "demo-oversized-command", role: "Tool", text: activity.title, tool: activity),
+                .init(id: "demo-after-oversized-command", role: "Agent",
+                      text: "The oversized command is complete. This message stays reachable.")
+            ]
+        }
+        if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_CODE_MODE_CARD"] == "1"
+            || ProcessInfo.processInfo.environment["NANOCODEX_DEMO_CODE_MODE_OBJECT_CARD"] == "1" {
+            // Presentation-only fixture: this JavaScript and its result never execute.
+            let source = """
+            // Inspect the complete synthetic JavaScript source, preserving every newline beyond the old 140 character preview boundary.
+            const result = await tools.exec_command({
+              cmd: 'git status --short',
+              workdir: '/workspace/demo'
+            });
+            text(result.output);
+            """ + "\n// " + String(repeating: "Preserve full source. ", count: 20)
+            let objectArguments = ProcessInfo.processInfo.environment["NANOCODEX_DEMO_CODE_MODE_OBJECT_CARD"] == "1"
+            var activity = ToolPresentation(name: "exec", arguments: objectArguments
+                ? .object(["code": .string(source)]) : .string(source))
+            activity.finish(.string("Synthetic code result"))
+            demoRows["inbox"] = [.init(id: "demo-code-mode-card", role: "Tool", text: activity.title, tool: activity)]
+        }
+        if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_CODE_MODE_BATCH"] == "1" {
+            // Synthetic presentation fixture; these tools never execute.
+            var batch = ToolPresentation(name: "exec", arguments: .string("text(await tools.exec_command({cmd: \"ls -la /brain\"}));\ntext(await tools.environment({}));"))
+            batch.finish(.string("Completed"))
+            var command = ToolPresentation(name: "exec_command", arguments: .object(["cmd": .string("ls -la /brain")]))
+            command.finish(.object(["output": .string("attachments/\noutputs/"), "exit_code": .number(0)]))
+            var environment = ToolPresentation(name: "environment", arguments: .object([:]))
+            environment.finish(.object(["status": .string("ready")]))
+            demoRows["inbox"] = [
+                .init(id: "demo-code-mode-batch", role: "Tool", text: batch.title, tool: batch),
+                .init(id: "demo-code-mode-batch/code-1", role: "Tool", text: command.title, tool: command),
+                .init(id: "demo-code-mode-batch/code-2", role: "Tool", text: environment.title, tool: environment)
+            ]
+        }
+        if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_THREAD_CONTROLS"] == "1" {
+            let tools = demoRows["inbox"] ?? []
+            demoRows["inbox"] = [
+                .init(id: "navigation-user-1", role: "You", text: "Inspect the workspace and summarize the results."),
+                .init(id: "navigation-agent-1", role: "Agent", text: "I’ll inspect the workspace using the tools below.\n\n" + (1...8).map {
+                    "Review step \($0): Check the available files and confirm the workspace is ready for the next task."
+                }.joined(separator: "\n\n"))
+            ] + tools + [
+                .init(id: "navigation-user-2", role: "You", text: "What should we work on next?"),
+                .init(id: "navigation-agent-2", role: "Agent", text: "The workspace is ready. We can review the output and choose the next task.")
+            ]
+        }
+        if ProcessInfo.processInfo.environment["NANOCODEX_DEMO_LIVE_SCREEN_ENTRY"] == "1",
+           let image = DemoContent.rows("inbox").compactMap({ $0.tool?.generatedResults })
+               .flatMap({ ChatGeneratedOutput.parse(results: $0) })
+               .first(where: { $0.kind == .image })?.source {
+            // Reuse the generated-output PNG fixture, attributed to a synthetic
+            // computer result. No computer action is executed by this fixture.
+            var activity = ToolPresentation(name: "computer", arguments: .object(["action": .string("observe")]))
+            activity.finish(.object(["image_url": .string(image)]))
+            demoRows["inbox"] = [.init(id: "demo-live-screen-entry", role: "Tool", text: activity.title, tool: activity)]
         }
         activateContext()
         restoreCreations()
@@ -2652,24 +3314,48 @@ private enum KeychainAccount {
 private struct InboxMediaProjection: Sendable {
     private struct Entry: Sendable {
         var results: [String]
+        var computerScreen: Bool
         var outputs: [ChatGeneratedOutput]
     }
     private var entries: [String: Entry] = [:]
+    // Only hashes survive window eviction. Original bytes are retained for one
+    // latest screen, not for the conversation's entire screenshot history.
+    private var screenIDs = Set<String>()
+    private var latestScreenCursor: Cursor?
+    private(set) var latestScreen: ChatGeneratedOutput?
     private(set) var outputs: [String: [ChatGeneratedOutput]] = [:]
     mutating func update(_ rows: [TranscriptRow]) {
         var retained: [String: Entry] = [:]
-        var projected: [String: [ChatGeneratedOutput]] = [:]
+        var knownScreens = screenIDs
+        var latest = latestScreen
+        var latestCursor = latestScreenCursor
         for row in rows {
             guard !Task.isCancelled else { return }
             guard let tool = row.tool, !tool.isInspectionOutput, let results = tool.generatedResults else { continue }
+            let computerScreen = tool.isComputerScreenOutput
             let entry: Entry
-            if let previous = entries[row.id], previous.results == results { entry = previous }
+            if let previous = entries[row.id], previous.results == results, previous.computerScreen == computerScreen { entry = previous }
             else {
-                entry = Entry(results: results, outputs: ChatGeneratedOutput.parse(results: results))
+                entry = Entry(results: results, computerScreen: computerScreen,
+                              outputs: ChatGeneratedOutput.parse(results: results, computerScreen: computerScreen))
             }
             retained[row.id] = entry
-            if !entry.outputs.isEmpty { projected[row.id] = entry.outputs }
+            for output in entry.outputs where output.isComputerScreen {
+                knownScreens.insert(output.id)
+                let cursor = row.completionCursor ?? row.cursor ?? .zero
+                if latestCursor == nil || cursor >= latestCursor! {
+                    latest = output; latestCursor = cursor
+                }
+            }
         }
-        entries = retained; outputs = projected
+        // Attribution may arrive after an outer exec image, and rows need not be
+        // in completion order. Filter only after every attributed result is seen.
+        var projected: [String: [ChatGeneratedOutput]] = [:]
+        for (id, entry) in retained {
+            let ordinary = entry.outputs.filter { !knownScreens.contains($0.id) }
+            if !ordinary.isEmpty { projected[id] = ordinary }
+        }
+        entries = retained; outputs = projected; screenIDs = knownScreens
+        latestScreen = latest; latestScreenCursor = latestCursor
     }
 }

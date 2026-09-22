@@ -1,0 +1,132 @@
+{
+  "cohort": "router-release-20260922",
+  "rows": [
+    {
+      "name": "fixed-cloudflare",
+      "http": 200,
+      "first_output_ms": 4609.304834,
+      "total_ms": 4797.189958999999,
+      "events": 8,
+      "status": "completed",
+      "backend": "cloudflare",
+      "model": "gpt-5.6-luna",
+      "thinking": "low",
+      "router_ms": 0,
+      "diagnostics": null
+    },
+    {
+      "name": "fixed-openrouter",
+      "http": 200,
+      "first_output_ms": 2147.458208,
+      "total_ms": 2237.8734160000004,
+      "events": 8,
+      "status": "completed",
+      "backend": "openrouter",
+      "model": "gpt-5.6-luna",
+      "thinking": "low",
+      "router_ms": 0,
+      "diagnostics": null
+    },
+    {
+      "name": "fixed-vercel",
+      "http": 200,
+      "first_output_ms": 878.9569999999994,
+      "total_ms": 1144.5416669999995,
+      "events": 8,
+      "status": "completed",
+      "backend": "vercel",
+      "model": "gpt-5.6-luna",
+      "thinking": "low",
+      "router_ms": 0,
+      "diagnostics": null
+    },
+    {
+      "name": "auto-opening",
+      "http": 200,
+      "first_output_ms": 2348.656708999999,
+      "total_ms": 2655.0797089999996,
+      "events": 24,
+      "status": "completed",
+      "backend": "vercel",
+      "model": "gpt-5.6-luna",
+      "thinking": "low",
+      "router_ms": 877,
+      "diagnostics": {
+        "source": "typesafe/jev",
+        "signal_kind": "choice_probabilities_and_confidence_not_task_success",
+        "eligible_candidates": [
+          "openrouter:openai/gpt-5.6-luna:low",
+          "vercel:openai/gpt-5.6-luna:low",
+          "cloudflare:openai/gpt-5.6-luna:low"
+        ],
+        "proposed_candidate": "vercel:openai/gpt-5.6-luna:low",
+        "chosen_candidate": "vercel:openai/gpt-5.6-luna:low",
+        "candidate_confidence": 0.75,
+        "family_confidence": 0.96,
+        "candidate_probabilities": {
+          "openrouter:openai/gpt-5.6-luna:low": 0.16,
+          "vercel:openai/gpt-5.6-luna:low": 0.83,
+          "cloudflare:openai/gpt-5.6-luna:low": 0.01
+        },
+        "family_probabilities": {
+          "repository_repair": 0.01,
+          "long_engineering": 0.01,
+          "terminal": 0.01,
+          "research": 0.01,
+          "science": 0,
+          "mathematics": 0,
+          "desktop": 0,
+          "business_tools": 0,
+          "other": 0.96
+        },
+        "min_confidence": 0.75,
+        "confidence_status": "accepted",
+        "fallback_basis": "none"
+      }
+    },
+    {
+      "name": "auto-pinned-continuation",
+      "http": 200,
+      "first_output_ms": 669.3867920000012,
+      "total_ms": 844.6221250000017,
+      "events": 8,
+      "status": "completed",
+      "backend": "vercel",
+      "model": "gpt-5.6-luna",
+      "thinking": "low",
+      "router_ms": 877,
+      "diagnostics": {
+        "source": "typesafe/jev",
+        "signal_kind": "choice_probabilities_and_confidence_not_task_success",
+        "eligible_candidates": [
+          "openrouter:openai/gpt-5.6-luna:low",
+          "vercel:openai/gpt-5.6-luna:low",
+          "cloudflare:openai/gpt-5.6-luna:low"
+        ],
+        "proposed_candidate": "vercel:openai/gpt-5.6-luna:low",
+        "chosen_candidate": "vercel:openai/gpt-5.6-luna:low",
+        "candidate_confidence": 0.75,
+        "family_confidence": 0.96,
+        "candidate_probabilities": {
+          "openrouter:openai/gpt-5.6-luna:low": 0.16,
+          "vercel:openai/gpt-5.6-luna:low": 0.83,
+          "cloudflare:openai/gpt-5.6-luna:low": 0.01
+        },
+        "family_probabilities": {
+          "repository_repair": 0.01,
+          "long_engineering": 0.01,
+          "terminal": 0.01,
+          "research": 0.01,
+          "science": 0,
+          "mathematics": 0,
+          "desktop": 0,
+          "business_tools": 0,
+          "other": 0.96
+        },
+        "min_confidence": 0.75,
+        "confidence_status": "accepted",
+        "fallback_basis": "none"
+      }
+    }
+  ]
+}

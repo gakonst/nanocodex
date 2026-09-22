@@ -85,6 +85,7 @@ test("the packed package ships and resolves every public entry point", async () 
       import { Agent as HostAgent, Transport as HostTransport } from "nanocodex/host";
       import * as hostExports from "nanocodex/host";
       import { Agent as ManagedAgent } from "nanocodex/managed";
+      import { readManagedAccess, handBrokerRequest } from "nanocodex/cloudflare/managed-access";
       import { Principal } from "nanocodex/connect";
       import { HostPrincipal } from "nanocodex/connect/server";
       import { dataset as aggregateDataset, web } from "nanocodex/tools";
@@ -94,6 +95,8 @@ test("the packed package ships and resolves every public entry point", async () 
       import { Subagents as BrowserSubagents, Workspace as BrowserWorkspace } from "nanocodex/browser";
       import * as browserExports from "nanocodex/browser";
 
+      assert.equal(typeof readManagedAccess, "function");
+      assert.equal(typeof handBrokerRequest, "function");
       assert.equal(typeof Actions.turn.prompt, "function");
       assert.equal(typeof ManagedAgent.create, "function");
       assert.equal(typeof ManagedAgent.createAndPrompt, "function");

@@ -19,6 +19,9 @@ mod history;
 mod installation;
 mod pane;
 mod prompt;
+mod screen;
+#[path = "../screen_ice.rs"]
+mod screen_ice;
 mod session;
 #[path = "../skill.rs"]
 mod skill;
@@ -26,10 +29,17 @@ mod spinner;
 mod theme;
 #[path = "transcript/mod.rs"]
 mod transcript;
+mod vault;
+#[path = "../voice_command.rs"]
+mod voice;
+#[path = "../voice_state.rs"]
+mod voice_state;
 
 // Keep production components on their normal module paths in this private target.
 mod tui {
-    pub(crate) use crate::{context, format, pane, prompt, session, spinner, theme, transcript};
+    pub(crate) use crate::{
+        context, format, pane, prompt, screen, session, spinner, theme, transcript, vault,
+    };
 }
 
 use components::{AppEffect, AppEvent, AppNode, RenderRequest, RootEffect, RootNode};

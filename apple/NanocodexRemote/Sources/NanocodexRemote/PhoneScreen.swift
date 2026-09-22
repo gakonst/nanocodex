@@ -20,6 +20,8 @@ final class PhoneScreen: NSObject, RemoteCapture, URLSessionDataDelegate, @unche
     private let lock = NSLock()
     private var stopped = false
     private let snapshotBuffer = RemoteSnapshotBuffer()
+    private var broadcastFrameSize: (Int, Int)?
+    private var onBroadcastFrame: (@Sendable (CVPixelBuffer) -> Void)?
     var onFailure: @Sendable (Error) -> Void = { _ in }
 
     init(source: RTCVideoSource, port: Int, expectedSize: CGSize? = nil) throws {
@@ -37,6 +39,8 @@ final class PhoneScreen: NSObject, RemoteCapture, URLSessionDataDelegate, @unche
         self.session = session; let request = session.dataTask(with: endpoint); self.request = request; request.resume()
     }
     @MainActor func stop() async { lock.withLock { stopped = true }; snapshotBuffer.clear(); request?.cancel(); session?.invalidateAndCancel(); session = nil }
+    func broadcastSize() -> (Int, Int)? { lock.withLock { broadcastFrameSize } }
+    func setBroadcastFrameHandler(_ handler: (@Sendable (CVPixelBuffer) -> Void)?) { lock.withLock { onBroadcastFrame = handler } }
     func snapshot() throws -> RemoteSnapshot { try snapshotBuffer.snapshot() }
     func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
                     newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) { completionHandler(nil) }
@@ -102,6 +106,7 @@ final class PhoneScreen: NSObject, RemoteCapture, URLSessionDataDelegate, @unche
         context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
         let timestamp = Int64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
         snapshotBuffer.update(pixelBuffer)
+        lock.withLock { broadcastFrameSize = (image.width, image.height); return onBroadcastFrame }?(pixelBuffer)
         source.capturer(capturer, didCapture: RTCVideoFrame(buffer: RTCCVPixelBuffer(pixelBuffer: pixelBuffer), rotation: ._0, timeStampNs: timestamp))
     }
     func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
@@ -145,6 +150,7 @@ final class PhoneScreen: NSObject, RemoteCapture, URLSessionDataDelegate, @unche
         let point = CGPoint(x: (event.x ?? 0) * (size.width - 1), y: (event.y ?? 0) * (size.height - 1))
         switch event.kind {
         case .button:
+            guard event.x != nil, event.y != nil else { throw RemoteError.invalidMessage }
             if event.button == 1 {
                 if event.down == false { try enqueue("/wda/touchAndHold", ["x": point.x, "y": point.y, "duration": 0.6]) }
                 return
@@ -157,6 +163,7 @@ final class PhoneScreen: NSObject, RemoteCapture, URLSessionDataDelegate, @unche
                 else { try drag(from: origin, to: point) }
             }
         case .scroll:
+            guard event.x != nil, event.y != nil else { throw RemoteError.invalidMessage }
             let target = CGPoint(x: min(size.width - 12, max(12, point.x + (event.deltaX ?? 0))), y: min(size.height - 12, max(12, point.y + (event.deltaY ?? 0))))
             try drag(from: point, to: target)
         case .text: try enqueue("/wda/keys", ["value": [event.text!], "frequency": 120])
@@ -168,7 +175,9 @@ final class PhoneScreen: NSObject, RemoteCapture, URLSessionDataDelegate, @unche
             case 74: try enqueue("/wda/homescreen", [:])
             default: break
             }
+        case .gamepad: throw RemoteError.unavailable
         case .releaseAll: releaseAll()
+        case .relativeMove: throw RemoteError.invalidMessage // XCTest has no persistent mouse pointer.
         case .move: break // XCTest submits complete gestures when the pointer lifts.
         }
     }

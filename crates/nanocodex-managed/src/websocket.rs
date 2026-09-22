@@ -515,6 +515,11 @@ async fn connect_endpoint(
         tokio_tungstenite::tungstenite::http::header::AUTHORIZATION,
         authorization,
     );
+    if let Some(origin) = &client.request_origin {
+        request
+            .headers_mut()
+            .insert("x-nanocodex-client-context", origin.clone());
+    }
     // The service's ingress limit applies to client writes, not event reads.
     // Retain transport backpressure without imposing tungstenite's default
     // 16 MiB frame / 64 MiB message ceiling on durable event replay.

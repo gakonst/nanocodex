@@ -1,0 +1,18 @@
+[
+  {
+    "path": "/api/router",
+    "status": 403
+  },
+  {
+    "path": "/v1/router",
+    "status": 403
+  },
+  {
+    "path": "/v1/account/hands",
+    "status": 403
+  },
+  {
+    "path": "/v1/connectors",
+    "status": 403
+  }
+]

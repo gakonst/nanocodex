@@ -34,6 +34,7 @@ describe("Realtime upstream failure diagnostics", () => {
       expect(await response.json()).toEqual({ error: "upstream_rejected" });
       expect(log).toHaveBeenCalledTimes(1);
       expect(log.mock.calls[0]?.[0]).toEqual({
+        agent_subject: "a".repeat(64),
         type: "egress.request", action: "error", rule: "realtime-call", method: "POST",
         host: "nanocodex.internal", path: "/v1/realtime/calls", duration_ms: expect.any(Number),
         code: "upstream_rejected", status: status === 429 ? 503 : 502, upstream_status: status,

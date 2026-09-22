@@ -1,0 +1,98 @@
+{
+  "mac_app": {
+    "installed_at": "2026-09-16T22:14:39Z",
+    "source": "e33c804a73947b88450dc0ea41356532b8dd4c77",
+    "source_code_revision": "8b4077a4e",
+    "path": "/Applications/Nanocodex.app",
+    "helper_uuid": "01FC732F-AF84-3C9C-95F4-68F3A083DDDA",
+    "raw_helper_sha256": "a9a6718b8c39640239c0fbf5c359c4d28ee46d13260b259ab0969b6056ff0c43",
+    "bundled_helper_sha256": "6163726c866450c1689386df849123cf66d44600f9f347cb5d7ec379aa7e8896",
+    "hypervisor_entitlement": true,
+    "signature_verified": true
+  },
+  "gpu_helper": {
+    "source_revision": "e33c804a73947b88450dc0ea41356532b8dd4c77",
+    "build_profile": "release",
+    "features": [
+      "nanocodex-vm/gpu"
+    ],
+    "cargo_build_jobs": 2,
+    "target_dir": "/Users/georgios/github/gakonst/nanocodex/target",
+    "binary_sha256": "c4a8313121776f0a45cf278130d0967aa254998014155183d78a7cfe267fbdb2",
+    "unsigned_build_sha256": "bb357afa726226ba1f9951e8e1adf3b46818c344ba453c9567624201755102dd",
+    "existing_assets_source": "/Users/georgios/Library/Application Support/Nanocodex/Native/vm-hands-ux-20260916",
+    "preserved_assets": [
+      "licenses/MoltenVK.txt",
+      "licenses/virglrenderer.txt",
+      "licenses/libepoxy.txt",
+      "licenses/SPIRV-Cross.txt",
+      "lib/libepoxy.0.dylib",
+      "lib/libMoltenVK.dylib",
+      "lib/libvirglrenderer.1.dylib",
+      "nanocodex-resources/voice/development-runtime.json",
+      "nanocodex-resources/voice/NOTICE.md",
+      "nanocodex-resources/voice/bin/nanocodex-voice-host",
+      "nanocodex-resources/voice/licenses/libffi.txt",
+      "nanocodex-resources/voice/licenses/LGPL-2.1.txt",
+      "nanocodex-resources/voice/licenses/PCRE2.md",
+      "nanocodex-resources/voice/licenses/zlib.txt",
+      "nanocodex-resources/voice/licenses/proxy-libintl.txt",
+      "nanocodex-resources/voice/licenses/sljit.txt",
+      "nanocodex-resources/voice/licenses/Opus.txt",
+      "nanocodex-resources/voice/plugins/libgstrtp.dylib",
+      "nanocodex-resources/voice/plugins/libgstaudioresample.dylib",
+      "nanocodex-resources/voice/plugins/libgstapp.dylib",
+      "nanocodex-resources/voice/plugins/libgstopus.dylib",
+      "nanocodex-resources/voice/plugins/libgstcoreelements.dylib",
+      "nanocodex-resources/voice/plugins/libgstrtpmanager.dylib",
+      "nanocodex-resources/voice/plugins/libgstaudioconvert.dylib",
+      "nanocodex-resources/voice/lib/libgstaudio-1.0.0.dylib",
+      "nanocodex-resources/voice/lib/libgstnet-1.0.0.dylib",
+      "nanocodex-resources/voice/lib/libgstreamer-1.0.0.dylib",
+      "nanocodex-resources/voice/lib/libpcre2-8.0.dylib",
+      "nanocodex-resources/voice/lib/libglib-2.0.0.dylib",
+      "nanocodex-resources/voice/lib/libgobject-2.0.0.dylib",
+      "nanocodex-resources/voice/lib/libgsttag-1.0.0.dylib",
+      "nanocodex-resources/voice/lib/libgstvideo-1.0.0.dylib",
+      "nanocodex-resources/voice/lib/libgstrtp-1.0.0.dylib",
+      "nanocodex-resources/voice/lib/libgstapp-1.0.0.dylib",
+      "nanocodex-resources/voice/lib/libgmodule-2.0.0.dylib",
+      "nanocodex-resources/voice/lib/libintl.8.dylib",
+      "nanocodex-resources/voice/lib/libgstbase-1.0.0.dylib",
+      "nanocodex-resources/voice/lib/liborc-0.4.0.dylib",
+      "nanocodex-resources/voice/lib/libgstpbutils-1.0.0.dylib",
+      "nanocodex-resources/voice/lib/libgio-2.0.0.dylib",
+      "nanocodex-resources/voice/lib/libopus.0.dylib"
+    ],
+    "library_sha256": {
+      "libMoltenVK.dylib": "20a23aabcad1d54fcf74077852d54c9f02b99816d4d032c0fe8cc6cfa7b4ed21",
+      "libepoxy.0.dylib": "300932ea0f491785af2d3b1fb1cf36099c96508e9c8d9bcd42aceb157e8b245a",
+      "libvirglrenderer.1.dylib": "f8a4b62f9b9c37de3bbe093eeccfd39c575378e3cb752c916d1a27f1bcbb9352"
+    },
+    "verification": [
+      "codesign --verify --strict for binary and bundled dylibs",
+      "nanocodex2 --help",
+      "nanocodex2 host --help"
+    ]
+  },
+  "iphone": {
+    "bundle_id": "xyz.paradigm.centaur",
+    "version": "0.1.0",
+    "build": "2026091602",
+    "executable_sha256": "33cddb475cd6a1bc5db37dcdcc548f5f7f5b7b45548bfff5a4078c10885f17d9",
+    "install_verified": true,
+    "launch_verified": true,
+    "physical_screen_timing": "unmeasured: UI-test automation startup timed out"
+  },
+  "live_mac_smoke": {
+    "native_uname": "Darwin",
+    "vm_uname": "Linux",
+    "marker": "hands_optimization_ok",
+    "factory": {
+      "name": "mac-a736ce3876d0427ea50267de38b1da8f",
+      "status": "connected"
+    },
+    "survived_cli_exit": true,
+    "scratch_agent_cleanup_exit_code": 0
+  }
+}

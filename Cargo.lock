@@ -3220,6 +3220,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e0e367e4e7da84520dedcac1901e4da967309406d1e51017ae1abfb97adbd38"
 dependencies = [
  "bitflags 2.13.1",
+ "block2",
+ "libc",
  "objc2",
 ]
 
@@ -3525,6 +3527,12 @@ dependencies = [
  "event-listener",
  "pin-project-lite",
 ]
+
+[[package]]
+name = "extended"
+version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "af9673d8203fcb076b19dfd17e38b3d4ae9f44959416ea532ce72415a6020365"
 
 [[package]]
 name = "eyre"
@@ -5685,7 +5693,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "nanocodex-agent",
  "nanocodex-durability",
@@ -5699,7 +5707,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-agent"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "async-trait",
  "chrono",
@@ -5727,7 +5735,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-bin"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "alloy-primitives",
  "alloy-rlp",
@@ -5803,7 +5811,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-browser"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -5837,7 +5845,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-cli-auth"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "clap",
  "fs2",
@@ -5856,19 +5864,20 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-computer"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
  "nanocodex-oai-api",
  "serde",
  "serde_json",
+ "sha2 0.11.0",
  "tokio",
 ]
 
 [[package]]
 name = "nanocodex-durability"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "eyre",
  "nanocodex-agent",
@@ -5889,7 +5898,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-egress"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "async-trait",
  "axum",
@@ -5911,7 +5920,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-eval"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "arcbox-ext4",
  "axum",
@@ -5949,7 +5958,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-eval-adapters"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "base64 0.22.1",
  "csv",
@@ -5971,8 +5980,9 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-examples"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
+ "base64 0.22.1",
  "dotenvy",
  "eyre",
  "futures-util",
@@ -5980,8 +5990,11 @@ dependencies = [
  "nanocodex",
  "nanocodex-browser",
  "nanocodex-egress",
+ "nanocodex-managed",
+ "nanocodex-oai-api",
  "nanocodex-vm",
  "nanocodex-voice",
+ "nanocodex-voice-protocol",
  "reflink-copy",
  "reqwest",
  "serde",
@@ -5990,11 +6003,12 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tower",
+ "uuid",
 ]
 
 [[package]]
 name = "nanocodex-exe-dev"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "axum",
  "chrono",
@@ -6014,31 +6028,38 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-hand"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "base64 0.22.1",
  "block2",
+ "dispatch2",
  "image",
  "objc2",
+ "objc2-core-audio-types",
  "objc2-core-foundation",
  "objc2-core-graphics",
+ "objc2-core-media",
+ "objc2-core-video",
  "objc2-foundation",
  "objc2-screen-capture-kit",
  "serde",
  "serde_json",
  "tracing",
  "tracing-subscriber",
+ "windows 0.62.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
 name = "nanocodex-managed"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "axum",
  "futures-util",
  "nanocodex-agent",
  "nanocodex-oai-api",
  "nanocodex-tools",
+ "nanocodex-voice-protocol",
  "reqwest",
  "rustls",
  "serde",
@@ -6055,7 +6076,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-oai-api"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6064,6 +6085,7 @@ dependencies = [
  "futures-util",
  "getrandom 0.4.3",
  "http",
+ "image",
  "opusic-c",
  "reqwest",
  "rustls",
@@ -6074,6 +6096,7 @@ dependencies = [
  "simd-json",
  "smallvec",
  "sonic-rs",
+ "symphonia",
  "thiserror 2.0.18",
  "tokio",
  "tokio-tungstenite 0.30.0",
@@ -6088,7 +6111,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-observability"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "clap",
  "opentelemetry",
@@ -6106,8 +6129,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocodex-phone"
+version = "0.6.4"
+dependencies = [
+ "base64 0.22.1",
+ "nanocodex-managed",
+ "nanocodex-oai-api",
+ "nanocodex-voice-protocol",
+ "serde",
+ "serde_json",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "nanocodex-python"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "nanocodex",
  "pyo3",
@@ -6117,14 +6154,36 @@ dependencies = [
 ]
 
 [[package]]
+name = "nanocodex-remote"
+version = "0.6.4"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "libc",
+ "opusic-c",
+ "reqwest",
+ "rustls",
+ "rustls-native-certs",
+ "serde_json",
+ "tempfile",
+ "tokio",
+ "tokio-tungstenite 0.30.0",
+ "tracing",
+ "url",
+ "uuid",
+ "webrtc",
+]
+
+[[package]]
 name = "nanocodex-subagents"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "async-trait",
  "futures-util",
  "js-sys",
  "jsonschema",
  "nanocodex-agent",
+ "nanocodex-oai-api",
  "nanocodex-tools",
  "serde",
  "serde_json",
@@ -6138,7 +6197,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-tools"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -6157,11 +6216,13 @@ dependencies = [
  "reqwest",
  "rmcp",
  "rquickjs",
+ "rustix 1.1.4",
  "rustls",
  "schemars 0.8.22",
  "serde",
  "serde_json",
  "sha1 0.11.0",
+ "symphonia",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -6175,7 +6236,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-tools-macros"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "proc-macro-crate",
  "proc-macro2",
@@ -6185,7 +6246,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-tui-control"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "clap",
  "libc",
@@ -6198,7 +6259,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-vm"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "arcbox-ext4",
  "async-trait",
@@ -6214,6 +6275,7 @@ dependencies = [
  "landlock",
  "libkrun",
  "nanocodex-computer",
+ "nanocodex-hand",
  "nanocodex-tools",
  "nix 0.31.3",
  "oci-client",
@@ -6237,7 +6299,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-voice"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "cpal",
  "futures-util",
@@ -6254,7 +6316,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-voice-ffi"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "nanocodex-voice-protocol",
  "serde_json",
@@ -6262,7 +6324,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-voice-native"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "anyhow",
  "ctor",
@@ -6277,7 +6339,7 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-voice-protocol"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "serde",
  "serde_json",
@@ -6285,8 +6347,9 @@ dependencies = [
 
 [[package]]
 name = "nanocodex-wasm"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
+ "async-trait",
  "futures-util",
  "js-sys",
  "nanocodex",
@@ -6301,9 +6364,11 @@ dependencies = [
 
 [[package]]
 name = "nanocodex2-bin"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
+ "anyhow",
  "arboard",
+ "async-trait",
  "axum",
  "base64 0.22.1",
  "chrono",
@@ -6318,17 +6383,20 @@ dependencies = [
  "kvm-ioctls",
  "nanocodex",
  "nanocodex-agent",
- "nanocodex-browser",
  "nanocodex-cli-auth",
  "nanocodex-computer",
  "nanocodex-hand",
  "nanocodex-managed",
  "nanocodex-observability",
+ "nanocodex-remote",
  "nanocodex-subagents",
  "nanocodex-tools",
  "nanocodex-tui-control",
  "nanocodex-vm",
+ "nanocodex-voice-native",
+ "nanocodex-voice-protocol",
  "nix 0.31.3",
+ "opusic-c",
  "percent-encoding",
  "png 0.18.1",
  "portable-pty",
@@ -6337,6 +6405,7 @@ dependencies = [
  "ratatui-image 11.0.6",
  "rayon",
  "reqwest",
+ "rustls",
  "semver 1.0.28",
  "serde",
  "serde_json",
@@ -6355,12 +6424,13 @@ dependencies = [
  "url",
  "uuid",
  "vt100",
+ "webrtc",
  "whoami 1.6.1",
 ]
 
 [[package]]
 name = "nanousd"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "alloy-primitives",
  "reqwest",
@@ -6373,7 +6443,7 @@ dependencies = [
 
 [[package]]
 name = "nanousd-api"
-version = "0.6.1"
+version = "0.6.4"
 dependencies = [
  "alloy",
  "alloy-primitives",
@@ -6849,6 +6919,37 @@ dependencies = [
 ]
 
 [[package]]
+name = "objc2-core-media"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "05ec576860167a15dd9fce7fbee7512beb4e31f532159d3482d1f9c6caedf31d"
+dependencies = [
+ "bitflags 2.13.1",
+ "block2",
+ "dispatch2",
+ "objc2",
+ "objc2-core-audio",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
+ "objc2-core-video",
+]
+
+[[package]]
+name = "objc2-core-video"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d425caf1df73233f29fd8a5c3e5edbc30d2d4307870f802d18f00d83dc5141a6"
+dependencies = [
+ "bitflags 2.13.1",
+ "block2",
+ "objc2",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-io-surface",
+ "objc2-metal",
+]
+
+[[package]]
 name = "objc2-encode"
 version = "4.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6904,9 +7005,11 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "74b7c5390f477482f001bc354d6571a70db7e4f8d5288e860c45521fbce11394"
 dependencies = [
  "block2",
+ "dispatch2",
  "objc2",
  "objc2-core-foundation",
  "objc2-core-graphics",
+ "objc2-core-media",
  "objc2-foundation",
 ]
 
@@ -8618,6 +8721,7 @@ dependencies = [
  "hyper-util",
  "js-sys",
  "log",
+ "mime_guess",
  "percent-encoding",
  "pin-project-lite",
  "rustls",
@@ -10270,6 +10374,119 @@ name = "symlink"
 version = "0.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a7973cce6668464ea31f176d85b13c7ab3bba2cb3b77a2ed26abd7801688010a"
+
+[[package]]
+name = "symphonia"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7edef6a96b696d4e0cab5ee9ebb7ca155ed95f30a6b45bbb8b97d2727f02424"
+dependencies = [
+ "lazy_static",
+ "symphonia-bundle-mp3",
+ "symphonia-core",
+ "symphonia-format-isomp4",
+ "symphonia-format-mkv",
+ "symphonia-format-ogg",
+ "symphonia-format-riff",
+ "symphonia-metadata",
+]
+
+[[package]]
+name = "symphonia-bundle-mp3"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "98ea5ffc8716bff677dfb3b01b420c7b758de901a72b8c330bf2040ab74b4add"
+dependencies = [
+ "lazy_static",
+ "log",
+ "symphonia-core",
+]
+
+[[package]]
+name = "symphonia-common"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2acc3fcc18ec9b8cdd48614e259c4cf0d27b71d41e5d9b120b42c5adab12d7c4"
+dependencies = [
+ "log",
+ "symphonia-core",
+ "symphonia-metadata",
+]
+
+[[package]]
+name = "symphonia-core"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "01c412864d599d4750d0c3d684d7e093ec05e5309681ef5252cc1096a437f6e0"
+dependencies = [
+ "bitflags 2.13.1",
+ "bytemuck",
+ "lazy_static",
+ "log",
+ "num-complex",
+ "smallvec",
+]
+
+[[package]]
+name = "symphonia-format-isomp4"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e681a70e1870d34e02abf1dbc51e4267c3f1827801474e8870be8c689fc4dc3"
+dependencies = [
+ "log",
+ "symphonia-common",
+ "symphonia-core",
+ "symphonia-metadata",
+]
+
+[[package]]
+name = "symphonia-format-mkv"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d015c5c0558864665894b3f4cbd95e10abb01b9c868e751c72670f326a56360e"
+dependencies = [
+ "lazy_static",
+ "log",
+ "symphonia-common",
+ "symphonia-core",
+]
+
+[[package]]
+name = "symphonia-format-ogg"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0b5495e7f7e3c7035328d82b6d6e377eef289bb0c4105bdeb557fc93a833f994"
+dependencies = [
+ "log",
+ "symphonia-common",
+ "symphonia-core",
+ "symphonia-metadata",
+]
+
+[[package]]
+name = "symphonia-format-riff"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1ff70929083a8c1a5f6cd7c904b6071c7914ad04739b510c2f7239dfc9b7dabe"
+dependencies = [
+ "extended",
+ "log",
+ "symphonia-core",
+ "symphonia-metadata",
+]
+
+[[package]]
+name = "symphonia-metadata"
+version = "0.6.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "83713a97705d77bdef7cdbc0768fd6e5a54e4cd7e48d60a806ae85639e2c87c6"
+dependencies = [
+ "lazy_static",
+ "log",
+ "regex-lite",
+ "smallvec",
+ "symphonia-core",
+]
 
 [[package]]
 name = "syn"

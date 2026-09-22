@@ -63,3 +63,28 @@ async fn relocated_helper_initializes_negotiates_and_closes() -> anyhow::Result<
     .await??;
     Ok(())
 }
+
+#[tokio::test]
+#[ignore = "requires pnpm build:voice-native and NANOCODEX_TEST_VOICE_RUNTIME"]
+async fn helper_exits_when_parent_control_pipe_closes() -> anyhow::Result<()> {
+    let runtime = std::env::var_os("NANOCODEX_TEST_VOICE_RUNTIME").expect("prepared runtime path");
+    let helper = Path::new(&runtime).join("bin").join(if cfg!(windows) {
+        "nanocodex-voice-host.exe"
+    } else {
+        "nanocodex-voice-host"
+    });
+    let mut child = tokio::process::Command::new(helper)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    drop(child.stdin.take());
+    anyhow::ensure!(
+        tokio::time::timeout(Duration::from_secs(5), child.wait())
+            .await??
+            .success(),
+        "helper survived parent disconnect"
+    );
+    Ok(())
+}

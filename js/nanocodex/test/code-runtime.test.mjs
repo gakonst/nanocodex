@@ -143,7 +143,7 @@ test("nested lifecycle updates are observed at start and completion boundaries",
 for (const [label, source] of [
   ["normal completion", "void tools.blocked({});"],
   ["exit", "void tools.blocked({}); exit();"],
-]) test(`a cell owns discarded nested tool promises through ${label}`, async () => {
+]) test(`root ${label} cancels discarded nested tool promises`, async () => {
   const started = deferred();
   let nestedSignal;
   const runtime = createCodeRuntime({
@@ -169,17 +169,16 @@ for (const [label, source] of [
     execution.then(() => "settled"),
     new Promise((resolve) => setTimeout(() => resolve("pending"), 10)),
   ]);
-  assert.equal(beforeCancel, "pending");
+  assert.equal(beforeCancel, "settled");
 
-  runtime.cancel("discarded");
   const completed = JSON.parse(await withDeadline(
     execution,
     1_000,
     "discarded nested tool did not cancel",
   ));
   assert.equal(nestedSignal.aborted, true);
-  assert.equal(completed.success, false);
-  assert.match(completed.output, /Code Mode execution was cancelled/);
+  assert.equal(completed.success, true);
+  assert.match(completed.output, /Script completed/);
 });
 
 function deferred() {
@@ -310,13 +309,14 @@ for (const evaluator of ["native", "quickjs", "worker"]) test(`${evaluator} supp
     audio({ type: "audio", data: "AAAA", mimeType: "audio/wav" });
     text("世界".repeat(200));
   `, "helpers", "exec-helpers"), "helpers", "exec-helpers");
-  assert.deepEqual(first.notifications, [{ call_id: "exec-helpers", text: "progress" }]);
+  assert.deepEqual(first.notifications, []);
+  assert.deepEqual(first.updates.filter(update => update.type === "notification"), [{ type: "notification", call_id: "exec-helpers", text: "progress" }]);
   assert.deepEqual(first.cell, { origin_call_id: "exec-helpers", running: true });
   const cellId = outputText(first.output).match(/cell ID ([^\s]+)/)[1];
   let last;
   for (let index = 0; index < 10; index++) {
     const callId = `wait-helpers-${index}`;
-    last = await observed(runtime, runtime.waitCodeObserved(JSON.stringify({ cell_id: cellId, max_tokens: 10 }), "helpers", callId), "helpers", callId);
+    last = await observed(runtime, runtime.waitCodeObserved(JSON.stringify({ cell_id: cellId, max_tokens: 20 }), "helpers", callId), "helpers", callId);
     if (!outputText(last.output).includes("Script running")) break;
   }
   assert.equal(last.success, true);
@@ -324,13 +324,13 @@ for (const evaluator of ["native", "quickjs", "worker"]) test(`${evaluator} supp
   assert.deepEqual(last.cell, { origin_call_id: "exec-helpers", running: false });
   assert.equal(last.output.find((item) => item.type === "input_image").detail, "original");
   assert.equal(last.output.find((item) => item.type === "input_audio").audio_url, "data:audio/wav;base64,AAAA");
-  assert.match(outputText(last.output), /output truncated/);
+  assert.match(outputText(last.output), /tokens truncated|omitted/);
   assert.doesNotMatch(outputText(last.output), /�/);
   const silent = await observed(runtime, runtime.executeCodeObserved(
     '// @exec: {"max_output_tokens":0}\ntext("must-not-appear");', "helpers", "exec-silent",
   ), "helpers", "exec-silent");
   assert.equal(silent.success, true);
-  assert.equal(outputText(silent.output).split("Output:\n")[1].trim(), "…output truncated…");
+  assert.match(outputText(silent.output), /Warning: truncated output.*\nTotal output lines: 1\n\n…4 tokens truncated…/);
   runtime.reset();
 });
 
@@ -375,3 +375,112 @@ for (const pragma of ['{"yield_time_ms":-1}', '{"max_output_tokens":1.5}', '{"un
     runtime.reset();
   });
 }
+
+for (const value of [
+  "data:image/png;base64,",
+  "data:image/png;base64,undefined",
+  "data:image/png;base64,a",
+  "data:image/png;base64,AA=A",
+  "data:image/png;base64,AB==",
+  "data:image/png;base64,AAB=",
+  "data:image/png;base64\n,AAAA",
+  "data:image/png;base64\u2028,AAAA",
+  "data:image/png;base64,!!!!",
+  "data:image/png,AAAA",
+  "data:application/octet-stream;base64,AAAA",
+  { image_url: "data:image/png;base64,[object Object]" },
+]) test(`Codex helper defers data URI decoding to history preparation: ${JSON.stringify(value)}`, async () => {
+  const runtime = createCodeRuntime({});
+  const result = JSON.parse(await runtime.executeCode(
+    `image(${JSON.stringify(value)});`, "invalid-image", "exec-invalid-image",
+  ));
+  assert.equal(result.success, true);
+  assert.equal(result.output.some((item) => item.type === "input_image"), true);
+  runtime.reset();
+});
+
+for (const data of ["AAAA", "AA==", "AAA="]) test(`Code Mode accepts base64 image padding: ${data}`, async () => {
+  const runtime = createCodeRuntime({});
+  const result = JSON.parse(await runtime.executeCode(
+    `image("data:image/png;base64,${data}");`, "valid-image", "exec-valid-image",
+  ));
+  assert.equal(result.success, true);
+  assert.equal(result.output.find((item) => item.type === "input_image").image_url, `data:image/png;base64,${data}`);
+  runtime.reset();
+});
+
+for (const evaluator of ["quickjs", "worker"]) test(`${evaluator} preserves Codex data URI acceptance at the helper boundary`, async () => {
+  let evaluate;
+  if (evaluator === "quickjs") {
+    const { default: variant } = await import("@jitl/quickjs-wasmfile-release-asyncify");
+    const { newQuickJSAsyncWASMModuleFromVariant } = await import("quickjs-emscripten-core");
+    const { createQuickJsEvaluator } = await import("../runtime/quickjs-evaluator.mjs");
+    evaluate = createQuickJsEvaluator(await newQuickJSAsyncWASMModuleFromVariant(variant));
+  } else {
+    const { NodeWebWorker } = await import("./support/node-web-worker.mjs");
+    const { createWorkerEvaluator } = await import("../runtime/worker-evaluator.mjs");
+    evaluate = createWorkerEvaluator({ createWorker: () => new NodeWebWorker(new URL("../runtime/code-evaluator.worker.mjs", import.meta.url)) });
+  }
+  const runtime = createCodeRuntime({}, { evaluate });
+  const result = JSON.parse(await runtime.executeCode(
+    'image("data:image/png;base64,not base64");', "bad-image", "exec-bad-image",
+  ));
+  assert.equal(result.success, true);
+  assert.equal(result.output.some((item) => item.type === "input_image"), true);
+  runtime.reset();
+});
+
+test("Code Mode preserves a real PNG fixture", async () => {
+  const url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
+  const runtime = createCodeRuntime({});
+  const result = JSON.parse(await runtime.executeCode(`image(${JSON.stringify(url)});`, "png", "exec-png"));
+  assert.equal(result.success, true);
+  assert.equal(result.output.find((item) => item.type === "input_image").image_url, url);
+  runtime.reset();
+});
+
+
+test("direct and yielded nested calls retain the originating turn identity", async () => {
+  const release = deferred();
+  const contexts = [];
+  const runtime = createCodeRuntime({
+    probe: { supportsParallelToolCalls: true, async handler(input, context) {
+      contexts.push({ callId: context.callId, turnId: context.turnId });
+      if (input.block) await release.promise;
+      return "ok";
+    } },
+  });
+  await runtime.executeTool("probe", "{}", "owner", "direct", "fixture", "owner:7");
+  const initial = await observed(runtime, runtime.executeCodeObserved(
+    '// @exec: {"yield_time_ms": 0}\nawait tools.probe({block:true}); await tools.probe({});',
+    "owner", "exec-turn", "fixture", "owner:7",
+  ), "owner", "exec-turn");
+  const cellId = outputText(initial.output).match(/Script running with cell ID ([^\s]+)/)[1];
+  await runtime.executeTool("probe", "{}", "owner", "next-turn", "fixture", "owner:8");
+  release.resolve();
+  const completed = await observed(runtime, runtime.waitCodeObserved(JSON.stringify({ cell_id: cellId }), "owner", "wait-turn"), "owner", "wait-turn");
+  assert.equal(completed.success, true);
+  assert.deepEqual(contexts.map(({turnId}) => turnId), ["owner:7", "owner:7", "owner:8", "owner:7"]);
+  assert.equal(new Set(contexts.map(({callId}) => callId)).size, 4);
+  runtime.reset();
+});
+
+
+test("global host bridge forwards turn identity to direct and Code Mode hosts", async () => {
+  const { installHostBridge, bindHostSession, releaseHostSession } = await import("../internal.mjs");
+  const contexts = [];
+  const runtime = createCodeRuntime({ probe: { handler(_input, context) { contexts.push(context.turnId); return "ok"; } } });
+  const host = { executeTool: runtime.executeTool, executeCode: runtime.executeCodeObserved };
+  installHostBridge();
+  bindHostSession(host, "bridge-turn");
+  try {
+    const direct = JSON.parse(await globalThis.nanocodexHost.executeTool("probe", "{}", "bridge-turn", "direct", "fixture", "bridge-turn:7"));
+    assert.equal(direct.success, true);
+    const nested = await observed(runtime, globalThis.nanocodexHost.executeCode("await tools.probe({});", "bridge-turn", "exec", "fixture", "bridge-turn:7"), "bridge-turn", "exec");
+    assert.equal(nested.success, true);
+    assert.deepEqual(contexts, ["bridge-turn:7", "bridge-turn:7"]);
+  } finally {
+    releaseHostSession(host, "bridge-turn");
+    runtime.reset();
+  }
+});

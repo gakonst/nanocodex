@@ -663,3 +663,23 @@ test("MCP parallel safety requires an annotation or explicit server policy", asy
   assert.equal(selective.resolve("mcp__selective__annotated").parallelSafe, true);
   assert.equal(global.resolve("mcp__global__default").parallelSafe, true);
 });
+
+test("prepared MCP handlers preserve real turn metadata and omit absent context", async () => {
+  const calls = [];
+  const mcp = await createMcpRuntime({ fixture: { client: {
+    async listTools() { return { tools: [{ name: "probe", inputSchema: { type: "object" } }] }; },
+    async callTool(params) { calls.push(params); return { content: [] }; },
+  } } });
+  try {
+    await mcp.settled();
+    const tool = mcp.resolve("mcp__fixture__probe");
+    for (const [callId, turnId] of [["one", "session:7"], ["two", "session:7"], ["three", "session:8"], ["legacy", undefined]]) {
+      await tool.handler({}, { sessionId: "session", callId, model: "fixture", turnId });
+      assert.deepEqual(calls.at(-1), { name: "probe", arguments: {},
+        ...(turnId === undefined ? {} : { _meta: { "x-codex-turn-metadata": {
+          session_id: "session", thread_id: "session", turn_id: turnId, call_id: callId, model: "fixture",
+        } } }),
+      });
+    }
+  } finally { await mcp.close(); }
+});

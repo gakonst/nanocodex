@@ -2,6 +2,25 @@ import XCTest
 
 final class NanocodexUITests: XCTestCase {
     @MainActor
+    func testScheduledJobsAreDiscoverableWithoutLosingDraft() throws {
+        let app = fixture(theme: "light")
+        app.launch(); defer { app.terminate() }
+        let composer = app.textViews["message-input"]
+        XCTAssertTrue(composer.waitForExistence(timeout: 10))
+        composer.click(); composer.typeText("Keep this schedule draft")
+        let menu = app.descendants(matching: .any).matching(identifier: "workspace-menu").firstMatch
+        XCTAssertTrue(menu.waitForExistence(timeout: 5))
+        menu.click()
+        let schedules = app.menuItems["Scheduled jobs"]
+        XCTAssertTrue(schedules.waitForExistence(timeout: 5))
+        schedules.click()
+        XCTAssertTrue(app.staticTexts["Select a job to edit, pause, or cancel it. Ask an agent in chat to create a new job."].waitForExistence(timeout: 5))
+        XCTAssertTrue(app.buttons["Refresh"].exists)
+        app.buttons["Close"].click()
+        XCTAssertEqual(composer.value as? String, "Keep this schedule draft")
+    }
+
+    @MainActor
     func testBrowserChromeStaysBelowNativeToolbar() throws {
         let app = fixture(theme: "light")
         app.launch(); defer { app.terminate() }

@@ -17,7 +17,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap},
 };
-use std::cmp::Reverse;
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
@@ -145,7 +144,7 @@ impl RecentPromptPicker {
 
     fn refresh_visible(&mut self) {
         let query = self.query.to_ascii_lowercase();
-        let mut visible = self
+        self.visible = self
             .prompts
             .iter()
             .enumerate()
@@ -155,11 +154,9 @@ impl RecentPromptPicker {
                 {
                     return None;
                 }
-                fuzzy_score(&prompt.text, &query).map(|score| (index, score))
+                fuzzy_score(&prompt.text, &query).map(|_| index)
             })
             .collect::<Vec<_>>();
-        visible.sort_by_key(|(index, score)| (Reverse(*score), *index));
-        self.visible = visible.into_iter().map(|(index, _)| index).collect();
         self.selected = 0;
         self.preview_scroll = 0;
     }
@@ -421,6 +418,26 @@ mod tests {
             picker.update(key(KeyCode::Enter)).effects,
             [RecentPromptPickerEffect::Insert(
                 "  exact\n\n    prompt  ".to_owned()
+            )]
+        );
+    }
+
+    #[test]
+    fn fuzzy_matches_preserve_recency_over_match_score() {
+        let mut picker = RecentPromptPicker::new(
+            vec![
+                prompt("docs for the parser", "current", "/work/current"),
+                prompt("parser", "current", "/work/current"),
+                prompt("unrelated", "current", "/work/current"),
+            ],
+            "current".to_owned(),
+        );
+        picker.insert_paste("parser");
+        assert_eq!(picker.visible, [0, 1]);
+        assert_eq!(
+            picker.select().effects,
+            [RecentPromptPickerEffect::Insert(
+                "docs for the parser".to_owned()
             )]
         );
     }

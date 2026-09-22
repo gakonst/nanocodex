@@ -34,6 +34,8 @@ struct CallIds {
     non_server_tool_search_outputs: HashSet<Box<str>>,
 }
 
+use crate::tools::valid_tool_image_data_url;
+
 impl ContextManager {
     #[must_use]
     pub fn new(items: Vec<ResponseItem>) -> Self {
@@ -105,6 +107,38 @@ impl ContextManager {
         if self.calls.is_balanced() {
             self.calls.clear();
         }
+    }
+
+    /// Repairs malformed legacy tool images before restored history is replayed.
+    pub(super) fn replace_invalid_tool_images(&mut self) -> usize {
+        let mut replaced = 0;
+        let mut items = self.flattened_items();
+        for item in &mut items {
+            let (ResponseItem::FunctionCallOutput { output, .. }
+            | ResponseItem::CustomToolCallOutput { output, .. }) = item
+            else {
+                continue;
+            };
+            let FunctionOutputBody::Content(content) = output else {
+                continue;
+            };
+            for part in content {
+                if let FunctionOutputContent::InputImage { image_url, .. } = part
+                    && !valid_tool_image_data_url(image_url)
+                {
+                    *part = FunctionOutputContent::InputText {
+                        text:
+                            "[image omitted: malformed base64 image data in restored tool output]"
+                                .into(),
+                    };
+                    replaced += 1;
+                }
+            }
+        }
+        if replaced > 0 {
+            self.replace_and_recompute(items, &[]);
+        }
+        replaced
     }
 
     pub fn replace_rejected_images(&mut self) -> usize {
@@ -288,15 +322,15 @@ impl ContextManager {
     }
 
     fn items_after_last_model_generated_tokens(&self) -> u64 {
-        let mut tokens = 0_u64;
+        let mut tokens = None::<u64>;
         for item in &self.items {
             if is_model_generated_item(item) {
-                tokens = 0;
-            } else {
-                tokens = tokens.saturating_add(compaction::estimate_item_tokens(item));
+                tokens = Some(0);
+            } else if let Some(tokens) = &mut tokens {
+                *tokens = tokens.saturating_add(compaction::estimate_item_tokens(item));
             }
         }
-        tokens
+        tokens.unwrap_or_default()
     }
 
     fn non_last_reasoning_tokens(&self) -> u64 {
@@ -530,8 +564,7 @@ const fn is_model_generated_item(item: &ResponseItem) -> bool {
         ResponseItem::Message {
             role: MessageRole::Assistant,
             ..
-        } | ResponseItem::AgentMessage { .. }
-            | ResponseItem::Reasoning { .. }
+        } | ResponseItem::Reasoning { .. }
             | ResponseItem::LocalShellCall { .. }
             | ResponseItem::FunctionCall { .. }
             | ResponseItem::ToolSearchCall { .. }
@@ -544,7 +577,69 @@ const fn is_model_generated_item(item: &ResponseItem) -> bool {
 }
 
 fn is_user_turn_boundary(item: &ResponseItem) -> bool {
-    item.is_user_message() && !is_contextual_user_message(item)
+    match item {
+        ResponseItem::AgentMessage { .. } => true,
+        ResponseItem::Message {
+            role: MessageRole::Assistant,
+            content,
+            ..
+        } => is_inter_agent_instruction_content(content),
+        _ => item.is_user_message() && !is_contextual_user_message(item),
+    }
+}
+
+// Older Codex histories encode inter-agent instructions as a single JSON text
+// block in an assistant message. Recognize the envelope, not arbitrary JSON.
+fn is_inter_agent_instruction_content(content: &[ContentItem]) -> bool {
+    #[derive(serde::Deserialize)]
+    struct Instruction {
+        author: String,
+        recipient: String,
+        #[serde(default)]
+        other_recipients: Vec<String>,
+        #[serde(rename = "content")]
+        _content: String,
+        #[serde(rename = "trigger_turn")]
+        _trigger_turn: bool,
+        #[serde(rename = "id")]
+        _id: Option<String>,
+        #[serde(rename = "encrypted_content")]
+        _encrypted_content: Option<String>,
+        #[serde(rename = "internal_chat_message_metadata_passthrough")]
+        _metadata: Option<InstructionMetadata>,
+    }
+    #[derive(serde::Deserialize)]
+    struct InstructionMetadata {
+        #[serde(rename = "turn_id")]
+        _turn_id: Option<String>,
+        #[serde(rename = "create_time")]
+        _create_time: Option<serde_json::Number>,
+    }
+    fn valid_agent_path(path: &str) -> bool {
+        if matches!(path, "/root" | "/morpheus") {
+            return true;
+        }
+        path.strip_prefix("/root/").is_some_and(|suffix| {
+            suffix.split('/').all(|segment| {
+                !segment.is_empty()
+                    && segment != "root"
+                    && segment
+                        .chars()
+                        .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '_')
+            })
+        })
+    }
+    let [ContentItem::InputText { text } | ContentItem::OutputText { text, .. }] = content else {
+        return false;
+    };
+    serde_json::from_str::<Instruction>(text).is_ok_and(|instruction| {
+        valid_agent_path(&instruction.author)
+            && valid_agent_path(&instruction.recipient)
+            && instruction
+                .other_recipients
+                .iter()
+                .all(|path| valid_agent_path(path))
+    })
 }
 
 #[must_use]
@@ -664,6 +759,82 @@ fn truncate_output_content(items: &mut Vec<FunctionOutputContent>, token_limit: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn usage_counts_incoming_agent_instructions_and_preceding_local_tail() {
+        let reasoning: ResponseItem = serde_json::from_value(serde_json::json!({
+            "type": "reasoning", "summary": [], "encrypted_content": "x".repeat(1200)
+        }))
+        .unwrap();
+        let agent: ResponseItem = serde_json::from_value(serde_json::json!({
+            "type": "agent_message", "author": "/root/peer", "recipient": "/root",
+            "content": [{"type": "input_text", "text": "Continue with the new task"}]
+        }))
+        .unwrap();
+        let local = ResponseItem::message(
+            MessageRole::Developer,
+            [ContentItem::InputText {
+                text: "additional local context".into(),
+            }],
+        );
+        let expected_tail =
+            compaction::estimate_item_tokens(&local) + compaction::estimate_item_tokens(&agent);
+        let prior_reasoning = compaction::estimate_item_tokens(&reasoning);
+        assert!(prior_reasoning > 0);
+        let mut context = ContextManager::new(vec![reasoning, local, agent]);
+        context.update_token_info(Some(&Usage {
+            total_tokens: 100,
+            ..Usage::default()
+        }));
+        assert_eq!(context.active_context_tokens(true), 100 + expected_tail);
+        assert_eq!(
+            context.active_context_tokens(false),
+            100 + expected_tail + prior_reasoning
+        );
+    }
+
+    #[test]
+    fn usage_without_model_items_does_not_add_the_entire_history_again() {
+        let mut context = ContextManager::new(vec![message("initial input")]);
+        assert_eq!(context.active_context_tokens(true), 0);
+        context.replace_and_recompute(vec![message("restored input")], &[]);
+        let estimated = context.last_token_usage.as_ref().unwrap().total_tokens;
+        assert!(estimated > 0);
+        assert_eq!(context.active_context_tokens(true), estimated);
+        assert_eq!(context.active_context_tokens(false), estimated);
+    }
+
+    #[test]
+    fn usage_legacy_agent_instruction_starts_a_reasoning_boundary() {
+        let reasoning: ResponseItem = serde_json::from_value(serde_json::json!({
+            "type": "reasoning", "summary": [], "encrypted_content": "x".repeat(1200)
+        }))
+        .unwrap();
+        let prior_reasoning = compaction::estimate_item_tokens(&reasoning);
+        let envelope = serde_json::json!({
+            "author": "/root/peer", "recipient": "/root", "content": "new task",
+            "trigger_turn": true
+        });
+        let instruction = ResponseItem::message(
+            MessageRole::Assistant,
+            [ContentItem::InputText {
+                text: envelope.to_string().into(),
+            }],
+        );
+        let mut context = ContextManager::new(vec![reasoning, instruction]);
+        context.update_token_info(Some(&Usage {
+            total_tokens: 100,
+            ..Usage::default()
+        }));
+        assert_eq!(context.active_context_tokens(false), 100 + prior_reasoning);
+        assert_eq!(context.active_context_tokens(true), 100);
+        for text in ["ordinary assistant output".to_owned(), "{}".to_owned(),
+            serde_json::json!({"author":"relative", "recipient":"/root", "content":"x", "trigger_turn":true}).to_string()] {
+            let item = ResponseItem::message(MessageRole::Assistant,
+                [ContentItem::InputText { text: text.into() }]);
+            assert!(!is_user_turn_boundary(&item));
+        }
+    }
 
     #[test]
     fn complete_prompt_reuses_the_history_without_repair() {
@@ -919,6 +1090,8 @@ mod tests {
 
     #[test]
     fn history_truncates_tool_text_but_preserves_images() {
+        // Image payloads can exceed the entire text budget and must remain intact.
+        let image_url = format!("data:image/png;base64,{}", "YWJj".repeat(24_000));
         let context = ContextManager::new(vec![ResponseItem::custom_tool_output(
             "call".to_owned(),
             None,
@@ -927,7 +1100,7 @@ mod tests {
                     text: "x".repeat(48_004).into_boxed_str(),
                 },
                 FunctionOutputContent::InputImage {
-                    image_url: "data:image/png;base64,a".into(),
+                    image_url: image_url.clone().into_boxed_str(),
                     detail: None,
                 },
                 FunctionOutputContent::InputText {
@@ -948,11 +1121,62 @@ mod tests {
         );
         assert!(matches!(
             &output[1],
-            FunctionOutputContent::InputImage { .. }
+            FunctionOutputContent::InputImage { image_url: retained, .. }
+                if retained.as_ref() == image_url
         ));
         assert!(
             matches!(&output[2], FunctionOutputContent::InputText { text } if text.as_ref() == "[omitted 1 text items ...]")
         );
+    }
+
+    #[test]
+    fn malformed_restored_tool_images_are_replaced_without_removing_valid_images() {
+        let mut context = ContextManager::new(vec![ResponseItem::custom_tool_output(
+            "call".to_owned(),
+            None,
+            FunctionOutputBody::Content(vec![
+                FunctionOutputContent::InputText {
+                    text: "retained text".into(),
+                },
+                FunctionOutputContent::InputImage {
+                    image_url: "data:image/png;base64,AAAA\n[output truncated]".into(),
+                    detail: None,
+                },
+                FunctionOutputContent::InputImage {
+                    image_url: "data:image/png;base64,YQ==".into(),
+                    detail: None,
+                },
+            ]),
+        )]);
+        assert_eq!(context.replace_invalid_tool_images(), 1);
+        let encoded = serde_json::to_string(&context.flattened_items()).unwrap();
+        assert!(encoded.contains("retained text"));
+        assert!(encoded.contains("base64,YQ=="));
+        assert!(encoded.contains("malformed base64 image data"));
+        assert!(!encoded.contains("output truncated"));
+        assert_eq!(context.replace_invalid_tool_images(), 0);
+    }
+
+    #[test]
+    fn restored_tool_image_envelopes_require_image_mime_and_valid_base64() {
+        for valid in [
+            "data:image/png;base64,YQ==",
+            "DATA:IMAGE/PNG;BASE64,YWI=",
+            "data:image/svg+xml;base64,YWJj",
+        ] {
+            assert!(super::valid_tool_image_data_url(valid), "{valid}");
+        }
+        for invalid in [
+            "data:image/png;base64,",
+            "data:image/png;base64,a",
+            "data:image/png;base64,AA=A",
+            "data:image/png;base64,!!!!",
+            "data:image/png;base64\n,AAAA",
+            "data:application/octet-stream;base64,AAAA",
+            "https://example.test/image.png",
+        ] {
+            assert!(!super::valid_tool_image_data_url(invalid), "{invalid}");
+        }
     }
 
     #[test]

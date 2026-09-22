@@ -122,6 +122,14 @@ files and repairs missing or corrupt resources before activating that release.
 For upgrades performed by an older updater, the CLI repairs its matching runtime
 automatically on first voice use.
 
+On macOS and Windows, current native CLIs and Hands automatically provision
+OpenAI's signed CUA runtime and select its upstream MCP tools. The macOS installer
+fetches the official app bundle; Windows uses its official Microsoft Store package.
+Linux requires an explicitly installed upstream MCP provider; no custom CUA backend is bundled.
+Use `nanocodex2 computer setup --refresh`
+to update or repair the runtime, or `NANOCODEX_COMPUTER=off` to disable it.
+See [runtime installation and platform limits](docs/computer/upstream-provider.md).
+
 The CLI is a production consumer and a useful way to try the agent, not a
 process protocol that applications must adopt. See
 [`bin/nanocodex`](bin/nanocodex), the [examples index](examples/README.md), and
@@ -134,6 +142,54 @@ keys are separate from `nanocodex auth` (ChatGPT provider credentials) and
 `nanocodex login/connect/status/logout` (Connect installation grants). See the
 [CLI account sign-in guide](bin/nanocodex/nanocodex2/README.md#account-sign-in)
 for environment overrides, storage, and key revocation.
+
+To connect multiple ChatGPT subscriptions, open **Connect → ChatGPT → Add account**
+on the web. Sign in to the additional ChatGPT account, enter the displayed code,
+then return to Nanocodex. The card lists every account ID, the default account,
+and any quota reset time. Adding an account preserves existing connections;
+**Disconnect all ChatGPT accounts** removes the entire pool.
+
+On iPhone and iPad, open **Connectors → ChatGPT accounts**. On Mac, open
+**Settings → Account → Manage ChatGPT accounts** (or **Connections** in the app
+menu). These open the same web page; sign in there with the same Nanocodex account
+used in the native app.
+
+From the CLI, import one Codex login at a time and approve each connection:
+
+```sh
+nanocodex connect chatgpt --auth-file /path/to/account-one/auth.json
+nanocodex connect chatgpt --auth-file /path/to/account-two/auth.json
+```
+
+Without `--auth-file`, the command uses the current Codex login. Each distinct
+ChatGPT account is retained (up to 20); reconnecting the same account does not
+create a duplicate. The most recently connected account is preferred. Hosted
+model requests automatically switch to another connected account when ChatGPT
+reports subscription exhaustion. Exhausted accounts become eligible again at
+the provider's reset time, or after one minute if no reset time is supplied.
+Ordinary request-rate limits do not switch accounts. Existing Nanocodex sessions
+reconnect with their full conversation history when switching before output
+begins; a failure after output begins is surfaced to avoid replaying partial
+work. Disconnecting ChatGPT removes all connected ChatGPT accounts.
+
+To test a specific connected account, pin a new session using its `account_id`
+from the connector status (`chatgpt.accounts`):
+
+```sh
+nanocodex2 new --chatgpt-account <account-id>
+nanocodex2 run --chatgpt-account <account-id> "Reply with hello"
+```
+
+The pin stays with the session across reconnects and resumes. Pinned sessions
+surface that account's subscription limit instead of switching accounts, and do
+not change the preferred account for other sessions. Unknown or disconnected
+account IDs fail without falling back to another account or provider. New
+sessions without a pin keep automatic failover.
+
+Managed API callers can set `configuration.chatgpt_account_id` when creating an
+agent (including `Agent.create` / `Agent.createAndPrompt` in JavaScript). Rust
+callers can use `ManagedClient::create_with_chatgpt_account(settings, account_id)`.
+
 
 ### Linux Hands and VM factories
 
@@ -169,10 +225,25 @@ arguments, and waits for remote registration and the native desktop catalog.
 reconnect independently of SSH. Re-running setup reuses identities and private
 VM roots under `/srv/nanocodex`; it never replaces a retained workspace. A setup
 already enrolled to another account or origin is rejected. `--artifacts DIR`
-accepts matching locally built Linux `nanocodex2`, `nanocodex-vm-guest`, and
-`nanocodex-computer` executables for development. The CLI bundles the computer
-runtime source needed to build the VM image; no local checkout is required.
-Image reuse includes that source in its cache key.
+accepts matching locally built Linux `nanocodex2` and `nanocodex-vm-guest`
+executables for development. Computer use in a guest requires an explicitly
+configured upstream MCP provider; no custom CUA runtime is built into the image.
+
+### Windows Hand
+
+Download `nanocodex-hand-setup-x86_64.exe` from the latest release and
+double-click it on an x86-64 Windows 10 or 11 computer. Keep **Sign in and
+connect this computer now** selected, then enter the account phone number and
+the six-digit SMS code. No terminal setup or administrator access is required.
+
+The installer bundles the account Hand and provisions OpenAI’s official computer-use
+runtime. It verifies the runtime before use, uses a dedicated per-user account
+credential, and registers a hidden interactive startup task with failure
+recovery. Running in the signed-in session is deliberate: Windows Graphics
+Capture, UI Automation, and input cannot control that desktop from a Session 0
+service. Start-menu shortcuts stop, repair, inspect, or uninstall the Hand.
+See [`windows/hand`](windows/hand) for behavior, security boundaries, build
+instructions, and the real Notepad control smoke test.
 
 ## Rust: start here
 
@@ -541,34 +612,33 @@ runtime includes the bounded OpenAI/Codex-compatible web-search boundary, and
 JavaScript hosts can use the matching `web()` factory. Applications decide
 which network tool to install and where credentials live.
 
-For full deterministic Chromium control, the supported source-distributed
-[`nanocodex-browser`](crates/nanocodex-browser/README.md) crate
-provides an ordinary deferred `BrowserTool`. It supports semantic/CSS/role/text
-targets, tabs and frames, bounded DOM/layout/style and network inspection,
-screenshots and pixel diffs, PDFs, traces, video, accessibility, performance,
-coverage, heap and React diagnostics, uploads, and virtual passkeys. The full
-roughly 67 KiB action contract stays runtime-only until discovered, adding no
-browser schema bytes to the initial model request.
+Nanocodex agents use a Hand's `cua_repl` MCP provider for browser interaction.
+Route each CUA call with `workdir`, just like a shell call. First call
+`tools.mcp__cua_repl__js({workdir: "/desktop"})` to read the provider contract;
+then pass its arguments alongside `workdir`. The host consumes `workdir` and
+forwards every other argument unchanged. There is no `select_computer` tool or
+global target. Different Hands can run concurrently in one Code Mode cell:
 
-```rust,ignore
-use nanocodex::{Nanocodex, OpenAi, Tools};
-use nanocodex_browser::BrowserTool;
-
-# fn build(openai: OpenAi) -> Result<(), Box<dyn std::error::Error>> {
-let tools = Tools::builder().provider(BrowserTool::new()?).build()?;
-let (_agent, _events) = Nanocodex::builder(openai).tools(tools).build()?;
-# Ok(())
-# }
+```js
+await Promise.all([
+  tools.mcp__cua_repl__js({ workdir: "/desktop", code: desktopCode }),
+  tools.mcp__cua_repl__js({ workdir: "/vm", code: vmCode }),
+]);
 ```
 
-Local CLI mode uses a dedicated persistent browser profile by default so login
-and site state survive Nanocodex restarts; `--browser-profile=temporary` opts
-back into one disposable profile with host-cookie import. The profile is still
-private browser state, not an OS sandbox. The optional
-`BrowserVm` composition starts an unprivileged headed Chromium under Xvfb in a
-disposable libkrun guest and closes CDP, Chromium, networking, VMM, and disk as
-one owned lifecycle. Run the source in
-[`examples/browser_agent.rs`](examples/browser_agent.rs).
+Read each provider's contract first; `code` above assumes that provider's schema.
+JS and reset calls to the same Hand are ordered. Each cell pins its captured Hand
+connections, as shell routing does. A published screen alone does not provide
+CUA; attach a supported computer or report the missing capability.
+
+The managed cloud runtime and native/VM Hands do not expose `browser_execute`
+or the managed `browser_vault_*` tools. Secure Vault intake remains available,
+but automated Vault browser login needs a supported private CUA integration.
+Do not pass Vault secrets into CUA code or ordinary tool arguments.
+
+The source-distributed [`nanocodex-browser`](crates/nanocodex-browser/README.md)
+library remains in the workspace for explicit library consumers and legacy
+utilities; it is disabled as an agent browser backend.
 
 ## VMs, sandboxes, and voice
 
@@ -627,6 +697,9 @@ cargo run -p nanocodex-examples --bin realtime-pipe \
 
 Runnable sources: [`examples/voice.rs`](examples/voice.rs) and
 [`examples/realtime_pipe.rs`](examples/realtime_pipe.rs).
+
+The managed terminal UI also supports [ChatGPT and ElevenLabs voice switching
+and instant cloning](docs/voice/terminal.md) through `/voice` commands.
 
 ## Evaluation is a product boundary
 

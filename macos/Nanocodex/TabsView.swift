@@ -144,6 +144,8 @@ struct WorkspaceToolbar: ToolbarContent {
                 .accessibilityIdentifier("workspace-remote-screens").disabled(!screensAvailable)
             Menu {
                 Button("Hands", systemImage: "hand.raised") { model.screen = .hands }
+                Button("Scheduled jobs", systemImage: "clock") { model.showingScheduledJobs = true }
+                    .accessibilityIdentifier("workspace-scheduled-jobs")
                 Button("Connections", systemImage: "link") { model.openAccount() }
                 Divider()
                 Button("Keyboard Shortcuts…", systemImage: "keyboard") { model.screen = .chat; model.showingKeyboardHelp = true }

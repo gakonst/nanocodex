@@ -5,6 +5,62 @@ import InboxCore
 final class ScheduledJobTests: XCTestCase {
     private let payload = #"{"id":"daily-check","cron":"0 9 * * *","timezone":"Europe/Athens","input":"Check the forecast","enabled":true,"session_mode":"new","next_run_at":1788760800000,"last_run_at":1788674400000,"last_skipped_at":null,"last_agent_id":"run-agent","last_turn_id":"cron:revision:1788674400000"}"#
 
+    func testUpdateAndCancelUseAuthenticatedOwnerScopedRequests() async throws {
+        let job = try ScheduledJob(JSONDecoder().decode(JSON.self, from: Data(payload.utf8)), agentID: "source-agent")
+        let fixture = try HTTPFixture { [payload] request in
+            XCTAssertEqual(request.path, "/v1/agents/source-agent/triggers/daily-check")
+            XCTAssertEqual(request.headers["authorization"], "Bearer " + fixtureKey)
+            if request.method == "DELETE" {
+                XCTAssertTrue(request.body.isEmpty)
+                return FixtureReply(status: 204, body: "")
+            }
+            XCTAssertEqual(request.method, "PATCH")
+            let body = try! JSONDecoder().decode(JSON.self, from: request.body)
+            XCTAssertEqual(body["cron"], .string("30 10 * * *"))
+            XCTAssertEqual(body["timezone"], .string("UTC"))
+            XCTAssertEqual(body["input"], .string("Updated prompt"))
+            XCTAssertEqual(body["enabled"], .bool(false))
+            XCTAssertEqual(body["session_mode"], .string("continue"))
+            return FixtureReply(body: payload)
+        }
+        defer { fixture.close() }
+        let client = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
+        defer { client.close() }
+        let result = try await client.updateScheduledJob(job, cron: "30 10 * * *", timezone: "UTC", input: "Updated prompt", enabled: false, startsNewConversation: false)
+        XCTAssertEqual(result.id, job.id)
+        try await client.cancelScheduledJob(job)
+    }
+
+    func testUpdateRejectsResponseForAnotherSchedule() async throws {
+        let job = try ScheduledJob(JSONDecoder().decode(JSON.self, from: Data(payload.utf8)), agentID: "source-agent")
+        let fixture = try HTTPFixture { [payload] _ in
+            FixtureReply(body: payload.replacingOccurrences(of: "daily-check", with: "other-job"))
+        }
+        defer { fixture.close() }
+        let client = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
+        defer { client.close() }
+        do {
+            _ = try await client.updateScheduledJob(job, cron: job.cron, timezone: job.timezone, input: job.input, enabled: false, startsNewConversation: true)
+            XCTFail("Must not replace a schedule with an unrelated response")
+        } catch { XCTAssertEqual(error as? APIError, .invalidResponse) }
+    }
+
+    func testScheduleMutationErrorsAreSurfacedWithoutRetry() async throws {
+        let job = try ScheduledJob(JSONDecoder().decode(JSON.self, from: Data(payload.utf8)), agentID: "source-agent")
+        for status in [400, 403, 404, 409, 500] {
+            let fixture = try HTTPFixture { _ in FixtureReply(status: status) }
+            defer { fixture.close() }
+            let client = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
+            defer { client.close() }
+            do { try await client.cancelScheduledJob(job); XCTFail("Expected failure") }
+            catch { XCTAssertEqual(error as? APIError, .http(status)) }
+            do {
+                _ = try await client.updateScheduledJob(job, cron: job.cron, timezone: job.timezone, input: job.input, enabled: false, startsNewConversation: true)
+                XCTFail("Expected failure")
+            } catch { XCTAssertEqual(error as? APIError, .http(status)) }
+        }
+    }
+
     func testAccountDiscoverySkipsOnlyExplicitlyEmptyAgentsAndSupportsOlderServers() async throws {
         let fixture = try HTTPFixture { request in
             XCTAssertEqual(request.path, "/v1/agents")

@@ -1,6 +1,6 @@
 import Foundation
 
-/// A read-only projection of the managed agent's existing cron trigger contract.
+/// A projection of the managed agent's existing cron trigger contract.
 public struct ScheduledJob: Identifiable, Equatable, Sendable {
     public var id: String { agentID + "/" + triggerID }
     public let agentID: String

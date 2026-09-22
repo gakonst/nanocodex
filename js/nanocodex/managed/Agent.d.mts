@@ -1,3 +1,4 @@
+import type { RequestOriginContext } from "../tools/environment.mjs";
 import type { Model, PromptInput, ReasoningMode, Thinking, TurnUsage } from "../types.mjs";
 import type { AgentId } from "../runtime/subagents.mjs";
 
@@ -106,6 +107,8 @@ export type Organization = Readonly<{
 export type OrganizationUpdate = Readonly<{ name: string | null }>;
 
 export type Options = Readonly<{
+  /** Descriptive client-reported context; never grants authority or changes execution placement. */
+  requestOrigin?: RequestOriginContext;
   /** Managed service origin. Defaults to the current browser origin. */
   baseUrl?: string | URL | undefined;
   /** Server credential. Browsers omit this and authenticate with the account cookie. */
@@ -141,6 +144,8 @@ export type Environment = Readonly<{
   network?: NetworkPolicy;
 }>;
 export type Configuration = Readonly<{
+  /** Pin this session to one connected ChatGPT account; disables automatic account failover. */
+  chatgpt_account_id?: string;
   settings?: Readonly<{ model: CreateSettings["model"]; thinking: CreateSettings["thinking"]; reasoning_mode: "standard" | "pro"; fast_mode: boolean }>;
   instructions?: string;
   tools?: readonly string[];
@@ -222,11 +227,24 @@ export type State = Readonly<{
   }>;
 }>;
 
+export type AgentPresentation = Readonly<{
+  revision: number;
+  status: "running" | "stopping" | "completed" | "cancelled" | "failed" | "idle";
+  activeTurnIds: readonly string[];
+  title?: string;
+  activity?: string;
+  activityTurnId?: string;
+  lastUserMessageAt?: number;
+  updatedAt: number;
+}>;
+
 export type Summary = Readonly<{
   title: string;
   createdAt: number;
   updatedAt: number;
   turnCount: number;
+  lastUserMessageAt?: number;
+  presentation?: AgentPresentation;
 }>;
 
 export type TurnState =
@@ -364,7 +382,7 @@ export type CronTriggerConfig = Readonly<{
   cron: string;
   /** IANA time zone. Defaults to UTC. */
   timezone?: string | undefined;
-  /** Text prompt submitted for each occurrence, at most 64 KiB. */
+  /** Text prompt submitted for each occurrence. */
   input: string;
   /** Defaults to true; false pauses future occurrences. */
   enabled?: boolean | undefined;
@@ -390,6 +408,9 @@ export type CronTrigger = Readonly<{
 }>;
 
 export type Agent = Readonly<{
+  /** Start bounded background runtime/socket preparation for an active conversation.
+   * Resolves on acceptance, not provider readiness. Never required before prompt(). */
+  prepare(options?: Readonly<{ signal?: AbortSignal }>): Promise<void>;
   requiredActions: Readonly<{
     list(): Promise<{ data: readonly Readonly<{ call_id: string; session_id: string; source_call_id: string; name: string; input: unknown; deadline_at: number }>[] }>;
     submit(callId: string, outcome: import("nanocodex-tools/hosted").HostedToolCallOutcome): Promise<void>;
@@ -416,6 +437,9 @@ export type Agent = Readonly<{
     get(id: string): Promise<CronTrigger>;
     /** Create or replace an account-owned schedule using a stable id. */
     put(id: string, config: CronTriggerConfig): Promise<CronTrigger>;
+    /** Update an existing schedule; omitted settings are preserved. */
+    update(id: string, patch: Partial<CronTriggerConfig>): Promise<CronTrigger>;
+    /** Stop future occurrences. Already dispatched runs are not cancelled. */
     delete(id: string): Promise<void>;
   }>;
   /** Reverse-tool endpoint with cookie/bearer transport retained in a private closure. */
@@ -443,15 +467,16 @@ export function remove(id: string, options?: Options): Promise<void>;
 export { remove as delete };
 export function findSessions(request: FindSessionsRequest, options?: Options): Promise<FindSessionsResponse>;
 export function readSession(request: ReadSessionRequest, options?: Options): Promise<ReadSessionResponse>;
+export type MemoryOptions = Options & Readonly<{ scope?: "team" | "personal" }>;
 /** List the authenticated account's hosted durable memory. */
-export function listMemories(options?: Options): Promise<readonly MemoryRecord[]>;
+export function listMemories(options?: MemoryOptions): Promise<readonly MemoryRecord[]>;
 /** Compare-and-swap delete one hosted durable memory; deleting an absent id is idempotent. */
-export function deleteMemory(key: MemoryKey, options?: Options): Promise<void>;
-export function memory(operation: MemoryScanOperation, options?: Options): Promise<MemoryScanResult>;
-export function memory(operation: MemoryReadOperation, options?: Options): Promise<MemoryReadResult>;
-export function memory(operation: MemoryPutOperation, options?: Options): Promise<MemoryPutResult>;
-export function memory(operation: MemoryDeleteOperation, options?: Options): Promise<MemoryDeleteResult>;
-export function memory(operation: MemoryOperation, options?: Options): Promise<MemoryResult>;
+export function deleteMemory(key: MemoryKey, options?: MemoryOptions): Promise<void>;
+export function memory(operation: MemoryScanOperation, options?: MemoryOptions): Promise<MemoryScanResult>;
+export function memory(operation: MemoryReadOperation, options?: MemoryOptions): Promise<MemoryReadResult>;
+export function memory(operation: MemoryPutOperation, options?: MemoryOptions): Promise<MemoryPutResult>;
+export function memory(operation: MemoryDeleteOperation, options?: MemoryOptions): Promise<MemoryDeleteResult>;
+export function memory(operation: MemoryOperation, options?: MemoryOptions): Promise<MemoryResult>;
 export function getOrganization(options?: Options): Promise<Organization>;
 export function updateOrganization(request: OrganizationUpdate, options?: Options): Promise<Organization>;
 

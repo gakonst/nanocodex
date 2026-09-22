@@ -19,8 +19,27 @@ import (
 )
 
 func main() {
+	if os.Getenv(broadcastHelperEnv) == "1" {
+		if err := runBroadcastEncoder(); err != nil {
+			fmt.Fprintln(os.Stderr, "nanocodex_broadcast_error="+broadcastSafeCategory(err.Error()))
+			os.Exit(1)
+		}
+		return
+	}
+	if os.Getenv(encoderHelperEnv) == "1" {
+		if err := runScreenEncoder(); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
+	if len(os.Args) > 1 && (os.Args[1] == "observe-local" || os.Args[1] == "--observe-local") {
+		if err := observeLocal(ctx, os.Args[2:], os.Stdout); err != nil {
+			log.Fatal(err)
+		}
+		return
+	}
 	if len(os.Args) > 1 && os.Args[1] == "phone-list" {
 		if err := listPhones(); err != nil {
 			log.Fatal(err)
@@ -55,6 +74,10 @@ func main() {
 		flags.IntVar(&config.Height, "height", 900, "headless output height")
 		flags.BoolVar(&config.IncludeLoopback, "include-loopback", false, "allow local viewers on the host network")
 		flags.BoolVar(&config.Frames, "frames", false, "use bounded HTTPS frame/input relay for restricted sandboxes")
+		flags.StringVar(&config.Interface, "interface", "", "optional WebRTC network interface (default: all)")
+		flags.BoolVar(&config.IPv4Only, "ipv4-only", false, "use IPv4 for WebRTC on networks with unreliable IPv6")
+		flags.UintVar(&config.UDPPortMin, "udp-port-min", 0, "first WebRTC UDP port; set with udp-port-max for bounded firewall rules")
+		flags.UintVar(&config.UDPPortMax, "udp-port-max", 0, "last WebRTC UDP port (default: OS ephemeral range)")
 		_ = flags.Parse(os.Args[2:])
 		run := serveWayland
 		if os.Args[1] == "desktop-host" {

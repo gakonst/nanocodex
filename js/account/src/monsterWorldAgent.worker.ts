@@ -252,7 +252,7 @@ async function coordinatorAgent(): Promise<DefaultAgent> {
         name: "act",
         description: "Start moving your runtime-bound resident immediately. The first call resolves only after every resident has acted, returning one fresh complete wave of peer claims and positions; later corrections return fresh current geometry.",
         parameters: ACT_PARAMETERS,
-        handler(input, context) {
+        handler(input: unknown, context: ToolContext) {
           const requested = worldAct(input);
           return requestWorldAction(context, requested.claim, requested.action);
         },

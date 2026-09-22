@@ -1,3 +1,4 @@
+// Fake-account CLI fixtures must not contact the host's installed Hand service.
 use std::{
     collections::HashMap,
     convert::Infallible,
@@ -29,6 +30,7 @@ const PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 #[tokio::test]
 async fn hand_help_exposes_the_vm_and_machine_contract() {
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .env("NANOCODEX_DISABLE_HAND", "1")
         .args(["hand", "--help"])
         .output()
         .await
@@ -111,6 +113,7 @@ async fn hand_rejects_mixed_options_and_removed_native_command() {
         ],
     ] {
         let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .args(&args)
             .env_remove("NANOCODEX_VM_GUEST_RUNTIME")
             .env_remove("NANOCODEX_KRUNFW_DIR")
@@ -129,6 +132,7 @@ async fn hand_rejects_mixed_options_and_removed_native_command() {
 #[tokio::test]
 async fn host_help_exposes_the_bounded_vm_pool_contract() {
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .env("NANOCODEX_DISABLE_HAND", "1")
         .args(["host", "--help"])
         .output()
         .await
@@ -178,6 +182,7 @@ async fn hand_json_tracing_exposes_resources_without_paths_or_credentials() {
     let root_parent = tempfile::tempdir().unwrap();
     let missing_root = root_parent.path().join("private-root-sentinel.ext4");
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .env("NANOCODEX_DISABLE_HAND", "1")
         .args([
             "hand",
             "--vm",
@@ -247,6 +252,7 @@ async fn vm_child_entrypoint_does_not_require_managed_credentials() {
         .path()
         .join("missing-launch-record");
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .env("NANOCODEX_DISABLE_HAND", "1")
         .args(["__vm-run-config", "--config"])
         .arg(missing)
         .env_remove("NANOCODEX_API_KEY")
@@ -315,6 +321,7 @@ async fn run_flushes_each_assistant_delta_before_completion() {
     let workspace = tempfile::tempdir().unwrap();
     let (config_home, decoy) = configure_workspace(workspace.path());
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .env("NANOCODEX_DISABLE_HAND", "1")
         .args([
             "run",
             "stream answer",
@@ -375,6 +382,15 @@ async fn run_flushes_each_assistant_delta_before_completion() {
 
 #[tokio::test]
 async fn run_uses_managed_lifecycle_with_the_configured_local_workspace() {
+    run_workspace_lifecycle(false).await;
+}
+
+#[tokio::test]
+async fn pinned_run_creates_once_then_opens_the_saved_session() {
+    run_workspace_lifecycle(true).await;
+}
+
+async fn run_workspace_lifecycle(pinned: bool) {
     let api_key = format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let address = listener.local_addr().unwrap();
@@ -393,6 +409,19 @@ async fn run_uses_managed_lifecycle_with_the_configured_local_workspace() {
         catalogs: Arc::new(Mutex::new(Vec::new())),
     };
     let app = Router::new()
+        .route(
+            "/v1/agents",
+            post(
+                |axum::Json(body): axum::Json<serde_json::Value>| async move {
+                    assert_eq!(body["configuration"]["chatgpt_account_id"], "account-a");
+                    axum::Json(serde_json::json!({
+                        "agent_id": AGENT_ID, "session_id": AGENT_ID,
+                        "events_url": format!("/v1/agents/{AGENT_ID}/events"),
+                        "websocket_url": format!("/v1/agents/{AGENT_ID}/live"),
+                    }))
+                },
+            ),
+        )
         .route("/v1/agents/live", get(create_live_socket))
         .route("/v1/agents/{agent}", get(agent_state))
         .route("/v1/agents/{agent}/tool-host", get(tool_host))
@@ -420,12 +449,19 @@ async fn run_uses_managed_lifecycle_with_the_configured_local_workspace() {
     let output = tokio::time::timeout(
         PROCESS_TIMEOUT,
         tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .args([
                 "run",
                 "answer from managed",
                 "--idempotency-key",
                 "stable-request",
             ])
+            .args(if pinned {
+                vec!["--chatgpt-account", "account-a"]
+            } else {
+                vec![]
+            })
+            .env("NANOCODEX_COMPUTER", "off")
             .env("NANOCODEX_MANAGED_URL", &state.origin)
             .env("NC_API_KEY", &api_key)
             .env_remove("NANOCODEX_API_KEY")
@@ -521,7 +557,9 @@ async fn run_rejects_a_malformed_create_live_ready_frame() {
     let output = tokio::time::timeout(
         PROCESS_TIMEOUT,
         tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .args(["run", "this turn must not submit"])
+            .env("NANOCODEX_COMPUTER", "off")
             .env("NANOCODEX_MANAGED_URL", &state.origin)
             .env("NC_API_KEY", &api_key)
             .env_remove("NANOCODEX_API_KEY")
@@ -577,12 +615,14 @@ async fn run_keeps_the_durable_agent_when_local_tools_are_initially_unavailable(
     let output = tokio::time::timeout(
         PROCESS_TIMEOUT,
         tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .args([
                 "run",
                 "answer from managed",
                 "--idempotency-key",
                 "stable-request-without-local-tools",
             ])
+            .env("NANOCODEX_COMPUTER", "off")
             .env("NANOCODEX_MANAGED_URL", &state.origin)
             .env("NC_API_KEY", &api_key)
             .env_remove("NANOCODEX_API_KEY")
@@ -647,12 +687,14 @@ async fn run_reconnects_the_same_local_host_after_a_ready_socket_disconnect() {
     let output = tokio::time::timeout(
         PROCESS_TIMEOUT,
         tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .args([
                 "run",
                 "answer from managed",
                 "--idempotency-key",
                 "disconnect-then-cloud",
             ])
+            .env("NANOCODEX_COMPUTER", "off")
             .env("NANOCODEX_MANAGED_URL", &state.origin)
             .env("NC_API_KEY", &api_key)
             .env_remove("NANOCODEX_API_KEY")
@@ -732,12 +774,14 @@ async fn run_reopens_one_durable_agent_and_falls_back_when_local_tools_are_absen
     let first = tokio::time::timeout(
         PROCESS_TIMEOUT,
         tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .args([
                 "run",
                 "first durable turn",
                 "--idempotency-key",
                 "durable-turn-one",
             ])
+            .env("NANOCODEX_COMPUTER", "off")
             .env("NANOCODEX_MANAGED_URL", &state.origin)
             .env("NC_API_KEY", &api_key)
             .env_remove("NANOCODEX_API_KEY")
@@ -773,6 +817,7 @@ async fn run_reopens_one_durable_agent_and_falls_back_when_local_tools_are_absen
     let second = tokio::time::timeout(
         PROCESS_TIMEOUT,
         tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .args([
                 "run",
                 "second durable turn",
@@ -781,6 +826,7 @@ async fn run_reopens_one_durable_agent_and_falls_back_when_local_tools_are_absen
                 "--idempotency-key",
                 "durable-turn-two",
             ])
+            .env("NANOCODEX_COMPUTER", "off")
             .env("NANOCODEX_MANAGED_URL", &state.origin)
             .env("NC_API_KEY", &api_key)
             .env_remove("NANOCODEX_API_KEY")
@@ -1470,7 +1516,21 @@ async fn serve_tool_host(mut socket: WebSocket, state: TestState, disconnect_aft
     };
     let catalog: serde_json::Value = serde_json::from_str(&catalog).unwrap();
     assert_eq!(catalog["type"], "catalog");
-    assert_eq!(catalog.as_object().unwrap().len(), 4);
+    assert_eq!(
+        catalog
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>(),
+        ["type", "tools", "machines", "attachment_id", "capabilities"]
+            .into_iter()
+            .collect(),
+    );
+    assert_eq!(
+        catalog["capabilities"],
+        serde_json::json!(["turn_metadata"])
+    );
     let names = catalog["tools"]
         .as_array()
         .unwrap()
@@ -1742,7 +1802,16 @@ async fn headless_settings_and_cron_use_the_managed_contract() {
     let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
     let cwd = tempfile::tempdir().unwrap();
     for args in [
-        vec!["new", "--model", "sol", "--thinking", "high", "--fast-mode"],
+        vec![
+            "new",
+            "--model",
+            "sol",
+            "--thinking",
+            "high",
+            "--fast-mode",
+            "--chatgpt-account",
+            "account-a",
+        ],
         vec!["settings", AGENT_ID, "thinking", "high"],
         vec![
             "cron",
@@ -1763,6 +1832,7 @@ async fn headless_settings_and_cron_use_the_managed_contract() {
         let output = tokio::time::timeout(
             PROCESS_TIMEOUT,
             tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+                .env("NANOCODEX_DISABLE_HAND", "1")
                 .args(&args)
                 .current_dir(cwd.path())
                 .env("NANOCODEX_MANAGED_URL", &origin)
@@ -1789,10 +1859,21 @@ async fn headless_settings_and_cron_use_the_managed_contract() {
         vec!["run", "hello", "--agent", AGENT_ID, "--model", "sol"],
         vec!["cron", "get", AGENT_ID, "../escape"],
         vec!["new", "--model", "astra", "--thinking", "none"],
+        vec![
+            "run",
+            "hello",
+            "--agent",
+            AGENT_ID,
+            "--chatgpt-account",
+            "account-a",
+        ],
+        vec!["new", "--chatgpt-account", ""],
+        vec!["new", "--chatgpt-account", "with space"],
     ] {
         let output = tokio::time::timeout(
             PROCESS_TIMEOUT,
             tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+                .env("NANOCODEX_DISABLE_HAND", "1")
                 .args(&args)
                 .current_dir(cwd.path())
                 .env("NANOCODEX_MANAGED_URL", &origin)
@@ -1810,6 +1891,10 @@ async fn headless_settings_and_cron_use_the_managed_contract() {
     assert_eq!(
         requests[0].2["settings"],
         json!({"model": "gpt-5.6-sol", "thinking": "high", "reasoning_mode": "standard", "fast_mode": true})
+    );
+    assert_eq!(
+        requests[0].2["configuration"],
+        json!({"chatgpt_account_id": "account-a"})
     );
     assert_eq!(requests[1].2, json!({"thinking": "high"}));
     assert_eq!(requests[2].0, "PUT");
@@ -1888,6 +1973,10 @@ mod docker_hand_live {
             send(&mut socket, json!({"type":"draining"})).await;
         })
     }
+    async fn ice(State(state): State<Service>, headers: HeaderMap) -> axum::Json<Value> {
+        assert_eq!(headers["authorization"], state.authorization);
+        axum::Json(json!({"iceServers": []}))
+    }
     async fn screen(
         State(state): State<Service>,
         headers: HeaderMap,
@@ -1903,6 +1992,10 @@ mod docker_hand_live {
             let catalog = receive(&mut socket).await;
             assert_eq!(catalog["type"], "catalog");
             assert_eq!(catalog["machine_id"], "docker-cli-test");
+            assert!(
+                catalog["surfaces"][0].get("transport").is_none(),
+                "{catalog}"
+            );
             send(
                 &mut socket,
                 json!({"type":"published","generation":"docker-screen-generation"}),
@@ -1913,16 +2006,65 @@ mod docker_hand_live {
                 json!({"type":"viewer","viewer_id":"test-viewer","surface_id":"desktop"}),
             )
             .await;
-            send(
-                &mut socket,
-                json!({"type":"frame_request","viewer_id":"test-viewer"}),
-            )
-            .await;
-            let frame = receive(&mut socket).await;
-            assert_eq!(frame["type"], "frame");
-            assert!(frame["jpeg"].as_str().unwrap().starts_with("/9j/"));
+            let offer = receive(&mut socket).await;
+            assert_eq!(offer["type"], "signal", "{offer}");
+            assert_eq!(offer["signal"]["type"], "offer", "{offer}");
+            assert!(
+                offer["signal"]["sdp"]
+                    .as_str()
+                    .unwrap()
+                    .contains("H264/90000")
+            );
+            let mut media = webrtc::api::media_engine::MediaEngine::default();
+            media.register_default_codecs().unwrap();
+            let api = webrtc::api::APIBuilder::new().with_media_engine(media).build();
+            let peer = api.new_peer_connection(Default::default()).await.unwrap();
+            let (packets, mut received) = mpsc::unbounded_channel();
+            peer.on_track(Box::new(move |track, _, _| {
+                let packets = packets.clone();
+                Box::pin(async move {
+                    let (packet, _) = track.read_rtp().await.unwrap();
+                    assert!(!packet.payload.is_empty());
+                    assert_eq!(track.codec().capability.mime_type.to_lowercase(), "video/h264");
+                    packets.send(()).unwrap();
+                })
+            }));
+            let (candidates, mut outgoing) = mpsc::unbounded_channel();
+            peer.on_ice_candidate(Box::new(move |candidate| {
+                if let Some(candidate) = candidate {
+                    let candidate = candidate.to_json().unwrap();
+                    candidates.send(json!({"type":"signal","viewer_id":"test-viewer","signal":{
+                        "type":"candidate", "candidate":candidate.candidate,
+                        "sdpMid":candidate.sdp_mid, "sdpMLineIndex":candidate.sdp_mline_index,
+                    }})).unwrap();
+                }
+                Box::pin(async {})
+            }));
+            peer.set_remote_description(
+                webrtc::peer_connection::sdp::session_description::RTCSessionDescription::offer(
+                    offer["signal"]["sdp"].as_str().unwrap().to_owned(),
+                ).unwrap(),
+            ).await.unwrap();
+            let answer = peer.create_answer(None).await.unwrap();
+            peer.set_local_description(answer.clone()).await.unwrap();
+            send(&mut socket, json!({"type":"signal","viewer_id":"test-viewer","signal":{
+                "type":"answer", "sdp":answer.sdp,
+            }})).await;
+            loop {
+                tokio::select! {
+                    packet = received.recv() => { packet.unwrap(); break; }
+                    candidate = outgoing.recv() => { send(&mut socket, candidate.unwrap()).await; }
+                    message = receive(&mut socket) => {
+                        assert_eq!(message["type"], "signal", "{message}");
+                        let signal = &message["signal"];
+                        assert_eq!(signal["type"], "candidate", "{message}");
+                        peer.add_ice_candidate(serde_json::from_value(signal.clone()).unwrap()).await.unwrap();
+                    }
+                }
+            }
             state.ready.send("screen").unwrap();
             while socket.recv().await.is_some() {}
+            peer.close().await.unwrap();
         })
     }
 
@@ -1961,10 +2103,12 @@ mod docker_hand_live {
         let app = Router::new()
             .route("/v1/account/tool-host", get(tools))
             .route("/v1/account/hands/host", get(screen))
+            .route("/v1/account/hands/ice", post(ice))
             .with_state(service);
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let config = tempfile::tempdir().unwrap();
         let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .args([
                 "hand",
                 "--docker",
@@ -2084,6 +2228,7 @@ async fn docker_preflight_errors_are_actionable_before_account_login() {
             .args(["hand", "--docker", "image", "--volume", "work"])
             .args(extra)
             .env_clear()
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .env("PATH", dir.path())
             .env("NANOCODEX_HOME", dir.path())
             // VM environment defaults must not invalidate Docker selection.

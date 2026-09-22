@@ -2,6 +2,7 @@ mod auth;
 mod benchmark;
 mod browser;
 mod browser_cookie_sync;
+mod computer;
 mod config;
 #[cfg(feature = "tempo")]
 mod credits;
@@ -96,6 +97,8 @@ struct Cli {
 enum Command {
     /// Discover and control a running interactive terminal.
     Tui(nanocodex_tui_control::Cli),
+    /// Install or refresh the upstream computer-use runtime.
+    Computer(computer::Computer),
     /// Add a Linux Hand and VM factory through your existing SSH connection.
     Hand(hand_setup::Hand),
     /// Sign in to the managed Nanocodex account shared with nanocodex2.
@@ -206,6 +209,7 @@ fn process_exit_code(error: &eyre::Report) -> u8 {
 async fn run(cli: Cli) -> Result<()> {
     match cli.command {
         Some(Command::Tui(command)) => command.run().await.map_err(Into::into),
+        Some(Command::Computer(command)) => command.run().await.map_err(|error| eyre!(error)),
         Some(Command::Hand(command)) => command.run().await,
         Some(Command::Account(command)) => command.run().await.map_err(Into::into),
         Some(Command::Auth(command)) => command.run().await,

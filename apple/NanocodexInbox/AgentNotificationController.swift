@@ -5,8 +5,8 @@ import UserNotifications
 import CryptoKit
 import os
 
-/// Native, independently dismissible thread notifications. Updates replace the
-/// same request instead of adding an alert for every progress message.
+/// Native, independently dismissible outcome notifications. Running progress
+/// stays in the app; each terminal revision can notify only once.
 @MainActor
 final class AgentNotificationController: NSObject, UNUserNotificationCenterDelegate {
     private struct Desired: Equatable {
@@ -23,7 +23,6 @@ final class AgentNotificationController: NSObject, UNUserNotificationCenterDeleg
     private var revision = 0
     private var account = ""
     private var ledger = AgentNotificationLedger()
-    private var removedLegacyActivity = false
     private let log = Logger(subsystem: "xyz.paradigm.centaur", category: "AgentNotifications")
 
     init(open: @escaping (URL) -> Void) {
@@ -56,17 +55,24 @@ final class AgentNotificationController: NSObject, UNUserNotificationCenterDeleg
         }
     }
 
-    private func apply(_ next: Desired, version: Int) async {
-        if !removedLegacyActivity {
-            for activity in Activity<AgentActivityAttributes>.activities { await activity.end(nil, dismissalPolicy: .immediate) }
-            removedLegacyActivity = true
+    // Retire stale Island cards even before account restoration or a roster
+    // refresh succeeds. Repeat on activation: a once-per-process sweep can
+    // miss activities restored by the system after launch.
+    func removeLegacyActivities() async {
+        for activity in Activity<AgentActivityAttributes>.activities {
+            await activity.end(nil, dismissalPolicy: .immediate)
         }
+    }
+
+    private func apply(_ next: Desired, version: Int) async {
+        await removeLegacyActivities()
         let delivered = await center.deliveredNotifications()
         let pending = await center.pendingNotificationRequests()
         guard version == revision, !Task.isCancelled else { return }
         let own = delivered.map(\.request).filter { $0.content.categoryIdentifier == Self.category }
         let old = (own + pending.filter { $0.content.categoryIdentifier == Self.category }).filter {
             next.account.isEmpty || $0.content.userInfo["account"] as? String != next.account
+                || ($0.content.userInfo["revision"] as? String)?.hasPrefix("running:") == true
         }.map(\.identifier)
         center.removeDeliveredNotifications(withIdentifiers: old)
         center.removePendingNotificationRequests(withIdentifiers: old)
@@ -99,7 +105,7 @@ final class AgentNotificationController: NSObject, UNUserNotificationCenterDeleg
             content.threadIdentifier = Self.identifier(account: account, agentID: thread.id)
             content.userInfo = ["account": account, "agent": thread.id, "revision": thread.revision]
             content.sound = nil
-            content.interruptionLevel = thread.isRunning ? .passive : .active
+            content.interruptionLevel = .active
             let request = UNNotificationRequest(identifier: content.threadIdentifier, content: content, trigger: nil)
             do {
                 try await center.add(request)

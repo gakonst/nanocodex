@@ -130,6 +130,7 @@ final class AppModel: ObservableObject {
     private let isolatedSession: Bool
     private var currentCredential: AccountKeychain.Credential? {
         didSet {
+            showingScheduledJobs = false
             resetRemoteSharing()
             if let credential = currentCredential, let origin = URL(string: credential.baseUrl) {
                 remoteService = try? RemoteService(origin: origin) { request in
@@ -139,6 +140,13 @@ final class AppModel: ObservableObject {
             }
         }
     }
+    @Published var showingScheduledJobs = false
+
+    func schedulesClient() throws -> ManagedClient {
+        guard let credential = currentCredential else { throw APIError.invalidCredential }
+        return ManagedClient(credential: try .init(origin: credential.baseUrl, apiKey: credential.apiKey))
+    }
+
     func attachmentPreview(_ attachment: MessageAttachment, agentID: String) async throws -> Data {
         guard let credential = currentCredential else { throw APIError.invalidCredential }
         let epoch = generation
@@ -1107,7 +1115,10 @@ final class AppModel: ObservableObject {
         }
     }
     func discoverHands() { if activeTab?.threadId == nil { newTab() }; screen = .chat; Task { await send("Call accountInfo and show my available Hands with their names, exact workspace mounts, and capabilities.", targetOverride: "") } }
-    func openAccount() { guard let url = URL(string: state.baseUrl + "/connect") else { return }; NSWorkspace.shared.open(url) }
+    func openAccount(chatGpt: Bool = false) {
+        guard let url = URL(string: state.baseUrl + "/connect" + (chatGpt ? "#chatgpt-accounts" : "")) else { return }
+        NSWorkspace.shared.open(url)
+    }
     func prepareToQuit() async {
         accountHandDiscovery?.cancel(); accountHandDiscovery = nil
         backgroundActivityStopped = true; backgroundActivity.stop()

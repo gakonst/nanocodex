@@ -37,6 +37,10 @@ test("Agent.create opens an existing managed identity with the common Turn lifec
     const request = new Request(input, init);
     requests.push(request);
     const path = new URL(request.url).pathname;
+    if (request.method === "POST" && path.endsWith("/prepare")) {
+      // An unresponsive preparation request must not delay readiness or a turn.
+      return new Promise(() => {});
+    }
     if (request.method === "GET" && path === `/v1/agents/${agentId}`) {
       return Response.json({ agent_id: agentId, session_id: sessionId });
     }
@@ -106,7 +110,9 @@ test("Agent.create opens an existing managed identity with the common Turn lifec
   await agent.session.shutdown();
   assert.throws(() => agent.turn.prompt({ input: "after shutdown" }), /disposed/);
   assert.equal(requests.some((request) => request.method === "DELETE"), false);
-  assert.equal(requests[0].method, "GET", "open-existing verifies ownership before readiness");
+  assert.equal(requests.filter((request) => new URL(request.url).pathname.endsWith("/prepare")).length, 1);
+  const foreground = requests.filter((request) => !new URL(request.url).pathname.endsWith("/prepare"));
+  assert.equal(foreground[0].method, "GET", "open-existing verifies ownership before readiness");
 });
 
 test("managed create reverse-attaches one Tools recipe and shutdown closes it without deleting", async () => {
@@ -133,6 +139,9 @@ test("managed create reverse-attaches one Tools recipe and shutdown closes it wi
         const path = new URL(request.url).pathname;
         if (request.method === "POST" && path === "/v1/agents") {
           return Response.json({ agent_id: agentId }, { status: 201 });
+        }
+        if (request.method === "POST" && path.endsWith("/prepare")) {
+          return Response.json({ state: "preparing" }, { status: 202 });
         }
         assert.equal(request.method, "GET");
         assert.equal(path, `/v1/agents/${agentId}`);
@@ -280,7 +289,7 @@ test("shutdown interrupts managed attachment backoff and observation abort never
 
   assert.equal(attempts, 1, "shutdown cancels the pending retry delay");
   assert.equal(methods.some((request) => request.includes("/cancel")), false);
-  assert.deepEqual(methods.slice(0, 2), [
+  assert.deepEqual(methods.filter((request) => !request.endsWith("/prepare")).slice(0, 2), [
     `GET /v1/agents/${agentId}`,
     `GET /v1/agents/${agentId}/events`,
   ]);

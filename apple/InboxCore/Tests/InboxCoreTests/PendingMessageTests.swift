@@ -2,6 +2,33 @@ import XCTest
 @testable import InboxCore
 
 final class PendingMessageTests: XCTestCase {
+    func testAttachmentTransportPinsFirstChoiceAcrossSettingsChangesAndRelaunch() throws {
+        for phoneEnabled in [false, true] {
+            var message = PendingMessage(agentID: "a", input: "Photo", predecessor: "", id: "same-turn")
+            XCTAssertEqual(message.attachmentTransport, .automatic)
+            XCTAssertEqual(message.resolveAttachmentTransport(phoneEnabled: phoneEnabled), phoneEnabled)
+            XCTAssertEqual(message.resolveAttachmentTransport(phoneEnabled: !phoneEnabled), phoneEnabled)
+            var restored = try JSONDecoder().decode(PendingMessage.self, from: JSONEncoder().encode(message))
+            restored.restore()
+            XCTAssertEqual(restored.attachmentTransport, phoneEnabled ? .phone : .cloud)
+            XCTAssertEqual(restored.resolveAttachmentTransport(phoneEnabled: !phoneEnabled), phoneEnabled)
+            XCTAssertEqual(restored.submission.requestID, "same-turn")
+        }
+    }
+    func testLegacyAttachmentTransportRemainsCloudWhenPhoneEnabled() throws {
+        let legacy = Data(#"{"id":"legacy","agentID":"a","input":"Photo","predecessor":"","phase":"failed"}"#.utf8)
+        var restored = try JSONDecoder().decode(PendingMessage.self, from: legacy)
+        XCTAssertNil(restored.attachmentTransport)
+        XCTAssertFalse(restored.resolveAttachmentTransport(phoneEnabled: true))
+        XCTAssertEqual(restored.attachmentTransport, .cloud)
+        XCTAssertFalse(restored.resolveAttachmentTransport(phoneEnabled: false))
+    }
+    func testUnpreparedTransportSurvivesPersistenceUntilFirstResolution() throws {
+        let message = PendingMessage(agentID: "a", input: "Photo", predecessor: "")
+        var restored = try JSONDecoder().decode(PendingMessage.self, from: JSONEncoder().encode(message))
+        XCTAssertEqual(restored.attachmentTransport, .automatic)
+        XCTAssertTrue(restored.resolveAttachmentTransport(phoneEnabled: true))
+    }
     func testAttachmentReferencesSurviveRetryWithoutEmbeddingImageBytes() throws {
         let attachment = try MessageAttachment(name: "Image.jpg", byteCount: 4096)
         let message = PendingMessage(agentID: "a", input: "Describe this", predecessor: "previous", id: "same-turn", attachments: [attachment])

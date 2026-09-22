@@ -16,10 +16,11 @@ export const connectorCapabilityIds = Object.freeze([
   "x",
   "spotify",
   "soundcloud",
+  "link",
   "chatgpt",
 ]);
 
-export const connectorProviderIds = Object.freeze(["github", "google", "slack", "x", "spotify", "soundcloud", "chatgpt"]);
+export const connectorProviderIds = Object.freeze(["github", "google", "slack", "x", "spotify", "soundcloud", "link", "chatgpt"]);
 export const connectorConnectionHeader = "X-Nanocodex-Connector-Connection";
 
 const capabilityIds = new Set(connectorCapabilityIds);
@@ -46,6 +47,7 @@ export function connectorCapabilityLabel(capability) {
   if (capability === "slack") return "Slack";
   if (capability === "spotify") return "Spotify";
   if (capability === "soundcloud") return "SoundCloud";
+  if (capability === "link") return "Stripe Link";
   if (capability === "x") return "X";
   if (capability === "chatgpt") return "ChatGPT";
   return undefined;
@@ -150,7 +152,7 @@ export function connectorControlsForCapabilities(capabilities, statuses) {
 
 function decodeStatus(value, capability) {
   if (!isRecord(value)
-    || Object.keys(value).some((key) => !["connected", "connections", "account_id", "connection_id", "label"].includes(key))
+    || Object.keys(value).some((key) => !["connected", "connections", "accounts", "account_id", "connection_id", "label"].includes(key))
     || typeof value.connected !== "boolean"
     || (value.account_id !== undefined && !shortText(value.account_id))
     || (value.connection_id !== undefined && (typeof value.connection_id !== "string" || !connectionId.test(value.connection_id)))
@@ -159,6 +161,7 @@ function decodeStatus(value, capability) {
       || value.connections.length > maxConnections))) {
     throw new Error("Nanocodex received invalid connector statuses.");
   }
+  const accounts = value.accounts === undefined ? undefined : decodeAccounts(value.accounts);
   const connections = value.connections === undefined
     ? []
     : value.connections.map((connection) => decodeConnection(connection, capability));
@@ -168,10 +171,35 @@ function decodeStatus(value, capability) {
   return Object.freeze({
     connected: value.connected,
     connections: Object.freeze(connections),
+    ...(accounts === undefined ? {} : { accounts }),
     ...(value.account_id === undefined ? {} : { account_id: value.account_id.trim() }),
     ...(value.connection_id === undefined ? {} : { connection_id: value.connection_id }),
     ...(value.label === undefined ? {} : { label: value.label.trim() }),
   });
+}
+
+// The account broker publishes metadata for retained ChatGPT accounts. It is
+// display/status data, not a connector identity or additional grant authority.
+function decodeAccounts(value) {
+  if (!Array.isArray(value) || value.length > 20) {
+    throw new Error("Nanocodex received invalid connector statuses.");
+  }
+  return Object.freeze(value.map((account) => {
+    if (!isRecord(account)
+      || Object.keys(account).some((key) => !["account_id", "connected", "active", "limited_until"].includes(key))
+      || !shortText(account.account_id)
+      || typeof account.connected !== "boolean"
+      || typeof account.active !== "boolean"
+      || (account.limited_until !== undefined && (!Number.isSafeInteger(account.limited_until) || account.limited_until <= 0))) {
+      throw new Error("Nanocodex received invalid connector statuses.");
+    }
+    return Object.freeze({
+      account_id: account.account_id.trim(),
+      connected: account.connected,
+      active: account.active,
+      ...(account.limited_until === undefined ? {} : { limited_until: account.limited_until }),
+    });
+  }));
 }
 
 function decodeConnection(value, capability) {

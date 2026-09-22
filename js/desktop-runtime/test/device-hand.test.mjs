@@ -5,6 +5,9 @@ import { tmpdir } from "node:os";
 import { test } from "node:test";
 import { describeDeviceHand, connectDeviceHand } from "../src/device-hand.mjs";
 
+// Synthetic desktop fixtures must never discover or install a host provider.
+process.env.NANOCODEX_COMPUTER = "off";
+
 test("desktop shares the CLI identity and owns only its client lease", { timeout: 5000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), "device-hand-test-"));
   t.after(() => rm(dir, { recursive: true, force: true }));

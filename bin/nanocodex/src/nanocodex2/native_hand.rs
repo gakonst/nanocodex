@@ -7,11 +7,12 @@ use std::{
     path::{Path, PathBuf},
 };
 
-use nanocodex_browser::{Browser, BrowserExecuteTool};
 use nanocodex_managed::{ManagedClient, ManagedError};
 use nanocodex_tools::{
     Tools, WorkspaceTools,
-    attachment::{AttachmentEvent, AttachmentMachine, AttachmentMetadata, AttachmentTarget},
+    attachment::{
+        AttachmentError, AttachmentEvent, AttachmentMachine, AttachmentMetadata, AttachmentTarget,
+    },
 };
 use serde::{Deserialize, Serialize};
 
@@ -23,8 +24,6 @@ struct NativeHand {
     state_dir: Option<PathBuf>,
     machine_name: Option<String>,
     vm_provider: Option<String>,
-    browser: bool,
-    browser_executable: Option<PathBuf>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -36,11 +35,10 @@ struct Identity {
 
 pub(super) struct NativeState {
     pub(super) machine: AttachmentMachine,
-    directory: PathBuf,
     _lock: NativeStateLock,
 }
 
-struct NativeStateLock(File);
+pub(super) struct NativeStateLock(pub(super) File);
 
 impl Drop for NativeStateLock {
     fn drop(&mut self) {
@@ -51,11 +49,6 @@ impl Drop for NativeStateLock {
 }
 
 impl NativeState {
-    #[cfg(test)]
-    fn open(workspace: &Path, directory: &Path, name: String) -> Result<Self, ManagedError> {
-        Self::open_with_browser(workspace, directory, name, false)
-    }
-
     pub(super) fn advertise_vm_provider(&mut self, provider: &str) -> Result<(), ManagedError> {
         super::validate_vm_factory_name(provider)?;
         let mut capabilities: Vec<String> = self
@@ -75,11 +68,10 @@ impl NativeState {
         Ok(())
     }
 
-    pub(super) fn open_with_browser(
+    pub(super) fn open(
         workspace: &Path,
         directory: &Path,
         name: String,
-        browser: bool,
     ) -> Result<Self, ManagedError> {
         let workspace = fs::canonicalize(workspace).map_err(configuration)?;
         if !workspace.is_dir() {
@@ -160,14 +152,10 @@ impl NativeState {
             .workspace
             .to_str()
             .ok_or_else(|| configuration("native Hand workspace must be valid UTF-8"))?;
-        let mut capabilities = host::MACHINE_CAPABILITIES
+        let capabilities = host::MACHINE_CAPABILITIES
             .into_iter()
             .map(str::to_owned)
             .collect::<Vec<_>>();
-        if browser {
-            capabilities.extend(["browser".to_owned(), "browser-egress".to_owned()]);
-            capabilities.sort_unstable();
-        }
         let machine = AttachmentMachine::new(
             identity.machine_id.to_string(),
             name,
@@ -177,7 +165,6 @@ impl NativeState {
         .map_err(configuration)?;
         Ok(Self {
             machine,
-            directory: directory.to_path_buf(),
             _lock: lock,
         })
     }
@@ -197,6 +184,7 @@ fn require_regular(path: &Path, directory: bool) -> Result<(), ManagedError> {
 }
 
 pub(super) async fn serve_hand(command: super::Hand) -> Result<(), ManagedError> {
+    reject_browser_options(command.browser, command.browser_executable.as_deref())?;
     if command.machine_id.is_some() {
         return Err(configuration(
             "Native Hand identities are retained automatically; use --state-dir for another workspace",
@@ -206,9 +194,10 @@ pub(super) async fn serve_hand(command: super::Hand) -> Result<(), ManagedError>
         && command.state_dir.is_none()
         && command.machine_name.is_none()
         && command.vm_provider.is_none()
-        && !command.browser
     {
-        return super::device_hand::serve(super::device_hand::DeviceHand::default()).await;
+        let mut device = super::device_hand::DeviceHand::default();
+        device.daemon = true;
+        return super::device_hand::serve(device).await;
     }
     let client = super::client_from_environment(None)?;
     serve(
@@ -222,8 +211,6 @@ pub(super) async fn serve_hand(command: super::Hand) -> Result<(), ManagedError>
             state_dir: command.state_dir,
             machine_name: command.machine_name,
             vm_provider: command.vm_provider,
-            browser: command.browser,
-            browser_executable: command.browser_executable,
         },
     )
     .await
@@ -240,17 +227,7 @@ async fn serve(client: &ManagedClient, command: NativeHand) -> Result<(), Manage
     let name = command
         .machine_name
         .unwrap_or_else(|| host::bounded_display_name(whoami::devicename()));
-    let browser = if command.browser {
-        let mut builder = Browser::builder();
-        if let Some(executable) = command.browser_executable {
-            builder = builder.executable(executable);
-        }
-        Some(builder.build().map_err(configuration)?)
-    } else {
-        None
-    };
-    let mut state =
-        NativeState::open_with_browser(&command.workspace, &directory, name, browser.is_some())?;
+    let mut state = NativeState::open(&command.workspace, &directory, name)?;
     if let Some(provider) = command.vm_provider {
         state.advertise_vm_provider(&provider)?;
     }
@@ -269,46 +246,37 @@ async fn serve(client: &ManagedClient, command: NativeHand) -> Result<(), Manage
             None
         }
     };
-    let result = run_with_browser(
-        target,
-        state,
-        browser.clone(),
-        super::service::shutdown_signal(),
-    )
-    .await;
+    let result = run(target, state, super::service::shutdown_signal()).await;
     let stopped = match screen {
         Some(screen) => screen.shutdown().await,
         None => Ok(()),
     };
-    let browser_stopped = match browser {
-        Some(browser) => browser.close().await.map_err(configuration),
-        None => Ok(()),
-    };
-    result.and(stopped).and(browser_stopped)
+    result.and(stopped)
 }
 
-#[cfg(test)]
+pub(super) fn reject_browser_options(
+    browser: bool,
+    executable: Option<&Path>,
+) -> Result<(), ManagedError> {
+    if browser || executable.is_some() {
+        return Err(configuration(
+            "Hand browser automation is disabled; use the Hand's CUA tools to interact with its desktop browser",
+        ));
+    }
+    Ok(())
+}
+
 async fn run(
     target: AttachmentTarget,
     state: NativeState,
     shutdown: impl Future<Output = Result<(), ManagedError>>,
 ) -> Result<(), ManagedError> {
-    run_with_browser(target, state, None, shutdown).await
-}
-
-pub(super) async fn run_with_browser(
-    target: AttachmentTarget,
-    state: NativeState,
-    browser: Option<Browser>,
-    shutdown: impl Future<Output = Result<(), ManagedError>>,
-) -> Result<(), ManagedError> {
-    run_observed(target, &state, browser, shutdown, |_| {}).await
+    run_observed(target, &state, shutdown, |_| {}).await
 }
 
 pub(super) async fn run_observed(
     target: AttachmentTarget,
     state: &NativeState,
-    browser: Option<Browser>,
     shutdown: impl Future<Output = Result<(), ManagedError>>,
     mut observe: impl FnMut(&AttachmentEvent),
 ) -> Result<(), ManagedError> {
@@ -317,15 +285,16 @@ pub(super) async fn run_observed(
     let mut tools = Tools::builder()
         .without_defaults()
         .add(WorkspaceTools::new(state.machine.workspace()));
-    if let Some(mut config) = nanocodex_computer::ComputerConfig::discover() {
-        if cfg!(target_os = "linux") {
-            config.desktop_runtime = Some(state.directory.join("desktop"));
+    if let Some(config) = nanocodex_computer::ComputerConfig::discover_or_install()
+        .await
+        .map_err(ManagedError::Configuration)?
+    {
+        let computer = nanocodex_computer::ComputerTools::connect(config)
+            .await
+            .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+        for tool in computer.tools() {
+            tools = tools.add(tool);
         }
-        let computer = nanocodex_computer::ComputerTools::local(config);
-        tools = tools.add(computer.js()).add(computer.reset());
-    }
-    if let Some(browser) = browser {
-        tools = tools.tool(BrowserExecuteTool::from_browser(browser));
     }
     let tools = tools.build().map_err(configuration)?;
     let (attachment, mut events) = tools
@@ -341,7 +310,14 @@ pub(super) async fn run_observed(
                 result?;
                 return attachment.detach().await.map_err(configuration);
             }
-            result = closed.closed() => return result.map_err(configuration),
+            result = closed.closed() => return result.map_err(|error| {
+                let status = match &error {
+                    AttachmentError::Authentication(_) => reqwest::StatusCode::UNAUTHORIZED,
+                    AttachmentError::Fenced(_) => reqwest::StatusCode::FORBIDDEN,
+                    _ => return configuration(error),
+                };
+                ManagedError::Http { status, code: "hand_attachment_access".into(), message: error.to_string() }
+            }),
             Some(event) = events.recv() => {
               observe(&event);
               match event {
@@ -466,7 +442,7 @@ mod tests {
     }
 
     #[test]
-    fn hand_supports_native_browser_options_and_rejects_removed_command() {
+    fn hand_parses_legacy_browser_options_and_rejects_removed_command() {
         assert!(crate::Cli::try_parse_from(["nanocodex2", "native-hand"]).is_err());
         assert!(
             crate::Cli::try_parse_from(["nanocodex2", "native-hand", "--workspace", "."]).is_err()
@@ -513,29 +489,24 @@ mod tests {
     }
 
     #[test]
-    fn native_browser_hand_advertises_egress_capabilities() {
+    fn native_hand_has_no_browser_automation_capabilities() {
         let workspace = tempfile::tempdir().unwrap();
         let directory = private_state_directory();
-        let state = NativeState::open_with_browser(
-            workspace.path(),
-            directory.path(),
-            "Browser host".into(),
-            true,
-        )
-        .unwrap();
+        let state =
+            NativeState::open(workspace.path(), directory.path(), "CUA host".into()).unwrap();
         let machine = serde_json::to_value(&state.machine).unwrap();
-        assert!(
-            machine["capabilities"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("browser"))
-        );
-        assert!(
-            machine["capabilities"]
-                .as_array()
-                .unwrap()
-                .contains(&json!("browser-egress"))
-        );
+        let capabilities = machine["capabilities"].as_array().unwrap();
+        assert!(!capabilities.contains(&json!("browser")));
+        assert!(!capabilities.contains(&json!("browser-egress")));
+    }
+
+    #[test]
+    fn legacy_browser_options_require_cua() {
+        reject_browser_options(false, None).unwrap();
+        for (browser, executable) in [(true, None), (false, Some(Path::new("/opt/chrome")))] {
+            let error = reject_browser_options(browser, executable).unwrap_err();
+            assert!(error.to_string().contains("CUA"));
+        }
     }
 
     #[test]
@@ -710,7 +681,7 @@ mod tests {
         let workspace = tempfile::tempdir().unwrap();
         let directory = private_state_directory();
         let state =
-            NativeState::open(workspace.path(), directory.path(), "Test Linux".into()).unwrap();
+            NativeState::open(workspace.path(), directory.path(), "Test host".into()).unwrap();
         let machine_id = state.machine.id().to_owned();
         let (catalogs_tx, mut catalogs) = mpsc::unbounded_channel();
         let (completed_tx, mut completed) = mpsc::unbounded_channel();
@@ -739,6 +710,13 @@ mod tests {
             let first = catalogs.recv().await.unwrap();
             let second = catalogs.recv().await.unwrap();
             assert_eq!(first, second);
+            assert!(
+                second["tools"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|tool| { tool["definition"]["name"] != "browser_execute" })
+            );
             assert_eq!(second["attachment_id"], machine_id);
             assert_eq!(second["machines"][0]["id"], machine_id);
             assert_eq!(
@@ -759,7 +737,7 @@ mod tests {
         .expect("native Hand lifecycle timed out");
         server.abort();
         let restarted =
-            NativeState::open(workspace.path(), directory.path(), "Test Linux".into()).unwrap();
+            NativeState::open(workspace.path(), directory.path(), "Test host".into()).unwrap();
         assert_eq!(restarted.machine.id(), machine_id);
     }
 }
