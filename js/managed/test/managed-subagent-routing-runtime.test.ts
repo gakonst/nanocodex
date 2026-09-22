@@ -86,7 +86,7 @@ it.each([
           expect(choices).toBeLessThanOrEqual(2);
           const chooserState = JSON.parse(input.state);
           const candidate = choices === 1 ? rootCandidate : childCandidate;
-          expect(chooserState.candidates.some((c: any) => c.id === candidate.id)).toBe(true);
+          expect(Object.keys(input.questions.candidate.criteria)).toContain(candidate.id);
           if (choices === 2) expect(chooserState.opening_prompt).toContain("child-fixture-task");
           return { answers: { candidate: { choice: candidate.id, confidence: .99 }, family: { choice: "terminal", confidence: .99 } } };
         }
