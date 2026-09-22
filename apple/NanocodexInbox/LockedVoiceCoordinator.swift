@@ -11,7 +11,7 @@ final class LockedVoiceCoordinator {
     static let shared = LockedVoiceCoordinator()
 
     enum CaptureError: LocalizedError {
-        case alreadyRecording, unavailable, permissions, account, staleCapture
+        case alreadyRecording, unavailable, permissions, account, staleCapture, completionFailed
         var errorDescription: String? {
             switch self {
             case .alreadyRecording: "A voice task is already in progress. Finish or cancel it first."
@@ -19,6 +19,7 @@ final class LockedVoiceCoordinator {
             case .permissions: "Open the app and allow Microphone and Speech Recognition before recording from the Lock Screen."
             case .account: "Sign in in the app before recording from the Lock Screen."
             case .staleCapture: "This voice recording has already ended."
+            case .completionFailed: "The voice task could not be sent. Any available transcript is saved in Nanocodex."
             }
         }
     }
@@ -30,6 +31,7 @@ final class LockedVoiceCoordinator {
         let generation: UUID?
         let language: String
         let recorder = LockedAudioRecorder()
+        let completion = LockedVoiceCompletion()
         var activity: Activity<LockedVoiceActivityAttributes>?
         var phase = "preparing"
         var restore: Task<Void, Error>?
@@ -114,8 +116,12 @@ final class LockedVoiceCoordinator {
     }
 
     func finish(captureID: String) async throws {
-        guard let current = capture, current.id == captureID, current.recorder.recording else { return }
-        current.recorder.finish()
+        guard let current = capture, current.id == captureID else { throw CaptureError.staleCapture }
+        // Finish stops the microphone and starts asynchronous file recognition.
+        // Keep the system's Send execution alive through transcription and cloud
+        // admission; duplicate taps join this capture instead of returning early.
+        if current.recorder.recording { current.recorder.finish() }
+        try await current.completion.wait()
     }
 
     func cancel(captureID: String) async throws {
@@ -217,16 +223,22 @@ final class LockedVoiceCoordinator {
         current.recorder.stop()
         current.heartbeat?.cancel()
         current.completionDeadline?.cancel()
-        current.restore?.cancel(); current.delivery?.cancel()
+        current.restore?.cancel()
+        // Successful admission has already flushed its receipt. On failure, let
+        // cancellation finish persisting the queue's retry state before returning.
+        if phase != "sent" { current.delivery?.cancel() }
         current.observations.removeAll()
         if preserve {
             model.retainLockedVoiceRecovery(current.recorder.transcript, captureID: current.id, accountScope: current.account)
         }
         let content = content(current, phase: phase)
         Task {
+            await current.delivery?.value
             await current.update?.value
             await current.activity?.end(content, dismissalPolicy: .after(Date().addingTimeInterval(15)))
             releaseBackground(current)
+            current.completion.resolve(phase == "sent" ? .success(()) : .failure(
+                phase == "cancelled" ? CancellationError() : CaptureError.completionFailed))
         }
     }
 }
