@@ -255,6 +255,7 @@ async function previewForUrl(url: URL, env: LinkPreviewEnv): Promise<Preview> {
       title: document?.[0] ?? fallbackTitle,
     };
   }
+  if (pathname === "/router") return fixed(pathname, "Router", "Compare provider latency, routing health and the retained inference benchmark.", "INFERENCE OPERATIONS");
   if (pathname === "/evals") {
     return fixed(pathname, "Evals", "Inspect retained, verifier-backed Nanocodex evaluation worksets and runs.", "EVALUATIONS");
   }
