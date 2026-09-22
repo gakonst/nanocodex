@@ -13,7 +13,7 @@ function feed() {
 }
 function setup(provider, upstream, signal) {
   const observed = [], requests = [];
-  const options = { provider, model: "gpt-6-sol", reasoningEffort: "high", apiKey: "synthetic-secret",
+  const options = { provider, model: "gpt-6-sol", reasoningEffort: provider === "cloudflare" ? "high" : "none", apiKey: "synthetic-secret",
     ...(provider === "cloudflare" ? { accountId: "a".repeat(32) } : {}),
     fetch: async (_url, init) => { requests.push(JSON.parse(init.body)); return new Response(upstream.body, { headers: { "content-type": "text/event-stream" } }); },
     onRequest: () => ({ headers(status) { observed.push(status); }, firstToken() { observed.push("first"); }, finish(outcome) { observed.push(outcome); } }) };

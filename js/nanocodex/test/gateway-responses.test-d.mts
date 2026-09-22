@@ -46,3 +46,9 @@ createGatewayResponses({ provider: "cloudflare", model: "gpt-6-sol", reasoningEf
 createGatewayResponses({ provider: "cloudflare", model: "gpt-6-sol", reasoningEffort: "low", accountId: "a".repeat(32) });
 // @ts-expect-error REST and binding cannot be mixed
 createGatewayResponses({ provider: "cloudflare", model: "gpt-6-sol", reasoningEffort: "low", accountId: "a".repeat(32), apiKey: "synthetic", ai });
+
+for (const model of ["gpt-6-sol", "gpt-6-luna"] as const) {
+  for (const reasoningEffort of ["none", "low", "medium", "high", "xhigh", "max"] as const) {
+    createGatewayResponses({ provider: "cloudflare", model, reasoningEffort, ai });
+  }
+}

@@ -14,7 +14,7 @@ export function createGatewayResponses(options) {
   const { provider, model, reasoningEffort, apiKey, fetch: fetchImpl = globalThis.fetch } = options;
   if (provider !== "cloudflare" && !Object.hasOwn(ENDPOINTS, provider)) fail("unsupported provider");
   if (!MODELS.includes(model)) fail("unsupported canonical model");
-  if (!(model === "kimi-k3" ? ["low", "high"] : ["low", "medium", "high"]).includes(reasoningEffort)) fail("unsupported reasoning effort");
+  if (!(["gpt-6-sol", "gpt-6-luna"].includes(model) ? ["none", "low", "medium", "high", "xhigh", "max"] : model === "kimi-k3" ? ["low", "high"] : ["low", "medium", "high"]).includes(reasoningEffort)) fail("unsupported reasoning effort");
   const cloudflareHttp = provider === "cloudflare" && (options.accountId !== undefined || apiKey !== undefined);
   if (provider === "cloudflare") {
     if (!model.startsWith("gpt-")) fail("Cloudflare gateway requires an OpenAI canonical model");
@@ -33,12 +33,16 @@ export function createGatewayResponses(options) {
   const gatewayModel = model === MODELS[0]
     ? (provider === "openrouter" ? "z-ai/glm-5.3" : "zai/glm-5.3") : model === "kimi-k3" ? "moonshotai/kimi-k3" : model === "mimo-v2.6-pro" ? "xiaomi/mimo-v2.6-pro" : `openai/${model}`;
   const apiBaseUrl = `https://${provider}-responses.invalid/v1`;
-  const adapter = (signal, attempt) => createWorkersAiResponses({
+  const adapter = (signal, attempt, reasoningMode) => createWorkersAiResponses({
     async run(_model, input) {
       signal?.throwIfAborted();
+      if (provider !== "cloudflare" && ["gpt-6-sol", "gpt-6-luna"].includes(model) && reasoningEffort !== "none" && input.tools?.length) {
+        fail("GPT-6 Sol/Luna function calling requires Responses or reasoning effort none");
+      }
       if (input.reasoning_effort !== undefined && input.reasoning_effort !== reasoningEffort) fail("reasoning override does not match pinned effort");
       if (provider === "cloudflare" && !cloudflareHttp) {
         const payload = toBindingResponsesInput(input, reasoningEffort);
+        if (reasoningMode !== undefined) payload.reasoning.mode = reasoningMode;
         attempt.outcome = "network_error";
         try { attempt.observer = options.onRequest?.(); } catch { /* telemetry is best effort */ }
         let value;
@@ -65,6 +69,7 @@ export function createGatewayResponses(options) {
       const payload = cloudflareHttp
         ? { ...toBindingResponsesInput(input, reasoningEffort), model: gatewayModel }
         : { ...input, model: gatewayModel, reasoning_effort: reasoningEffort };
+      if (cloudflareHttp && reasoningMode !== undefined) payload.reasoning.mode = reasoningMode;
       if (["kimi-k3", "mimo-v2.6-pro"].includes(model)) {
         // Both providers document these models through the unified reasoning field.
         delete payload.reasoning_effort;
@@ -156,7 +161,21 @@ export function createGatewayResponses(options) {
         finish,
       };
       try {
-        const response = await adapter(request.signal, attempt).createResponse(endpoint, sessionId, request);
+        // The portable Chat translator has no reasoning.mode field. Preserve it
+        // explicitly on Responses transports and reject unsupported pro requests.
+        const body = JSON.parse(request.body);
+        const supportsMode = ["gpt-6-sol", "gpt-6-luna"].includes(model);
+        const validateMode = value => {
+          if (value !== undefined && !["standard", "pro"].includes(value)) fail("unsupported reasoning mode");
+          if (value === "pro" && (provider !== "cloudflare" || !supportsMode)) fail("pro reasoning requires a supported Responses model");
+          return value;
+        };
+        let reasoningMode = validateMode(body.reasoning?.mode);
+        if (Array.isArray(body.input)) for (const item of body.input) {
+          if (item.type === "configuration_update") reasoningMode = validateMode(item.reasoning?.mode) ?? reasoningMode;
+        }
+        if (provider !== "cloudflare" || !supportsMode) reasoningMode = undefined;
+        const response = await adapter(request.signal, attempt, reasoningMode).createResponse(endpoint, sessionId, request);
         attempt.outcome = "success";
         deferred = attempt.streaming === true;
         return response;

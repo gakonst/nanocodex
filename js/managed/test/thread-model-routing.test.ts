@@ -2,7 +2,7 @@ import { URL as NodeURL } from "node:url";
 import { readFileSync } from "node:fs";
 const preferenceObservations = JSON.parse(readFileSync(new NodeURL("./fixtures/thread-routing-preferences-20260921.json", import.meta.url), "utf8")) as {
   cases: Array<{id:string; catalog:number; prompt:string; preferences:Record<string,unknown>;
-    answers:{candidate:{confidence:number}}; expected_choice:string; expected_selection:string}>;
+    answers:{candidate:{choice:string; confidence:number}}; expected_choice:string; expected_selection:string}>;
 };
 import { describe, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
@@ -253,23 +253,30 @@ describe("cross-provider candidate routing", () => {
   } })) });
   const openrouter = "openrouter:openai/gpt-6-astra:high";
   const vercel = "vercel:openai/gpt-6-astra:high";
-  it("offers 67 unique candidates, preserving every old identity", async () => {
-    expect(ROUTING_CANDIDATES).toHaveLength(67);
-    expect(new Set(ROUTING_CANDIDATES.map(c => c.id)).size).toBe(67);
+  it("offers unique candidates supported by the managed tools contract", async () => {
+    expect(ROUTING_CANDIDATES).toHaveLength(43);
+    expect(new Set(ROUTING_CANDIDATES.map(c => c.id)).size).toBe(43);
     const p = routingPolicySchema.parse({ candidates: ROUTING_CANDIDATES.map(c => c.id) });
     const ai = choose(vercel);
     const route = await resolveThreadRoute(ai, "task", p, available);
-    expect(route.audit?.eligible_candidates).toHaveLength(55);
+    expect(route.audit?.eligible_candidates).toHaveLength(34);
     expect(route).toMatchObject({ backend: "vercel", model: FRONTIER_MODEL, provider_model: "openai/gpt-6-astra" });
-    expect(Object.keys((ai.run.mock.calls[0][1] as {questions:{candidate:{criteria:object}}}).questions.candidate.criteria)).toHaveLength(55);
+    expect(Object.keys((ai.run.mock.calls[0][1] as {questions:{candidate:{criteria:object}}}).questions.candidate.criteria)).toHaveLength(34);
+  });
+  it.each(["gpt-6-sol", "gpt-6-luna"])("keeps %s tools on native and Responses routes", model => {
+    for (const effort of ["low", "medium", "high"]) {
+      for (const backend of ["openrouter", "vercel"]) {
+        expect(() => routingPolicySchema.parse({ candidates: [`${backend}:openai/${model}:${effort}`] })).toThrow();
+      }
+      expect(ROUTING_CANDIDATES.some(c => c.id === `${model}:${effort}`)).toBe(true);
+      expect(ROUTING_CANDIDATES.some(c => c.id === `cloudflare:openai/${model}:${effort}`)).toBe(true);
+    }
   });
   it("sends dated provider token rates separately from measured task costs", async () => {
     const ai = choose(vercel);
     const route = await resolveThreadRoute(ai, "compare cost", routingPolicySchema.parse({}), available);
     const state = JSON.parse((ai.run.mock.calls[0][1] as {state:string}).state);
     const hint = (id: string) => { const c = ROUTING_CANDIDATES.find(c => c.id === id)!; return state.catalog_price_hints[`${c.backend}/${c.model}`]; };
-    expect(hint("openrouter:openai/gpt-6-sol:low")).toMatchObject({as_of:"2026-09-22", unit:"USD per million tokens", input:2, output:10, cached_input:.2, source:"https://openrouter.ai/api/v1/models"});
-    expect(hint("openrouter:openai/gpt-6-luna:low")).toMatchObject({as_of:"2026-09-22", input:.1, output:.5, cached_input:.01, source:"https://openrouter.ai/api/v1/models"});
     expect(ROUTING_CANDIDATES.some(candidate => candidate.id === "vercel:openai/gpt-6-sol:low")).toBe(false);
     expect(ROUTING_CANDIDATES.some(candidate => candidate.id === "vercel:openai/gpt-6-luna:low")).toBe(false);
     expect(hint("openrouter:z-ai/glm-5.3:low")).toMatchObject({input:.91,output:2.86,cached_input:.169});
@@ -283,7 +290,7 @@ describe("cross-provider candidate routing", () => {
     expect(route.selection).toBe("prior");
   });
   it.each([
-    [undefined, 15], [{openrouter:true,vercel:false},35], [{openrouter:false,vercel:true},35], [available,55], [{...available,cloudflare:true},67], [{openrouter:false,vercel:false,cloudflare:true},27],
+    [undefined, 12], [{openrouter:true,vercel:false},23], [{openrouter:false,vercel:true},23], [available,34], [{...available,cloudflare:true},43], [{openrouter:false,vercel:false,cloudflare:true},21],
   ])("filters unavailable providers before Jev: %j", async (availability, count) => {
     const ai = choose("gpt-6-astra:high");
     const route = await resolveThreadRoute(ai, "task", routingPolicySchema.parse({}), availability);
@@ -361,9 +368,9 @@ describe("preference-preserving confidence fallback", () => {
     expect(route.audit).toMatchObject({confidence_status:"unavailable_or_invalid",fallback_basis:"eligible_frontier"});
   });
   it("retains a provider-specific proposal only within available eligible candidates", async () => {
-    const id = "openrouter:openai/gpt-6-luna:low";
-    const route = await resolveThreadRoute(output(id,.3),"economy",routingPolicySchema.parse({candidates:[id]}),{openrouter:true,vercel:false});
-    expect(route).toMatchObject({backend:"openrouter",provider_model:"openai/gpt-6-luna",selection:"fallback"});
+    const id = "cloudflare:openai/gpt-6-luna:low";
+    const route = await resolveThreadRoute(output(id,.3),"economy",routingPolicySchema.parse({candidates:[id]}),{openrouter:false,vercel:false,cloudflare:true});
+    expect(route).toMatchObject({backend:"cloudflare",provider_model:"openai/gpt-6-luna",selection:"fallback"});
     expect(route.audit?.candidate_choice).toBe(id);
   });
   it("cannot relabel a low-confidence proposal as measured or satisfy a measured-success constraint", async () => {
@@ -389,18 +396,20 @@ describe("preference-preserving confidence fallback", () => {
 
 
 describe("captured preference-distribution policy replay (not accuracy labels)", () => {
-  it.each(preferenceObservations.cases)("retains $catalog/$id without inflating confidence", async observation => {
+  it.each(preferenceObservations.cases)("replays historical $catalog/$id against the supported catalog", async observation => {
     const ai = {run:vi.fn(async()=>({state:"Completed",result:{answers:observation.answers}}))};
     const route = await resolveThreadRoute(ai,observation.prompt,routingPolicySchema.parse({preferences:observation.preferences, candidates: ROUTING_CANDIDATES.filter(c => !["kimi-k3", "mimo-v2.6-pro"].includes(c.model)).map(c => c.id)}),
       {openrouter:observation.catalog===45,vercel:observation.catalog===45});
-    expect(route.audit?.candidate_choice).toBe(observation.expected_choice);
-    expect(route.audit?.candidate_confidence).toBe(observation.answers.candidate.confidence);
-    expect(route.selection).toBe(observation.expected_selection);
+    const retired = observation.answers.candidate.choice.includes("gpt-5.6");
+    expect(route.audit?.candidate_choice).toBe(retired ? "gpt-6-astra:high" : observation.expected_choice);
+    expect(route.audit?.candidate_confidence).toBe(retired ? 0 : observation.answers.candidate.confidence);
+    expect(route.selection).toBe(retired ? "fallback" : observation.expected_selection);
+    if (retired) expect(route.audit?.confidence_status).toBe("unavailable_or_invalid");
     expect(route.estimate).toBeNull();
     expect(ai.run).toHaveBeenCalledOnce();
     const state = JSON.parse((ai.run.mock.calls[0] as unknown as [string,{state:string}])[1].state);
     expect(state.preferences).toEqual(observation.preferences);
-    expect(Object.keys((ai.run.mock.calls[0] as unknown as [string,{questions:{candidate:{criteria:object}}}])[1].questions.candidate.criteria)).toHaveLength(observation.catalog);
+    expect(Object.keys((ai.run.mock.calls[0] as unknown as [string,{questions:{candidate:{criteria:object}}}])[1].questions.candidate.criteria)).toHaveLength(observation.catalog === 45 ? 24 : 12);
   });
 });
 
@@ -512,12 +521,12 @@ describe("Cloudflare frontier opt-in", () => {
   it("adds the supported Cloudflare frontier entries with unknown prices", () => {
     const cloudflare = ROUTING_CANDIDATES.filter(c => c.backend === "cloudflare");
     expect(cloudflare).toHaveLength(9);
-    expect(ROUTING_CANDIDATES.filter(c => c.backend !== "chatgpt")).toHaveLength(35);
+    expect(ROUTING_CANDIDATES.filter(c => c.backend !== "chatgpt")).toHaveLength(34);
     for (const model of [FRONTIER_MODEL, "gpt-6-sol", "gpt-6-luna"]) {
       for (const thinking of ["low", "medium", "high"]) {
         expect(cloudflare.find(c => c.id === `cloudflare:openai/${model}:${thinking}`)).toMatchObject({model, thinking, provider_model:`openai/${model}`,catalog_price_hint:null});
         expect(ROUTING_CANDIDATES.some(c => c.id === `${model}:${thinking}`)).toBe(true);
-        expect(ROUTING_CANDIDATES.some(c => c.id === `openrouter:openai/${model}:${thinking}`)).toBe(true);
+        expect(ROUTING_CANDIDATES.some(c => c.id === `openrouter:openai/${model}:${thinking}`)).toBe(model === FRONTIER_MODEL);
         expect(ROUTING_CANDIDATES.some(c => c.id === `vercel:openai/${model}:${thinking}`)).toBe(model === FRONTIER_MODEL);
       }
     }
