@@ -265,12 +265,12 @@ async fn regression(steer_after_acceptance: bool) {
         let mut results = 0;
         let expected_results = if steer_after_acceptance { 4 } else { 3 };
         while let Ok(update) = updates.try_recv() {
-            if let AgentUpdate::Event { event, .. } = update.update {
-                if event.kind == AgentEventKind::ToolResult {
-                    let payload: Value = serde_json::from_str(event.payload.get()).unwrap();
-                    assert_eq!(payload["status"], "completed", "{payload}");
-                    results += 1;
-                }
+            if let AgentUpdate::Event { event, .. } = update.update
+                && event.kind == AgentEventKind::ToolResult
+            {
+                let payload: Value = serde_json::from_str(event.payload.get()).unwrap();
+                assert_eq!(payload["status"], "completed", "{payload}");
+                results += 1;
             }
         }
         assert_eq!(results, expected_results);

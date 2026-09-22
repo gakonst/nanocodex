@@ -147,7 +147,7 @@ impl TokenRates {
                     };
                 let speed = if fast { 2 } else { 1 };
                 let context = if long { 2 } else { 1 };
-                TokenRates {
+                Self {
                     input: input * speed * context,
                     cached_input: cached_input * speed * context,
                     cache_write_input: cache_write_input * speed * context,

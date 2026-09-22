@@ -639,8 +639,10 @@ impl Service<ResponsesAttempt> for RevisionRecoveryProvider {
     }
 }
 
+type RevisionObservations = Arc<Mutex<Vec<(Option<u64>, u32)>>>;
+
 struct RecoveredRevisionProbe {
-    observations: Arc<Mutex<Vec<(Option<u64>, u32)>>>,
+    observations: RevisionObservations,
     compactions: Arc<AtomicU32>,
 }
 
