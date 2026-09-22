@@ -68,8 +68,8 @@ test("attachment publishes one exact catalog and exchanges ready, call, result, 
   await tools.close();
 });
 
-test("attachment forwards provider-qualified and auto-route models to tool handlers", async () => {
-  const models = ["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro", "auto", "openrouter/auto", "openai/gpt-6-astra", "@openai/gpt-6-astra", "auto(openai/gpt-6-astra,anthropic/claude)"];
+test("attachment preserves arbitrary model strings as opaque metadata", async () => {
+  const models = ["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro", "auto", "openrouter/auto", "openai/gpt-6-astra", "@openai/gpt-6-astra", "auto(openai/gpt-6-astra,anthropic/claude)", "", "x y", "x\n", "x\t", "x\0", "x\x7f", "模型🦙", "x".repeat(8192)];
   const received = [];
   const tools = await createTools({ tools: {
     echo: { description: "Echo.", handler: (_, context) => { received.push(context.model); return "ok"; } },
@@ -92,8 +92,8 @@ test("attachment forwards provider-qualified and auto-route models to tool handl
   await tools.close();
 });
 
-test("attachment rejects invalid model metadata before dispatch", async () => {
-  for (const model of [undefined, null, 1, "", "x y", "x\n", "x\t", "x\0", "x\x7f", "é", "x".repeat(129)]) {
+test("attachment rejects non-string model metadata before dispatch", async () => {
+  for (const model of [undefined, null, 1, {}, [], true]) {
     let dispatched = false;
     const fixture = await readyAttachment({ handler: () => { dispatched = true; return "ok"; } });
     fixture.socket.receive({ ...callFrame({}), model });
@@ -102,6 +102,16 @@ test("attachment rejects invalid model metadata before dispatch", async () => {
     assert.equal(dispatched, false);
     await fixture.tools.close();
   }
+});
+
+test("opaque model metadata still obeys the attachment frame capacity", async () => {
+  let dispatched = false;
+  const fixture = await readyAttachment({ handler: () => { dispatched = true; return "ok"; } });
+  fixture.socket.receive({ ...callFrame({}), model: "x".repeat(2 * 1024 * 1024) });
+  await waitFor(() => fixture.socket.closed?.code === 1008);
+  assert.match(fixture.socket.closed.reason, /frame capacity exceeded/);
+  assert.equal(dispatched, false);
+  await fixture.tools.close();
 });
 
 test("catalog preserves provider, remote name, summary, and timeout metadata", async () => {

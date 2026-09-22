@@ -9,10 +9,10 @@ const call = {
 };
 
 test("model routing metadata survives parsing without relaxing identities", () => {
-  for (const model of ["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro", "auto", "openrouter/auto", "gpt-6-astra", "openai/gpt-6-astra", "@openai/gpt-6-astra", "auto(openai/gpt-6-astra,anthropic/claude)", "x".repeat(128)]) {
+  for (const model of ["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro", "auto", "openrouter/auto", "gpt-6-astra", "openai/gpt-6-astra", "@openai/gpt-6-astra", "auto(openai/gpt-6-astra,anthropic/claude)", "", "x y", "x\n", "x\t", "x\0", "x\x7f", "模型🦙", "x".repeat(8192)]) {
     assert.deepEqual(parseHostedToolsManagedFrame(JSON.stringify({ ...call, model })), { ...call, model });
   }
-  for (const model of [undefined, null, 1, {}, "", "x y", "x\n", "x\t", "x\0", "x\x7f", "é", "x".repeat(129)]) {
+  for (const model of [undefined, null, 1, {}, [], true]) {
     assert.throws(() => parseHostedToolsManagedFrame(JSON.stringify({ ...call, model })), /model must/);
   }
   for (const field of ["session_id", "call_id", "name"]) {

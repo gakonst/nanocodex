@@ -540,7 +540,8 @@ function parseFrame(encoded) {
   if (frame.type === "call") {
     requiredIdentifier(frame.session_id, "session_id"); requiredIdentifier(frame.call_id, "call_id");
     if (frame.turn_id !== undefined && (typeof frame.turn_id !== "string" || !frame.turn_id || utf8ByteLength(frame.turn_id) > 256)) throw new TypeError("turn_id must be 1-256 UTF-8 bytes");
-    requiredModel(frame.model); requiredIdentifier(frame.name, "name");
+    if (typeof frame.model !== "string") throw new TypeError("model must be a string");
+    requiredIdentifier(frame.name, "name");
     if (typeof frame.input !== "string" && (!frame.input || typeof frame.input !== "object" || Array.isArray(frame.input))) throw new Error("call input must be an object or string");
     positiveInteger(frame.output_token_budget, "output_token_budget");
     positiveInteger(frame.output_byte_budget, "output_byte_budget");
@@ -563,11 +564,6 @@ function abortGeneration(state, reason) {
 }
 function positiveInteger(value, name) { if (!Number.isSafeInteger(value) || value < 1) throw new TypeError(`${name} must be a positive safe integer`); return value; }
 function positiveOption(value, fallback, name) { return value === undefined ? fallback : positiveInteger(value, name); }
-// Model names are opaque routing metadata, not tool or call identifiers.
-function requiredModel(value) {
-  if (typeof value !== "string" || value.length < 1 || value.length > 128 || /[^\x21-\x7e]/.test(value)) throw new TypeError("model must be 1-128 printable non-whitespace ASCII bytes");
-  return value;
-}
 function requiredIdentifier(value, name) { if (typeof value !== "string" || !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(value)) throw new TypeError(`${name} must be a safe ASCII identifier`); return value; }
 function exactKeys(value, allowed) { for (const key of Object.keys(value)) if (!allowed.includes(key)) throw new Error(`${value.type} contains unsupported field ${key}`); }
 function snapshot(value) { return value === undefined ? null : JSON.parse(JSON.stringify(value)); }
