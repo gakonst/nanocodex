@@ -6,76 +6,52 @@ use crate::{Model, responses::Usage};
 // OpenAI publishes rates per one million tokens. All supported rates convert
 // exactly to nano-USD per token, avoiding floating point and division.
 const SOL_STANDARD: TokenRates = TokenRates {
+    input: 2_000,
+    cached_input: 200,
+    cache_write_input: 2_500,
+    output: 10_000,
+};
+const SOL_PRIORITY: TokenRates = TokenRates {
     input: 4_000,
     cached_input: 400,
     cache_write_input: 5_000,
     output: 20_000,
 };
-const SOL_PRIORITY: TokenRates = TokenRates {
-    input: 8_000,
-    cached_input: 800,
-    cache_write_input: 10_000,
-    output: 40_000,
-};
 const SOL_LONG_CONTEXT_STANDARD: TokenRates = TokenRates {
+    input: 4_000,
+    cached_input: 400,
+    cache_write_input: 5_000,
+    output: 15_000,
+};
+const SOL_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
     input: 8_000,
     cached_input: 800,
     cache_write_input: 10_000,
     output: 30_000,
 };
-const SOL_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
-    input: 16_000,
-    cached_input: 1_600,
-    cache_write_input: 20_000,
-    output: 60_000,
-};
-const TERRA_STANDARD: TokenRates = TokenRates {
-    input: 2_000,
-    cached_input: 200,
-    cache_write_input: 2_500,
-    output: 12_000,
-};
-const TERRA_PRIORITY: TokenRates = TokenRates {
-    input: 4_000,
-    cached_input: 400,
-    cache_write_input: 5_000,
-    output: 24_000,
-};
-const TERRA_LONG_CONTEXT_STANDARD: TokenRates = TokenRates {
-    input: 4_000,
-    cached_input: 400,
-    cache_write_input: 5_000,
-    output: 18_000,
-};
-const TERRA_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
-    input: 8_000,
-    cached_input: 800,
-    cache_write_input: 10_000,
-    output: 36_000,
-};
 const LUNA_STANDARD: TokenRates = TokenRates {
+    input: 100,
+    cached_input: 10,
+    cache_write_input: 125,
+    output: 500,
+};
+const LUNA_PRIORITY: TokenRates = TokenRates {
     input: 200,
     cached_input: 20,
     cache_write_input: 250,
-    output: 1_200,
-};
-const LUNA_PRIORITY: TokenRates = TokenRates {
-    input: 400,
-    cached_input: 40,
-    cache_write_input: 500,
-    output: 2_400,
+    output: 1_000,
 };
 const LUNA_LONG_CONTEXT_STANDARD: TokenRates = TokenRates {
+    input: 200,
+    cached_input: 20,
+    cache_write_input: 250,
+    output: 750,
+};
+const LUNA_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
     input: 400,
     cached_input: 40,
     cache_write_input: 500,
-    output: 1_800,
-};
-const LUNA_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
-    input: 800,
-    cached_input: 80,
-    cache_write_input: 1_000,
-    output: 3_600,
+    output: 1_500,
 };
 const ASTRA_STANDARD: TokenRates = TokenRates {
     input: 10_000,
@@ -145,10 +121,6 @@ impl TokenRates {
             (Model::Sol, true, false) => SOL_PRIORITY,
             (Model::Sol, false, true) => SOL_LONG_CONTEXT_STANDARD,
             (Model::Sol, true, true) => SOL_LONG_CONTEXT_PRIORITY,
-            (Model::Terra, false, false) => TERRA_STANDARD,
-            (Model::Terra, true, false) => TERRA_PRIORITY,
-            (Model::Terra, false, true) => TERRA_LONG_CONTEXT_STANDARD,
-            (Model::Terra, true, true) => TERRA_LONG_CONTEXT_PRIORITY,
             (Model::Luna, false, false) => LUNA_STANDARD,
             (Model::Luna, true, false) => LUNA_PRIORITY,
             (Model::Luna, false, true) => LUNA_LONG_CONTEXT_STANDARD,
@@ -190,8 +162,7 @@ impl ServiceTier {
     pub const fn for_model(model: Model, fast_mode: bool) -> Self {
         match (model, fast_mode) {
             (Model::Glm53 | Model::Kimi | Model::Mimo, _) | (_, false) => Self::Standard,
-            (Model::Astra, true) => Self::Fast,
-            (_, true) => Self::Priority,
+            (Model::Sol | Model::Luna | Model::Astra, true) => Self::Fast,
         }
     }
 }
@@ -296,7 +267,7 @@ impl EstimatedUsdCost {
 /// };
 /// let cost = estimate(&usage, ServiceTier::Standard);
 ///
-/// assert_eq!(cost.amount().decimal(), "0.00222");
+/// assert_eq!(cost.amount().decimal(), "0.00111");
 /// ```
 #[must_use]
 pub fn estimate(usage: &Usage, service_tier: ServiceTier) -> EstimatedUsdCost {
@@ -420,11 +391,11 @@ mod tests {
             ServiceTier::Standard,
         );
 
-        assert_eq!(estimate.input().decimal(), "5.2");
-        assert_eq!(estimate.cached_input().decimal(), "0.2");
-        assert_eq!(estimate.cache_write_input().decimal(), "1");
-        assert_eq!(estimate.output().decimal(), "6");
-        assert_eq!(estimate.amount().decimal(), "12.4");
+        assert_eq!(estimate.input().decimal(), "2.6");
+        assert_eq!(estimate.cached_input().decimal(), "0.1");
+        assert_eq!(estimate.cache_write_input().decimal(), "0.5");
+        assert_eq!(estimate.output().decimal(), "3");
+        assert_eq!(estimate.amount().decimal(), "6.2");
     }
 
     #[test]
@@ -446,8 +417,8 @@ mod tests {
             ServiceTier::Priority,
         );
 
-        assert_eq!(standard.amount().decimal(), "38");
-        assert_eq!(priority.amount().decimal(), "76");
+        assert_eq!(standard.amount().decimal(), "19");
+        assert_eq!(priority.amount().decimal(), "38");
         assert_eq!(priority.service_tier(), ServiceTier::Priority);
         assert_eq!(priority.service_tier().as_str(), "priority");
     }
@@ -467,35 +438,12 @@ mod tests {
         let standard = estimate_for_model(&usage, Model::Luna, ServiceTier::Standard);
         let priority = estimate_for_model(&usage, Model::Luna, ServiceTier::Priority);
 
-        assert_eq!(standard.input().decimal(), "0.28");
-        assert_eq!(standard.cached_input().decimal(), "0.008");
-        assert_eq!(standard.cache_write_input().decimal(), "0.05");
-        assert_eq!(standard.output().decimal(), "1.8");
-        assert_eq!(standard.amount().decimal(), "2.138");
-        assert_eq!(priority.amount().decimal(), "4.276");
-    }
-
-    #[test]
-    fn terra_rates_cover_standard_and_priority_usage() {
-        let usage = Usage {
-            input_tokens: 1_000_000,
-            input_tokens_details: Some(InputTokenDetails {
-                cached_tokens: 200_000,
-                cache_write_tokens: 100_000,
-            }),
-            output_tokens: 1_000_000,
-            ..Usage::default()
-        };
-
-        let standard = estimate_for_model(&usage, Model::Terra, ServiceTier::Standard);
-        let priority = estimate_for_model(&usage, Model::Terra, ServiceTier::Priority);
-
-        assert_eq!(standard.input().decimal(), "2.8");
-        assert_eq!(standard.cached_input().decimal(), "0.08");
-        assert_eq!(standard.cache_write_input().decimal(), "0.5");
-        assert_eq!(standard.output().decimal(), "18");
-        assert_eq!(standard.amount().decimal(), "21.38");
-        assert_eq!(priority.amount().decimal(), "42.76");
+        assert_eq!(standard.input().decimal(), "0.14");
+        assert_eq!(standard.cached_input().decimal(), "0.004");
+        assert_eq!(standard.cache_write_input().decimal(), "0.025");
+        assert_eq!(standard.output().decimal(), "0.75");
+        assert_eq!(standard.amount().decimal(), "0.919");
+        assert_eq!(priority.amount().decimal(), "1.838");
     }
 
     #[test]
@@ -536,7 +484,7 @@ mod tests {
         let estimate = estimate_tokens(10, 8, 8, 0, Model::Sol, ServiceTier::Standard);
 
         assert_eq!(estimate.input().nano_usd(), 0);
-        assert_eq!(estimate.cached_input().nano_usd(), 3_200);
-        assert_eq!(estimate.cache_write_input().nano_usd(), 10_000);
+        assert_eq!(estimate.cached_input().nano_usd(), 1_600);
+        assert_eq!(estimate.cache_write_input().nano_usd(), 5_000);
     }
 }

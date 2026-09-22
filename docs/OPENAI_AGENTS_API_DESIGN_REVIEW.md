@@ -33,7 +33,7 @@ const prompt = "Compute 17 * 19.";
 // OpenAI-Beta: agents=v1
 const openAIRequest = {
   agent: {
-    model: "gpt-5.6-luna",
+    model: "gpt-6-luna",
     instructions,
     reasoning: { effort: "high" },
     service_tier: "default",
@@ -48,7 +48,7 @@ const openAIRequest = {
 const nanocodexOptions = {
   baseUrl: process.env.NANOCODEX_MANAGED_URL,
   apiKey: process.env.NANOCODEX_API_KEY,
-  settings: { model: "gpt-5.6-luna", thinking: "high", reasoningMode: "standard", fastMode: false },
+  settings: { model: "gpt-6-luna", thinking: "high", reasoningMode: "standard", fastMode: false },
   configuration: {
     instructions,
     tools: [],

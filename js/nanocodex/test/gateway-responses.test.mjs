@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createGatewayResponses } from "../cloudflare/gateway-responses.mjs";
-const models = ["@cf/zai-org/glm-5.3", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const models = ["@cf/zai-org/glm-5.3", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"];
 const secret = "synthetic-server-only-key";
 const options = { provider: "openrouter", model: models[0], reasoningEffort: "high", apiKey: secret };
 const completion = (message, finish_reason = "stop") => Response.json({ choices: [{ message, finish_reason }] });
@@ -12,22 +12,23 @@ const events = async response => (await response.text()).trim().split("\n\n").ma
 for (const provider of ["openrouter", "vercel"]) for (const model of models) {
   test(`${provider}/${model} pins routing and round-trips namespaced custom tools`, async () => {
     const requests = [];
-    const transport = createGatewayResponses({ ...options, provider, model, fetch: async (url, init) => {
+    const reasoningEffort = ["gpt-6-sol", "gpt-6-luna"].includes(model) ? "none" : "high";
+    const transport = createGatewayResponses({ ...options, provider, model, reasoningEffort, fetch: async (url, init) => {
       assert.equal(url, provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://ai-gateway.vercel.sh/v1/chat/completions");
       assert.equal(init.redirect, "manual");
       assert.equal(init.headers.authorization, `Bearer ${secret}`);
       const body = JSON.parse(init.body); requests.push(body);
       assert.equal(body.model, model === models[0] ? (provider === "openrouter" ? "z-ai/glm-5.3" : "zai/glm-5.3") : `openai/${model}`);
       assert.equal(body.stream, false); assert.equal(body.models, undefined);
-      if (provider === "openrouter") { assert.deepEqual(body.reasoning, { effort: "high" }); assert.deepEqual(body.provider, { require_parameters: true }); }
-      else assert.equal(body.reasoning_effort, "high");
+      if (provider === "openrouter") { assert.deepEqual(body.reasoning, { effort: reasoningEffort }); assert.deepEqual(body.provider, { require_parameters: true }); }
+      else assert.equal(body.reasoning_effort, reasoningEffort);
       if (requests.length === 1) return completion({ tool_calls: [{ id: "call", function: { name: body.tools[0].function.name, arguments: JSON.stringify({ input: "text(42)" }) } }] }, "tool_calls");
       assert.equal(body.messages.at(-1).role, "tool"); assert.equal(body.messages.at(-1).content, "42");
       return completion({ content: "done" });
     } });
     assert.equal(transport.stateless, true);
     const tools = [{ type: "namespace", name: "functions", tools: [{ type: "custom", name: "exec" }] }];
-    const first = await events(await invoke(transport, { model, tools, input: "run", reasoning: { effort: "high" } }));
+    const first = await events(await invoke(transport, { model, tools, input: "run", reasoning: { effort: reasoningEffort } }));
     const response = first.at(-1).response;
     assert.equal(response.model, model); assert.equal(response.end_turn, false);
     assert.equal(response.output[0].name, "exec"); assert.equal(response.output[0].namespace, "functions");
@@ -285,7 +286,7 @@ test("Cloudflare validates model, effort, full history and hosted tools before d
   assert.throws(() => createGatewayResponses(bindingOptions));
   const transport = createGatewayResponses({ ...bindingOptions, ai });
   for (const body of [
-    { model: "gpt-5.6-sol" }, { reasoning: { effort: "low" } },
+    { model: "gpt-6-sol" }, { reasoning: { effort: "low" } },
     { input: [{ type: "configuration_update", reasoning: { effort: "medium" } }] },
     { previous_response_id: "opaque" }, { context_management: [{}] },
     { input: [{ type: "compaction", encrypted_content: "opaque" }] },
@@ -505,4 +506,101 @@ test("buffered gateway reasoning details retain visible text without duplicating
     const events = (await response.text()).split("\n\n").filter(Boolean).map(frame => JSON.parse(frame.split("\ndata: ")[1]));
     assert.deepEqual(events.filter(e => e.type === "response.reasoning_text.delta").map(e => e.delta), ["Inspect fixture"]);
   }
+});
+
+
+for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
+  for (const reasoningEffort of ["none", "low", "medium", "high", "xhigh", "max"]) {
+    test(`${model}/${reasoningEffort} preserves Responses tools and pinned effort`, async () => {
+      let calls = 0;
+      const transport = createGatewayResponses({ provider: "cloudflare", model, reasoningEffort, ai: {
+        async run(upstream, payload) {
+          calls++;
+          assert.equal(upstream, `openai/${model}`);
+          assert.deepEqual(payload.reasoning, { effort: reasoningEffort });
+          assert.equal(payload.tools[0].type, "function");
+          return nativeResponse([{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }]);
+        },
+      } });
+      const result = await events(await invoke(transport, { model, reasoning: { effort: reasoningEffort }, input: "test", tools: [{ type: "function", name: "inspect", parameters: { type: "object" } }] }));
+      assert.equal(calls, 1);
+      assert.equal(result.at(-1).response.model, model);
+    });
+    for (const provider of ["openrouter", "vercel"]) {
+      test(`${provider}/${model}/${reasoningEffort} enforces Chat tools contract before dispatch`, async () => {
+        let calls = 0;
+        const transport = createGatewayResponses({ provider, model, reasoningEffort, apiKey: secret, fetch: async (_url, init) => {
+          calls++;
+          const body = JSON.parse(init.body);
+          assert.equal(body.model, `openai/${model}`);
+          assert.equal(provider === "openrouter" ? body.reasoning.effort : body.reasoning_effort, reasoningEffort);
+          return completion({ content: "ok" });
+        } });
+        const body = { model, input: "test", tools: [{ type: "function", name: "inspect", parameters: { type: "object" } }] };
+        if (reasoningEffort === "none") await invoke(transport, body);
+        else await assert.rejects(invoke(transport, body), /incompatible/);
+        assert.equal(calls, reasoningEffort === "none" ? 1 : 0);
+        await invoke(transport, { model, input: "text only" });
+        assert.equal(calls, reasoningEffort === "none" ? 2 : 1);
+      });
+    }
+  }
+}
+
+
+for (const model of ["gpt-6-sol", "gpt-6-luna"]) for (const mode of ["standard", "pro"]) {
+  for (const wire of ["binding", "rest"]) test(`${model}/${mode}/${wire} preserves Responses reasoning mode`, async () => {
+    const run = async (_model, payload) => {
+      assert.deepEqual(payload.reasoning, { effort: "medium", mode });
+      return nativeResponse([{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }]);
+    };
+    const transport = createGatewayResponses({ provider: "cloudflare", model, reasoningEffort: "medium",
+      ...(wire === "binding" ? { ai: { run } } : { accountId: "a".repeat(32), apiKey: secret,
+        fetch: async (_url, init) => Response.json(await run(model, JSON.parse(init.body))) }),
+    });
+    await invoke(transport, { model, reasoning: { effort: "medium", mode }, input: "test" });
+    await invoke(transport, { model, input: [{ type: "configuration_update", reasoning: { mode } }, { role: "user", content: "test" }] });
+  });
+}
+test("Chat gateways reject pro reasoning rather than silently downgrading", async () => {
+  for (const provider of ["openrouter", "vercel"]) {
+    let calls = 0;
+    const transport = createGatewayResponses({ ...options, provider, model: "gpt-6-sol", reasoningEffort: "medium", fetch: async () => { calls++; return completion({ content: "unexpected" }); } });
+    await assert.rejects(invoke(transport, { input: "test", reasoning: { mode: "pro" } }), /incompatible/);
+    assert.equal(calls, 0);
+  }
+});
+
+test("retired model IDs remain unavailable to gateway transports", () => {
+  for (const model of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+    assert.throws(() => createGatewayResponses({ ...options, model }), /unsupported canonical model/);
+  }
+});
+
+test("invalid and unsupported reasoning modes never dispatch", async () => {
+  for (const model of ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]) {
+    let calls = 0;
+    const transport = createGatewayResponses({ provider: "cloudflare", model, reasoningEffort: "medium", ai: {
+      async run() { calls++; return nativeResponse([nativeText("unexpected")]); },
+    } });
+    for (const mode of ["invalid", null, ...(model === "gpt-6-astra" ? ["pro"] : [])]) {
+      await assert.rejects(invoke(transport, { input: "test", reasoning: { mode } }), /incompatible/);
+      await assert.rejects(invoke(transport, { reasoning: { mode }, input: [{ type: "configuration_update", reasoning: { mode: "standard" } }] }), /incompatible/);
+      await assert.rejects(invoke(transport, { input: [{ type: "configuration_update", reasoning: { mode } }, { type: "configuration_update", reasoning: { mode: "standard" } }] }), /incompatible/);
+      await assert.rejects(invoke(transport, { input: [{ type: "configuration_update", reasoning: { mode } }] }), /incompatible/);
+    }
+    assert.equal(calls, 0);
+  }
+});
+
+test("Chat tool guard includes tools declared in retained history", async () => {
+  let calls = 0;
+  const transport = createGatewayResponses({ ...options, model: "gpt-6-sol", fetch: async () => {
+    calls++; return completion({ content: "unexpected" });
+  } });
+  await assert.rejects(invoke(transport, { input: [
+    { type: "additional_tools", tools: [{ type: "function", name: "inspect", parameters: { type: "object" } }] },
+    { role: "user", content: "test" },
+  ] }), /incompatible/);
+  assert.equal(calls, 0);
 });

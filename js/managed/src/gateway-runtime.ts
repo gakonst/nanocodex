@@ -37,7 +37,7 @@ export function gatewayRuntime(env: GatewaySecrets, route: Pick<ThreadRoute, "ba
     backend: route.backend, model: route.model, effort: route.thinking,
   }, telemetry.store) : undefined;
   if (route.backend === "cloudflare") {
-    if (!(route.model === "gpt-6-astra" || route.model === "gpt-5.6-sol" || route.model === "gpt-5.6-terra" || route.model === "gpt-5.6-luna") || !gatewayAvailability(env).cloudflare) throw new Error("Pinned cloudflare route requires its configured transport and frontier gate");
+    if (!(route.model === "gpt-6-astra" || route.model === "gpt-6-sol" || route.model === "gpt-6-luna") || !gatewayAvailability(env).cloudflare) throw new Error("Pinned cloudflare route requires its configured transport and frontier gate");
     const rest = cloudflareRestConfig(env);
     if (rest) {
       if (route.provider_model !== `openai/${route.model}`) throw new Error("Cloudflare request does not match pinned model");

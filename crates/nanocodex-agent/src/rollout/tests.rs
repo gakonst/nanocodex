@@ -343,7 +343,7 @@ fn loads_the_latest_supported_model_from_codex_turn_context() {
                 "cwd": home.path(),
                 "approval_policy": "on-request",
                 "sandbox_policy": {"type": "workspace-write"},
-                "model": "gpt-5.6-sol",
+                "model": "gpt-6-sol",
                 "effort": "high",
                 "summary": "auto"
             }
@@ -355,7 +355,7 @@ fn loads_the_latest_supported_model_from_codex_turn_context() {
                 "cwd": home.path(),
                 "approval_policy": "on-request",
                 "sandbox_policy": {"type": "workspace-write"},
-                "model": "gpt-5.6-luna",
+                "model": "gpt-6-luna",
                 "effort": "high",
                 "summary": "auto"
             }
@@ -371,7 +371,46 @@ fn loads_the_latest_supported_model_from_codex_turn_context() {
     let snapshot = serde_json::to_value(session.snapshot()).expect("encode snapshot");
 
     assert_eq!(session.model(), Model::Luna);
-    assert_eq!(snapshot["model"], "gpt-5.6-luna");
+    assert_eq!(snapshot["model"], "gpt-6-luna");
+}
+
+#[test]
+fn rejects_rollout_continuation_for_obsolete_model_ids() {
+    let home = tempdir().expect("temporary Codex home");
+    let thread_id = "019c0d31-c308-7d91-bff4-5dca82d15ac7";
+    let directory = home.path().join("sessions/2026/07/24");
+    std::fs::create_dir_all(&directory).expect("create rollout directory");
+    let path = directory.join(format!("rollout-2026-07-24T12-00-00-{thread_id}.jsonl"));
+    let mut file = File::create(&path).expect("create Codex rollout");
+    write_line(
+        &mut file,
+        &serde_json::json!({
+            "timestamp": "2026-07-24T12:00:00Z",
+            "type": "session_meta",
+            "payload": {"id": thread_id, "cwd": home.path()}
+        }),
+    )
+    .expect("write session metadata");
+    write_line(
+        &mut file,
+        &serde_json::json!({
+            "timestamp": "2026-07-24T12:00:01Z",
+            "type": "turn_context",
+            "payload": {"model": "gpt-5.6-luna"}
+        }),
+    )
+    .expect("write obsolete model");
+    file.flush().expect("flush rollout");
+
+    let error = RolloutConfig::new(home.path())
+        .load_session(thread_id)
+        .expect_err("obsolete model continuation must be rejected");
+    assert_eq!(error.kind(), std::io::ErrorKind::InvalidData);
+    assert!(
+        error
+            .to_string()
+            .contains("continuation requires its original model")
+    );
 }
 
 #[test]
@@ -499,7 +538,7 @@ async fn writes_codex_rollout_envelope_and_committed_items() {
     assert_eq!(lines[2]["payload"]["message"], "remember amber");
     assert_eq!(lines[3]["type"], "turn_context");
     assert_eq!(lines[3]["payload"]["cwd"], "/worktree");
-    assert_eq!(lines[3]["payload"]["model"], "gpt-5.6-sol");
+    assert_eq!(lines[3]["payload"]["model"], "gpt-6-sol");
     assert_eq!(lines[3]["payload"]["effort"], "high");
     assert_eq!(lines[4]["type"], "response_item");
     assert_eq!(lines[4]["payload"]["type"], "message");

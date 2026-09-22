@@ -536,7 +536,10 @@ impl Serialize for ResponsesInput<'_> {
     {
         let mut sequence = serializer.serialize_seq(Some(self.len()))?;
         for item in self.iter() {
-            sequence.serialize_element(&RequestResponseItem { item })?;
+            sequence.serialize_element(&RequestResponseItem {
+                item,
+                strip_image_detail: false,
+            })?;
         }
         sequence.end()
     }
@@ -545,6 +548,7 @@ impl Serialize for ResponsesInput<'_> {
 #[derive(Clone, Copy)]
 struct RequestInput<'a> {
     input: ResponsesInput<'a>,
+    strip_image_detail: bool,
 }
 
 impl Serialize for RequestInput<'_> {
@@ -554,7 +558,10 @@ impl Serialize for RequestInput<'_> {
     {
         let mut sequence = serializer.serialize_seq(Some(self.input.len()))?;
         for item in self.input.iter() {
-            sequence.serialize_element(&RequestResponseItem { item })?;
+            sequence.serialize_element(&RequestResponseItem {
+                item,
+                strip_image_detail: self.strip_image_detail,
+            })?;
         }
         sequence.end()
     }
@@ -562,6 +569,7 @@ impl Serialize for RequestInput<'_> {
 
 struct RequestResponseItem<'a> {
     item: &'a ResponseItem,
+    strip_image_detail: bool,
 }
 
 impl Serialize for RequestResponseItem<'_> {
@@ -569,9 +577,14 @@ impl Serialize for RequestResponseItem<'_> {
     where
         S: serde::Serializer,
     {
-        if self.item.id().is_some_and(|id| !id.is_prefixed()) {
+        if self.strip_image_detail || self.item.id().is_some_and(|id| !id.is_prefixed()) {
             let mut item = self.item.clone();
-            item.set_id(None);
+            if item.id().is_some_and(|id| !id.is_prefixed()) {
+                item.set_id(None);
+            }
+            if self.strip_image_detail {
+                item.strip_image_details();
+            }
             item.serialize(serializer)
         } else {
             self.item.serialize(serializer)
@@ -677,9 +690,15 @@ impl<'a> ResponseCreate<'a> {
             kind: websocket.then_some("response.create"),
             model,
             previous_response_id,
-            input: RequestInput { input },
+            input: RequestInput {
+                input,
+                strip_image_detail: matches!(
+                    policy.model,
+                    crate::Model::Sol | crate::Model::Luna | crate::Model::Astra
+                ),
+            },
             tool_choice: "auto",
-            // gpt-5.6-sol uses Responses Lite. Codex disables the provider
+            // GPT-6 uses Responses Lite. Codex disables the provider
             // parallel-call request bit for Lite even though the client-side
             // scheduler still accepts multi-call responses and replays.
             parallel_tool_calls: false,
@@ -707,13 +726,14 @@ impl<'a> ResponseCreate<'a> {
             text: TextControls { verbosity: "low" },
             // The API accepts both `fast` and `priority`. Codex currently uses
             // `priority` as the compatibility request value for Fast mode.
-            // Astra standard mode is explicit so a project-level Fast default
+            // GPT-6 standard mode is explicit so a project-level Fast default
             // cannot silently change processing or the local cost estimate.
             service_tier: match (policy.model, policy.fast_mode) {
                 (crate::Model::Glm53 | crate::Model::Kimi | crate::Model::Mimo, _) => None,
                 (_, true) => Some("priority"),
-                (crate::Model::Astra, false) => Some("default"),
-                (_, false) => None,
+                (crate::Model::Sol | crate::Model::Luna | crate::Model::Astra, false) => {
+                    Some("default")
+                }
             },
             generate,
             client_metadata: ClientMetadata {
@@ -911,7 +931,7 @@ fn tool_namespaces_info(profile: &RequestProfile) -> BTreeMap<String, serde_json
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ContentItem, MessageRole, Model, ReasoningMode, Thinking};
+    use crate::{ContentItem, ImageDetail, MessageRole, Model, ReasoningMode, Thinking};
     use serde_json::json;
 
     #[test]
@@ -1103,11 +1123,61 @@ mod tests {
     }
 
     #[test]
+    fn responses_lite_strips_image_detail_without_mutating_history() {
+        let image = ContentItem::input_image_with_detail(
+            "data:image/png;base64,YQ==",
+            ImageDetail::Original,
+        );
+        let history = ResponseHistory::new(vec![ResponseItem::message(MessageRole::User, [image])]);
+        let config = ModelConfig::default();
+        let profile = RequestProfile::new("image-agent", "image-lineage", Arc::from([]));
+
+        for model in [Model::Sol, Model::Luna, Model::Astra] {
+            let request = serde_json::to_value(ResponseCreate::generation_with_policy(
+                &config,
+                CreatePolicy::new(
+                    config.responses_transport,
+                    model,
+                    model.default_thinking(),
+                    false,
+                ),
+                ResponsesInput::history(&[], &history, None),
+                None,
+                &profile,
+                None,
+            ))
+            .expect("request should serialize");
+            assert!(request["input"][0]["content"][0].get("detail").is_none());
+        }
+
+        let provider_request = serde_json::to_value(ResponseCreate::generation_with_policy(
+            &config,
+            CreatePolicy::new(
+                config.responses_transport,
+                Model::Glm53,
+                Thinking::Medium,
+                false,
+            ),
+            ResponsesInput::history(&[], &history, None),
+            None,
+            &profile,
+            None,
+        ))
+        .expect("request should serialize");
+        assert_eq!(
+            provider_request["input"][0]["content"][0]["detail"],
+            "original"
+        );
+
+        let retained = serde_json::to_value(history.iter().next().unwrap()).unwrap();
+        assert_eq!(retained["content"][0]["detail"], "original");
+    }
+
+    #[test]
     fn supported_models_serialize_as_selected() {
         for (model, expected) in [
-            (Model::Sol, "gpt-5.6-sol"),
-            (Model::Terra, "gpt-5.6-terra"),
-            (Model::Luna, "gpt-5.6-luna"),
+            (Model::Sol, "gpt-6-sol"),
+            (Model::Luna, "gpt-6-luna"),
             (Model::Astra, "gpt-6-astra"),
             (Model::Glm53, "@cf/zai-org/glm-5.3"),
         ] {
@@ -1136,7 +1206,7 @@ mod tests {
         let profile = RequestProfile::new("gateway-agent", "gateway-lineage", Arc::from([]));
         let request = serde_json::to_value(ResponseCreate::warmup(
             &config,
-            Model::Terra,
+            Model::Sol,
             Thinking::Medium,
             false,
             &profile,
@@ -1144,7 +1214,7 @@ mod tests {
         ))
         .expect("request should serialize");
 
-        assert_eq!(request["model"], json!("openai/gpt-5.6-terra"));
+        assert_eq!(request["model"], json!("openai/gpt-6-sol"));
     }
 
     #[test]
@@ -1164,14 +1234,14 @@ mod tests {
             );
         let request = serde_json::to_value(ResponseCreate::warmup(
             &config,
-            Model::Terra,
+            Model::Sol,
             Thinking::Max,
             true,
             &profile,
             None,
         ))
         .unwrap();
-        assert_eq!(request["model"], "original/gpt-5.6-terra");
+        assert_eq!(request["model"], "original/gpt-6-sol");
         assert_eq!(request["reasoning"]["mode"], "pro");
         assert_eq!(request["reasoning"]["effort"], "max");
         assert_eq!(request["service_tier"], "priority");
@@ -1274,7 +1344,7 @@ mod tests {
             None,
         ))
         .expect("fast request should serialize");
-        assert!(standard.get("service_tier").is_none());
+        assert_eq!(standard["service_tier"], json!("default"));
         assert_eq!(fast["service_tier"], json!("priority"));
 
         let astra_standard = serde_json::to_value(ResponseCreate::warmup(

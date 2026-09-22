@@ -394,7 +394,25 @@ test("managed Agent retries creation with one stable identity", async () => {
   assert.match(keys[0], /^managed-create:[0-9a-f-]{36}$/);
 });
 
-test("managed Agent rejects incomplete and unsupported Astra creation policy", async () => {
+test("managed Agent preserves Sol and Luna none/pro policy", async () => {
+  for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
+    let body;
+    await Agent.create({
+      baseUrl: origin,
+      idempotencyKey: `create:${model}`,
+      settings: { model, thinking: "none", reasoningMode: "pro", fastMode: false },
+      fetch: async (_url, init) => {
+        body = JSON.parse(init.body);
+        return Response.json({ agent_id: agentId });
+      },
+    });
+    assert.deepEqual(body.settings, {
+      model, thinking: "none", reasoning_mode: "pro", fast_mode: false,
+    });
+  }
+});
+
+test("managed Agent rejects incomplete, retired, and Astra-incompatible creation policy", async () => {
   const options = { baseUrl: origin, fetch: async () => Response.json({ agent_id: agentId }) };
   await assert.rejects(Agent.create({
     ...options,
@@ -408,7 +426,7 @@ test("managed Agent rejects incomplete and unsupported Astra creation policy", a
       reasoningMode: "standard",
       fastMode: false,
     },
-  }), /GPT-6 Astra requires low/);
+  }), /GPT-6 Astra requires/);
   await assert.rejects(Agent.create({
     ...options,
     settings: {
@@ -418,6 +436,12 @@ test("managed Agent rejects incomplete and unsupported Astra creation policy", a
       fastMode: false,
     },
   }), /does not support pro/);
+  for (const model of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+    await assert.rejects(Agent.create({
+      ...options,
+      settings: { model, thinking: "medium", reasoningMode: "standard", fastMode: false },
+    }), /creation settings are invalid/);
+  }
 });
 
 test("managed Agent reads and updates model, thinking, and Fast settings", async () => {

@@ -693,9 +693,8 @@ struct ModelMenu: View {
         Menu {
             Picker("Model", selection: Binding(get: { model.settingsForTab(paneID ?? model.activeTabID).model }, set: { let value = $0; model.changeSettings(tabID: paneID) { $0.selectModel(value) } })) {
                 Text("GPT-6 Astra").tag("gpt-6-astra")
-                Text("GPT-5.6 Sol").tag("gpt-5.6-sol")
-                Text("GPT-5.6 Terra").tag("gpt-5.6-terra")
-                Text("GPT-5.6 Luna").tag("gpt-5.6-luna")
+                Text("GPT-6 Sol").tag("gpt-6-sol")
+                Text("GPT-6 Luna").tag("gpt-6-luna")
             }.disabled(model.snapshot(paneID)?.hasAcceptedTurn == true)
             Picker("Reasoning", selection: Binding(get: { model.settingsForTab(paneID ?? model.activeTabID).thinking }, set: { let value = $0; model.changeSettings(tabID: paneID) { $0.thinking = value } })) {
                 Text("None").tag("none").disabled(!model.settingsForTab(paneID ?? model.activeTabID).supportsNoReasoning)

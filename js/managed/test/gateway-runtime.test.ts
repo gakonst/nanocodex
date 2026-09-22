@@ -73,7 +73,7 @@ describe("Cloudflare frontier runtime", () => {
     if (runtime.provider !== "cloudflare" || !runtime.ai) throw Error("wrong transport");
     const ai = runtime.ai;
     await ai.run("openai/gpt-6-astra", { input: "fixture" });
-    expect(() => ai.run("openai/gpt-5.6-luna", {})).toThrow("pinned model");
+    expect(() => ai.run("openai/gpt-6-luna", {})).toThrow("pinned model");
     check.mockImplementation(() => { throw Error("revoked"); });
     expect(() => ai.run("openai/gpt-6-astra", {})).toThrow("revoked");
     expect(AI.run).toHaveBeenCalledTimes(1);
@@ -102,7 +102,7 @@ describe("Cloudflare frontier runtime", () => {
 describe("deployment-owned Cloudflare REST configuration", () => {
   const rest = { NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true", CLOUDFLARE_AI_API_TOKEN: "private-fixture-token",
     NANOCODEX_CLOUDFLARE_ACCOUNT_ID: "a".repeat(32) };
-  const pin = {backend:"cloudflare",model:"gpt-5.6-sol",provider_model:"openai/gpt-5.6-sol",thinking:"low"} as ThreadRoute;
+  const pin = {backend:"cloudflare",model:"gpt-6-sol",provider_model:"openai/gpt-6-sol",thinking:"low"} as ThreadRoute;
   it("keeps partial or invalid REST configuration unavailable even with a healthy binding", () => {
     const AI={run:vi.fn()};
     for(const extra of [{CLOUDFLARE_AI_API_TOKEN:undefined},{NANOCODEX_CLOUDFLARE_ACCOUNT_ID:undefined},

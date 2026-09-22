@@ -103,7 +103,7 @@ describe("combined managed agent creation", () => {
     const { runtime, requests } = fixtureEnvironment();
     const body = {
       settings: {
-        model: "gpt-5.6-luna",
+        model: "gpt-6-luna",
         thinking: "low",
         reasoning_mode: "standard",
         fast_mode: false,

@@ -1,16 +1,14 @@
 const MANAGED_AGENT_SETTINGS_TABLE = `
   CREATE TABLE IF NOT EXISTS managed_agent_settings (
     singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-    model TEXT NOT NULL CHECK (
-      model IN ('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra', '@cf/zai-org/glm-5.3', 'kimi-k3', 'mimo-v2.6-pro')
-    ),
+    model TEXT NOT NULL,
     thinking TEXT NOT NULL CHECK (thinking IN ('none', 'low', 'medium', 'high', 'xhigh', 'max')),
     reasoning_mode TEXT NOT NULL CHECK (reasoning_mode IN ('standard', 'pro')),
     fast_mode INTEGER NOT NULL CHECK (fast_mode IN (0, 1))
   );
   INSERT OR IGNORE INTO managed_agent_settings
     (singleton, model, thinking, reasoning_mode, fast_mode)
-  VALUES (1, 'gpt-5.6-sol', 'high', 'standard', 0);
+  VALUES (1, 'gpt-6-sol', 'medium', 'standard', 0);
 `;
 
 type AgentSettingsSchemaStorage = Pick<DurableObjectStorage, "sql" | "transactionSync">;
@@ -23,15 +21,14 @@ export function initializeManagedAgentSettingsSchema(
     `SELECT sql FROM sqlite_master
      WHERE type = 'table' AND name = 'managed_agent_settings'`,
   ).one().sql;
-  if (installed.includes("'kimi-k3'") && installed.includes("'mimo-v2.6-pro'")) return;
+  if (installed.includes("model TEXT NOT NULL")
+    && !installed.includes("model TEXT NOT NULL CHECK")) return;
 
   storage.transactionSync(() => {
     storage.sql.exec(`
       CREATE TABLE managed_agent_settings_next (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-        model TEXT NOT NULL CHECK (
-          model IN ('gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna', 'gpt-6-astra', '@cf/zai-org/glm-5.3', 'kimi-k3', 'mimo-v2.6-pro')
-        ),
+        model TEXT NOT NULL,
         thinking TEXT NOT NULL CHECK (thinking IN ('none', 'low', 'medium', 'high', 'xhigh', 'max')),
         reasoning_mode TEXT NOT NULL CHECK (reasoning_mode IN ('standard', 'pro')),
         fast_mode INTEGER NOT NULL CHECK (fast_mode IN (0, 1))

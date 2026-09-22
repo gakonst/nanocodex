@@ -43,7 +43,7 @@ test("Cloudflare EGRESS sends one fixed placeholder through the private binding"
         return {
           status: 101,
           headers: new Headers({
-            "openai-model": "gpt-5.6-luna",
+            "openai-model": "gpt-6-luna",
             "x-codex-turn-state": "next-state",
             "x-reasoning-included": "true",
             "x-request-id": "request-1",
@@ -87,7 +87,7 @@ test("Cloudflare EGRESS sends one fixed placeholder through the private binding"
       socket,
       status: 101,
       requestId: "request-1",
-      serverModel: "gpt-5.6-luna",
+      serverModel: "gpt-6-luna",
       reasoningIncluded: true,
       turnState: "next-state",
     });

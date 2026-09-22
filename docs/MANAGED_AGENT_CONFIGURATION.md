@@ -11,7 +11,7 @@ import { Agent } from "nanocodex/managed";
 
 const client = { baseUrl: "https://managed.example", apiKey: process.env.NANOCODEX_API_KEY };
 await Agent.definitions.put("reviewer-v1", {
-  settings: { model: "gpt-5.6-luna", thinking: "low", reasoning_mode: "standard", fast_mode: false },
+  settings: { model: "gpt-6-luna", thinking: "low", reasoning_mode: "standard", fast_mode: false },
   instructions: "Review the supplied code. Return concrete findings.",
   prompt_cache: "explicit",
 }, client);
@@ -53,7 +53,7 @@ for a session and can be stored in a named agent definition.
 ```js
 const single = await Agent.create({
   ...client,
-  settings: { model: "gpt-5.6-luna", thinking: "low", reasoningMode: "standard", fastMode: false },
+  settings: { model: "gpt-6-luna", thinking: "low", reasoningMode: "standard", fastMode: false },
   configuration: {
     instructions: "Use only the supplied data and return JSON.",
     tools: [],
@@ -86,7 +86,7 @@ creating or prompting twice.
 const { agent, turn } = await Agent.createAndPrompt({
   ...client,
   idempotencyKey: `run:${job.id}`,
-  settings: { model: "gpt-5.6-luna", thinking: "low", reasoningMode: "standard", fastMode: false },
+  settings: { model: "gpt-6-luna", thinking: "low", reasoningMode: "standard", fastMode: false },
   configuration: { tools: [], multi_agent: { enabled: false } },
   input: job.prompt,
 });
@@ -115,7 +115,7 @@ idempotency key.
 const session = await Agent.create({
   ...client,
   idempotencyKey: `create:${job.id}`,
-  settings: { model: "gpt-5.6-luna", thinking: "low", reasoningMode: "standard", fastMode: false },
+  settings: { model: "gpt-6-luna", thinking: "low", reasoningMode: "standard", fastMode: false },
   configuration: { tools: [], multi_agent: { enabled: false } },
 });
 const turn = session.turn.prompt({

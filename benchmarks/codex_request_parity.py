@@ -354,7 +354,7 @@ class WebSocketConnection:
                 "Connection: Upgrade\r\n"
                 f"Sec-WebSocket-Accept: {accept}\r\n"
                 "x-reasoning-included: true\r\n"
-                "openai-model: gpt-5.6-sol\r\n"
+                "openai-model: gpt-6-sol\r\n"
                 "\r\n"
             ).encode()
         )
@@ -806,7 +806,7 @@ def stock_command(
         "-c",
         'model_provider="parity"',
         "-c",
-        'model="gpt-5.6-sol"',
+        'model="gpt-6-sol"',
         "-c",
         'model_reasoning_effort="medium"',
         "-c",

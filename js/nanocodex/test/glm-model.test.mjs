@@ -22,6 +22,6 @@ test("managed GLM rejects incompatible effort and reasoning before network", asy
     await assert.rejects(Agent.create({ baseUrl: "https://managed.example", idempotencyKey: "glm:invalid",
       settings: { model, fastMode: false, ...settings },
       fetch: async () => { assert.fail("invalid GLM policy reached network"); },
-    }), /GLM-5.3 requires/);
+    }), /creation settings are invalid|GLM-5.3 requires/);
   }
 });

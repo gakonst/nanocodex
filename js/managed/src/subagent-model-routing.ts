@@ -20,7 +20,7 @@ const bindingSchema = z.object({
 }).strict();
 const aliases = new Map([
   ["kimi", "kimi-k3"], ["mimo", "mimo-v2.6-pro"],
-  ["sol", "gpt-5.6-sol"], ["terra", "gpt-5.6-terra"], ["luna", "gpt-5.6-luna"],
+  ["sol", "gpt-6-sol"], ["luna", "gpt-6-luna"],
   ["astra", "gpt-6-astra"], ["glm-5.3", "@cf/zai-org/glm-5.3"],
 ]);
 export type RetainedChildRoute = {

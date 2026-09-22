@@ -137,7 +137,7 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
       mcp: browserMcpConfiguration(location.origin, threadId, accountMcpConnections),
       durability: false,
       ...(source === "sponsored" ? {
-        model: "gpt-5.6-luna" as const,
+        model: "gpt-6-luna" as const,
         thinking: "none" as const,
         reasoningMode: "standard" as const,
         fastMode: false,
@@ -380,7 +380,7 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
 
 function terminalDefaultSettings(source: CredentialSource | undefined): ManagedCreateSettings {
   if (source === "sponsored") {
-    return { model: "gpt-5.6-luna", thinking: "none", reasoningMode: "standard", fastMode: false };
+    return { model: "gpt-6-luna", thinking: "none", reasoningMode: "standard", fastMode: false };
   }
   return {
     model: "gpt-6-astra",

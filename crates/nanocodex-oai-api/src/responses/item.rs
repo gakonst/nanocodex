@@ -5,6 +5,8 @@ use std::{fmt, ops::Deref};
 use serde::{Deserialize, Serialize};
 use smallvec::SmallVec;
 
+#[cfg(feature = "client")]
+use super::FunctionOutputContent;
 use super::{
     AgentMessageContent, ContentItem, FunctionOutputBody, InternalMessageMetadata, ItemStatus,
     JsonValue, LocalShellAction, LocalShellStatus, MessagePhase, MessageRole, ReasoningContent,
@@ -293,6 +295,29 @@ const fn is_false(value: &bool) -> bool {
 }
 
 impl ResponseItem {
+    #[cfg(feature = "client")]
+    pub(crate) fn strip_image_details(&mut self) {
+        match self {
+            Self::Message { content, .. } => {
+                for item in content {
+                    if let ContentItem::InputImage { detail, .. } = item {
+                        *detail = None;
+                    }
+                }
+            }
+            Self::FunctionCallOutput { output, .. } | Self::CustomToolCallOutput { output, .. } => {
+                if let FunctionOutputBody::Content(content) = output {
+                    for item in content {
+                        if let FunctionOutputContent::InputImage { detail, .. } = item {
+                            *detail = None;
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
     /// Creates the stable developer item that declares session tools.
     #[must_use]
     pub const fn additional_tools(tools: Vec<ToolDefinition>) -> Self {

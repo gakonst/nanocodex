@@ -320,7 +320,7 @@ impl GdpvalCase {
             rubric_items: &self.rubric_items,
             scoring: ScoringContract {
                 reproduction: "nanocodex-public-gdpval-pairwise-v1",
-                grader_model: "gpt-5.6-sol",
+                grader_model: "gpt-6-sol",
                 grader_reasoning_effort: "low",
                 presentation_orders: 2,
             },

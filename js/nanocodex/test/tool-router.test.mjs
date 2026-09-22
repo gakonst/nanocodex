@@ -473,14 +473,14 @@ test("createCodeRuntime adopts a branded createTools router and carries the pinn
   } } });
   const runtime = createCodeRuntime(tools);
   assert.equal(
-    JSON.parse(await runtime.executeTool("echo", '{"value":"adopted"}', "session:1", "call:1", "gpt-5.6-luna")).output,
-    "adopted:gpt-5.6-luna",
+    JSON.parse(await runtime.executeTool("echo", '{"value":"adopted"}', "session:1", "call:1", "gpt-6-luna")).output,
+    "adopted:gpt-6-luna",
   );
   await runtime.reset();
   assert.equal(disposals, 0);
   assert.equal(
-    JSON.parse(await runtime.executeTool("echo", '{"value":"still-owned"}', "session:1", "call:2", "gpt-5.6-luna")).output,
-    "still-owned:gpt-5.6-luna",
+    JSON.parse(await runtime.executeTool("echo", '{"value":"still-owned"}', "session:1", "call:2", "gpt-6-luna")).output,
+    "still-owned:gpt-6-luna",
   );
   await tools.close();
   assert.equal(disposals, 1);

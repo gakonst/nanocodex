@@ -1696,7 +1696,7 @@ function createFixture(options = {}) {
       completions.delete(sessionId);
       const snapshot = Object.freeze({
         version: 1,
-        model: "gpt-5.6-sol",
+        model: "gpt-6-sol",
         lineage_id: sessionId,
         prompt_cache_key: sessionId,
         workspace: `/workspace/${sessionId}`,

@@ -10,7 +10,7 @@ export type GatewayRequestObserver = Readonly<{
   finish(outcome: GatewayRequestOutcome): void | boolean | Promise<void | boolean>;
 }>;
 type GatewayResponsesCommonOptions = Readonly<{
-  reasoningEffort: "low" | "medium" | "high";
+  reasoningEffort: "none" | "low" | "medium" | "high" | "xhigh" | "max";
   /** Called once immediately before each outbound attempt. Failures cannot break generation. */
   onRequest?: () => GatewayRequestObserver;
 }>;

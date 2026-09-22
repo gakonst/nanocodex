@@ -17,6 +17,67 @@ function admissionBinding(bind: () => Response | Promise<Response>) {
 }
 
 describe("managed durable turn admission", () => {
+  it("preserves an accepted legacy model across cold restart and rejects before host startup", async () => {
+    const sessions = (env as unknown as {
+      NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
+    }).NANOCODEX_SESSIONS;
+    await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
+      let hostRequests = 0;
+      const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
+      Object.defineProperty(session, "env", { value: {
+        ...runtimeEnv,
+        NANOCODEX: { fetch: async () => {
+          hostRequests++;
+          throw new Error("legacy continuation reached the host binding");
+        } },
+      } });
+      const now = Date.now();
+      state.storage.sql.exec(
+        `INSERT INTO session_state (
+           singleton, session_id, owner_id, organization_id, team_id,
+           authorization_epoch, public_origin, runtime_profile, last_active
+         ) VALUES (1, ?, 'fixture-owner', 'fixture-organization', 'fixture-team',
+                   1, 'https://nanocodex.example/', 'managed', ?)`,
+        crypto.randomUUID(),
+        now,
+      );
+      state.storage.sql.exec(
+        "INSERT INTO managed_configuration VALUES (1, ?)",
+        JSON.stringify({
+          tools: [],
+          environment: { files: [], skills: [], setup_commands: [], network: { access: "disabled" } },
+        }),
+      );
+      state.storage.sql.exec(
+        "UPDATE managed_agent_settings SET model = 'gpt-5.6-luna', thinking = 'none'",
+      );
+      state.storage.sql.exec(
+        `INSERT INTO managed_turns (
+           id, request_hash, input_json, authorization_json, state,
+           accepted_cursor, dispatch_input_chunks, may_have_inner_operation,
+           attempt_count, created_at, accepted_at, updated_at
+         ) VALUES ('legacy-resume', 'hash', '"continue"', '{"capabilities":[]}',
+                   'accepted', 0, 1, 0, 0, ?, ?, ?)`,
+        now,
+        now,
+        now,
+      );
+      state.storage.sql.exec(
+        "INSERT INTO managed_turn_dispatch_chunks VALUES ('legacy-resume', 0, '\"continue\"')",
+      );
+
+      await session.alarm();
+
+      expect(state.storage.sql.exec<{ model: string; thinking: string }>(
+        "SELECT model, thinking FROM managed_agent_settings WHERE singleton = 1",
+      ).one()).toEqual({ model: "gpt-5.6-luna", thinking: "none" });
+      await expect.poll(() => state.storage.sql.exec<{ state: string; error: string | null }>(
+        "SELECT state, error FROM managed_turns WHERE id = 'legacy-resume'",
+      ).one()).toMatchObject({ state: "failed", error: expect.stringContaining("no longer supported") });
+      expect(hostRequests).toBe(0);
+    });
+  });
+
   it("continues cold admission while optional hand discovery is stalled or fails", async () => {
     const sessions = (env as unknown as {
       NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
@@ -546,7 +607,7 @@ it("keeps a real managed automatic compaction owned across three recovery alarms
     state.storage.sql.exec(`INSERT INTO session_state (singleton, session_id, owner_id, organization_id, team_id, authorization_epoch, public_origin, runtime_profile, last_active)
       VALUES (1, ?, 'fixture-owner', 'fixture-org', 'fixture-team', 1, 'https://nanocodex.example/', 'managed', ?)`, crypto.randomUUID(), now);
     state.storage.sql.exec("INSERT INTO managed_configuration VALUES (1, ?)", JSON.stringify({ tools: [], environment: { files: [], skills: [], setup_commands: [], network: { access: "disabled" } } }));
-    state.storage.sql.exec("UPDATE managed_agent_settings SET model = 'gpt-5.6-sol', thinking = 'low'");
+    state.storage.sql.exec("UPDATE managed_agent_settings SET model = 'gpt-6-sol', thinking = 'low'");
     const seed = (id: string) => {
       state.storage.sql.exec(`INSERT INTO managed_turns (id, request_hash, input_json, authorization_json, state, accepted_cursor, dispatch_input_chunks, may_have_inner_operation, attempt_count, created_at, accepted_at, updated_at)
         VALUES (?, 'hash', '"fixture"', '{"capabilities":[]}', 'accepted', 0, 1, 0, 0, ?, ?, ?)`, id, now, now, now);

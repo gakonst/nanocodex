@@ -34,7 +34,7 @@ export type JsonSchema = boolean | Readonly<Record<string, unknown>>;
 export type SpawnOptions = Readonly<{
   role: string;
   task: string;
-  model?: "sol" | "terra" | "luna" | "astra" | "glm-5.3" | "kimi" | "mimo" | undefined;
+  model?: "sol" | "luna" | "astra" | "glm-5.3" | "kimi" | "mimo" | undefined;
   thinking?: Thinking | undefined;
   outputSchema: JsonSchema;
 }>;

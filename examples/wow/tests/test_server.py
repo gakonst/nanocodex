@@ -39,7 +39,7 @@ class BackendTests(unittest.TestCase):
         result = b.handle('POST', '/api/send', {}, {'text': 'Help', 'mode': 'build', 'context': {'edition': 'Classic'}, 'idempotency_key': 'stable-1'})
         method, path, body, key = b.calls[0]
         self.assertEqual((method, path, key), ('POST', '/v1/agent-runs', 'stable-1'))
-        self.assertEqual(body['settings'], {'model': 'gpt-5.6-luna', 'thinking': 'low', 'reasoning_mode': 'standard', 'fast_mode': False})
+        self.assertEqual(body['settings'], {'model': 'gpt-6-luna', 'thinking': 'low', 'reasoning_mode': 'standard', 'fast_mode': False})
         self.assertIn('untrusted game data', body['input'])
         self.assertIn('browse current primary sources', body['input'])
         self.assertEqual(result['thread_id'], 'agent-1')
@@ -57,7 +57,7 @@ class BackendTests(unittest.TestCase):
         b.handle('POST', '/api/send', {}, {'text': 'Help', 'mode': 'hint'})
         script = ('import {parseAgentRunBody} from ' + json.dumps(str(validator)) + ';'
                   'const body = await Bun.stdin.text(); parseAgentRunBody(body);'
-                  'let rejected=false; try {parseAgentRunBody(JSON.stringify({settings:{model:"gpt-5.6-luna"},input:"test"}));} catch {rejected=true;}'
+                  'let rejected=false; try {parseAgentRunBody(JSON.stringify({settings:{model:"gpt-6-luna"},input:"test"}));} catch {rejected=true;}'
                   'if(!rejected) throw new Error("incomplete settings unexpectedly accepted");')
         result = subprocess.run([bun, '-e', script], input=json.dumps(b.calls[0][2]), text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -81,7 +81,7 @@ class BackendTests(unittest.TestCase):
         b.handle('POST', '/api/send', {}, {'text': 'Give a hint', 'mode': 'hint', 'project_id': 'root'})
         self.assertEqual(len(b.calls), 1)
         self.assertEqual(b.calls[0][1], '/v1/agent-runs')
-        self.assertEqual(b.calls[0][2]['settings'], {'model': 'gpt-5.6-luna', 'thinking': 'low', 'reasoning_mode': 'standard', 'fast_mode': False})
+        self.assertEqual(b.calls[0][2]['settings'], {'model': 'gpt-6-luna', 'thinking': 'low', 'reasoning_mode': 'standard', 'fast_mode': False})
 
     def test_projection_uses_real_membership_unknown_status(self):
         b = FakeBackend()

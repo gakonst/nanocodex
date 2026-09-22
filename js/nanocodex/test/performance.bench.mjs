@@ -225,7 +225,7 @@ test("Worker completion keeps a large retained snapshot out of the eager crossov
   const retainedText = "x".repeat(8 * 1024 * 1024);
   const encodedSnapshot = JSON.stringify({
     version: 1,
-    model: "gpt-5.6-sol",
+    model: "gpt-6-sol",
     lineage_id: "large-worker-result",
     prompt_cache_key: "large-worker-result",
     workspace: "/workspace",

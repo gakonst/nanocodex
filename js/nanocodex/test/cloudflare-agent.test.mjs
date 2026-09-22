@@ -351,7 +351,7 @@ test("Cloudflare ephemeral Agent owns transport without durable state", async ()
   const owner = durableOwner(storage, egressBinding(subjects));
   const agent = await createEphemeral(module, owner, {
     instructions: "Use the caller's search tool.",
-    model: "gpt-5.6-sol",
+    model: "gpt-6-sol",
     tools: [{
       name: "search",
       description: "Search account history",
@@ -1150,11 +1150,11 @@ for (const provider of ["openrouter", "vercel"]) {
   test(`Cloudflare Agent pins ${provider} transport and effort over two tool turns`, {timeout:30_000}, async () => {
     const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
     let calls=0, tools=0;
-    const gateway = {provider,model:"gpt-5.6-sol",reasoningEffort:"low",apiKey:"synthetic-fixture-key",
+    const gateway = {provider,model:"gpt-6-sol",reasoningEffort:"low",apiKey:"synthetic-fixture-key",
       async fetch(url,init) {
         assert.equal(url,provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://ai-gateway.vercel.sh/v1/chat/completions");
         const body=JSON.parse(init.body); calls++;
-        assert.equal(body.model,"openai/gpt-5.6-sol");
+        assert.equal(body.model,"openai/gpt-6-sol");
         assert.equal(provider === "openrouter" ? body.reasoning.effort : body.reasoning_effort,"low");
         if(calls===1 || calls===3){
           const tool=body.tools.find(t=>t.function.description.startsWith("runtimeInfo\n")); assert.ok(tool);
@@ -1202,11 +1202,11 @@ test("routed children use their own provider and reuse the pin on continuation",
         arguments: JSON.stringify({ output: JSON.stringify({ ok: childTurn }) }) },
     }] } }] };
   } };
-  const gateway = { provider: "openrouter", model: "gpt-5.6-sol", reasoningEffort: "low", apiKey: "synthetic-test-key",
+  const gateway = { provider: "openrouter", model: "gpt-6-sol", reasoningEffort: "low", apiKey: "synthetic-test-key",
     async fetch(_url, init) {
       rootCalls++;
       const body = JSON.parse(init.body);
-      assert.equal(body.model, "openai/gpt-5.6-sol");
+      assert.equal(body.model, "openai/gpt-6-sol");
       assert.equal(body.reasoning.effort, "low");
       return gatewayFixtureResponse(body, { choices: [{ finish_reason: "stop", message: { content: "ROOT_PIN_OK" } }] });
     },
@@ -1301,7 +1301,7 @@ test("live child continuation preserves schema, history, routing, and spawning a
     }] } }] };
   } };
   const gateway = {
-    provider: "openrouter", model: "gpt-5.6-sol", reasoningEffort: "low", apiKey: "synthetic-test-key",
+    provider: "openrouter", model: "gpt-6-sol", reasoningEffort: "low", apiKey: "synthetic-test-key",
     async fetch() { throw new Error("a child must never use the parent provider"); },
   };
   const options = {

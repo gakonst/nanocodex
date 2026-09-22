@@ -32,7 +32,7 @@ function run(id, input, expected, previous, controls) {
       }
     };
     lane.addEventListener("message", onMessage); lane.addEventListener("close", onClose);
-    writer.send(JSON.stringify({ type: "response.create", model: "gpt-5.6-luna", reasoning: { effort: "low" }, max_output_tokens: 128, store: false,
+    writer.send(JSON.stringify({ type: "response.create", model: "gpt-6-luna", reasoning: { effort: "low" }, max_output_tokens: 128, store: false,
       input, ...(previous ? { previous_response_id: previous } : {}) }));
   });
   return { inProgress, result };
@@ -51,5 +51,5 @@ try {
   await run("cache", input, "42", undefined, { promptCache: "explicit" }).result;
 } finally {
   clearTimeout(deadline); pool.close();
-  console.log(JSON.stringify({ timestamp: new Date().toISOString(), model: "gpt-5.6-luna", connect_ms: connectMs, complete: records.length === 6, records }, null, 2));
+  console.log(JSON.stringify({ timestamp: new Date().toISOString(), model: "gpt-6-luna", connect_ms: connectMs, complete: records.length === 6, records }, null, 2));
 }

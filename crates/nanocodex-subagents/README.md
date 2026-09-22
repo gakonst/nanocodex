@@ -20,7 +20,7 @@ parent runtime drops the task tree, child history, messages, and results. A fres
 registry starts empty. Historical agent IDs do not identify recovered children;
 use `list_agents` to discover the current live registry before addressing agents.
 
-`spawn_agent` accepts optional `model` (`sol`, `terra`, `luna`, or `astra`) and
+`spawn_agent` accepts optional `model` (`sol`, `luna`, or `astra`) and
 `thinking` (`none` through `max`) overrides. Omitted values inherit the
 invoking agent's current settings; an override configures only the new child.
 

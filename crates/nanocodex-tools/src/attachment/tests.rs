@@ -400,7 +400,7 @@ fn call(call_id: &str, name: &str) -> Value {
         "type":"call",
         "session_id":"session-1",
         "call_id":call_id,
-        "model":"gpt-5.6-sol",
+        "model":"gpt-6-sol",
         "name":name,
         "input":if name == "echo" { json!({"value":"hello"}) } else { json!({}) },
         "output_token_budget":1000,

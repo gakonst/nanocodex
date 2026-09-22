@@ -29,7 +29,7 @@ const TURN_STATE_READ_TIMEOUT_MS = 2_000;
 const ALLOWED_OPTIONS = new Set(["apiKey", "baseUrl", "fetch", "toolsTransport", "requestOrigin"]);
 const CREATE_SETTINGS = new Set(["model", "thinking", "reasoningMode", "fastMode"]);
 const SETTINGS_PATCH = CREATE_SETTINGS;
-const MODELS = new Set(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"]);
+const MODELS = new Set(["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"]);
 const THINKING = new Set(["none", "low", "medium", "high", "xhigh", "max"]);
 const REASONING_MODES = new Set(["standard", "pro"]);
 const eventEncoder = new TextEncoder();
@@ -468,7 +468,8 @@ function managedSettings(value) {
     || !REASONING_MODES.has(value.reasoning_mode) || typeof value.fast_mode !== "boolean"
     || (["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"].includes(value.model) && (!(value.model === "kimi-k3" ? ["low", "high"] : ["low", "medium", "high"]).includes(value.thinking) || value.reasoning_mode === "pro"))
     || (value.model === "gpt-6-astra" && value.thinking === "none")
-    || (value.model === "gpt-6-astra" && value.reasoning_mode === "pro")) {
+    || (value.model === "gpt-6-astra" && value.reasoning_mode === "pro")
+  ) {
     throw new ManagedError("invalid_response", "managed agent settings are malformed");
   }
   return Object.freeze({

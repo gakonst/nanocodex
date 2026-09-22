@@ -15,6 +15,11 @@ mod unix;
 #[cfg(unix)]
 pub use unix::{Server, connect, list};
 
+#[cfg(not(unix))]
+mod unsupported;
+#[cfg(not(unix))]
+pub use unsupported::Server;
+
 pub mod history;
 
 pub const VERSION: u32 = 1;

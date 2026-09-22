@@ -8,7 +8,7 @@ export function webSearchRequest(decoded: Record<string, unknown>): Record<strin
   if (!commands || typeof commands !== "object" || Array.isArray(commands)) {
     throw new Error("commands must be an object");
   }
-  const model = decoded.model ?? "gpt-5.6-sol";
+  const model = decoded.model ?? "gpt-6-sol";
   if (typeof model !== "string" || !/^[A-Za-z0-9._:-]{1,200}$/.test(model)) {
     throw new Error("invalid model");
   }

@@ -243,7 +243,7 @@ async function coordinatorAgent(): Promise<DefaultAgent> {
   if (coordinator) return coordinator;
   coordinatorBoot ??= Agent.create({
     instructions: WORLD_INSTRUCTIONS,
-    model: "gpt-5.6-luna",
+    model: "gpt-6-luna",
     thinking: "none",
     toolMode: "direct",
     transport: Transport.hostManaged(),

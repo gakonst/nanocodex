@@ -51,8 +51,8 @@ from nanocodex import Nanocodex
 
 agent, events = Nanocodex(
     os.environ["OPENAI_API_KEY"],
-    model="gpt-5.6-luna",
-    thinking="low",
+    model="gpt-6-luna",
+    thinking="medium",
 )
 
 

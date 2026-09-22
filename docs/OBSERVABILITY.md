@@ -155,7 +155,7 @@ gate verifies event counts, exactly one trace root per accepted prompt, all
 parent references, expected success/error span volume, shared cell-actor
 parentage and complete interval overlap for the delayed `Promise.all` fan-out,
 model and terminal latency, exact token/cache fields, automatic
-the selected GPT-5.6 model's cost, structural model/tool fields, API-visible reasoning
+the selected GPT-6 model's cost, structural model/tool fields, API-visible reasoning
 summaries, prompt/readable/encrypted reasoning/tool-argument sentinels in
 ordered span events, and absence of the separately configured API key from
 exported trace data.

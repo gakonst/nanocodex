@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { WebSocketServer } from "ws";
-import { DesktopRuntime, managedOrigin, validateHand, validateSettings, compareCursor, restoredLayout } from "../src/runtime.mjs";
+import { DEFAULT_SETTINGS, DesktopRuntime, managedOrigin, validateHand, validateSettings, compareCursor, restoredLayout } from "../src/runtime.mjs";
 import { desktopPreferences } from "../src/configuration.mjs";
 
 // Synthetic desktop fixtures must never discover or install a host provider.
@@ -139,8 +139,19 @@ test("disabling during automatic workspace creation prevents attachment", { time
 test("Astra accepts its supported settings and rejects None or Pro", () => {
   const settings = { model: "gpt-6-astra", thinking: "high", reasoning_mode: "standard", fast_mode: false };
   for (const thinking of ["low", "medium", "high", "xhigh", "max"]) assert.equal(validateSettings({ ...settings, thinking }).thinking, thinking);
-  for (const thinking of ["none", "ultra"]) assert.throws(() => validateSettings({ ...settings, thinking }), /Astra supports/);
+  for (const thinking of ["none", "ultra"]) assert.throws(() => validateSettings({ ...settings, thinking }), /Low through Max/);
   assert.throws(() => validateSettings({ ...settings, reasoning_mode: "pro" }), /Standard/);
+});
+test("GPT-6 Sol and Luna retain None and Pro", () => {
+  for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
+    const settings = { model, thinking: "medium", reasoning_mode: "standard", fast_mode: false };
+    assert.equal(validateSettings(settings), settings);
+    assert.equal(validateSettings({ ...settings, thinking: "none" }).thinking, "none");
+    assert.equal(validateSettings({ ...settings, reasoning_mode: "pro" }).reasoning_mode, "pro");
+  }
+});
+test("new desktop threads default to GPT-6 Sol", () => {
+  assert.deepEqual(DEFAULT_SETTINGS, { model: "gpt-6-sol", thinking: "medium", reasoning_mode: "standard", fast_mode: false });
 });
 test("accepted turns lock model and mode while effort and Fast use a minimal patch", async t => {
   const current = { model: "gpt-6-astra", thinking: "high", reasoning_mode: "standard", fast_mode: false };
@@ -161,7 +172,7 @@ test("accepted turns lock model and mode while effort and Fast use a minimal pat
   const updated = await runtime.settings({ agentId, settings: { ...current, thinking: "max", fast_mode: true } });
   assert.equal(updated.thinking, "max");
   assert.deepEqual(patches, [{ thinking: "max", fast_mode: true }]);
-  await assert.rejects(runtime.settings({ agentId, settings: { ...current, model: "gpt-5.6-sol" } }), /new tab/);
+  await assert.rejects(runtime.settings({ agentId, settings: { ...current, model: "gpt-6-sol" } }), /new tab/);
   assert.equal(patches.length, 1);
 });
 test("Hand scope and VM resource validation preserve explicit grants", () => {
@@ -500,7 +511,7 @@ test("unsent tab model settings survive runtime persistence and corrupt settings
   let saved;
   const runtime = new DesktopRuntime({ baseUrl: await service(t), apiKey: key, persist: async value => { saved = value; } });
   t.after(() => runtime.close());
-  const draftSettings = { model: "gpt-5.6-luna", thinking: "low", reasoning_mode: "standard", fast_mode: true };
+  const draftSettings = { model: "gpt-6-luna", thinking: "low", reasoning_mode: "standard", fast_mode: true };
   const layout = { tabs: [{ id: "draft", draft: "Unsent", draftSettings }, { id: "other" }], activeTabId: "draft", tabPosition: "left", theme: "system" };
   await runtime.saveLayout(layout);
   assert.deepEqual(restoredLayout(saved.layout).tabs[0].draftSettings, draftSettings);

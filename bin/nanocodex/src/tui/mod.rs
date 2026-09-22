@@ -3675,9 +3675,7 @@ fn classify_submission(input: impl Into<SubmittedPrompt>) -> Submission {
                 return Submission::ModelPicker;
             };
             if settings.next().is_some() {
-                return Submission::InvalidCommand(
-                    "Usage: /model [sol|terra|luna|astra]".to_owned(),
-                );
+                return Submission::InvalidCommand("Usage: /model [astra|sol|luna]".to_owned());
             }
             return match argument.parse() {
                 Ok(model) => Submission::Model(model),
@@ -4381,11 +4379,11 @@ mod tests {
     #[test]
     fn model_picker_exposes_and_applies_astra_before_the_first_prompt() {
         let (commands, mut worker) = mpsc::unbounded_channel();
-        let mut app = App::new("/workspace".into());
+        let mut app = App::new("/workspace".into()).with_model(Model::Sol);
         app.open_model_picker();
 
         handle_key(
-            KeyEvent::new(KeyCode::Right, KeyModifiers::NONE),
+            KeyEvent::new(KeyCode::Left, KeyModifiers::NONE),
             &mut app,
             "main-session",
             &commands,

@@ -9,7 +9,7 @@ export type AgentPresentation = {
   updatedAt: number;
   lastUserMessageAt?: number;
 };
-export const PRESENTATION_MODEL = "gpt-5.6-luna";
+export const PRESENTATION_MODEL = "gpt-6-luna";
 const INTERVAL = 20_000;
 
 export function cleanPresentationText(value: string, limit: number): string | undefined {
