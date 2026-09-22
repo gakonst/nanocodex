@@ -249,10 +249,10 @@ it.each([
         // Route selection must reach live/reconnecting clients through durable
         // history, exactly once and before the first turn settles.
         const routeEvents = sql.exec<{ cursor: number; message_json: string }>(
-          "SELECT cursor,message_json FROM managed_events WHERE json_extract(message_json, '$.type') = 'model_route_selected'",
+          "SELECT cursor,message_json FROM managed_events WHERE turn_id = 'fixture-turn-1' AND json_extract(message_json, '$.model_route.model') IS NOT NULL",
         ).toArray();
         expect(routeEvents).toHaveLength(1);
-        expect(JSON.parse(routeEvents[0].message_json)).toMatchObject({ type: "model_route_selected",
+        expect(JSON.parse(routeEvents[0].message_json)).toMatchObject({ type: "event", event: { type: "run.started" },
           model_route: { backend: provider, model: "gpt-5.6-sol", thinking: "low" }, model_routing_automatic: true });
         const opening = sql.exec<{ accepted_cursor: number; terminal_cursor: number }>(
           "SELECT accepted_cursor,terminal_cursor FROM managed_turns WHERE id = 'fixture-turn-1'",

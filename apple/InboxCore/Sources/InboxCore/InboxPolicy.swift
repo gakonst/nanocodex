@@ -145,7 +145,7 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
             latestCursor = max(latestCursor, event.cursor)
             // Route history is independent of active-turn snapshots. A replay
             // may carry the first selected provider after newer activity arrived.
-            if event.type == "model_route_selected" {
+            if !event.data["model_route"]["model"].string.isEmpty {
                 applyModelRoute(event.data["model_route"], automatic: event.data["model_routing_automatic"].bool, cursor: event.cursor)
             }
             // A state read may already include these events. It owns active-turn

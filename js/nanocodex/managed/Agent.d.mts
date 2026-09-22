@@ -273,6 +273,8 @@ export type EventData = Readonly<{
   cursor: string;
   created_at: number;
   turn_id: string | null;
+  model_route?: { model: string; thinking: string; reasoning_mode: string; fast_mode: boolean; backend: string };
+  model_routing_automatic?: boolean;
 }> & (
   | { type: "agent_created"; agent_id: string; capabilities: Capabilities }
   | { type: "turn_accepted"; id: string; input: PromptInput; replayed: boolean }

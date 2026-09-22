@@ -44,7 +44,7 @@ final class ModelSelectionTests: XCTestCase {
     func testLiveRoutePublishesActualProviderWithoutStatePollAndSurvivesReplay() throws {
         var card = AgentCard(id: "fixture", title: "Fixture")
         try card.apply(state: state(["model_routing_enabled": .bool(true), "model_routing_automatic": .bool(true)]))
-        let selected = try event("model_route_selected", "12", ["model_route": route, "model_routing_automatic": .bool(true)])
+        let selected = try event("event", "12", ["event": .object(["type": .string("run.started"), "payload": .object([:])]), "model_route": route, "model_routing_automatic": .bool(true)])
         card.apply(events: [try event("turn_accepted", "11"), selected])
         XCTAssertEqual(card.provider, "cloudflare"); XCTAssertEqual(card.model, "gpt-5.6-sol")
         XCTAssertEqual(card.thinking, "high"); XCTAssertTrue(card.modelPinned); XCTAssertTrue(card.routingAutomatic)
@@ -68,10 +68,10 @@ final class ModelSelectionTests: XCTestCase {
     func testReplayedRouteIsAppliedAfterNewerStateAndCannotReplaceNewerRouteMetadata() throws {
         var card = AgentCard(id: "fixture", title: "Fixture")
         try card.apply(state: state(["latest_event_cursor": .string("15"), "model_routing_enabled": .bool(true)]))
-        card.apply(events: [try event("model_route_selected", "12", ["model_route": route])])
+        card.apply(events: [try event("event", "12", ["event": .object(["type": .string("run.started"), "payload": .object([:])]), "model_route": route])])
         XCTAssertEqual(card.provider, "cloudflare"); XCTAssertFalse(card.routingAutomatic)
         try card.apply(state: state(["latest_event_cursor": .string("16"), "model_route": route, "model_routing_automatic": .bool(true)]))
-        card.apply(events: [try event("model_route_selected", "12", ["model_route": route])])
+        card.apply(events: [try event("event", "12", ["event": .object(["type": .string("run.started"), "payload": .object([:])]), "model_route": route])])
         XCTAssertTrue(card.routingAutomatic)
     }
 

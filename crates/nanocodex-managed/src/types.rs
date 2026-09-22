@@ -1337,6 +1337,20 @@ mod tests {
     }
 
     #[test]
+    fn route_metadata_is_compatible_with_existing_event_decoder() {
+        let json = concat!(
+            r#"{"cursor":"2","created_at":1,"turn_id":"turn-1","type":"event","#,
+            r#""model_route":{"model":"@cf/zai-org/glm-5.3","backend":"workers_ai","thinking":"low"},"#,
+            r#""model_routing_automatic":true,"#,
+            r#""event":{"protocol_version":1,"request_id":"request-1","seq":1,"#,
+            r#""type":"assistant.delta","payload":{"delta":"hi"}}}"#
+        );
+        let event: ManagedEvent = serde_json::from_str(json).unwrap();
+        assert_eq!(event.data.agent_event().unwrap().unwrap().seq, 1);
+        assert!(matches!(event.data, ManagedEventData::Event { .. }));
+    }
+
+    #[test]
     fn nested_agent_event_retains_its_raw_object() {
         let json = concat!(
             r#"{"cursor":"2","created_at":1,"turn_id":"turn-1","type":"event","agent_id":7,"#,
