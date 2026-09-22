@@ -68,6 +68,8 @@ export async function preserveManagedMemory(options: ManagedMemoryPreservationOp
     throw new Error(`Memory preservation failed (HTTP ${response.status}); context has not been compacted.`);
   }
   const receipt = await response.json<{ boundary_id?: string; request_hash?: string }>();
+  request.signal.throwIfAborted();
+  options.assertActive();
   if (receipt.boundary_id !== request.boundaryId || typeof receipt.request_hash !== 'string' || !/^[a-f0-9]{64}$/.test(receipt.request_hash))
     throw new Error('Memory preservation returned an invalid durable receipt');
   return { receiptId: `memory-flush:${receipt.request_hash}` };

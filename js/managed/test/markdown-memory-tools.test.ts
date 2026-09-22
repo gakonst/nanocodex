@@ -39,11 +39,12 @@ it("requires explicit sharing intent and root context before any write reaches s
   expect(f.fetch.mock.calls[0]).toEqual([expect.any(String), expect.objectContaining({ headers: expect.objectContaining({ "x-nanocodex-memory-mutation": "1" }), body: JSON.stringify({ operation: "put", path: "MEMORY.md", expected_revision: 0, content: "shared" }) })]);
 });
 it("gates bootstrap by configured reads and exposes distinct Markdown tool names", () => {
-  expect(markdownMemoryTools(fixture().options).map(tool => tool.name)).toEqual(["memory_get", "memory_search", "memory_write"]);
+  expect(markdownMemoryTools(fixture().options).map(tool => tool.name)).toEqual(["memory_status", "memory_get", "memory_search", "memory_write"]);
   expect(markdownMemoryEnabled()).toBe(true);
   expect(markdownMemoryEnabled(["memory"])).toBe(true);
   expect(markdownMemoryEnabled(["memory_get"])).toBe(true);
   expect(markdownMemoryEnabled(["memory_write"])).toBe(false);
+  expect(markdownMemoryEnabled(["memory_status"])).toBe(false);
   expect(markdownMemoryEnabled([])).toBe(false);
 });
 it("protects Markdown API methods and capabilities before forwarding to storage", async () => {
@@ -58,14 +59,28 @@ it("protects Markdown API methods and capabilities before forwarding to storage"
     ...(method === "POST" ? { body: JSON.stringify(body) } : {}),
   }), bindings as unknown as Parameters<typeof worker.fetch>[1], { waitUntil: () => {} });
   expect((await call("get", { path: "MEMORY.md" }, false)).status).toBe(401);
+  expect((await call("status", {}, false)).status).toBe(401);
+  expect((await call("status", undefined, true, "GET")).status).toBe(405);
+  expect((await call("status?scope=team", {})).status).toBe(400);
+  expect((await call("flush", { session_id: "session", boundary_id: "boundary", messages: [] })).status).toBe(404);
+  expect((await call("unsupported", {})).status).toBe(404);
   expect((await call("get", undefined, true, "GET")).status).toBe(405);
   expect((await call("get?scope=team", { path: "MEMORY.md" })).status).toBe(400);
   expect((await call("write", { operation: "put", path: "MEMORY.md", expected_revision: 0, content: "private" })).status).toBe(403);
   expect(f.fetch).not.toHaveBeenCalled();
   expect((await call("get", { path: "MEMORY.md" })).status).toBe(200);
   expect(f.getByName).toHaveBeenLastCalledWith(JSON.stringify(["personal-memory", record.organizationId, record.userId]));
+  expect((await call("status", {})).status).toBe(200);
+  expect(f.fetch).toHaveBeenLastCalledWith("https://memory.internal/markdown-memory/status", expect.objectContaining({
+    headers: expect.objectContaining({ "x-nanocodex-private-memory-owner": record.userId }), body: "{}",
+  }));
+  expect((await call("status", { scope: "team" })).status).toBe(200);
+  expect(f.getByName).toHaveBeenLastCalledWith(record.organizationId);
   record.capabilities = ["memory:write"];
   expect((await call("get", { path: "MEMORY.md" })).status).toBe(403);
+  const requestsBeforeDeniedStatus = f.fetch.mock.calls.length;
+  expect((await call("status", {})).status).toBe(403);
+  expect(f.fetch).toHaveBeenCalledTimes(requestsBeforeDeniedStatus);
   expect((await call("write", { operation: "put", path: "MEMORY.md", expected_revision: 0, content: "private" })).status).toBe(200);
 });
 
@@ -114,4 +129,32 @@ it("withdraws stale bootstrap on a failed read and republishes the same snapshot
   await inject();
   expect(session.appendDeveloperMessage).toHaveBeenCalledTimes(3);
   expect(session.appendDeveloperMessage.mock.calls[2]![0]).toBe(session.appendDeveloperMessage.mock.calls[0]![0]);
+});
+
+it("requires live read authority for status and never exposes flush as a model tool", async () => {
+  const f = fixture();
+  const tools = markdownMemoryTools(f.options);
+  expect(tools.some(tool => tool.name.includes("flush"))).toBe(false);
+  const status = tools.find(tool => tool.name === "memory_status")!;
+  f.fetch.mockResolvedValue(Response.json({ automation: "disabled", consolidation: { pending: [] }, flush: { receipts: [] } }));
+  expect(await status.handler({}, f.context)).toMatchObject({ automation: "disabled", scope: "personal" });
+  expect(f.authorize).toHaveBeenLastCalledWith("memory_get", f.context);
+  expect(f.fetch).toHaveBeenLastCalledWith("https://memory.internal/markdown-memory/status", expect.objectContaining({
+    headers: expect.objectContaining({ "x-nanocodex-private-memory-owner": "alice", "x-nanocodex-subject-id": "agent:session" }),
+  }));
+  expect(new Headers(f.fetch.mock.calls[0]![1]!.headers).has("x-nanocodex-memory-mutation")).toBe(false);
+  f.authorize.mockImplementation(() => { throw new Error("memory:read capability is required"); });
+  await expect(status.handler({}, f.context)).rejects.toThrow("memory:read capability is required");
+  expect(f.fetch).toHaveBeenCalledTimes(1);
+});
+
+it("keeps Connect status in its authorized team and blocks private status reads", async () => {
+  const f = fixture();
+  f.connect();
+  const status = markdownMemoryTools(f.options).find(tool => tool.name === "memory_status")!;
+  expect(await status.handler({}, f.context)).toMatchObject({ scope: "team" });
+  expect(f.getByName).toHaveBeenLastCalledWith("org");
+  expect(new Headers(f.fetch.mock.calls[0]![1]!.headers).has("x-nanocodex-private-memory-owner")).toBe(false);
+  await expect(status.handler({ scope: "personal" }, f.context)).rejects.toThrow("direct account authority");
+  expect(f.fetch).toHaveBeenCalledTimes(1);
 });

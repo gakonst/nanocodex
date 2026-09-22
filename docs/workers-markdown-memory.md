@@ -84,16 +84,25 @@ Hybrid search uses reciprocal rank fusion, recency decay for dated notes and
 MMR diversity. Evergreen curated files do not decay. Index retry state survives
 eviction. Deletion is immediately effective in canonical reads and recall,
 while remote index cleanup is asynchronous and visible in `memory_status`.
+Index operations have durable 30-second leases and a 16-attempt budget; deletion
+reconciliation stops after a 15-minute horizon. Exhausted/expired receipts remain
+visible instead of keeping an alarm alive forever. A new canonical revision
+queues new indexing work. Late upload completion reopens deletion work, but
+physical removal from the remote index is not claimed until cleanup succeeds.
 `DREAMS.md` is readable explicitly but excluded from search and bootstrap.
 
 ## Awaited pre-compaction preservation
 
-The SDK's optional `beforeCompaction` callback runs before context is trimmed or
+The Node, in-process Web and Cloudflare SDK hosts support the optional
+`beforeCompaction` callback. Browser Worker creation rejects function callbacks;
+it cannot transfer their execution authority across its Worker boundary.
+The callback runs before context is trimmed or
 compacted, including explicit and automatic compaction. It receives a bounded
 suffix of user/assistant text and a stable boundary identity, then returns a
 durable receipt. Execution replay reuses acknowledged receipts. The host must
 also make its own writes idempotent to cover a lost response after commit.
-Cancellation and a 30-second host deadline stop the barrier; errors leave the
+The evidence budget is 64 whole messages and 32 KiB of UTF-8 text. Cancellation
+and a 30-second host deadline stop the barrier; errors leave the
 compaction unperformed. Subagents do not inherit this root callback.
 
 Managed direct-account sessions connect this barrier to an internal personal
@@ -125,6 +134,10 @@ source invalidates dependent generated entries and retained preimages. Recalled
 material and consolidation reports never become new reinforcement evidence.
 `DREAMS.md` records bounded outcomes without being fed back into retrieval.
 Model attempts and retry leases are bounded and persist across eviction.
+Extraction permits 48 inference attempts per owner per UTC day. Consolidation
+permits three attempts per owner per UTC day, selects at most eight sources and
+12 KiB per batch, and retains 32 audit receipts with their preimages. Both passes
+limit model output to 2,048 tokens. These are ceilings, not usage targets.
 
 `memory_status` (and its authenticated HTTP endpoint) exposes semantic backlog,
 consolidation work and receipts, and extraction receipts without invoking a

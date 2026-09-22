@@ -165,7 +165,7 @@ fn provider(
     trigger: Trigger,
 ) -> Result<
     OpenAi<
-        impl nanocodex_oai_api::ResponsesServiceFactory<Service = Provider> + Send + Sync + 'static,
+        impl nanocodex_oai_api::tower::ResponsesServiceFactory<Service = Provider> + Send + Sync + 'static,
     >,
 > {
     let evidence = evidence.clone();

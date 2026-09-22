@@ -1,6 +1,6 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { describe, expect, it, vi } from 'vitest';
-import type { MemoryFlushFixture } from './markdown-memory-flush-worker';
+import type { DurableAgentSession } from '../src/index';
 import { MarkdownMemoryStore } from '../src/markdown-memory';
 import { MarkdownMemoryFlush, type MarkdownMemoryFlushInput, type MarkdownMemoryFlushMessage } from '../src/markdown-memory-flush';
 import type { MarkdownMemoryCompletion } from '../src/markdown-memory-ai';
@@ -13,7 +13,7 @@ const span = (message: MarkdownMemoryFlushMessage, start = 0, end = message.text
 const select: MarkdownMemoryCompletion = async request => ({ spans: (request.input as MarkdownMemoryFlushInput).messages.map(message => span(message)) });
 const options = { now: () => NOW, containsSecret: (text: string) => text.includes('synthetic-vault-value') };
 async function withStorage(run: (storage: DurableObjectStorage, store: MarkdownMemoryStore) => Promise<void>) {
-  const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<MemoryFlushFixture> }).NANOCODEX_SESSIONS;
+  const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
   await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (_session, state) => run(state.storage, new MarkdownMemoryStore(state.storage)));
 }
 function deferred<T>() {
@@ -41,6 +41,20 @@ describe('precompaction memory flush on Durable Object SQLite', () => {
       expect(new MarkdownMemoryFlush(storage, select, options).status('alice')).toMatchObject({ attempts: 1, remaining: 47, pending: 0, receipts: [receipt] });
       expect(new MarkdownMemoryFlush(storage, select, options).status('bob')).toMatchObject({ attempts: 0, receipts: [] });
       expect(JSON.stringify(storage.sql.exec('SELECT * FROM markdown_memory_flushes').toArray())).not.toContain(source.text);
+    });
+  });
+
+  it('derives exact Unicode offsets from unique quotes without model arithmetic', async () => {
+    await withStorage(async (storage, store) => {
+      const message = user('unicode', 'Transient heading.\nI prefer café updates with 🟢 indicators.');
+      const quote = message.text.split('\n')[1]!;
+      const complete: MarkdownMemoryCompletion = async () => ({ spans: [{ message_id: message.id, quote }] });
+      const receipt = await new MarkdownMemoryFlush(storage, complete, options).flush('alice', input('quoted', [message]));
+      expect(store.readFile('alice', receipt.path!)).toContain(`> ${quote}`);
+      expect(store.readFile('alice', receipt.path!)).toContain(`UTF-16 range [19,${message.text.length})`);
+      const repeated = user('unicode', `${quote}\n${quote}`);
+      await expect(new MarkdownMemoryFlush(storage, complete, options).flush('alice', input('ambiguous', [repeated])))
+        .rejects.toMatchObject({ code: 'memory_inference_invalid' });
     });
   });
 

@@ -1,6 +1,9 @@
 import { createHash } from "node:crypto";
 /** Canonical Markdown bodies and their derived search index share one DO transaction. */
 const MAX_BYTES = 65_536;
+// Cleanup sweeps stop after this window; retained receipts can be reopened by a
+// late upload completion without scheduling an alarm forever.
+export const MARKDOWN_MEMORY_CLEANUP_HORIZON_MS = 15 * 60_000;
 const encoder = new TextEncoder();
 const MAX_LINE_BYTES = 8192;
 const MAX_READ_BYTES = 16384;
@@ -38,12 +41,12 @@ function text(value: unknown, max: number): string {
 }
 export function validateMarkdownMemoryPath(value: unknown): string {
   const path = text(value, 128);
-  if (path === 'MEMORY.md' || path === 'USER.md') return path;
+  if (path === 'MEMORY.md' || path === 'USER.md' || path === 'DREAMS.md') return path;
   const match = /^memory\/(\d{4}-\d{2}-\d{2})(?:-[a-z0-9]+(?:-[a-z0-9]+)*)?\.md$/.exec(path);
   if (!match || !Number.isFinite(Date.parse(`${match[1]}T00:00:00Z`)) || new Date(`${match[1]}T00:00:00Z`).toISOString().slice(0, 10) !== match[1]) throw new MarkdownMemoryError('invalid memory path');
   return path;
 }
-function ownerKey(owner: unknown): string {
+export function validateMarkdownMemoryOwner(owner: unknown): string {
   const value = text(owner, 512);
   if (!value.trim()) throw new MarkdownMemoryError('memory owner is required');
   return value;
@@ -63,15 +66,33 @@ export class MarkdownMemoryStore {
         PRIMARY KEY(owner,operation_id));
       CREATE TABLE IF NOT EXISTS markdown_memory_ai_items (
         chunk_id INTEGER PRIMARY KEY, owner TEXT NOT NULL, path TEXT NOT NULL, revision INTEGER NOT NULL,
-        operation TEXT NOT NULL, item_id TEXT, attempts INTEGER NOT NULL DEFAULT 0, retry_at INTEGER);
+        operation TEXT NOT NULL, item_id TEXT, attempts INTEGER NOT NULL DEFAULT 0, retry_at INTEGER,
+        cleanup_until INTEGER, cleanup_state TEXT, last_error TEXT, lease_until INTEGER, lease_id TEXT);
       CREATE INDEX IF NOT EXISTS markdown_memory_ai_retry ON markdown_memory_ai_items(retry_at);
       CREATE INDEX IF NOT EXISTS markdown_memory_ai_document ON markdown_memory_ai_items(owner,path);
       CREATE TABLE IF NOT EXISTS markdown_memory_migrations (name TEXT PRIMARY KEY);
       INSERT OR IGNORE INTO markdown_memory_ai_items(chunk_id,owner,path,revision,operation,retry_at)
         SELECT c.id,c.owner,c.path,CAST(f.revision AS INTEGER),'upload',0
         FROM markdown_memory_chunks c JOIN markdown_memory_fts f ON f.rowid=c.id
-        WHERE NOT EXISTS (SELECT 1 FROM markdown_memory_migrations WHERE name='ai-items');
+        JOIN markdown_memory_documents d ON d.owner=c.owner AND d.path=c.path
+          AND d.revision=CAST(f.revision AS INTEGER) AND d.deleted=0
+        WHERE c.path<>'DREAMS.md' AND NOT EXISTS (SELECT 1 FROM markdown_memory_migrations WHERE name='ai-items');
       INSERT OR IGNORE INTO markdown_memory_migrations VALUES('ai-items');`);
+    this.storage.transactionSync(() => {
+      const columns = new Set(storage.sql.exec<{ name: string }>('PRAGMA table_info(markdown_memory_ai_items)').toArray().map(row => row.name));
+      for (const [name, type] of [['cleanup_until', 'INTEGER'], ['cleanup_state', 'TEXT'], ['last_error', 'TEXT'], ['lease_until', 'INTEGER'], ['lease_id', 'TEXT']]) {
+        if (!columns.has(name!)) storage.sql.exec(`ALTER TABLE markdown_memory_ai_items ADD COLUMN ${name} ${type}`);
+      }
+      // Upgrade old indefinite tombstones once, and retire any historic DREAMS
+      // projection while keeping the journal directly readable.
+      if (storage.sql.exec("SELECT 1 FROM markdown_memory_migrations WHERE name='ai-cleanup-v2'").toArray().length) return;
+      storage.sql.exec(`UPDATE markdown_memory_ai_items SET operation='delete',cleanup_until=?,
+        cleanup_state='pending',retry_at=0,attempts=0 WHERE operation='delete' OR path='DREAMS.md'`,
+      Date.now() + MARKDOWN_MEMORY_CLEANUP_HORIZON_MS);
+      storage.sql.exec("DELETE FROM markdown_memory_fts WHERE path='DREAMS.md'");
+      storage.sql.exec("DELETE FROM markdown_memory_chunks WHERE path='DREAMS.md'");
+      storage.sql.exec("INSERT INTO markdown_memory_migrations VALUES('ai-cleanup-v2')");
+    });
   }
   private row(owner: string, path: string): Row {
     return this.storage.sql.exec<Row>('SELECT revision,deleted,content FROM markdown_memory_documents WHERE owner=? AND path=?', owner, path).toArray()[0]
@@ -79,21 +100,21 @@ export class MarkdownMemoryStore {
   }
   /** Compatibility projection: canonical live paths only, never tombstones. */
   list(owner: string): string[] {
-    owner = ownerKey(owner);
+    owner = validateMarkdownMemoryOwner(owner);
     return this.storage.sql.exec<{ path: string }>(
       'SELECT path FROM markdown_memory_documents WHERE owner=? AND deleted=0 ORDER BY path', owner,
     ).toArray().map(row => row.path);
   }
   /** Full canonical body remains bounded by the document admission limit. */
   readFile(owner: string, path: string): string {
-    owner = ownerKey(owner);
+    owner = validateMarkdownMemoryOwner(owner);
     path = validateMarkdownMemoryPath(path);
     const row = this.row(owner, path);
     if (row.deleted) throw new MarkdownMemoryError('memory file was not found', 404, 'memory_not_found');
     return row.content;
   }
   get(owner: string, input: unknown) {
-    owner = ownerKey(owner);
+    owner = validateMarkdownMemoryOwner(owner);
     const value = record(input, ['path', 'from_line', 'max_lines', 'revision']);
     const path = validateMarkdownMemoryPath(value.path);
     const from = integer(value.from_line, 1, 1, MAX_BYTES + 1);
@@ -113,7 +134,7 @@ export class MarkdownMemoryStore {
       to_line: to, total_lines: lines.length, ...(to < lines.length ? { next_line: to + 1 } : {}) };
   }
   search(owner: string, input: unknown) {
-    owner = ownerKey(owner);
+    owner = validateMarkdownMemoryOwner(owner);
     const value = record(input, ['query', 'limit']);
     const query = text(value.query, 512);
     const limit = integer(value.limit, 8, 1, 20);
@@ -122,14 +143,17 @@ export class MarkdownMemoryStore {
     if (!terms.length) return { results: [] };
     const match = terms.map(term => `"${term}"`).join(' AND ');
     const results = this.storage.sql.exec<{ path: string; revision: number; from_line: number; to_line: number; snippet: string }>(
-      `SELECT path, CAST(revision AS INTEGER) AS revision, CAST(from_line AS INTEGER) AS from_line,
-        CAST(to_line AS INTEGER) AS to_line, snippet(markdown_memory_fts,5,'','',' … ',48) AS snippet
-        FROM markdown_memory_fts WHERE markdown_memory_fts MATCH ? AND owner=? ORDER BY rank LIMIT ?`, match, owner, limit,
+      `SELECT f.path, CAST(f.revision AS INTEGER) AS revision, CAST(f.from_line AS INTEGER) AS from_line,
+        CAST(f.to_line AS INTEGER) AS to_line, snippet(markdown_memory_fts,5,'','',' … ',48) AS snippet
+        FROM markdown_memory_fts f JOIN markdown_memory_chunks c ON c.id=f.rowid AND c.owner=f.owner AND c.path=f.path
+        JOIN markdown_memory_documents d ON d.owner=c.owner AND d.path=c.path AND d.revision=CAST(f.revision AS INTEGER)
+        WHERE markdown_memory_fts MATCH ? AND c.owner=? AND d.deleted=0 AND c.path<>'DREAMS.md'
+        ORDER BY rank LIMIT ?`, match, owner, limit,
     ).toArray().map(row => ({ ...row, snippet: row.snippet.slice(0, 2048) }));
     return { results };
   }
   write(owner: string, input: unknown) {
-    owner = ownerKey(owner);
+    owner = validateMarkdownMemoryOwner(owner);
     const value = record(input, ['operation', 'path', 'expected_revision', 'content', 'operation_id']);
     const path = validateMarkdownMemoryPath(value.path);
     const operation = value.operation;
@@ -170,8 +194,9 @@ export class MarkdownMemoryStore {
       owner, path, revision, Number(deleted), body);
       // Persist cleanup intent before removing the canonical chunks. An upload may
       // still be in flight; immutable revision keys and retained tombstones reconcile it.
-      this.storage.sql.exec(`UPDATE markdown_memory_ai_items SET operation='delete',attempts=0,retry_at=0
-        WHERE owner=? AND path=? AND operation='upload'`, owner, path);
+      this.storage.sql.exec(`UPDATE markdown_memory_ai_items SET operation='delete',attempts=0,retry_at=0,
+        cleanup_until=?,cleanup_state='pending',last_error=NULL
+        WHERE owner=? AND path=? AND operation='upload'`, Date.now() + MARKDOWN_MEMORY_CLEANUP_HORIZON_MS, owner, path);
       this.storage.sql.exec(`DELETE FROM markdown_memory_fts WHERE rowid IN
         (SELECT id FROM markdown_memory_chunks WHERE owner=? AND path=?)`, owner, path);
       this.storage.sql.exec('DELETE FROM markdown_memory_chunks WHERE owner=? AND path=?', owner, path);
@@ -182,6 +207,7 @@ export class MarkdownMemoryStore {
     });
   }
   private index(owner: string, path: string, revision: number, content: string) {
+    if (path === 'DREAMS.md') return;
     const lines = content.split('\n');
     let chunk = '', from = 1, to = 1;
     const flush = () => {
@@ -210,7 +236,7 @@ export class MarkdownMemoryStore {
     flush();
   }
   bootstrap(owner: string, now: number) {
-    owner = ownerKey(owner);
+    owner = validateMarkdownMemoryOwner(owner);
     if (!Number.isFinite(now) || !Number.isFinite(new Date(now).getTime())) throw new MarkdownMemoryError('invalid bootstrap time');
     const dates = [now, now - 86_400_000].map(time => new Date(time).toISOString().slice(0, 10));
     const paths = ['MEMORY.md', 'USER.md', ...dates.map(date => `memory/${date}.md`)];

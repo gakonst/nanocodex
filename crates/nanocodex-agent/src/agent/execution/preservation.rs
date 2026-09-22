@@ -183,10 +183,6 @@ mod tests {
                 MessageRole::Developer,
                 [ContentItem::input_text("recalled memory")],
             ),
-            ResponseItem::message(
-                MessageRole::System,
-                [ContentItem::input_text("system instructions")],
-            ),
             ResponseItem::function_call_output(
                 "tool".into(),
                 nanocodex_oai_api::responses::FunctionOutputBody::Text("tool text".into()),
