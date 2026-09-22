@@ -100,6 +100,36 @@ final class ChatMarkdownTests: XCTestCase {
     }
 
     @MainActor
+    func testPreparedHistoryIsFormattedBeforeRendererTaskRuns() async throws {
+        let source = "# Prefetched " + UUID().uuidString + "\n\nA **formatted** paragraph."
+        try await ChatMarkdown.prepare(source)
+        // A newly mounted row has no published state and has not called update.
+        let renderer = ChatMarkdownRenderer()
+        XCTAssertNil(renderer.rendered)
+        let blocks = try XCTUnwrap(renderer.blocks(for: source))
+        guard case .text(heading: 1, marker: nil, quote: false) = blocks[0].kind else {
+            return XCTFail("First paint must already contain a formatted heading")
+        }
+        XCTAssertFalse(String(blocks[0].text.characters).hasPrefix("#"))
+    }
+
+    @MainActor
+    func testColdMountKeepsParsedStreamingPrefixButRejectsReplacement() async throws {
+        let source = "# Cold " + UUID().uuidString + "\n\n**Formatted** body"
+        let renderer = ChatMarkdownRenderer()
+        XCTAssertNil(renderer.blocks(for: source), "Unprepared rows still use the readable fallback")
+        renderer.update(source)
+        let deadline = Date().addingTimeInterval(2)
+        while renderer.rendered?.source != source, Date() < deadline {
+            try await Task.sleep(for: .milliseconds(10))
+        }
+        XCTAssertNotNil(renderer.blocks(for: source))
+        XCTAssertNotNil(renderer.blocks(for: source + " streaming"))
+        XCTAssertNil(renderer.blocks(for: "# Replacement " + UUID().uuidString))
+        renderer.cancel()
+    }
+
+    @MainActor
     func testContinuousStreamingPublishesBeforeTheStreamEnds() async throws {
         let renderer = ChatMarkdownRenderer()
         defer { renderer.cancel() }

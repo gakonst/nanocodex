@@ -13,26 +13,6 @@ import UIKit
 import AVFoundation
 import os.signpost
 
-private struct ConversationComposerHeightKey: EnvironmentKey {
-    static let defaultValue: CGFloat = 0
-}
-
-private struct ConversationNavigationActiveKey: EnvironmentKey {
-    static let defaultValue = false
-}
-
-private extension EnvironmentValues {
-    var conversationComposerHeight: CGFloat {
-        get { self[ConversationComposerHeightKey.self] }
-        set { self[ConversationComposerHeightKey.self] = newValue }
-    }
-
-    var conversationNavigationActive: Bool {
-        get { self[ConversationNavigationActiveKey.self] }
-        set { self[ConversationNavigationActiveKey.self] = newValue }
-    }
-}
-
 private enum Ink {
     static let background = Color(uiColor: .systemBackground)
     static let card = Color(uiColor: .secondarySystemGroupedBackground)
@@ -58,10 +38,8 @@ private enum Ink {
 
 struct InboxView: View {
     @ObservedObject var model: InboxModel
-    @State private var showConversations = false
-    @State private var drawerTranslation: CGFloat = 0
-    @State private var drawerDragIsHorizontal: Bool?
-    @GestureState private var drawerGestureActive = false
+    @State private var preferredColumn: NavigationSplitViewColumn = .detail
+    @State private var navigationSelection: String?
     @State private var readingPositions = ConversationReadingPositions()
     @State private var showScheduledJobs = false
     @State private var showConnectors = false
@@ -73,36 +51,10 @@ struct InboxView: View {
     @State private var screenExpanded = false
     @State private var controlsScreen: RemoteScreenSelection?
     @State private var screenViewerRevision = UUID()
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var composerFocused = false
-    @State private var composerHeight: CGFloat = 80
 
     var body: some View {
-        NavigationStack {
-            inbox
-                #if os(iOS)
-                .navigationTitle("Conversations")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar(.hidden, for: .navigationBar)
-                #endif
-                .navigationDestination(isPresented: $showScheduledJobs) {
-                    ScheduledJobsView(model: model) {
-                        showScheduledJobs = false
-                        composerFocused = false
-                    }
-                    #if os(iOS)
-                    .toolbar(.visible, for: .navigationBar)
-                    .navigationBarTitleDisplayMode(.inline)
-                    #endif
-                }
-                .navigationDestination(isPresented: $showConnectors) {
-                    ConnectorsView(model: model)
-                        #if os(iOS)
-                        .toolbar(.visible, for: .navigationBar)
-                        .navigationBarTitleDisplayMode(.inline)
-                        #endif
-                }
-        }
+        inbox
         .safeAreaInset(edge: .top, spacing: 0) {
             if !model.isDemo, let update = appUpdates.update {
                 HStack(spacing: 12) {
@@ -161,7 +113,14 @@ struct InboxView: View {
         .onChange(of: model.screenScope) { _, _ in
             screenThreads.removeAll(); screenExpanded = false; showScreens = false; controlsScreen = nil
         }
-        .onChange(of: model.focused?.id) { _, _ in screenExpanded = false }
+        .onChange(of: model.focused?.id, initial: true) { _, id in
+            screenExpanded = false
+            navigationSelection = id
+            if id != nil { preferredColumn = .detail }
+        }
+        .onChange(of: navigationSelection) { _, id in
+            if let id { selectConversation(id) }
+        }
         .onChange(of: showScreens) { _, visible in
             // Recreate the passive panel after full controls release their lease.
             if !visible { screenViewerRevision = UUID() }
@@ -178,7 +137,7 @@ struct InboxView: View {
         }
         .onChange(of: model.connected) { _, connected in
             if connected && model.musicConnectorToOpen != nil { showConnectors = true }
-            if !connected { screenThreads.removeAll(); screenExpanded = false; showConversations = false; showScreens = false; showScheduledJobs = false; showConnectors = false; showSettings = false; readingPositions.values.removeAll() }
+            if !connected { screenThreads.removeAll(); screenExpanded = false; preferredColumn = .detail; showScreens = false; showScheduledJobs = false; showConnectors = false; showSettings = false; readingPositions.values.removeAll() }
         }
 
     }
@@ -194,97 +153,46 @@ struct InboxView: View {
         }
     }
     private var conversationWorkspace: some View {
-        GeometryReader { geometry in
-            let width = min(geometry.size.width - 24, 420)
-            let reveal = showConversations ? width + drawerTranslation : drawerTranslation
-            ZStack(alignment: .leading) {
-                if showConversations || drawerTranslation > 0 {
-                    ConversationDrawer(model: model, select: { id in
-                        selectConversation(id)
-                        setConversationsVisible(false)
-                    }, close: { setConversationsVisible(false) }, create: createAgent,
-                    settings: { showSettings = true })
-                    .frame(width: width, height: geometry.size.height)
-                    // Slide the conversation above a stationary list. Moving
-                    // a newly inserted native scroll view can strand its rows
-                    // offscreen when the same drag dismisses the keyboard.
-                    .allowsHitTesting(showConversations)
-                    .accessibilityHidden(!showConversations)
-                    .transition(.opacity)
-                }
-                // Keep the transcript and editor mounted. Opening navigation must
-                // not rebuild history, lose a draft, or start preview streams.
+        NavigationSplitView(preferredCompactColumn: $preferredColumn) {
+            ConversationSidebar(model: model, selection: $navigationSelection, create: createAgent,
+                                settings: { composerFocused = false; showSettings = true })
+        } detail: {
+            NavigationStack {
                 inboxContent
-                    .environment(\.conversationNavigationActive, showConversations || drawerTranslation != 0)
-                    // Animate the outer drawer translation only. Inherited spring
-                    // transactions must not animate transcript layout or restoration.
-                    .transaction { $0.animation = nil }
-                    .frame(width: geometry.size.width, height: geometry.size.height)
-                    .background(Ink.background)
-                    .clipShape(RoundedRectangle(cornerRadius: reveal > 0 ? 28 : 0))
-                    .shadow(color: .black.opacity(reveal > 0 ? 0.12 : 0), radius: 16, x: -4)
-                    .overlay {
-                        if showConversations {
-                            Color.clear.contentShape(Rectangle())
-                                .onTapGesture { setConversationsVisible(false) }
+                    .navigationTitle(model.focused?.title ?? "New conversation")
+                    .navigationBarTitleDisplayMode(.inline)
+                    .toolbar {
+                        ToolbarItem(placement: .principal) {
+                            Text(model.focused?.title ?? "New conversation")
+                                .font(.headline).lineLimit(1)
+                                .accessibilityValue(model.focused?.status ?? "")
+                                .accessibilityIdentifier("conversation-title:" + (model.focused?.id ?? "empty"))
+                        }
+                        ToolbarItemGroup(placement: .topBarTrailing) {
+                            Button(action: createAgent) {
+                                Label("New conversation", systemImage: "square.and.pencil")
+                            }
+                            .accessibilityIdentifier("new-conversation")
+                            .keyboardShortcut("n", modifiers: .command)
+                            appMenu
                         }
                     }
-                    .accessibilityHidden(showConversations)
-                    .offset(x: reveal)
+                    .navigationDestination(isPresented: $showScheduledJobs) {
+                        ScheduledJobsView(model: model) {
+                            showScheduledJobs = false
+                            composerFocused = false
+                        }
+                    }
+                    .navigationDestination(isPresented: $showConnectors) {
+                        ConnectorsView(model: model)
+                    }
             }
-            .clipped()
-            .contentShape(Rectangle())
-            .simultaneousGesture(DragGesture(minimumDistance: 16)
-                .updating($drawerGestureActive) { _, active, _ in active = true }
-                .onChanged { value in
-                    // Keep the direction through onEnded: GestureState can reset
-                    // before that callback on iOS 18. Cancellation is handled below.
-                    if drawerDragIsHorizontal == nil {
-                        drawerDragIsHorizontal = (showConversations || value.startLocation.x <= 28)
-                            && abs(value.translation.width) > abs(value.translation.height) * 1.5
-                            && (showConversations || value.translation.width > 0)
-                    }
-                    guard drawerDragIsHorizontal == true else { return }
-                    if showConversations {
-                        drawerTranslation = max(-width, min(0, value.translation.width))
-                    } else if value.translation.width > 0 {
-                        composerFocused = false
-                        drawerTranslation = min(width, value.translation.width)
-                    }
-                }
-                .onEnded { value in
-                    let horizontal = drawerDragIsHorizontal == true
-                    drawerDragIsHorizontal = nil
-                    guard horizontal else { return }
-                    let visible: Bool
-                    if showConversations {
-                        visible = !(horizontal && (value.translation.width < -width * 0.25
-                            || value.predictedEndTranslation.width < -width * 0.5))
-                    } else {
-                        visible = horizontal && (value.translation.width > width * 0.25
-                            || value.predictedEndTranslation.width > width * 0.5)
-                    }
-                    setConversationsVisible(visible)
-                })
-                .onChange(of: drawerGestureActive) { _, active in
-                    guard !active else { return }
-                    drawerDragIsHorizontal = nil
-                    if drawerTranslation != 0 { setConversationsVisible(showConversations) }
-                }
         }
-    }
-    private func setConversationsVisible(_ visible: Bool) {
-        composerFocused = false
-        withAnimation(reduceMotion ? nil : .spring(response: 0.32, dampingFraction: 0.92)) {
-            drawerTranslation = 0
-            showConversations = visible
-        }
+        .navigationSplitViewStyle(.balanced)
+        .onChange(of: preferredColumn) { _, _ in composerFocused = false }
     }
     private var inboxContent: some View {
         VStack(spacing: 0) {
-            // Scrolled content can retain offscreen hit regions at large text
-            // sizes. Keep navigation above those regions as well as visually.
-            conversationHeader.zIndex(1)
                 if let screen = model.latestScreenOutput,
                    !screenThreads.contains(model.focusedConversationIdentity ?? "") {
                     ChatLatestScreen(output: screen, onWatchLive: model.remoteService == nil ? nil : {
@@ -311,8 +219,7 @@ struct InboxView: View {
             }
             Group {
                     if let identity = model.focusedConversationIdentity {
-                        ConversationView(model: model, identity: identity, readingPositions: readingPositions).id(identity)
-                            .environment(\.conversationComposerHeight, composerHeight)
+                        ConversationView(model: model, identity: identity, readingPositions: readingPositions, composerFocused: composerFocused).id(identity)
                     } else { emptyState.frame(maxWidth: .infinity, maxHeight: .infinity) }
             }
             .frame(maxHeight: screenExpanded && screenThreads.contains(model.focusedConversationIdentity ?? "") ? 0 : .infinity)
@@ -326,13 +233,15 @@ struct InboxView: View {
                     .padding(.horizontal, 16)
             }
         }
-        .overlay(alignment: .bottom) {
+        .safeAreaInset(edge: .bottom, spacing: 0) {
             VStack(spacing: 0) {
                 if let error = model.error {
                     HStack(alignment: .top) {
                         Text(error).font(.caption).foregroundStyle(Ink.amber)
                         Spacer(minLength: 4)
-                        Button { model.error = nil } label: { Image(systemName: "xmark") }
+                        Button { model.error = nil } label: {
+                            Image(systemName: "xmark").font(.system(size: 17)).frame(width: 44, height: 44).contentShape(Rectangle())
+                        }
                             .accessibilityLabel("Dismiss error")
                     }
                     .padding(12).background(Ink.card, in: RoundedRectangle(cornerRadius: 12)).padding(.horizontal, 12)
@@ -346,46 +255,7 @@ struct InboxView: View {
                 }
             }
             .padding(.bottom, 4)
-            .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { composerHeight = $0 }
         }
-    }
-
-    private var conversationHeader: some View {
-        let card = model.focused
-        return HStack(spacing: 12) {
-            Button { setConversationsVisible(true) } label: {
-                Image(systemName: "line.3.horizontal").frame(width: 44, height: 44).contentShape(Rectangle())
-            }
-            .modifier(InboxHeaderGlass())
-            .accessibilityLabel("Conversations").accessibilityIdentifier("conversation-drawer-open")
-            Button { setConversationsVisible(true) } label: {
-                VStack(alignment: .leading, spacing: 3) {
-                    HStack(spacing: 6) {
-                        if card?.isRunning == true {
-                            Circle().fill(Ink.running).frame(width: 6, height: 6).accessibilityHidden(true)
-                        }
-                        Text(card?.title ?? "New conversation")
-                            .font(.subheadline.weight(.semibold)).lineLimit(1)
-                    }
-                }
-                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 44, alignment: .leading)
-                .contentShape(Rectangle())
-            }
-            .accessibilityLabel(card?.title ?? "New conversation")
-            .accessibilityValue(card?.status ?? "")
-            .accessibilityAddTraits(.isSelected)
-            .accessibilityIdentifier("conversation-title:" + (card?.id ?? "empty"))
-            HStack(spacing: 0) {
-                Button(action: createAgent) {
-                    Image(systemName: "square.and.pencil").frame(width: 44, height: 44)
-                }.accessibilityLabel("New conversation").accessibilityIdentifier("new-conversation")
-                    .keyboardShortcut("n", modifiers: .command)
-                appMenu
-            }.modifier(InboxHeaderGlass())
-        }
-        .buttonStyle(.plain)
-        .font(.system(size: 18, weight: .medium))
-        .padding(.horizontal, 16).padding(.vertical, 6)
     }
 
     private var appMenu: some View {
@@ -422,7 +292,8 @@ struct InboxView: View {
 
     private func selectConversation(_ id: String) {
         composerFocused = false
-        model.select(id)
+        if model.focused?.id != id { model.select(id) }
+        preferredColumn = .detail
     }
     private var accountRestoration: some View {
         VStack(spacing: 20) {
@@ -499,23 +370,10 @@ struct InboxView: View {
         #if os(iOS)
         UIImpactFeedbackGenerator(style: .soft).impactOccurred()
         #endif
-        setConversationsVisible(false)
+        preferredColumn = .detail
         model.newAgent()
     }
 
-}
-
-private struct InboxHeaderGlass: ViewModifier {
-    @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-    func body(content: Content) -> some View {
-        if reduceTransparency {
-            content.background(Ink.card, in: RoundedRectangle(cornerRadius: 24))
-        } else if #available(iOS 26.0, *) {
-            content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 24))
-        } else {
-            content.background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 24))
-        }
-    }
 }
 
 /// Navigation uses roster summaries only, without parsing Markdown or starting preview streams.
@@ -534,153 +392,67 @@ private struct SidebarCard: Identifiable, Equatable {
     }
 }
 
-private struct ConversationDrawer: View {
-    let model: InboxModel
-    let select: (String) -> Void
-    let close: () -> Void
+private struct ConversationSidebar: View {
+    @ObservedObject var model: InboxModel
+    @Binding var selection: String?
     let create: () -> Void
     let settings: () -> Void
     @State private var query = ""
 
-    var body: some View {
+    private var cards: [SidebarCard] {
         let search = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        // Preview is search input, not rendered state. Streaming preview changes
-        // only cross the equality boundary if they change search membership.
-        let cards = model.cards.filter { card in
+        return model.cards.filter { card in
             search.isEmpty
                 || card.title.localizedCaseInsensitiveContains(search)
                 || card.id.localizedCaseInsensitiveContains(search)
                 || card.preview.localizedCaseInsensitiveContains(search)
-        }.map(SidebarCard.init)
-        ConversationDrawerContent(cards: cards, focusedID: model.focused?.id,
-                                  query: query, queryChanged: { query = $0 },
-                                  select: select, close: close, create: create, settings: settings)
-            .equatable()
-    }
-}
-
-private struct ConversationDrawerContent: View, Equatable {
-    // Deliberately omit transcript rows, previews, cursors, drafts, and connection
-    // state so model publications cannot rebuild an unchanged native scroll view.
-    let cards: [SidebarCard]
-    let focusedID: String?
-    let query: String
-    let queryChanged: (String) -> Void
-    let select: (String) -> Void
-    let close: () -> Void
-    let create: () -> Void
-    let settings: () -> Void
-    @ScaledMetric(relativeTo: .subheadline) private var titleSize = 15
-    @ScaledMetric(relativeTo: .footnote) private var detailSize = 13
-    @ScaledMetric(relativeTo: .caption) private var statusSize = 12
-
-    static func == (lhs: Self, rhs: Self) -> Bool {
-        lhs.cards == rhs.cards && lhs.focusedID == rhs.focusedID && lhs.query == rhs.query
-    }
-
-    private var visibleCards: [SidebarCard] {
-        // Match AgentCard.mostRecentlyMessagedFirst, including its ID tie break.
-        cards.sorted {
+        }.map(SidebarCard.init).sorted {
             $0.lastUserMessageAt != $1.lastUserMessageAt
                 ? $0.lastUserMessageAt > $1.lastUserMessageAt : $0.id < $1.id
         }
     }
 
-    private func conversationRow(_ card: SidebarCard) -> some View {
-        let knownStatus = card.sidebarStatus
-        let running = ["Running", "Stopping"].contains(knownStatus)
-        let subtitle = card.error != nil ? "Couldn’t refresh" : card.sidebarActivity
-        let status = [knownStatus, subtitle, card.error ?? ""].filter { !$0.isEmpty }.joined(separator: ". ")
-        return VStack(alignment: .leading, spacing: 6) {
-            Text(card.title)
-                .font(.system(size: titleSize, weight: focusedID == card.id ? .medium : .regular))
-                .foregroundStyle(Ink.text).lineLimit(2)
-            HStack(spacing: 6) {
-                Circle().fill(running ? Ink.running : Ink.muted.opacity(0.65))
-                    .frame(width: 5, height: 5).accessibilityHidden(true)
-                Text(knownStatus).font(.system(size: statusSize)).foregroundStyle(Ink.muted)
-            }
-            if !subtitle.isEmpty {
-                Text(subtitle).font(.system(size: detailSize)).foregroundStyle(Ink.muted)
-                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
-            }
-        }
-        .padding(.horizontal, 12).padding(.vertical, 11)
-        .frame(maxWidth: .infinity, minHeight: 56, alignment: .leading)
-        .background(focusedID == card.id ? Ink.surface : Color.clear,
-                    in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-        .contentShape(Rectangle())
-        // Tap recognition must fail when dragging. A plain Button can fire
-        // on release after the drawer's simultaneous swipe gesture.
-        .onTapGesture { select(card.id) }
-        .accessibilityRepresentation {
-            Button(card.title) { select(card.id) }
-                .accessibilityValue(status)
-                .accessibilityAddTraits(focusedID == card.id ? [.isSelected] : [])
-                .accessibilityIdentifier("conversation-row:" + card.id)
-        }
-    }
-
     var body: some View {
-        let visibleCards = visibleCards
-        VStack(spacing: 12) {
-            HStack(spacing: 4) {
-                Text("Agents").font(.headline.weight(.medium)).foregroundStyle(Ink.text)
-                    .padding(.leading, 12)
-                Spacer()
-                Button(action: create) {
-                    Image(systemName: "square.and.pencil").frame(width: 44, height: 44)
-                }
-                .accessibilityLabel("New conversation").accessibilityIdentifier("drawer-new-conversation")
-                Button(action: close) {
-                    Image(systemName: "sidebar.left").frame(width: 44, height: 44)
-                }
-                .accessibilityLabel("Return to conversation").accessibilityIdentifier("conversation-drawer-close")
-            }
-            .font(.system(size: 17, weight: .regular))
-            HStack(spacing: 8) {
-                Image(systemName: "magnifyingglass").foregroundStyle(Ink.muted)
-                TextField("Search agents", text: Binding(get: { query }, set: queryChanged))
-                    .textInputAutocapitalization(.never).autocorrectionDisabled()
-                    .accessibilityIdentifier("conversation-search")
-                if !query.isEmpty {
-                    Button { queryChanged("") } label: {
-                        Image(systemName: "xmark.circle.fill").frame(width: 44, height: 44)
-                    }.foregroundStyle(Ink.muted).accessibilityLabel("Clear search")
-                }
-            }
-            .font(.system(size: detailSize)).padding(.horizontal, 12).frame(minHeight: 44)
-            .background(Ink.surface, in: RoundedRectangle(cornerRadius: 10, style: .continuous))
-            ScrollView {
-                LazyVStack(spacing: 4) {
-                    ForEach(visibleCards) { card in
-                        conversationRow(card)
+        List(selection: $selection) {
+            ForEach(cards) { card in
+                NavigationLink(value: card.id) {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text(card.title).font(.headline).lineLimit(2)
+                        Label(card.sidebarStatus, systemImage: "circle.fill")
+                            .font(.caption)
+                            .foregroundStyle(["Running", "Stopping"].contains(card.sidebarStatus) ? Ink.running : Ink.muted)
+                        if let error = card.error {
+                            Text("Couldn’t refresh: " + error).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                        } else if !card.sidebarActivity.isEmpty {
+                            Text(card.sidebarActivity).font(.subheadline).foregroundStyle(.secondary).lineLimit(2)
+                        }
                     }
-                    if visibleCards.isEmpty {
-                        ContentUnavailableView("No matching conversations", systemImage: "bubble.left.and.bubble.right",
-                                               description: Text("Try another search."))
-                    }
+                    .padding(.vertical, 4)
                 }
+                .accessibilityIdentifier("conversation-row:" + card.id)
+                .accessibilityAddTraits(selection == card.id ? [.isSelected] : [])
             }
-            .scrollDismissesKeyboard(.interactively)
-            .accessibilityIdentifier("conversation-list")
-            Divider().overlay(Ink.border.opacity(0.3))
-            Button(action: settings) {
-                HStack(spacing: 10) {
-                    Image(systemName: "gearshape")
-                    Text("Settings").font(.system(size: detailSize))
-                    Spacer()
-                }
-                .foregroundStyle(Ink.muted).padding(.horizontal, 12).frame(minHeight: 44)
-                .contentShape(Rectangle())
-            }.accessibilityLabel("Account settings")
         }
-        .buttonStyle(.plain)
-        .padding(.horizontal, 16).padding(.top, 6).padding(.bottom, 8)
-        .background(ChatPalette.sidebar)
-        .accessibilityElement(children: .contain)
-        .accessibilityIdentifier("conversation-drawer")
-        .accessibilityAction(.escape, close)
+        .listStyle(.sidebar)
+        .overlay {
+            if cards.isEmpty {
+                ContentUnavailableView("No matching conversations", systemImage: "bubble.left.and.bubble.right",
+                                       description: Text("Create a conversation or try another search."))
+            }
+        }
+        .searchable(text: $query, placement: .navigationBarDrawer(displayMode: .always), prompt: "Search agents")
+        .scrollDismissesKeyboard(.interactively)
+        .accessibilityIdentifier("conversation-list")
+        .navigationTitle("Conversations")
+        .toolbar {
+            ToolbarItem(placement: .topBarLeading) {
+                Button(action: settings) { Label("Account settings", systemImage: "gearshape") }
+            }
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(action: create) { Label("New conversation", systemImage: "square.and.pencil") }
+                    .accessibilityIdentifier("drawer-new-conversation")
+            }
+        }
     }
 }
 
@@ -782,8 +554,8 @@ private struct AgentComposerView: View {
                             HStack(alignment: .center, spacing: 8) {
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text(model.steeringTransfer(message.id)?.title ?? message.queueTitle)
-                                        .font(.system(size: 11)).foregroundStyle(Ink.muted)
-                                    Text(ContextPrompt.separate(message.input)?.request ?? message.input).font(.system(size: 14))
+                                        .font(.caption2).foregroundStyle(Ink.muted)
+                                    Text(ContextPrompt.separate(message.input)?.request ?? message.input).font(.subheadline)
                                         .fixedSize(horizontal: false, vertical: true).textSelection(.enabled)
                                         .accessibilityIdentifier("pending-message")
                                     if let names = queue.attachmentNames[message.id], !names.isEmpty {
@@ -815,10 +587,10 @@ private struct AgentComposerView: View {
                                         .disabled(!model.connected)
                                 }
                                 Button { model.cancelPending(message.id) } label: {
-                                    Image(systemName: "xmark").frame(width: 44, height: 44).contentShape(Rectangle())
+                                    Image(systemName: "xmark").font(.system(size: 17)).frame(width: 44, height: 44).contentShape(Rectangle())
                                 }.accessibilityLabel("Cancel queued message")
                                     .disabled(!model.connected || (model.cancellation(agentID: message.agentID, turnID: message.id).map { $0.error == nil } ?? false))
-                            }.font(.system(size: 13, weight: .medium)).buttonStyle(.plain)
+                            }.font(.footnote.weight(.medium)).buttonStyle(.plain)
                                 .padding(.horizontal, 16).padding(.vertical, 8)
                         }
                     }
@@ -874,7 +646,7 @@ private struct AgentComposerView: View {
             }
             HStack(alignment: .bottom, spacing: 2) {
                 Button { focused = false; showAttachmentMenu = true } label: {
-                    Image(systemName: "plus").frame(width: 44, height: 44).contentShape(Rectangle())
+                    Image(systemName: "plus").font(.system(size: 20)).frame(width: 44, height: 44).contentShape(Rectangle())
                 }.accessibilityLabel("Add attachments").accessibilityIdentifier("add-attachments")
                 if attachments.isEmpty { composerText } else { Spacer(minLength: 0) }
                 if let agentID = card?.id {
@@ -914,7 +686,7 @@ private struct AgentComposerView: View {
                             showExpandedEditor = true
                         } label: {
                             Image(systemName: "arrow.up.left.and.arrow.down.right")
-                                .frame(width: 44, height: 44).contentShape(Rectangle())
+                                .font(.system(size: 17)).frame(width: 44, height: 44).contentShape(Rectangle())
                         }.buttonStyle(.plain).foregroundStyle(Ink.muted)
                             .accessibilityLabel("Expand message editor")
                             .accessibilityIdentifier("expand-composer")
@@ -1670,7 +1442,7 @@ private struct ConversationMessageContent: View, Equatable {
 }
 
 private final class ConversationReadingPositions {
-    struct Position {
+    struct Position: Equatable {
         var atLatest: Bool
         var rowID: String? = nil
         var offsetY: CGFloat = 0
@@ -1753,6 +1525,7 @@ private final class ConversationRenderProjection: ObservableObject {
         var itemIndices: [String: Int]
         var userIndices: [Int]
         var cellRevisions: [String: UUID]
+        var activityRevisions: [String: UUID]
     }
     @Published private(set) var value: Value?
     private(set) var rebuildCount: UInt64 = 0
@@ -1806,13 +1579,17 @@ private final class ConversationRenderProjection: ObservableObject {
             guard !Task.isCancelled else { return nil }
             let items = ConversationRenderedItem.project(groups, outputs: outputs)
             guard !Task.isCancelled else { return nil }
+            let previousRows = Dictionary(uniqueKeysWithValues: (previous?.rows ?? []).map { ($0.id, $0) })
+            let activityRevisions = Dictionary(uniqueKeysWithValues: rows.map { row in
+                (row.id, previousRows[row.id] == row ? (previous?.activityRevisions[row.id] ?? UUID()) : UUID())
+            })
             return Value(revision: revision, identity: identity, rows: rows, pending: pending,
                          items: items, itemsByID: Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) }),
                          itemIndices: Dictionary(uniqueKeysWithValues: items.enumerated().map { ($0.element.id, $0.offset) }),
                          userIndices: items.indices.filter { items[$0].message?.role == "You" },
                          cellRevisions: Dictionary(uniqueKeysWithValues: items.map { item in
                              (item.id, previous?.itemsByID[item.id] == item ? (previous?.cellRevisions[item.id] ?? UUID()) : UUID())
-                         }))
+                         }), activityRevisions: activityRevisions)
         }
         let prepared = await withTaskCancellationHandler {
             await worker.value
@@ -1826,9 +1603,11 @@ private final class ConversationRenderProjection: ObservableObject {
 }
 
 private struct ConversationView: View {
+    @Environment(\.verticalSizeClass) private var verticalSizeClass
     @ObservedObject var model: InboxModel
     let identity: String
     let readingPositions: ConversationReadingPositions
+    let composerFocused: Bool
     @StateObject private var projection = ConversationRenderProjection()
 
     var body: some View {
@@ -1839,11 +1618,12 @@ private struct ConversationView: View {
         ConversationContentView(model: model,
                                 identity: identity, readingPositions: readingPositions,
                                 tools: readingPositions.toolExpansion(for: identity),
+                                showsControls: !(composerFocused && verticalSizeClass == .compact),
                                 revision: .init(projectionRevision: rendered?.revision, preparing: preparing,
                                                 rows: rendered?.rows ?? [], items: rendered?.items ?? [],
                                                 itemsByID: rendered?.itemsByID ?? [:],
                                                 itemIndices: rendered?.itemIndices ?? [:], userIndices: rendered?.userIndices ?? [],
-                                                cellRevisions: rendered?.cellRevisions ?? [:], pending: rendered?.pending ?? [],
+                                                cellRevisions: rendered?.cellRevisions ?? [:], activityRevisions: rendered?.activityRevisions ?? [:], pending: rendered?.pending ?? [],
                                                 title: model.focused?.title ?? "Conversation",
                                                 activeTurns: model.focused?.activeTurns ?? [],
                                                 connected: model.connected,
@@ -1877,6 +1657,7 @@ private struct ConversationContentView: View {
         var itemIndices: [String: Int]
         var userIndices: [Int]
         var cellRevisions: [String: UUID]
+        var activityRevisions: [String: UUID]
         var pending: [PendingMessage]
         var title: String
         var activeTurns: [String]
@@ -1903,19 +1684,18 @@ private struct ConversationContentView: View {
     let identity: String
     let readingPositions: ConversationReadingPositions
     let tools: ConversationToolExpansion
+    let showsControls: Bool
     let revision: Revision
     private struct UserNavigationTargets: Equatable {
         var previous: String?
         var next: String?
     }
-    @Environment(\.conversationComposerHeight) private var composerHeight
     @State private var userNavigationTargets = UserNavigationTargets()
     @State private var selectedUserMessage: String?
     @State private var pendingUserDirection: HistoryDirection?
     @State private var navigationKnownIDs: Set<String> = []
     @State private var navigationProjectionRevision: UUID?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @Environment(\.conversationNavigationActive) private var navigationActive
     @State private var followsLatest = true
     @State private var isInteractingTranscript = false
     @State private var isScrollGestureActive = false
@@ -1926,7 +1706,6 @@ private struct ConversationContentView: View {
     @State private var scroll = NativeConversationScrollProxy()
     @State private var nativeScrollState = ConversationNativeScrollState()
     #if DEBUG
-    @State private var rowMeasurementCount: UInt64 = 0
     #endif
     private var historyRestore: (id: String, offsetY: CGFloat, childID: String?)? {
         get { rowGeometry.historyRestore }
@@ -1964,19 +1743,14 @@ private struct ConversationContentView: View {
     private func restoreHistoryPosition(using scroll: NativeConversationScrollProxy) {
         guard !revision.preparing, !model.loadingOlder, !model.loadingNewer,
               let target = historyRestore else { return }
-        var transaction = Transaction()
-        transaction.disablesAnimations = true
-        withTransaction(transaction) {
-            let position = ConversationReadingPositions.Position(atLatest: false, rowID: target.id, offsetY: target.offsetY, childID: target.childID)
-            readingPositions.values[identity] = position
-            pendingReadingRestore = position
-            scroll.scrollTo(target.id, anchor: .top)
-            historyRestore = nil
-        }
+        let position = ConversationReadingPositions.Position(atLatest: false, rowID: target.id, offsetY: target.offsetY, childID: target.childID)
+        readingPositions.values[identity] = position
+        pendingReadingRestore = position
+        historyRestore = nil
     }
     private func updateHistoryPosition(in viewport: GeometryProxy) {
         guard model.focusedConversationIdentity == identity, hasInitialPosition,
-              pendingReadingRestore == nil, !revision.preparing, !navigationActive, historyContent.isMeasured else { return }
+              pendingReadingRestore == nil, !revision.preparing, historyContent.isMeasured else { return }
         // Ignore the transient top layout before a newly opened conversation
         // reaches its initial position at the bottom.
         if !historyReady {
@@ -1993,10 +1767,12 @@ private struct ConversationContentView: View {
             loadHistory(.newer, in: viewport)
         }
     }
-    private func saveReadingPosition(in viewport: GeometryProxy) {
+    private func saveReadingPosition(in viewport: GeometryProxy, userInitiated: Bool) {
         guard model.focusedConversationIdentity == identity, hasInitialPosition,
               pendingReadingRestore == nil, historyReady, historyContent.isMeasured,
-              !historyRequestInFlight, !revision.preparing, !navigationActive else { return }
+              !historyRequestInFlight, !revision.preparing else { return }
+        // Persist reader intent, not passive keyboard/navigation layout changes.
+        guard followsLatest || userInitiated || readingPositions.values[identity] == nil else { return }
         if !followsLatest {
             let visible = rowGeometry.visibleFrames(height: viewport.size.height).filter { revision.itemsByID[rowGeometry.semanticID(for: $0.key)] != nil }
             let sourceRows = visible.keys.compactMap { rowGeometry.sourceRowIDs[$0] }
@@ -2017,12 +1793,8 @@ private struct ConversationContentView: View {
     }
     private func followLatest(using scroll: NativeConversationScrollProxy) {
         guard followsLatest, pendingReadingRestore == nil,
-              !model.needsLatestHistory, !isScrollGestureActive, !navigationActive else { return }
-        // Animate only the scroll offset, not the transcript's text or tool state.
-        // Initial positioning and accessibility Reduce Motion remain immediate.
-        withAnimation(hasInitialPosition && !reduceMotion ? .smooth(duration: 0.24) : nil) {
-            scroll.scrollTo("latest", anchor: .bottom, animated: hasInitialPosition && !reduceMotion)
-        }
+              !model.needsLatestHistory, !isScrollGestureActive else { return }
+        scroll.scrollTo("latest", anchor: .bottom, animated: hasInitialPosition && !reduceMotion)
     }
     private func userTarget(_ direction: HistoryDirection) -> String? {
         let users = revision.userIndices
@@ -2053,10 +1825,6 @@ private struct ConversationContentView: View {
         pendingUserDirection = nil
         pendingReadingRestore = .init(atLatest: false, rowID: id, offsetY: 0)
         readingPositions.values[identity] = pendingReadingRestore
-        // Measured restoration retains the target through streaming and layout changes.
-        var transaction = Transaction(animation: nil)
-        transaction.disablesAnimations = true
-        withTransaction(transaction) { scroll.scrollTo(id, anchor: .top) }
     }
     private func navigateUser(_ direction: HistoryDirection, using scroll: NativeConversationScrollProxy) {
         // History insertion/restoration must finish before another explicit jump.
@@ -2104,7 +1872,7 @@ private struct ConversationContentView: View {
             fetchUserHistory(direction)
         } else { pendingUserDirection = nil }
     }
-    private func updateRowPositions(in viewport: GeometryProxy, using scroll: NativeConversationScrollProxy) {
+    private func updateRowPositions(in viewport: GeometryProxy, userInitiated: Bool) {
         let frames = rowGeometry
         // Only visible cells participate in scroll bookkeeping. User-message
         // locations are indexed once by the background projection, then searched
@@ -2121,27 +1889,15 @@ private struct ConversationContentView: View {
                 next: revision.userIndices.indices.contains(next) ? revision.items[revision.userIndices[next]].id : nil)
             if userNavigationTargets != targets { userNavigationTargets = targets }
         }
-        if !navigationActive, !isInteractingTranscript, let target = pendingReadingRestore, let id = target.rowID, let parent = frames[id] {
-            let frame = target.childID.flatMap { frames[$0] } ?? parent
-            if abs(frame.minY - target.offsetY) < 1 {
-                // Retain the semantic position through keyboard/viewport
-                // changes. The next touch or explicit jump releases it.
-                historyReady = true
-            } else {
-                let available = viewport.size.height - composerHeight - 52 - parent.height
-                if abs(available) > 0.5 {
-                    // The timeline can grow while loading older steps.
-                    // Preserve the step's screen position within its parent.
-                    let origin = parent.minY + target.offsetY - frame.minY
-                    scroll.scrollTo(id, anchor: UnitPoint(x: 0, y: origin / available))
-                }
-            }
+        if let target = pendingReadingRestore, let id = target.rowID,
+           let frame = frames[id], abs(frame.minY - target.offsetY) < 1 {
+            historyReady = true
         }
-        saveReadingPosition(in: viewport)
+        saveReadingPosition(in: viewport, userInitiated: userInitiated)
         updateHistoryPosition(in: viewport)
         // Continue following the reader during a slow history request,
         // until the insertion changes the coordinate space.
-        if historyRequestInFlight, model.historyMutationRevision == historyRequestRevision {
+        if userInitiated, historyRequestInFlight, model.historyMutationRevision == historyRequestRevision {
             rememberHistoryPosition(in: viewport)
         }
     }
@@ -2156,6 +1912,36 @@ private struct ConversationContentView: View {
     }
     private func threadControls(using scroll: NativeConversationScrollProxy) -> some View {
         HStack(spacing: 8) {
+            if historyContent.isMeasured, !model.threadLoading,
+               model.needsLatestHistory || (!followsLatest && !historyContent.atLatest) {
+                Button {
+                    selectedUserMessage = nil
+                    pendingUserDirection = nil
+                    historyDirection = nil
+                    historyRestore = nil
+                    pendingReadingRestore = nil
+                    followsLatest = true
+                    Task {
+                        if model.needsLatestHistory { await model.loadNewer(latest: true) }
+                        guard model.focusedConversationIdentity == identity, !model.needsLatestHistory else { return }
+                        followLatest(using: scroll)
+                    }
+                } label: {
+                    Label("Latest messages", systemImage: "arrow.down")
+                        .labelStyle(.iconOnly)
+                        .frame(width: 44, height: 44)
+                        .background(.regularMaterial, in: Circle())
+                        .overlay(Circle().strokeBorder(Ink.border, lineWidth: 0.5))
+                        .contentShape(Rectangle())
+                }
+                .disabled(model.loadingNewer || model.loadingOlder)
+                .accessibilityLabel("Latest messages")
+                .accessibilityHint("Scroll to the latest message and follow new responses")
+                .accessibilityIdentifier("latest-messages")
+            } else {
+                Color.clear.frame(width: 44, height: 44).accessibilityHidden(true)
+            }
+            Spacer(minLength: 8)
             Button {
                 followsLatest = false
                 if let first = rowGeometry.firstFrame(where: { revision.itemsByID[$0] != nil }) {
@@ -2184,10 +1970,15 @@ private struct ConversationContentView: View {
             }.accessibilityLabel("Next user message").accessibilityIdentifier("next-user-message")
                 .disabled(userTarget(.newer) == nil && (!model.hasNewer || revision.preparing || model.loadingOlder || model.loadingNewer || pendingUserDirection != nil))
         }
+        .font(.system(size: 17, weight: .semibold))
         .buttonStyle(.plain)
         .disabled(revision.loading || model.loadingOlder || model.loadingNewer)
         .padding(.horizontal, 20).padding(.vertical, 4)
-        .frame(maxWidth: .infinity, alignment: .trailing)
+        .frame(maxWidth: 620)
+        .accessibilityElement(children: .contain)
+        .accessibilityIdentifier("conversation-controls")
+        .frame(maxWidth: .infinity)
+        .background(Ink.background)
     }
     @ViewBuilder
     private func nativeRow(_ item: ConversationRenderedItem, in viewport: GeometryProxy) -> some View {
@@ -2260,7 +2051,12 @@ private struct ConversationContentView: View {
                 canRetry: revision.canRetry, vaultAccount: String(describing: model.vaultIntakeAccount),
                 activeTurns: revision.activeTurns)
             guard item.message == nil, let content = item.content, !content.activity.isEmpty else {
-                rows.append(.init(id: item.id, revision: cellRevision, content: { AnyView(nativeRow(item, in: viewport)) }))
+                let markdown = item.message.flatMap { row in
+                    row.role == "Agent" || row.role == "Thinking" ? row.text : nil
+                } ?? (item.output?.kind == .text ? item.output?.text : nil)
+                rows.append(.init(id: item.id, revision: cellRevision,
+                    content: { AnyView(nativeRow(item, in: viewport)) },
+                    prepare: markdown.map { source in { try await ChatMarkdown.prepare(source) } }))
                 continue
             }
             // Each activity is an independent native cell. A large expanded batch
@@ -2310,6 +2106,9 @@ private struct ConversationContentView: View {
                         ? item.id + ":activity" : (!isGroup && index == 0 ? item.id : activity.id)
                     let expansionID = activity.id + (content.childAgentID == nil ? "" : ":detail")
                     var activityRevision = cellRevision
+                    // A sibling tool update must not invalidate this card merely
+                    // because the enclosing turn's grouped value changed.
+                    activityRevision.revision = revision.activityRevisions[activity.id]
                     activityRevision.expanded = tools.isExpanded(expansionID)
                     rows.append(.init(id: rowID, revision: activityRevision, content: {
                         AnyView(Group {
@@ -2321,7 +2120,9 @@ private struct ConversationContentView: View {
                                 ConversationMessageView(row: activity, model: model, agentID: model.focused?.id ?? "")
                             }
                         })
-                    }))
+                    }, prepare: activity.role != "Tool" && content.childAgentID != nil
+                        && (activity.role == "Agent" || activity.role == "Thinking")
+                        ? { try await ChatMarkdown.prepare(activity.text) } : nil))
                 }
                 if content.isCodeModeBatch && content.childAgentID == nil {
                     let rowID = item.id + ":javascript"
@@ -2356,24 +2157,24 @@ private struct ConversationContentView: View {
     var body: some View {
         Group {
             ZStack(alignment: .bottom) {
-            // The transcript fills the viewport and scrolls beneath the controls
-            // and composer. Content margins keep the final message reachable.
+            // The safe-area inset reserves the composer outside this viewport.
+            // A separate safe-area inset reserves the conversation controls.
             GeometryReader { viewport in
             let boundaryItemID = historyBoundaryItemID
             ZStack(alignment: .top) {
             NativeConversationTranscript(
                 rows: nativeRows(in: viewport), proxy: scroll,
-                followsLatest: followsLatest && pendingReadingRestore == nil && !model.needsLatestHistory && !navigationActive,
-                bottomInset: composerHeight + 52,
-                onFrames: { frames in
+                followsLatest: followsLatest && pendingReadingRestore == nil && !model.needsLatestHistory,
+                animatesUpdates: !reduceMotion,
+                bottomInset: 0,
+                onFrames: { frames, userInitiated in
                     // Native frames contain only realized cells in viewport coordinates.
                     var visible = frames
                     if let boundaryItemID, let boundary = frames.filter({ rowGeometry.semanticID(for: $0.key) == boundaryItemID }).values.max(by: { $0.maxY < $1.maxY }) {
                         visible["history-gap"] = CGRect(x: 0, y: boundary.maxY, width: 1, height: 1)
                     }
-                    rowGeometry.updateOffset(0)
-                    rowGeometry.updateContentFrames(visible)
-                    updateRowPositions(in: viewport, using: scroll)
+                    rowGeometry.updateViewportFrames(visible)
+                    updateRowPositions(in: viewport, userInitiated: userInitiated)
                 },
                 onMetrics: { metrics in
                     let previous = nativeScrollState.metrics
@@ -2384,7 +2185,7 @@ private struct ConversationContentView: View {
                         atLatest: metrics.contentSize.height - metrics.contentOffset.y - metrics.containerSize.height + metrics.contentInsets.bottom <= verticalPadding + 1,
                         isMeasured: metrics.containerSize.height > 0)
                     if historyContent != contentPosition { historyContent = contentPosition }
-                    if let previous, isInteractingTranscript, !navigationActive,
+                    if let previous, isInteractingTranscript,
                        abs(previous.contentOffset.y - metrics.contentOffset.y) > 0.5, !historyRequestInFlight {
                         if followsLatest { followsLatest = false }
                         if selectedUserMessage != nil { selectedUserMessage = nil }
@@ -2397,16 +2198,15 @@ private struct ConversationContentView: View {
                         if hasInitialPosition && !historyReady { historyReady = true }
                     }
                     updateHistoryPosition(in: viewport)
-                    saveReadingPosition(in: viewport)
                 },
                 onPhase: { previous, phase in
                 if phase == .tracking { scrollsTowardLatest = false }
                 isInteractingTranscript = phase == .interacting
                 isScrollGestureActive = phase == .tracking || phase == .interacting || phase == .decelerating
-                // Horizontal drawer gestures can enter a scroll phase without
-                // moving the transcript. Only vertical input suspends following.
+                // Tracking alone does not establish a new reading position.
+                // Only vertical input suspends following.
                 if phase == .idle, previous == .interacting || previous == .decelerating {
-                    if !navigationActive, pendingReadingRestore == nil, historyContent.atLatest, !model.needsLatestHistory {
+                    if pendingReadingRestore == nil, historyContent.atLatest, !model.needsLatestHistory {
                         followsLatest = true
                     }
                 }
@@ -2417,22 +2217,18 @@ private struct ConversationContentView: View {
                 }
                 })
             .contentShape(Rectangle())
+            .onChange(of: pendingReadingRestore) { _, position in
+                if let position, let id = position.rowID {
+                    readingPositions.values[identity] = position
+                    scroll.restore(id, offset: position.offsetY)
+                }
+            }
             .onChange(of: revision.projectionRevision) { _, _ in
                 continueUserNavigation(using: scroll)
                 restoreHistoryPosition(using: scroll)
                 // Content-height observation follows after layout; issuing a second
                 // scroll here would retarget against the previous geometry.
                 updateHistoryPosition(in: viewport)
-            }
-            .onChange(of: navigationActive) { _, active in
-                if !active { followLatest(using: scroll) }
-                guard active, !followsLatest, pendingReadingRestore == nil else { return }
-                // Capture before keyboard dismissal / drawer animation can resize
-                // the viewport. Keep the same row and point offset on close too.
-                if let first = rowGeometry.visibleFrames(height: viewport.size.height).filter({ revision.itemsByID[rowGeometry.semanticID(for: $0.key)] != nil })
-                    .min(by: { $0.value.minY < $1.value.minY }) {
-                    pendingReadingRestore = .init(atLatest: false, rowID: first.key, offsetY: first.value.minY)
-                }
             }
             .onChange(of: hasInitialPosition) { _, _ in updateHistoryPosition(in: viewport) }
             .onChange(of: revision.error) { _, error in
@@ -2459,44 +2255,6 @@ private struct ConversationContentView: View {
             .accessibilityElement(children: .contain)
             .accessibilityLabel(revision.title)
             .accessibilityIdentifier("conversation")
-            // Keep controls as siblings of the native scroll accessibility node.
-            // An overlay can replace that node after accessibilityHidden changes
-            // during drawer navigation, expanding the button to the whole viewport.
-            VStack {
-                Spacer(minLength: 0)
-                if historyContent.isMeasured, !model.threadLoading, model.needsLatestHistory || (!followsLatest && !historyContent.atLatest) {
-                    Button {
-                        selectedUserMessage = nil
-                        pendingUserDirection = nil
-                        historyDirection = nil
-                        historyRestore = nil
-                        pendingReadingRestore = nil
-                        // Record the intent before fetching/projecting the live
-                        // tail; every later publication continues following it.
-                        followsLatest = true
-                        Task {
-                            if model.needsLatestHistory { await model.loadNewer(latest: true) }
-                            guard model.focusedConversationIdentity == identity, !model.needsLatestHistory else { return }
-                            followLatest(using: scroll)
-                        }
-                    } label: {
-                        Label("Latest messages", systemImage: "arrow.down")
-                            .labelStyle(.iconOnly)
-                            .frame(width: 42, height: 42)
-                            .background(.regularMaterial, in: Circle())
-                            .overlay(Circle().strokeBorder(Ink.border, lineWidth: 0.5))
-                            .contentShape(Circle())
-                    }
-                    .buttonStyle(.plain)
-                    .frame(width: 42, height: 42)
-                    .padding(.bottom, composerHeight + 60)
-                    .disabled(model.loadingNewer || model.loadingOlder)
-                    .accessibilityLabel("Latest messages")
-                    .accessibilityHint("Scroll to the latest message and follow new responses")
-                    .accessibilityIdentifier("latest-messages")
-                }
-            }
-            .accessibilityElement(children: .contain)
             if revision.loading {
                     ProgressView()
                         .accessibilityLabel("Loading conversation")
@@ -2513,8 +2271,10 @@ private struct ConversationContentView: View {
             }
             }
             }
-            threadControls(using: scroll)
-                .padding(.bottom, composerHeight)
+            }
+            .safeAreaInset(edge: .bottom, spacing: 0) {
+                // Keep a readable transcript line above the landscape keyboard.
+                if showsControls { threadControls(using: scroll) }
             }
             .onChange(of: revision.rows.first?.id, initial: true) { _, _ in
                 if !hasInitialPosition, !revision.rows.isEmpty {
@@ -2525,7 +2285,6 @@ private struct ConversationContentView: View {
                        revision.items.contains(where: { $0.id == rowGeometry.semanticID(for: id) }) {
                         followsLatest = false
                         pendingReadingRestore = saved
-                        scroll.scrollTo(id, anchor: .top)
                     } else {
                         scroll.scrollTo("latest", anchor: .bottom)
                     }
@@ -2535,31 +2294,6 @@ private struct ConversationContentView: View {
             }
             }
         .foregroundStyle(Ink.text)
-    }
-}
-
-private struct InboxGeneratedOutputView: View, Equatable {
-    private let results: [[String]]
-    @State private var outputs: [ChatGeneratedOutput] = []
-
-    init(rows: [TranscriptRow]) {
-        results = rows.compactMap { $0.tool?.isInspectionOutput == true ? nil : $0.tool?.generatedResults }
-    }
-    static func == (lhs: Self, rhs: Self) -> Bool { lhs.results == rhs.results }
-    var body: some View {
-        Group { if !outputs.isEmpty { ChatGeneratedOutputs(outputs: outputs) } }
-            .task(id: results) {
-                let captured = results
-                let parsed = await Task.detached(priority: .utility) {
-                    // This also applies to replayed rows that used to opt exec
-                    // output into chat. Tool text belongs inside its disclosure.
-                    var seen = Set<String>()
-                    return captured.flatMap { ChatGeneratedOutput.parse(results: $0) }
-                        .filter { seen.insert($0.id).inserted }
-                }.value
-                guard !Task.isCancelled else { return }
-                outputs = parsed
-            }
     }
 }
 
@@ -2575,55 +2309,28 @@ private final class ConversationRowGeometry {
     var semanticIDs: [String: String] = [:]
     var sourceRowIDs: [String: String] = [:]
     func semanticID(for id: String) -> String { semanticIDs[id] ?? id }
-    private var contentFrames: [String: CGRect] = [:]
+    private var viewportFrames: [String: CGRect] = [:]
     private var orderedFrames: [(key: String, value: CGRect)] = []
-    private var offsetY: CGFloat = 0
 
-    func updateContentFrames(_ value: [String: CGRect]) {
-        contentFrames = value
-        // These are non-overlapping siblings in the measured vertical stack.
-        // Index only when layout changes, never for a native scroll offset.
-        orderedFrames = value.sorted { $0.value.minY < $1.value.minY }
-    }
-
-    func updateOffset(_ value: CGFloat) { offsetY = value }
-
-    subscript(_ id: String) -> CGRect? {
-        contentFrames[id]?.offsetBy(dx: 0, dy: -offsetY)
-    }
-
-    private var firstVisibleIndex: Int {
-        var lower = 0, upper = orderedFrames.count
-        while lower < upper {
-            let middle = lower + (upper - lower) / 2
-            if orderedFrames[middle].value.maxY <= offsetY { lower = middle + 1 }
-            else { upper = middle }
+    // Native collection layout supplies only realized rows in viewport coordinates.
+    func updateViewportFrames(_ value: [String: CGRect]) {
+        viewportFrames = value
+        orderedFrames = value.sorted {
+            $0.value.minY == $1.value.minY ? $0.key < $1.key : $0.value.minY < $1.value.minY
         }
-        return lower
     }
+
+    subscript(_ id: String) -> CGRect? { viewportFrames[id] }
 
     func visibleFrames(height: CGFloat) -> [String: CGRect] {
-        var visible: [String: CGRect] = [:]
-        for entry in orderedFrames.dropFirst(firstVisibleIndex) {
-            guard entry.value.minY < offsetY + height else { break }
-            visible[entry.key] = entry.value.offsetBy(dx: 0, dy: -offsetY)
-        }
-        return visible
+        viewportFrames.filter { $0.value.maxY > 0 && $0.value.minY < height }
     }
 
     func firstFrame(where matches: (String) -> Bool) -> (key: String, value: CGRect)? {
-        guard let entry = orderedFrames.dropFirst(firstVisibleIndex).first(where: { matches($0.key) }) else { return nil }
-        return (entry.key, entry.value.offsetBy(dx: 0, dy: -offsetY))
+        orderedFrames.first { $0.value.maxY > 0 && matches($0.key) }
     }
 
     var historyRestore: (id: String, offsetY: CGFloat, childID: String?)?
-}
-
-private struct ConversationRowFrames: PreferenceKey {
-    static var defaultValue: [String: CGRect] { [:] }
-    static func reduce(value: inout [String: CGRect], nextValue: () -> [String: CGRect]) {
-        value.merge(nextValue()) { _, new in new }
-    }
 }
 
 private struct ConversationContentPosition: Equatable {
@@ -2730,6 +2437,7 @@ private struct ConversationToolCard: View {
     var onToggle: () -> Void
     @State private var sourceSheet: ToolSourceDocument?
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     private var failed: Bool { row.tool?.status == "Failed" }
     private var title: String { row.tool?.title ?? row.text }
     private var subject: String { row.tool?.subject ?? "" }
@@ -2770,148 +2478,169 @@ private struct ConversationToolCard: View {
                 .font(.caption2.weight(.medium)).foregroundStyle(failed ? Color.orange : Ink.muted)
                 .fixedSize(horizontal: false, vertical: true)
         } else {
-            Image(systemName: "checkmark").font(.caption2.weight(.semibold))
+            Image(systemName: "checkmark").font(.system(size: 17, weight: .semibold))
                 .foregroundStyle(Ink.muted).accessibilityLabel("Completed")
         }
     }
-    private var disclosure: some View {
-        Image(systemName: expanded ? "chevron.up" : "chevron.down")
-            .font(.caption2.weight(.semibold)).foregroundStyle(Ink.muted).accessibilityHidden(true)
+    private var expansion: Binding<Bool> {
+        Binding(get: { expanded }, set: { value in
+            guard value != expanded else { return }
+            onToggle()
+            expanded = value
+        })
     }
     var body: some View {
+        DisclosureGroup(isExpanded: expansion) {
+            details
+        } label: {
+            summary
+        }
+        .accessibilityIdentifier("tool-disclosure-" + row.id)
+        .transaction { if reduceMotion { $0.animation = nil } }
+        .padding(.horizontal, 12)
+        .sheet(item: $sourceSheet) { document in ToolSourceSheet(document: document) }
+        .background(Ink.surface, in: RoundedRectangle(cornerRadius: 12))
+    }
+    private var commandDirectory: some View {
+        Text(directory ?? "Default directory")
+            .font(.caption.monospaced()).foregroundStyle(Ink.muted)
+            .multilineTextAlignment(.leading)
+            .fixedSize(horizontal: false, vertical: true)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .accessibilityIdentifier("command-directory-" + row.id)
+    }
+    private var summary: some View {
+        VStack(alignment: .leading, spacing: hasSource ? 10 : 0) {
+            if let command {
+                if dynamicTypeSize.isAccessibilitySize {
+                    HStack {
+                        Image(systemName: "folder").font(.system(size: 17)).foregroundStyle(Color.accentColor)
+                        Spacer(minLength: 4)
+                        statusIndicator
+                    }
+                    commandDirectory
+                } else {
+                    HStack(spacing: 6) {
+                        Image(systemName: "folder").font(.system(size: 17)).foregroundStyle(Color.accentColor)
+                        commandDirectory
+                        Spacer(minLength: 4)
+                        statusIndicator
+                    }
+                }
+                let preview = ChatCodePreview(command)
+                ChatCodeText(source: preview.text, language: "bash")
+                    .font(.system(.footnote, design: .monospaced))
+                    .foregroundStyle(Ink.text)
+                    .multilineTextAlignment(.leading)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .lineLimit(preview.isTruncated ? 3 : nil)
+                    .accessibilityIdentifier("command-source-" + row.id)
+                if preview.isTruncated {
+                    Text("Show command and results").font(.caption2).foregroundStyle(Ink.muted)
+                }
+                if let shell {
+                    Text(shell).font(.caption2.monospaced()).foregroundStyle(Ink.muted)
+                }
+            } else if let source = codeModeSource {
+                let headerLayout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 6))
+                    : AnyLayout(HStackLayout(spacing: 6))
+                headerLayout {
+                    Image(systemName: "curlybraces").font(.system(size: 17)).foregroundStyle(Color.accentColor)
+                    Text("Code Mode").font(.caption.weight(.medium)).foregroundStyle(Ink.muted)
+                    Text("JavaScript").font(.caption2.monospaced()).foregroundStyle(Ink.muted)
+                    if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 4) }
+                    statusIndicator
+                }
+                if !expanded {
+                    // The disclosure preview must not highlight an entire
+                    // program that is clipped to three visible lines.
+                    ChatCodeText(source: ChatCodePreview(source).text, language: "javascript")
+                        .font(.system(.caption, design: .monospaced))
+                        .foregroundStyle(Ink.text)
+                        .multilineTextAlignment(.leading)
+                        .lineLimit(3)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .accessibilityIdentifier("code-mode-preview-" + row.id)
+                    Text("Show code and results")
+                        .font(.caption2).foregroundStyle(Ink.muted)
+                }
+            } else {
+                let headerLayout = dynamicTypeSize.isAccessibilitySize
+                    ? AnyLayout(VStackLayout(alignment: .leading, spacing: 8))
+                    : AnyLayout(HStackLayout(spacing: 8))
+                headerLayout {
+                    Image(systemName: symbol).font(.system(size: 17)).foregroundStyle(Color.accentColor)
+                        .frame(width: 18).accessibilityHidden(true)
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(subject.isEmpty ? title : subject)
+                            .font(.subheadline).foregroundStyle(Ink.text)
+                            .lineLimit(3).multilineTextAlignment(.leading)
+                        if !subject.isEmpty { Text(title).font(.caption2).foregroundStyle(Ink.muted) }
+                    }
+                    if !dynamicTypeSize.isAccessibilitySize { Spacer(minLength: 0) }
+                    statusIndicator
+                }
+            }
+        }.padding(.vertical, hasSource ? 12 : 6)
+            .frame(minHeight: 44).contentShape(Rectangle())
+        .contextMenu {
+            if let command {
+                Button("Copy command", systemImage: "doc.on.doc") { UIPasteboard.general.string = command }
+            }
+            if let source = codeModeSource {
+                Button("Copy code", systemImage: "doc.on.doc") { UIPasteboard.general.string = source }
+            }
+            if let directory {
+                Button("Copy directory", systemImage: "folder") { UIPasteboard.general.string = directory }
+            }
+        }
+    }
+    private var details: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Button {
-                onToggle()
-                withAnimation(reduceMotion ? nil : .easeInOut(duration: 0.18)) { expanded.toggle() }
-            } label: {
-                VStack(alignment: .leading, spacing: hasSource ? 10 : 0) {
-                    if let command {
-                        HStack(spacing: 6) {
-                            Image(systemName: "folder").foregroundStyle(Color.accentColor)
-                            Text(directory ?? "Default directory")
-                                .font(.caption.monospaced()).foregroundStyle(Ink.muted)
-                                .fixedSize(horizontal: false, vertical: true)
-                                .accessibilityIdentifier("command-directory-" + row.id)
-                            Spacer(minLength: 4)
-                            statusIndicator
-                            disclosure
-                        }
-                        let preview = ChatCodePreview(command)
-                        ChatCodeText(source: preview.text, language: "bash")
+            if let command, ChatCodePreview(command).isTruncated {
+                Button("View full command") { sourceSheet = .init(title: "Command", source: command) }
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("command-full-source-" + row.id)
+            }
+            if let source = codeModeSource {
+                Divider()
+                HStack {
+                    Text("JavaScript").font(.caption2.monospaced()).foregroundStyle(Ink.muted)
+                    Spacer()
+                    Button {
+                        UIPasteboard.general.string = source
+                    } label: {
+                        Label("Copy code", systemImage: "doc.on.doc")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .frame(minHeight: 44)
+                    .accessibilityIdentifier("code-mode-copy-" + row.id)
+                }
+                if ChatCodePreview(source, maximumCharacters: 16_384, maximumLines: 120).isTruncated {
+                    Button("View full code") { sourceSheet = .init(title: "Code", source: source) }
+                        .frame(minHeight: 44)
+                        .accessibilityIdentifier("code-mode-full-source-" + row.id)
+                } else {
+                    ScrollView(.horizontal) {
+                        ChatCodeText(source: source, language: "javascript")
                             .font(.system(.footnote, design: .monospaced))
                             .foregroundStyle(Ink.text)
-                            .multilineTextAlignment(.leading)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .lineLimit(preview.isTruncated ? 3 : nil)
-                            .accessibilityIdentifier("command-source-" + row.id)
-                        if preview.isTruncated {
-                            Text("Show command and results").font(.caption2).foregroundStyle(Ink.muted)
-                        }
-                        if let shell {
-                            Text(shell).font(.caption2.monospaced()).foregroundStyle(Ink.muted)
-                        }
-                    } else if let source = codeModeSource {
-                        HStack(spacing: 6) {
-                            Image(systemName: "curlybraces").foregroundStyle(Color.accentColor)
-                            Text("Code Mode").font(.caption.weight(.medium)).foregroundStyle(Ink.muted)
-                            Text("JavaScript").font(.caption2.monospaced()).foregroundStyle(Ink.muted)
-                            Spacer(minLength: 4)
-                            statusIndicator
-                            disclosure
-                        }
-                        if !expanded {
-                            // The disclosure preview must not highlight an entire
-                            // program that is clipped to three visible lines.
-                            ChatCodeText(source: ChatCodePreview(source).text, language: "javascript")
-                                .font(.system(.caption, design: .monospaced))
-                                .foregroundStyle(Ink.text)
-                                .multilineTextAlignment(.leading)
-                                .lineLimit(3)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .accessibilityIdentifier("code-mode-preview-" + row.id)
-                            Text("Show code and results")
-                                .font(.caption2).foregroundStyle(Ink.muted)
-                        }
-                    } else {
-                        HStack(spacing: 8) {
-                            Image(systemName: symbol).foregroundStyle(Color.accentColor)
-                                .frame(width: 18).accessibilityHidden(true)
-                            VStack(alignment: .leading, spacing: 3) {
-                                Text(subject.isEmpty ? title : subject)
-                                    .font(.subheadline).foregroundStyle(Ink.text)
-                                    .lineLimit(3).multilineTextAlignment(.leading)
-                                if !subject.isEmpty { Text(title).font(.caption2).foregroundStyle(Ink.muted) }
-                            }
-                            Spacer(minLength: 0)
-                            statusIndicator
-                            disclosure
-                        }
+                            .lineSpacing(4)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: true, vertical: true)
+                            .padding(.bottom, 12)
+                            .accessibilityIdentifier("code-mode-source-" + row.id)
                     }
-                }.padding(.vertical, hasSource ? 12 : 6)
-                    .frame(minHeight: 44).contentShape(Rectangle())
-            }.buttonStyle(.plain)
-                .accessibilityIdentifier("tool-disclosure-" + row.id)
-                .accessibilityValue(expanded ? "Expanded" : "Collapsed")
-                .accessibilityHint(expanded ? "Hide input and results" : "Show input and results")
-                .contextMenu {
-                    if let command {
-                        Button("Copy command", systemImage: "doc.on.doc") { UIPasteboard.general.string = command }
-                    }
-                    if let source = codeModeSource {
-                        Button("Copy code", systemImage: "doc.on.doc") { UIPasteboard.general.string = source }
-                    }
-                    if let directory {
-                        Button("Copy directory", systemImage: "folder") { UIPasteboard.general.string = directory }
-                    }
+                    .accessibilityIdentifier("code-mode-scroll-" + row.id)
                 }
-            if expanded {
-                if let command, ChatCodePreview(command).isTruncated {
-                    Button("View full command") { sourceSheet = .init(title: "Command", source: command) }
-                        .frame(minHeight: 44)
-                        .accessibilityIdentifier("command-full-source-" + row.id)
-                }
-                if let source = codeModeSource {
-                    Divider()
-                    HStack {
-                        Text("JavaScript").font(.caption2.monospaced()).foregroundStyle(Ink.muted)
-                        Spacer()
-                        Button {
-                            UIPasteboard.general.string = source
-                        } label: {
-                            Label("Copy code", systemImage: "doc.on.doc")
-                                .font(.caption)
-                        }
-                        .buttonStyle(.plain)
-                        .frame(minHeight: 44)
-                        .accessibilityIdentifier("code-mode-copy-" + row.id)
-                    }
-                    if ChatCodePreview(source, maximumCharacters: 16_384, maximumLines: 120).isTruncated {
-                        Button("View full code") { sourceSheet = .init(title: "Code", source: source) }
-                            .frame(minHeight: 44)
-                            .accessibilityIdentifier("code-mode-full-source-" + row.id)
-                    } else {
-                        ScrollView(.horizontal) {
-                            ChatCodeText(source: source, language: "javascript")
-                                .font(.system(.footnote, design: .monospaced))
-                                .foregroundStyle(Ink.text)
-                                .lineSpacing(4)
-                                .textSelection(.enabled)
-                                .fixedSize(horizontal: true, vertical: true)
-                                .padding(.bottom, 12)
-                                .accessibilityIdentifier("code-mode-source-" + row.id)
-                        }
-                        .accessibilityIdentifier("code-mode-scroll-" + row.id)
-                    }
-                }
-                Divider()
-                ToolActivityView(row: row, hidesCommand: command != nil, hidesCode: codeModeSource != nil).padding(.vertical, 12)
-                    .accessibilityIdentifier("tool-detail-" + row.id)
             }
-        }.padding(.horizontal, 12)
-            .sheet(item: $sourceSheet) { document in ToolSourceSheet(document: document) }
-            .background(Ink.surface, in: RoundedRectangle(cornerRadius: 12))
-            .accessibilityElement(children: .contain)
+            Divider()
+            ToolActivityView(row: row, hidesCommand: command != nil, hidesCode: codeModeSource != nil).padding(.vertical, 12)
+                .accessibilityIdentifier("tool-detail-" + row.id)
+        }
     }
 }
 
@@ -2970,6 +2699,7 @@ private struct ToolActivityView: View {
     let row: TranscriptRow
     var hidesCommand = false
     var hidesCode = false
+    @State private var sourceSheet: ToolSourceDocument?
     private var tool: ToolPresentation {
         if let tool = row.tool { return tool }
         var fallback = ToolPresentation(name: row.text, arguments: .null)
@@ -2978,23 +2708,42 @@ private struct ToolActivityView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            let input = tool.input.filter {
+            let presentation = tool
+            let input = presentation.input.filter {
                 (!hidesCommand || !["Command", "Folder", "Shell"].contains($0.label)) && (!hidesCode || $0.label != "Code")
             }
             if !input.isEmpty { fields(input, heading: "Input") }
-            if !tool.output.isEmpty { fields(tool.output, heading: "Result") }
+            if !presentation.output.isEmpty { fields(presentation.output, heading: "Result") }
         }.foregroundStyle(Ink.muted).accessibilityIdentifier("tool-activity")
+            .sheet(item: $sourceSheet) { document in ToolSourceSheet(document: document) }
     }
     private func fields(_ values: [ToolField], heading: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(heading).font(.caption.weight(.semibold)).foregroundStyle(Ink.muted)
                 .accessibilityAddTraits(.isHeader)
-            ForEach(Array(values.enumerated()), id: \.offset) { _, field in
+            // Bound payloads before Text measures them, including field count.
+            ForEach(Array(values.prefix(24).enumerated()), id: \.offset) { _, field in
+                let preview = ChatCodePreview(field.value, maximumCharacters: 2_048, maximumLines: 12)
+                let labelPreview = ChatCodePreview(field.label, maximumCharacters: 256, maximumLines: 2)
                 VStack(alignment: .leading, spacing: 3) {
-                    if field.label != heading { Text(field.label).font(.caption).foregroundStyle(Ink.muted) }
-                    Text(field.value).font(field.code ? .system(.footnote, design: .monospaced) : .subheadline)
+                    if field.label != heading {
+                        Text(labelPreview.text)
+                            .font(.caption).foregroundStyle(Ink.muted).lineLimit(2)
+                    }
+                    Text(preview.text).font(field.code ? .system(.footnote, design: .monospaced) : .subheadline)
                         .foregroundStyle(Ink.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    if preview.isTruncated || labelPreview.isTruncated {
+                        Button("View full text") {
+                            sourceSheet = .init(title: labelPreview.isTruncated ? heading : field.label,
+                                                source: labelPreview.isTruncated ? "\(field.label)\n\n\(field.value)" : field.value)
+                        }.font(.caption).frame(minHeight: 44)
+                    }
                 }
+            }
+            if values.count > 24 {
+                Button("View all \(values.count) fields") {
+                    sourceSheet = .init(title: heading, source: values.map { "\($0.label)\n\($0.value)" }.joined(separator: "\n\n"))
+                }.font(.caption).frame(minHeight: 44)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
