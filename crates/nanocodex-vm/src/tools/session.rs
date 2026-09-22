@@ -1095,6 +1095,7 @@ impl VmToolSessionHandle {
                 model: context.model().to_owned(),
                 session_id: context.session_id().to_owned(),
                 call_id: context.call_id().to_owned(),
+                turn_id: context.turn_id().map(str::to_owned),
                 output_token_budget: context.output_token_budget(),
             },
         });

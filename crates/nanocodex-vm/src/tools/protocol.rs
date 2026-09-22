@@ -341,6 +341,7 @@ mod tests {
                 model: "model".into(),
                 session_id: "session".into(),
                 call_id: "call".into(),
+                turn_id: None,
                 output_token_budget: 100,
             },
         };
@@ -405,6 +406,7 @@ mod tests {
                 model: "model".to_owned(),
                 session_id: "session".to_owned(),
                 call_id: "call".to_owned(),
+                turn_id: None,
                 output_token_budget: 100,
             },
         };
@@ -428,6 +430,7 @@ mod tests {
                 model: "gpt-5.6".to_owned(),
                 session_id: "session-1".to_owned(),
                 call_id: "call-1".to_owned(),
+                turn_id: None,
                 output_token_budget: 10_000,
             },
         });
@@ -627,6 +630,8 @@ pub(crate) struct WireToolContext {
     pub model: String,
     pub session_id: String,
     pub call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub turn_id: Option<String>,
     pub output_token_budget: usize,
 }
 

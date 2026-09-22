@@ -332,6 +332,17 @@ where
     Ok(())
 }
 
+fn guest_tool_context(context: &super::protocol::WireToolContext) -> ToolContext<'_> {
+    ToolContext::new(
+        &context.model,
+        &context.session_id,
+        &context.call_id,
+        &[],
+        context.output_token_budget,
+    )
+    .with_turn_id(context.turn_id.as_deref())
+}
+
 #[cfg(test)]
 async fn serve_test_io(
     workspace: &Path,
@@ -385,13 +396,7 @@ async fn execute_request(
             })
         }
         SessionRequest::Tool(request) => {
-            let context = ToolContext::new(
-                &request.context.model,
-                &request.context.session_id,
-                &request.context.call_id,
-                &[],
-                request.context.output_token_budget,
-            );
+            let context = guest_tool_context(&request.context);
             let execution = match request.tool {
                 super::protocol::GuestTool::Computer { name } => {
                     use nanocodex_tools::Tool as _;
@@ -1043,6 +1048,29 @@ mod tests {
     const PATH_TRACING_IMAGE_BYTES: u64 = 48_262_737;
 
     #[test]
+    fn wire_context_preserves_real_turn_metadata_in_guest() {
+        for turn_id in [Some("host-turn"), None] {
+            let mut encoded = json!({
+                "model": "model",
+                "session_id": "session",
+                "call_id": "call",
+                "output_token_budget": 100,
+            });
+            if let Some(turn_id) = turn_id {
+                encoded["turn_id"] = json!(turn_id);
+            }
+            let wire: WireToolContext = serde_json::from_value(encoded.clone()).unwrap();
+            assert_eq!(serde_json::to_value(&wire).unwrap(), encoded);
+            let context = super::guest_tool_context(&wire);
+            assert_eq!(context.turn_id(), turn_id);
+            assert_eq!(context.session_id(), "session");
+            assert_eq!(context.call_id(), "call");
+            assert_eq!(context.model(), "model");
+            assert_eq!(context.output_token_budget(), 100);
+        }
+    }
+
+    #[test]
     fn parses_guest_peak_memory_inputs() {
         let meminfo = "MemTotal:       524288 kB\nmalformed\nMemAvailable:   131071 kB\n";
         assert_eq!(parse_meminfo(meminfo), Some((524_288, 131_071)));
@@ -1547,6 +1575,7 @@ mod tests {
                 model: "model".to_owned(),
                 session_id: "session".to_owned(),
                 call_id: "foreground".to_owned(),
+                turn_id: None,
                 output_token_budget: 10_000,
             },
         });
@@ -1671,6 +1700,7 @@ mod tests {
                 model: "model".to_owned(),
                 session_id: "session".to_owned(),
                 call_id: "detached".to_owned(),
+                turn_id: None,
                 output_token_budget: 10_000,
             },
         });
@@ -1787,6 +1817,7 @@ mod tests {
                 model: "model".to_owned(),
                 session_id: "session".to_owned(),
                 call_id: "oversized".to_owned(),
+                turn_id: None,
                 output_token_budget: 10_000,
             },
         });
@@ -1867,6 +1898,7 @@ mod tests {
                 model: "model".to_owned(),
                 session_id: "session".to_owned(),
                 call_id: "view-image".to_owned(),
+                turn_id: None,
                 output_token_budget: 10_000,
             },
         });
