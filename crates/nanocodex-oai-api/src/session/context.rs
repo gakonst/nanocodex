@@ -20,6 +20,7 @@ const SYNTHETIC_OUTPUT_ID_NAMESPACE: uuid::Uuid =
 pub struct ContextManager {
     items: ResponseHistory,
     pub(super) last_token_usage: Option<Usage>,
+    pub(super) token_usage_is_estimate: bool,
     calls: CallIds,
 }
 
@@ -42,6 +43,7 @@ impl ContextManager {
         let mut context = Self {
             items: ResponseHistory::default(),
             last_token_usage: None,
+            token_usage_is_estimate: false,
             calls: CallIds::default(),
         };
         context.record_items(items);
@@ -98,6 +100,13 @@ impl ContextManager {
             }
             assign_missing_response_item_id(&mut item);
             self.calls.track(&item);
+            if self.token_usage_is_estimate
+                && let Some(usage) = &mut self.last_token_usage
+            {
+                usage.total_tokens = usage
+                    .total_tokens
+                    .saturating_add(compaction::estimate_item_tokens(&item));
+            }
             self.items.push(item);
         }
     }
@@ -213,12 +222,14 @@ impl ContextManager {
             total_tokens,
             ..Usage::default()
         });
+        self.token_usage_is_estimate = true;
         self.calls = CallIds::from_items(self.items.iter());
     }
 
     pub fn update_token_info(&mut self, usage: Option<&Usage>) {
         if let Some(usage) = usage {
             self.last_token_usage = Some(usage.clone());
+            self.token_usage_is_estimate = false;
         }
     }
 
@@ -228,6 +239,11 @@ impl ContextManager {
             .last_token_usage
             .as_ref()
             .map_or(0, |usage| usage.total_tokens);
+        // A recomputed baseline already includes every retained item. Appends
+        // extend that estimate directly until a provider supplies fresh usage.
+        if self.token_usage_is_estimate {
+            return reported;
+        }
         let local_tail = self.items_after_last_model_generated_tokens();
         if server_reasoning_included {
             reported.saturating_add(local_tail)
@@ -317,6 +333,24 @@ impl ContextManager {
     }
 
     pub(crate) fn adopt_prompt_items(&mut self, items: ResponseHistory) {
+        if self.token_usage_is_estimate
+            && let Some(usage) = &mut self.last_token_usage
+        {
+            let before = self
+                .items
+                .iter()
+                .map(compaction::estimate_item_tokens)
+                .fold(0, u64::saturating_add);
+            let after = items
+                .iter()
+                .map(compaction::estimate_item_tokens)
+                .fold(0, u64::saturating_add);
+            // Retain any request-prefix contribution outside the history.
+            usage.total_tokens = usage
+                .total_tokens
+                .saturating_sub(before)
+                .saturating_add(after);
+        }
         self.items = items;
         self.calls = CallIds::from_items(self.items.iter());
     }
@@ -759,6 +793,43 @@ fn truncate_output_content(items: &mut Vec<FunctionOutputContent>, token_limit: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recomputed_history_does_not_double_count_the_existing_local_tail() {
+        let history: Vec<ResponseItem> = serde_json::from_value(serde_json::json!([
+            {"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":"x".repeat(28)}]},
+            {"type":"message", "role":"user", "content":[{"type":"input_text", "text":"x".repeat(600000)}]}
+        ])).unwrap();
+        let mut context = ContextManager::new(Vec::new());
+        context.replace_and_recompute(history, &[]);
+        assert_eq!(context.active_context_tokens(false), 150007);
+        assert_eq!(context.active_context_tokens(true), 150007);
+        context.record_items([message("more")]);
+        assert_eq!(context.active_context_tokens(false), 150008);
+    }
+
+    #[test]
+    fn recomputed_context_counts_existing_items_once_and_tracks_new_items() {
+        let history: Vec<ResponseItem> = serde_json::from_value(serde_json::json!([
+            {"type":"reasoning", "summary":[], "encrypted_content":"x".repeat(1200)},
+            {"type":"message", "role":"user", "content":[
+                {"type":"input_text", "text":"x".repeat(600000)}]}
+        ]))
+        .unwrap();
+        let mut context = ContextManager::new(Vec::new());
+        context.replace_and_recompute(history, &[]);
+        // 250 reasoning bytes / 4 rounded up, plus 150000 user text tokens.
+        for includes_reasoning in [false, true] {
+            assert_eq!(context.active_context_tokens(includes_reasoning), 150063);
+        }
+        context.record_items([message("more")]);
+        assert_eq!(context.active_context_tokens(false), 150064);
+        context.update_token_info(Some(&Usage {
+            total_tokens: 100,
+            ..Usage::default()
+        }));
+        assert_eq!(context.active_context_tokens(true), 150101);
+    }
 
     #[test]
     fn usage_counts_incoming_agent_instructions_and_preceding_local_tail() {

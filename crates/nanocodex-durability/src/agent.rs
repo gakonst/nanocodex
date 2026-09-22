@@ -7,7 +7,7 @@ use nanocodex_agent::{
     ExecutionPolicyDisposition, NanocodexBuilder, NanocodexError, Result as AgentResult,
     execution::{
         ExecutionAdmission, ExecutionContinuation, ExecutionFuture, ExecutionOutput,
-        ExecutionPolicy, ExecutionSteer, ExecutionStepAdmission,
+        ExecutionPolicy, ExecutionSteer, ExecutionStepAdmission, IdentifiedExecutionSteer,
     },
     session::SessionSnapshot,
 };
@@ -249,7 +249,41 @@ impl ExecutionPolicy for DurableExecution {
         Box::pin(async move {
             let input = raw(input_json)?;
             self.owner
-                .accept_steer(operation_id, accepted_after_model_call_index, &input)
+                .accept_steer(
+                    operation_id,
+                    accepted_after_model_call_index,
+                    &input,
+                    None,
+                    true,
+                )
+                .await
+                .map(|index| index.expect("unidentified steer is new"))
+                .map_err(agent_error)
+        })
+    }
+
+    fn supports_steer_receipts(&self) -> bool {
+        true
+    }
+
+    fn accept_identified_steer<'a>(
+        &'a self,
+        operation_id: String,
+        message_id: String,
+        accepted_after_model_call_index: u32,
+        input_json: String,
+        capacity_available: bool,
+    ) -> ExecutionFuture<'a, AgentResult<Option<u32>>> {
+        Box::pin(async move {
+            let input = raw(input_json)?;
+            self.owner
+                .accept_steer(
+                    operation_id,
+                    accepted_after_model_call_index,
+                    &input,
+                    Some(message_id),
+                    capacity_available,
+                )
                 .await
                 .map_err(agent_error)
         })
@@ -260,6 +294,17 @@ impl ExecutionPolicy for DurableExecution {
         operation_id: String,
     ) -> ExecutionFuture<'a, AgentResult<Vec<ExecutionSteer>>> {
         Box::pin(async move {
+            self.retained_identified_steers(operation_id)
+                .await
+                .map(|steers| steers.into_iter().map(|(_, steer)| steer).collect())
+        })
+    }
+
+    fn retained_identified_steers<'a>(
+        &'a self,
+        operation_id: String,
+    ) -> ExecutionFuture<'a, AgentResult<Vec<IdentifiedExecutionSteer>>> {
+        Box::pin(async move {
             self.owner
                 .retained_steers(operation_id)
                 .await
@@ -267,14 +312,17 @@ impl ExecutionPolicy for DurableExecution {
                     steers
                         .into_iter()
                         .map(|steer| {
-                            Ok(ExecutionSteer {
-                                index: steer.index,
-                                accepted_after_model_call_index: steer
-                                    .state
-                                    .accepted_after_model_call_index,
-                                model_call_index: steer.state.model_call_index,
-                                input_json: steer.state.input.json()?.to_owned(),
-                            })
+                            Ok((
+                                steer.state.message_id,
+                                ExecutionSteer {
+                                    index: steer.index,
+                                    accepted_after_model_call_index: steer
+                                        .state
+                                        .accepted_after_model_call_index,
+                                    model_call_index: steer.state.model_call_index,
+                                    input_json: steer.state.input.json()?.to_owned(),
+                                },
+                            ))
                         })
                         .collect()
                 })
@@ -465,6 +513,15 @@ fn raw(json: String) -> AgentResult<Box<RawValue>> {
 }
 
 fn agent_error(error: Error) -> NanocodexError {
+    if matches!(error, Error::SteerQueueFull) {
+        return NanocodexError::SteerQueueFull;
+    }
+    if matches!(
+        error,
+        Error::SteerConflict { .. } | Error::SteerWithdrawn { .. }
+    ) {
+        return NanocodexError::InvalidRequest(error.to_string());
+    }
     let disposition = match &error {
         Error::Store(crate::StoreError::NotCommitted(_))
         | Error::OperationBlocked { .. }

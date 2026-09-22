@@ -272,6 +272,19 @@ impl Terminal {
             .unwrap();
     }
 
+    async fn wait_output(&self, text: &str) {
+        tokio::time::timeout(TIMEOUT, async {
+            loop {
+                if String::from_utf8_lossy(&self.output.lock().unwrap()).contains(text) {
+                    return;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .unwrap_or_else(|_| panic!("terminal never emitted {text:?}"));
+    }
+
     async fn wait_text(&self, text: &str) {
         self.wait_text_presence(text, true).await;
     }
@@ -319,6 +332,8 @@ impl Drop for Terminal {
 #[derive(Clone)]
 struct Service {
     socket_paths: Arc<Mutex<Vec<String>>>,
+    receipts: Arc<Mutex<std::collections::HashMap<(String, String), Value>>>,
+    receipts_enabled: Arc<AtomicBool>,
     vault_writes: Arc<Mutex<Vec<Value>>>,
     routing_requests: Arc<Mutex<Vec<String>>>,
     model_route: Arc<Mutex<Option<Value>>>,
@@ -563,6 +578,34 @@ async fn submit(State(service): State<Service>, Json(input): Json<Value>) -> Jso
     }))
 }
 
+fn accepted_receipt(input: &Value) -> Value {
+    use sha2::{Digest as _, Sha256};
+    let prompt: nanocodex::agent::input::Prompt =
+        serde_json::from_value(json!({"instruction": input})).unwrap();
+    json!({"state": "accepted", "input_key": Sha256::digest(serde_json::to_vec(&prompt).unwrap()).iter().map(|byte| format!("{byte:02x}")).collect::<String>()})
+}
+
+async fn steer_receipt(
+    State(service): State<Service>,
+    axum::extract::Path((_, turn)): axum::extract::Path<(String, String)>,
+    axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<Value>, axum::http::StatusCode> {
+    if !service.receipts_enabled.load(Ordering::Acquire) {
+        return Err(axum::http::StatusCode::NOT_FOUND);
+    }
+    let id = query.get("message_id").unwrap();
+    let receipt = service
+        .receipts
+        .lock()
+        .unwrap()
+        .get(&(turn.clone(), id.clone()))
+        .cloned()
+        .unwrap_or_else(|| json!({"state": "unknown"}));
+    Ok(Json(
+        json!({"protocol": 1, "turn_id": turn, "message_id": id, "state": receipt["state"], "input_key": receipt["input_key"]}),
+    ))
+}
+
 async fn steer(
     State(service): State<Service>,
     axum::extract::Path((_, turn)): axum::extract::Path<(String, String)>,
@@ -605,6 +648,8 @@ async fn cancel(
 
 struct Fixture {
     socket_paths: Arc<Mutex<Vec<String>>>,
+    receipts: Arc<Mutex<std::collections::HashMap<(String, String), Value>>>,
+    receipts_enabled: Arc<AtomicBool>,
     vault_writes: Arc<Mutex<Vec<Value>>>,
     routing_requests: Arc<Mutex<Vec<String>>>,
     model_route: Arc<Mutex<Option<Value>>>,
@@ -702,6 +747,8 @@ impl Fixture {
         let resume_gate = Arc::new(tokio::sync::Semaphore::new(1));
         let socket_paths = Arc::new(Mutex::new(Vec::new()));
         let vault_writes = Arc::new(Mutex::new(Vec::new()));
+        let receipts = Arc::new(Mutex::new(std::collections::HashMap::new()));
+        let receipts_enabled = Arc::new(AtomicBool::new(false));
         let routing_requests = Arc::new(Mutex::new(Vec::new()));
         let model_route = Arc::new(Mutex::new(None));
         let app = Router::new()
@@ -726,9 +773,12 @@ impl Fixture {
             .route("/v1/agents/{agent}/routing", post(enable_routing))
             .route("/v1/agents/{agent}/turns", post(submit))
             .route("/v1/agents/{agent}/turns/{turn}/steer", post(steer))
+            .route("/v1/agents/{agent}/turns/{turn}/steer-receipt", get(steer_receipt))
             .route("/v1/agents/{agent}/turns/{turn}/cancel", post(cancel))
             .with_state(Service {
                 socket_paths: socket_paths.clone(),
+                receipts: receipts.clone(),
+                receipts_enabled: receipts_enabled.clone(),
                 vault_writes: vault_writes.clone(),
                 routing_requests: routing_requests.clone(),
                 model_route: model_route.clone(),
@@ -765,6 +815,8 @@ impl Fixture {
             .unwrap();
         Self {
             socket_paths,
+            receipts,
+            receipts_enabled,
             vault_writes,
             routing_requests,
             model_route,
@@ -969,7 +1021,7 @@ async fn terminal_id_command_shows_attached_agent_without_sending_input() {
         fixture.terminal.wait_no_text(AGENT).await;
         let encoded = base64::engine::general_purpose::STANDARD.encode(AGENT);
         let copy = format!("\x1b]52;c;{encoded}");
-        assert!(String::from_utf8_lossy(&fixture.terminal.output.lock().unwrap()).contains(&copy));
+        fixture.terminal.wait_output(&copy).await;
         fixture.terminal.wait_text("Enter steer").await;
         assert!(fixture.submissions.try_recv().is_err());
         assert!(fixture.steers.try_recv().is_err());
@@ -1716,6 +1768,136 @@ async fn terminal_drains_a_burst_of_steering_sent_before_prompt_admission() {
         .prompt("followup after twelve steers", "\t");
     let next = fixture.submission("followup after twelve steers").await;
     fixture.complete(&next);
+    assert!(fixture.submissions.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn terminal_reconciles_unknown_steering_from_its_durable_receipt() {
+    for attached in [false, true] {
+        let mut fixture = Fixture::start_with_active(attached).await;
+        fixture.receipts_enabled.store(true, Ordering::Release);
+        let turn = if attached {
+            REMOTE_TURN.to_owned()
+        } else {
+            fixture.terminal.prompt("local task", "\r");
+            fixture.submission("local task").await
+        };
+        fixture.terminal.prompt("ACK_LOST_INSTRUCTION", "\r");
+        let (input, ack) = tokio::time::timeout(TIMEOUT, fixture.steers.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        let message_id = input["message_id"].as_str().unwrap().to_owned();
+        ack.send(false).unwrap();
+        fixture.terminal.wait_text("[delivery unknown]").await;
+        // Foreign callers and other turns cannot confirm our request.
+        fixture.receipts.lock().unwrap().insert(
+            (turn.clone(), "foreign".into()),
+            accepted_receipt(&input["input"]),
+        );
+        fixture.receipts.lock().unwrap().insert(
+            ("other-turn".into(), message_id.clone()),
+            accepted_receipt(&input["input"]),
+        );
+        fixture.terminal.wait_text("[delivery unknown]").await;
+        fixture.receipts.lock().unwrap().insert(
+            (turn.clone(), message_id),
+            accepted_receipt(&input["input"]),
+        );
+        fixture.terminal.wait_no_text("[delivery unknown]").await;
+        fixture.terminal.wait_text("steering accepted").await;
+        fixture.terminal.prompt("NEXT_INSTRUCTION", "\r");
+        let (next, ack) = tokio::time::timeout(TIMEOUT, fixture.steers.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(prompt_text(&next["input"]), "NEXT_INSTRUCTION");
+        ack.send(true).unwrap();
+        fixture.complete(&turn);
+        assert!(fixture.submissions.try_recv().is_err());
+    }
+}
+
+#[tokio::test]
+async fn terminal_replays_steer_receipt_after_disconnect_and_completion_without_resubmitting() {
+    let mut fixture = Fixture::start().await;
+    fixture.receipts_enabled.store(true, Ordering::Release);
+    fixture.terminal.prompt("local task", "\r");
+    let turn = fixture.submission("local task").await;
+    fixture.terminal.prompt("ACK_LOST_BEFORE_RECONNECT", "\r");
+    let (input, ack) = tokio::time::timeout(TIMEOUT, fixture.steers.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    ack.send(false).unwrap();
+    fixture.terminal.wait_text("[delivery unknown]").await;
+    fixture.break_stream();
+    fixture.replacement_connection().await;
+    fixture.terminal.wait_text("Reconnected").await;
+    fixture.complete(&turn);
+    fixture.receipts.lock().unwrap().insert(
+        (turn, input["message_id"].as_str().unwrap().into()),
+        accepted_receipt(&input["input"]),
+    );
+    fixture.terminal.wait_no_text("[delivery unknown]").await;
+    fixture.terminal.wait_text("steering accepted").await;
+    assert!(fixture.steers.try_recv().is_err());
+    assert!(fixture.submissions.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn terminal_durable_steer_receipt_wins_over_late_http_failure() {
+    let mut fixture = Fixture::start_with_active(true).await;
+    fixture.receipts_enabled.store(true, Ordering::Release);
+    fixture.terminal.prompt("RECEIPT_BEFORE_FAILED_ACK", "\r");
+    let (input, ack) = tokio::time::timeout(TIMEOUT, fixture.steers.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    fixture.receipts.lock().unwrap().insert(
+        (
+            REMOTE_TURN.into(),
+            input["message_id"].as_str().unwrap().into(),
+        ),
+        accepted_receipt(&input["input"]),
+    );
+    fixture.terminal.wait_text("steering accepted").await;
+    let _ = ack.send(false);
+    fixture.terminal.prompt("AFTER_LATE_HTTP_FAILURE", "\r");
+    let (next, ack) = tokio::time::timeout(TIMEOUT, fixture.steers.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(prompt_text(&next["input"]), "AFTER_LATE_HTTP_FAILURE");
+    ack.send(true).unwrap();
+    fixture.complete(REMOTE_TURN);
+    fixture.terminal.wait_no_text("[delivery unknown]").await;
+    assert!(fixture.submissions.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn terminal_receipt_for_a_different_payload_cannot_confirm_unknown_steering() {
+    let mut fixture = Fixture::start_with_active(true).await;
+    fixture.receipts_enabled.store(true, Ordering::Release);
+    fixture.terminal.prompt("DIFFERENT_PAYLOAD", "\r");
+    let (input, ack) = tokio::time::timeout(TIMEOUT, fixture.steers.recv())
+        .await
+        .unwrap()
+        .unwrap();
+    fixture.receipts.lock().unwrap().insert(
+        (
+            REMOTE_TURN.into(),
+            input["message_id"].as_str().unwrap().into(),
+        ),
+        accepted_receipt(&json!("earlier payload")),
+    );
+    ack.send(false).unwrap();
+    fixture.terminal.wait_text("[delivery unknown]").await;
+    // Let the independent receipt poll finish as well as the HTTP reconciliation.
+    tokio::time::sleep(Duration::from_millis(1500)).await;
+    fixture.terminal.wait_text("[delivery unknown]").await;
+    fixture.terminal.wait_no_text("steering accepted").await;
+    assert!(fixture.steers.try_recv().is_err());
     assert!(fixture.submissions.try_recv().is_err());
 }
 

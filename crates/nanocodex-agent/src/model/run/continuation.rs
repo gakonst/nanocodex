@@ -12,8 +12,12 @@ struct CurrentExecution {
     #[serde(default)]
     client_authored: std::collections::BTreeSet<String>,
     context_baseline: ContextBaseline,
+    #[serde(default)]
     context_usage: Option<Usage>,
+    #[serde(default)]
     server_reasoning_included: bool,
+    #[serde(default)]
+    context_usage_is_estimate: bool,
     prompt_cache_key: String,
     model: String,
     effort: Thinking,
@@ -102,12 +106,11 @@ where
             .conversation
             .managed
             .restore_client_authored(saved.client_authored);
-        session
-            .conversation
-            .update_token_info(saved.context_usage.as_ref());
-        session
-            .conversation
-            .observe_server_reasoning(saved.server_reasoning_included);
+        session.conversation.managed.restore_context_usage(
+            saved.context_usage.as_ref(),
+            saved.server_reasoning_included,
+            saved.context_usage_is_estimate,
+        );
         // Provider response IDs are connection-local; only the conversation is durable.
         session.conversation.reset_for_full_request();
         session.context = ContextState::new(
@@ -185,6 +188,7 @@ where
             context_baseline: session.context.baseline(),
             context_usage: session.conversation.managed.context_usage().0.cloned(),
             server_reasoning_included: session.conversation.managed.context_usage().1,
+            context_usage_is_estimate: session.conversation.managed.context_usage_is_estimate(),
             prompt_cache_key: session.factory.profile().prompt_cache_key().to_owned(),
             model: self.model.as_str().to_owned(),
             effort: self.thinking,
@@ -209,5 +213,59 @@ where
             )
             .await?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn execution_accounting_basis_roundtrips_and_defaults_for_legacy_records() {
+        let saved = CurrentExecution {
+            phase: ExecutionPhase::Generate,
+            instruction_revision: None,
+            workspace: ".".into(),
+            canonical_context: ResponseItem::message(
+                MessageRole::User,
+                [ContentItem::input_text("task")],
+            ),
+            client_authored: Default::default(),
+            context_baseline: ContextBaseline::Missing,
+            context_usage: Some(Usage {
+                total_tokens: 150007,
+                ..Usage::default()
+            }),
+            server_reasoning_included: true,
+            context_usage_is_estimate: true,
+            prompt_cache_key: "synthetic".into(),
+            model: Model::Astra.as_str().into(),
+            effort: Thinking::Low,
+            fast_mode: false,
+            reasoning_mode: "standard".into(),
+            model_id_prefix: None,
+            store_responses: false,
+            stats: RunStats::default(),
+            usage_reported: false,
+            usage_cost: None,
+            warmup_reported: false,
+            warmup_cost: None,
+            context_window_tokens: 272000,
+            force_compaction: false,
+            tool_call_indices: HashMap::new(),
+        };
+        let mut encoded = serde_json::to_value(saved).unwrap();
+        let restored: CurrentExecution = serde_json::from_value(encoded.clone()).unwrap();
+        assert!(restored.context_usage_is_estimate);
+        assert!(restored.server_reasoning_included);
+        assert_eq!(restored.context_usage.unwrap().total_tokens, 150007);
+        encoded
+            .as_object_mut()
+            .unwrap()
+            .remove("context_usage_is_estimate");
+        let legacy: CurrentExecution = serde_json::from_value(encoded).unwrap();
+        assert!(!legacy.context_usage_is_estimate);
+        assert!(legacy.server_reasoning_included);
+        assert_eq!(legacy.context_usage.unwrap().total_tokens, 150007);
     }
 }

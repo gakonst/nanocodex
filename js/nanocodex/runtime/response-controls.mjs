@@ -1,6 +1,7 @@
 /** Apply stable managed response policy at the provider wire boundary, including replay. */
 export function responseControlsSocket(socket, controls = {}) {
   validateResponseControls(controls);
+  if (!hasResponseControls(controls)) return socket;
   return new Proxy({}, {
     get(_target, property) {
       const target = socket;
@@ -22,10 +23,17 @@ export function responseControlsSocket(socket, controls = {}) {
 /** Apply the same policy to an HTTPS Responses body before provider dispatch. */
 export function responseControlsBody(encoded, controls = {}) {
   validateResponseControls(controls);
+  if (!hasResponseControls(controls)) return encoded;
   const body = JSON.parse(encoded);
   if (!body || typeof body !== "object" || Array.isArray(body)) throw new TypeError("response body must be an object");
   applyResponseControls(body, controls);
   return JSON.stringify(body);
+}
+
+function hasResponseControls(controls) {
+  return controls.promptCacheKey !== undefined
+    || controls.outputSchema !== undefined
+    || controls.promptCache !== undefined;
 }
 
 function validateResponseControls(controls) {

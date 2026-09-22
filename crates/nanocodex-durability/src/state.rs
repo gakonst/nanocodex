@@ -222,6 +222,9 @@ pub enum Transition {
     },
     /// Live steering input was accepted for an active operation.
     SteerAccepted {
+        /// Caller identity atomically retained with this acceptance.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        message_id: Option<String>,
         /// Accepted operation identity.
         operation_id: String,
         /// Stable one-based FIFO position within the operation.
@@ -349,6 +352,9 @@ pub struct StepState {
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SteerState {
+    /// Optional caller identity for pending withdrawal after recovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub message_id: Option<String>,
     /// Exact typed steering prompt.
     pub input: EncodedPayload,
     /// Model call that was current when the steering input was accepted.
@@ -357,10 +363,25 @@ pub struct SteerState {
     pub model_call_index: Option<u32>,
 }
 
+/// A small durable caller receipt retained after consumption or withdrawal.
+#[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct IdentifiedSteerReceipt {
+    /// Fingerprint of the exact serialized prompt.
+    pub input_key: String,
+    /// Original acceptance ordinal.
+    pub index: u32,
+    /// Withdrawn identities cannot be accepted again.
+    pub withdrawn: bool,
+}
+
 /// Reduced durable operation state.
 #[derive(Clone, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct OperationState {
+    /// Caller receipts survive retirement of live steering bodies.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub steer_receipts: BTreeMap<String, IdentifiedSteerReceipt>,
     /// Current conversation and execution position; settled batches are retired atomically.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub continuation: Option<EncodedPayload>,
@@ -840,6 +861,7 @@ impl DurableState {
                 steer_index,
                 accepted_after_model_call_index,
                 input: _,
+                message_id,
             } => {
                 self.ensure_prior_operations_terminal(operation_id)?;
                 if *accepted_after_model_call_index == 0 {
@@ -848,6 +870,14 @@ impl DurableState {
                     )));
                 }
                 let operation = self.pending_operation(operation_id)?;
+                if message_id
+                    .as_ref()
+                    .is_some_and(|id| id.is_empty() || operation.steer_receipts.contains_key(id))
+                {
+                    return Err(Error::InvalidState(
+                        "steer identity was already accepted or is empty".into(),
+                    ));
+                }
                 let expected = u32::try_from(operation.steers.len())
                     .ok()
                     .and_then(|length| length.checked_add(operation.retired_steers)?.checked_add(1))
@@ -996,6 +1026,7 @@ impl DurableState {
                 self.operations.insert(
                     operation_id,
                     OperationState {
+                        steer_receipts: BTreeMap::new(),
                         continuation: None,
                         retired_model_calls: 0,
                         retired_steers: 0,
@@ -1047,17 +1078,28 @@ impl DurableState {
             }
             Transition::SteerAccepted {
                 operation_id,
-                steer_index: _,
+                steer_index,
                 accepted_after_model_call_index,
                 input,
+                message_id,
             } => {
-                self.pending_operation_mut(&operation_id)?
-                    .steers
-                    .push(SteerState {
-                        input,
-                        accepted_after_model_call_index,
-                        model_call_index: None,
-                    });
+                let operation = self.pending_operation_mut(&operation_id)?;
+                if let Some(id) = &message_id {
+                    operation.steer_receipts.insert(
+                        id.clone(),
+                        IdentifiedSteerReceipt {
+                            input_key: input.key.to_string(),
+                            index: steer_index,
+                            withdrawn: false,
+                        },
+                    );
+                }
+                operation.steers.push(SteerState {
+                    message_id,
+                    input,
+                    accepted_after_model_call_index,
+                    model_call_index: None,
+                });
             }
             Transition::SteerBound {
                 operation_id,
@@ -1074,7 +1116,13 @@ impl DurableState {
                 operation.steers[index].model_call_index = Some(model_call_index);
             }
             Transition::SteerWithdrawn { operation_id, .. } => {
-                self.pending_operation_mut(&operation_id)?.steers.pop();
+                let operation = self.pending_operation_mut(&operation_id)?;
+                if let Some(steer) = operation.steers.pop()
+                    && let Some(id) = steer.message_id
+                    && let Some(receipt) = operation.steer_receipts.get_mut(&id)
+                {
+                    receipt.withdrawn = true;
+                }
             }
             Transition::OperationCompleted {
                 operation_id,
@@ -1249,6 +1297,7 @@ mod continuation_tests {
             })?;
             if model_call <= 256 {
                 apply(Transition::SteerAccepted {
+                    message_id: None,
                     operation_id: id.clone(),
                     steer_index: model_call,
                     accepted_after_model_call_index: model_call,
@@ -1288,6 +1337,7 @@ mod continuation_tests {
         })?;
         for steer_index in 1..=2 {
             apply(Transition::SteerAccepted {
+                message_id: None,
                 operation_id: "turn".into(),
                 steer_index,
                 accepted_after_model_call_index: 1,
@@ -1347,6 +1397,7 @@ mod continuation_tests {
             input: payload.clone(),
         })?;
         apply(Transition::SteerAccepted {
+            message_id: None,
             operation_id: id.clone(),
             steer_index: 1,
             accepted_after_model_call_index: 1,
@@ -1430,6 +1481,7 @@ mod withdrawal_tests {
         })?;
         for steer_index in 1..=2 {
             apply(Transition::SteerAccepted {
+                message_id: None,
                 operation_id: "turn".into(),
                 steer_index,
                 accepted_after_model_call_index: 1,
@@ -1487,6 +1539,7 @@ mod withdrawal_tests {
             input: payload.clone(),
         })?;
         apply(Transition::SteerAccepted {
+            message_id: None,
             operation_id: "turn".into(),
             steer_index: 1,
             accepted_after_model_call_index: 1,
@@ -1514,6 +1567,7 @@ mod withdrawal_tests {
         })?;
         for steer_index in 2..=3 {
             apply(Transition::SteerAccepted {
+                message_id: None,
                 operation_id: "turn".into(),
                 steer_index,
                 accepted_after_model_call_index: 2,

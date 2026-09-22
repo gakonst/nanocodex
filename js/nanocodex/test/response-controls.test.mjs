@@ -120,3 +120,12 @@ test("HTTPS and WebSocket requests apply identical response controls", () => {
     assert.throws(() => responseControlsBody(JSON.stringify(request), invalid), TypeError);
   }
 });
+
+test("empty response controls do not parse or re-encode request bodies", () => {
+  const socket = { send() {} };
+  for (const controls of [undefined, {}, { promptCacheKey: undefined, outputSchema: undefined, promptCache: undefined }]) {
+    assert.equal(responseControlsSocket(socket, controls), socket);
+    // Deliberately not JSON: any parsing would throw rather than pass through.
+    assert.equal(responseControlsBody("opaque encoded request", controls), "opaque encoded request");
+  }
+});

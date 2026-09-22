@@ -2560,7 +2560,7 @@ async function managedFetchRoute(
       return stub.fetch(`https://session.internal/${resource}`, {method,headers:sessionHeaders,...(method === "GET" ? {} : {body:request.body})});
     }
     const turnMatch = resource.match(
-      /^turns\/([^/]+)(?:\/(steer|withdraw-steer|cancel|command-status))?$/,
+      /^turns\/([^/]+)(?:\/(steer|steer-receipt|withdraw-steer|cancel|command-status))?$/,
     );
     if (turnMatch) {
       // SDK paths percent-encode ':' in cron and other stable turn IDs.
@@ -2572,7 +2572,7 @@ async function managedFetchRoute(
         return json({ error: "invalid_turn_id" }, { status: 400 });
       }
       const action = turnMatch[2];
-      const expectedMethod = action === undefined || action === "command-status" ? "GET" : "POST";
+      const expectedMethod = action === undefined || action === "command-status" || action === "steer-receipt" ? "GET" : "POST";
       if (request.method !== expectedMethod) {
         return json({ error: "method_not_allowed" }, { status: 405 });
       }
@@ -2585,7 +2585,7 @@ async function managedFetchRoute(
         if (originFailure) return originFailure;
       }
       return stub.fetch(
-        `https://session.internal/turns/${turnId}${action ? `/${action}` : ""}?${publicOrigin}`,
+        `https://session.internal/turns/${turnId}${action ? `/${action}` : ""}?${publicOrigin}${action === "steer-receipt" ? `&message_id=${encodeURIComponent(url.searchParams.get("message_id") ?? "")}` : ""}`,
         {
           method: request.method,
           headers: sessionHeaders,
@@ -4099,7 +4099,7 @@ export class DurableAgentSession extends DurableComputerSession {
         headers: { "cache-control": "no-store" },
       });
     }
-    const turnRoute = url.pathname.match(/^\/turns\/([A-Za-z0-9._:-]{1,128})(?:\/(steer|withdraw-steer|cancel|command-status))?$/);
+    const turnRoute = url.pathname.match(/^\/turns\/([A-Za-z0-9._:-]{1,128})(?:\/(steer|steer-receipt|withdraw-steer|cancel|command-status))?$/);
     if (turnRoute) {
       if (this.#deleting) return json({ error: "agent_deleting" }, { status: 409 });
       const turnId = turnRoute[1]!;
@@ -4113,6 +4113,22 @@ export class DurableAgentSession extends DurableComputerSession {
       }
       if (request.method === "GET" && turnRoute[2] === "command-status") {
         return this.#commandReceipts.status(turnId, request.headers.get("idempotency-key") ?? "", this.#commandAuthority(turnAuthorization));
+      }
+      if (request.method === "GET" && turnRoute[2] === "steer-receipt") {
+        try {
+          const messageId = url.searchParams.get("message_id") ?? "";
+          if (!TURN_ID.test(messageId)) return json({ error: "invalid_message_id" }, { status: 400 });
+          const row = await this.#authorizedSteerTurn(turnId, turnAuthorization);
+          const receipt = CloudflareAgent.steerReceipt(this, turnId, messageId);
+          return json({
+            protocol: 1,
+            turn_id: turnId,
+            message_id: messageId,
+            state: receipt === null ? "unknown" : receipt.withdrawn ? "withdrawn" : "accepted",
+            input_key: receipt?.input_key ?? null,
+            terminal: isTerminalState(row.state),
+          }, { headers: { "cache-control": "no-store" } });
+        } catch (error) { return managedErrorResponse(error, "steer_receipt_failed"); }
       }
       if (request.method === "POST" && turnRoute[2] === "steer") {
         return this.#steerHttpTurn(turnId, request, turnAuthorization);
@@ -6155,6 +6171,7 @@ export class DurableAgentSession extends DurableComputerSession {
     messageId?: string,
   ): Promise<void> {
     const command = parseGoalCommand(input);
+    if (messageId && command === null && await this.#replaySteerReceipt(id, input, authorization, messageId)) return;
     if (command !== null) {
       await this.#settingsMutationTail;
       this.#assertDurabilityAdmissionActive();
@@ -6185,9 +6202,27 @@ export class DurableAgentSession extends DurableComputerSession {
       await this.#scheduleNextAlarm();
       return;
     }
-    const turn = await this.#steerableManagedTurn(id, authorization);
-    await turn.steer({ input, messageId });
-    this.#sidebarPresentation().recordUserMessage(`steer:${messageId ?? crypto.randomUUID()}`, Date.now());
+    try {
+      const turn = await this.#steerableManagedTurn(id, authorization);
+      await turn.steer({ input, messageId });
+      this.#sidebarPresentation().recordUserMessage(`steer:${messageId ?? crypto.randomUUID()}`, Date.now());
+    } catch (error) {
+      // A concurrent request may have committed after our first lookup; also
+      // reconcile a lost storage ACK before classifying its transport error.
+      if (messageId && await this.#replaySteerReceipt(id, input, authorization, messageId)) return;
+      throw error;
+    }
+  }
+
+  async #replaySteerReceipt(id: string, input: PromptInput, authorization: TurnAuthorization, messageId: string): Promise<boolean> {
+    await this.#authorizedSteerTurn(id, authorization);
+    const receipt = CloudflareAgent.steerReceipt(this, id, messageId);
+    if (receipt === null) return false;
+    if (receipt.input_key !== await CloudflareAgent.steerInputKey(input)) {
+      throw new ManagedRequestError(409, "message_id_conflict", "this steering identity has different retained input");
+    }
+    if (receipt.withdrawn) throw new ManagedRequestError(409, "steer_withdrawn", "this steering identity was withdrawn");
+    return true;
   }
 
   async #withdrawSteerHttpTurn(id: string, request: Request, authorization: TurnAuthorization): Promise<Response> {
@@ -6212,8 +6247,8 @@ export class DurableAgentSession extends DurableComputerSession {
     }
   }
 
-  async #steerableManagedTurn(id: string, authorization: TurnAuthorization) {
-    let row = await this.#findManagedTurn(id);
+  async #authorizedSteerTurn(id: string, authorization: TurnAuthorization) {
+    const row = await this.#findManagedTurn(id);
     if (!row) throw new ManagedRequestError(404, "turn_not_found", `turn ${id} does not exist`);
     let retainedAuthorization: TurnAuthorization;
     try { retainedAuthorization = parseTurnAuthorization(row.authorization_json); }
@@ -6221,6 +6256,11 @@ export class DurableAgentSession extends DurableComputerSession {
     if (!turnControlAuthorizationMatches(retainedAuthorization, authorization)) {
       throw new ManagedRequestError(403, "turn_authority_mismatch", "this authorization cannot control the active turn");
     }
+    return row;
+  }
+
+  async #steerableManagedTurn(id: string, authorization: TurnAuthorization) {
+    let row = await this.#authorizedSteerTurn(id, authorization);
     try {
       await withHardDeadline("turn settings", 10_000, () => this.#settingsMutationTail);
     } catch {
@@ -8285,6 +8325,8 @@ export class DurableAgentSession extends DurableComputerSession {
         }, undefined, gatewayTelemetry),
         // Voice and session control can start while the owned Responses relay warms up.
         waitForPreconnect: false,
+        // Managed observation consumes normalized/progress events only.
+        rawApiEvents: false,
         subagentsEnabled: configuration.multi_agent?.enabled,
         subagentMaxConcurrency: configuration.multi_agent?.enabled
           ? configuration.multi_agent.max_concurrent_subagents ?? 6 : undefined,

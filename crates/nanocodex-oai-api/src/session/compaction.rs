@@ -502,8 +502,12 @@ fn original_image_bytes_estimate(image_url: &str) -> Option<usize> {
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(payload)
             .ok()?;
-        let decoded = image::load_from_memory(&bytes).ok()?;
-        let (width, height) = (decoded.width(), decoded.height());
+        // Estimation needs header dimensions, never a full decoded pixel buffer.
+        let (width, height) = image::ImageReader::new(std::io::Cursor::new(bytes))
+            .with_guessed_format()
+            .ok()?
+            .into_dimensions()
+            .ok()?;
         let patches_wide = width.div_ceil(ORIGINAL_IMAGE_PATCH_SIZE);
         let patches_high = height.div_ceil(ORIGINAL_IMAGE_PATCH_SIZE);
         let patches = usize::try_from(u64::from(patches_wide) * u64::from(patches_high))
@@ -541,6 +545,27 @@ mod tests {
 
         assert_eq!(
             original_image_bytes_estimate(&image_url),
+            Some(6 * APPROX_BYTES_PER_TOKEN)
+        );
+    }
+
+    #[test]
+    fn original_image_estimate_reads_dimensions_without_decoding_pixels() {
+        use base64::{Engine as _, engine::general_purpose::STANDARD};
+        let mut encoded = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::new_rgb8(65, 33)
+            .write_to(&mut encoded, image::ImageFormat::Png)
+            .unwrap();
+        let mut header = encoded.into_inner();
+        let data = header
+            .windows(4)
+            .position(|bytes| bytes == b"IDAT")
+            .unwrap();
+        header.truncate(data + 4);
+        assert!(image::load_from_memory(&header).is_err());
+        let url = format!("data:image/png;base64,{}", STANDARD.encode(header));
+        assert_eq!(
+            original_image_bytes_estimate(&url),
             Some(6 * APPROX_BYTES_PER_TOKEN)
         );
     }

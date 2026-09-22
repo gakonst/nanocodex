@@ -26,8 +26,8 @@ pub use session::{Admission, AutomaticAdmission, BeginStep, DurableSession};
 #[cfg_attr(docsrs, doc(cfg(all(feature = "sqlite", not(target_family = "wasm")))))]
 pub use sqlite::SqliteStore;
 pub use state::{
-    DurableState, EncodedPayload, OperationState, OperationStatus, SteerState, StepState,
-    StepStatus, Transition,
+    DurableState, EncodedPayload, IdentifiedSteerReceipt, OperationState, OperationStatus,
+    SteerState, StepState, StepStatus, Transition,
 };
 pub use store::{
     OwnedState, OwnerId, OwnerToken, StateStore, StoreError, StoreFuture, StoreRecord, StoredState,
@@ -39,6 +39,21 @@ pub type Result<T> = std::result::Result<T, Error>;
 /// Portable durable-execution failure.
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    /// New steering input cannot enter a full pending queue.
+    #[error("steering queue is full")]
+    SteerQueueFull,
+    /// A steering caller identity was reused with different input.
+    #[error("steering message `{message_id}` already has different input")]
+    SteerConflict {
+        /// Conflicting caller identity.
+        message_id: String,
+    },
+    /// A withdrawn identity cannot be resurrected.
+    #[error("steering message `{message_id}` was withdrawn")]
+    SteerWithdrawn {
+        /// Withdrawn caller identity.
+        message_id: String,
+    },
     /// The host store rejected or failed an operation.
     #[error(transparent)]
     Store(#[from] StoreError),

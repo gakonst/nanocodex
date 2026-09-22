@@ -204,6 +204,17 @@ impl<F> OpenAiBuilder<F> {
         self
     }
 
+    /// Controls complete raw `api.event` telemetry from the standard transport.
+    ///
+    /// Enabled by default. Disable this when only normalized output and transport
+    /// progress are needed: raw payloads are skipped before event serialization.
+    /// The policy is inherited by sessions and agents created from this client.
+    #[must_use]
+    pub const fn raw_api_events(mut self, enabled: bool) -> Self {
+        self.config.raw_api_events = enabled;
+        self
+    }
+
     /// Selects incremental continuation or complete replay for healthy calls.
     #[must_use]
     pub const fn history(mut self, history: ResponsesHistory) -> Self {

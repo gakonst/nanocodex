@@ -336,6 +336,9 @@ pub(crate) enum RootEffect {
     WithdrawSteer {
         id: QueueId,
     },
+    ForgetSteerReceipt {
+        id: QueueId,
+    },
     PersistSteerWithdrawal {
         text: String,
     },
@@ -2774,6 +2777,7 @@ impl RootNode {
         for effect in update.effects {
             match effect {
                 QueueEffect::Blur => {}
+                QueueEffect::Discard { id } => effects.push(RootEffect::ForgetSteerReceipt { id }),
                 QueueEffect::Edit { id, prompt } => {
                     let edit = self.begin_queue_edit(id, prompt);
                     effects.extend(edit.effects);
@@ -2823,6 +2827,7 @@ impl RootNode {
         let Some(edit) = self.queue_edit.take() else {
             return ComponentUpdate::none();
         };
+        let forget_receipt = save && self.queue.component().is_unconfirmed_steer(edit.id);
         if save {
             // A saved revision is a new instruction. A late receipt for the
             // original request must not remove it from the queue.
@@ -2856,7 +2861,13 @@ impl RootNode {
         if !restored {
             return ComponentUpdate::render(RenderRequest::Immediate);
         }
-        self.submit_next_queued()
+        let mut update = self.submit_next_queued();
+        if forget_receipt {
+            update
+                .effects
+                .insert(0, RootEffect::ForgetSteerReceipt { id: edit.id });
+        }
+        update
     }
 
     fn edit_composer(&mut self, event: ComposerEvent) -> ComponentUpdate<RootEffect> {
@@ -3417,7 +3428,12 @@ impl RootNode {
     }
 
     fn steer_admitted(&mut self, id: QueueId) -> ComponentUpdate<RootEffect> {
-        let accepted = self.queue.component_mut().steer_admitted(id);
+        let accepted = if self.queue_edit.as_ref().is_some_and(|edit| edit.id == id) {
+            self.confirmed_queue_edit = Some(id);
+            self.queue.component().prompt(id).map(|prompt| (id, prompt))
+        } else {
+            self.queue.component_mut().steer_admitted(id)
+        };
         if let Some(accepted) = &accepted {
             self.last_admitted_steer = Some(accepted.clone());
         }
@@ -6145,6 +6161,35 @@ mod live_control_tests {
     }
 
     #[test]
+    fn receipt_while_editing_unknown_steer_preserves_saved_revision() {
+        for save in [false, true] {
+            let mut root = root_with_draft("");
+            root.update(RootEvent::ManagedActiveTurns(1));
+            let (id, _) = root
+                .queue
+                .component_mut()
+                .begin_steer("original".to_owned().into());
+            root.update(RootEvent::SteerUnconfirmed(id));
+            root.queue.component_mut().set_focused(true);
+            root.update(key(KeyCode::Char('e')));
+            root.composer
+                .component_mut()
+                .replace_draft("revised".to_owned());
+            root.update(RootEvent::SteerAdmitted(id));
+            assert_eq!(root.composer.component().draft(), "revised");
+            root.update(key(if save { KeyCode::Enter } else { KeyCode::Esc }));
+            if save {
+                assert_eq!(
+                    root.queue.component().prompt(id).unwrap().display_text(),
+                    "revised"
+                );
+            } else {
+                assert!(root.queue.component().is_empty());
+            }
+        }
+    }
+
+    #[test]
     fn unknown_image_steering_supports_explicit_edit_retry_and_cancellation() {
         use crate::tui::Submission;
         use nanocodex::agent::input::{PromptInput, UserInput};
@@ -6177,11 +6222,12 @@ mod live_control_tests {
                 root.composer.component().draft(),
                 "updated inspect [Image #3][Image #4]"
             );
-            assert!(
-                root.update(key(if save { KeyCode::Enter } else { KeyCode::Esc }))
-                    .effects
-                    .is_empty()
-            );
+            let edited = root.update(key(if save { KeyCode::Enter } else { KeyCode::Esc }));
+            if save {
+                assert_eq!(edited.effects, [RootEffect::ForgetSteerReceipt { id }]);
+            } else {
+                assert!(edited.effects.is_empty());
+            }
             assert_eq!(
                 root.composer.component().draft(),
                 "preserved draft [Image #1]"
@@ -6196,7 +6242,18 @@ mod live_control_tests {
                 root.update(key(KeyCode::Char('e')));
                 update = root.update(key(KeyCode::Enter));
             }
-            let [RootEffect::Submit(prompt)] = update.effects.as_slice() else {
+            let effects = if save {
+                update.effects.as_slice()
+            } else {
+                let [RootEffect::ForgetSteerReceipt { id: forgotten }, rest @ ..] =
+                    update.effects.as_slice()
+                else {
+                    panic!("saving unknown delivery must stop its receipt poll");
+                };
+                assert_eq!(*forgotten, id);
+                rest
+            };
+            let [RootEffect::Submit(prompt)] = effects else {
                 panic!("explicitly saving the image input should submit it once");
             };
             assert_eq!(
@@ -6428,7 +6485,7 @@ mod live_control_tests {
             assert!(root.queue.component().is_empty());
             if save {
                 assert!(
-                    matches!(update.effects.as_slice(), [RootEffect::Submit(prompt)] if prompt.display_text() == "revised input")
+                    matches!(update.effects.as_slice(), [RootEffect::ForgetSteerReceipt { .. }, RootEffect::Submit(prompt)] if prompt.display_text() == "revised input")
                 );
             } else {
                 assert!(
@@ -6449,14 +6506,15 @@ mod live_control_tests {
         root.composer
             .component_mut()
             .replace_draft("revised input".to_owned());
-        assert!(
+        assert!(matches!(
             root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
                 KeyCode::Enter,
                 KeyModifiers::SUPER
             ))))
             .effects
-            .is_empty()
-        );
+            .as_slice(),
+            [RootEffect::ForgetSteerReceipt { .. }]
+        ));
         assert!(root.queue_edit.is_none());
         root.confirm_prompt("request-1");
         let update = root.update(RootEvent::ManagedActiveTurns(0));

@@ -1,6 +1,7 @@
 //! Prompt image preparation and model-output image normalization.
 
 use std::{
+    borrow::Cow,
     collections::{HashMap, VecDeque},
     io::Cursor,
     path::Path,
@@ -12,7 +13,6 @@ use image::{
     ColorType, DynamicImage, GenericImageView, ImageDecoder, ImageEncoder, ImageFormat,
     ImageReader,
     codecs::{jpeg::JpegEncoder, png::PngEncoder, webp::WebPEncoder},
-    imageops::FilterType,
 };
 pub use nanocodex_oai_api::ImageDetail;
 use nanocodex_oai_api::{PromptInput, UserInput, responses::ContentItem};
@@ -31,6 +31,14 @@ const REMOTE_IMAGE_URL_PLACEHOLDER: &str =
 const DATA_URL_PREFIX: &str = "data:";
 const PROMPT_IMAGE_PATCH_SIZE: u32 = 32;
 const MAX_PROMPT_IMAGE_INPUT_BYTES: usize = 1024 * 1024 * 1024;
+// Pixel buffers expand independently of compressed file size. Keep ordinary
+// 12 MP RGB photos usable in Workers, but reject larger decodes before
+// allocating their pixels. RGBA needs more headroom for source/destination
+// buffers and serialized tool results. Native hosts retain the usual budget.
+#[cfg(target_family = "wasm")]
+const MAX_PROMPT_IMAGE_DECODE_BYTES: u64 = 40 * 1024 * 1024;
+#[cfg(not(target_family = "wasm"))]
+const MAX_PROMPT_IMAGE_DECODE_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_IMAGE_CACHE_ENTRIES: usize = 32;
 const MAX_IMAGE_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
@@ -504,14 +512,24 @@ fn load_for_prompt_bytes(
         ImageFormat::Png | ImageFormat::Jpeg | ImageFormat::WebP => Some(guessed_format),
         _ => None,
     };
-    let mut decoder = ImageReader::with_format(Cursor::new(&file_bytes), guessed_format)
-        .into_decoder()
-        .map_err(|error| {
-            ImagePreparationError::Processing(format!(
-                "unable to decode image at `{}`: {error}",
-                path.display()
-            ))
-        })?;
+    let mut reader = ImageReader::with_format(Cursor::new(&file_bytes), guessed_format);
+    let mut decode_limits = image::Limits::default();
+    decode_limits.max_alloc = Some(MAX_PROMPT_IMAGE_DECODE_BYTES);
+    reader.limits(decode_limits);
+    let mut decoder = reader.into_decoder().map_err(|error| {
+        ImagePreparationError::Processing(format!(
+            "unable to decode image at `{}`: {error}",
+            path.display()
+        ))
+    })?;
+    let pixel_bytes = decoder.total_bytes();
+    if pixel_bytes > MAX_PROMPT_IMAGE_DECODE_BYTES {
+        return Err(ImagePreparationError::ImageTooLarge {
+            representation: "decoded pixels",
+            size: usize::try_from(pixel_bytes).unwrap_or(usize::MAX),
+            max: usize::try_from(MAX_PROMPT_IMAGE_DECODE_BYTES).unwrap_or(usize::MAX),
+        });
+    }
     let metadata = ImageMetadata {
         icc_profile: decoder
             .icc_profile()
@@ -540,7 +558,11 @@ fn load_for_prompt_bytes(
             encode_image(&dynamic, ImageFormat::Png, metadata)?
         }
     } else {
-        let resized = dynamic.resize_exact(target_width, target_height, FilterType::Triangle);
+        // Triangle resize constructs an input-width x output-height RGBA-f32
+        // intermediate: about 170 MiB for an ordinary 12 MP original-detail
+        // photo. Area downsampling needs only source and destination pixels.
+        let resized = dynamic.thumbnail_exact(target_width, target_height);
+        drop(dynamic);
         encode_image(
             &resized,
             preserved_format.unwrap_or(ImageFormat::Png),
@@ -641,16 +663,11 @@ fn encode_image(
     let ImageMetadata { icc_profile, exif } = metadata;
     match target_format {
         ImageFormat::Png => {
-            let rgba = image.to_rgba8();
+            let (pixels, color) = rgb_or_rgba8_bytes(image);
             let mut encoder = PngEncoder::new(&mut bytes);
             apply_image_metadata(&mut encoder, icc_profile, exif, target_format)?;
             encoder
-                .write_image(
-                    rgba.as_raw(),
-                    image.width(),
-                    image.height(),
-                    ColorType::Rgba8.into(),
-                )
+                .write_image(pixels.as_ref(), image.width(), image.height(), color.into())
                 .map_err(|error| encode_error(target_format, &error))?;
         }
         ImageFormat::Jpeg => {
@@ -661,16 +678,11 @@ fn encode_image(
                 .map_err(|error| encode_error(target_format, &error))?;
         }
         ImageFormat::WebP => {
-            let rgba = image.to_rgba8();
+            let (pixels, color) = rgb_or_rgba8_bytes(image);
             let mut encoder = WebPEncoder::new_lossless(&mut bytes);
             apply_image_metadata(&mut encoder, icc_profile, exif, target_format)?;
             encoder
-                .write_image(
-                    rgba.as_raw(),
-                    image.width(),
-                    image.height(),
-                    ColorType::Rgba8.into(),
-                )
+                .write_image(pixels.as_ref(), image.width(), image.height(), color.into())
                 .map_err(|error| encode_error(target_format, &error))?;
         }
         _ => unreachable!("target format is normalized above"),
@@ -679,6 +691,15 @@ fn encode_image(
         bytes: bytes.into(),
         mime: format_to_mime(target_format),
     })
+}
+
+// Keep already-supported 8-bit buffers borrowed. Converting a 10 MP RGB
+// result to owned RGBA adds a 40 MiB allocation at the encoder boundary.
+fn rgb_or_rgba8_bytes(image: &DynamicImage) -> (Cow<'_, [u8]>, ColorType) {
+    match image.color() {
+        color @ (ColorType::Rgb8 | ColorType::Rgba8) => (Cow::Borrowed(image.as_bytes()), color),
+        _ => (Cow::Owned(image.to_rgba8().into_raw()), ColorType::Rgba8),
+    }
 }
 
 fn apply_image_metadata(
@@ -776,6 +797,115 @@ mod tests {
             .expect("decode prepared data URL");
         let prepared = image::load_from_memory(&bytes).expect("decode prepared image");
         assert_eq!(prepared.dimensions(), (1600, 1600));
+    }
+
+    #[test]
+    fn downsampling_preserves_format_color_regions_and_metadata() {
+        let image = DynamicImage::ImageRgb8(image::RgbImage::from_fn(80, 60, |x, y| {
+            match (x < 40, y < 30) {
+                (true, true) => image::Rgb([220, 30, 10]),
+                (false, true) => image::Rgb([20, 210, 40]),
+                (true, false) => image::Rgb([10, 40, 230]),
+                (false, false) => image::Rgb([240, 240, 240]),
+            }
+        }));
+        let mut profile = vec![0_u8; 128];
+        profile[16..20].copy_from_slice(b"RGB ");
+        // Minimal little-endian TIFF with an empty IFD.
+        let exif = b"II\x2a\x00\x08\x00\x00\x00\x00\x00\x00\x00\x00\x00".to_vec();
+        for format in [ImageFormat::Png, ImageFormat::Jpeg, ImageFormat::WebP] {
+            let encoded = encode_image(
+                &image,
+                format,
+                ImageMetadata {
+                    icc_profile: Some(profile.clone()),
+                    exif: Some(exif.clone()),
+                },
+            )
+            .unwrap();
+            let prepared = load_for_prompt_bytes(
+                Path::new("fixture"),
+                encoded.bytes.to_vec(),
+                PromptImageResizeLimits {
+                    max_dimension: 40,
+                    max_patches: 100,
+                },
+            )
+            .unwrap();
+            assert_eq!(prepared.mime, format_to_mime(format));
+            let mut decoder = ImageReader::with_format(Cursor::new(&prepared.bytes), format)
+                .into_decoder()
+                .unwrap();
+            assert_eq!(decoder.dimensions(), (40, 30));
+            assert_eq!(decoder.icc_profile().unwrap(), Some(profile.clone()));
+            assert_eq!(decoder.exif_metadata().unwrap(), Some(exif.clone()));
+            let resized = DynamicImage::from_decoder(decoder).unwrap().to_rgb8();
+            for (x, y, expected) in [
+                (5, 5, [220_u8, 30, 10]),
+                (30, 5, [20, 210, 40]),
+                (5, 25, [10, 40, 230]),
+                (30, 25, [240, 240, 240]),
+            ] {
+                for (actual, expected) in resized.get_pixel(x, y).0.into_iter().zip(expected) {
+                    assert!(
+                        actual.abs_diff(expected) <= 5,
+                        "{format:?}: color region changed"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn lossless_encoding_preserves_rgb_samples_and_rgba_transparency() {
+        for image in [
+            DynamicImage::ImageRgb8(image::RgbImage::from_pixel(
+                12,
+                8,
+                image::Rgb([20, 80, 160]),
+            )),
+            DynamicImage::ImageRgba8(image::RgbaImage::from_fn(12, 8, |x, _| {
+                image::Rgba([20, 80, 160, if x < 6 { 50 } else { 200 }])
+            })),
+        ] {
+            for format in [ImageFormat::Png, ImageFormat::WebP] {
+                let encoded = encode_image(
+                    &image,
+                    format,
+                    ImageMetadata {
+                        icc_profile: None,
+                        exif: None,
+                    },
+                )
+                .unwrap();
+                let decoded = image::load_from_memory(&encoded.bytes).unwrap();
+                assert_eq!(decoded.to_rgba8(), image.to_rgba8(), "{format:?}");
+                if format == ImageFormat::Png {
+                    assert_eq!(decoded.color(), image.color());
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn original_detail_preserves_bytes_when_the_image_already_fits() {
+        let image = DynamicImage::new_rgb8(64, 48);
+        let encoded = encode_image(
+            &image,
+            ImageFormat::Jpeg,
+            ImageMetadata {
+                icc_profile: None,
+                exif: None,
+            },
+        )
+        .unwrap();
+        let prepared = load_for_prompt_bytes(
+            Path::new("fixture"),
+            encoded.bytes.to_vec(),
+            ORIGINAL_DETAIL_LIMITS,
+        )
+        .unwrap();
+        assert_eq!(prepared.bytes.as_ref(), encoded.bytes.as_ref());
     }
 
     #[test]

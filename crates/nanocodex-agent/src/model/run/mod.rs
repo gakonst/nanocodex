@@ -189,6 +189,23 @@ impl ModelCheckpoint {
         self.conversation.managed.client_authored()
     }
 
+    pub(crate) fn context_usage(&self) -> crate::session::ContextUsage {
+        let (usage, server_reasoning_included) = self.conversation.managed.context_usage();
+        crate::session::ContextUsage {
+            usage: usage.cloned(),
+            server_reasoning_included,
+            is_estimate: self.conversation.managed.context_usage_is_estimate(),
+        }
+    }
+
+    pub(crate) fn restore_context_usage(&mut self, usage: &crate::session::ContextUsage) {
+        self.conversation.managed.restore_context_usage(
+            usage.usage.as_ref(),
+            usage.server_reasoning_included,
+            usage.is_estimate,
+        );
+    }
+
     pub(crate) fn snapshot_history(&self) -> Vec<ResponseItem> {
         self.conversation.flattened_history()
     }
@@ -575,4 +592,77 @@ pub(crate) fn prepare_history_checkpoint(
         context_source,
         selected_agents_md,
     })
+}
+
+#[cfg(test)]
+mod context_accounting_snapshot_tests {
+    use super::*;
+    use crate::session::{CommittedSession, SessionSnapshot};
+
+    #[test]
+    fn snapshot_preserves_context_accounting_and_accepts_legacy_snapshots() {
+        let history: Vec<ResponseItem> = serde_json::from_value(serde_json::json!([
+            {"type":"reasoning", "summary":[], "encrypted_content":"x".repeat(1200)},
+            {"type":"message", "role":"user", "content":[{"type":"input_text", "text":"synthetic task"}]},
+            {"type":"message", "role":"assistant", "content":[{"type":"output_text", "text":"synthetic answer"}]}
+        ])).unwrap();
+        let prefix = serde_json::from_value(serde_json::json!([
+            {"type":"additional_tools", "role":"developer", "tools":[]},
+            {"type":"message", "role":"developer", "content":[{"type":"input_text", "text":"synthetic instructions"}]}
+        ])).unwrap();
+        let mut checkpoint = ModelCheckpoint::resume(
+            ".".into(),
+            Arc::from("synthetic-lineage"),
+            prefix,
+            Arc::from("synthetic-cache"),
+            history[1].clone(),
+            history,
+            Default::default(),
+            None,
+            None,
+        )
+        .unwrap();
+        checkpoint.conversation.update_token_info(Some(&Usage {
+            total_tokens: 265639,
+            ..Usage::default()
+        }));
+        checkpoint.conversation.observe_server_reasoning(true);
+        let snapshot =
+            CommittedSession::new(Arc::from("synthetic-lineage"), Model::Astra, checkpoint)
+                .snapshot();
+        let encoded = serde_json::to_value(snapshot).unwrap();
+        let restored: SessionSnapshot = serde_json::from_value(encoded.clone()).unwrap();
+        let restored = restored.into_resume().unwrap().checkpoint.unwrap();
+        assert_eq!(restored.conversation.active_context_tokens(), 265639);
+        assert!(restored.conversation.managed.context_usage().1);
+        assert!(restored.conversation.previous_response_id().is_none());
+        assert!(restored.conversation.active_context_tokens() >= 244800);
+
+        // History replacement stores an all-history estimate, not a provider baseline.
+        let mut estimated = restored;
+        estimated
+            .conversation
+            .managed
+            .replace_prepared_history(vec![
+                ResponseItem::message(MessageRole::Assistant, [ContentItem::output_text("answer")]),
+                ResponseItem::message(
+                    MessageRole::User,
+                    [ContentItem::input_text("x".repeat(600000))],
+                ),
+            ]);
+        let expected = estimated.conversation.active_context_tokens();
+        let snapshot =
+            CommittedSession::new(Arc::from("synthetic-lineage"), Model::Astra, estimated)
+                .snapshot();
+        let decoded: SessionSnapshot =
+            serde_json::from_str(&serde_json::to_string(&snapshot).unwrap()).unwrap();
+        let restored = decoded.into_resume().unwrap().checkpoint.unwrap();
+        assert!(restored.conversation.managed.context_usage_is_estimate());
+        assert_eq!(restored.conversation.active_context_tokens(), expected);
+        assert!(expected < 244800);
+        let mut legacy = encoded;
+        legacy.as_object_mut().unwrap().remove("context_usage");
+        let legacy: SessionSnapshot = serde_json::from_value(legacy).unwrap();
+        assert!(legacy.into_resume().is_ok());
+    }
 }

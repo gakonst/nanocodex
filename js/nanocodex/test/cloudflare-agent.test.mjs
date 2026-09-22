@@ -296,6 +296,7 @@ test("Cloudflare Agent accepts complete hosted policy only through its internal 
   });
   const agent = await configured.create(owner, {
     additionalInstructions: "Keep the host's account boundaries.",
+    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { rawApiEvents: false },
     [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: {
       model: "gpt-6-astra",
       thinking: "xhigh",
@@ -310,6 +311,7 @@ test("Cloudflare Agent accepts complete hosted policy only through its internal 
   assert.equal(captured.thinking, "xhigh");
   assert.equal(captured.reasoningMode, "standard");
   assert.equal(captured.fastMode, true);
+  assert.equal(captured.rawApiEvents, false);
   await agent.session.shutdown();
 
   await assert.rejects(configured.create(owner, {

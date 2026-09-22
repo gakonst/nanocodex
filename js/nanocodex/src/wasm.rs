@@ -987,6 +987,8 @@ struct WasmConfig {
     fast_mode: bool,
     #[serde(default)]
     websocket_warmup: bool,
+    #[serde(default = "default_raw_api_events")]
+    raw_api_events: bool,
     #[serde(default)]
     stateless_http: bool,
     #[serde(default)]
@@ -1367,7 +1369,8 @@ impl WasmNanocodex {
             .model(model)
             .reasoning_mode(reasoning_mode)
             .fast_mode(config.fast_mode)
-            .websocket_warmup(config.websocket_warmup);
+            .websocket_warmup(config.websocket_warmup)
+            .raw_api_events(config.raw_api_events);
         if config.stateless_http {
             openai = openai
                 .transport(ResponsesTransport::Https)
@@ -2331,7 +2334,7 @@ impl WasmBrowserVoice {
                 self.active_turn.replace(Some((ticket, turn.control())));
                 let active_turn = Rc::clone(&self.active_turn);
                 spawn_local(async move {
-                    let _ = turn.await;
+                    let _ = complete_turn_without_events(turn).await;
                     let mut active = active_turn.borrow_mut();
                     if active
                         .as_ref()
@@ -2876,7 +2879,9 @@ impl WasmTurn {
             state.control = Some(turn.control());
             state.notify();
         }
-        let completed = turn.await.map_err(|error| turn_failure(&error));
+        let completed = complete_turn_without_events(turn)
+            .await
+            .map_err(|error| turn_failure(&error));
         let mut state = state.borrow_mut();
         state.control = None;
         state.completed = Some(completed);
@@ -2944,6 +2949,27 @@ impl WasmTurn {
             })?;
         }
     }
+}
+
+// The session stream is forwarded independently. Discard the per-turn mirror
+// while waiting so it cannot retain every event for the lifetime of a long turn.
+async fn complete_turn_without_events(mut turn: Turn) -> Result<TurnResult, NanocodexError> {
+    use futures_util::Stream;
+    use std::{future::Future, pin::Pin, task::Poll};
+
+    futures_util::future::poll_fn(|cx| {
+        if let Poll::Ready(result) = Pin::new(&mut turn).poll(cx) {
+            return Poll::Ready(result);
+        }
+        for _ in 0..64 {
+            if !matches!(Pin::new(&mut turn).poll_next(cx), Poll::Ready(Some(_))) {
+                return Poll::Pending;
+            }
+        }
+        cx.waker().wake_by_ref();
+        Poll::Pending
+    })
+    .await
 }
 
 fn turn_failure(error: &NanocodexError) -> TurnFailure {
@@ -3337,6 +3363,10 @@ fn parse_revision(revision: &str) -> Result<u64, StoreError> {
     revision.parse::<u64>().map_err(|error| {
         StoreError::Backend(format!("invalid JavaScript durability revision: {error}"))
     })
+}
+
+const fn default_raw_api_events() -> bool {
+    true
 }
 
 fn default_model() -> String {

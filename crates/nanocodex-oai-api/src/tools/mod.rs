@@ -237,6 +237,16 @@ impl ToolOutput {
         self.output.structured_result()
     }
 
+    /// Moves the explicit machine-readable result without cloning its payload.
+    /// Falls back to the model-visible body when no explicit result is present.
+    #[doc(hidden)]
+    #[must_use]
+    pub fn take_structured_result(&mut self) -> Value {
+        self.structured_result
+            .take()
+            .unwrap_or_else(|| self.output.structured_result())
+    }
+
     /// Sets the exact machine-readable result independently of model-visible output.
     #[must_use]
     pub fn with_structured_result(mut self, value: Value) -> Self {
@@ -574,6 +584,17 @@ mod tests {
         assert_eq!(context.call_id(), "call");
         assert!(context.history().is_empty());
         assert_eq!(context.output_token_budget(), 1_024);
+    }
+
+    #[test]
+    fn taking_structured_result_moves_the_payload_and_preserves_model_output() {
+        let value = json!({"image_url": "x".repeat(1024)});
+        let pointer = value["image_url"].as_str().unwrap().as_ptr();
+        let mut output = ToolOutput::text("model output").with_structured_result(value);
+        let result = output.take_structured_result();
+        assert_eq!(result["image_url"].as_str().unwrap().as_ptr(), pointer);
+        assert_eq!(output.output.structured_result(), json!("model output"));
+        assert_eq!(output.take_structured_result(), json!("model output"));
     }
 
     #[test]

@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { Agent, ManagedError } from "../managed/index.mjs";
+import { steerInputKey } from "../runtime/steer-receipt.mjs";
 
 const origin = "https://managed.example";
 const agentId = "0198d3f0-8844-7000-8000-000000000001";
@@ -2262,6 +2263,57 @@ test("managed clients freeze and send explicit Hand attribution separately from 
   await assert.rejects(Agent.list({ baseUrl: origin, apiKey, requestOrigin: { client: "desktop", user_id: "forged" } }), /invalid request origin/);
 });
 
+test("identified steering resolves a lost ACK only by a correlated read receipt", async () => {
+  for (const [status, state, receiptId, expected] of [
+    [200, "accepted", "message", true], [200, "unknown", "message", false],
+    [200, "accepted", "foreign", false], [200, "withdrawn", "message", false],
+    [404, "unknown", "message", false],
+  ]) {
+    const calls = [];
+    const turn = Agent.open(agentId, { baseUrl: origin, fetch: async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname.endsWith("/turns")) return Response.json({ turn_id: "completed", state: "accepted", accepted_cursor: "1" });
+      calls.push([request.method, url.pathname.split("/").at(-1)]);
+      if (url.pathname.endsWith("/steer")) throw new Error("ACK lost after admission");
+      assert.equal(url.searchParams.get("message_id"), "message");
+      return Response.json({ protocol: 1, turn_id: "completed", message_id: receiptId, state, input_key: await steerInputKey("once"), terminal: true }, { status });
+    } }).turn.prompt({ id: "completed", input: "task" });
+    const steering = turn.steer({ input: "once", messageId: "message" });
+    if (expected) assert.deepEqual(await steering, { turn_id: "completed", state: "steering" });
+    else await assert.rejects(steering);
+    assert.deepEqual(calls, [["POST", "steer"], ["GET", "steer-receipt"]]);
+  }
+});
+
+
+test("a failed different-payload steer cannot reuse an earlier ID receipt", async () => {
+  for (const failure of ["transport", "gateway"]) {
+    let posts = 0;
+    let reads = 0;
+    const turn = Agent.open(agentId, { baseUrl: origin, fetch: async (input, init) => {
+      const request = new Request(input, init);
+      const url = new URL(request.url);
+      if (url.pathname.endsWith("/turns")) return Response.json({ turn_id: "completed", state: "accepted", accepted_cursor: "1" });
+      if (url.pathname.endsWith("/steer")) {
+        posts++;
+        if (posts === 1) {
+          assert.equal((await request.json()).input, "A");
+          return Response.json({ turn_id: "completed", state: "steering" });
+        }
+        assert.equal((await request.json()).input, "B");
+        if (failure === "transport") throw new Error("lost conflicting POST reply");
+        return Response.json({ error: "upstream_failure" }, { status: 502 });
+      }
+      reads++;
+      return Response.json({ protocol: 1, turn_id: "completed", message_id: "message", state: "accepted", input_key: await steerInputKey("A"), terminal: true });
+    } }).turn.prompt({ id: "completed", input: "task" });
+    await turn.steer({ input: "A", messageId: "message" });
+    await assert.rejects(turn.steer({ input: "B", messageId: "message" }));
+    assert.equal(posts, 2, "neither ambiguous POST is replayed");
+    assert.equal(reads, 1);
+  }
+});
 
 test("managed client carries a bounded optional location in the existing context header", async () => {
   const location = { latitude: 37.5, longitude: -122.5, accuracy_meters: 25, timestamp_ms: Date.now(), approximate: false };

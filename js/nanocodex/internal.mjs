@@ -319,6 +319,7 @@ export function toWasmConfig(options = {}) {
   copy(config, "stateless_http", options.stateless);
   copy(config, "subagent_routing", options.subagentRouting);
   copy(config, "websocket_warmup", options.websocketWarmup);
+  copy(config, "raw_api_events", options.rawApiEvents);
   copy(config, "websocket_url", options.websocketUrl);
   copy(config, "api_base_url", options.apiBaseUrl);
   copy(config, "instructions", options.instructions);

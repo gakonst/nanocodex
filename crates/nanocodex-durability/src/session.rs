@@ -204,11 +204,13 @@ enum Command {
         result: oneshot::Sender<Result<()>>,
     },
     AcceptSteer {
+        capacity_available: bool,
+        message_id: Option<String>,
         caller: Caller,
         operation_id: String,
         accepted_after_model_call_index: u32,
         input: EncodedPayload,
-        result: oneshot::Sender<Result<u32>>,
+        result: oneshot::Sender<Result<Option<u32>>>,
     },
     RetainedSteers {
         caller: Caller,
@@ -546,6 +548,8 @@ impl Driver {
                     drop(result.send(outcome));
                 }
                 Command::AcceptSteer {
+                    capacity_available,
+                    message_id,
                     caller,
                     operation_id,
                     accepted_after_model_call_index,
@@ -559,6 +563,8 @@ impl Driver {
                                 operation_id,
                                 accepted_after_model_call_index,
                                 input,
+                                message_id,
+                                capacity_available,
                             )
                             .await
                         }
@@ -976,12 +982,32 @@ impl Driver {
         operation_id: String,
         accepted_after_model_call_index: u32,
         input: EncodedPayload,
-    ) -> Result<u32> {
+        message_id: Option<String>,
+        capacity_available: bool,
+    ) -> Result<Option<u32>> {
         self.require_claimed(caller, &operation_id)?;
         self.require_running(&operation_id)?;
         let operation = self.state.operation(&operation_id).ok_or_else(|| {
             Error::InvalidState(format!("operation `{operation_id}` was not accepted"))
         })?;
+        if let Some(id) = &message_id
+            && let Some(receipt) = operation.steer_receipts.get(id)
+        {
+            if receipt.input_key != input.key.as_ref() {
+                return Err(Error::SteerConflict {
+                    message_id: id.clone(),
+                });
+            }
+            if receipt.withdrawn {
+                return Err(Error::SteerWithdrawn {
+                    message_id: id.clone(),
+                });
+            }
+            return Ok(None);
+        }
+        if !capacity_available {
+            return Err(Error::SteerQueueFull);
+        }
         let steer_index = u32::try_from(operation.steers.len())
             .ok()
             .and_then(|length| length.checked_add(operation.retired_steers)?.checked_add(1))
@@ -991,13 +1017,14 @@ impl Driver {
                 ))
             })?;
         self.apply(Transition::SteerAccepted {
+            message_id,
             operation_id,
             steer_index,
             accepted_after_model_call_index,
             input,
         })
         .await?;
-        Ok(steer_index)
+        Ok(Some(steer_index))
     }
 
     fn retained_steers(&self, caller: &Caller, operation_id: &str) -> Result<Vec<StoredSteer>> {
@@ -2110,9 +2137,13 @@ impl DurableOwner {
         operation_id: String,
         accepted_after_model_call_index: u32,
         input: &I,
-    ) -> Result<u32> {
+        message_id: Option<String>,
+        capacity_available: bool,
+    ) -> Result<Option<u32>> {
         let (result, receiver) = oneshot::channel();
         self.send(Command::AcceptSteer {
+            capacity_available,
+            message_id,
             caller: self.caller()?,
             operation_id,
             accepted_after_model_call_index,
@@ -2500,6 +2531,123 @@ mod tests {
             ));
         });
         drop(abandoned_results);
+    }
+
+    #[tokio::test]
+    async fn lost_steer_ack_cold_reopen_replays_receipt_without_duplicate_and_keeps_tombstone() {
+        let store = MemoryStore::new().unwrap();
+        let session =
+            DurableSession::open_with_terminal_receipt_limit(store.clone(), "steer-receipt", 64)
+                .await
+                .unwrap();
+        let (owner, _) = session.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("turn".into(), &"prompt")
+            .await
+            .unwrap();
+        owner.begin_attempt("turn".into()).await.unwrap();
+        let input = nanocodex_oai_api::Prompt::new("accepted before ACK loss");
+        let (result, lost_ack) = oneshot::channel();
+        drop(lost_ack);
+        // Acceptance persists despite losing its caller acknowledgement.
+        owner
+            .send(Command::AcceptSteer {
+                capacity_available: true,
+                caller: owner.caller().unwrap(),
+                operation_id: "turn".into(),
+                accepted_after_model_call_index: 1,
+                input: EncodedPayload::encode(&input).unwrap(),
+                message_id: Some("message".into()),
+                result,
+            })
+            .await
+            .unwrap();
+        let state = session.state().await.unwrap();
+        let accepted = state.operation("turn").unwrap();
+        assert_eq!(accepted.steers.len(), 1);
+        assert_eq!(accepted.steer_receipts.len(), 1);
+        assert_eq!(
+            accepted.steer_receipts["message"].input_key,
+            accepted.steers[0].input.key.as_ref()
+        );
+        owner.shutdown().await.unwrap();
+        drop((owner, session));
+
+        let reopened =
+            DurableSession::open_with_terminal_receipt_limit(store.clone(), "steer-receipt", 64)
+                .await
+                .unwrap();
+        let (owner, _) = reopened.acquire_agent().await.unwrap();
+        owner
+            .admit_typed::<_, u32, String>("turn".into(), &"prompt")
+            .await
+            .unwrap();
+        owner.begin_attempt("turn".into()).await.unwrap();
+        let revision = reopened.state().await.unwrap().revision();
+        assert_eq!(
+            owner
+                .accept_steer("turn".into(), 8, &input, Some("message".into()), false)
+                .await
+                .unwrap(),
+            None
+        );
+        assert_eq!(reopened.state().await.unwrap().revision(), revision);
+        assert_eq!(owner.retained_steers("turn".into()).await.unwrap().len(), 1);
+        assert!(matches!(
+            owner
+                .accept_steer(
+                    "turn".into(),
+                    8,
+                    &"different",
+                    Some("message".into()),
+                    false
+                )
+                .await,
+            Err(Error::SteerConflict { .. })
+        ));
+        owner.withdraw_steer("turn".into(), 1).await.unwrap();
+        assert!(matches!(
+            owner
+                .accept_steer("turn".into(), 8, &input, Some("message".into()), false)
+                .await,
+            Err(Error::SteerWithdrawn { .. })
+        ));
+        assert_eq!(
+            owner
+                .accept_steer("turn".into(), 1, &input, Some("consumed".into()), true)
+                .await
+                .unwrap(),
+            Some(1)
+        );
+        owner.bind_steer("turn".into(), 1, 2).await.unwrap();
+        owner
+            .begin_step(
+                "turn".into(),
+                "model-2".into(),
+                "model_call".into(),
+                &"request",
+            )
+            .await
+            .unwrap();
+        owner
+            .complete_step("turn".into(), "model-2".into(), &"response")
+            .await
+            .unwrap();
+        owner
+            .complete("turn".into(), EncodedPayload::encode(&1).unwrap(), &"done")
+            .await
+            .unwrap();
+        owner.shutdown().await.unwrap();
+        drop((owner, reopened));
+        let terminal = DurableSession::open_with_terminal_receipt_limit(store, "steer-receipt", 64)
+            .await
+            .unwrap();
+        let state = terminal.state().await.unwrap();
+        let operation = state.operation("turn").unwrap();
+        assert!(operation.status.is_terminal());
+        assert!(operation.steers.is_empty());
+        assert!(operation.steer_receipts["message"].withdrawn);
+        assert!(!operation.steer_receipts["consumed"].withdrawn);
     }
 
     #[tokio::test]
@@ -2948,6 +3096,7 @@ mod tests {
     fn compacted_steer_state_rejects_impossible_boundaries_and_terminal_shapes() {
         fn steer(accepted_after: u32, bound_to: Option<u32>) -> SteerState {
             SteerState {
+                message_id: None,
                 input: EncodedPayload::encode(&"steer").unwrap(),
                 accepted_after_model_call_index: accepted_after,
                 model_call_index: bound_to,
@@ -2956,6 +3105,7 @@ mod tests {
 
         fn operation(status: OperationStatus, steers: Vec<SteerState>) -> OperationState {
             OperationState {
+                steer_receipts: Default::default(),
                 continuation: None,
                 retired_model_calls: 0,
                 retired_steers: 0,

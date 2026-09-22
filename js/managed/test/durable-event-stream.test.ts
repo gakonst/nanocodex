@@ -162,3 +162,40 @@ it("does not fetch the next short page before delivery or after cancellation", a
     } finally { await reader.cancel(); log.clear(); }
   });
 });
+
+
+it("aborts backpressured event writes when the request is canceled", async () => {
+  const namespace = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace }).NANOCODEX_MEMORY;
+  await runInDurableObject(namespace.getByName(crypto.randomUUID()), async (_instance, ctx) => {
+    const log = new DurableEventLog<{ type: string; text: string }>(ctx.storage);
+    log.append({ type: "event", text: "x".repeat(1_000_000) });
+    try {
+      for (let index = 0; index < 40; index++) {
+        const controller = new AbortController();
+        const remove = vi.spyOn(controller.signal, "removeEventListener");
+        let pageCalls = 0;
+        const response = log.streamWithPage("0", "1", async (after) => {
+          pageCalls++;
+          return log.page(after, 1);
+        }, controller.signal);
+        expect(response.status, `reconnect ${index}`).toBe(200);
+        const reader = response.body!.getReader();
+        let outcome = "pending";
+        void reader.closed.then(() => { outcome = "closed"; }, () => { outcome = "aborted"; });
+        try {
+          await reader.read(); // Consume the cursor only; the event write blocks.
+          await expect.poll(() => pageCalls).toBe(1);
+          controller.abort();
+          // Request cancellation must terminate the write without requiring
+          // downstream to consume/cancel the retained response body as well.
+          await expect.poll(() => outcome, { timeout: 500 }).toBe("aborted");
+          expect(pageCalls).toBe(1);
+          expect(remove).toHaveBeenCalledWith("abort", expect.any(Function));
+        } finally {
+          await reader.cancel().catch(() => {});
+          remove.mockRestore();
+        }
+      }
+    } finally { log.clear(); }
+  });
+});

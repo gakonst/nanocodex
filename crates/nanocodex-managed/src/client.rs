@@ -19,7 +19,8 @@ use crate::{
     AutoRoutingStatus, EventCursor, EventHistoryPage, FindSessionsRequest, FindSessionsResponse,
     ManagedApiKey, ManagedError, ManagedEventStream, MemoryKey, MemoryListResponse, MemoryRecord,
     PromptInput, ReadSessionBody, ReadSessionRequest, ReadSessionResponse, RoutingStatus,
-    SteerWithdrawal, TurnAction, TurnSteer, TurnSubmission, TurnView,
+    SteerReceipt, SteerReceiptState, SteerWithdrawal, TurnAction, TurnSteer, TurnSubmission,
+    TurnView,
 };
 
 const MAX_HISTORY_PAGE: u16 = 256;
@@ -785,7 +786,7 @@ impl ManagedClient {
         self.steer_identified(agent_id, turn_id, input, None).await
     }
 
-    /// Adds input with a caller-selected identity for pending withdrawal.
+    /// Adds input with a caller-selected identity for durable receipt recovery and withdrawal.
     ///
     /// # Errors
     /// Returns a validation, transport, HTTP, or response-schema failure.
@@ -818,11 +819,48 @@ impl ManagedClient {
                 // The service returns this only before calling turn.steer.
                 // A transport failure is ambiguous. Identified commands retain a
                 // service receipt and must use command_status to reconcile it.
+
                 tokio::time::sleep(Duration::from_secs(1)).await;
                 continue;
             }
+            if result.as_ref().is_err_and(|error| !matches!(error, ManagedError::Http { status, .. } if status.is_client_error()))
+                && let Some(message_id) = message_id
+                && let Ok(receipt) = self.steer_receipt(agent_id, turn_id, message_id).await
+                && receipt.state == SteerReceiptState::Accepted
+                && receipt.matches_input(input)
+            {
+                return Ok(TurnAction { turn_id: turn_id.to_owned(), state: "steering".to_owned() });
+            }
             return result;
         }
+    }
+
+    /// Reads a durable receipt without repeating the steering POST.
+    /// Older servers reject this endpoint; callers must preserve an unknown outcome.
+    ///
+    /// # Errors
+    /// Returns validation, transport, HTTP, or correlation errors.
+    pub async fn steer_receipt(
+        &self,
+        agent_id: &str,
+        turn_id: &str,
+        message_id: &str,
+    ) -> Result<SteerReceipt, ManagedError> {
+        validate_id("agent", agent_id)?;
+        validate_id("turn", turn_id)?;
+        validate_id("message", message_id)?;
+        let mut url = self.url(&format!(
+            "{}/turns/{turn_id}/steer-receipt",
+            agent_path(agent_id)
+        ))?;
+        url.query_pairs_mut().append_pair("message_id", message_id);
+        let receipt: SteerReceipt = self.read_json(url).await?;
+        if receipt.protocol != 1 || receipt.turn_id != turn_id || receipt.message_id != message_id {
+            return Err(ManagedError::Configuration(
+                "managed steer receipt did not match the request".to_owned(),
+            ));
+        }
+        Ok(receipt)
     }
 
     /// Requests cancellation of an active managed turn.
@@ -1708,6 +1746,109 @@ mod tests {
                 .is_err()
         );
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn lost_steer_ack_uses_only_correlated_read_receipts_and_never_repeats_post() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        for (post_status, receipt_status, receipt_id, receipt_state, receipt_input, confirmed) in [
+            (
+                StatusCode::BAD_GATEWAY,
+                StatusCode::OK,
+                "message",
+                "accepted",
+                Some("once"),
+                true,
+            ),
+            (
+                StatusCode::BAD_GATEWAY,
+                StatusCode::OK,
+                "other",
+                "accepted",
+                Some("once"),
+                false,
+            ),
+            (
+                StatusCode::BAD_GATEWAY,
+                StatusCode::OK,
+                "message",
+                "unknown",
+                Some("once"),
+                false,
+            ),
+            (
+                StatusCode::BAD_GATEWAY,
+                StatusCode::OK,
+                "message",
+                "withdrawn",
+                Some("once"),
+                false,
+            ),
+            (
+                StatusCode::BAD_GATEWAY,
+                StatusCode::NOT_FOUND,
+                "message",
+                "unknown",
+                Some("once"),
+                false,
+            ),
+            (
+                StatusCode::CONFLICT,
+                StatusCode::OK,
+                "message",
+                "accepted",
+                Some("once"),
+                false,
+            ),
+            (
+                StatusCode::BAD_GATEWAY,
+                StatusCode::OK,
+                "message",
+                "accepted",
+                Some("previous payload"),
+                false,
+            ),
+            (
+                StatusCode::BAD_GATEWAY,
+                StatusCode::OK,
+                "message",
+                "accepted",
+                None,
+                false,
+            ),
+        ] {
+            let posts = Arc::new(AtomicUsize::new(0));
+            let count = posts.clone();
+            let app = Router::new()
+                .route("/v1/agents/agent-1/turns/completed/steer", axum::routing::post(move || {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    async move { (post_status, axum::Json(serde_json::json!({"error": "fixture", "message": "lost reply or conflict"}))) }
+                }))
+                .route("/v1/agents/agent-1/turns/completed/steer-receipt", axum::routing::get(move |axum::extract::Query(query): axum::extract::Query<std::collections::HashMap<String, String>>| async move {
+                    assert_eq!(query.get("message_id").unwrap(), "message");
+                    (receipt_status, axum::Json(serde_json::json!({"protocol":1,"turn_id":"completed","message_id":receipt_id,"state":receipt_state,"input_key":receipt_input.map(|text| { use sha2::{Digest as _, Sha256}; Sha256::digest(serde_json::to_vec(&serde_json::json!({"instruction":text})).unwrap()).iter().map(|byte| format!("{byte:02x}")).collect::<String>() }),"terminal":true})))
+                }));
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+            let client = ManagedClient::new(
+                format!("http://{address}"),
+                ManagedApiKey::parse(key()).unwrap(),
+            )
+            .unwrap();
+            let result = client
+                .steer_with_id(
+                    "agent-1",
+                    "completed",
+                    "message",
+                    &PromptInput::Text("once".into()),
+                )
+                .await;
+            assert_eq!(result.is_ok(), confirmed);
+            assert_eq!(posts.load(Ordering::SeqCst), 1);
+            server.abort();
+        }
     }
 
     #[tokio::test]

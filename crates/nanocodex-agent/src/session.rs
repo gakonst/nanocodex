@@ -2,7 +2,7 @@ use std::fmt;
 #[cfg(feature = "openai")]
 use std::sync::Arc;
 
-use nanocodex_oai_api::responses::ResponseItem;
+use nanocodex_oai_api::responses::{ResponseItem, Usage};
 #[cfg(feature = "openai")]
 use nanocodex_oai_api::{Model, responses::MessageRole};
 
@@ -118,8 +118,19 @@ impl CommittedSession {
             history: self.model.snapshot_history(),
             client_authored: self.model.client_authored().clone(),
             context_snapshot: Some(self.model.context_baseline().clone()),
+            context_usage: Some(self.model.context_usage()),
         }
     }
+}
+
+/// Accounting basis for exactly the history retained at a durable boundary.
+#[derive(Clone, serde::Deserialize, serde::Serialize)]
+pub(crate) struct ContextUsage {
+    pub(crate) usage: Option<Usage>,
+    #[serde(default)]
+    pub(crate) server_reasoning_included: bool,
+    #[serde(default)]
+    pub(crate) is_estimate: bool,
 }
 
 /// Versioned, serializable state for resuming a completed session boundary.
@@ -149,6 +160,8 @@ pub struct SessionSnapshot {
     client_authored: std::collections::BTreeSet<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     context_snapshot: Option<ContextBaseline>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    context_usage: Option<ContextUsage>,
 }
 
 /// Session metadata separated from independently persisted conversation items.
@@ -229,6 +242,7 @@ impl SessionSnapshot {
             history,
             client_authored,
             context_snapshot,
+            context_usage: None,
         })
     }
 
@@ -296,7 +310,7 @@ impl SessionSnapshot {
         let checkpoint = self
             .request_prefix
             .map(|request_prefix| {
-                ModelCheckpoint::resume(
+                let mut checkpoint = ModelCheckpoint::resume(
                     self.workspace.clone(),
                     Arc::clone(&lineage_id),
                     request_prefix,
@@ -306,7 +320,11 @@ impl SessionSnapshot {
                     self.client_authored.clone(),
                     None,
                     self.context_snapshot.clone(),
-                )
+                )?;
+                if let Some(usage) = self.context_usage.as_ref() {
+                    checkpoint.restore_context_usage(usage);
+                }
+                Ok::<_, NanocodexError>(checkpoint)
             })
             .transpose()?;
         Ok(SessionResume {

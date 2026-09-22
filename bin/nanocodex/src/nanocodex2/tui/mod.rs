@@ -556,6 +556,14 @@ struct DriverRuntime {
     admissions: JoinSet<Admission>,
     completions: JoinSet<Completion>,
     steers: JoinSet<SteerCompletion>,
+    receipt_reconciliations: JoinSet<(
+        PaneId,
+        components::QueueId,
+        String,
+        String,
+        nanocodex_managed::SteerReceiptState,
+    )>,
+    unresolved_steers: HashMap<(PaneId, components::QueueId), CancellationToken>,
     vault_tasks: JoinSet<vault::Completion>,
     vault_attempted: HashSet<(String, String)>,
     steer_receipts: HashMap<(PaneId, components::QueueId), (u64, SteerTarget, String)>,
@@ -1031,7 +1039,22 @@ impl DriverRuntime {
             self.steers = JoinSet::new();
             self.withdrawals = JoinSet::new();
             self.pending_withdrawals.clear();
-            self.steer_receipts.clear();
+            self.steer_receipts.retain(|key, (generation, target, _)| {
+                if !self.unresolved_steers.contains_key(key) {
+                    return false;
+                }
+                *generation = self.connection_generation;
+                if let SteerTarget::Local(local) = target {
+                    let Some(turn_id) = self.local_managed_turns.get(local) else {
+                        return false;
+                    };
+                    *target = SteerTarget::Managed {
+                        agent_id: self.agent_id.clone(),
+                        turn_id: turn_id.clone(),
+                    };
+                }
+                true
+            });
             self.controls.clear();
             self.admitting.clear();
             self.cancel_after_admission.clear();
@@ -1093,6 +1116,63 @@ impl DriverRuntime {
         let cursor = self.observed_cursor.clone();
         self.connection.spawn(async move {
             ConnectionResult::Recovered(reconnect_agent(client, agent_id, cursor).await)
+        });
+    }
+
+    fn reconcile_steer_receipt(
+        &mut self,
+        pane: PaneId,
+        id: components::QueueId,
+        target: &SteerTarget,
+        message_id: String,
+        input: nanocodex_managed::PromptInput,
+    ) {
+        let (agent_id, turn_id) = match target {
+            SteerTarget::Local(local) => {
+                let Some(turn_id) = self.local_managed_turns.get(local) else {
+                    return;
+                };
+                (self.agent_id.clone(), turn_id.clone())
+            }
+            SteerTarget::Managed { agent_id, turn_id } => (agent_id.clone(), turn_id.clone()),
+        };
+        let cancellation = CancellationToken::new();
+        if let Some(previous) = self
+            .unresolved_steers
+            .insert((pane, id), cancellation.clone())
+        {
+            previous.cancel();
+        }
+        let client = self.client.clone();
+        self.receipt_reconciliations.spawn(async move {
+            let mut delay = std::time::Duration::from_secs(1);
+            loop {
+                // Only a read is repeated. An old server cannot accidentally receive
+                // a duplicate instruction while capability support is unknown.
+                tokio::select! {
+                    () = cancellation.cancelled() => return (pane, id, agent_id, message_id, nanocodex_managed::SteerReceiptState::Unknown),
+                    () = tokio::time::sleep(delay) => {}
+                }
+                let result = tokio::select! {
+                    () = cancellation.cancelled() => return (pane, id, agent_id, message_id, nanocodex_managed::SteerReceiptState::Unknown),
+                    result = client.steer_receipt(&agent_id, &turn_id, &message_id) => result,
+                };
+                match result {
+                    Ok(receipt) if receipt.terminal || receipt.state != nanocodex_managed::SteerReceiptState::Unknown => {
+                        let state = if receipt.matches_input(&input) {
+                            receipt.state
+                        } else {
+                            nanocodex_managed::SteerReceiptState::Unknown
+                        };
+                        return (pane, id, agent_id, message_id, state);
+                    }
+                    Err(ManagedError::Http { status, .. }) if matches!(status.as_u16(), 400 | 401 | 403 | 404 | 405) => {
+                        return (pane, id, agent_id, message_id, nanocodex_managed::SteerReceiptState::Unknown);
+                    }
+                    _ => {}
+                }
+                delay = (delay * 2).min(std::time::Duration::from_secs(30));
+            }
         });
     }
 
@@ -1412,6 +1492,8 @@ impl DriverRuntime {
     }
 
     fn detach_bug_source(&mut self) {
+        self.receipt_reconciliations = JoinSet::new();
+        self.unresolved_steers.clear();
         self.admissions = JoinSet::new();
         self.completions = JoinSet::new();
         self.steers = JoinSet::new();
@@ -1855,6 +1937,8 @@ async fn run_inner(
         admissions: JoinSet::new(),
         completions: JoinSet::new(),
         steers: JoinSet::new(),
+        receipt_reconciliations: JoinSet::new(),
+        unresolved_steers: HashMap::new(),
         vault_tasks: JoinSet::new(),
         vault_attempted: HashSet::new(),
         steer_receipts: HashMap::new(),
@@ -2595,6 +2679,8 @@ async fn run_inner(
                             runtime.connection_generation =
                                 runtime.connection_generation.wrapping_add(1);
                             runtime.steer_receipts.clear();
+                            runtime.receipt_reconciliations = JoinSet::new();
+                            runtime.unresolved_steers.clear();
                             runtime.pending_withdrawals.clear();
                             runtime.withdrawals = JoinSet::new();
                             runtime.managed_events = Some(managed_events);
@@ -2967,6 +3053,32 @@ async fn run_inner(
                     stopping = apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
                 }
             }
+            result = runtime.receipt_reconciliations.join_next(), if !runtime.receipt_reconciliations.is_empty() => {
+                if let Some(Ok((pane, id, agent_id, message_id, state))) = result {
+                    if agent_id != runtime.agent_id
+                        || !runtime.unresolved_steers.contains_key(&(pane, id))
+                        || !runtime.steer_receipts.get(&(pane, id)).is_some_and(|(_, _, retained)| *retained == message_id) { continue; }
+                    if let Some(cancellation) = runtime.unresolved_steers.remove(&(pane, id)) { cancellation.cancel(); }
+                    if state == nanocodex_managed::SteerReceiptState::Unknown { continue; }
+                    if runtime.pending_steer_target.as_ref().is_some_and(|(pending, _)| *pending == id) {
+                        runtime.pending_steer_target = None;
+                        runtime.steers = JoinSet::new();
+                    }
+                    if runtime.unconfirmed_steer.as_ref().is_some_and(|(pending, _, _)| *pending == id) {
+                        runtime.unconfirmed_steer = None;
+                    }
+                    let mut update = if state == nanocodex_managed::SteerReceiptState::Accepted {
+                        app.update(AppEvent::SteerAdmitted { pane, id })
+                    } else {
+                        runtime.steer_receipts.remove(&(pane, id));
+                        app.update(AppEvent::SteerWithdrawn { pane, id })
+                    };
+                    if runtime.pending_withdrawals.remove(&(pane, id)) && state == nanocodex_managed::SteerReceiptState::Accepted {
+                        update.effects.push(AppEffect::Pane { pane, effect: RootEffect::WithdrawSteer { id } });
+                    }
+                    stopping |= apply_update(update, &mut app, &mut runtime, &mut terminal, &mut scheduler).await?;
+                }
+            }
             result = runtime.steers.join_next(), if !runtime.steers.is_empty() => {
                 if let Some(result) = result {
                     let (pane, id, generation, target, outcome) = result.map_err(|error| ManagedError::Configuration(format!("steer task failed: {error}")))?;
@@ -2974,7 +3086,8 @@ async fn run_inner(
                     let withdraw = runtime.pending_withdrawals.remove(&(pane, id));
                     let mut update = match runtime.resolve_steer(generation, &target, outcome) {
                         SteerResolution::Admitted => {
-                            runtime.steer_receipts.retain(|(owner, candidate), _| *owner != pane || *candidate == id);
+                            if let Some(cancellation) = runtime.unresolved_steers.remove(&(pane, id)) { cancellation.cancel(); }
+                            runtime.steer_receipts.retain(|key @ (owner, candidate), _| *owner != pane || *candidate == id || runtime.unresolved_steers.contains_key(key));
                             app.update(AppEvent::SteerAdmitted { pane, id })
                         }
                         SteerResolution::Unconfirmed { error, active } => {
@@ -2987,10 +3100,12 @@ async fn run_inner(
                             app.update(AppEvent::SteerUnconfirmed { pane, id })
                         }
                         SteerResolution::Failed if withdraw => {
+                            if let Some(cancellation) = runtime.unresolved_steers.remove(&(pane, id)) { cancellation.cancel(); }
                             runtime.steer_receipts.remove(&(pane, id));
                             app.update(AppEvent::SteerWithdrawn { pane, id })
                         }
                         SteerResolution::Failed => {
+                            if let Some(cancellation) = runtime.unresolved_steers.remove(&(pane, id)) { cancellation.cancel(); }
                             runtime.steer_receipts.remove(&(pane, id));
                             app.update(AppEvent::SteerFailed { pane, id })
                         }
@@ -3009,6 +3124,7 @@ async fn run_inner(
                     let update = match outcome {
                         Ok(true) => {
                             runtime.steer_receipts.remove(&(pane, id));
+                            if let Some(cancellation) = runtime.unresolved_steers.remove(&(pane, id)) { cancellation.cancel(); }
                             if runtime.unconfirmed_steer.as_ref().is_some_and(|(pending, _, _)| *pending == id) {
                                 runtime.unconfirmed_steer = None;
                             }
@@ -3429,6 +3545,7 @@ async fn apply_update(
                                 (pane, id),
                                 (generation, target.clone(), message_id.clone()),
                             );
+                            runtime.reconcile_steer_receipt(pane, id, &target, message_id.clone(), prompt.managed_prompt());
                             runtime.pending_steer_target = Some((id, target.clone()));
                             runtime.steers.spawn(async move {
                                 let result = control
@@ -3457,6 +3574,7 @@ async fn apply_update(
                                         (pane, id),
                                         (generation, target.clone(), message_id.clone()),
                                     );
+                                    runtime.reconcile_steer_receipt(pane, id, &target, message_id.clone(), input.clone());
                                     runtime.pending_steer_target = Some((id, target.clone()));
                                     runtime.steers.spawn(async move {
                                         let result = client
@@ -3503,6 +3621,13 @@ async fn apply_update(
                                 &mut effects,
                                 scheduler,
                             );
+                        }
+                    }
+                    RootEffect::ForgetSteerReceipt { id } => {
+                        if let Some(cancellation) = runtime.unresolved_steers.remove(&(pane, id)) { cancellation.cancel(); }
+                        runtime.steer_receipts.remove(&(pane, id));
+                        if runtime.unconfirmed_steer.as_ref().is_some_and(|(pending, _, _)| *pending == id) {
+                            runtime.unconfirmed_steer = None;
                         }
                     }
                     RootEffect::WithdrawSteer { id } => {
@@ -4666,6 +4791,8 @@ mod tests {
             admissions: JoinSet::new(),
             completions: JoinSet::new(),
             steers: JoinSet::new(),
+            receipt_reconciliations: JoinSet::new(),
+            unresolved_steers: HashMap::new(),
             vault_tasks: JoinSet::new(),
             vault_attempted: HashSet::new(),
             steer_receipts: HashMap::new(),

@@ -630,7 +630,9 @@ where
                     unreachable!("tool search is not an ordinary direct tool")
                 }
             };
-            let structured_result = execution.structured_result();
+            // The explicit result is retained by CompletedToolCall. Move it before
+            // image preparation instead of keeping another large copy alive.
+            let structured_result = execution.take_structured_result();
             prepare_output_images(&mut execution.output).await;
             if let Some(content) = serialize_trace_content(&execution.output) {
                 record_span_content(tool_span, "tool.output", &content);

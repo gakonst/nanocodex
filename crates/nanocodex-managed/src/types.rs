@@ -722,6 +722,57 @@ pub(crate) struct TurnSubmission<'a> {
     pub(crate) input: &'a PromptInput,
 }
 
+/// A read-only correlated steering receipt, including after turn completion.
+#[derive(Debug, Deserialize, Serialize)]
+pub struct SteerReceipt {
+    /// Receipt protocol version; version one never implies safe POST replay on older servers.
+    pub protocol: u8,
+    /// Owning managed turn.
+    pub turn_id: String,
+    /// Caller-selected steering identity.
+    pub message_id: String,
+    /// Durable disposition, or unknown when no receipt is retained.
+    pub state: SteerReceiptState,
+    /// Exact accepted-prompt fingerprint; absent receipts cannot confirm input.
+    #[serde(default)]
+    pub input_key: Option<String>,
+    /// Whether the owning turn is terminal; an unknown terminal receipt cannot arrive later.
+    #[serde(default)]
+    pub terminal: bool,
+}
+
+impl SteerReceipt {
+    /// Checks the accepted fingerprint against the exact typed prompt before recovery.
+    #[must_use]
+    pub fn matches_input(&self, input: &PromptInput) -> bool {
+        use sha2::{Digest as _, Sha256};
+        #[derive(Serialize)]
+        struct SteerPrompt<'a> {
+            instruction: &'a PromptInput,
+        }
+        self.input_key.as_ref().is_some_and(|key| {
+            serde_json::to_vec(&SteerPrompt { instruction: input }).is_ok_and(|bytes| {
+                *key == Sha256::digest(bytes)
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            })
+        })
+    }
+}
+
+/// Authoritative disposition of an identified steering input.
+#[derive(Debug, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SteerReceiptState {
+    /// Input was durably accepted.
+    Accepted,
+    /// Input was withdrawn before consumption.
+    Withdrawn,
+    /// No retained receipt; this does not authorize resubmission.
+    Unknown,
+}
+
 /// Receipt for a pending steer withdrawal.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct SteerWithdrawal {

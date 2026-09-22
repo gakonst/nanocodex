@@ -1,3 +1,5 @@
+import { steerInputKey } from "../runtime/steer-receipt.mjs";
+export { steerInputKey };
 import { createGatewayResponses } from "./gateway-responses.mjs";
 import { createWorkersAiResponses } from "./workers-ai-responses.mjs";
 import { responseControlsBody, responseControlsSocket } from "../runtime/response-controls.mjs";
@@ -60,6 +62,8 @@ const lifecycles = new WeakMap();
 /** @internal Binds the package-owned module to the public Cloudflare namespace. */
 export function bindAgent(module, hostAgent = HostAgent) {
   return Object.freeze({
+    steerReceipt,
+    steerInputKey,
     bootstrapPlan: async (input) => {
       await initializeBrowserEngine({ module });
       return JSON.parse(managedBootstrapPlan(input));
@@ -421,6 +425,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
         fastMode: internalConfiguration.fast_mode,
       }),
       module,
+      rawApiEvents: internalRuntime?.rawApiEvents,
       toolMode: internalRuntime?.toolMode ?? "direct",
       codeEvaluator: internalRuntime?.codeEvaluator,
       [Symbol.for("nanocodex.browser.internalRuntime")]: {
@@ -827,4 +832,21 @@ async function withTimeout(promise, timeoutMs, message) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/** Read a single Rust-owned receipt without loading/fencing the execution. */
+export function steerReceipt(owner, operationId, messageId) {
+  const { storage } = resolveContext(owner);
+  const tables = storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('nanocodex_cloudflare_durability', 'nanocodex_durable_states')").toArray();
+  if (tables.length !== 2) return null;
+  const stateId = storedStateId(storage);
+  if (stateId === undefined) return null;
+  const path = `$.nanocodex_durable_state.operations.${JSON.stringify(operationId)}.steer_receipts.${JSON.stringify(messageId)}`;
+  const row = storage.sql.exec("SELECT json_extract(payload, ?) AS receipt FROM nanocodex_durable_states WHERE state_id = ?", path, stateId).toArray()[0];
+  if (row?.receipt == null) return null;
+  const receipt = JSON.parse(row.receipt);
+  if (!/^[a-f0-9]{64}$/.test(receipt.input_key) || !Number.isSafeInteger(receipt.index) || receipt.index < 1 || typeof receipt.withdrawn !== "boolean") {
+    throw new Error("invalid durable steer receipt");
+  }
+  return Object.freeze(receipt);
 }

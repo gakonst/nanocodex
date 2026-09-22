@@ -1,3 +1,4 @@
+import { steerInputKey } from "../runtime/steer-receipt.mjs";
 import { requestOriginContext } from "../tools/environment.mjs";
 import { ManagedError } from "./ManagedError.mjs";
 import { registerManagedAgent } from "./internal.mjs";
@@ -620,11 +621,24 @@ function managedTurn(client, agentId, eventStream, options, acceptedSubmission) 
       // Cancellation deliberately bypasses this queue.
       const steering = steeringTail.then(async () => {
         const accepted = await submission;
-        return client.json(`${turnPath(agentId, requiredString(accepted, "turn_id"))}/steer`, {
-          method: "POST",
-          body,
-          signal,
-        });
+        const turnId = requiredString(accepted, "turn_id");
+        try {
+          return await client.json(`${turnPath(agentId, turnId)}/steer`, { method: "POST", body, signal });
+        } catch (error) {
+          if (typeof messageId === "string" && TURN_ID.test(messageId) && !(error?.status >= 400 && error?.status < 500)) {
+            // Capability discovery is read-only. Missing/legacy receipts never authorize resending.
+            const receipt = await client.json(`${turnPath(agentId, turnId)}/steer-receipt?message_id=${encodeURIComponent(messageId)}`, { signal }).catch(() => undefined);
+            if (
+              receipt?.protocol === 1 && receipt.turn_id === turnId &&
+              receipt.message_id === messageId && receipt.state === "accepted" &&
+              typeof receipt.input_key === "string" &&
+              receipt.input_key === await steerInputKey(JSON.parse(body).input).catch(() => undefined)
+            ) {
+              return { turn_id: turnId, state: "steering" };
+            }
+          }
+          throw error;
+        }
       });
       steeringTail = steering.then(() => {}, () => {});
       return steering;
