@@ -110,8 +110,7 @@ describe("trusted managed ingress", () => {
           let response: any;
           if (model === "openai/gpt-6-astra") {
             childCalls++;
-            const token = Number([...JSON.stringify(input.input).matchAll(/turn_token: (\d+)/g)].at(-1)?.[1]);
-            response = childCalls === 1 ? toolCall(input, "submit_result", { turn_token: token, output: { value: "synthetic" } }) : completed();
+            response = childCalls === 1 ? toolCall(input, "submit_result", { output: { value: "synthetic" } }) : completed();
           } else {
             rootCalls++;
             if (rootCalls === 1) response = toolCall(input, "spawn_agent", { role: "origin specialist", task: "Return synthetic result",
