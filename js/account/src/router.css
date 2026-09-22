@@ -150,6 +150,7 @@
 .atlas-totals {
   display: flex;
   gap: 28px;
+  flex-wrap: wrap;
 }
 .atlas-totals > span {
   font-size: 11px;

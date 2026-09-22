@@ -210,6 +210,7 @@ export function RouterAtlas({ snapshot }: { snapshot: RouterSnapshot }) {
     ...new Set([...providerNames, ...snapshot.providers.map((p) => p.backend)]),
   ];
   const scale = latencyScale(snapshot.providers);
+  const routing = summarizeRouter(snapshot.decisions);
   const live = globalTotals(snapshot.providers, "live"),
     probe = globalTotals(snapshot.providers, "probe");
   const active = rows.find((r) => r.key === selection?.row);
@@ -229,6 +230,15 @@ export function RouterAtlas({ snapshot }: { snapshot: RouterSnapshot }) {
           <span>
             <b>{probe.samples}</b> probes{" "}
             <em>{probe.failed} failed / cancelled</em>
+          </span>
+          <span>
+            <b className={routing.bindingFailures ? "atlas-danger" : ""}>
+              {routing.bindingFailures}/{routing.attempts}
+            </b>{" "}
+            Jev failures
+            <em>
+              {routing.recovered} recovered · {routing.low} low confidence
+            </em>
           </span>
           <span>
             <b>{new Set(rows.map((r) => r.model)).size}</b> models{" "}
