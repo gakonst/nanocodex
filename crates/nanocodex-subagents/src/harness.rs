@@ -18,14 +18,12 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tracing::Instrument;
 
 const COMMAND_CAPACITY: usize = 8;
-pub(super) const DEFERRED_CAPACITY: usize = 8;
-pub(super) const URGENT_CAPACITY: usize = 4;
 
 #[derive(Clone)]
 pub(super) struct HarnessHandle {
     commands: mpsc::Sender<HarnessCommand>,
-    deferred: mpsc::Sender<DeliveryCommand>,
-    urgent: mpsc::Sender<DeliveryCommand>,
+    deferred: mpsc::UnboundedSender<DeliveryCommand>,
+    urgent: mpsc::UnboundedSender<DeliveryCommand>,
 }
 
 struct DeliveryCommand {
@@ -82,8 +80,8 @@ struct Harness {
     agent: Option<Nanocodex>,
     active: Option<ActiveTurn>,
     commands: mpsc::Receiver<HarnessCommand>,
-    deferred: mpsc::Receiver<DeliveryCommand>,
-    urgent: mpsc::Receiver<DeliveryCommand>,
+    deferred: mpsc::UnboundedReceiver<DeliveryCommand>,
+    urgent: mpsc::UnboundedReceiver<DeliveryCommand>,
     pending_deferred: VecDeque<AgentMessage>,
     pending_urgent: VecDeque<AgentMessage>,
     output_schema: String,
@@ -146,7 +144,6 @@ impl HarnessHandle {
         &self,
         message: AgentMessage,
     ) -> std::io::Result<EnqueuedDelivery> {
-        let id = message.id;
         let (response, result) = oneshot::channel();
         let (committed, wait_for_commit) = oneshot::channel();
         let command = DeliveryCommand {
@@ -158,14 +155,9 @@ impl HarnessHandle {
             MessagePriority::Deferred => &self.deferred,
             MessagePriority::Urgent => &self.urgent,
         };
-        sender.try_send(command).map_err(|error| match error {
-            mpsc::error::TrySendError::Full(_) => {
-                std::io::Error::other(format!("agent message mailbox is full for message {id}"))
-            }
-            mpsc::error::TrySendError::Closed(_) => {
-                std::io::Error::other("subagent harness is closed")
-            }
-        })?;
+        sender
+            .send(command)
+            .map_err(|_| std::io::Error::other("subagent harness is closed"))?;
         Ok(EnqueuedDelivery {
             committed,
             response: result,
@@ -197,8 +189,8 @@ pub(super) fn spawn(
     rehydrated_assignment: Option<String>,
 ) -> (HarnessHandle, Task<()>) {
     let (commands, receiver) = mpsc::channel(COMMAND_CAPACITY);
-    let (deferred, deferred_receiver) = mpsc::channel(DEFERRED_CAPACITY);
-    let (urgent, urgent_receiver) = mpsc::channel(URGENT_CAPACITY);
+    let (deferred, deferred_receiver) = mpsc::unbounded_channel();
+    let (urgent, urgent_receiver) = mpsc::unbounded_channel();
     let handle = HarnessHandle {
         commands,
         deferred,
@@ -278,8 +270,10 @@ impl Harness {
             biased;
             command = self.commands.recv() => HarnessEvent::Command(command),
             urgent = self.urgent.recv() => HarnessEvent::Urgent(urgent),
-            deferred = self.deferred.recv() => HarnessEvent::Deferred(deferred),
+            // Completed turns must release their capacity and drain queued work
+            // even when deferred admission requests keep arriving.
             result = &mut active.result => HarnessEvent::TurnFinished(result),
+            deferred = self.deferred.recv() => HarnessEvent::Deferred(deferred),
         }
     }
 
@@ -413,18 +407,6 @@ impl Harness {
             MessagePriority::Deferred => &mut self.pending_deferred,
             MessagePriority::Urgent => &mut self.pending_urgent,
         };
-        let limit = match priority {
-            MessagePriority::Deferred => DEFERRED_CAPACITY,
-            MessagePriority::Urgent => URGENT_CAPACITY,
-        };
-        if queue.len() >= limit {
-            self.reject(
-                command,
-                format!("{priority:?} mailbox for agent {} is full", self.id),
-            )
-            .await;
-            return;
-        }
         let id = command.message.id;
         queue.push_back(command.message);
         self.admit(id, command.response, MessageDisposition::Queued)
@@ -631,6 +613,9 @@ impl Harness {
     async fn turn_finished(&mut self, result: Result<AgentResult<TurnResult>, TaskError>) {
         self.active = None;
         self.publish_turn_result(result).await;
+        // Do not depend on the capacity watch to notice our own turn ending.
+        // If another agent took the released slot, the watch still retries later.
+        self.start_pending().await;
     }
 
     async fn publish_turn_result(&self, result: Result<AgentResult<TurnResult>, TaskError>) {
@@ -660,5 +645,64 @@ impl Harness {
                 .await;
         }
         shutdown_result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::{MessagePurpose, MessageSender, ThreadId};
+
+    #[tokio::test]
+    async fn delivery_transport_accepts_bursts_and_preserves_commit_and_fifo() {
+        let (commands, _commands) = mpsc::channel(COMMAND_CAPACITY);
+        let (deferred, mut deferred_receiver) = mpsc::unbounded_channel();
+        let (urgent, mut urgent_receiver) = mpsc::unbounded_channel();
+        let handle = HarnessHandle {
+            commands,
+            deferred,
+            urgent,
+        };
+        for (priority, receiver) in [
+            (MessagePriority::Deferred, &mut deferred_receiver),
+            (MessagePriority::Urgent, &mut urgent_receiver),
+        ] {
+            let mut deliveries = Vec::new();
+            // No receiver runs until every send has succeeded.
+            for index in 1..=128 {
+                let id = MessageId::new(index);
+                deliveries.push(
+                    handle
+                        .enqueue_delivery(AgentMessage {
+                            id,
+                            thread_id: ThreadId::for_message(id),
+                            from: MessageSender::Root,
+                            to: AgentId::new(1),
+                            priority,
+                            purpose: MessagePurpose::Coordinate,
+                            in_reply_to: None,
+                            body: format!("finding {index}"),
+                        })
+                        .unwrap(),
+                );
+            }
+            for (index, delivery) in deliveries.into_iter().enumerate() {
+                let mut command = receiver.try_recv().unwrap();
+                assert_eq!(command.message.id, MessageId::new(index as u64 + 1));
+                assert!(matches!(
+                    command.committed.as_mut().unwrap().try_recv(),
+                    Err(oneshot::error::TryRecvError::Empty)
+                ));
+                let (receipt, ()) = tokio::join!(delivery.release(), async {
+                    assert!(command.wait_for_commit().await);
+                    command
+                        .response
+                        .send(Ok(MessageDisposition::Queued))
+                        .unwrap();
+                });
+                assert_eq!(receipt.unwrap(), MessageDisposition::Queued);
+            }
+            assert!(receiver.try_recv().is_err());
+        }
     }
 }

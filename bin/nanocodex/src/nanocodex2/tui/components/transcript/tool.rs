@@ -1720,8 +1720,75 @@ mod tests {
         assert!(collapsed.contains("Spawned  reviewer"));
         assert!(collapsed.contains("agent 72 · running"));
         assert!(!collapsed.contains("output_schema"));
-        assert!(expanded.contains("output_schema"));
+        assert!(!expanded.contains("output_schema"));
         assert!(expanded.contains("Inspect the entire repository carefully"));
+    }
+
+    #[test]
+    fn subagent_cards_render_semantic_results_and_messages() {
+        let mut wait = tool("wait_agent", json!({"agent_ids": [1, 2]}));
+        wait.result = Some(json!({"agents": [
+            {"agent_id": 1, "role": "Reviewer", "task": "Review changes", "status": {
+                "state": "completed", "output": {"report": "Looks good", "checks": ["Build passed"]}
+            }},
+            {"agent_id": 2, "role": "Tester", "status": {"state": "running"}}
+        ]}));
+        let mut message = tool(
+            "send_agent_message",
+            json!({
+                "agent_id": 2, "message": "Please check narrow terminals.", "purpose": "coordinate"
+            }),
+        );
+        message.result = Some(json!({"disposition": "queued", "thread_id": "internal-thread"}));
+        let mut submission = tool(
+            "submit_result",
+            json!({"output": {
+                "report": "All checks passed", "files_changed": ["view.rs", "card.rs"]
+            }}),
+        );
+        submission.result = Some(json!({"accepted": true}));
+        for (entry, expected) in [
+            (
+                &wait,
+                vec![
+                    "Agent 1 · Reviewer",
+                    "Looks good",
+                    "Build passed",
+                    "Agent 2 · Tester",
+                ],
+            ),
+            (
+                &message,
+                vec!["Message", "Please check narrow terminals.", "queued"],
+            ),
+            (
+                &submission,
+                vec!["Accepted", "All checks passed", "Files changed", "view.rs"],
+            ),
+        ] {
+            let rendered = render_expanded(entry, 100, &Theme::default())
+                .iter()
+                .map(ToString::to_string)
+                .collect::<Vec<_>>()
+                .join("\n");
+            for text in expected {
+                assert!(rendered.contains(text), "{rendered}");
+            }
+            for raw in [
+                "\"output\"",
+                "agent_id",
+                "thread_id",
+                "arguments and result",
+            ] {
+                assert!(!rendered.contains(raw), "{rendered}");
+            }
+            for width in [1, 7, 24] {
+                let lines = render_expanded(entry, width, &Theme::default());
+                assert!(lines.iter().all(|line| line.width() <= usize::from(width)));
+            }
+        }
+        let summary = render(&wait, 140, &Theme::default())[0].to_string();
+        assert!(summary.contains("1 completed · 1 running"), "{summary}");
     }
 
     #[test]

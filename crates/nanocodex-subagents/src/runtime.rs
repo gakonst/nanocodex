@@ -3586,67 +3586,124 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn message_priorities_have_independent_mailbox_bounds() {
-        let (registry, _control, _updates) = super::channel(0);
-        let (_sender, sender_session) =
-            insert_pending_runtime_session(&registry, "main", None, Arc::new(Notify::new())).await;
-        let (target, _target_session) =
-            insert_pending_runtime_session(&registry, "main", None, Arc::new(Notify::new())).await;
-        mark_reusable(&registry, "main", target).await;
-
-        for index in 0..crate::harness::DEFERRED_CAPACITY {
+    async fn deferred_burst_waits_for_turn_boundary_and_is_not_lost_on_close() {
+        let (registry, _control, mut updates) = super::channel(1);
+        let called = Arc::new(Notify::new());
+        let (target, _) =
+            insert_pending_runtime_session(&registry, "main", None, Arc::clone(&called)).await;
+        registry
+            .launch_initial_turn(
+                "main",
+                target,
+                "Keep working.".to_owned(),
+                registry.reserve_turn().unwrap(),
+            )
+            .await
+            .unwrap();
+        timeout(Duration::from_secs(5), called.notified())
+            .await
+            .unwrap();
+        let mut ids = Vec::new();
+        // Reproduce a burst beyond the old eight-message limit while running.
+        for index in 0..16 {
             let receipt = registry
                 .send_message(
-                    &sender_session,
+                    "main",
                     target,
                     MessagePriority::Deferred,
                     MessagePurpose::Coordinate,
                     None,
-                    format!("queued message {index}"),
+                    format!("finding {index}"),
                 )
                 .await
                 .unwrap();
             assert_eq!(receipt.disposition, MessageDisposition::Queued);
+            ids.push(receipt.message_id);
+            let update = next_message_update(&mut updates).await;
+            assert_eq!(update.message_id, receipt.message_id);
+            assert_eq!(
+                update.delivery,
+                MessageDeliveryState::Admitted {
+                    disposition: MessageDisposition::Queued,
+                }
+            );
         }
-        let normal_error = registry
-            .send_message(
-                &sender_session,
-                target,
-                MessagePriority::Deferred,
-                MessagePurpose::Coordinate,
-                None,
-                "one message too many".to_owned(),
-            )
-            .await
-            .unwrap_err();
-        assert!(normal_error.to_string().contains("mailbox"));
+        registry.close("main", target).await.unwrap();
+        for id in ids {
+            let update = next_message_update(&mut updates).await;
+            assert_eq!(update.message_id, id);
+            assert!(matches!(
+                update.delivery,
+                MessageDeliveryState::Failed { .. }
+            ));
+        }
+        registry.close_all("main").await.unwrap();
+    }
 
-        for index in 0..crate::harness::URGENT_CAPACITY {
-            let receipt = registry
-                .send_message(
-                    &sender_session,
-                    target,
-                    MessagePriority::Urgent,
-                    MessagePurpose::Coordinate,
-                    None,
-                    format!("urgent queued message {index}"),
-                )
-                .await
-                .unwrap();
-            assert_eq!(receipt.disposition, MessageDisposition::Queued);
+    #[tokio::test]
+    async fn backlog_beyond_old_limits_drains_in_priority_then_fifo_order_across_turns() {
+        #[derive(Clone)]
+        struct FailingService;
+        impl Service<ResponsesAttempt> for FailingService {
+            type Response = ResponsesServiceResponse;
+            type Error = ResponseError;
+            type Future = std::future::Ready<StdResult<Self::Response, Self::Error>>;
+            fn poll_ready(&mut self, _: &mut Context<'_>) -> Poll<StdResult<(), Self::Error>> {
+                Poll::Ready(Ok(()))
+            }
+            fn call(&mut self, _: ResponsesAttempt) -> Self::Future {
+                std::future::ready(Err(ResponseError::service(std::io::Error::other(
+                    "synthetic completed turn failure",
+                ))))
+            }
         }
-        let urgent_error = registry
-            .send_message(
-                &sender_session,
-                target,
-                MessagePriority::Urgent,
-                MessagePurpose::Coordinate,
-                None,
-                "one urgent message too many".to_owned(),
-            )
-            .await
-            .unwrap_err();
-        assert!(urgent_error.to_string().contains("mailbox"));
+        let (registry, _control, mut updates) = super::channel(0);
+        let reservation = registry.reserve("main").await.unwrap();
+        let target = reservation.id;
+        let openai = OpenAi::builder("test-key")
+            .service(|| FailingService)
+            .build()
+            .unwrap();
+        let (agent, events) = Nanocodex::builder(openai).build().unwrap();
+        insert_runtime_session(&registry, &reservation, None, agent, events).await;
+        mark_reusable(&registry, "main", target).await;
+        let mut deferred = Vec::new();
+        let mut urgent = Vec::new();
+        for (priority, count, ids) in [
+            (MessagePriority::Deferred, 128, &mut deferred),
+            (MessagePriority::Urgent, 16, &mut urgent),
+        ] {
+            for index in 0..count {
+                let receipt = registry
+                    .send_message(
+                        "main",
+                        target,
+                        priority,
+                        MessagePurpose::Coordinate,
+                        None,
+                        format!("queued finding {index}"),
+                    )
+                    .await
+                    .unwrap();
+                assert_eq!(receipt.disposition, MessageDisposition::Queued);
+                ids.push(receipt.message_id);
+                assert_eq!(
+                    next_message_update(&mut updates).await.message_id,
+                    receipt.message_id
+                );
+            }
+        }
+        registry.set_max_concurrency(1);
+        for id in urgent.into_iter().chain(deferred) {
+            let update = next_message_update(&mut updates).await;
+            assert_eq!(update.message_id, id);
+            assert_eq!(
+                update.delivery,
+                MessageDeliveryState::Delivered {
+                    disposition: MessageDisposition::Started,
+                }
+            );
+        }
         registry.close_all("main").await.unwrap();
     }
 
