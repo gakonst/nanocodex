@@ -366,11 +366,11 @@ mod tests {
             idr.as_ptr(),
             "payload must stay shared without a copy"
         );
-        for suffix in [b'1', b'2'] {
+        for suffix in *b"12" {
             let frame: EncodedPacket = vec![0, 0, 1, 0x41, suffix].into();
             state.frames.send(frame).unwrap();
         }
-        for suffix in [b'1', b'2'] {
+        for suffix in *b"12" {
             assert_eq!(
                 packets.try_next().await.unwrap().unwrap().last(),
                 Some(&suffix)
