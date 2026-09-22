@@ -126,21 +126,21 @@ async fn model_is_fixed_at_creation_while_runtime_reasoning_policy_can_change() 
         let mut socket = accept_async(stream).await?;
         let warmup = next_json(&mut socket).await?;
         assert_warmup(&warmup);
-        assert_eq!(warmup["model"], "gpt-5.6-luna");
+        assert_eq!(warmup["model"], "gpt-6-luna");
         assert_eq!(warmup["reasoning"]["effort"], "low");
         assert_eq!(warmup["input"][1]["content"][0]["text"], "custom prompt");
         send_warmup(&mut socket, "resp-warmup").await?;
 
         let first = next_json(&mut socket).await?;
-        assert_eq!(first["model"], "gpt-5.6-luna");
+        assert_eq!(first["model"], "gpt-6-luna");
         assert_eq!(first["previous_response_id"], "resp-warmup");
         assert_eq!(first["reasoning"]["effort"], "low");
-        assert!(first.get("service_tier").is_none());
+        assert_eq!(first["service_tier"], "default");
         let prompt_cache_key = first["prompt_cache_key"].clone();
         send_final(&mut socket, "resp-first").await?;
 
         let follow_on = next_json(&mut socket).await?;
-        assert_eq!(follow_on["model"], "gpt-5.6-luna");
+        assert_eq!(follow_on["model"], "gpt-6-luna");
         assert!(follow_on.get("previous_response_id").is_none());
         assert_eq!(follow_on["reasoning"]["effort"], "high");
         assert_eq!(follow_on["service_tier"], "priority");
@@ -151,10 +151,10 @@ async fn model_is_fixed_at_creation_while_runtime_reasoning_policy_can_change() 
         send_final(&mut socket, "resp-second").await?;
 
         let standard = next_json(&mut socket).await?;
-        assert_eq!(standard["model"], "gpt-5.6-luna");
+        assert_eq!(standard["model"], "gpt-6-luna");
         assert!(standard.get("previous_response_id").is_none());
         assert_eq!(standard["reasoning"]["effort"], "high");
-        assert!(standard.get("service_tier").is_none());
+        assert_eq!(standard["service_tier"], "default");
         let replay = standard.to_string();
         assert!(replay.contains("first prompt"));
         assert!(replay.contains("second prompt"));
@@ -201,15 +201,15 @@ async fn model_is_fixed_at_creation_while_runtime_reasoning_policy_can_change() 
     assert_eq!(completed[0]["connection_attempts"], 1);
     assert_eq!(completed[0]["response_attempts"], 2);
     assert_eq!(completed[0]["effort"], "low");
-    assert_eq!(completed[0]["model"], "gpt-5.6-luna");
+    assert_eq!(completed[0]["model"], "gpt-6-luna");
     assert_eq!(completed[1]["connection_attempts"], 0);
     assert_eq!(completed[1]["response_attempts"], 1);
     assert_eq!(completed[1]["effort"], "high");
-    assert_eq!(completed[1]["model"], "gpt-5.6-luna");
+    assert_eq!(completed[1]["model"], "gpt-6-luna");
     assert_eq!(completed[2]["connection_attempts"], 0);
     assert_eq!(completed[2]["response_attempts"], 1);
     assert_eq!(completed[2]["effort"], "high");
-    assert_eq!(completed[2]["model"], "gpt-5.6-luna");
+    assert_eq!(completed[2]["model"], "gpt-6-luna");
 
     timeout(std::time::Duration::from_secs(5), server)
         .await
@@ -228,12 +228,12 @@ async fn queued_prompts_retain_effort_captured_when_accepted() -> Result<()> {
         let (stream, _) = listener.accept().await?;
         let mut socket = accept_async(stream).await?;
         let warmup = next_json(&mut socket).await?;
-        assert_eq!(warmup["model"], "gpt-5.6-luna");
+        assert_eq!(warmup["model"], "gpt-6-luna");
         assert_eq!(warmup["reasoning"]["effort"], "low");
         send_warmup(&mut socket, "resp-warmup").await?;
 
         let first = next_json(&mut socket).await?;
-        assert_eq!(first["model"], "gpt-5.6-luna");
+        assert_eq!(first["model"], "gpt-6-luna");
         assert_eq!(first["reasoning"]["effort"], "low");
         first_started
             .send(())
@@ -256,20 +256,20 @@ async fn queued_prompts_retain_effort_captured_when_accepted() -> Result<()> {
         .await?;
 
         let continuation = next_json(&mut socket).await?;
-        assert_eq!(continuation["model"], "gpt-5.6-luna");
+        assert_eq!(continuation["model"], "gpt-6-luna");
         assert_eq!(continuation["previous_response_id"], "resp-first-tool");
         assert_eq!(continuation["reasoning"]["effort"], "low");
         send_final(&mut socket, "resp-first").await?;
 
         let queued = next_json(&mut socket).await?;
-        assert_eq!(queued["model"], "gpt-5.6-luna");
+        assert_eq!(queued["model"], "gpt-6-luna");
         assert_eq!(queued["previous_response_id"], "resp-first");
         assert_eq!(queued["reasoning"]["effort"], "low");
-        assert!(queued.get("service_tier").is_none());
+        assert_eq!(queued["service_tier"], "default");
         send_final(&mut socket, "resp-queued").await?;
 
         let updated = next_json(&mut socket).await?;
-        assert_eq!(updated["model"], "gpt-5.6-luna");
+        assert_eq!(updated["model"], "gpt-6-luna");
         assert!(updated.get("previous_response_id").is_none());
         assert_eq!(updated["reasoning"]["effort"], "high");
         assert_eq!(updated["service_tier"], "priority");
@@ -309,7 +309,7 @@ async fn queued_prompts_retain_effort_captured_when_accepted() -> Result<()> {
                 .snapshot()
                 .expect("local turns always retain a snapshot"),
         )?["model"],
-        "gpt-5.6-luna"
+        "gpt-6-luna"
     );
     let updated = agent.prompt("updated prompt").await?.result().await?;
     assert_eq!(
@@ -318,7 +318,7 @@ async fn queued_prompts_retain_effort_captured_when_accepted() -> Result<()> {
                 .snapshot()
                 .expect("local turns always retain a snapshot"),
         )?["model"],
-        "gpt-5.6-luna"
+        "gpt-6-luna"
     );
 
     drop((agent, events));

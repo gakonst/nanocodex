@@ -679,10 +679,8 @@ impl<'a> ResponseCreate<'a> {
             previous_response_id,
             input: RequestInput { input },
             tool_choice: "auto",
-            // gpt-5.6-sol uses Responses Lite. Codex disables the provider
-            // parallel-call request bit for Lite even though the client-side
-            // scheduler still accepts multi-call responses and replays.
-            parallel_tool_calls: false,
+            // GPT-6 Sol/Luna support parallel calls in the Codex catalog.
+            parallel_tool_calls: matches!(policy.model, crate::Model::Sol | crate::Model::Luna),
             reasoning: ReasoningControls {
                 // Astra rejects the legacy `reasoning.mode` field. Standard
                 // already serializes as absent; keep this model guard as a
@@ -707,12 +705,14 @@ impl<'a> ResponseCreate<'a> {
             text: TextControls { verbosity: "low" },
             // The API accepts both `fast` and `priority`. Codex currently uses
             // `priority` as the compatibility request value for Fast mode.
-            // Astra standard mode is explicit so a project-level Fast default
+            // GPT-6 standard mode is explicit so a project-level Fast default
             // cannot silently change processing or the local cost estimate.
             service_tier: match (policy.model, policy.fast_mode) {
                 (crate::Model::Glm53 | crate::Model::Kimi | crate::Model::Mimo, _) => None,
                 (_, true) => Some("priority"),
-                (crate::Model::Astra, false) => Some("default"),
+                (crate::Model::Sol | crate::Model::Luna | crate::Model::Astra, false) => {
+                    Some("default")
+                }
                 (_, false) => None,
             },
             generate,
@@ -969,7 +969,7 @@ mod tests {
         assert_eq!(request["client_metadata"]["thread_id"], json!("branch-a"));
         assert_eq!(request["store"], false);
         assert_eq!(request["generate"], false);
-        assert_eq!(request["parallel_tool_calls"], false);
+        assert_eq!(request["parallel_tool_calls"], true);
         assert!(request.get("tools").is_none());
         assert!(request.get("instructions").is_none());
         assert!(request["reasoning"].get("summary").is_none());
@@ -1105,9 +1105,11 @@ mod tests {
     #[test]
     fn supported_models_serialize_as_selected() {
         for (model, expected) in [
-            (Model::Sol, "gpt-5.6-sol"),
+            (Model::Sol, "gpt-6-sol"),
+            (Model::Sol56, "gpt-5.6-sol"),
             (Model::Terra, "gpt-5.6-terra"),
-            (Model::Luna, "gpt-5.6-luna"),
+            (Model::Luna, "gpt-6-luna"),
+            (Model::Luna56, "gpt-5.6-luna"),
             (Model::Astra, "gpt-6-astra"),
             (Model::Glm53, "@cf/zai-org/glm-5.3"),
         ] {
@@ -1185,7 +1187,7 @@ mod tests {
     }
 
     #[test]
-    fn pro_mode_and_every_effort_serialize_independently() {
+    fn reasoning_modes_and_every_effort_serialize_independently() {
         let prefix: Arc<[ResponseItem]> = Arc::from([ResponseItem::message(
             MessageRole::Developer,
             [ContentItem::InputText {
@@ -1194,33 +1196,48 @@ mod tests {
         )]);
         let profile = RequestProfile::new("pro-agent", "pro-lineage", prefix);
 
-        for (thinking, expected) in [
-            (Thinking::None, "none"),
-            (Thinking::Low, "low"),
-            (Thinking::Medium, "medium"),
-            (Thinking::High, "high"),
-            (Thinking::Xhigh, "xhigh"),
-            (Thinking::Max, "max"),
-        ] {
-            let config = ModelConfig {
-                auth: crate::OpenAiAuth::api_key("test-key"),
-                reasoning_mode: ReasoningMode::Pro,
-                thinking,
-                ..ModelConfig::default()
-            };
-            let request = serde_json::to_value(ResponseCreate::warmup(
-                &config,
-                Model::Sol,
-                thinking,
-                false,
-                &profile,
-                None,
-            ))
-            .expect("request should serialize");
+        for model in [Model::Sol, Model::Luna, Model::Sol56, Model::Luna56] {
+            for mode in [ReasoningMode::Standard, ReasoningMode::Pro] {
+                for transport in [
+                    crate::ResponsesTransport::Https,
+                    crate::ResponsesTransport::WebSocket,
+                ] {
+                    for (thinking, expected) in [
+                        (Thinking::None, "none"),
+                        (Thinking::Low, "low"),
+                        (Thinking::Medium, "medium"),
+                        (Thinking::High, "high"),
+                        (Thinking::Xhigh, "xhigh"),
+                        (Thinking::Max, "max"),
+                    ] {
+                        let config = ModelConfig {
+                            auth: crate::OpenAiAuth::api_key("test-key"),
+                            reasoning_mode: mode,
+                            responses_transport: transport,
+                            thinking,
+                            ..ModelConfig::default()
+                        };
+                        let request = serde_json::to_value(ResponseCreate::warmup(
+                            &config, model, thinking, false, &profile, None,
+                        ))
+                        .expect("request should serialize");
 
-            assert_eq!(request["reasoning"]["mode"], json!("pro"));
-            assert_eq!(request["reasoning"]["effort"], json!(expected));
-            assert_eq!(request["reasoning"]["context"], json!("all_turns"));
+                        assert_eq!(request["model"], model.as_str());
+                        assert_eq!(
+                            request["reasoning"]
+                                .get("mode")
+                                .and_then(serde_json::Value::as_str),
+                            if mode == ReasoningMode::Pro {
+                                Some("pro")
+                            } else {
+                                None
+                            }
+                        );
+                        assert_eq!(request["reasoning"]["effort"], json!(expected));
+                        assert_eq!(request["reasoning"]["context"], json!("all_turns"));
+                    }
+                }
+            }
         }
     }
 
@@ -1274,7 +1291,7 @@ mod tests {
             None,
         ))
         .expect("fast request should serialize");
-        assert!(standard.get("service_tier").is_none());
+        assert_eq!(standard["service_tier"], json!("default"));
         assert_eq!(fast["service_tier"], json!("priority"));
 
         let astra_standard = serde_json::to_value(ResponseCreate::warmup(

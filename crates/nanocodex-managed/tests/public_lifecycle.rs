@@ -828,7 +828,7 @@ async fn public_managed_lifecycle_preserves_durable_identity_control_and_replay(
         assert_eq!(
             lock(&fixture.inner.settings).clone(),
             json!({
-                "model": "gpt-5.6-luna",
+                "model": "gpt-6-luna",
                 "thinking": "xhigh",
                 "reasoning_mode": "pro",
                 "fast_mode": false

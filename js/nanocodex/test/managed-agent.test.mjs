@@ -2348,3 +2348,22 @@ test("agent listings retain bounded sidebar metadata and tolerate legacy summari
   assert.deepEqual(agents[0].summary.presentation, presentation);
   assert.equal(Object.isFrozen(agents[0].summary.presentation.activeTurnIds), true);
 });
+
+
+test("managed GPT-6 and legacy settings preserve exact identities, six efforts and modes", async () => {
+  for (const model of ["gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna"]) {
+    for (const thinking of ["none", "low", "medium", "high", "xhigh", "max"]) {
+      for (const reasoningMode of ["standard", "pro"]) {
+        const settings = { model, thinking, reasoningMode, fastMode: false };
+        const wire = { model, thinking, reasoning_mode: reasoningMode, fast_mode: false };
+        const agent = Agent.open(agentId, { baseUrl: origin, fetch: async (input, init) => {
+          const request = new Request(input, init);
+          if (request.method === "PATCH") assert.deepEqual(await request.json(), wire);
+          return Response.json({ settings: wire });
+        } });
+        assert.deepEqual(await agent.settings.read(), settings);
+        assert.deepEqual(await agent.settings.update(settings), settings);
+      }
+    }
+  }
+});

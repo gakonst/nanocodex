@@ -391,6 +391,9 @@ async function check() {
     task: "Return any JSON value.",
     outputSchema: true,
   });
+  for (const model of ["gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna"] as const) {
+    await Subagents.spawn(agent, { role: "exact-model", task: "Preserve this model ID.", model, thinking: "max", outputSchema: true });
+  }
   const subagentBatch = await Subagents.spawnMany(agent, [
     {
       role: "planner",

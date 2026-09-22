@@ -9,7 +9,7 @@ const requestSchema = z.object({
   role: z.string().max(4096),
   task: z.string().max(65536),
   model: z.string().optional(),
-  thinking: z.enum(["low", "medium", "high"]).optional(),
+  thinking: z.enum(["none", "low", "medium", "high", "xhigh", "max"]).optional(),
   hostContextRef: z.string().min(1).max(256),
 }).strict();
 const bindingSchema = z.object({
@@ -20,7 +20,7 @@ const bindingSchema = z.object({
 }).strict();
 const aliases = new Map([
   ["kimi", "kimi-k3"], ["mimo", "mimo-v2.6-pro"],
-  ["sol", "gpt-5.6-sol"], ["terra", "gpt-5.6-terra"], ["luna", "gpt-5.6-luna"],
+  ["sol", "gpt-6-sol"], ["terra", "gpt-5.6-terra"], ["luna", "gpt-6-luna"],
   ["astra", "gpt-6-astra"], ["glm-5.3", "@cf/zai-org/glm-5.3"],
 ]);
 export type RetainedChildRoute = {
@@ -72,7 +72,9 @@ export function createSubagentRouteController(options: {
       const candidates = ROUTING_CANDIDATES.filter(candidate => (
         (!options.policy.candidates || options.policy.candidates.includes(candidate.id))
         && (model === undefined || candidate.model === model)
-        && (request.thinking === undefined || candidate.thinking === request.thinking)
+        && (request.thinking === undefined
+          ? (model !== "gpt-6-sol" && model !== "gpt-6-luna" || candidate.thinking === "medium")
+          : candidate.thinking === request.thinking)
       )).map(candidate => candidate.id);
       if (!candidates.length) throw new Error("Explicit child model/effort is outside eligible routing policy");
       resolving++;

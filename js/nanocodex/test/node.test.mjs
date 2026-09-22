@@ -626,7 +626,7 @@ test("Node host invokes canonical subagent handlers without a root model turn", 
     const childSocket = await bounded(server.connection, "child connection");
     const childReader = messageReader(childSocket);
     const childWarmup = await bounded(childReader.next(), "child warmup");
-    assert.equal(childWarmup.model, "gpt-5.6-luna");
+    assert.equal(childWarmup.model, "gpt-6-luna");
     assert.doesNotMatch(childWarmup.input[1].content[0].text, /GPT-6 Astra/);
     assert.match(childWarmup.input[1].content[0].text, /Use the caller's memory tools\.$/);
     sendWarmup(childSocket, "direct-child-warmup");
@@ -1082,6 +1082,10 @@ test("WASM advertises and resumes Code Mode cells through function wait", async 
 
 for (const [options, effort] of [
   [{ model: "gpt-5.6-luna" }, "medium"],
+  [{ model: "gpt-6-sol" }, "medium"],
+  [{ model: "gpt-6-luna" }, "medium"],
+  [{ model: "gpt-6-sol", thinking: "max", reasoningMode: "pro" }, "max"],
+  [{ model: "gpt-6-luna", thinking: "none", reasoningMode: "standard" }, "none"],
   [{ model: "gpt-6-astra", thinking: "high" }, "high"],
 ]) test(`WASM resolves catalog effort and preserves explicit effort: ${JSON.stringify(options)}`, async () => {
   const server = await startServer();
@@ -1093,6 +1097,7 @@ for (const [options, effort] of [
       const request = await reader.next();
       assert.equal(request.model, options.model);
       assert.equal(request.reasoning.effort, effort);
+      if (options.reasoningMode) assert.equal(request.reasoning.mode, options.reasoningMode);
       sendWarmup(socket, "defaults-warmup");
       await reader.next();
       sendFinal(socket, "defaults-final", "done");

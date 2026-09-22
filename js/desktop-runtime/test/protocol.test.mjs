@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { WebSocketServer } from "ws";
-import { DesktopRuntime, managedOrigin, validateHand, validateSettings, compareCursor, restoredLayout } from "../src/runtime.mjs";
+import { DEFAULT_SETTINGS, DesktopRuntime, managedOrigin, validateHand, validateSettings, compareCursor, restoredLayout } from "../src/runtime.mjs";
 import { desktopPreferences } from "../src/configuration.mjs";
 
 // Synthetic desktop fixtures must never discover or install a host provider.
@@ -591,4 +591,17 @@ test("deep mixed split layouts retain every agent and draft through JSON persist
   assert.deepEqual(restored.paneLayouts, [tree]);
   assert.deepEqual(restored.tabs.map(t => t.draft), tabs.map(t => t.draft));
   assert.equal(restored.tiledTabIDs.length, 96);
+});
+
+
+test("GPT-6 desktop defaults keep explicit High and exact saved legacy settings", () => {
+  assert.deepEqual(DEFAULT_SETTINGS, { model: "gpt-6-sol", thinking: "high", reasoning_mode: "standard", fast_mode: false });
+  for (const model of ["gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna"]) {
+    for (const thinking of ["none", "low", "medium", "high", "xhigh", "max"]) {
+      for (const reasoning_mode of ["standard", "pro"]) {
+        const settings = { model, thinking, reasoning_mode, fast_mode: false };
+        assert.deepEqual(validateSettings(settings), settings);
+      }
+    }
+  }
 });

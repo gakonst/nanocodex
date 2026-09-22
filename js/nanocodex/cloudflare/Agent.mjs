@@ -382,7 +382,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
           }
           selected = createWorkersAiResponses(profile.workersAi.ai);
         } else {
-          if (!["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].includes(profile.model)) {
+          if (!["gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].includes(profile.model)) {
             throw new Error("Session model requires an explicit inference binding");
           }
           selected = frontierEndpoint;
@@ -628,7 +628,7 @@ function validateInternalConfiguration(configuration) {
       "reasoning_mode",
       "fast_mode",
     ].includes(key))
-    || !["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"]
+    || !["gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"]
       .includes(configuration.model)
     || !["none", "low", "medium", "high", "xhigh", "max"].includes(configuration.thinking)
     || !["standard", "pro"].includes(configuration.reasoning_mode)

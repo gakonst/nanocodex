@@ -128,6 +128,11 @@ describe("eval-informed thread routing", () => {
     db.prepare("UPDATE managed_agent_settings SET model = ?").run(OSS_MODEL);
     initializeManagedAgentSettingsSchema(storage as never);
     expect(db.prepare("SELECT model FROM managed_agent_settings").get()?.model).toBe(OSS_MODEL);
+    for (const model of ["gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna"]) {
+      db.prepare("UPDATE managed_agent_settings SET model = ?, thinking = 'max', reasoning_mode = 'pro'").run(model);
+      initializeManagedAgentSettingsSchema(storage as never);
+      expect(db.prepare("SELECT model, thinking, reasoning_mode FROM managed_agent_settings").get()).toMatchObject({ model, thinking: "max", reasoning_mode: "pro" });
+    }
     db.close();
   });
 });
@@ -153,13 +158,13 @@ describe("v2 direct candidate routing", () => {
       candidate: { choice, confidence: candidateConfidence }, family: { choice: "terminal", confidence: familyConfidence },
     } })),
   });
-  it("defaults to one direct typed choice across fifteen model/effort candidates", async () => {
+  it("defaults to one direct typed choice across the expanded model/effort catalog", async () => {
     const ai = answer();
     const route = await resolveThreadRoute(ai, "Fix build quickly and cheaply", direct());
     expect(route).toMatchObject({ policy_version: "jev-direct-v4", model: "gpt-5.6-luna", thinking: "low", estimate: null });
     expect(ai.run).toHaveBeenCalledOnce();
     const request = ai.run.mock.calls[0][1] as { state: string; questions: { candidate: { criteria: object } } };
-    expect(Object.keys(request.questions.candidate.criteria)).toHaveLength(15);
+    expect(Object.keys(request.questions.candidate.criteria)).toHaveLength(27);
     expect(JSON.parse(request.state)).toMatchObject({ preferences: {}, preference_sources: { duration: "prompt_or_default", cost: "prompt_or_default" }, measurements: [] });
     expect(route.audit).toMatchObject({ candidate_choice: "gpt-5.6-luna:low", classifier_confidence: .97, candidate_confidence: .98 });
   });
@@ -253,15 +258,15 @@ describe("cross-provider candidate routing", () => {
   } })) });
   const openrouter = "openrouter:openai/gpt-6-astra:high";
   const vercel = "vercel:openai/gpt-6-astra:high";
-  it("offers 67 unique candidates, preserving every old identity", async () => {
-    expect(ROUTING_CANDIDATES).toHaveLength(67);
-    expect(new Set(ROUTING_CANDIDATES.map(c => c.id)).size).toBe(67);
+  it("offers 91 unique candidates, preserving every old identity", async () => {
+    expect(ROUTING_CANDIDATES).toHaveLength(91);
+    expect(new Set(ROUTING_CANDIDATES.map(c => c.id)).size).toBe(91);
     const p = routingPolicySchema.parse({ candidates: ROUTING_CANDIDATES.map(c => c.id) });
     const ai = choose(vercel);
     const route = await resolveThreadRoute(ai, "task", p, available);
-    expect(route.audit?.eligible_candidates).toHaveLength(55);
+    expect(route.audit?.eligible_candidates).toHaveLength(67);
     expect(route).toMatchObject({ backend: "vercel", model: FRONTIER_MODEL, provider_model: "openai/gpt-6-astra" });
-    expect(Object.keys((ai.run.mock.calls[0][1] as {questions:{candidate:{criteria:object}}}).questions.candidate.criteria)).toHaveLength(55);
+    expect(Object.keys((ai.run.mock.calls[0][1] as {questions:{candidate:{criteria:object}}}).questions.candidate.criteria)).toHaveLength(67);
   });
   it("sends dated provider token rates separately from measured task costs", async () => {
     const ai = choose(vercel);
@@ -281,7 +286,7 @@ describe("cross-provider candidate routing", () => {
     expect(route.selection).toBe("prior");
   });
   it.each([
-    [undefined, 15], [{openrouter:true,vercel:false},35], [{openrouter:false,vercel:true},35], [available,55], [{...available,cloudflare:true},67], [{openrouter:false,vercel:false,cloudflare:true},27],
+    [undefined, 27], [{openrouter:true,vercel:false},47], [{openrouter:false,vercel:true},47], [available,67], [{...available,cloudflare:true},91], [{openrouter:false,vercel:false,cloudflare:true},51],
   ])("filters unavailable providers before Jev: %j", async (availability, count) => {
     const ai = choose("gpt-6-astra:high");
     const route = await resolveThreadRoute(ai, "task", routingPolicySchema.parse({}), availability);
@@ -389,7 +394,7 @@ describe("preference-preserving confidence fallback", () => {
 describe("captured preference-distribution policy replay (not accuracy labels)", () => {
   it.each(preferenceObservations.cases)("retains $catalog/$id without inflating confidence", async observation => {
     const ai = {run:vi.fn(async()=>({state:"Completed",result:{answers:observation.answers}}))};
-    const route = await resolveThreadRoute(ai,observation.prompt,routingPolicySchema.parse({preferences:observation.preferences, candidates: ROUTING_CANDIDATES.filter(c => !["kimi-k3", "mimo-v2.6-pro"].includes(c.model)).map(c => c.id)}),
+    const route = await resolveThreadRoute(ai,observation.prompt,routingPolicySchema.parse({preferences:observation.preferences, candidates: ROUTING_CANDIDATES.filter(c => !["kimi-k3", "mimo-v2.6-pro", "gpt-6-sol", "gpt-6-luna"].includes(c.model)).map(c => c.id)}),
       {openrouter:observation.catalog===45,vercel:observation.catalog===45});
     expect(route.audit?.candidate_choice).toBe(observation.expected_choice);
     expect(route.audit?.candidate_confidence).toBe(observation.answers.candidate.confidence);
@@ -507,10 +512,10 @@ describe("Cloudflare frontier opt-in", () => {
   const id = "cloudflare:openai/gpt-6-astra:high";
   const available = { openrouter: false, vercel: false, cloudflare: true };
   const ai = { run: async () => ({ answers: { candidate: { choice: id, confidence: .99 }, family: { choice: "terminal", confidence: .99 } } }) };
-  it("adds exactly twelve frontier entries with unknown prices and retains all old IDs", () => {
+  it("adds exactly twenty-four frontier entries with unknown prices and retains all old IDs", () => {
     const cloudflare = ROUTING_CANDIDATES.filter(c => c.backend === "cloudflare");
-    expect(cloudflare).toHaveLength(12);
-    expect(ROUTING_CANDIDATES.filter(c => c.backend !== "chatgpt")).toHaveLength(55);
+    expect(cloudflare).toHaveLength(24);
+    expect(ROUTING_CANDIDATES.filter(c => c.backend !== "chatgpt")).toHaveLength(67);
     for (const model of [FRONTIER_MODEL, "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
       for (const thinking of ["low", "medium", "high"]) {
         expect(cloudflare.find(c => c.id === `cloudflare:openai/${model}:${thinking}`)).toMatchObject({model, thinking, provider_model:`openai/${model}`,catalog_price_hint:null});
@@ -540,4 +545,20 @@ describe("Cloudflare frontier opt-in", () => {
     expect(await pin.resolve(()=>resolveThreadRoute(ai,"task",policy,available))).toEqual(old);
     expect(retained.backend).toBe("chatgpt");
   });
+});
+
+it("omits unverified GPT6 Chat gateway routes while native Responses retains all efforts", () => {
+  for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
+    for (const backend of ["openrouter", "vercel"])
+      expect(ROUTING_CANDIDATES.filter(c => c.model === model && c.backend === backend).map(c => c.thinking)).toEqual([]);
+    for (const backend of ["chatgpt", "cloudflare"])
+      expect(ROUTING_CANDIDATES.filter(c => c.model === model && c.backend === backend).map(c => c.thinking)).toEqual(["none", "low", "medium", "high", "xhigh", "max"]);
+  }
+});
+
+it("defaults explicitly configured GPT6 frontier to medium", () => {
+  for (const frontier_model of ["gpt-6-sol", "gpt-6-luna"]) {
+    expect(routingPolicySchema.parse({ frontier_model }).frontier_thinking).toBe("medium");
+    expect(routingPolicySchema.parse({ frontier_model, frontier_thinking: "max" }).frontier_thinking).toBe("max");
+  }
 });

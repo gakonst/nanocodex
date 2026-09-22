@@ -5,25 +5,25 @@ use crate::{Model, responses::Usage};
 
 // OpenAI publishes rates per one million tokens. All supported rates convert
 // exactly to nano-USD per token, avoiding floating point and division.
-const SOL_STANDARD: TokenRates = TokenRates {
+const SOL56_STANDARD: TokenRates = TokenRates {
     input: 4_000,
     cached_input: 400,
     cache_write_input: 5_000,
     output: 20_000,
 };
-const SOL_PRIORITY: TokenRates = TokenRates {
+const SOL56_PRIORITY: TokenRates = TokenRates {
     input: 8_000,
     cached_input: 800,
     cache_write_input: 10_000,
     output: 40_000,
 };
-const SOL_LONG_CONTEXT_STANDARD: TokenRates = TokenRates {
+const SOL56_LONG_CONTEXT_STANDARD: TokenRates = TokenRates {
     input: 8_000,
     cached_input: 800,
     cache_write_input: 10_000,
     output: 30_000,
 };
-const SOL_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
+const SOL56_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
     input: 16_000,
     cached_input: 1_600,
     cache_write_input: 20_000,
@@ -53,25 +53,25 @@ const TERRA_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
     cache_write_input: 10_000,
     output: 36_000,
 };
-const LUNA_STANDARD: TokenRates = TokenRates {
+const LUNA56_STANDARD: TokenRates = TokenRates {
     input: 200,
     cached_input: 20,
     cache_write_input: 250,
     output: 1_200,
 };
-const LUNA_PRIORITY: TokenRates = TokenRates {
+const LUNA56_PRIORITY: TokenRates = TokenRates {
     input: 400,
     cached_input: 40,
     cache_write_input: 500,
     output: 2_400,
 };
-const LUNA_LONG_CONTEXT_STANDARD: TokenRates = TokenRates {
+const LUNA56_LONG_CONTEXT_STANDARD: TokenRates = TokenRates {
     input: 400,
     cached_input: 40,
     cache_write_input: 500,
     output: 1_800,
 };
-const LUNA_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
+const LUNA56_LONG_CONTEXT_PRIORITY: TokenRates = TokenRates {
     input: 800,
     cached_input: 80,
     cache_write_input: 1_000,
@@ -138,21 +138,37 @@ impl TokenRates {
         let fast = !matches!(service_tier, ServiceTier::Standard);
         let long = input_tokens > LONG_CONTEXT_THRESHOLD;
         match (model, fast, long) {
+            (Model::Sol | Model::Luna, _, _) => {
+                let (input, cached_input, cache_write_input, output) =
+                    if matches!(model, Model::Sol) {
+                        (2_000, 200, 2_500, 10_000)
+                    } else {
+                        (100, 10, 125, 500)
+                    };
+                let speed = if fast { 2 } else { 1 };
+                let context = if long { 2 } else { 1 };
+                TokenRates {
+                    input: input * speed * context,
+                    cached_input: cached_input * speed * context,
+                    cache_write_input: cache_write_input * speed * context,
+                    output: output * speed * if long { 3 } else { 2 } / 2,
+                }
+            }
             (Model::Glm53, _, _) => GLM53_STANDARD,
             (Model::Kimi, _, _) => KIMI_STANDARD,
             (Model::Mimo, _, _) => MIMO_STANDARD,
-            (Model::Sol, false, false) => SOL_STANDARD,
-            (Model::Sol, true, false) => SOL_PRIORITY,
-            (Model::Sol, false, true) => SOL_LONG_CONTEXT_STANDARD,
-            (Model::Sol, true, true) => SOL_LONG_CONTEXT_PRIORITY,
+            (Model::Sol56, false, false) => SOL56_STANDARD,
+            (Model::Sol56, true, false) => SOL56_PRIORITY,
+            (Model::Sol56, false, true) => SOL56_LONG_CONTEXT_STANDARD,
+            (Model::Sol56, true, true) => SOL56_LONG_CONTEXT_PRIORITY,
             (Model::Terra, false, false) => TERRA_STANDARD,
             (Model::Terra, true, false) => TERRA_PRIORITY,
             (Model::Terra, false, true) => TERRA_LONG_CONTEXT_STANDARD,
             (Model::Terra, true, true) => TERRA_LONG_CONTEXT_PRIORITY,
-            (Model::Luna, false, false) => LUNA_STANDARD,
-            (Model::Luna, true, false) => LUNA_PRIORITY,
-            (Model::Luna, false, true) => LUNA_LONG_CONTEXT_STANDARD,
-            (Model::Luna, true, true) => LUNA_LONG_CONTEXT_PRIORITY,
+            (Model::Luna56, false, false) => LUNA56_STANDARD,
+            (Model::Luna56, true, false) => LUNA56_PRIORITY,
+            (Model::Luna56, false, true) => LUNA56_LONG_CONTEXT_STANDARD,
+            (Model::Luna56, true, true) => LUNA56_LONG_CONTEXT_PRIORITY,
             (Model::Astra, false, false) => ASTRA_STANDARD,
             (Model::Astra, true, false) => ASTRA_PRIORITY,
             (Model::Astra, false, true) => ASTRA_LONG_CONTEXT_STANDARD,
@@ -190,7 +206,7 @@ impl ServiceTier {
     pub const fn for_model(model: Model, fast_mode: bool) -> Self {
         match (model, fast_mode) {
             (Model::Glm53 | Model::Kimi | Model::Mimo, _) | (_, false) => Self::Standard,
-            (Model::Astra, true) => Self::Fast,
+            (Model::Sol | Model::Luna | Model::Astra, true) => Self::Fast,
             (_, true) => Self::Priority,
         }
     }
@@ -296,7 +312,7 @@ impl EstimatedUsdCost {
 /// };
 /// let cost = estimate(&usage, ServiceTier::Standard);
 ///
-/// assert_eq!(cost.amount().decimal(), "0.00222");
+/// assert_eq!(cost.amount().decimal(), "0.00111");
 /// ```
 #[must_use]
 pub fn estimate(usage: &Usage, service_tier: ServiceTier) -> EstimatedUsdCost {
@@ -374,6 +390,48 @@ mod tests {
     };
 
     #[test]
+    fn gpt6_rates_cover_boundary_cache_and_fast() {
+        for (model, normal, long, fast) in [
+            (Model::Sol, "1.389", "2.278004", "4.556008"),
+            (Model::Luna, "0.06945", "0.1139002", "0.2278004"),
+        ] {
+            assert_eq!(
+                estimate_tokens(
+                    272_000,
+                    100_000,
+                    50_000,
+                    100_000,
+                    model,
+                    ServiceTier::Standard
+                )
+                .amount()
+                .decimal(),
+                normal
+            );
+            assert_eq!(
+                estimate_tokens(
+                    272_001,
+                    100_000,
+                    50_000,
+                    100_000,
+                    model,
+                    ServiceTier::Standard
+                )
+                .amount()
+                .decimal(),
+                long
+            );
+            assert_eq!(
+                estimate_tokens(272_001, 100_000, 50_000, 100_000, model, ServiceTier::Fast)
+                    .amount()
+                    .decimal(),
+                fast
+            );
+            assert_eq!(ServiceTier::for_model(model, true), ServiceTier::Fast);
+        }
+    }
+
+    #[test]
     fn glm53_rates_are_independent_of_priority_and_context() {
         for tier in [
             ServiceTier::Standard,
@@ -420,11 +478,11 @@ mod tests {
             ServiceTier::Standard,
         );
 
-        assert_eq!(estimate.input().decimal(), "5.2");
-        assert_eq!(estimate.cached_input().decimal(), "0.2");
-        assert_eq!(estimate.cache_write_input().decimal(), "1");
-        assert_eq!(estimate.output().decimal(), "6");
-        assert_eq!(estimate.amount().decimal(), "12.4");
+        assert_eq!(estimate.input().decimal(), "2.6");
+        assert_eq!(estimate.cached_input().decimal(), "0.1");
+        assert_eq!(estimate.cache_write_input().decimal(), "0.5");
+        assert_eq!(estimate.output().decimal(), "3");
+        assert_eq!(estimate.amount().decimal(), "6.2");
     }
 
     #[test]
@@ -434,7 +492,7 @@ mod tests {
             0,
             0,
             1_000_000,
-            Model::Sol,
+            Model::Sol56,
             ServiceTier::Standard,
         );
         let priority = estimate_tokens(
@@ -442,7 +500,7 @@ mod tests {
             0,
             0,
             1_000_000,
-            Model::Sol,
+            Model::Sol56,
             ServiceTier::Priority,
         );
 
@@ -464,8 +522,8 @@ mod tests {
             ..Usage::default()
         };
 
-        let standard = estimate_for_model(&usage, Model::Luna, ServiceTier::Standard);
-        let priority = estimate_for_model(&usage, Model::Luna, ServiceTier::Priority);
+        let standard = estimate_for_model(&usage, Model::Luna56, ServiceTier::Standard);
+        let priority = estimate_for_model(&usage, Model::Luna56, ServiceTier::Priority);
 
         assert_eq!(standard.input().decimal(), "0.28");
         assert_eq!(standard.cached_input().decimal(), "0.008");
@@ -533,7 +591,7 @@ mod tests {
 
     #[test]
     fn malformed_detail_counts_do_not_double_charge_input() {
-        let estimate = estimate_tokens(10, 8, 8, 0, Model::Sol, ServiceTier::Standard);
+        let estimate = estimate_tokens(10, 8, 8, 0, Model::Sol56, ServiceTier::Standard);
 
         assert_eq!(estimate.input().nano_usd(), 0);
         assert_eq!(estimate.cached_input().nano_usd(), 3_200);

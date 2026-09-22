@@ -56,11 +56,11 @@ indirect enum JSONValue: Codable, Equatable, Sendable {
 }
 
 struct AgentSettings: Codable, Equatable, Sendable {
-    var model = "gpt-5.6-sol"
+    var model = "gpt-6-sol"
     var thinking = "high"
     var reasoning_mode = "standard"
     var fast_mode = false
-    var modelName: String { ["gpt-6-astra": "Astra", "gpt-5.6-sol": "Sol", "gpt-5.6-terra": "Terra", "gpt-5.6-luna": "Luna"][model] ?? model }
+    var modelName: String { ["gpt-6-astra": "Astra", "gpt-6-sol": "Sol", "gpt-5.6-sol": "GPT-5.6 Sol", "gpt-5.6-luna": "GPT-5.6 Luna", "gpt-5.6-terra": "Terra", "gpt-6-luna": "Luna"][model] ?? model }
     var supportsProReasoning: Bool { model != "gpt-6-astra" }
     var supportsNoReasoning: Bool { model != "gpt-6-astra" }
 

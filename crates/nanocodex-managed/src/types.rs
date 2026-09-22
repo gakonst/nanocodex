@@ -590,9 +590,11 @@ mod model_serde {
         D: Deserializer<'de>,
     {
         match String::deserialize(deserializer)?.as_str() {
-            "gpt-5.6-sol" => Ok(Model::Sol),
+            "gpt-6-sol" => Ok(Model::Sol),
+            "gpt-5.6-sol" => Ok(Model::Sol56),
             "gpt-5.6-terra" => Ok(Model::Terra),
-            "gpt-5.6-luna" => Ok(Model::Luna),
+            "gpt-6-luna" => Ok(Model::Luna),
+            "gpt-5.6-luna" => Ok(Model::Luna56),
             "gpt-6-astra" => Ok(Model::Astra),
             "@cf/zai-org/glm-5.3" => Ok(Model::Glm53),
             "kimi-k3" => Ok(Model::Kimi),
@@ -600,6 +602,8 @@ mod model_serde {
             value => Err(de::Error::unknown_variant(
                 value,
                 &[
+                    "gpt-6-sol",
+                    "gpt-6-luna",
                     "gpt-5.6-sol",
                     "gpt-5.6-terra",
                     "gpt-5.6-luna",
@@ -847,6 +851,16 @@ mod settings_tests {
     use serde_json::json;
 
     use super::{AgentSettings, AgentSettingsPatch};
+
+    #[test]
+    fn gpt6_and_legacy_settings_round_trip_exact_ids() {
+        for id in ["gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna"] {
+            let wire = json!({"model": id, "thinking": "medium", "reasoning_mode": "pro", "fast_mode": true});
+            let settings: AgentSettings = serde_json::from_value(wire.clone()).unwrap();
+            assert_eq!(settings.model.as_str(), id);
+            assert_eq!(serde_json::to_value(settings).unwrap(), wire);
+        }
+    }
 
     #[test]
     fn glm53_settings_round_trip_with_canonical_identity() {

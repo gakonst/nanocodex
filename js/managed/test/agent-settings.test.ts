@@ -136,3 +136,13 @@ describe("managed agent settings", () => {
     }
   });
 });
+
+it.each(["gpt-6-sol", "gpt-6-luna"])("admits all GPT6 efforts and both reasoning modes for %s", model => {
+  expect(parseAgentSettingsQuery(new URLSearchParams({ model })).thinking).toBe("medium");
+  for (const thinking of ["none", "low", "medium", "high", "xhigh", "max"]) {
+    for (const reasoning_mode of ["standard", "pro"]) {
+      const settings = { model, thinking, reasoning_mode, fast_mode: true };
+      expect(parseCompleteAgentSettings(settings)).toEqual(settings);
+    }
+  }
+});

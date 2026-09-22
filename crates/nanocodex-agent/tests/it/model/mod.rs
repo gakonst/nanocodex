@@ -92,7 +92,10 @@ fn assert_warmup_with_store(warmup: &Value, store: bool) {
     assert_eq!(warmup["store"], store);
     assert_eq!(warmup["generate"], false);
     assert_eq!(warmup["stream"], true);
-    assert_eq!(warmup["parallel_tool_calls"], false);
+    assert_eq!(
+        warmup["parallel_tool_calls"],
+        matches!(warmup["model"].as_str(), Some("gpt-6-sol" | "gpt-6-luna"))
+    );
     assert_eq!(warmup["prompt_cache_key"], TEST_SESSION_ID);
     assert_eq!(warmup["input"].as_array().map(Vec::len), Some(2));
     assert_eq!(warmup["input"][0]["type"], "additional_tools");

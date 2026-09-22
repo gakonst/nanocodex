@@ -542,7 +542,7 @@ mod tests {
 
         assert_eq!(
             *observed_model.lock().expect("model observation lock"),
-            Some(Model::Luna)
+            Some(Model::Luna56)
         );
         agent.shutdown().await.expect("agent shutdown");
         drop(events);

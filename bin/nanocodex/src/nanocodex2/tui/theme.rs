@@ -175,9 +175,9 @@ impl Theme {
 
     pub(crate) const fn model(&self, model: Model) -> Color {
         match model {
-            Model::Luna => Color::White,
+            Model::Luna | Model::Luna56 => Color::White,
             Model::Terra => Color::Green,
-            Model::Sol => Color::Yellow,
+            Model::Sol | Model::Sol56 => Color::Yellow,
             Model::Astra => Color::LightMagenta,
             _ => Color::White,
         }

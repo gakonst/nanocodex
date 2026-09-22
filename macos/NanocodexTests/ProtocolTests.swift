@@ -1838,8 +1838,20 @@ final class ProtocolTests: XCTestCase {
             "reasoning_mode": .string("standard"), "fast_mode": .bool(true),
         ]))
     }
+    func testGPT6SettingsPreserveEffortsModesAndLegacyIdentity() throws {
+        for model in ["gpt-6-sol", "gpt-6-luna", "gpt-5.6-sol", "gpt-5.6-luna"] {
+            for effort in ["none", "low", "medium", "high", "xhigh", "max"] {
+                for mode in ["standard", "pro"] {
+                    let settings = AgentSettings(model: model, thinking: effort, reasoning_mode: mode, fast_mode: false)
+                    XCTAssertTrue(settings.supportsProReasoning)
+                    XCTAssertTrue(settings.supportsNoReasoning)
+                    XCTAssertEqual(try JSONDecoder().decode(AgentSettings.self, from: JSONEncoder().encode(settings)), settings)
+                }
+            }
+        }
+    }
     func testAstraRetainsSupportedEffortsAndExistingDefaults() throws {
-        XCTAssertEqual(AgentSettings(), AgentSettings(model: "gpt-5.6-sol", thinking: "high", reasoning_mode: "standard", fast_mode: false))
+        XCTAssertEqual(AgentSettings(), AgentSettings(model: "gpt-6-sol", thinking: "high", reasoning_mode: "standard", fast_mode: false))
         for effort in ["low", "medium", "high", "xhigh", "max"] {
             var settings = AgentSettings(model: "gpt-5.6-terra", thinking: effort, reasoning_mode: "pro", fast_mode: false)
             settings.selectModel("gpt-6-astra")

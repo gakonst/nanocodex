@@ -435,90 +435,92 @@ async fn serialized_session_and_codex_rollout_share_committed_history() -> Resul
 
 #[tokio::test]
 async fn serialized_session_rebinds_deployed_instructions_and_tools() -> Result<()> {
-    let listener = TcpListener::bind("127.0.0.1:0").await?;
-    let endpoint = format!("http://{}", listener.local_addr()?);
-    let server = tokio::spawn(async move {
-        let first = next_http_json(&listener).await?;
-        assert_eq!(first.body["model"], "gpt-5.6-luna");
-        assert_eq!(first.body["store"], false);
-        assert!(first.body.get("previous_response_id").is_none());
-        assert!(first.body.to_string().contains("first prompt"));
-        send_http_final(first.stream, "resp-first").await?;
+    for model in [Model::Sol, Model::Luna, Model::Sol56, Model::Luna56] {
+        let listener = TcpListener::bind("127.0.0.1:0").await?;
+        let endpoint = format!("http://{}", listener.local_addr()?);
+        let server = tokio::spawn(async move {
+            let first = next_http_json(&listener).await?;
+            assert_eq!(first.body["model"], model.as_str());
+            assert_eq!(first.body["store"], false);
+            assert!(first.body.get("previous_response_id").is_none());
+            assert!(first.body.to_string().contains("first prompt"));
+            send_http_final(first.stream, "resp-first").await?;
 
-        let resumed = next_http_json(&listener).await?;
-        assert_eq!(resumed.body["model"], "gpt-5.6-luna");
-        assert_eq!(resumed.body["store"], false);
-        assert!(resumed.body.get("previous_response_id").is_none());
-        let replay = resumed.body.to_string();
+            let resumed = next_http_json(&listener).await?;
+            assert_eq!(resumed.body["model"], model.as_str());
+            assert_eq!(resumed.body["store"], false);
+            assert!(resumed.body.get("previous_response_id").is_none());
+            let replay = resumed.body.to_string();
+            assert_eq!(
+                resumed.body["input"][1]["content"][0]["text"],
+                "instructions from the new deployment"
+            );
+            assert_eq!(
+                resumed.body["input"][0]["tools"]
+                    .as_array()
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|tool| tool["name"].as_str())
+                    .collect::<Vec<_>>(),
+                ["exec", "wait"]
+            );
+            assert!(!replay.contains("instructions from the old deployment"));
+            assert!(replay.contains("first prompt"));
+            assert!(replay.contains("done"));
+            assert!(replay.contains("resume prompt"));
+            send_http_final(resumed.stream, "resp-resumed").await
+        });
+
+        let workspace = temporary_workspace("serialized-resume-https")?;
+        let openai = OpenAi::builder("test-key")
+            .transport(ResponsesTransport::Https)
+            .store(false)
+            .api_base_url(endpoint.clone())
+            .build()?;
+        let (agent, events) = Nanocodex::builder(openai)
+            .instructions("instructions from the old deployment")
+            .model(model)
+            .thinking(Thinking::Low)
+            .workspace(&workspace)
+            .prompt_cache_key("durable-cache")
+            .build()?;
+        let first = agent.prompt("first prompt").await?.result().await?;
+        let snapshot_json = serde_json::to_value(
+            first
+                .snapshot()
+                .expect("local turns always retain a snapshot"),
+        )?;
+        assert_eq!(snapshot_json["model"], model.as_str());
+        let snapshot = serde_json::from_value(snapshot_json)?;
+        drop((agent, events, first));
+
+        let openai = OpenAi::builder("test-key")
+            .transport(ResponsesTransport::Https)
+            .store(false)
+            .api_base_url(endpoint)
+            .build()?;
+        let (resumed, resumed_events) = Nanocodex::builder(openai)
+            .instructions("instructions from the new deployment")
+            .tools(Tools::builder().without_defaults().build()?)
+            .thinking(Thinking::Low)
+            .resume(snapshot)
+            .build()?;
         assert_eq!(
-            resumed.body["input"][1]["content"][0]["text"],
-            "instructions from the new deployment"
+            resumed
+                .prompt("resume prompt")
+                .await?
+                .result()
+                .await?
+                .final_message(),
+            "done"
         );
-        assert_eq!(
-            resumed.body["input"][0]["tools"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                .filter_map(|tool| tool["name"].as_str())
-                .collect::<Vec<_>>(),
-            ["exec", "wait"]
-        );
-        assert!(!replay.contains("instructions from the old deployment"));
-        assert!(replay.contains("first prompt"));
-        assert!(replay.contains("done"));
-        assert!(replay.contains("resume prompt"));
-        send_http_final(resumed.stream, "resp-resumed").await
-    });
 
-    let workspace = temporary_workspace("serialized-resume-https")?;
-    let openai = OpenAi::builder("test-key")
-        .transport(ResponsesTransport::Https)
-        .store(false)
-        .api_base_url(endpoint.clone())
-        .build()?;
-    let (agent, events) = Nanocodex::builder(openai)
-        .instructions("instructions from the old deployment")
-        .model(Model::Luna)
-        .thinking(Thinking::Low)
-        .workspace(&workspace)
-        .prompt_cache_key("durable-cache")
-        .build()?;
-    let first = agent.prompt("first prompt").await?.result().await?;
-    let snapshot_json = serde_json::to_value(
-        first
-            .snapshot()
-            .expect("local turns always retain a snapshot"),
-    )?;
-    assert_eq!(snapshot_json["model"], "gpt-5.6-luna");
-    let snapshot = serde_json::from_value(snapshot_json)?;
-    drop((agent, events, first));
-
-    let openai = OpenAi::builder("test-key")
-        .transport(ResponsesTransport::Https)
-        .store(false)
-        .api_base_url(endpoint)
-        .build()?;
-    let (resumed, resumed_events) = Nanocodex::builder(openai)
-        .instructions("instructions from the new deployment")
-        .tools(Tools::builder().without_defaults().build()?)
-        .thinking(Thinking::Low)
-        .resume(snapshot)
-        .build()?;
-    assert_eq!(
-        resumed
-            .prompt("resume prompt")
-            .await?
-            .result()
-            .await?
-            .final_message(),
-        "done"
-    );
-
-    drop((resumed, resumed_events));
-    timeout(std::time::Duration::from_secs(5), server)
-        .await
-        .map_err(|_| eyre!("mock HTTPS Responses server did not finish"))???;
-    std::fs::remove_dir_all(workspace)?;
+        drop((resumed, resumed_events));
+        timeout(std::time::Duration::from_secs(5), server)
+            .await
+            .map_err(|_| eyre!("mock HTTPS Responses server did not finish"))???;
+        std::fs::remove_dir_all(workspace)?;
+    }
     Ok(())
 }
 

@@ -4,9 +4,9 @@ import { z } from "zod";
 export const OSS_MODEL = "@cf/zai-org/glm-5.3" as const;
 export const FRONTIER_MODEL = "gpt-6-astra" as const;
 export const ROUTING_VERSION = "jev-direct-v4" as const;
-const frontierModel = z.enum(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+const frontierModel = z.enum(["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
 const gatewayModel = z.enum(["kimi-k3", "mimo-v2.6-pro"]);
-const thinking = z.enum(["low", "medium", "high"]);
+const thinking = z.enum(["none", "low", "medium", "high", "xhigh", "max"]);
 export const taskFamily = z.enum([
   "repository_repair", "long_engineering", "terminal", "research", "science",
   "mathematics", "desktop", "business_tools", "other",
@@ -43,7 +43,7 @@ const gatewayTokenPrices = {
 } as const;
 function catalogPriceHint(backend: z.infer<typeof backendSchema>, model: typeof OSS_MODEL | z.infer<typeof frontierModel> | z.infer<typeof gatewayModel>) {
   if (backend !== "openrouter" && backend !== "vercel") return null;
-  if (gatewayModel.safeParse(model).success) return null;
+  if (gatewayModel.safeParse(model).success || model === "gpt-6-sol" || model === "gpt-6-luna") return null;
   const [input, output, cached_input] = gatewayTokenPrices[backend][model as keyof typeof gatewayTokenPrices[typeof backend]];
   return {
     as_of: "2026-09-20", unit: "USD per million tokens", input, output, cached_input,
@@ -56,12 +56,14 @@ function catalogPriceHint(backend: z.infer<typeof backendSchema>, model: typeof 
 export const ROUTING_CANDIDATES = [OSS_MODEL, ...frontierModel.options, ...gatewayModel.options].flatMap(model => {
   const nativeBackend = model === OSS_MODEL ? "workers_ai" as const : "chatgpt" as const;
   const gatewayOnly = gatewayModel.safeParse(model).success;
-  return [...(gatewayOnly ? [] : [nativeBackend]), "openrouter" as const, "vercel" as const,
+  const gpt6 = model === "gpt-6-sol" || model === "gpt-6-luna";
+  // Third-party GPT6 availability is unverified; explicit SDK adapters remain separate.
+  return [...(gatewayOnly ? [] : [nativeBackend]), ...(gpt6 ? [] : ["openrouter" as const, "vercel" as const]),
     ...(model === OSS_MODEL || gatewayOnly ? [] : ["cloudflare" as const])].flatMap(backend => {
     const provider_model = model === "kimi-k3" ? "moonshotai/kimi-k3" : model === "mimo-v2.6-pro" ? "xiaomi/mimo-v2.6-pro" : backend === "openrouter" ? (model === OSS_MODEL ? "z-ai/glm-5.3" : `openai/${model}`)
       : backend === "cloudflare" ? `openai/${model}`
       : backend === "vercel" ? (model === OSS_MODEL ? "zai/glm-5.3" : `openai/${model}`) : model;
-    return thinking.options.filter(effort => model !== "kimi-k3" || effort !== "medium").map(effort => ({
+    return thinking.options.filter(effort => gpt6 || (model === "kimi-k3" ? ["low", "high"] : ["low", "medium", "high"]).includes(effort)).map(effort => ({
       id: backend === nativeBackend ? `${model}:${effort}` : `${backend}:${provider_model}:${effort}`,
       model, provider_model, thinking: effort, backend,
       catalog_price_hint: catalogPriceHint(backend, model),
@@ -89,7 +91,7 @@ export const routingPolicySchema = z.object({
   preferences: preferencesSchema.default({}),
   frontier_model: frontierModel.default(FRONTIER_MODEL),
   objective: z.enum(["cost", "effectiveness", "time", "balanced"]).default("balanced"),
-  oss_thinking: thinking.default("medium"), frontier_thinking: thinking.default("high"),
+  oss_thinking: thinking.default("medium"), frontier_thinking: thinking.optional(),
   min_confidence: z.number().min(0).max(1).default(0.75),
   // Low-confidence proposals remain unmeasured fallbacks, never confident admissions.
   low_confidence_fallback: z.enum(["proposed", "frontier"]).default("proposed"),
@@ -102,7 +104,7 @@ export const routingPolicySchema = z.object({
 }).strict().superRefine((p, ctx) => {
   const keys = p.estimates.map(e => `${e.family}/${e.backend}/${e.model}/${e.thinking}`);
   if (new Set(keys).size !== keys.length) ctx.addIssue({ code: "custom", path: ["estimates"], message: "Provide one measurement per task family, backend, model and thinking level" });
-});
+}).transform(p => ({ ...p, frontier_thinking: p.frontier_thinking ?? (p.frontier_model === "gpt-6-sol" || p.frontier_model === "gpt-6-luna" ? "medium" as const : "high" as const) }));
 export type ThreadRoutingPolicy = z.infer<typeof routingPolicySchema>;
 export type RoutingAi = { run(model: string, input: unknown): Promise<unknown> };
 
@@ -123,7 +125,7 @@ export const EVAL_EVIDENCE = {
 export type ThreadRoute = {
   version: 1; policy_version: typeof ROUTING_VERSION | "jev-direct-v3" | "jev-direct-v2" | "jev-evals-v1"; backend: z.infer<typeof backendSchema>;
   provider_model: string;
-  model: typeof OSS_MODEL | z.infer<typeof frontierModel> | z.infer<typeof gatewayModel>; thinking: "low" | "medium" | "high";
+  model: typeof OSS_MODEL | z.infer<typeof frontierModel> | z.infer<typeof gatewayModel>; thinking: z.infer<typeof thinking>;
   reasoning_mode: "standard"; fast_mode: false; family: TaskFamily; confidence: number;
   objective: ThreadRoutingPolicy["objective"]; selection: "measured" | "prior" | "fallback";
   reason: string; evidence: (typeof EVAL_EVIDENCE)[TaskFamily];

@@ -51,7 +51,7 @@ async fn automatic_routing_uses_explicit_post_and_validates_receipt() {
     for _ in 0..2 {
         let receipt = client.enable_auto_routing("empty-thread").await.unwrap();
         assert!(receipt.enabled);
-        assert_eq!(receipt.settings.model, Model::Sol);
+        assert_eq!(receipt.settings.model, Model::Sol56);
     }
     assert!(matches!(
         client.enable_auto_routing("invalid-receipt").await,

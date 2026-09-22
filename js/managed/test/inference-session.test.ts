@@ -834,3 +834,7 @@ it("a failed telemetry namespace lookup cannot fail a completed inference", asyn
   expect(response.status).toBe(200);
   expect(await response.text()).not.toContain("private telemetry");
 });
+
+it.each(["none", "low", "medium", "high", "xhigh", "max"])("accepts GPT6 inference effort %s", effort => {
+  expect(validateInferenceRequest({ model: "gpt-6-sol", input: "fixture", reasoning: { effort } }).reasoning?.effort).toBe(effort);
+});

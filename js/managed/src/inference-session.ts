@@ -84,7 +84,7 @@ const requestSchema = z.object({
   model: z.string().min(1).max(256).default("auto"), input: z.union([z.string().min(1), z.array(historyItem).min(1).max(1024)]),
   instructions: z.string().optional(), stream: z.boolean().default(false),
   max_output_tokens: z.number().int().min(1).max(INFERENCE_MAX_OUTPUT_TOKENS).optional(),
-  reasoning: z.object({ effort: z.enum(["low", "medium", "high"]) }).strict().optional(),
+  reasoning: z.object({ effort: z.enum(["none", "low", "medium", "high", "xhigh", "max"]) }).strict().optional(),
   tools: z.array(tool).max(128).optional(),
   tool_choice: z.union([z.enum(["auto", "none", "required"]),
     z.object({ type: z.enum(["function", "custom"]), name }).strict()]).optional(),
@@ -207,7 +207,8 @@ function requestPolicy(policy: ThreadRoutingPolicy, input: InferenceRequest): Th
   const candidates = policy.candidates!.filter(id => {
     const candidate = ROUTING_CANDIDATES.find(c => c.id === id)!;
     return (input.model === "auto" || input.model === candidate.model || input.model === candidate.id)
-      && (!input.reasoning || candidate.thinking === input.reasoning.effort);
+      && (input.reasoning ? candidate.thinking === input.reasoning.effort
+        : !["gpt-6-sol", "gpt-6-luna"].includes(input.model) || candidate.thinking === "medium");
   });
   if (!candidates.length) throw new InferenceRequestError("no_inference_candidates");
   return { ...policy, candidates };

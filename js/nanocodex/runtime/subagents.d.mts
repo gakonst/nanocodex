@@ -1,4 +1,4 @@
-import type { DefaultAgent, Thinking } from "../types.mjs";
+import type { DefaultAgent, Model, Thinking } from "../types.mjs";
 
 // Adapter-specific extend() signatures do not change subagent ownership.
 type SubagentOwner = Omit<DefaultAgent, "extend">;
@@ -34,7 +34,7 @@ export type JsonSchema = boolean | Readonly<Record<string, unknown>>;
 export type SpawnOptions = Readonly<{
   role: string;
   task: string;
-  model?: "sol" | "terra" | "luna" | "astra" | "glm-5.3" | "kimi" | "mimo" | undefined;
+  model?: Model | "sol" | "terra" | "luna" | "astra" | "glm-5.3" | "kimi" | "mimo" | undefined;
   thinking?: Thinking | undefined;
   outputSchema: JsonSchema;
 }>;

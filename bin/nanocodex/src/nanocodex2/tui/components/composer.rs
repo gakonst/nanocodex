@@ -820,8 +820,10 @@ impl Composer {
             Model::Glm53 => "glm-5.3",
             Model::Astra => "Astra",
             Model::Sol => "Sol",
+            Model::Sol56 => "Sol (GPT-5.6)",
             Model::Terra => "Terra",
             Model::Luna => "Luna",
+            Model::Luna56 => "Luna (GPT-5.6)",
             _ => model.as_str(),
         };
         match self.routed_provider {

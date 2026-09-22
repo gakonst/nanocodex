@@ -40,6 +40,9 @@ type SeedResult = {
   outcome?: string;
   inputTokens?: number;
   cachedInputTokens?: number;
+  cacheWriteTokens?: number;
+  contextTokens?: number;
+  fastMode?: boolean;
   outputTokens?: number;
   reasoningOutputTokens?: number;
   totalTokens?: number;
@@ -732,8 +735,9 @@ function validSeedResult(value: unknown): boolean {
   return result != null &&
     (result.caseKey == null || validImportKey(result.caseKey)) &&
     ["status", "outcome"].every((key) => result[key] == null || typeof result[key] === "string") &&
-    ["inputTokens", "cachedInputTokens", "outputTokens", "reasoningOutputTokens", "totalTokens"]
+    ["inputTokens", "cachedInputTokens", "cacheWriteTokens", "contextTokens", "outputTokens", "reasoningOutputTokens", "totalTokens"]
       .every((key) => optionalSafeInteger(result[key])) &&
+    (result.fastMode == null || typeof result.fastMode === "boolean") &&
     optionalSafeInteger(result.durationMs) &&
     (result.costUsd == null || (typeof result.costUsd === "number" && Number.isFinite(result.costUsd)));
 }
@@ -794,7 +798,7 @@ function isFinishRequest(value: unknown): value is FinishRequest {
     (body.case == null || asRecord(body.case) != null);
 }
 
-function caseMetrics(value: Record<string, unknown> | undefined) {
+export function caseMetrics(value: Record<string, unknown> | undefined) {
   const agent = asRecord(value?.agent);
   const usage = asRecord(value?.usage) ?? asRecord(agent?.usage);
   const estimatedCost = asRecord(asRecord(agent?.metadata)?.estimated_cost);
@@ -804,6 +808,9 @@ function caseMetrics(value: Record<string, unknown> | undefined) {
     outcome: stringOrNull(value?.outcome),
     inputTokens: integerOrNull(usage?.input_tokens),
     cachedInputTokens: integerOrNull(usage?.cached_input_tokens),
+    cacheWriteTokens: integerOrNull(usage?.cache_write_input_tokens),
+    contextTokens: integerOrNull(usage?.context_tokens),
+    fastMode: agent?.fast_mode === true,
     outputTokens: integerOrNull(usage?.output_tokens),
     reasoningOutputTokens: integerOrNull(usage?.reasoning_output_tokens),
     totalTokens: integerOrNull(usage?.total_tokens),
@@ -818,23 +825,33 @@ export function estimatedCostUsd(
     inputTokens?: number | null;
     cachedInputTokens?: number | null;
     outputTokens?: number | null;
+    cacheWriteTokens?: number | null;
+    contextTokens?: number | null;
+    fastMode?: boolean;
   } | undefined,
 ): number | null {
-  const rates = model === "sol" || model === "gpt-5.6-sol"
-    ? { input: 4, cached: 0.4, output: 20 }
-    : model === "terra" || model === "gpt-5.6-terra"
-      ? { input: 2, cached: 0.2, output: 12 }
-      : model === "luna" || model === "gpt-5.6-luna"
-        ? { input: 0.2, cached: 0.02, output: 1.2 }
-        : model === "astra" || model === "gpt-6-astra"
-          ? { input: 10, cached: 1, output: 50 }
-        : null;
+  const gpt6 = ["sol", "luna", "gpt-6-sol", "gpt-6-luna"].includes(model);
+  const rates = model === "sol" || model === "gpt-6-sol"
+    ? { input: 2, cached: 0.2, write: 2.5, output: 10 }
+    : model === "luna" || model === "gpt-6-luna"
+      ? { input: 0.1, cached: 0.01, write: 0.125, output: 0.5 }
+      : model === "gpt-5.6-sol" ? { input: 4, cached: 0.4, write: 4, output: 20 }
+        : model === "terra" || model === "gpt-5.6-terra" ? { input: 2, cached: 0.2, write: 2, output: 12 }
+          : model === "gpt-5.6-luna" ? { input: 0.2, cached: 0.02, write: 0.2, output: 1.2 }
+            : model === "astra" || model === "gpt-6-astra" ? { input: 10, cached: 1, write: 10, output: 50 } : null;
   const input = usage?.inputTokens;
   const output = usage?.outputTokens;
   if (rates == null || input == null || output == null) return null;
   const cached = Math.max(0, Math.min(input, usage?.cachedInputTokens ?? 0));
-  const ordinary = Math.max(0, input - cached);
-  return (ordinary * rates.input + cached * rates.cached + output * rates.output) / 1_000_000;
+  const written = Math.max(0, Math.min(input - cached, usage?.cacheWriteTokens ?? 0));
+  const ordinary = Math.max(0, input - cached - written);
+  // Eval usage can aggregate many requests; aggregate input is not a context length.
+  // Prefer the producer's actual cost above; do not invent a long-context tier.
+  if (gpt6 && input > 272_000 && usage?.contextTokens == null) return null;
+  const long = gpt6 && (usage?.contextTokens ?? input) > 272_000;
+  const fast = gpt6 && usage?.fastMode ? 2 : 1;
+  return ((ordinary * rates.input + cached * rates.cached + written * rates.write) * (long ? 2 : 1)
+    + output * rates.output * (long ? 1.5 : 1)) * fast / 1_000_000;
 }
 
 function phaseDurationMs(phase: Record<string, unknown> | null): number | null {

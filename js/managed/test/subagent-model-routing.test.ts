@@ -188,3 +188,12 @@ describe("hosted child routing", () => {
 function requestBinding(routeId: string) {
   return { parentSessionId: request.parentSessionId, hostContextRef: request.hostContextRef, routeId };
 }
+
+it.each(["sol", "luna"])("routes %s to GPT-6 with medium default and six efforts", async alias => {
+  const { controller } = fixture();
+  expect(await controller.resolve({ ...request, model: alias })).toMatchObject({ model: `gpt-6-${alias}`, thinking: "medium" });
+  for (const thinking of ["none", "low", "medium", "high", "xhigh", "max"]) {
+    expect(await controller.resolve({ ...request, model: alias, thinking })).toMatchObject({ model: `gpt-6-${alias}`, thinking });
+  }
+  expect(await controller.resolve({ ...request, model: `gpt-5.6-${alias}`, thinking: "high" })).toMatchObject({ model: `gpt-5.6-${alias}`, thinking: "high" });
+});

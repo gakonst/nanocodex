@@ -81,9 +81,9 @@ impl ModelConfig {
     #[must_use]
     pub fn system_prompt(&self) -> Cow<'_, str> {
         let base = self.system_prompt.as_deref().unwrap_or(match self.model {
-            Model::Astra => ASTRA_SYSTEM_PROMPT,
+            Model::Sol | Model::Luna | Model::Astra => ASTRA_SYSTEM_PROMPT,
             Model::Glm53 | Model::Kimi | Model::Mimo => GLM_SYSTEM_PROMPT,
-            Model::Sol | Model::Terra | Model::Luna => SYSTEM_PROMPT,
+            Model::Sol56 | Model::Terra | Model::Luna56 => SYSTEM_PROMPT,
         });
         let base =
             if self.system_prompt.is_none() && matches!(self.model, Model::Kimi | Model::Mimo) {
@@ -155,9 +155,9 @@ mod prompt_tests {
     fn supported_models_select_exact_pinned_instructions() {
         for (model, expected) in [
             (Model::Astra, ASTRA_SYSTEM_PROMPT),
-            (Model::Sol, SYSTEM_PROMPT),
+            (Model::Sol, ASTRA_SYSTEM_PROMPT),
             (Model::Terra, SYSTEM_PROMPT),
-            (Model::Luna, SYSTEM_PROMPT),
+            (Model::Luna, ASTRA_SYSTEM_PROMPT),
         ] {
             let mut config = ModelConfig {
                 model,

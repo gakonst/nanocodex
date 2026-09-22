@@ -159,7 +159,7 @@ describe("sponsored homepage model access", () => {
       expect(received).toMatchObject({ type: "provider.received" });
       const forwarded = JSON.parse(String(received.frame));
       expect(forwarded).toMatchObject({
-        model: "gpt-5.6-luna",
+        model: "gpt-6-luna",
         reasoning: { effort: "none", mode: "standard" },
       });
       expect(forwarded).not.toHaveProperty("service_tier");

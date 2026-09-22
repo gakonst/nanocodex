@@ -61,8 +61,8 @@ test('explicit child choices must be honored or rejected; never silently substit
 });
 
 test('equivalent public model aliases preserve explicit overrides and pin canonical models', async () => {
-  for (const [model, alias] of [['sol', 'gpt-5.6-sol'], ['terra', 'gpt-5.6-terra'],
-    ['luna', 'gpt-5.6-luna'], ['astra', 'gpt-6-astra'], ['glm-5.3', '@cf/zai-org/glm-5.3'], ['glm-5.3', 'glm53'], ['kimi', 'kimi-k3'], ['mimo', 'mimo-v2.6-pro']]) {
+  for (const [model, alias] of [['sol', 'gpt-6-sol'], ['terra', 'gpt-5.6-terra'],
+    ['luna', 'gpt-6-luna'], ['astra', 'gpt-6-astra'], ['glm-5.3', '@cf/zai-org/glm-5.3'], ['glm-5.3', 'glm53'], ['kimi', 'kimi-k3'], ['mimo', 'mimo-v2.6-pro']]) {
     for (const [requested, selected] of [[model, alias], [alias, model]]) {
       const { router } = fixture(new Map(), () => ({ provider: 'test', model: selected, thinking: 'low' }));
       const request = { parentSessionId: 'large-parent', hostContextRef: 'owned', model: requested };
@@ -138,5 +138,22 @@ test('the WASM bridge refuses asynchronous custom route bindings', async () => {
     assert.throws(() => globalThis.nanocodexHost.bindSubagentRoute(id, '{}'), /binding must be synchronous/);
   } finally {
     releaseDefinitionHost(id);
+  }
+});
+
+
+test('legacy exact IDs remain pinned and cannot be replaced by GPT-6 aliases', async () => {
+  for (const family of ['sol', 'luna']) {
+    const legacy = `gpt-5.6-${family}`;
+    const request = { parentSessionId: 'large-parent', hostContextRef: 'owned', model: legacy };
+    const { router } = fixture(new Map(), () => ({ provider: 'test', model: legacy, thinking: 'medium' }));
+    const choice = await router.resolve(request);
+    assert.equal(choice.model, legacy);
+    router.bind({ ...request, sessionId: 'legacy', routeId: choice.routeId });
+    assert.equal(router.route('legacy').model, legacy);
+    for (const replacement of [family, `gpt-6-${family}`]) {
+      const changed = fixture(new Map(), () => ({ provider: 'test', model: replacement, thinking: 'medium' }));
+      await assert.rejects(changed.router.resolve(request), /explicit model override/);
+    }
   }
 });

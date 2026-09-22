@@ -13,6 +13,16 @@ final class ModelSelectionTests: XCTestCase {
         XCTAssertEqual(ModelChoice.find("mimo-v2.6-pro")?.efforts, ["low", "medium", "high"])
         XCTAssertFalse(ModelChoice.find("gpt-6-astra")!.efforts.contains("none"))
     }
+    func testGPT6CatalogRetainsLegacyIdentities() {
+        for family in ["sol", "luna"] {
+            let current = "gpt-6-\(family)", legacy = "gpt-5.6-\(family)"
+            XCTAssertTrue(ModelChoice.all.contains { $0.id == current })
+            XCTAssertFalse(ModelChoice.all.contains { $0.id == legacy })
+            XCTAssertEqual(ModelChoice.find(current)?.efforts, ["none", "low", "medium", "high", "xhigh", "max"])
+            XCTAssertEqual(ModelChoice.find(legacy)?.id, legacy)
+            XCTAssertTrue(ModelChoice.find(legacy)!.name.hasPrefix("GPT-5.6"))
+        }
+    }
     func testPendingAutomaticRouteAndResolvedProvider() throws {
         var card = AgentCard(id: "fixture", title: "Fixture")
         try card.apply(state: state(["model_routing_enabled": .bool(true), "model_routing_automatic": .bool(true)]))

@@ -4,7 +4,7 @@ Status: implemented.
 
 ## Ownership and public composition
 
-`OpenAi::new(auth)` creates the standard client recipe with `gpt-5.6-sol`.
+`OpenAi::new(auth)` creates the standard client recipe with `gpt-6-astra`.
 `OpenAi::builder(auth)` exposes the closed Sol/Terra/Luna/Astra model choice plus
 transport, storage, history, reasoning, wire namespace, and Tower policy. The
 optional wire namespace applies only to API-key HTTPS OpenAI routing gateways;

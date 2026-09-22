@@ -152,12 +152,18 @@ pub const MODEL: &str = Model::Astra.as_str();
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum Model {
-    /// GPT-5.6 Sol.
+    /// GPT-6 Sol.
     Sol,
+    /// Legacy GPT-5.6 Sol.
+    #[serde(rename = "gpt-5.6-sol")]
+    Sol56,
     /// GPT-5.6 Terra.
     Terra,
-    /// GPT-5.6 Luna.
+    /// GPT-6 Luna.
     Luna,
+    /// Legacy GPT-5.6 Luna.
+    #[serde(rename = "gpt-5.6-luna")]
+    Luna56,
     /// GPT-6 Astra.
     #[default]
     Astra,
@@ -180,17 +186,19 @@ impl Model {
     #[must_use]
     pub const fn default_thinking(self) -> Thinking {
         match self {
-            Self::Sol | Self::Astra | Self::Glm53 | Self::Kimi | Self::Mimo => Thinking::Low,
-            Self::Terra | Self::Luna => Thinking::Medium,
+            Self::Sol56 | Self::Astra | Self::Glm53 | Self::Kimi | Self::Mimo => Thinking::Low,
+            Self::Sol | Self::Terra | Self::Luna | Self::Luna56 => Thinking::Medium,
         }
     }
     /// Returns the Responses API model identifier.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Sol => "gpt-5.6-sol",
+            Self::Sol => "gpt-6-sol",
+            Self::Sol56 => "gpt-5.6-sol",
             Self::Terra => "gpt-5.6-terra",
-            Self::Luna => "gpt-5.6-luna",
+            Self::Luna => "gpt-6-luna",
+            Self::Luna56 => "gpt-5.6-luna",
             Self::Astra => "gpt-6-astra",
             Self::Glm53 => "@cf/zai-org/glm-5.3",
             Self::Kimi => "kimi-k3",
@@ -245,21 +253,23 @@ impl FromStr for Model {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "gpt-5.6-sol" | "sol" => Ok(Self::Sol),
+            "gpt-6-sol" | "sol" => Ok(Self::Sol),
+            "gpt-5.6-sol" => Ok(Self::Sol56),
             "gpt-5.6-terra" | "terra" => Ok(Self::Terra),
-            "gpt-5.6-luna" | "luna" => Ok(Self::Luna),
+            "gpt-6-luna" | "luna" => Ok(Self::Luna),
+            "gpt-5.6-luna" => Ok(Self::Luna56),
             "gpt-6-astra" | "astra" => Ok(Self::Astra),
             "@cf/zai-org/glm-5.3" | "glm-5.3" | "glm53" => Ok(Self::Glm53),
             "kimi-k3" | "kimi" => Ok(Self::Kimi),
             "mimo-v2.6-pro" | "mimo" => Ok(Self::Mimo),
             _ => Err(format!(
-                "invalid model {value:?}; expected gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-6-astra, @cf/zai-org/glm-5.3, kimi-k3, or mimo-v2.6-pro"
+                "invalid model {value:?}; expected gpt-6-sol, gpt-6-luna, gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-6-astra, @cf/zai-org/glm-5.3, kimi-k3, or mimo-v2.6-pro"
             )),
         }
     }
 }
 
-/// Default GPT-5.6 context window used for accounting and automatic compaction.
+/// Default Codex context window used for accounting and automatic compaction.
 pub const CONTEXT_WINDOW_TOKENS: u64 = 272_000;
 /// Largest Codex-compatible prompt context currently accepted by supported models.
 ///
@@ -754,6 +764,39 @@ mod tests {
     };
 
     #[test]
+    fn gpt6_and_legacy_model_contracts() {
+        for (model, id) in [
+            (Model::Sol, "gpt-6-sol"),
+            (Model::Luna, "gpt-6-luna"),
+            (Model::Sol56, "gpt-5.6-sol"),
+            (Model::Luna56, "gpt-5.6-luna"),
+        ] {
+            assert_eq!(id.parse::<Model>().unwrap(), model);
+            assert_eq!(model.to_string(), id);
+            assert_eq!(
+                serde_json::from_str::<Model>(&serde_json::to_string(&model).unwrap()).unwrap(),
+                model
+            );
+            assert!(model.supports_reasoning_mode(ReasoningMode::Standard));
+            assert!(model.supports_reasoning_mode(ReasoningMode::Pro));
+        }
+        for model in [Model::Sol, Model::Luna] {
+            assert_eq!(model.default_thinking(), Thinking::Medium);
+            assert_eq!(model.max_context_window_tokens(), 872_000);
+            for effort in [
+                Thinking::None,
+                Thinking::Low,
+                Thinking::Medium,
+                Thinking::High,
+                Thinking::Xhigh,
+                Thinking::Max,
+            ] {
+                assert!(model.supports_thinking(effort));
+            }
+        }
+    }
+
+    #[test]
     fn glm53_has_distinct_identity_and_policy() {
         for name in ["glm53", "glm-5.3", "@cf/zai-org/glm-5.3"] {
             assert_eq!(name.parse(), Ok(Model::Glm53));
@@ -798,11 +841,11 @@ mod tests {
     #[test]
     fn model_parses_short_and_api_names() {
         assert_eq!("sol".parse(), Ok(Model::Sol));
-        assert_eq!("gpt-5.6-sol".parse(), Ok(Model::Sol));
+        assert_eq!("gpt-5.6-sol".parse(), Ok(Model::Sol56));
         assert_eq!("terra".parse(), Ok(Model::Terra));
         assert_eq!("gpt-5.6-terra".parse(), Ok(Model::Terra));
         assert_eq!("luna".parse(), Ok(Model::Luna));
-        assert_eq!("gpt-5.6-luna".parse(), Ok(Model::Luna));
+        assert_eq!("gpt-5.6-luna".parse(), Ok(Model::Luna56));
         assert_eq!("astra".parse(), Ok(Model::Astra));
         assert_eq!("gpt-6-astra".parse(), Ok(Model::Astra));
         assert_eq!(Model::default().as_str(), "gpt-6-astra");

@@ -370,7 +370,7 @@ fn loads_the_latest_supported_model_from_codex_turn_context() {
         .expect("load Nanocodex rollout");
     let snapshot = serde_json::to_value(session.snapshot()).expect("encode snapshot");
 
-    assert_eq!(session.model(), Model::Luna);
+    assert_eq!(session.model(), Model::Luna56);
     assert_eq!(snapshot["model"], "gpt-5.6-luna");
 }
 
@@ -499,7 +499,7 @@ async fn writes_codex_rollout_envelope_and_committed_items() {
     assert_eq!(lines[2]["payload"]["message"], "remember amber");
     assert_eq!(lines[3]["type"], "turn_context");
     assert_eq!(lines[3]["payload"]["cwd"], "/worktree");
-    assert_eq!(lines[3]["payload"]["model"], "gpt-5.6-sol");
+    assert_eq!(lines[3]["payload"]["model"], "gpt-6-sol");
     assert_eq!(lines[3]["payload"]["effort"], "high");
     assert_eq!(lines[4]["type"], "response_item");
     assert_eq!(lines[4]["payload"]["type"], "message");

@@ -20,7 +20,7 @@ const ai = { async run(model: string, input: Record<string, unknown>): Promise<u
 createGatewayResponses({ provider: "cloudflare", model: "gpt-5.6-sol", reasoningEffort: "high", ai });
 createGatewayResponses({ provider: "cloudflare", model: "gpt-6-astra", reasoningEffort: "medium", ai: {
   async run(model, input) {
-    const upstream: "openai/gpt-6-astra" | "openai/gpt-5.6-sol" | "openai/gpt-5.6-terra" | "openai/gpt-5.6-luna" = model;
+    const upstream: "openai/gpt-6-sol" | "openai/gpt-6-luna" | "openai/gpt-6-astra" | "openai/gpt-5.6-sol" | "openai/gpt-5.6-terra" | "openai/gpt-5.6-luna" = model;
     return { upstream, input };
   },
 } });
@@ -44,3 +44,9 @@ createGatewayResponses({ provider: "cloudflare", model: "gpt-5.6-sol", reasoning
 createGatewayResponses({ provider: "cloudflare", model: "gpt-5.6-sol", reasoningEffort: "low", accountId: "a".repeat(32) });
 // @ts-expect-error REST and binding cannot be mixed
 createGatewayResponses({ provider: "cloudflare", model: "gpt-5.6-sol", reasoningEffort: "low", accountId: "a".repeat(32), apiKey: "synthetic", ai });
+
+for (const model of ["gpt-6-sol", "gpt-6-luna"] as const) {
+  for (const reasoningEffort of ["none", "low", "medium", "high", "xhigh", "max"] as const) {
+    createGatewayResponses({ provider: "cloudflare", model, reasoningEffort, ai });
+  }
+}

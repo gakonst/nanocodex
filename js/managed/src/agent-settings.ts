@@ -1,5 +1,7 @@
 import { parseConfiguration, type AgentConfiguration } from "./agent-configuration";
 export const AGENT_MODELS = [
+  "gpt-6-sol",
+  "gpt-6-luna",
   "gpt-5.6-sol",
   "gpt-5.6-terra",
   "gpt-5.6-luna",
@@ -67,7 +69,7 @@ export function parseAgentSettingsQuery(
     }
   }
   const model = search.get("model") ?? DEFAULT_AGENT_SETTINGS.model;
-  const thinking = search.get("thinking") ?? DEFAULT_AGENT_SETTINGS.thinking;
+  const thinking = search.get("thinking") ?? (model === "gpt-6-sol" || model === "gpt-6-luna" ? "medium" : DEFAULT_AGENT_SETTINGS.thinking);
   const reasoningMode = search.get("reasoning_mode")
     ?? DEFAULT_AGENT_SETTINGS.reasoning_mode;
   const encodedFastMode = search.get("fast_mode");

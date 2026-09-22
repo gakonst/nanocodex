@@ -5,7 +5,7 @@ import { initializeManagedAgentSettingsSchema } from "../src/agent-settings-sche
 import type { DurableAgentSession } from "../src/index";
 
 describe("managed agent settings schema", () => {
-  it("migrates retained settings before accepting Astra and remains idempotent", async () => {
+  it("migrates retained settings before accepting GPT6 and remains idempotent", async () => {
     const sessions = (env as unknown as {
       NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
     }).NANOCODEX_SESSIONS;
@@ -46,12 +46,13 @@ describe("managed agent settings schema", () => {
         fast_mode: 1,
       });
 
-      state.storage.sql.exec(
-        "UPDATE managed_agent_settings SET model = 'gpt-6-astra' WHERE singleton = 1",
-      );
-      expect(state.storage.sql.exec<{ model: string }>(
-        "SELECT model FROM managed_agent_settings WHERE singleton = 1",
-      ).one().model).toBe("gpt-6-astra");
+      for (const model of ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-luna"]) {
+        state.storage.sql.exec("UPDATE managed_agent_settings SET model = ? WHERE singleton = 1", model);
+        initializeManagedAgentSettingsSchema(state.storage);
+        expect(state.storage.sql.exec<{ model: string }>(
+          "SELECT model FROM managed_agent_settings WHERE singleton = 1",
+        ).one().model).toBe(model);
+      }
     });
   });
 });
