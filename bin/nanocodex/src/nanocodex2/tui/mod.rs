@@ -2005,20 +2005,27 @@ async fn run_inner(
     let mut clone_tick = tokio::time::interval(std::time::Duration::from_millis(200));
     clone_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut stopping = false;
+    #[cfg(unix)]
     let mut control_server = if nanocodex_tui_control::Server::enabled() {
         Some(nanocodex_tui_control::Server::start("managed").map_err(terminal_error)?)
     } else {
         None
     };
-    runtime.control_bridge = control_server.as_ref().map(|server| server.bridge.clone());
+    #[cfg(unix)]
+    let mut control_commands = control_server.as_mut().map(|server| {
+        runtime.control_bridge = Some(server.bridge.clone());
+        &mut server.commands
+    });
+    #[cfg(not(unix))]
+    let mut control_commands: Option<&mut mpsc::Receiver<nanocodex_tui_control::Command>> = None;
     let mut control_tasks = JoinSet::new();
 
     let mut routing_tick = tokio::time::interval(Duration::from_secs(1));
     routing_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     while !stopping {
-        if let Some(server) = &control_server {
-            control::snapshot(&server.bridge, &app, &runtime, false);
+        if let Some(bridge) = &runtime.control_bridge {
+            control::snapshot(bridge, &app, &runtime, false);
         }
         // Finish thread selection and prompt admission before detaching. The durable
         // managed turn itself continues independently of this terminal.
@@ -2178,8 +2185,8 @@ async fn run_inner(
                 (Some(&mut voice.status), Some(&mut voice.transcripts))
             });
         tokio::select! {
-            command = async { match &mut control_server { Some(server) => server.commands.recv().await, None => pending().await } } => {
-                if let Some(command) = command { control::dispatch(command, &control_server.as_ref().unwrap().bridge, &runtime, &mut control_tasks); }
+            command = async { match &mut control_commands { Some(commands) => commands.recv().await, None => pending().await } } => {
+                if let Some(command) = command { control::dispatch(command, runtime.control_bridge.as_ref().unwrap(), &runtime, &mut control_tasks); }
             }
             Some(result) = control_tasks.join_next(), if !control_tasks.is_empty() => {
                 if let Ok((command, result, settings, session)) = result {
@@ -2189,8 +2196,8 @@ async fn run_inner(
                             effort:effort_from_thinking(settings.thinking),fast_mode:settings.fast_mode,model:settings.model}), &mut scheduler);
                     }
                     // Publish readiness and revisions before a client can act on this acknowledgement.
-                    if let Some(server) = &control_server {
-                        control::snapshot(&server.bridge, &app, &runtime, false);
+                    if let Some(bridge) = &runtime.control_bridge {
+                        control::snapshot(bridge, &app, &runtime, false);
                     }
                     command.finish(result);
                 }
@@ -2368,7 +2375,7 @@ async fn run_inner(
             }, if runtime.managed_events_open => {
                 match event {
                     Some(event) => {
-                        if let Some(server) = &control_server { let mut value=serde_json::to_value(&event).unwrap_or_default(); value["session_id"]=serde_json::json!(runtime.agent_id); server.bridge.publish("managed.event",value); }
+                        if let Some(bridge) = &runtime.control_bridge { let mut value=serde_json::to_value(&event).unwrap_or_default(); value["session_id"]=serde_json::json!(runtime.agent_id); bridge.publish("managed.event",value); }
                         runtime.observed_cursor.clone_from(&event.cursor);
                         if let Some(request_id) = event.data.turn_id() {
                             if runtime.submitted_turns.contains(request_id) {
