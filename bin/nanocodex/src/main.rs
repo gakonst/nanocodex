@@ -206,6 +206,11 @@ fn process_exit_code(error: &eyre::Report) -> u8 {
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    if !matches!(&cli.command, Some(Command::Update(_)))
+        && let Err(error) = update::ensure_default_automatic_updates()
+    {
+        eprintln!("Could not configure automatic updates: {error:#}");
+    }
     match cli.command {
         Some(Command::Computer(command)) => command.run().await.map_err(|error| eyre!(error)),
         Some(Command::Hand(command)) => command.run().await,

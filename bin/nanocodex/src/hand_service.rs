@@ -582,12 +582,13 @@ pub(crate) struct ServiceUpdate {
     candidate: PathBuf,
     previous: Vec<u8>,
     was_loaded: bool,
+    start_stopped: bool,
     backup: PathBuf,
     // Legacy clients use per-account launch locks before spawning a publisher.
     // Hold them through handover so old clients cannot steal service ownership.
     _legacy_guards: Vec<fs::File>,
 }
-pub(crate) async fn prepare_update(candidate: &Path) -> Result<Option<ServiceUpdate>> {
+pub(crate) async fn prepare_update(candidate: &Path, start_stopped: bool) -> Result<Option<ServiceUpdate>> {
     if !cfg!(target_os = "macos") {
         return Ok(None);
     }
@@ -621,6 +622,7 @@ pub(crate) async fn prepare_update(candidate: &Path) -> Result<Option<ServiceUpd
         candidate,
         previous,
         was_loaded: state.loaded,
+        start_stopped,
         backup,
         _legacy_guards: legacy_guards,
     }))
@@ -631,10 +633,10 @@ impl ServiceUpdate {
         stop().await?;
         let since = SystemTime::now();
         switch_executable(&self.candidate).await?;
-        // Activation is only requested by an explicit start/restart operation.
-        // Leave the verified publisher running; retain was_loaded for rollback.
-        start().await?;
-        verify_connected(&self.candidate, since, Duration::from_secs(60)).await?;
+        if self.was_loaded || self.start_stopped {
+            start().await?;
+            verify_connected(&self.candidate, since, Duration::from_secs(60)).await?;
+        }
         Ok(())
     }
     pub(crate) async fn rollback(&mut self) -> Result<()> {

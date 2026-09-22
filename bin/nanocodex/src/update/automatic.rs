@@ -23,6 +23,55 @@ pub(super) fn configure(action: AutoUpdate, root: &Path, nightly: bool) -> Resul
     }
 }
 
+/// Install the default schedule once, preserving an existing schedule and channel.
+pub(super) fn ensure_default(root: &Path, nightly: bool) -> Result<()> {
+    #[cfg(target_os = "macos")]
+    return macos::ensure_default(root, nightly);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (root, nightly);
+        Ok(())
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn opt_out_path(root: &Path) -> std::path::PathBuf {
+    root.join("automatic-updates-disabled")
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn entry_exists(path: &Path) -> Result<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(error.into()),
+    }
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn should_install_default(root: &Path, schedule: &Path) -> Result<bool> {
+    // Even a dangling link counts as an existing entry: never replace it implicitly.
+    Ok(!entry_exists(&opt_out_path(root))? && !entry_exists(schedule)?)
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn record_opt_out(root: &Path) -> Result<()> {
+    std::fs::create_dir_all(root)?;
+    let marker = tempfile::NamedTempFile::new_in(root)?;
+    marker.as_file().sync_all()?;
+    marker.persist(opt_out_path(root))?;
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", test))]
+fn clear_opt_out(root: &Path) -> Result<()> {
+    match std::fs::remove_file(opt_out_path(root)) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.into()),
+    }
+}
+
 fn supported(os: &str) -> Result<()> {
     if os != "macos" {
         bail!("automatic updates are only supported on macOS (current platform: {os})");
@@ -156,6 +205,22 @@ mod macos {
         Ok(Some(value))
     }
 
+    pub(super) fn ensure_default(root: &Path, nightly: bool) -> Result<()> {
+        // An explicit opt-out should not require HOME or spawn any subprocesses.
+        if entry_exists(&opt_out_path(root))? {
+            return Ok(());
+        }
+        let home =
+            PathBuf::from(std::env::var_os("HOME").ok_or_else(|| eyre::eyre!("HOME is not set"))?);
+        let path = home
+            .join("Library/LaunchAgents")
+            .join(format!("{LABEL}.plist"));
+        if should_install_default(root, &path)? {
+            configure(AutoUpdate::Enable, root, nightly)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn configure(action: AutoUpdate, root: &Path, nightly: bool) -> Result<()> {
         let home =
             PathBuf::from(std::env::var_os("HOME").ok_or_else(|| eyre::eyre!("HOME is not set"))?);
@@ -232,12 +297,16 @@ mod macos {
                         .output()?,
                     "load automatic updates",
                 )?;
+                clear_opt_out(root)?;
                 println!("Automatic updates enabled every 3600 seconds (nightly={nightly}).");
             }
             AutoUpdate::Disable => {
                 if loaded && settings.is_none() {
                     bail!("refusing to unload a LaunchAgent without a managed configuration");
                 }
+                // Persist user intent before unloading so a partial failure cannot
+                // cause a later startup to silently re-enable automatic updates.
+                record_opt_out(root)?;
                 if loaded {
                     checked(
                         Command::new("/bin/launchctl")
@@ -259,6 +328,46 @@ mod macos {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn default_policy_preserves_schedules_and_persistent_opt_out() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("install");
+        let schedule = directory.path().join("schedule.plist");
+        assert!(should_install_default(&root, &schedule).unwrap());
+        for nightly in [false, true] {
+            let original = render(&root, directory.path(), nightly).unwrap();
+            std::fs::write(&schedule, &original).unwrap();
+            assert!(!should_install_default(&root, &schedule).unwrap());
+            assert_eq!(std::fs::read_to_string(&schedule).unwrap(), original);
+        }
+        record_opt_out(&root).unwrap();
+        std::fs::remove_file(&schedule).unwrap();
+        assert!(!should_install_default(&root, &schedule).unwrap());
+        // Repeating disable is safe; the marker survives removal of the schedule.
+        record_opt_out(&root).unwrap();
+        assert!(!should_install_default(&root, &schedule).unwrap());
+        clear_opt_out(&root).unwrap();
+        assert!(should_install_default(&root, &schedule).unwrap());
+        clear_opt_out(&root).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn default_policy_preserves_dangling_schedule_links() {
+        let directory = tempfile::tempdir().unwrap();
+        let schedule = directory.path().join("schedule.plist");
+        std::os::unix::fs::symlink(directory.path().join("missing"), &schedule).unwrap();
+        assert!(!should_install_default(directory.path(), &schedule).unwrap());
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    #[test]
+    fn ensure_default_is_noop_on_other_platforms() {
+        let directory = tempfile::tempdir().unwrap();
+        ensure_default(directory.path(), true).unwrap();
+        assert_eq!(std::fs::read_dir(directory.path()).unwrap().count(), 0);
+    }
 
     #[test]
     fn escapes_paths_and_renders_exact_schedule() {

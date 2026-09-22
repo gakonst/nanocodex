@@ -110,6 +110,27 @@ pub(crate) fn prepare_legacy_nightly_bootstrap() -> Result<()> {
     Ok(())
 }
 
+/// Repair missing default scheduling only for an installed, managed CLI.
+pub(crate) fn ensure_default_automatic_updates() -> Result<()> {
+    if !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    let store = VersionStore::discover()?;
+    let executable = std::env::current_exe()?.canonicalize()?;
+    let Ok(root) = store.root().canonicalize() else {
+        return Ok(());
+    };
+    if !executable.starts_with(root.join("versions"))
+        && !executable.starts_with(root.join("updater"))
+    {
+        return Ok(());
+    }
+    if store.active()?.is_some() && root.join("updater/nanocodex").is_file() {
+        automatic::ensure_default(&root, version::IS_NIGHTLY)?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, thiserror::Error)]
 enum DownloadError {
     #[error(transparent)]
@@ -208,7 +229,11 @@ impl Update {
         let manager_version = Version::parse(env!("CARGO_PKG_VERSION"))
             .wrap_err("the installed Nanocodex version is invalid")?;
         let store = VersionStore::discover()?;
-        let _lock = store.update_lock()?;
+        let _lock = if matches!(&self.auto, Some(automatic::AutoUpdate::Status)) {
+            None
+        } else {
+            Some(store.update_lock()?)
+        };
         if let Some(action) = self.auto {
             if matches!(action, automatic::AutoUpdate::Enable) {
                 store.prepare(&manager_key(&manager_version))?;
@@ -241,8 +266,18 @@ impl Update {
         }
         let manager_key = manager_key(&manager_version);
         store.prepare(&manager_key)?;
+        automatic::ensure_default(store.root(), self.nightly || version::IS_NIGHTLY)?;
         VersionStore::promote_running_legacy_nightly_manager()?;
         let previous = store.active()?.unwrap_or_else(|| manager_key.clone());
+        // A verified pending bundle can activate even if the release server is offline.
+        if self.background
+            && let Some(key) = store.pending()?
+            && activate_coordinated(&store, &key, true, false).await?
+        {
+            store.promote_manager(&key)?;
+            report_activation(&previous, &key, false);
+            return Ok(());
+        }
 
         if let Some(path) = &self.path {
             return install_local_binary(
@@ -570,7 +605,7 @@ async fn activate_coordinated(
         &serde_json::to_vec(&serde_json::json!({"previous":previous,"candidate":key}))?,
         false,
     )?;
-    let mut service = match crate::hand_service::prepare_update(&companion).await {
+    let mut service = match crate::hand_service::prepare_update(&companion, restart_hand).await {
         Ok(service) => service,
         Err(error) => {
             fs::remove_file(&journal)?;
