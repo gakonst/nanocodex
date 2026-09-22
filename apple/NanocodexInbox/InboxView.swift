@@ -2050,7 +2050,12 @@ private struct ConversationContentView: View {
                 canRetry: revision.canRetry, vaultAccount: String(describing: model.vaultIntakeAccount),
                 activeTurns: revision.activeTurns)
             guard item.message == nil, let content = item.content, !content.activity.isEmpty else {
-                rows.append(.init(id: item.id, revision: cellRevision, content: { AnyView(nativeRow(item, in: viewport)) }))
+                let markdown = item.message.flatMap { row in
+                    row.role == "Agent" || row.role == "Thinking" ? row.text : nil
+                } ?? (item.output?.kind == .text ? item.output?.text : nil)
+                rows.append(.init(id: item.id, revision: cellRevision,
+                    content: { AnyView(nativeRow(item, in: viewport)) },
+                    prepare: markdown.map { source in { try await ChatMarkdown.prepare(source) } }))
                 continue
             }
             // Each activity is an independent native cell. A large expanded batch
@@ -2114,7 +2119,9 @@ private struct ConversationContentView: View {
                                 ConversationMessageView(row: activity, model: model, agentID: model.focused?.id ?? "")
                             }
                         })
-                    }))
+                    }, prepare: activity.role != "Tool" && content.childAgentID != nil
+                        && (activity.role == "Agent" || activity.role == "Thinking")
+                        ? { try await ChatMarkdown.prepare(activity.text) } : nil))
                 }
                 if content.isCodeModeBatch && content.childAgentID == nil {
                     let rowID = item.id + ":javascript"

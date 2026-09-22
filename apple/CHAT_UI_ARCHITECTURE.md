@@ -120,3 +120,25 @@ conversation-control strip to leave room for the transcript above the keyboard.
 Tool header icons retain fixed visual sizes inside their controls, while command,
 Code Mode, and generic tool headers stack at accessibility text sizes. This avoids
 squeezing large text between decorative icons and status indicators.
+
+## Markdown preparation during history scrolling
+
+A parsed history row previously started with raw Markdown even when the bounded
+parse cache already held its formatted blocks: the SwiftUI body waited for an
+asynchronous task to retrieve the cache hit. First paint now performs a synchronous
+cache lookup only. Parsing remains on the parser actor, with the existing 64-entry,
+8-MiB cache limits and large-input exclusion.
+
+The native coordinator uses Apple's
+[UICollectionViewDataSourcePrefetching](https://developer.apple.com/documentation/uikit/uicollectionviewdatasourceprefetching)
+to prepare upcoming Markdown rows asynchronously. Row adapters supply preparation
+closures, so the collection does not parse unrelated tool payloads. Work is keyed
+by stable identity and revision, removed on completion, and canceled when no longer
+needed. The cell configuration path also requests preparation because UIKit does
+not promise a prefetch callback for every row.
+
+Prepared rows can render formatted content on their first body evaluation. A true
+cache miss retains readable text until formatting finishes; prefetching is best
+effort and does not eliminate every possible cold-row height change. Unit coverage
+checks prepared first paint without running a renderer update task, streaming
+prefix reuse, replacement rejection, off-main parsing, and cancellation.

@@ -11,6 +11,11 @@ public struct ChatMarkdown: View {
 
     public init(text: String, compact: Bool = false) { self.text = text; self.compact = compact }
 
+    /// Warms the bounded parsed-message cache without doing work on the main actor.
+    public static func prepare(_ text: String) async throws {
+        _ = try await ChatMarkdownParser.shared.blocks(for: text)
+    }
+
     public var body: some View {
         ChatMarkdownContent(text: text, compact: compact).equatable()
     }
@@ -32,8 +37,8 @@ private struct ChatMarkdownContent: View, Equatable {
 
     var body: some View {
         Group {
-            if let rendered = renderer.rendered, rendered.source == text || text.hasPrefix(rendered.source) {
-                content(rendered.blocks)
+            if let blocks = renderer.blocks(for: text) {
+                content(blocks)
             } else {
                 Text(text).lineSpacing(compact ? 3 : 5).textSelection(.enabled)
                     .frame(maxWidth: compact ? nil : .infinity, alignment: .leading)
@@ -162,6 +167,13 @@ final class ChatMarkdownRenderer: ObservableObject {
     private var latest = ""
     private var task: Task<Void, Never>?
     private var generation = 0
+    /// Safe during the first body evaluation: NSCache lookup only, never parsing.
+    func blocks(for text: String) -> [ChatMarkdownBlock]? {
+        if let cached = ChatMarkdownParser.shared.cachedBlocks(for: text) { return cached }
+        if let rendered, rendered.source == text || text.hasPrefix(rendered.source) { return rendered.blocks }
+        return nil
+    }
+
     func update(_ text: String) {
         latest = text
         guard task == nil, rendered?.source != text else { return }
@@ -177,7 +189,7 @@ final class ChatMarkdownRenderer: ObservableObject {
                     try Task.checkCancellation()
                     // A parsed prefix is useful while a reply is streaming; a
                     // replaced/corrected message must not show obsolete content.
-                    if self.latest == source || self.latest.hasPrefix(source) { self.rendered = (source, blocks) }
+                    if self.generation == generation, self.latest == source || self.latest.hasPrefix(source) { self.rendered = (source, blocks) }
                     if self.latest == source { return }
                     try await Task.sleep(for: .milliseconds(32))
                 }
@@ -191,21 +203,28 @@ final class ChatMarkdownRenderer: ObservableObject {
 /// messages. Theme and Dynamic Type styling remain in the SwiftUI renderer.
 actor ChatMarkdownParser {
     static let shared = ChatMarkdownParser()
-    private final class Parsed {
+    private final class Parsed: @unchecked Sendable {
         let blocks: [ChatMarkdownBlock]
         init(_ blocks: [ChatMarkdownBlock]) { self.blocks = blocks }
     }
-    private let cache: NSCache<NSString, Parsed> = {
-        let cache = NSCache<NSString, Parsed>()
-        cache.countLimit = 64
-        cache.totalCostLimit = 8 * 1024 * 1024
-        return cache
-    }()
+    // NSCache synchronizes access; values are immutable Sendable block arrays.
+    // The wrapper exposes only lookup/insertion and never changes cache limits.
+    private final class Cache: @unchecked Sendable {
+        let storage = NSCache<NSString, Parsed>()
+        init() {
+            storage.countLimit = 64
+            storage.totalCostLimit = 8 * 1024 * 1024
+        }
+    }
+    private nonisolated let cache = Cache()
+    nonisolated func cachedBlocks(for text: String) -> [ChatMarkdownBlock]? {
+        cache.storage.object(forKey: text as NSString)?.blocks
+    }
     func blocks(for text: String) throws -> [ChatMarkdownBlock] {
         assert(!Thread.isMainThread)
         try Task.checkCancellation()
         let key = text as NSString
-        if let parsed = cache.object(forKey: key) { return parsed.blocks }
+        if let parsed = cache.storage.object(forKey: key) { return parsed.blocks }
         let blocks = ChatMarkdownBlock.parse(text)
         try Task.checkCancellation()
         if text.utf8.count <= 1_000_000 {
@@ -218,7 +237,7 @@ actor ChatMarkdownParser {
                     cost += rows.reduce(0) { $0 + $1.reduce(0) { $0 + $1.runs.count * 128 } }
                 }
             }
-            if cost <= cache.totalCostLimit { cache.setObject(Parsed(blocks), forKey: key, cost: cost) }
+            if cost <= cache.storage.totalCostLimit { cache.storage.setObject(Parsed(blocks), forKey: key, cost: cost) }
         }
         return blocks
     }

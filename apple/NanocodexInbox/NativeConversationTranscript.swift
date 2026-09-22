@@ -28,9 +28,11 @@ private struct NativeCellContent: View {
 }
 private final class NativeTranscriptCell: UICollectionViewCell {
     let visibility = NativeCellVisibility()
+    var representedID: String?
     override func prepareForReuse() {
         super.prepareForReuse()
         visibility.visible = false
+        representedID = nil
     }
 }
 
@@ -75,6 +77,9 @@ struct NativeConversationTranscript: UIViewRepresentable {
         var id: String
         var revision: AnyHashable
         var content: () -> AnyView
+        // The row adapter chooses what needs preparation; UIKit stays unaware
+        // of Markdown, tool payloads and other presentation-specific data.
+        var prepare: (() async throws -> Void)? = nil
     }
 
     var rows: [Row]
@@ -103,6 +108,7 @@ struct NativeConversationTranscript: UIViewRepresentable {
         view.keyboardDismissMode = .interactive
         view.contentInsetAdjustmentBehavior = .automatic
         view.delegate = context.coordinator
+        view.prefetchDataSource = context.coordinator
         context.coordinator.install(view)
         return view
     }
@@ -115,6 +121,8 @@ struct NativeConversationTranscript: UIViewRepresentable {
         coordinator.parent.proxy.scroll = nil
         view.didLayout = nil
         view.delegate = nil
+        view.prefetchDataSource = nil
+        coordinator.cancelPreparations()
     }
 
     final class TranscriptCollectionView: UICollectionView {
@@ -126,12 +134,13 @@ struct NativeConversationTranscript: UIViewRepresentable {
     }
 
     @MainActor
-    final class Coordinator: NSObject, UICollectionViewDelegate {
+    final class Coordinator: NSObject, UICollectionViewDelegate, UICollectionViewDataSourcePrefetching {
         var parent: NativeConversationTranscript
         private weak var view: TranscriptCollectionView?
         private var dataSource: UICollectionViewDiffableDataSource<Int, String>!
         private var rows: [String: NativeTranscriptItem] = [:]
         private var ids: [String] = []
+        private var preparations: [String: (token: UUID, task: Task<Void, Never>)] = [:]
         private var transcriptRowCount = 0
         private var phase: ScrollPhase = .idle
         private var anchor: (id: String, offset: CGFloat)?
@@ -159,6 +168,8 @@ struct NativeConversationTranscript: UIViewRepresentable {
             self.view = view
             let registration = UICollectionView.CellRegistration<NativeTranscriptCell, String> { [weak self] cell, _, id in
                 guard let item = self?.rows[id] else { return }
+                cell.representedID = id
+                self?.prepare(id)
                 cell.contentConfiguration = UIHostingConfiguration {
                     NativeCellContent(visibility: cell.visibility, item: item).id(id).frame(maxWidth: 740, alignment: .leading)
                         .frame(maxWidth: .infinity, alignment: .center)
@@ -222,6 +233,10 @@ struct NativeConversationTranscript: UIViewRepresentable {
                     return (id, frame.minY - view.contentOffset.y)
                 }.first
             }
+            // Snapshot changes invalidate index paths; cancellation is keyed by
+            // stable row identity and happens before installing new revisions.
+            let invalidated = Set(changedIDs).union(Set(ids).subtracting(newIDs))
+            for id in invalidated { preparations.removeValue(forKey: id)?.task.cancel() }
             rows = Dictionary(uniqueKeysWithValues: next.rows.map { row in
                 let item = rows[row.id] ?? NativeTranscriptItem(row)
                 if item.row.revision != row.revision { item.row = row }
@@ -260,6 +275,37 @@ struct NativeConversationTranscript: UIViewRepresentable {
                     self.queuedUpdate = nil
                     self.update(update)
                 }
+            }
+        }
+
+        private func prepare(_ id: String) {
+            guard preparations[id] == nil, let prepare = rows[id]?.row.prepare else { return }
+            let token = UUID()
+            let task = Task { [weak self] in
+                defer {
+                    if self?.preparations[id]?.token == token { self?.preparations.removeValue(forKey: id) }
+                }
+                do { try Task.checkCancellation(); try await prepare() } catch { }
+            }
+            preparations[id] = (token, task)
+        }
+
+        fileprivate func cancelPreparations() {
+            for preparation in preparations.values { preparation.task.cancel() }
+            preparations.removeAll()
+        }
+
+        func collectionView(_ collectionView: UICollectionView, prefetchItemsAt indexPaths: [IndexPath]) {
+            for path in indexPaths {
+                if let id = dataSource.itemIdentifier(for: path) { prepare(id) }
+            }
+        }
+
+        func collectionView(_ collectionView: UICollectionView, cancelPrefetchingForItemsAt indexPaths: [IndexPath]) {
+            for path in indexPaths {
+                guard let id = dataSource.itemIdentifier(for: path),
+                      !collectionView.indexPathsForVisibleItems.contains(path) else { continue }
+                preparations.removeValue(forKey: id)?.task.cancel()
             }
         }
 
@@ -429,6 +475,9 @@ struct NativeConversationTranscript: UIViewRepresentable {
         }
         func collectionView(_ collectionView: UICollectionView, didEndDisplaying cell: UICollectionViewCell, forItemAt indexPath: IndexPath) {
             (cell as? NativeTranscriptCell)?.visibility.visible = false
+            if let id = (cell as? NativeTranscriptCell)?.representedID {
+                preparations.removeValue(forKey: id)?.task.cancel()
+            }
         }
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
