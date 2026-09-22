@@ -408,18 +408,32 @@ final class InboxModel: ObservableObject {
                 .init(id: "demo-tool-history-\($0)", role: "Agent", text: "Earlier synthetic progress note \($0).")
             }
             let epoch = generation
+            let arrivalEnvironment = ProcessInfo.processInfo.environment
+            let arrivalCount = min(200, max(1, Int(arrivalEnvironment["NANOCODEX_DEMO_TOOL_ARRIVAL_COUNT"] ?? "") ?? 6))
+            let arrivalInterval = min(5_000, max(50, Int(arrivalEnvironment["NANOCODEX_DEMO_TOOL_ARRIVAL_INTERVAL_MS"] ?? "") ?? 1_000))
             Task {
                 try? await Task.sleep(for: .seconds(3))
-                for index in 1...6 {
+                for index in 1...arrivalCount {
                     guard !Task.isCancelled, generation == epoch, focused?.id == id else { return }
-                    var activity = ToolPresentation(name: "exec_command", arguments: .object([
+                    let activity = ToolPresentation(name: "exec_command", arguments: .object([
                         "cmd": .string("echo synthetic-tool-\(index)")
                     ]))
-                    activity.finish(.object(["output": .string("Synthetic result \(index); no command was executed."),
-                                             "exit_code": .number(0)]))
-                    rows.append(.init(id: "demo-tool-arrival-\(index)", role: "Tool", text: activity.title, tool: activity))
+                    let toolRowID = "demo-tool-arrival-\(index)"
+                    rows.append(.init(id: toolRowID, role: "Tool", text: activity.title, running: true, tool: activity))
                     demoRows[id] = rows
-                    if index < 6 { try? await Task.sleep(for: .seconds(1)) }
+                    // Exercise both arrival and completion without replacing the
+                    // row identity. Each call consumes one configured interval.
+                    try? await Task.sleep(for: .milliseconds(arrivalInterval / 2))
+                    guard !Task.isCancelled, generation == epoch, focused?.id == id,
+                          let toolIndex = rows.firstIndex(where: { $0.id == toolRowID }) else { return }
+                    rows[toolIndex].tool?.finish(.object([
+                        "output": .string("Synthetic result \(index); no command was executed."),
+                        "exit_code": .number(0)
+                    ]))
+                    rows[toolIndex].running = false
+                    demoRows[id] = rows
+                    try? await Task.sleep(for: .milliseconds(arrivalInterval - arrivalInterval / 2))
+                    guard !Task.isCancelled, generation == epoch, focused?.id == id else { return }
                 }
             }
         }

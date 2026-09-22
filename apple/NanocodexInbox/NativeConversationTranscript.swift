@@ -13,11 +13,17 @@ extension EnvironmentValues {
 @Observable private final class NativeCellVisibility {
     var visible = false
 }
+/// The native data source owns identity; Observation delivers content changes
+/// directly to mounted SwiftUI cells without rebuilding a collection snapshot.
+@Observable private final class NativeTranscriptItem {
+    var row: NativeConversationTranscript.Row
+    init(_ row: NativeConversationTranscript.Row) { self.row = row }
+}
 private struct NativeCellContent: View {
     let visibility: NativeCellVisibility
-    let row: NativeConversationTranscript.Row
+    let item: NativeTranscriptItem
     var body: some View {
-        row.content().environment(\.nativeTranscriptVisible, visibility.visible)
+        item.row.content().environment(\.nativeTranscriptVisible, visibility.visible)
     }
 }
 private final class NativeTranscriptCell: UICollectionViewCell {
@@ -30,10 +36,28 @@ private final class NativeTranscriptCell: UICollectionViewCell {
 
 @MainActor
 final class NativeConversationScrollProxy {
-    fileprivate var scroll: ((String, UnitPoint, Bool) -> Void)?
+    enum Position {
+        case aligned(UnitPoint)
+        case readingOffset(CGFloat)
+
+        func contentOffset(for frame: CGRect, in view: UIScrollView) -> CGFloat {
+            switch self {
+            case .readingOffset(let offset): return frame.minY - offset
+            case .aligned(let anchor):
+                let inset = view.adjustedContentInset
+                let height = view.bounds.height - inset.top - inset.bottom
+                return frame.minY - inset.top - (height - frame.height) * anchor.y
+            }
+        }
+    }
+    fileprivate var scroll: ((String, Position, Bool) -> Void)?
 
     func scrollTo(_ id: String, anchor: UnitPoint? = nil, animated: Bool = false) {
-        scroll?(id, anchor ?? .top, animated)
+        scroll?(id, .aligned(anchor ?? .top), animated)
+    }
+
+    func restore(_ id: String, offset: CGFloat) {
+        scroll?(id, .readingOffset(offset), false)
     }
 }
 
@@ -56,8 +80,9 @@ struct NativeConversationTranscript: UIViewRepresentable {
     var rows: [Row]
     var proxy: NativeConversationScrollProxy
     var followsLatest: Bool
+    var animatesUpdates: Bool
     var bottomInset: CGFloat
-    var onFrames: ([String: CGRect]) -> Void
+    var onFrames: ([String: CGRect], Bool) -> Void
     var onMetrics: (NativeConversationScrollMetrics) -> Void
     var onPhase: (ScrollPhase, ScrollPhase) -> Void
 
@@ -76,7 +101,7 @@ struct NativeConversationTranscript: UIViewRepresentable {
         // Propagate those intrinsic-size changes into the native layout on iOS 18.
         view.selfSizingInvalidation = .enabledIncludingConstraints
         view.keyboardDismissMode = .interactive
-        view.contentInsetAdjustmentBehavior = .never
+        view.contentInsetAdjustmentBehavior = .automatic
         view.delegate = context.coordinator
         context.coordinator.install(view)
         return view
@@ -105,18 +130,19 @@ struct NativeConversationTranscript: UIViewRepresentable {
         var parent: NativeConversationTranscript
         private weak var view: TranscriptCollectionView?
         private var dataSource: UICollectionViewDiffableDataSource<Int, String>!
-        private var rows: [String: Row] = [:]
+        private var rows: [String: NativeTranscriptItem] = [:]
         private var ids: [String] = []
         private var transcriptRowCount = 0
         private var phase: ScrollPhase = .idle
         private var anchor: (id: String, offset: CGFloat)?
-        private var retainedTarget: (id: String, anchor: UnitPoint)?
-        private var pendingTarget: (id: String, anchor: UnitPoint, animated: Bool)?
+        private var retainedTarget: (id: String, position: NativeConversationScrollProxy.Position)?
+        private var pendingTarget: (id: String, position: NativeConversationScrollProxy.Position, animated: Bool)?
         private var lastSize = CGSize.zero
         private var lastBounds = CGSize.zero
         private var correcting = false
         private var needsRetention = false
         private var reporting = false
+        private var readerMoved = false
         private var reportedFrames: [String: CGRect]?
         private var reportedMetrics: NativeConversationScrollMetrics?
         private var applying = false
@@ -132,9 +158,9 @@ struct NativeConversationTranscript: UIViewRepresentable {
         func install(_ view: TranscriptCollectionView) {
             self.view = view
             let registration = UICollectionView.CellRegistration<NativeTranscriptCell, String> { [weak self] cell, _, id in
-                guard let row = self?.rows[id] else { return }
+                guard let item = self?.rows[id] else { return }
                 cell.contentConfiguration = UIHostingConfiguration {
-                    NativeCellContent(visibility: cell.visibility, row: row).id(row.id).frame(maxWidth: 740, alignment: .leading)
+                    NativeCellContent(visibility: cell.visibility, item: item).id(id).frame(maxWidth: 740, alignment: .leading)
                         .frame(maxWidth: .infinity, alignment: .center)
                         .padding(.horizontal, 20)
                 }.margins(.all, 0)
@@ -175,14 +201,14 @@ struct NativeConversationTranscript: UIViewRepresentable {
                 captureAnchor()
             }
             parent = next
-            parent.proxy.scroll = { [weak self] id, anchor, animated in
-                self?.requestScroll(id, anchor: anchor, animated: animated)
+            parent.proxy.scroll = { [weak self] id, position, animated in
+                self?.requestScroll(id, position: position, animated: animated)
             }
             let newIDs = next.rows.map(\.id)
             assert(Set(newIDs).count == newIDs.count, "Transcript row IDs must be unique")
             // Compare before replacing the provider's row table.
             let changedIDs = next.rows.compactMap { row -> String? in
-                guard let old = rows[row.id], old.revision != row.revision else { return nil }
+                guard let old = rows[row.id], old.row.revision != row.revision else { return nil }
                 return row.id
             }
             let insetChanged = view.contentInset.bottom != next.bottomInset
@@ -196,26 +222,38 @@ struct NativeConversationTranscript: UIViewRepresentable {
                     return (id, frame.minY - view.contentOffset.y)
                 }.first
             }
-            rows = Dictionary(uniqueKeysWithValues: next.rows.map { ($0.id, $0) })
+            rows = Dictionary(uniqueKeysWithValues: next.rows.map { row in
+                let item = rows[row.id] ?? NativeTranscriptItem(row)
+                if item.row.revision != row.revision { item.row = row }
+                return (row.id, item)
+            })
             view.contentInset.bottom = next.bottomInset
             view.verticalScrollIndicatorInsets.bottom = next.bottomInset
-            guard structural || !changedIDs.isEmpty else {
-                if insetChanged { view.setNeedsLayout() }
+            guard structural else {
+                if insetChanged || !changedIDs.isEmpty { view.setNeedsLayout() }
                 return
+            }
+            // Appending live rows is a single native scroll animation. History
+            // insertion, initial positioning and reader gestures never animate.
+            let appendAtTail = next.animatesUpdates && next.followsLatest
+                && !view.isTracking && !view.isDragging && !view.isDecelerating
+                && pendingTarget == nil && ids.last == "latest" && newIDs.last == "latest"
+                && newIDs.count > ids.count && newIDs.starts(with: ids.dropLast())
+            if appendAtTail {
+                retainedTarget = ("latest", .aligned(.bottom))
+                pendingTarget = ("latest", .aligned(.bottom), true)
             }
             ids = newIDs
             transcriptRowCount = newIDs.filter { $0 != "latest" && $0 != "transcript-header" }.count
             var snapshot = NSDiffableDataSourceSnapshot<Int, String>()
             snapshot.appendSections([0])
             snapshot.appendItems(newIDs)
-            snapshot.reconfigureItems(changedIDs)
             applying = true
             dataSource.apply(snapshot, animatingDifferences: false) { [weak self] in
                 guard let self else { return }
                 self.applying = false
-                // Reconfigured hosting content must be measured again before
-                // restoring the reading point, even when row IDs did not change.
-                self.view?.collectionViewLayout.invalidateLayout()
+                // UIKit owns self-sizing invalidation. Do not invalidate every
+                // estimated height again after each streamed content update.
                 self.view?.layoutIfNeeded()
                 self.layoutFinished()
                 if let update = self.queuedUpdate {
@@ -225,9 +263,9 @@ struct NativeConversationTranscript: UIViewRepresentable {
             }
         }
 
-        private func requestScroll(_ id: String, anchor: UnitPoint, animated: Bool) {
-            retainedTarget = (id, anchor)
-            pendingTarget = (id, anchor, animated)
+        private func requestScroll(_ id: String, position: NativeConversationScrollProxy.Position, animated: Bool) {
+            retainedTarget = (id, position)
+            pendingTarget = (id, position, animated)
             performPendingScroll()
         }
 
@@ -235,9 +273,7 @@ struct NativeConversationTranscript: UIViewRepresentable {
             guard !applying, let view, let target = pendingTarget,
                   let path = dataSource.indexPath(for: target.id),
                   let attributes = view.collectionViewLayout.layoutAttributesForItem(at: path) else { return }
-            let inset = view.adjustedContentInset
-            let height = view.bounds.height - inset.top - inset.bottom
-            let y = attributes.frame.minY - inset.top - (height - attributes.frame.height) * target.anchor.y
+            let y = target.position.contentOffset(for: attributes.frame, in: view)
             pendingTarget = nil
             correcting = true
             if !target.animated, phase == .animating { transition(.idle) }
@@ -247,7 +283,7 @@ struct NativeConversationTranscript: UIViewRepresentable {
                 view.layoutIfNeeded()
                 // Realize the destination, then align using its measured height.
                 if let measured = view.collectionViewLayout.layoutAttributesForItem(at: path) {
-                    setOffset(measured.frame.minY - inset.top - (height - measured.frame.height) * target.anchor.y)
+                    setOffset(target.position.contentOffset(for: measured.frame, in: view))
                 }
             }
             correcting = false
@@ -285,8 +321,11 @@ struct NativeConversationTranscript: UIViewRepresentable {
             // UIKit may adjust contentOffset after self-sizing finishes. That is
             // not reader intent: keep the point captured by the last user scroll.
             let readingPointMoved: Bool
-            if !parent.followsLatest, retainedTarget == nil, phase != .animating,
-               !view.isTracking, !view.isDragging, !view.isDecelerating,
+            if !parent.followsLatest, phase != .animating,
+               let target = retainedTarget, let path = dataSource.indexPath(for: target.id),
+               let frame = view.layoutAttributesForItem(at: path)?.frame {
+                readingPointMoved = abs(target.position.contentOffset(for: frame, in: view) - view.contentOffset.y) > 0.5
+            } else if !parent.followsLatest, phase != .animating,
                let anchor, let path = dataSource.indexPath(for: anchor.id),
                let frame = view.layoutAttributesForItem(at: path)?.frame {
                 readingPointMoved = abs(frame.minY - anchor.offset - view.contentOffset.y) > 0.5
@@ -299,9 +338,7 @@ struct NativeConversationTranscript: UIViewRepresentable {
                 } else if pendingTarget == nil, phase != .animating, let target = retainedTarget,
                           let path = dataSource.indexPath(for: target.id),
                           let attributes = view.collectionViewLayout.layoutAttributesForItem(at: path) {
-                    let inset = view.adjustedContentInset
-                    let height = view.bounds.height - inset.top - inset.bottom
-                    setOffset(attributes.frame.minY - inset.top - (height - attributes.frame.height) * target.anchor.y)
+                    setOffset(target.position.contentOffset(for: attributes.frame, in: view))
                 } else if pendingTarget == nil, phase != .animating, let anchor,
                           let path = dataSource.indexPath(for: anchor.id),
                           let attributes = view.collectionViewLayout.layoutAttributesForItem(at: path) {
@@ -340,7 +377,7 @@ struct NativeConversationTranscript: UIViewRepresentable {
             mountedCounter.frame = CGRect(x: view.contentOffset.x, y: view.contentOffset.y, width: 1, height: 1)
             view.bringSubviewToFront(mountedCounter)
             let anchorFrame = anchor.flatMap { value in dataSource.indexPath(for: value.id).flatMap { view.layoutAttributesForItem(at: $0)?.frame } }
-            scrollDiagnostics.accessibilityLabel = "offset=\(view.contentOffset.y) size=\(view.contentSize.height) anchor=\(String(describing: anchor)) frame=\(String(describing: anchorFrame)) following=\(parent.followsLatest) phase=\(phase)"
+            scrollDiagnostics.accessibilityLabel = "offset=\(view.contentOffset.y) size=\(view.contentSize.height) anchor=\(String(describing: anchor)) frame=\(String(describing: anchorFrame)) following=\(parent.followsLatest) phase=\(phase) target=\(String(describing: retainedTarget))"
             scrollDiagnostics.frame = mountedCounter.frame
             view.bringSubviewToFront(scrollDiagnostics)
         }
@@ -361,9 +398,11 @@ struct NativeConversationTranscript: UIViewRepresentable {
                           let frame = view.layoutAttributesForItem(at: path)?.frame else { continue }
                     frames[id] = frame.offsetBy(dx: -view.contentOffset.x, dy: -view.contentOffset.y)
                 }
-                if self.reportedFrames != frames {
+                let readerMoved = self.readerMoved
+                self.readerMoved = false
+                if self.reportedFrames != frames || readerMoved {
                     self.reportedFrames = frames
-                    self.parent.onFrames(frames)
+                    self.parent.onFrames(frames, readerMoved)
                 }
                 let metrics = NativeConversationScrollMetrics(contentOffset: view.contentOffset, contentSize: view.contentSize,
                                                                 containerSize: view.bounds.size, contentInsets: view.adjustedContentInset)
@@ -389,6 +428,9 @@ struct NativeConversationTranscript: UIViewRepresentable {
         }
 
         func scrollViewDidScroll(_ scrollView: UIScrollView) {
+            if !correcting && (scrollView.isTracking || scrollView.isDragging || scrollView.isDecelerating) {
+                readerMoved = true
+            }
             if scrollView.isDragging { transition(.interacting) }
             if !correcting, !applying, !needsRetention,
                lastSize == scrollView.contentSize, lastBounds == scrollView.bounds.size {
@@ -408,11 +450,15 @@ struct NativeConversationTranscript: UIViewRepresentable {
         }
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
             captureAnchor()
+            readerMoved = true
             transition(decelerate ? .decelerating : .idle)
+            reportSoon()
         }
         func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
             captureAnchor()
+            readerMoved = true
             transition(.idle)
+            reportSoon()
         }
         func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
             transition(.idle)
