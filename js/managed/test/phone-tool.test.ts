@@ -236,3 +236,16 @@ it("does not retry uncertain steering writes and preserves their operation ident
     expect(JSON.parse(f.fetcher.mock.calls[0]![1].body).operation_id).toBe(steeringId);
   }
 });
+
+it("returns bounded numeric call quality without leaking arbitrary diagnostics", async () => {
+  const f = fixture();
+  const audio_diagnostics = { inbound_frames: 100, input_rms_dbfs: -32.5, input_peak_dbfs: -6,
+    timestamp_gap_ms: 40, clear_events: 2, pending_audio_ms: 20.125 };
+  f.fetcher.mockResolvedValue(Response.json({ ...snapshot, audio_diagnostics }));
+  expect(await f.tool.handler({ operation: "status", call_id: id }, context())).toMatchObject({ audio_diagnostics });
+  for (const diagnostic of [{ ...audio_diagnostics, secret: token }, { inbound_frames: -1 },
+    { input_rms_dbfs: null }, { pending_audio_ms: 1e30 }, { input_peak_dbfs: 2 }]) {
+    f.fetcher.mockResolvedValue(Response.json({ ...snapshot, audio_diagnostics: diagnostic }));
+    expect(await f.tool.handler({ operation: "status", call_id: id }, context())).not.toHaveProperty("audio_diagnostics");
+  }
+});

@@ -14,6 +14,7 @@ export const images = {
     inputs: ['.dockerignore', 'js/phone-cloud', 'Cargo.toml', 'Cargo.lock', 'bin', 'crates',
       'examples', 'js/nanocodex', 'py/bindings', 'third_party',
       'js/managed/scripts/phone-bridge.mjs', 'js/managed/scripts/phone-delegation.mjs',
+      'js/managed/scripts/phone-media-diagnostics.mjs',
       'js/managed/src/twilio-voice.ts'],
   },
   sandbox: {

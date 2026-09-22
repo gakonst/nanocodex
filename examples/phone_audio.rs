@@ -20,24 +20,57 @@ pub fn encode(sample: i16) -> u8 {
     let exponent = (0..=7).rev().find(|e| value & (128 << e) != 0).unwrap_or(0);
     !(sign | (exponent << 4) as u8 | ((value >> (exponent + 3)) & 15) as u8)
 }
-/// Linear interpolation preserves state across arbitrary input frame boundaries.
+/// Bandlimited 3:1 interpolation preserves telephone-band consonants while
+/// rejecting spectral images above 4 kHz. The 95-tap filter adds 1.96 ms delay.
+/// Polyphase evaluation needs only 32 input samples and preserves frame state.
 #[derive(Default)]
 pub struct Upsampler {
-    previous: Option<i16>,
+    history: [f64; 32],
+    position: usize,
+}
+fn interpolation_filter() -> &'static [f64; 95] {
+    static COEFFICIENTS: std::sync::OnceLock<[f64; 95]> = std::sync::OnceLock::new();
+    COEFFICIENTS.get_or_init(|| {
+        let mut result = [0.0; 95];
+        let cutoff = 3800.0 / 24_000.0;
+        for (i, coefficient) in result.iter_mut().enumerate() {
+            let offset = i as f64 - 47.0;
+            let sinc = if offset == 0.0 {
+                2.0 * cutoff
+            } else {
+                (2.0 * std::f64::consts::PI * cutoff * offset).sin()
+                    / (std::f64::consts::PI * offset)
+            };
+            let window = 0.54 - 0.46 * (2.0 * std::f64::consts::PI * i as f64 / 94.0).cos();
+            *coefficient = sinc * window;
+        }
+        let sum: f64 = result.iter().sum();
+        for coefficient in &mut result {
+            // Zero insertion reduces the DC level by three.
+            *coefficient *= 3.0 / sum;
+        }
+        result
+    })
 }
 impl Upsampler {
     pub fn convert(&mut self, input: &[u8]) -> Vec<u8> {
         let mut output = Vec::with_capacity(input.len() * 6);
         for &byte in input {
-            let current = decode(byte);
-            let previous = self.previous.unwrap_or(current);
-            for step in 1..=3 {
-                let sample = (i32::from(previous)
-                    + (i32::from(current) - i32::from(previous)) * step / 3)
-                    as i16;
+            self.history[self.position] = f64::from(decode(byte));
+            for phase in 0..3 {
+                let sample: f64 = interpolation_filter()
+                    .iter()
+                    .skip(phase)
+                    .step_by(3)
+                    .enumerate()
+                    .map(|(i, coefficient)| {
+                        coefficient * self.history[(self.position + 32 - i) % 32]
+                    })
+                    .sum();
+                let sample = sample.round().clamp(-32768.0, 32767.0) as i16;
                 output.extend_from_slice(&sample.to_le_bytes());
             }
-            self.previous = Some(current);
+            self.position = (self.position + 1) % self.history.len();
         }
         output
     }
@@ -141,6 +174,43 @@ mod tests {
         assert!(rms(1000.0) > 6000.0);
         assert!(rms(6000.0) < 100.0);
     }
+    #[test]
+    fn capture_preserves_upper_speech_band_and_rejects_interpolation_images() {
+        for frequency in [1000.0, 3000.0, 3400.0] {
+            let input: Vec<u8> = (0..8000)
+                .map(|n| {
+                    encode(
+                        (10_000.0
+                            * (2.0 * std::f64::consts::PI * frequency * n as f64 / 8000.0).sin())
+                            as i16,
+                    )
+                })
+                .collect();
+            let pcm = Upsampler::default().convert(&input);
+            let samples: Vec<f64> = pcm
+                .chunks_exact(2)
+                .map(|b| f64::from(i16::from_le_bytes([b[0], b[1]])))
+                .skip(2400)
+                .collect();
+            let amplitude = |hz: f64| {
+                let (sine, cosine) =
+                    samples
+                        .iter()
+                        .enumerate()
+                        .fold((0.0, 0.0), |(s, c), (n, x)| {
+                            let phase = 2.0 * std::f64::consts::PI * hz * n as f64 / 24_000.0;
+                            (s + x * phase.sin(), c + x * phase.cos())
+                        });
+                2.0 * sine.hypot(cosine) / samples.len() as f64
+            };
+            // Linear interpolation was only 0.567 (-4.93 dB) at 3.4 kHz.
+            let gain = amplitude(frequency) / 10_000.0;
+            assert!((0.97..1.03).contains(&gain), "{frequency} Hz gain: {gain}");
+            let image = amplitude(8000.0 - frequency) / 10_000.0;
+            assert!(image < 0.005, "{frequency} Hz image: {image}");
+        }
+    }
+
     #[test]
     fn streaming_boundaries_preserve_samples() {
         let input: Vec<u8> = (0..=255).collect();

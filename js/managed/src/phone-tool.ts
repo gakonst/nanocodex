@@ -1,9 +1,10 @@
+import { validPhoneAudioDiagnostics } from "./phone-audio-diagnostics";
 import { phoneAdminConfigured } from "./phone-admin";
 import type { NamedTool, ToolContext } from "nanocodex";
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 const STATUSES = new Set(["queued", "preparing", "unknown", "initiated", "ringing", "in-progress", "completed", "busy", "failed", "no-answer", "canceled"]);
-const ERRORS = new Set(["call_start_failed_or_unknown", "hangup_unconfirmed", "status_unavailable", "bridge_restarted", "voice_disconnected", "voice_unavailable", "duration_limit", "media_unavailable", "invalid_voice_audio", "media_backpressure", "playback_backpressure", "invalid_media", "bridge_shutdown"]);
+const ERRORS = new Set(["call_start_failed_or_unknown", "hangup_unconfirmed", "status_unavailable", "bridge_restarted", "voice_disconnected", "voice_unavailable", "voice_backpressure", "duration_limit", "media_unavailable", "invalid_voice_audio", "media_backpressure", "playback_backpressure", "invalid_media", "bridge_shutdown"]);
 const MAX_RESPONSE_BYTES = 1024 * 1024;
 
 async function readSnapshot(response: Response): Promise<Record<string, unknown>> {
@@ -141,6 +142,7 @@ export function phoneTools(options: Options): NamedTool[] {
           max_duration_seconds: result.max_duration_seconds,
           ...(typeof result.call_agent_id === "string" && UUID.test(result.call_agent_id) ? { call_agent_id: result.call_agent_id } : {}),
           ...(result.transcript_truncated === true ? { transcript_truncated: true } : {}),
+          ...(validPhoneAudioDiagnostics(result.audio_diagnostics) ? { audio_diagnostics: { ...result.audio_diagnostics } } : {}),
           transcript: result.transcript.map(entry => ({ speaker: entry.speaker, text: redact(entry.text) })),
           ...(typeof result.error === "string" && ERRORS.has(result.error) ? { error: result.error } : {}),
         };

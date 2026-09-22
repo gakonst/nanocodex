@@ -1,3 +1,4 @@
+import { validPhoneAudioDiagnostics } from "./phone-audio-diagnostics";
 import { phoneAdminConfigured } from "./phone-admin";
 import { Container } from "@cloudflare/containers";
 import { verifyTwilioWebhookSignature, type TwilioVoiceEnv } from "./twilio-voice";
@@ -14,7 +15,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-
 const MAX_ROW = 1024 * 1024;
 const MAX_STORE = 32 * MAX_ROW;
 const statuses = new Set(["preparing", "unknown", "queued", "initiated", "ringing", "in-progress", "completed", "busy", "failed", "no-answer", "canceled"]);
-const recordKeys = new Set(["call_id", "status", "transcript", "transcript_truncated", "transcript_bytes", "max_duration_seconds", "error", "sid", "stop_requested", "hangup_attempted", "dial_requested", "callback_sequence", "delegate_agent_id", "delegate_session_id", "delegate_cleaned", "to", "steering"]);
+const recordKeys = new Set(["call_id", "status", "transcript", "transcript_truncated", "transcript_bytes", "max_duration_seconds", "error", "sid", "stop_requested", "hangup_attempted", "dial_requested", "callback_sequence", "delegate_agent_id", "delegate_session_id", "delegate_cleaned", "to", "steering", "audio_diagnostics"]);
 type CallRow = { id: string; agent: string; operation: string; fingerprint: string; record: string };
 function object(value: unknown): value is Record<string, unknown> { return !!value && typeof value === "object" && !Array.isArray(value); }
 export function validPhoneCheckpoint(value: unknown): value is CallRow {
@@ -26,6 +27,7 @@ export function validPhoneCheckpoint(value: unknown): value is CallRow {
   if (Object.keys(r).some(key => !recordKeys.has(key)) || r.call_id !== value.id || typeof r.status !== "string" || !statuses.has(r.status)
     || !Number.isInteger(r.max_duration_seconds) || Number(r.max_duration_seconds) < 30 || Number(r.max_duration_seconds) > 600
     || !Array.isArray(r.transcript) || r.transcript.length > 200) return false;
+  if ("audio_diagnostics" in r && !validPhoneAudioDiagnostics(r.audio_diagnostics)) return false;
   if ("to" in r && (typeof r.to !== "string" || !/^\+[1-9][0-9]{1,14}$/.test(r.to))) return false;
   if ("steering" in r) {
     if (!Array.isArray(r.steering) || r.steering.length > 16) return false;
