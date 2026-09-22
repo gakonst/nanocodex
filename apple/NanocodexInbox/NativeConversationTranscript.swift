@@ -270,6 +270,17 @@ struct NativeConversationTranscript: UIViewRepresentable {
 
         private func layoutFinished() {
             guard let view, !correcting, !applying else { return }
+            // Let UIKit own drag and momentum offsets. Restoring a previously
+            // captured anchor during self-sizing fights the current gesture,
+            // especially as tall history rows replace their estimated heights.
+            if view.isTracking || view.isDragging || view.isDecelerating {
+                lastSize = view.contentSize
+                lastBounds = view.bounds.size
+                needsRetention = false
+                captureAnchor()
+                reportSoon()
+                return
+            }
             correcting = true
             // UIKit may adjust contentOffset after self-sizing finishes. That is
             // not reader intent: keep the point captured by the last user scroll.
@@ -282,7 +293,7 @@ struct NativeConversationTranscript: UIViewRepresentable {
             } else { readingPointMoved = false }
             let changed = lastSize != view.contentSize || lastBounds != view.bounds.size || needsRetention || readingPointMoved
             if changed {
-                if parent.followsLatest, pendingTarget == nil,
+                if parent.followsLatest, pendingTarget == nil, phase != .animating,
                    !view.isTracking, !view.isDragging, !view.isDecelerating {
                     setOffset(view.contentSize.height - view.bounds.height + view.adjustedContentInset.bottom)
                 } else if pendingTarget == nil, phase != .animating, let target = retainedTarget,
@@ -392,12 +403,17 @@ struct NativeConversationTranscript: UIViewRepresentable {
         func scrollViewWillBeginDragging(_ scrollView: UIScrollView) {
             pendingTarget = nil
             retainedTarget = nil
+            captureAnchor()
             transition(.tracking)
         }
         func scrollViewDidEndDragging(_ scrollView: UIScrollView, willDecelerate decelerate: Bool) {
+            captureAnchor()
             transition(decelerate ? .decelerating : .idle)
         }
-        func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) { transition(.idle) }
+        func scrollViewDidEndDecelerating(_ scrollView: UIScrollView) {
+            captureAnchor()
+            transition(.idle)
+        }
         func scrollViewDidEndScrollingAnimation(_ scrollView: UIScrollView) {
             transition(.idle)
             needsRetention = true

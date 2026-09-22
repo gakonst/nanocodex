@@ -2676,6 +2676,31 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(conversation.isHittable, "Dismissing the source viewer promptly returns to the conversation")
     }
 
+    func testOversizedToolResultOpensCompleteNativeTextViewer() {
+        let app = launch(["NANOCODEX_DEMO_OVERSIZED_COMMAND": "1",
+                          "NANOCODEX_DEMO_OVERSIZED_RESULT": "1",
+                          "NANOCODEX_DEMO_PROFILE": UUID().uuidString]); selectInbox(app)
+        let conversation = app.descendants(matching: .any)["conversation"].firstMatch
+        let card = conversation.buttons["tool-disclosure-demo-oversized-command"]
+        XCTAssertTrue(card.waitForExistence(timeout: 5))
+        card.tap()
+        let fullText = conversation.buttons["View full text"]
+        XCTAssertTrue(fullText.waitForExistence(timeout: 5))
+        for _ in 0..<5 { if fullText.isHittable { break }; conversation.swipeUp() }
+        XCTAssertTrue(fullText.isHittable, "A large result keeps its full-text action reachable")
+        XCTAssertFalse(conversation.staticTexts["Final output sentinel"].exists)
+        fullText.tap()
+        XCTAssertTrue(app.navigationBars["Output"].waitForExistence(timeout: 5))
+        let source = app.textViews["tool-source-text"]
+        XCTAssertTrue(source.waitForExistence(timeout: 5))
+        let expected = String(repeating: "Synthetic output line\n", count: 200) + "Final output sentinel"
+        XCTAssertEqual(source.value as? String, expected, "Full output survives inline truncation")
+        XCTAssertTrue(app.buttons["tool-source-copy"].isHittable)
+        app.buttons["tool-source-done"].tap()
+        gone(source, timeout: 3)
+        XCTAssertTrue(conversation.isHittable)
+    }
+
     func testUserNavigationReleasesControlsAfterHistoryWithoutUserMessages() {
         let app = launch(["NANOCODEX_DEMO_LONG_THREAD": "1", "NANOCODEX_DEMO_HISTORY_DELAY_MS": "50",
                           "NANOCODEX_DEMO_PROFILE": UUID().uuidString])
@@ -3662,9 +3687,19 @@ final class InboxUITests: XCTestCase {
             XCTAssertLessThanOrEqual(mounted, 64, "Native hosted views must stay bounded independently of retained history")
         }
         assertBoundedHosts()
+        let diagnostics = app.staticTexts["conversation-native-scroll-state"]
+        func scrollOffset() -> Double {
+            let value = diagnostics.label.split(separator: " ").first ?? ""
+            return Double(value.replacingOccurrences(of: "offset=", with: "")) ?? .nan
+        }
+        var previousOffset = scrollOffset()
         for _ in 0..<12 {
             conversation.swipeDown()
             assertBoundedHosts()
+            let offset = scrollOffset()
+            XCTAssertLessThan(offset, previousOffset - 20,
+                              "Each upward-history gesture must advance past self-sizing rows without snapping back")
+            previousOffset = offset
         }
         let latest = app.buttons["latest-messages"]
         XCTAssertTrue(latest.isHittable, "Exercise real scrolling away from the tail")

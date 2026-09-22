@@ -3102,7 +3102,9 @@ final class InboxModel: ObservableObject {
                 "cmd": .string(command)
             ]))
             activity.finish(.object([
-                "stdout": .string("Synthetic oversized command completed. No command was executed."),
+                "stdout": .string(ProcessInfo.processInfo.environment["NANOCODEX_DEMO_OVERSIZED_RESULT"] == "1"
+                    ? String(repeating: "Synthetic output line\n", count: 200) + "Final output sentinel"
+                    : "Synthetic oversized command completed. No command was executed."),
                 "exit_code": .number(0)
             ]))
             demoRows["inbox"] = [

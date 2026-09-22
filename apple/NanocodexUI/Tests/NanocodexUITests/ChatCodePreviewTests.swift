@@ -35,6 +35,19 @@ final class ChatCodePreviewTests: XCTestCase {
         }
     }
 
+    func testExpandedToolTextBoundsLongLinesAndMultilineResults() {
+        for source in [String(repeating: "🛠️", count: 100_000),
+                       String(repeating: "result line\n", count: 10_000)] {
+            let preview = ChatCodePreview(source, maximumCharacters: 2_048, maximumLines: 12)
+            XCTAssertTrue(preview.isTruncated)
+            XCTAssertLessThanOrEqual(preview.text.count, 2_048)
+            XCTAssertLessThanOrEqual(preview.text.filter { $0.isNewline }.count, 11)
+            XCTAssertTrue(source.hasPrefix(preview.text))
+        }
+        let exact = String(repeating: "x", count: 2_048)
+        XCTAssertFalse(ChatCodePreview(exact, maximumCharacters: 2_048, maximumLines: 12).isTruncated)
+    }
+
     func testLargeSourceBypassesHighlightingWithoutLosingText() async {
         let source = "echo '" + String(repeating: "YWJjZA==", count: 20_000) + "'\n"
         let rendered = await ChatCodeHighlighter.highlight(source, language: "bash", dark: false)

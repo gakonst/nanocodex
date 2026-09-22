@@ -2969,6 +2969,7 @@ private struct ToolActivityView: View {
     let row: TranscriptRow
     var hidesCommand = false
     var hidesCode = false
+    @State private var sourceSheet: ToolSourceDocument?
     private var tool: ToolPresentation {
         if let tool = row.tool { return tool }
         var fallback = ToolPresentation(name: row.text, arguments: .null)
@@ -2977,23 +2978,42 @@ private struct ToolActivityView: View {
     }
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
-            let input = tool.input.filter {
+            let presentation = tool
+            let input = presentation.input.filter {
                 (!hidesCommand || !["Command", "Folder", "Shell"].contains($0.label)) && (!hidesCode || $0.label != "Code")
             }
             if !input.isEmpty { fields(input, heading: "Input") }
-            if !tool.output.isEmpty { fields(tool.output, heading: "Result") }
+            if !presentation.output.isEmpty { fields(presentation.output, heading: "Result") }
         }.foregroundStyle(Ink.muted).accessibilityIdentifier("tool-activity")
+            .sheet(item: $sourceSheet) { document in ToolSourceSheet(document: document) }
     }
     private func fields(_ values: [ToolField], heading: String) -> some View {
         VStack(alignment: .leading, spacing: 10) {
             Text(heading).font(.caption.weight(.semibold)).foregroundStyle(Ink.muted)
                 .accessibilityAddTraits(.isHeader)
-            ForEach(Array(values.enumerated()), id: \.offset) { _, field in
+            // Bound payloads before Text measures them, including field count.
+            ForEach(Array(values.prefix(24).enumerated()), id: \.offset) { _, field in
+                let preview = ChatCodePreview(field.value, maximumCharacters: 2_048, maximumLines: 12)
+                let labelPreview = ChatCodePreview(field.label, maximumCharacters: 256, maximumLines: 2)
                 VStack(alignment: .leading, spacing: 3) {
-                    if field.label != heading { Text(field.label).font(.caption).foregroundStyle(Ink.muted) }
-                    Text(field.value).font(field.code ? .system(.footnote, design: .monospaced) : .subheadline)
+                    if field.label != heading {
+                        Text(labelPreview.text)
+                            .font(.caption).foregroundStyle(Ink.muted).lineLimit(2)
+                    }
+                    Text(preview.text).font(field.code ? .system(.footnote, design: .monospaced) : .subheadline)
                         .foregroundStyle(Ink.text).textSelection(.enabled).fixedSize(horizontal: false, vertical: true)
+                    if preview.isTruncated || labelPreview.isTruncated {
+                        Button("View full text") {
+                            sourceSheet = .init(title: labelPreview.isTruncated ? heading : field.label,
+                                                source: labelPreview.isTruncated ? "\(field.label)\n\n\(field.value)" : field.value)
+                        }.font(.caption).frame(minHeight: 44)
+                    }
                 }
+            }
+            if values.count > 24 {
+                Button("View all \(values.count) fields") {
+                    sourceSheet = .init(title: heading, source: values.map { "\($0.label)\n\($0.value)" }.joined(separator: "\n\n"))
+                }.font(.caption).frame(minHeight: 44)
             }
         }.frame(maxWidth: .infinity, alignment: .leading)
     }
