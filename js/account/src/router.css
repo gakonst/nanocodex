@@ -733,3 +733,19 @@
     margin: 3px 0 0;
   }
 }
+
+.atlas-model-axis {
+  position: relative;
+  height: 23px;
+  margin-left: 11px;
+}
+.atlas-model-axis span {
+  position: absolute;
+  top: 7px;
+  font-size: 9px;
+  white-space: nowrap;
+  opacity: 0.65;
+}
+.atlas-signal svg line {
+  vector-effect: non-scaling-stroke;
+}

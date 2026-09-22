@@ -289,28 +289,28 @@ export function RouterAtlas({ snapshot }: { snapshot: RouterSnapshot }) {
               {efforts.map((effort) => (
                 <th scope="col" key={effort}>
                   <span className="atlas-effort">{effort} effort</span>
-                  <svg
-                    preserveAspectRatio="none"
-                    viewBox="0 0 180 22"
+                  <div
+                    className="atlas-model-axis"
+                    role="img"
                     aria-label="Logarithmic latency scale"
                   >
                     {scale.ticks.map((t) => (
-                      <text
+                      <span
                         key={t}
-                        x={8 + scale.x(t) * 1.64}
-                        y={16}
-                        textAnchor={
-                          t === 0
-                            ? "start"
-                            : t === scale.ceiling
-                              ? "end"
-                              : "middle"
-                        }
+                        style={{
+                          left: `${4.4444 + scale.x(t) * 0.911111}%`,
+                          transform:
+                            t === 0
+                              ? "none"
+                              : t === scale.ceiling
+                                ? "translateX(-100%)"
+                                : "translateX(-50%)",
+                        }}
                       >
                         {t === 0 ? "0" : formatMs(t)}
-                      </text>
+                      </span>
                     ))}
-                  </svg>
+                  </div>
                 </th>
               ))}
             </tr>
@@ -461,21 +461,21 @@ export function RouterAtlas({ snapshot }: { snapshot: RouterSnapshot }) {
                                                 y2={12}
                                               />
                                             )}
-                                            <circle
-                                              cx={
-                                                8 +
-                                                scale.x(p.generationTtftP50Ms) *
-                                                  1.64
-                                              }
-                                              cy={8}
-                                              r={3}
-                                              fill={
-                                                isSparse(p)
-                                                  ? "var(--atlas-bg)"
-                                                  : (providerColors[backend] ??
-                                                    "#929292")
-                                              }
+                                            <path
+                                              d={`M ${8 + scale.x(p.generationTtftP50Ms) * 1.64} 8 h 0`}
+                                              strokeWidth={7}
+                                              strokeLinecap="round"
+                                              vectorEffect="non-scaling-stroke"
                                             />
+                                            {isSparse(p) && (
+                                              <path
+                                                d={`M ${8 + scale.x(p.generationTtftP50Ms) * 1.64} 8 h 0`}
+                                                stroke="var(--atlas-bg)"
+                                                strokeWidth={3}
+                                                strokeLinecap="round"
+                                                vectorEffect="non-scaling-stroke"
+                                              />
+                                            )}
                                           </g>
                                         )}
                                       </svg>
