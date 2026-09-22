@@ -66,7 +66,7 @@ describe("eval-informed thread routing", () => {
     expect(() => policy({ estimates: [...estimates, estimates[0]] })).toThrow();
   });
   it("supports configured ChatGPT model and refuses mixed measurement sources", async () => {
-    expect((await resolveThreadRoute(jev("research"), "task", policy({ frontier_model: "gpt-5.6-sol", frontier_thinking: "low" }))).model).toBe("gpt-5.6-sol");
+    expect((await resolveThreadRoute(jev("research"), "task", policy({ frontier_model: "gpt-6-sol", frontier_thinking: "low" }))).model).toBe("gpt-6-sol");
     const mixed = estimates.map((e, i) => ({ ...e, source: `dataset-${i}` }));
     expect((await resolveThreadRoute(jev(), "task", policy({ estimates: mixed }))).selection).toBe("prior");
   });
@@ -148,20 +148,20 @@ describe("live Unified Billing Jev envelopes", () => {
 
 describe("v2 direct candidate routing", () => {
   const direct = (patch = {}) => routingPolicySchema.parse(patch);
-  const answer = (choice = "gpt-5.6-luna:low", candidateConfidence = .98, familyConfidence = .97) => ({
+  const answer = (choice = "gpt-6-luna:low", candidateConfidence = .98, familyConfidence = .97) => ({
     run: vi.fn(async (_model: string, _input: unknown) => ({ answers: {
       candidate: { choice, confidence: candidateConfidence }, family: { choice: "terminal", confidence: familyConfidence },
     } })),
   });
-  it("defaults to one direct typed choice across fifteen model/effort candidates", async () => {
+  it("defaults to one direct typed choice across the supported model/effort candidates", async () => {
     const ai = answer();
     const route = await resolveThreadRoute(ai, "Fix build quickly and cheaply", direct());
-    expect(route).toMatchObject({ policy_version: "jev-direct-v4", model: "gpt-5.6-luna", thinking: "low", estimate: null });
+    expect(route).toMatchObject({ policy_version: "jev-direct-v4", model: "gpt-6-luna", thinking: "low", estimate: null });
     expect(ai.run).toHaveBeenCalledOnce();
     const request = ai.run.mock.calls[0][1] as { state: string; questions: { candidate: { criteria: object } } };
-    expect(Object.keys(request.questions.candidate.criteria)).toHaveLength(15);
+    expect(Object.keys(request.questions.candidate.criteria)).toHaveLength(12);
     expect(JSON.parse(request.state)).toMatchObject({ preferences: {}, preference_sources: { duration: "prompt_or_default", cost: "prompt_or_default" }, measurements: [] });
-    expect(route.audit).toMatchObject({ candidate_choice: "gpt-5.6-luna:low", classifier_confidence: .97, candidate_confidence: .98 });
+    expect(route.audit).toMatchObject({ candidate_choice: "gpt-6-luna:low", classifier_confidence: .97, candidate_confidence: .98 });
   });
   it("serializes explicit preferences and preserves their priority over opening inference", async () => {
     const ai = answer();
@@ -183,15 +183,15 @@ describe("v2 direct candidate routing", () => {
     expect(route).toMatchObject({ model: OSS_MODEL, thinking: "low", selection: "fallback" });
   });
   it("preserves the proposed choice separately when conservative confidence forces fallback", async () => {
-    const route = await resolveThreadRoute(answer("gpt-5.6-luna:low", .51), "cheap task", direct({low_confidence_fallback:"frontier"}));
+    const route = await resolveThreadRoute(answer("gpt-6-luna:low", .51), "cheap task", direct({low_confidence_fallback:"frontier"}));
     expect(route).toMatchObject({selection:"fallback", model:FRONTIER_MODEL, thinking:"high"});
-    expect(route.audit).toMatchObject({proposed_candidate:"gpt-5.6-luna:low", candidate_choice:"gpt-6-astra:high", candidate_confidence:.51});
+    expect(route.audit).toMatchObject({proposed_candidate:"gpt-6-luna:low", candidate_choice:"gpt-6-astra:high", candidate_confidence:.51});
   });
   it("retains a selected supported thinking level and bounds eligibility", async () => {
     for (const thinking of ["low", "medium", "high"]) {
-      const id = `gpt-5.6-sol:${thinking}`;
+      const id = `gpt-6-sol:${thinking}`;
       const route = await resolveThreadRoute(answer(id), "task", direct({ candidates: [id] }));
-      expect(route).toMatchObject({ model: "gpt-5.6-sol", thinking, selection: "prior" });
+      expect(route).toMatchObject({ model: "gpt-6-sol", thinking, selection: "prior" });
       expect(route.audit?.eligible_candidates).toEqual([id]);
     }
     expect(() => direct({ preferences: {completion:0, cost:0, duration:0} })).toThrow();
@@ -201,35 +201,35 @@ describe("v2 direct candidate routing", () => {
     expect(() => direct({ preferences: { text: "x".repeat(2001) } })).toThrow();
   });
   it.each(["Pending", "Failed"])("does not admit %s envelopes", async state => {
-    const route = await resolveThreadRoute({run: async () => ({state, result: await answer().run("", {})})}, "task", direct({ candidates: ["gpt-5.6-sol:medium"] }));
-    expect(route).toMatchObject({ selection: "fallback", model: "gpt-5.6-sol", thinking: "medium" });
+    const route = await resolveThreadRoute({run: async () => ({state, result: await answer().run("", {})})}, "task", direct({ candidates: ["gpt-6-sol:medium"] }));
+    expect(route).toMatchObject({ selection: "fallback", model: "gpt-6-sol", thinking: "medium" });
   });
   it("accepts completed envelopes and retains usage", async () => {
     const route = await resolveThreadRoute({run: async () => ({state: "Completed", result: {...await answer().run("", {}), usage: { input_tokens: 42 }}})}, "task", direct());
     expect(route.router_usage).toEqual({input_tokens:42});
-    expect(route.model).toBe("gpt-5.6-luna");
+    expect(route.model).toBe("gpt-6-luna");
   });
   it("rejects a modality with no eligible model and bounds oversized fallback", async () => {
     const ai = answer();
     await expect(resolveThreadRoute(ai, [{type:"input_image"}], direct({candidates:[`${OSS_MODEL}:low`]}))).rejects.toThrow("no route admitted");
-    expect((await resolveThreadRoute(ai, "x".repeat(24001), direct({candidates:["gpt-5.6-sol:low"]}))).model).toBe("gpt-5.6-sol");
+    expect((await resolveThreadRoute(ai, "x".repeat(24001), direct({candidates:["gpt-6-sol:low"]}))).model).toBe("gpt-6-sol");
     expect(ai.run).not.toHaveBeenCalled();
   });
   it("never substitutes classifier confidence or wrong effort evidence for measured success", async () => {
-    const measurement = {family:"terminal", backend:"chatgpt", model:"gpt-5.6-luna", thinking:"low", success_rate:.8, expected_cost_usd:.1, expected_duration_ms:1000, sample_size:20, source:"heldout-v2"};
+    const measurement = {family:"terminal", backend:"chatgpt", model:"gpt-6-luna", thinking:"low", success_rate:.8, expected_cost_usd:.1, expected_duration_ms:1000, sample_size:20, source:"heldout-v2"};
     const p = direct({min_success_rate:.75, estimates:[measurement]});
-    expect((await resolveThreadRoute(answer("gpt-5.6-luna:low", .98, .1), "not cheap; take your time", p)).selection).toBe("prior");
+    expect((await resolveThreadRoute(answer("gpt-6-luna:low", .98, .1), "not cheap; take your time", p)).selection).toBe("prior");
     expect((await resolveThreadRoute(answer(), "task", p)).estimate?.success_rate).toBe(.8);
-    for (const ai of [answer("gpt-5.6-luna:high"), answer("gpt-5.6-luna:low", .2), answer("unknown")]) {
+    for (const ai of [answer("gpt-6-luna:high"), answer("gpt-6-luna:low", .2), answer("unknown")]) {
       await expect(resolveThreadRoute(ai, "task", p)).rejects.toThrow("no route admitted");
     }
     await expect(resolveThreadRoute(answer(), "task", direct({min_success_rate:.9, estimates:[measurement]}))).rejects.toThrow("no route admitted");
     await expect(resolveThreadRoute(answer(), "task", direct({min_success_rate:.5}))).rejects.toThrow("no route admitted");
   });
   it("labels measured comparisons only for a complete matched source cohort", async () => {
-    const base = {family:"terminal", backend:"chatgpt", model:"gpt-5.6-luna", thinking:"low", success_rate:.8, expected_cost_usd:.1, expected_duration_ms:1000, sample_size:20, source:"heldout-v2"};
-    const candidates = ["gpt-5.6-luna:low", "gpt-5.6-sol:low"];
-    const other = {...base, model:"gpt-5.6-sol"};
+    const base = {family:"terminal", backend:"chatgpt", model:"gpt-6-luna", thinking:"low", success_rate:.8, expected_cost_usd:.1, expected_duration_ms:1000, sample_size:20, source:"heldout-v2"};
+    const candidates = ["gpt-6-luna:low", "gpt-6-sol:low"];
+    const other = {...base, model:"gpt-6-sol"};
     expect((await resolveThreadRoute(answer(), "task", direct({candidates, estimates:[base, other]}))).selection).toBe("measured");
     expect((await resolveThreadRoute(answer(), "task", direct({candidates, estimates:[base, {...other, source:"different"}]}))).selection).toBe("prior");
   });
@@ -268,8 +268,10 @@ describe("cross-provider candidate routing", () => {
     const route = await resolveThreadRoute(ai, "compare cost", routingPolicySchema.parse({}), available);
     const state = JSON.parse((ai.run.mock.calls[0][1] as {state:string}).state);
     const hint = (id: string) => { const c = ROUTING_CANDIDATES.find(c => c.id === id)!; return state.catalog_price_hints[`${c.backend}/${c.model}`]; };
-    expect(hint("openrouter:openai/gpt-5.6-sol:low")).toMatchObject({as_of:"2026-09-20", unit:"USD per million tokens", input:2, output:10, cached_input:.2, source:"https://openrouter.ai/api/v1/models"});
-    expect(hint("vercel:openai/gpt-5.6-sol:low")).toMatchObject({input:4, output:20, cached_input:.4, source:"https://ai-gateway.vercel.sh/v1/models"});
+    expect(hint("openrouter:openai/gpt-6-sol:low")).toMatchObject({as_of:"2026-09-22", unit:"USD per million tokens", input:2, output:10, cached_input:.2, source:"https://openrouter.ai/api/v1/models"});
+    expect(hint("openrouter:openai/gpt-6-luna:low")).toMatchObject({as_of:"2026-09-22", input:.1, output:.5, cached_input:.01, source:"https://openrouter.ai/api/v1/models"});
+    expect(ROUTING_CANDIDATES.some(candidate => candidate.id === "vercel:openai/gpt-6-sol:low")).toBe(false);
+    expect(ROUTING_CANDIDATES.some(candidate => candidate.id === "vercel:openai/gpt-6-luna:low")).toBe(false);
     expect(hint("openrouter:z-ai/glm-5.3:low")).toMatchObject({input:.91,output:2.86,cached_input:.169});
     expect(hint("vercel:zai/glm-5.3:low")).toMatchObject({input:1.4,output:4.4,cached_input:.14});
     expect(hint("gpt-6-astra:high")).toBeNull();
@@ -359,9 +361,9 @@ describe("preference-preserving confidence fallback", () => {
     expect(route.audit).toMatchObject({confidence_status:"unavailable_or_invalid",fallback_basis:"eligible_frontier"});
   });
   it("retains a provider-specific proposal only within available eligible candidates", async () => {
-    const id = "vercel:openai/gpt-5.6-luna:low";
-    const route = await resolveThreadRoute(output(id,.3),"economy",routingPolicySchema.parse({candidates:[id]}),{openrouter:false,vercel:true});
-    expect(route).toMatchObject({backend:"vercel",provider_model:"openai/gpt-5.6-luna",selection:"fallback"});
+    const id = "openrouter:openai/gpt-6-luna:low";
+    const route = await resolveThreadRoute(output(id,.3),"economy",routingPolicySchema.parse({candidates:[id]}),{openrouter:true,vercel:false});
+    expect(route).toMatchObject({backend:"openrouter",provider_model:"openai/gpt-6-luna",selection:"fallback"});
     expect(route.audit?.candidate_choice).toBe(id);
   });
   it("cannot relabel a low-confidence proposal as measured or satisfy a measured-success constraint", async () => {
@@ -507,15 +509,16 @@ describe("Cloudflare frontier opt-in", () => {
   const id = "cloudflare:openai/gpt-6-astra:high";
   const available = { openrouter: false, vercel: false, cloudflare: true };
   const ai = { run: async () => ({ answers: { candidate: { choice: id, confidence: .99 }, family: { choice: "terminal", confidence: .99 } } }) };
-  it("adds exactly twelve frontier entries with unknown prices and retains all old IDs", () => {
+  it("adds the supported Cloudflare frontier entries with unknown prices", () => {
     const cloudflare = ROUTING_CANDIDATES.filter(c => c.backend === "cloudflare");
-    expect(cloudflare).toHaveLength(12);
-    expect(ROUTING_CANDIDATES.filter(c => c.backend !== "chatgpt")).toHaveLength(55);
-    for (const model of [FRONTIER_MODEL, "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
+    expect(cloudflare).toHaveLength(9);
+    expect(ROUTING_CANDIDATES.filter(c => c.backend !== "chatgpt")).toHaveLength(35);
+    for (const model of [FRONTIER_MODEL, "gpt-6-sol", "gpt-6-luna"]) {
       for (const thinking of ["low", "medium", "high"]) {
         expect(cloudflare.find(c => c.id === `cloudflare:openai/${model}:${thinking}`)).toMatchObject({model, thinking, provider_model:`openai/${model}`,catalog_price_hint:null});
         expect(ROUTING_CANDIDATES.some(c => c.id === `${model}:${thinking}`)).toBe(true);
-        for (const backend of ["openrouter", "vercel"]) expect(ROUTING_CANDIDATES.some(c => c.id === `${backend}:openai/${model}:${thinking}`)).toBe(true);
+        expect(ROUTING_CANDIDATES.some(c => c.id === `openrouter:openai/${model}:${thinking}`)).toBe(true);
+        expect(ROUTING_CANDIDATES.some(c => c.id === `vercel:openai/${model}:${thinking}`)).toBe(model === FRONTIER_MODEL);
       }
     }
     expect(cloudflare.some(c => c.model === OSS_MODEL)).toBe(false);

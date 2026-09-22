@@ -6,7 +6,7 @@ import WebSocket from 'ws';
 import { Agent, Transport } from '../node/index.mjs';
 
 const options = Object.fromEntries(process.argv.slice(2).map(arg => arg.replace(/^--/, '').split('=')));
-const names = ['gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-6-astra'];
+const names = ['gpt-6-luna', 'gpt-6-sol', 'gpt-6-astra'];
 const models = options.models ? options.models.split(',') : names;
 const tiers = options.tiers ? options.tiers.split(',') : ['default', 'fast'];
 const repetitions = Number(options.repetitions ?? 3);

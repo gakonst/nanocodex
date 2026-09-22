@@ -1,7 +1,7 @@
 import { chatReasoningText } from "./chat-reasoning.mjs";
 import { providerStream, streamResponse } from "./provider-stream.mjs";
 const MODEL = "@cf/zai-org/glm-5.3";
-const MODELS = [MODEL, "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "kimi-k3", "mimo-v2.6-pro"];
+const MODELS = [MODEL, "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "kimi-k3", "mimo-v2.6-pro"];
 const BASE = "https://workers-ai.invalid/v1";
 const fail = (message) => { throw new Error(`Workers AI Responses: ${message}`); };
 const json = (value) => typeof value === "string" ? value : JSON.stringify(value);

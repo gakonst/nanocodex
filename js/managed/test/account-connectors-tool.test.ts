@@ -28,7 +28,7 @@ describe("managed account connector tool", () => {
       sessionId: base.sessionId,
       callId: "root-list",
       parentCallId: "root-cell",
-      model: "gpt-5.6-sol",
+      model: "gpt-6-sol",
       signal: new AbortController().signal,
     };
     const child = {

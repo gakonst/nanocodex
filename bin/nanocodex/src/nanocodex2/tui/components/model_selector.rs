@@ -19,7 +19,7 @@ use ratatui::{
 };
 use std::time::{Duration, Instant};
 
-const MODELS: [Model; 4] = [Model::Luna, Model::Terra, Model::Sol, Model::Astra];
+const MODELS: [Model; 3] = [Model::Astra, Model::Sol, Model::Luna];
 const ANIMATION_DURATION: Duration = Duration::from_millis(280);
 const ANIMATION_FRAME_INTERVAL: Duration = Duration::from_millis(16);
 const KEY_BINDINGS: [(&str, &str); 3] = [("←/→", "model"), ("enter", "apply"), ("esc", "cancel")];
@@ -163,10 +163,9 @@ impl ModelSelector {
         );
 
         let labels = [
-            (model_column(left, width, 0), Model::Luna, "Luna"),
-            (model_column(left, width, 1), Model::Terra, "Terra"),
-            (model_column(left, width, 2), Model::Sol, "Sol"),
-            (model_column(left, width, 3), Model::Astra, "Astra"),
+            (model_column(left, width, 0), Model::Astra, "Astra"),
+            (model_column(left, width, 1), Model::Sol, "Sol"),
+            (model_column(left, width, 2), Model::Luna, "Luna"),
         ];
         for (column, model, label) in labels {
             let label_width = u16::try_from(label.len()).unwrap_or(u16::MAX);
@@ -254,7 +253,6 @@ fn model_index(model: Model) -> usize {
 fn model_name(model: Model) -> &'static str {
     match model {
         Model::Luna => "Luna",
-        Model::Terra => "Terra",
         Model::Sol => "Sol",
         Model::Astra => "Astra",
         _ => model.as_str(),
@@ -309,8 +307,8 @@ mod tests {
     }
 
     #[test]
-    fn terra_label_is_centered_under_its_stop() {
-        let terminal = render(&mut ModelSelector::new(Model::Terra));
+    fn sol_label_is_centered_under_its_stop() {
+        let terminal = render(&mut ModelSelector::new(Model::Sol));
         let buffer = terminal.backend().buffer();
         let stop = buffer
             .content
@@ -319,12 +317,12 @@ mod tests {
             .unwrap();
         let width = usize::from(buffer.area.width);
         let label_row = stop / width + 1;
-        let terra = buffer.content[label_row * width..(label_row + 1) * width]
-            .windows(5)
-            .position(|cells| cells.iter().map(|cell| cell.symbol()).collect::<String>() == "Terra")
+        let sol = buffer.content[label_row * width..(label_row + 1) * width]
+            .windows(3)
+            .position(|cells| cells.iter().map(|cell| cell.symbol()).collect::<String>() == "Sol")
             .unwrap();
 
-        assert_eq!(terra + 2, stop % width);
+        assert_eq!(sol + 1, stop % width);
     }
 
     #[test]
@@ -333,9 +331,9 @@ mod tests {
         let mut selector = ModelSelector::new(Model::Sol);
 
         selector.update_key(key(KeyCode::Right), now);
-        assert_eq!(selector.selected, 3);
-        selector.update_key(key(KeyCode::Left), now);
         assert_eq!(selector.selected, 2);
+        selector.update_key(key(KeyCode::Left), now);
+        assert_eq!(selector.selected, 1);
         selector.update_key(key(KeyCode::Left), now);
         selector.update_key(key(KeyCode::Left), now);
         selector.update_key(key(KeyCode::Left), now);
@@ -347,7 +345,6 @@ mod tests {
         let mut selector = ModelSelector::new(Model::Sol);
 
         assert_eq!(rendered_label_color(&mut selector, "Luna"), Color::White);
-        assert_eq!(rendered_label_color(&mut selector, "Terra"), Color::Green);
         assert_eq!(rendered_label_color(&mut selector, "Sol"), Color::Yellow);
         assert_eq!(
             rendered_label_color(&mut selector, "Astra"),
@@ -357,7 +354,7 @@ mod tests {
 
     #[test]
     fn filled_bar_uses_the_selected_model_color() {
-        let mut selector = ModelSelector::new(Model::Astra);
+        let mut selector = ModelSelector::new(Model::Luna);
         let terminal = render(&mut selector);
         let rail = terminal
             .backend()
@@ -368,36 +365,28 @@ mod tests {
             .collect::<Vec<_>>();
 
         assert!(!rail.is_empty());
-        assert!(rail.iter().all(|cell| cell.fg == Color::LightMagenta));
+        assert!(rail.iter().all(|cell| cell.fg == Color::White));
     }
 
     #[test]
     fn stops_use_the_filled_bar_color_only_when_covered() {
         assert_eq!(
-            rendered_stop_colors(&mut ModelSelector::new(Model::Luna)),
-            [Color::DarkGray, Color::DarkGray, Color::DarkGray]
-        );
-        assert_eq!(
-            rendered_stop_colors(&mut ModelSelector::new(Model::Terra)),
-            [Color::Green, Color::DarkGray, Color::DarkGray]
+            rendered_stop_colors(&mut ModelSelector::new(Model::Astra)),
+            [Color::DarkGray, Color::DarkGray]
         );
         assert_eq!(
             rendered_stop_colors(&mut ModelSelector::new(Model::Sol)),
-            [Color::Yellow, Color::Yellow, Color::DarkGray]
+            [Color::Yellow, Color::DarkGray]
         );
         assert_eq!(
-            rendered_stop_colors(&mut ModelSelector::new(Model::Astra)),
-            [
-                Color::LightMagenta,
-                Color::LightMagenta,
-                Color::LightMagenta
-            ]
+            rendered_stop_colors(&mut ModelSelector::new(Model::Luna)),
+            [Color::White, Color::White]
         );
     }
 
     #[test]
     fn title_does_not_describe_the_model_order() {
-        let terminal = render(&mut ModelSelector::new(Model::Terra));
+        let terminal = render(&mut ModelSelector::new(Model::Sol));
         let rendered = terminal
             .backend()
             .buffer()
@@ -442,7 +431,7 @@ mod tests {
 
         let update = selector.update_key(key(KeyCode::Enter), now);
 
-        assert_eq!(update.effects, [ModelSelectorEffect::Apply(Model::Terra)]);
+        assert_eq!(update.effects, [ModelSelectorEffect::Apply(Model::Astra)]);
     }
 
     #[test]
@@ -450,7 +439,7 @@ mod tests {
         let now = Instant::now();
         let mut selector = ModelSelector::new(Model::Astra);
 
-        assert_eq!(selector.selected, 3);
+        assert_eq!(selector.selected, 0);
         let update = selector.update_key(key(KeyCode::Enter), now);
 
         assert_eq!(update.effects, [ModelSelectorEffect::Apply(Model::Astra)]);
@@ -459,7 +448,7 @@ mod tests {
     #[test]
     fn animation_reaches_the_selected_stop() {
         let now = Instant::now();
-        let mut selector = ModelSelector::new(Model::Luna);
+        let mut selector = ModelSelector::new(Model::Astra);
         selector.update_key(key(KeyCode::Right), now);
         assert!(selector.animation_deadline().is_some());
 

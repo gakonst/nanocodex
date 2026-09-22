@@ -57,7 +57,7 @@ async fn chatgpt_auth_recovers_for_web_search() -> Result<()> {
                 "search_query": [{"q": "standalone web search"}],
             }))?),
             ToolContext::new(
-                "gpt-5.6-sol",
+                "gpt-6-sol",
                 "search-session",
                 "call-search",
                 &history,
@@ -89,7 +89,7 @@ async fn chatgpt_auth_recovers_for_web_search() -> Result<()> {
 
     let request = server.await??;
     assert_eq!(request["id"], "search-session");
-    assert_eq!(request["model"], "gpt-5.6-sol");
+    assert_eq!(request["model"], "gpt-6-sol");
     assert_eq!(
         request["commands"],
         json!({"search_query": [{"q": "standalone web search"}]})

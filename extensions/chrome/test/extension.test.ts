@@ -36,7 +36,7 @@ test("exposes one narrow direct cleanup tool", async () => {
     callId: "call-1",
     parentCallId: "",
     sessionId: "session-1",
-    model: "gpt-5.6-sol",
+    model: "gpt-6-sol",
     signal: new AbortController().signal,
   }), { ok: true });
   assert.deepEqual(calls, [{ action: "inspect" }]);

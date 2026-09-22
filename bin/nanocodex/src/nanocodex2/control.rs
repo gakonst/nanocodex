@@ -8,7 +8,7 @@ use nanocodex_managed::{
 
 #[derive(Args, Default)]
 pub(crate) struct InitialSettings {
-    /// Initial model (astra, sol, terra, or luna, or its full model ID).
+    /// Initial model (astra, sol, or luna, or its full model ID).
     #[arg(long)]
     model: Option<Model>,
     /// Initial reasoning effort.

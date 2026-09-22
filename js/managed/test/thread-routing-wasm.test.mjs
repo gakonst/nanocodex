@@ -102,10 +102,10 @@ test("Jev -> committed route -> real WASM GLM tool loop -> second turn retains m
 test("Jev failure persists configured ChatGPT fallback without live credentials", async () => fixture(async store => {
   let jevCalls = 0;
   const ai = { async run(model) { assert.equal(model, "typesafe/jev"); jevCalls++; throw new Error("synthetic provider failure"); } };
-  const route = await store.pin.resolve(() => resolveThreadRoute(ai, "Inspect build", routingPolicySchema.parse({ frontier_model: "gpt-5.6-sol", frontier_thinking: "medium" })));
+  const route = await store.pin.resolve(() => resolveThreadRoute(ai, "Inspect build", routingPolicySchema.parse({ frontier_model: "gpt-6-sol", frontier_thinking: "medium" })));
   assert.equal(route.backend, "chatgpt");
   assert.equal(route.selection, "fallback");
-  assert.equal(route.model, "gpt-5.6-sol");
+  assert.equal(route.model, "gpt-6-sol");
   assert.equal(route.thinking, "medium");
   assert.doesNotMatch(JSON.stringify(route), /synthetic provider failure/);
   const retained = await store.restart().resolve(() => { assert.fail("fallback must not reroute"); });

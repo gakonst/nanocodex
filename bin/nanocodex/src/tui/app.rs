@@ -63,11 +63,10 @@ pub(super) const STANDARD_THINKING_OPTIONS: [(Thinking, &str, &str); 4] = [
     ),
 ];
 
-pub(super) const MODEL_OPTIONS: [(Model, &str); 4] = [
-    (Model::Luna, "Luna"),
-    (Model::Terra, "Terra"),
-    (Model::Sol, "Sol"),
+pub(super) const MODEL_OPTIONS: [(Model, &str); 3] = [
     (Model::Astra, "Astra"),
+    (Model::Sol, "Sol"),
+    (Model::Luna, "Luna"),
 ];
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

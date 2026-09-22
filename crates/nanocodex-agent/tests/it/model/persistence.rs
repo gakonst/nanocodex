@@ -439,14 +439,14 @@ async fn serialized_session_rebinds_deployed_instructions_and_tools() -> Result<
     let endpoint = format!("http://{}", listener.local_addr()?);
     let server = tokio::spawn(async move {
         let first = next_http_json(&listener).await?;
-        assert_eq!(first.body["model"], "gpt-5.6-luna");
+        assert_eq!(first.body["model"], "gpt-6-luna");
         assert_eq!(first.body["store"], false);
         assert!(first.body.get("previous_response_id").is_none());
         assert!(first.body.to_string().contains("first prompt"));
         send_http_final(first.stream, "resp-first").await?;
 
         let resumed = next_http_json(&listener).await?;
-        assert_eq!(resumed.body["model"], "gpt-5.6-luna");
+        assert_eq!(resumed.body["model"], "gpt-6-luna");
         assert_eq!(resumed.body["store"], false);
         assert!(resumed.body.get("previous_response_id").is_none());
         let replay = resumed.body.to_string();
@@ -489,7 +489,7 @@ async fn serialized_session_rebinds_deployed_instructions_and_tools() -> Result<
             .snapshot()
             .expect("local turns always retain a snapshot"),
     )?;
-    assert_eq!(snapshot_json["model"], "gpt-5.6-luna");
+    assert_eq!(snapshot_json["model"], "gpt-6-luna");
     let snapshot = serde_json::from_value(snapshot_json)?;
     drop((agent, events, first));
 

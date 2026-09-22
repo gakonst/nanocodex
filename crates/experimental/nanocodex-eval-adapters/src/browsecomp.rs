@@ -115,7 +115,7 @@ impl DatasetImporter for BrowseComp {
                 correct_answer: &case.correct_answer,
                 topic: &case.topic,
                 scoring: BrowseCompScoring {
-                    grader_model: "gpt-5.6-sol",
+                    grader_model: "gpt-6-sol",
                     grader_contract: "openai-subscription-judge-reproduction",
                     reference_model: "gpt-4.1-2025-04-14",
                     reference_temperature: 0.5,

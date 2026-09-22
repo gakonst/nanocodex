@@ -5,8 +5,8 @@ Reference: [openai/codex ac192cd7937b0d73edc6dffe009940ae53782dd4](https://githu
 ## Model and request policy
 
 - New SDK, Python, native CLI, managed, and account conversations default to `gpt-6-astra` with `low` reasoning. Existing managed agents retain their settings. Sponsored homepage sessions retain their explicitly selected Luna policy.
-- Model selection in Rust builders resolves the catalog's default effort: Astra/Sol `low`, Terra/Luna `medium`. An explicitly selected effort wins regardless of builder order.
-- Astra's developer prompt comes from `models-manager/models.json`, with only the Nanocodex identity substituted. Explicit replacement and additive instructions remain supported. The shared GPT-5.6 prompt already matches the upstream template.
+- Model selection in Rust builders resolves the catalog's default effort: Astra `low`, GPT-6 Sol/Luna `medium`. An explicitly selected effort wins regardless of builder order.
+- Each GPT-6 model uses its own exact upstream instruction template from `models-manager/models.json`. Explicit replacement and additive instructions remain supported. [GPT-6 model integration](GPT_6_MODELS.md) records the model catalog pin and request policy.
 - Responses Lite requests keep `parallel_tool_calls: false`, encrypted reasoning, and no default reasoning summary. Stable session cache keys and immutable instruction/tool prefixes survive follow-on turns, reconnects, and replay.
 - `client_metadata["x-codex-turn-metadata"]` carries session/thread/turn identity, request kind, and effective `tool_namespaces_info`. The removed `code_mode_tool_names` inventory is no longer sent.
 

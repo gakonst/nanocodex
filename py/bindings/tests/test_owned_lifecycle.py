@@ -14,7 +14,7 @@ class OwnedLifecycleTests(unittest.TestCase):
     def test_default_model_and_effort_follow_the_catalog(self) -> None:
         for options, model, effort in [
             ({}, "gpt-6-astra", "low"),
-            ({"model": "gpt-5.6-luna"}, "gpt-5.6-luna", "medium"),
+            ({"model": "gpt-6-luna"}, "gpt-6-luna", "medium"),
             ({"thinking": "high"}, "gpt-6-astra", "high"),
         ]:
             with self.subTest(model=model, effort=effort), MockResponsesServer() as server:

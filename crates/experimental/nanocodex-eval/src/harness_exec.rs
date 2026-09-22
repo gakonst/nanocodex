@@ -1576,7 +1576,7 @@ mod tests {
             Some(HarnessExecError::SafetyRefusal(error)) if error == message
         ));
         let config =
-            HarnessExec::new(std::env::current_exe().unwrap(), "gpt-5.6-sol", "medium").unwrap();
+            HarnessExec::new(std::env::current_exe().unwrap(), "gpt-6-sol", "medium").unwrap();
         let result = transcript
             .agent_result(&config, Duration::from_millis(10), AgentStatus::Failed)
             .unwrap();
@@ -1627,7 +1627,7 @@ mod tests {
                 .unwrap();
         }
         let config =
-            HarnessExec::new(std::env::current_exe().unwrap(), "gpt-5.6-sol", "medium").unwrap();
+            HarnessExec::new(std::env::current_exe().unwrap(), "gpt-6-sol", "medium").unwrap();
         let result = transcript
             .agent_result(&config, Duration::from_millis(10), AgentStatus::Completed)
             .unwrap();
@@ -1713,7 +1713,7 @@ mod tests {
         fs::create_dir(&workspace).unwrap();
         fs::create_dir(&attempt).unwrap();
         let runner = Arc::new(StaticCommandRunner::default());
-        let harness = HarnessExec::new(std::env::current_exe().unwrap(), "gpt-5.6-sol", "medium")
+        let harness = HarnessExec::new(std::env::current_exe().unwrap(), "gpt-6-sol", "medium")
             .unwrap()
             .web_search(true)
             .arguments(vec![
@@ -1743,7 +1743,7 @@ mod tests {
             arguments.as_slice(),
             [
                 "run",
-                "--model=gpt-5.6-sol",
+                "--model=gpt-6-sol",
                 "--thinking=medium",
                 "--search=true",
                 "finish the benchmark",
@@ -1763,7 +1763,7 @@ mod tests {
 
     #[test]
     fn configured_harness_arguments_expand_coordinate_placeholders() {
-        let harness = HarnessExec::new(std::env::current_exe().unwrap(), "gpt-5.6-luna", "high")
+        let harness = HarnessExec::new(std::env::current_exe().unwrap(), "gpt-6-luna", "high")
             .unwrap()
             .web_search(true)
             .api_base_url("http://192.168.127.1:1234")
@@ -1780,7 +1780,7 @@ mod tests {
             harness.command_arguments("do the task"),
             [
                 "run",
-                "--model=gpt-5.6-luna",
+                "--model=gpt-6-luna",
                 "--thinking=high",
                 "--search=true",
                 "--api=http://192.168.127.1:1234",
@@ -1798,7 +1798,7 @@ mod tests {
         fs::create_dir(&attempt).unwrap();
         let marker = temporary.path().join("descendant-survived");
         let binary = write_timeout_codex(temporary.path(), &marker);
-        let codex = HarnessExec::new(binary, "gpt-5.6-sol", "medium")
+        let codex = HarnessExec::new(binary, "gpt-6-sol", "medium")
             .unwrap()
             .api_key("test");
 
@@ -1833,7 +1833,7 @@ mod tests {
         fs::create_dir(&attempt).unwrap();
         let marker = temporary.path().join("descendant-survived-success");
         let binary = write_success_with_descendant_codex(temporary.path(), &marker);
-        let codex = HarnessExec::new(binary, "gpt-5.6-sol", "medium")
+        let codex = HarnessExec::new(binary, "gpt-6-sol", "medium")
             .unwrap()
             .api_key("test");
 

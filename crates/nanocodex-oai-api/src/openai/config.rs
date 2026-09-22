@@ -5,7 +5,8 @@ use crate::{
     Thinking,
 };
 
-const SYSTEM_PROMPT: &str = include_str!("../../prompts/system.md");
+const SOL_SYSTEM_PROMPT: &str = include_str!("../../prompts/sol.md");
+const LUNA_SYSTEM_PROMPT: &str = include_str!("../../prompts/luna.md");
 const GLM_SYSTEM_PROMPT: &str = include_str!("../../prompts/glm.md");
 const ASTRA_SYSTEM_PROMPT: &str = include_str!("../../prompts/astra.md");
 
@@ -23,7 +24,7 @@ pub struct ModelConfig {
     /// Optional namespace prepended to the model identifier on the wire.
     ///
     /// This preserves Nanocodex's closed typed model policy while allowing an
-    /// OpenAI routing gateway to require IDs such as `openai/gpt-5.6-sol`.
+    /// OpenAI routing gateway to require IDs such as `openai/gpt-6-sol`.
     pub model_id_prefix: Option<Arc<str>>,
     /// Authentication source resolved for each transport connection.
     pub auth: OpenAiAuth,
@@ -83,7 +84,8 @@ impl ModelConfig {
         let base = self.system_prompt.as_deref().unwrap_or(match self.model {
             Model::Astra => ASTRA_SYSTEM_PROMPT,
             Model::Glm53 | Model::Kimi | Model::Mimo => GLM_SYSTEM_PROMPT,
-            Model::Sol | Model::Terra | Model::Luna => SYSTEM_PROMPT,
+            Model::Sol => SOL_SYSTEM_PROMPT,
+            Model::Luna => LUNA_SYSTEM_PROMPT,
         });
         let base =
             if self.system_prompt.is_none() && matches!(self.model, Model::Kimi | Model::Mimo) {
@@ -155,9 +157,8 @@ mod prompt_tests {
     fn supported_models_select_exact_pinned_instructions() {
         for (model, expected) in [
             (Model::Astra, ASTRA_SYSTEM_PROMPT),
-            (Model::Sol, SYSTEM_PROMPT),
-            (Model::Terra, SYSTEM_PROMPT),
-            (Model::Luna, SYSTEM_PROMPT),
+            (Model::Sol, SOL_SYSTEM_PROMPT),
+            (Model::Luna, LUNA_SYSTEM_PROMPT),
         ] {
             let mut config = ModelConfig {
                 model,

@@ -67,7 +67,7 @@ it("real key issuance and public gateway sessions isolate two callers", async ()
     const cloudflare = expanded.data.filter(c => c.provider === "cloudflare");
     expect(cloudflare).toHaveLength(gate === "true" ? 12 : 0);
     if (gate === "true") expect(cloudflare.map(c => c.id).sort()).toEqual(
-      ["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"].flatMap(model =>
+      ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].flatMap(model =>
         ["low", "medium", "high"].map(effort => `cloudflare:openai/${model}:${effort}`)).sort());
   }
   delete bindings.OPENROUTER_API_KEY;

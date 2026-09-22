@@ -22,7 +22,7 @@ export const formatMs = (n: number | null) =>
       : `${Math.round(n)}ms`;
 // Only known catalog aliases align. Unknown names remain distinct; never combine percentiles.
 export function modelFamily(model: string): string {
-  if (/^(openai\/)?gpt-(6-astra|5\.6-(sol|terra|luna))$/.test(model))
+  if (/^(openai\/)?gpt-6-(astra|sol|luna)$/.test(model))
     return model.replace(/^openai\//, "");
   if (["@cf/zai-org/glm-5.3", "z-ai/glm-5.3", "zai/glm-5.3"].includes(model))
     return "glm-5.3";

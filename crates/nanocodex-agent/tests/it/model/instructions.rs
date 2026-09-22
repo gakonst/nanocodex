@@ -3,7 +3,8 @@ use super::*;
 #[tokio::test]
 async fn model_prompt_selection_preserves_explicit_and_additional_instructions() -> Result<()> {
     let astra = include_str!("../../../../nanocodex-oai-api/prompts/astra.md");
-    let legacy = include_str!("../../../../nanocodex-oai-api/prompts/system.md");
+    let sol = include_str!("../../../../nanocodex-oai-api/prompts/sol.md");
+    let luna = include_str!("../../../../nanocodex-oai-api/prompts/luna.md");
     for (initial, selected, replacement, additional, expected) in [
         (Model::Astra, Model::Astra, None, None, astra.to_owned()),
         (
@@ -18,10 +19,9 @@ async fn model_prompt_selection_preserves_explicit_and_additional_instructions()
             Model::Sol,
             None,
             Some("host instructions"),
-            format!("{legacy}\n\nhost instructions"),
+            format!("{sol}\n\nhost instructions"),
         ),
-        (Model::Terra, Model::Terra, None, None, legacy.to_owned()),
-        (Model::Luna, Model::Luna, None, None, legacy.to_owned()),
+        (Model::Luna, Model::Luna, None, None, luna.to_owned()),
         (
             Model::Sol,
             Model::Astra,

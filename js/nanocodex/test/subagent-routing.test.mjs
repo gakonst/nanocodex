@@ -57,12 +57,14 @@ test('explicit child choices must be honored or rejected; never silently substit
   const request = { parentSessionId: 'large-parent', hostContextRef: 'owned', task: 'simple' };
   await assert.rejects(router.resolve({ ...request, model: 'sol' }), /explicit model/);
   await assert.rejects(router.resolve({ ...request, thinking: 'high' }), /explicit thinking/);
+  await assert.rejects(router.resolve({ ...request, model: 'terra' }), /invalid model/);
+  await assert.rejects(router.resolve({ ...request, model: 'gpt-5.6-sol' }), /invalid model/);
   assert.equal((await router.resolve({ ...request, model: 'astra', thinking: 'low' })).model, 'astra');
 });
 
 test('equivalent public model aliases preserve explicit overrides and pin canonical models', async () => {
-  for (const [model, alias] of [['sol', 'gpt-5.6-sol'], ['terra', 'gpt-5.6-terra'],
-    ['luna', 'gpt-5.6-luna'], ['astra', 'gpt-6-astra'], ['glm-5.3', '@cf/zai-org/glm-5.3'], ['glm-5.3', 'glm53'], ['kimi', 'kimi-k3'], ['mimo', 'mimo-v2.6-pro']]) {
+  for (const [model, alias] of [['sol', 'gpt-6-sol'],
+    ['luna', 'gpt-6-luna'], ['astra', 'gpt-6-astra'], ['glm-5.3', '@cf/zai-org/glm-5.3'], ['glm-5.3', 'glm53'], ['kimi', 'kimi-k3'], ['mimo', 'mimo-v2.6-pro']]) {
     for (const [requested, selected] of [[model, alias], [alias, model]]) {
       const { router } = fixture(new Map(), () => ({ provider: 'test', model: selected, thinking: 'low' }));
       const request = { parentSessionId: 'large-parent', hostContextRef: 'owned', model: requested };

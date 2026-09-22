@@ -32,7 +32,7 @@ async fn automatic_routing_uses_explicit_post_and_validates_receipt() {
                     axum::Json(json!({
                         "enabled": id != "invalid-receipt",
                         "model_routing": { "strategy": "direct" },
-                        "settings": { "model": "gpt-5.6-sol", "thinking": "high",
+                        "settings": { "model": "gpt-6-sol", "thinking": "high",
                             "reasoning_mode": "standard", "fast_mode": false }
                     }))
                     .into_response()

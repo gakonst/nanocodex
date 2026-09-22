@@ -18,7 +18,7 @@ test('deployed large input completes, survives replay, and remains readable in b
     return response.status === 204 ? undefined : response.json();
   };
   const created = await request('/v1/agents', 'POST', {
-    settings: { model: 'gpt-5.6-luna', thinking: 'low', reasoning_mode: 'standard', fast_mode: false },
+    settings: { model: 'gpt-6-luna', thinking: 'low', reasoning_mode: 'standard', fast_mode: false },
   });
   const base = `/v1/agents/${created.id ?? created.agent_id}`;
   const id = randomUUID();

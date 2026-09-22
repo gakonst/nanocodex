@@ -707,7 +707,7 @@ describe("Cloudflare frontier public Responses compatibility", () => {
       expect(f.commits.at(-1)?.route).toEqual(pin);
     }
     const count = f.ai.mock.calls.length;
-    for (const extra of [{ model: "gpt-5.6-sol" }, { model: "openrouter:openai/gpt-6-astra:low" },
+    for (const extra of [{ model: "gpt-6-sol" }, { model: "openrouter:openai/gpt-6-astra:low" },
       { model: "cloudflare:openai/gpt-6-astra:high" }, { reasoning: { effort: "high" } }]) {
       expect((await f.call("POST", "/responses", { input: history, ...extra })).status).toBe(409);
     }
@@ -728,7 +728,7 @@ describe("Cloudflare frontier public Responses compatibility", () => {
 
 
 describe("Cloudflare REST inference transport", () => {
-  const exact = "cloudflare:openai/gpt-5.6-sol:low";
+  const exact = "cloudflare:openai/gpt-6-sol:low";
   const accountId = "a".repeat(32), token = "private-deployment-inference-token";
   const native = (output: unknown[]) => ({ object: "response", status: "completed", output });
   it("repeats stateless requests without using the model binding or retaining account credentials", async () => {
@@ -738,7 +738,7 @@ describe("Cloudflare REST inference transport", () => {
     const send = vi.fn(async (url: string, init: RequestInit) => {
       expect(url).toBe(`https://api.cloudflare.com/client/v4/accounts/${accountId}/ai/v1/responses`);
       expect(init.redirect).toBe("manual"); expect((init.headers as any).authorization).toBe(`Bearer ${token}`);
-      expect(JSON.parse(init.body as string)).toMatchObject({ model: "openai/gpt-5.6-sol", stream: false,
+      expect(JSON.parse(init.body as string)).toMatchObject({ model: "openai/gpt-6-sol", stream: false,
         store: false, reasoning: { effort: "low" }, max_output_tokens: 512 });
       return Response.json(native([{ type: "message", role: "assistant", content: [{ type: "output_text", text: "fixture answer" }] }]));
     });
@@ -758,7 +758,7 @@ describe("Cloudflare REST inference transport", () => {
     let count=0;
     const send=vi.fn(async (_url: string, init: RequestInit) => {
       const body=JSON.parse(init.body as string); count++;
-      expect(f.commits.at(-1)?.route).toMatchObject({backend:"cloudflare",model:"gpt-5.6-sol",thinking:"low"});
+      expect(f.commits.at(-1)?.route).toMatchObject({backend:"cloudflare",model:"gpt-6-sol",thinking:"low"});
       if(count===1) return Response.json(native([{type:"function_call",call_id:"fixture_call",name:body.tools[0].name,arguments:'{"value":42}'}]));
       expect(body.input.at(-1)).toEqual({type:"function_call_output",call_id:"fixture_call",output:"42"});
       return Response.json(native([{type:"message",role:"assistant",content:[{type:"output_text",text:"42"}]}]));
@@ -771,7 +771,7 @@ describe("Cloudflare REST inference transport", () => {
     const second=await f.call("POST","/responses",{input:[{role:"user",content:"fixture"},...body.output,
       {type:"function_call_output",call_id:"fixture_call",output:"42"}],tools});
     expect(second.status).toBe(200); expect(f.commits.at(-1)!.route).toEqual(pin);
-    expect((await f.call("POST","/responses",{model:"openrouter:openai/gpt-5.6-sol:low",input:"fixture"})).status).toBe(409);
+    expect((await f.call("POST","/responses",{model:"openrouter:openai/gpt-6-sol:low",input:"fixture"})).status).toBe(409);
     delete f.bindings.CLOUDFLARE_AI_API_TOKEN;
     expect((await f.call("POST","/responses",{input:"fixture"})).status).toBe(503);
     expect(send).toHaveBeenCalledTimes(2); expect(f.ai).not.toHaveBeenCalled();
@@ -780,7 +780,7 @@ describe("Cloudflare REST inference transport", () => {
 });
 
 describe("incremental inference lifecycle", () => {
-  const exact = "cloudflare:openai/gpt-5.6-sol:low";
+  const exact = "cloudflare:openai/gpt-6-sol:low";
   function streamingFixture() {
     const f = fixture({ NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true", CLOUDFLARE_AI_API_TOKEN: "synthetic-token",
       NANOCODEX_CLOUDFLARE_ACCOUNT_ID: "a".repeat(32) });

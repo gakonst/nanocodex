@@ -151,7 +151,7 @@ function turnResult(finalMessage, dispose) {
     dispose,
     snapshot: {
       version: 1,
-      model: "gpt-5.6-sol",
+      model: "gpt-6-sol",
       lineage_id: "lineage",
       prompt_cache_key: "cache",
       workspace: "/workspace",

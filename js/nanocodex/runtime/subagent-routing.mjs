@@ -1,8 +1,7 @@
 const modelAliases = new Map([
   ["kimi", "kimi"], ["kimi-k3", "kimi"], ["mimo", "mimo"], ["mimo-v2.6-pro", "mimo"],
-  ['sol', 'sol'], ['gpt-5.6-sol', 'sol'],
-  ['terra', 'terra'], ['gpt-5.6-terra', 'terra'],
-  ['luna', 'luna'], ['gpt-5.6-luna', 'luna'],
+  ['sol', 'sol'], ['gpt-6-sol', 'sol'],
+  ['luna', 'luna'], ['gpt-6-luna', 'luna'],
   ['astra', 'astra'], ['gpt-6-astra', 'astra'],
   ['glm-5.3', 'glm-5.3'], ['glm53', 'glm-5.3'], ['@cf/zai-org/glm-5.3', 'glm-5.3'],
 ]);

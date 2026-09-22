@@ -117,9 +117,7 @@ impl SettingsCommand {
                     return Some(Self::OpenModel);
                 };
                 if parts.next().is_some() {
-                    return Some(Self::Invalid(
-                        "Usage: /model [sol|terra|luna|astra]".to_owned(),
-                    ));
+                    return Some(Self::Invalid("Usage: /model [astra|sol|luna]".to_owned()));
                 }
                 Some(match argument.parse() {
                     Ok(model) => Self::SetModel(model),
@@ -820,7 +818,6 @@ impl Composer {
             Model::Glm53 => "glm-5.3",
             Model::Astra => "Astra",
             Model::Sol => "Sol",
-            Model::Terra => "Terra",
             Model::Luna => "Luna",
             _ => model.as_str(),
         };
@@ -2223,7 +2220,6 @@ mod tests {
     fn composer_chrome_uses_the_model_palette() {
         for (model, color) in [
             (Model::Luna, Color::White),
-            (Model::Terra, Color::Green),
             (Model::Sol, Color::Yellow),
             (Model::Astra, Color::LightMagenta),
         ] {

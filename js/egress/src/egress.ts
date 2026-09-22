@@ -1797,10 +1797,10 @@ function canonicalSponsoredResponseCreate(
   const reasoning = isRecord(value.reasoning) ? value.reasoning : {};
   const canonical: Record<string, unknown> = {
     ...value,
-    model: "gpt-5.6-luna",
+    model: "gpt-6-luna",
     reasoning: { ...reasoning, effort: "none", mode: "standard" },
+    service_tier: "default",
   };
-  delete canonical.service_tier;
   return canonical;
 }
 

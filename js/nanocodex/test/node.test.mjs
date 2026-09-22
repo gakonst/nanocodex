@@ -20,7 +20,7 @@ const SESSION_IDS = Object.freeze({
 });
 
 const createWarmAgent = ({ apiKey, websocketUrl, ...options }) => Agent.create({
-  model: "gpt-5.6-sol", // Legacy fixtures exercise none/pro reasoning and Sol pricing.
+  model: "gpt-6-sol",
   ...options,
   transport: Transport.openAi({ apiKey, websocketUrl, websocketWarmup: true }),
 });
@@ -310,7 +310,7 @@ test("Node-hosted WASM preserves follow-ons, cache identity, events, and custom 
     const generation = await reader.next();
     assert.equal(generation.previous_response_id, "resp-warmup");
     assert.equal(generation.reasoning.effort, "none");
-    assert.equal(generation.service_tier, undefined);
+    assert.equal(generation.service_tier, "default");
     sendCompleted(socket, "resp-tool", [{
       type: "custom_tool_call",
       call_id: "call-exec",
@@ -347,11 +347,11 @@ test("Node-hosted WASM preserves follow-ons, cache identity, events, and custom 
     reasoning_output_tokens: 2,
     total_tokens: 24,
     estimated_cost: {
-      usd: "0.000124",
-      input_usd: "0.00004",
-      cached_input_usd: "0.000004",
+      usd: "0.000062",
+      input_usd: "0.00002",
+      cached_input_usd: "0.000002",
       cache_write_input_usd: "0",
-      output_usd: "0.00008",
+      output_usd: "0.00004",
       service_tier: "standard",
     },
     cost_status: "estimated_from_usage",
@@ -370,7 +370,7 @@ test("Node-hosted WASM preserves follow-ons, cache identity, events, and custom 
   assert.equal(events.filter((event) => event.type === "run.completed").length, 2);
   assert.equal(
     events.find((event) => event.type === "run.completed")?.payload.estimated_cost.usd,
-    "0.000124",
+    "0.000062",
   );
   assert.ok(events.some((event) => event.type === "tool.call" && event.payload.tool === "multiply"));
   watch.off();
@@ -389,7 +389,7 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
   const agent = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: "018f1f9a-7b3c-7a08-8000-000000000008",
     durability,
     durabilityId,
@@ -626,7 +626,7 @@ test("Node host invokes canonical subagent handlers without a root model turn", 
     const childSocket = await bounded(server.connection, "child connection");
     const childReader = messageReader(childSocket);
     const childWarmup = await bounded(childReader.next(), "child warmup");
-    assert.equal(childWarmup.model, "gpt-5.6-luna");
+    assert.equal(childWarmup.model, "gpt-6-luna");
     assert.doesNotMatch(childWarmup.input[1].content[0].text, /GPT-6 Astra/);
     assert.match(childWarmup.input[1].content[0].text, /Use the caller's memory tools\.$/);
     sendWarmup(childSocket, "direct-child-warmup");
@@ -778,7 +778,7 @@ test("WASM snapshots rebind deployed policy while retaining authoritative histor
   const original = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: originalServer.url,
-    thinking: "none",
+    thinking: "low",
     instructions: "instructions from the old WASM deployment",
     sessionId: SESSION_IDS.original,
     workspace: "/virtual/original-workspace",
@@ -812,7 +812,7 @@ test("WASM snapshots rebind deployed policy while retaining authoritative histor
   const resumed = await createWarmAgent({
     apiKey: "test-key",
     websocketUrl: resumedServer.url,
-    thinking: "none",
+    thinking: "low",
     instructions: "instructions from the new WASM deployment",
     sessionId: SESSION_IDS.resumed,
     resume: snapshot,
@@ -882,7 +882,7 @@ test("Node can load an application-owned web module and resume Codex rollout his
   };
   const snapshot = {
     version: 1,
-    model: "gpt-5.6-sol",
+    model: "gpt-6-sol",
     lineage_id: "codex-rollout-lineage",
     prompt_cache_key: "codex-rollout-lineage",
     workspace: process.cwd(),
@@ -901,7 +901,7 @@ test("Node can load an application-owned web module and resume Codex rollout his
     apiKey: "test-key",
     module: wasm,
     websocketUrl: server.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.embedded,
     resume: snapshot,
   });
@@ -969,7 +969,7 @@ test("independent agents keep their host connections isolated", async () => {
   const left = await createWarmAgent({
     apiKey: "left-key",
     websocketUrl: leftServer.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.left,
     tools: {
       leftTool: {
@@ -982,7 +982,7 @@ test("independent agents keep their host connections isolated", async () => {
   const right = await createWarmAgent({
     apiKey: "right-key",
     websocketUrl: rightServer.url,
-    thinking: "none",
+    thinking: "low",
     sessionId: SESSION_IDS.right,
     tools: {
       rightTool: {
@@ -1081,7 +1081,7 @@ test("WASM advertises and resumes Code Mode cells through function wait", async 
 });
 
 for (const [options, effort] of [
-  [{ model: "gpt-5.6-luna" }, "medium"],
+  [{ model: "gpt-6-luna" }, "medium"],
   [{ model: "gpt-6-astra", thinking: "high" }, "high"],
 ]) test(`WASM resolves catalog effort and preserves explicit effort: ${JSON.stringify(options)}`, async () => {
   const server = await startServer();

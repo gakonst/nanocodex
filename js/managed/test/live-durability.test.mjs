@@ -97,7 +97,7 @@ test("deployed durable threads survive long histories, replay, tools, and cancel
   }
   const created = await request("/v1/agents", "POST", {
     settings: {
-      model: "gpt-5.6-luna", thinking: "low", reasoning_mode: "standard", fast_mode: false,
+      model: "gpt-6-luna", thinking: "low", reasoning_mode: "standard", fast_mode: false,
     },
   }, run);
   const id = created.id ?? created.agent_id;

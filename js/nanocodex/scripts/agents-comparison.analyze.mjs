@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 const path = process.argv[2]; if (!path) throw new Error('supply matrix.json');
 const report = JSON.parse(readFileSync(path, 'utf8'));
-const rates = { 'gpt-5.6-luna': [.2, .02, .25, 1.2], 'gpt-5.6-terra': [2, .2, 2.5, 12], 'gpt-5.6-sol': [4, .4, 5, 20], 'gpt-6-astra': [10, 1, 12.5, 50] };
+const rates = { 'gpt-6-luna': [.1, .01, .125, .5], 'gpt-6-sol': [2, .2, 2.5, 10], 'gpt-5.6-luna': [.2, .02, .25, 1.2], 'gpt-5.6-terra': [2, .2, 2.5, 12], 'gpt-5.6-sol': [4, .4, 5, 20], 'gpt-6-astra': [10, 1, 12.5, 50] };
 const median = xs => { const v = xs.filter(Number.isFinite).sort((a,b) => a-b); return v.length ? (v[Math.floor(v.length/2)] + v[Math.ceil(v.length/2)-1])/2 : null; };
 const range = xs => { const v=xs.filter(Number.isFinite); return v.length ? [Math.min(...v), Math.max(...v)] : null; };
 const successful = r => r.correct && ['response.completed', 'turn_completed', 'agent.session.turn.completed'].includes(r.terminal) && !r.error;
@@ -44,7 +44,7 @@ const sessions=report.records.filter(r=>r.session_id);
 const summary={started_at:report.started_at,finished_at:report.finished_at,complete:report.complete??false, trials:report.records.length,successes:report.records.filter(successful).length,
  sessions_created:sessions.length,sessions_deleted:sessions.filter(r=>r.cleanup?.some(c=>[200,204,404].includes(c.status))).length,
  usage_missing:estimates.filter(e=>!e).length,estimated_model_subtotal_low_usd:estimates.reduce((n,e)=>n+(e?.low??0),0),estimated_model_subtotal_high_usd:estimates.reduce((n,e)=>n+(e?.high??0),0),
- pricing_source:'https://developers.openai.com/api/docs/pricing',pricing_checked:'2026-09-11',groups};
+ pricing_source:'https://developers.openai.com/api/docs/pricing',pricing_checked:'2026-09-11',gpt6_pricing_checked:'2026-09-22',groups};
 writeFileSync(join(dirname(path),'summary.json'),JSON.stringify(summary,null,2)+'\n');
 // Keep reviewable per-trial evidence; verbose wire traces remain in the input file.
 writeFileSync(join(dirname(path),'measurements.json'),JSON.stringify({

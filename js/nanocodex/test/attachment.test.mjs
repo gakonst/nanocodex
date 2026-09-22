@@ -50,7 +50,7 @@ test("attachment publishes one exact catalog and exchanges ready, call, result, 
   const client = await connecting;
   socket.receive({ ...callFrame({ value: "hello" }), turn_id: "session:1:7" });
   await waitFor(() => socket.frames().some(({ type }) => type === "result"));
-  assert.equal(context.model, "gpt-5.6-sol");
+  assert.equal(context.model, "gpt-6-sol");
   assert.equal(context.turnId, "session:1:7");
   assert.deepEqual(lastFrame(socket, "result"), {
     type: "result",
@@ -621,7 +621,7 @@ async function readyAttachment(tool, socket = new FakeSocket()) {
 
 function callFrame(input) {
   return {
-    type: "call", session_id: "session:1", call_id: "call:1", model: "gpt-5.6-sol",
+    type: "call", session_id: "session:1", call_id: "call:1", model: "gpt-6-sol",
     name: "echo", input, output_token_budget: 10_000, output_byte_budget: 128 * 1024,
     deadline_at: Date.now() + 30_000,
   };

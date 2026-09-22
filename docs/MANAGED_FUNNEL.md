@@ -10,7 +10,7 @@ SMS verification -> three free ephemeral prompts -> connect or fund Wallet
 ```
 
 The sponsored demo gives each persistent SMS account exactly three prompts. It
-uses `gpt-5.6-luna` with thinking disabled. Its browser agent sets
+uses `gpt-6-luna` with thinking disabled. Its browser agent sets
 `durability: false`, creates a fresh thread ID for the mounted page, and does not
 expose conversation history. Reloading discards the model thread but does not
 reset the three-prompt allowance.

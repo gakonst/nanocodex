@@ -185,7 +185,7 @@ describe("managed routing admission", () => {
     expect(await response.json()).toMatchObject({ error: "routing_unavailable" });
   }));
 
-  it.each(["null", "[]", "{", '{"enabled":false}', '{"model":"gpt-5.6-sol"}'])("rejects invalid enable body %s", body => fixture(async instance => {
+  it.each(["null", "[]", "{", '{"enabled":false}', '{"model":"gpt-6-sol"}'])("rejects invalid enable body %s", body => fixture(async instance => {
     await withRouting(instance, async () => {
       expect((await instance.fetch(routingRequest(body))).status).toBe(400);
     });
@@ -244,7 +244,7 @@ describe("managed routing admission", () => {
   it.each([
     { name: "legacy empty request", body: "", routed: false },
     { name: "empty configuration", body: JSON.stringify({ configuration: {} }), routed: false },
-    { name: "explicit model", body: JSON.stringify({ settings: { ...DEFAULT_AGENT_SETTINGS, model: "gpt-5.6-sol" } }), routed: false },
+    { name: "explicit model", body: JSON.stringify({ settings: { ...DEFAULT_AGENT_SETTINGS, model: "gpt-6-sol" } }), routed: false },
     { name: "unrelated tool policy", body: JSON.stringify({ configuration: { tools: ["exec_command"] } }), routed: false },
     { name: "explicit routing opt-in", body: JSON.stringify({ configuration: { model_routing: {} } }), routed: true },
   ])("API deployment preserves opt-in admission: $name", async ({ body, routed }) => {
@@ -269,7 +269,7 @@ describe("managed routing admission", () => {
       runtime, createExecutionContext(), principal);
     expect(response.status).toBe(201);
     expect(!!admitted.configuration.model_routing).toBe(routed);
-    expect(admitted.settings).toEqual(body.includes("gpt-5.6-sol") ? { ...DEFAULT_AGENT_SETTINGS, model: "gpt-5.6-sol" } : DEFAULT_AGENT_SETTINGS);
+    expect(admitted.settings).toEqual(body.includes("gpt-6-sol") ? { ...DEFAULT_AGENT_SETTINGS, model: "gpt-6-sol" } : DEFAULT_AGENT_SETTINGS);
     if (routed) expect(admitted.configuration.model_routing.strategy).toBe("direct");
   });
 
@@ -303,7 +303,7 @@ describe("managed routing admission", () => {
     }
     const settings = state.storage.sql.exec("SELECT * FROM managed_agent_settings").one();
     const route = state.storage.sql.exec("SELECT * FROM managed_thread_route").toArray();
-    for (const patch of [{ model: "gpt-5.6-sol" }, { thinking: "low" }]) {
+    for (const patch of [{ model: "gpt-6-sol" }, { thinking: "low" }]) {
       const response = await instance.fetch(request("/settings", "PATCH", patch));
       expect(response.status).toBe(409);
       expect(await response.json()).toMatchObject({ error: "settings_locked" });

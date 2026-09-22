@@ -17,10 +17,12 @@ createGatewayResponses({ provider: "vercel", model: "gpt-6-astra", reasoningEffo
   } }),
 });
 const ai = { async run(model: string, input: Record<string, unknown>): Promise<unknown> { return { model, input }; } };
+createGatewayResponses({ provider: "cloudflare", model: "gpt-6-sol", reasoningEffort: "high", ai });
+// @ts-expect-error retired models are not public transport choices
 createGatewayResponses({ provider: "cloudflare", model: "gpt-5.6-sol", reasoningEffort: "high", ai });
 createGatewayResponses({ provider: "cloudflare", model: "gpt-6-astra", reasoningEffort: "medium", ai: {
   async run(model, input) {
-    const upstream: "openai/gpt-6-astra" | "openai/gpt-5.6-sol" | "openai/gpt-5.6-terra" | "openai/gpt-5.6-luna" = model;
+    const upstream: "openai/gpt-6-astra" | "openai/gpt-6-sol" | "openai/gpt-6-luna" = model;
     return { upstream, input };
   },
 } });
@@ -37,10 +39,10 @@ createGatewayResponses({ provider: "openrouter", model: "gpt-6-astra", reasoning
 // @ts-expect-error HTTP gateways do not accept a binding
 createGatewayResponses({ provider: "vercel", model: "gpt-6-astra", reasoningEffort: "high", apiKey: "synthetic", ai });
 
-createGatewayResponses({ provider: "cloudflare", model: "gpt-5.6-sol", reasoningEffort: "low", accountId: "a".repeat(32), apiKey: "synthetic", fetch: globalThis.fetch });
+createGatewayResponses({ provider: "cloudflare", model: "gpt-6-sol", reasoningEffort: "low", accountId: "a".repeat(32), apiKey: "synthetic", fetch: globalThis.fetch });
 // @ts-expect-error REST requires an account ID
-createGatewayResponses({ provider: "cloudflare", model: "gpt-5.6-sol", reasoningEffort: "low", apiKey: "synthetic" });
+createGatewayResponses({ provider: "cloudflare", model: "gpt-6-sol", reasoningEffort: "low", apiKey: "synthetic" });
 // @ts-expect-error REST requires a token
-createGatewayResponses({ provider: "cloudflare", model: "gpt-5.6-sol", reasoningEffort: "low", accountId: "a".repeat(32) });
+createGatewayResponses({ provider: "cloudflare", model: "gpt-6-sol", reasoningEffort: "low", accountId: "a".repeat(32) });
 // @ts-expect-error REST and binding cannot be mixed
-createGatewayResponses({ provider: "cloudflare", model: "gpt-5.6-sol", reasoningEffort: "low", accountId: "a".repeat(32), apiKey: "synthetic", ai });
+createGatewayResponses({ provider: "cloudflare", model: "gpt-6-sol", reasoningEffort: "low", accountId: "a".repeat(32), apiKey: "synthetic", ai });

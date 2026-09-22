@@ -492,7 +492,7 @@ def parse_args() -> argparse.Namespace:
         default=["codex", "app-server"],
         help="command used to launch Codex app-server",
     )
-    parser.add_argument("--model", default="gpt-5.6-sol")
+    parser.add_argument("--model", default="gpt-6-sol")
     parser.add_argument("--cwd", type=Path, default=Path.cwd())
     parser.add_argument(
         "--workload",

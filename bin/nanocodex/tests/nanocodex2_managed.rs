@@ -1890,7 +1890,7 @@ async fn headless_settings_and_cron_use_the_managed_contract() {
     assert_eq!(requests.len(), before_invalid);
     assert_eq!(
         requests[0].2["settings"],
-        json!({"model": "gpt-5.6-sol", "thinking": "high", "reasoning_mode": "standard", "fast_mode": true})
+        json!({"model": "gpt-6-sol", "thinking": "high", "reasoning_mode": "standard", "fast_mode": true})
     );
     assert_eq!(
         requests[0].2["configuration"],

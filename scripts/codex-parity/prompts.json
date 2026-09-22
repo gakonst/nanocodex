@@ -1,5 +1,6 @@
 {
   "upstream": "36430b36881cf5c289cb48e671cfc9e8b542ae7b",
+  "model_upstream": "49e95cc73f4eb2999b1d14f863c009168df6122b",
   "sources": [
     {
       "path": "core/src/context/realtime_end_instructions.rs",
@@ -80,30 +81,36 @@
       "role": "composition reference (external only)"
     }
   ],
+  "model_sources": [
+    {
+      "path": "models-manager/models.json",
+      "upstream": "49e95cc73f4eb2999b1d14f863c009168df6122b",
+      "sha256": "d30ef7d632cb45a18a3d3ab16abc9376b0e0f4ea600b6c6aab2ad5a4968646d4",
+      "bytes": 421843,
+      "role": "consumed model prompt source"
+    }
+  ],
   "model_fields": [
     {
       "model": "gpt-6-astra",
       "field": "model_messages.instructions_template",
       "target": "crates/nanocodex-oai-api/prompts/astra.md",
+      "upstream": "36430b36881cf5c289cb48e671cfc9e8b542ae7b",
       "sha256": "152dfaeeb552876190962be1c12c93d426840ff12691f648261554a7675a6698"
     },
     {
-      "model": "gpt-5.6-sol",
+      "model": "gpt-6-sol",
       "field": "model_messages.instructions_template",
-      "target": "crates/nanocodex-oai-api/prompts/system.md",
-      "sha256": "cbefa6b0bede0e332d957fca70ccacf9f12f4c0ecdf81b819e5cbe1a3b16e265"
+      "target": "crates/nanocodex-oai-api/prompts/sol.md",
+      "upstream": "49e95cc73f4eb2999b1d14f863c009168df6122b",
+      "sha256": "b1dd8718c037906c53a305c5cbccb4a4be35ccbb7837461ec349bfc495412f0d"
     },
     {
-      "model": "gpt-5.6-terra",
+      "model": "gpt-6-luna",
       "field": "model_messages.instructions_template",
-      "target": "crates/nanocodex-oai-api/prompts/system.md",
-      "sha256": "cbefa6b0bede0e332d957fca70ccacf9f12f4c0ecdf81b819e5cbe1a3b16e265"
-    },
-    {
-      "model": "gpt-5.6-luna",
-      "field": "model_messages.instructions_template",
-      "target": "crates/nanocodex-oai-api/prompts/system.md",
-      "sha256": "cbefa6b0bede0e332d957fca70ccacf9f12f4c0ecdf81b819e5cbe1a3b16e265"
+      "target": "crates/nanocodex-oai-api/prompts/luna.md",
+      "upstream": "49e95cc73f4eb2999b1d14f863c009168df6122b",
+      "sha256": "b707476816bfe5e571a1bd2179f130fff2b132da5ab8e61063acdb7fd24daf12"
     }
   ],
   "outputs": [
@@ -123,9 +130,14 @@
       "bytes": 21269
     },
     {
-      "path": "crates/nanocodex-oai-api/prompts/system.md",
-      "sha256": "cbefa6b0bede0e332d957fca70ccacf9f12f4c0ecdf81b819e5cbe1a3b16e265",
-      "bytes": 17766
+      "path": "crates/nanocodex-oai-api/prompts/luna.md",
+      "sha256": "b707476816bfe5e571a1bd2179f130fff2b132da5ab8e61063acdb7fd24daf12",
+      "bytes": 18043
+    },
+    {
+      "path": "crates/nanocodex-oai-api/prompts/sol.md",
+      "sha256": "b1dd8718c037906c53a305c5cbccb4a4be35ccbb7837461ec349bfc495412f0d",
+      "bytes": 18998
     },
     {
       "path": "crates/nanocodex-voice-protocol/src/backend_prompt.md",

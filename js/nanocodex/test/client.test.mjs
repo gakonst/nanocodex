@@ -1037,7 +1037,7 @@ function rawTurn(value) {
         snapshot() {
           return JSON.stringify({
             version: 1,
-            model: "gpt-5.6-sol",
+            model: "gpt-6-sol",
             lineage_id: "test-lineage",
             prompt_cache_key: "test-cache-key",
             workspace: ".",

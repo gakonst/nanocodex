@@ -147,7 +147,7 @@ impl JudgeRuntime {
             ("NANOCODEX_JUDGE_TOKEN".to_owned(), self.token.to_string()),
             ("EVAL_BASE_URL".to_owned(), base_url.clone()),
             ("EVAL_API_KEY".to_owned(), self.token.to_string()),
-            ("EVAL_MODEL".to_owned(), "gpt-5.6-sol".to_owned()),
+            ("EVAL_MODEL".to_owned(), "gpt-6-sol".to_owned()),
             ("OPENAI_BASE_URL".to_owned(), base_url.clone()),
             ("OPENAI_API_BASE".to_owned(), base_url),
             ("OPENAI_API_KEY".to_owned(), self.token.to_string()),
@@ -531,7 +531,7 @@ mod tests {
             "http://192.168.127.254:43123/v1"
         );
         assert_eq!(environment["EVAL_API_KEY"], "judge-token");
-        assert_eq!(environment["EVAL_MODEL"], "gpt-5.6-sol");
+        assert_eq!(environment["EVAL_MODEL"], "gpt-6-sol");
         assert_eq!(environment["OPENAI_API_KEY"], "judge-token");
         assert_eq!(
             environment["OPENAI_BASE_URL"],
@@ -545,7 +545,7 @@ mod tests {
         let response = JudgeRuntime::chat_answer(
             "chatcmpl_test".to_owned(),
             JudgeAnswer {
-                model: Model::from_str("gpt-5.6-sol").unwrap(),
+                model: Model::from_str("gpt-6-sol").unwrap(),
                 message: "judge result".to_owned(),
             },
         );
@@ -561,7 +561,7 @@ mod tests {
         let jobs = Arc::new(AsyncMutex::new(BTreeMap::from([(
             "judge-test".to_owned(),
             JudgeJob::Complete(Ok(JudgeAnswer {
-                model: Model::from_str("gpt-5.6-sol").unwrap(),
+                model: Model::from_str("gpt-6-sol").unwrap(),
                 message: "stable answer".to_owned(),
             })),
         )])));
@@ -594,7 +594,7 @@ mod tests {
 
     #[test]
     fn async_request_accepts_bounded_gzip_payloads() {
-        let body = br#"{"model":"gpt-5.6-sol","input":"grade this"}"#;
+        let body = br#"{"model":"gpt-6-sol","input":"grade this"}"#;
         let mut encoder = GzEncoder::new(Vec::new(), Compression::fast());
         encoder.write_all(body).unwrap();
         let compressed = encoder.finish().unwrap();
@@ -603,7 +603,7 @@ mod tests {
 
         let request = JudgeRuntime::decode_request(&headers, &compressed).unwrap();
 
-        assert_eq!(request.model, "gpt-5.6-sol");
+        assert_eq!(request.model, "gpt-6-sol");
         assert_eq!(request.input, "grade this");
     }
 }

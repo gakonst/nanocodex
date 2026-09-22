@@ -44,7 +44,7 @@ def judge(question, answer_a, answer_b):
     )
     body = json.dumps(
         {
-            "model": os.environ.get("ARENA_HARD_JUDGE", "gpt-5.6-sol"),
+            "model": os.environ.get("ARENA_HARD_JUDGE", "gpt-6-sol"),
             "temperature": 0,
             "max_output_tokens": 16000,
             "input": [
@@ -96,7 +96,7 @@ candidate_first = judge(case["prompt"], candidate, baseline_answer)
 reward = (1.0 - score_for_a(baseline_first["label"]) + score_for_a(candidate_first["label"])) / 2.0
 passed = reward > 0.0
 evidence = {
-    "judge_model": os.environ.get("ARENA_HARD_JUDGE", "gpt-5.6-sol"),
+    "judge_model": os.environ.get("ARENA_HARD_JUDGE", "gpt-6-sol"),
     "baseline_model": baseline["model"],
     "baseline_first": baseline_first,
     "candidate_first": candidate_first,

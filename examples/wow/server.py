@@ -107,7 +107,7 @@ def identifier(value, required=True):
     return value
 
 
-LUNA_SETTINGS = {'model': 'gpt-5.6-luna', 'thinking': 'low', 'reasoning_mode': 'standard', 'fast_mode': False}
+LUNA_SETTINGS = {'model': 'gpt-6-luna', 'thinking': 'low', 'reasoning_mode': 'standard', 'fast_mode': False}
 CAPABILITIES = dict.fromkeys(('standalone_chat_create', 'turn_cancel', 'turn_steer',
                               'history_pagination', 'thread_state', 'turn_state'), True)
 CAPABILITIES.update(dict.fromkeys(('project_create', 'project_rename', 'project_metadata',
@@ -509,7 +509,7 @@ class Backend:
             if thread:
                 receipt = self.request('POST', '/v1/agents/' + thread + '/turns', {'input': prompt}, key)
             else:
-                settings = {'model': 'gpt-5.6-luna', 'thinking': 'low', 'reasoning_mode': 'standard', 'fast_mode': False}
+                settings = {'model': 'gpt-6-luna', 'thinking': 'low', 'reasoning_mode': 'standard', 'fast_mode': False}
                 try:
                     receipt = self.request('POST', '/v1/agent-runs', {'settings': settings, 'input': prompt}, key)
                     thread = identifier(receipt.get('agent_id'))

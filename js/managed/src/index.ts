@@ -7511,6 +7511,14 @@ export class DurableAgentSession extends DurableComputerSession {
     catalog?: Promise<unknown>,
     options: { reuseReady?: boolean } = {},
   ): Promise<CloudflareAgent.Agent> {
+    const storedModel: unknown = this.#settings().model;
+    if (!isAgentModel(storedModel)) {
+      throw new ManagedRequestError(
+        409,
+        "unsupported_stored_model",
+        `stored agent model ${String(storedModel)} is no longer supported; start a new conversation`,
+      );
+    }
     if (this.#durabilityExported) throw new Error("durability state was exported");
     if (this.#deleting || this.#deleted) throw retryableError("agent is being deleted");
     if (this.#configuration().model_routing && !this.#threadRoute()) {

@@ -131,7 +131,7 @@ async function invoke(tools: ToolMap, name: string, input: unknown): Promise<unk
   if (!tool) throw new Error(`missing tool: ${name}`);
   return tool.handler(input, {
     callId: "smoke",
-    model: "gpt-5.6-sol",
+    model: "gpt-6-sol",
     parentCallId: "smoke",
     sessionId: "smoke",
     signal: new AbortController().signal,

@@ -820,18 +820,19 @@ export function estimatedCostUsd(
     outputTokens?: number | null;
   } | undefined,
 ): number | null {
-  const rates = model === "sol" || model === "gpt-5.6-sol"
-    ? { input: 4, cached: 0.4, output: 20 }
-    : model === "terra" || model === "gpt-5.6-terra"
-      ? { input: 2, cached: 0.2, output: 12 }
-      : model === "luna" || model === "gpt-5.6-luna"
-        ? { input: 0.2, cached: 0.02, output: 1.2 }
+  const rates = model === "sol" || model === "gpt-6-sol"
+    ? { input: 2, cached: 0.2, output: 10 }
+    : model === "luna" || model === "gpt-6-luna"
+        ? { input: 0.1, cached: 0.01, output: 0.5 }
         : model === "astra" || model === "gpt-6-astra"
           ? { input: 10, cached: 1, output: 50 }
         : null;
   const input = usage?.inputTokens;
   const output = usage?.outputTokens;
   if (rates == null || input == null || output == null) return null;
+  // Evaluation totals may aggregate several requests, so crossing the
+  // per-request long-context threshold cannot be priced from totals alone.
+  if (input > 272_000) return null;
   const cached = Math.max(0, Math.min(input, usage?.cachedInputTokens ?? 0));
   const ordinary = Math.max(0, input - cached);
   return (ordinary * rates.input + cached * rates.cached + output * rates.output) / 1_000_000;

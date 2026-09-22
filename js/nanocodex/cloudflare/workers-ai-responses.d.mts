@@ -1,6 +1,6 @@
 import type { BrowserHttpRequest } from "../browser/host.mjs";
 
-export type ResponsesCanonicalModel = "@cf/zai-org/glm-5.3" | "gpt-6-astra" | "gpt-5.6-sol" | "gpt-5.6-terra" | "gpt-5.6-luna" | "kimi-k3" | "mimo-v2.6-pro";
+export type ResponsesCanonicalModel = "@cf/zai-org/glm-5.3" | "gpt-6-astra" | "gpt-6-sol" | "gpt-6-luna" | "kimi-k3" | "mimo-v2.6-pro";
 
 /** Structural Workers AI binding; provider credentials stay with Cloudflare. */
 export type WorkersAiBinding<Model extends ResponsesCanonicalModel = "@cf/zai-org/glm-5.3"> = {

@@ -803,7 +803,7 @@ describe("HostedToolsBroker socket-owned protocol", () => {
   it("accepts HTTP results through the pinned broker lifecycle and rejects conflicts", async () => {
     const fixture = createFixture(); const host = fixture.socket(); await catalog(fixture.broker, host);
     const pending = fixture.broker.provider().resolve("fixture__lookup")!.handler({ id: "42" }, {
-      sessionId: "session:1", callId: "source:1", model: "gpt-5.6-luna",
+      sessionId: "session:1", callId: "source:1", model: "gpt-6-luna",
     });
     const outcome = JSON.parse(result(IDS[1]!, "done")).outcome;
     fixture.broker.completeHttpResult(IDS[1]!, outcome);

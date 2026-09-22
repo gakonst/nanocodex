@@ -10,7 +10,7 @@ from matplotlib.ticker import FuncFormatter
 
 source = Path(sys.argv[1])
 data = json.loads(source.read_text())
-models = ['gpt-5.6-luna', 'gpt-5.6-terra', 'gpt-5.6-sol', 'gpt-6-astra']
+models = list(dict.fromkeys(g['model'] for g in data['groups']))
 paths = ['responses_http', 'responses_ws', 'nanocodex_node', 'openai_agents']
 labels = ['Responses HTTP', 'Responses WS (reused)', 'Nanocodex Node (fresh)', 'OpenAI Agents (fresh)']
 colors = ['#2878b5', '#249c88', '#d29421', '#c84b63']
@@ -20,19 +20,21 @@ for row, metric in enumerate(['ttft', 'completion']):
         ax = axes[row, col]
         for index, path in enumerate(paths):
             for m, model in enumerate(models):
-                record = next(g for g in data['groups'] if (g['model'], g['tier'], g['path']) == (model, tier, path))
+                record = next((g for g in data['groups'] if (g['model'], g['tier'], g['path']) == (model, tier, path)), None)
+                if record is None:
+                    continue
                 value = record[metric + '_median_ms']
                 bounds = record[metric + '_range_ms']
                 if value is None or bounds is None:
                     continue
-                y = 3 - m + (1.5-index)*.13
+                y = len(models) - 1 - m + (1.5-index)*.13
                 ax.errorbar(value/1000, y, xerr=[[(value-bounds[0])/1000], [(bounds[1]-value)/1000]],
                             fmt='o', color=colors[index], capsize=2.5, markersize=5, linewidth=1.2)
         ax.set_xscale('log')
         ax.set_xlim(.3, 150)
         ax.set_xticks([.5, 1, 2, 5, 10, 20, 50, 100])
         ax.xaxis.set_major_formatter(FuncFormatter(lambda x, _: f'{x:g}'))
-        ax.set_yticks([3, 2, 1, 0], ['Luna', 'Terra', 'Sol', 'Astra'])
+        ax.set_yticks(list(reversed(range(len(models)))), models)
         ax.grid(axis='x', alpha=.2)
         ax.set_axisbelow(True)
         for side in ['top', 'right']:

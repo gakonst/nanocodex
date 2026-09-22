@@ -37,7 +37,7 @@ async fn generation_uses_codex_images_request_and_persists_result() -> Result<()
         .run(
             r#"{"prompt":"paint a blue whale"}"#,
             ToolContext::new(
-                "gpt-5.6-sol",
+                "gpt-6-sol",
                 "session/one",
                 "code:1",
                 &history,
