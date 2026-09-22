@@ -751,82 +751,67 @@
 }
 
 .atlas-thinking-matrix {
-  min-width: 850px;
+  min-width: 0;
+  width: 100%;
+  table-layout: fixed;
 }
-.atlas-thinking-matrix thead th:last-child {
-  width: 290px;
-  vertical-align: middle;
-  padding: 8px 12px;
+.atlas-thinking-matrix th:first-child {
+  width: 110px;
+  padding-left: 12px;
+}
+.atlas-thinking-matrix thead th {
+  padding-top: 4px;
+  padding-bottom: 4px;
+}
+.atlas-thinking-matrix thead th:first-child {
+  padding-bottom: 4px;
+}
+.atlas-thinking-matrix tbody tr:not(.atlas-model-heading) > th {
+  padding: 0 6px 0 12px;
 }
 .atlas-thinking-matrix .atlas-thinking-chart {
-  padding: 5px 8px;
+  padding: 0 8px;
 }
 .atlas-thinking-chart svg {
   display: block;
   width: 100%;
+  height: 44px;
   overflow: visible;
+  cursor: pointer;
 }
 .atlas-thinking-chart svg line,
 .atlas-thinking-chart svg path {
   vector-effect: non-scaling-stroke;
 }
+.atlas-provider-line {
+  stroke: currentColor;
+  opacity: 0.16;
+  stroke-width: 1;
+}
 .atlas-thinking-mark {
   cursor: pointer;
 }
-.atlas-thinking-mark:hover rect {
-  opacity: 0.12;
+.atlas-thinking-mark:hover {
+  filter: brightness(1.2);
 }
-.atlas-thinking-matrix .atlas-thinking-readings {
-  padding: 5px 8px;
-}
-.atlas-thinking-readings button {
+.atlas-provider-button {
   display: flex;
   align-items: center;
-  gap: 10px;
+  justify-content: space-between;
+  gap: 3px;
   width: 100%;
+  min-height: 44px;
+  background: none;
   border: 0;
-  padding: 0 5px;
-  font: inherit;
-  font-size: 10px;
-  background: transparent;
-  text-align: left;
+  padding: 0;
   cursor: pointer;
-  white-space: nowrap;
+  font: inherit;
+  font-size: 11px;
+  text-align: left;
 }
-.atlas-thinking-readings button[aria-pressed="true"],
-.atlas-thinking-readings button:hover:not(:disabled) {
-  background: color-mix(in srgb, currentColor 6%, transparent);
-}
-.atlas-thinking-readings button:disabled {
-  cursor: default;
-}
-.atlas-thinking-readings b {
-  font-weight: 550;
-}
-.atlas-thinking-readings small {
+.atlas-provider-button small {
   font-size: 9px;
-  margin-left: auto;
-  opacity: 0.7;
-}
-.atlas-thinking-readings em {
-  color: #d16b6b;
-  font-style: normal;
-}
-.atlas-thinking-level {
-  display: inline-flex;
-  gap: 7px;
-  min-width: 65px;
-  font-weight: 550;
-}
-.atlas-thinking-level small {
-  color: var(--text);
-  font-weight: 400;
-}
-.atlas-thinking-readings .atlas-reading-failed {
-  background: color-mix(in srgb, #d16b6b 9%, transparent);
-}
-.atlas-unknown {
-  opacity: 0.45;
+  opacity: 0.8;
 }
 .atlas-thinking-axis {
   position: relative;
@@ -839,14 +824,290 @@
   white-space: nowrap;
   opacity: 0.65;
 }
+.atlas-thinking-legend {
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+}
 .atlas-thinking-legend > span {
   display: inline-flex;
   align-items: center;
   gap: 5px;
 }
-.atlas-thinking-legend i {
+.atlas-thinking-legend i,
+.atlas-effort-picker i {
   height: 7px;
   width: 7px;
   display: inline-block;
   border-radius: 50%;
+  flex-shrink: 0;
+}
+.atlas-source-switch {
+  display: inline-flex;
+  border: 1px solid var(--atlas-line);
+  border-radius: 7px;
+  padding: 2px;
+  margin-right: auto;
+}
+.atlas-source-switch button {
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  min-height: 36px;
+  padding: 0 10px;
+  cursor: pointer;
+}
+.atlas-source-switch button[aria-pressed="true"] {
+  background: color-mix(in srgb, currentColor 10%, transparent);
+}
+.atlas-thinking-matrix .atlas-model-heading th {
+  padding: 7px 12px;
+}
+.atlas-thinking-matrix .atlas-model-heading strong {
+  font-size: 12px;
+}
+.atlas-thinking-matrix .atlas-model-heading span {
+  display: none;
+}
+.atlas-detail-sheet {
+  position: fixed;
+  bottom: 12px;
+  left: 12px;
+  right: 12px;
+  max-width: 960px;
+  max-height: 65dvh;
+  overflow: auto;
+  margin: 0 auto;
+  background: var(--surface, #212121);
+  border: 1px solid var(--atlas-line);
+  border-radius: 14px;
+  box-shadow: 0 -8px 40px #0003;
+  z-index: 60;
+  padding: 0 16px 12px;
+}
+.atlas-detail-sheet .atlas-section-heading {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface, #212121);
+  padding: 10px 0 6px;
+  align-items: center;
+}
+.atlas-detail-sheet h3 small {
+  display: block;
+  margin: 4px 0 0;
+}
+.atlas-detail-sheet .atlas-section-heading button {
+  min-width: 44px;
+  min-height: 44px;
+}
+.atlas-effort-picker {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 6px 0 12px;
+}
+.atlas-effort-picker button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 44px;
+  border: 1px solid var(--atlas-line);
+  border-radius: 7px;
+  padding: 6px 10px;
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  cursor: pointer;
+}
+.atlas-effort-picker button[aria-pressed="true"] {
+  background: color-mix(in srgb, currentColor 8%, transparent);
+  border-color: currentColor;
+}
+.atlas-effort-picker strong {
+  font-weight: 500;
+}
+.atlas-cohort-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 280px), 1fr));
+  gap: 10px;
+}
+.atlas-cohort-cards article {
+  border: 1px solid var(--atlas-line);
+  border-radius: 8px;
+  padding: 12px;
+  min-width: 0;
+}
+.atlas-cohort-cards h4 {
+  font-size: 12px;
+  display: flex;
+  justify-content: space-between;
+  margin: 0 0 10px;
+  font-weight: 550;
+}
+.atlas-cohort-cards h4 small {
+  font-size: 10px;
+  font-weight: 400;
+  opacity: 0.65;
+}
+.atlas-cohort-cards dl {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px 8px;
+  margin: 0;
+}
+.atlas-cohort-cards dt {
+  font-size: 9px;
+  opacity: 0.6;
+  margin-bottom: 4px;
+}
+.atlas-cohort-cards dd {
+  font-size: 11px;
+  margin: 0;
+  font-variant-numeric: tabular-nums;
+}
+.atlas-cohort-cards p {
+  font-size: 9px;
+  line-height: 1.6;
+  opacity: 0.6;
+  margin: 12px 0 4px;
+}
+.atlas-model-id {
+  font-size: 9px;
+  opacity: 0.5;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 600px) {
+  .router-dashboard {
+    padding: 14px 10px 32px;
+  }
+  .router-header {
+    margin-bottom: 12px;
+    gap: 8px;
+  }
+  .router-header > div > p:last-child {
+    display: none;
+  }
+  .router-header .router-eyebrow {
+    font-size: 8px;
+    letter-spacing: 1px;
+  }
+  .router-header h1 {
+    font-size: 26px;
+  }
+  .router-link {
+    font-size: 10px;
+  }
+  .router-toolbar {
+    gap: 4px;
+    padding-bottom: 8px;
+  }
+  .router-tabs button,
+  .router-refresh {
+    font-size: 11px;
+    padding: 7px;
+    min-height: 36px;
+    gap: 5px;
+  }
+  .router-meta {
+    font-size: 9px;
+    gap: 4px 10px;
+    margin: 8px 0;
+  }
+  .router-dashboard > .router-muted {
+    font-size: 9px;
+    margin: 8px 0;
+  }
+  .router-atlas {
+    margin-top: 10px;
+    border-radius: 8px;
+  }
+  .atlas-topline {
+    padding: 10px 12px;
+    gap: 8px;
+  }
+  .atlas-topline h2 {
+    font-size: 15px;
+    margin: 0;
+  }
+  .atlas-topline p {
+    display: none;
+  }
+  .atlas-totals {
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 8px;
+    width: 100%;
+  }
+  .atlas-totals > span {
+    font-size: 9px;
+    min-width: 0;
+  }
+  .atlas-totals b {
+    font-size: 18px;
+    letter-spacing: -0.5px;
+    display: block;
+  }
+  .atlas-totals em {
+    font-size: 8px;
+    line-height: 1.4;
+  }
+  .atlas-thinking-legend {
+    gap: 8px;
+    font-size: 10px;
+  }
+  .atlas-source-switch {
+    margin-right: 4px;
+  }
+  .atlas-source-switch button {
+    min-height: 40px;
+    padding: 0 8px;
+  }
+  .atlas-sparse-key {
+    margin-left: auto;
+  }
+  .atlas-scroll:has(.atlas-thinking-matrix) {
+    max-height: none;
+    overflow: visible;
+  }
+  .atlas-thinking-matrix th:first-child {
+    width: 88px;
+  }
+  .atlas-thinking-matrix thead th {
+    position: static;
+  }
+  .atlas-thinking-matrix th:first-child {
+    position: static;
+  }
+  .atlas-thinking-matrix caption {
+    padding: 7px 10px;
+    font-size: 9px;
+    line-height: 1.5;
+  }
+  .atlas-provider-button {
+    font-size: 10px;
+  }
+  .atlas-thinking-matrix .atlas-thinking-chart {
+    padding: 0 6px;
+  }
+  .atlas-thinking-axis span {
+    font-size: 8px;
+  }
+  .atlas-footnote {
+    font-size: 9px;
+    padding: 8px 10px;
+  }
+  .atlas-detail-sheet {
+    bottom: 0;
+    left: 0;
+    right: 0;
+    border-radius: 14px 14px 0 0;
+    max-height: 70dvh;
+    padding: 0 12px max(12px, env(safe-area-inset-bottom));
+  }
+  .atlas-decisions {
+    padding: 12px 10px;
+  }
 }

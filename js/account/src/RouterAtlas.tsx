@@ -14,6 +14,7 @@ import {
   latencyScale,
   providerColors,
   providerNames,
+  thinkingPoints,
 } from "./routerAtlasData";
 
 const pct = (n: number | null) =>
@@ -212,158 +213,94 @@ const thinkingColors: Record<string, string> = {
 function ProviderThinkingPlot({
   rows,
   backend,
+  source,
   scale,
   selectedRow,
   onSelect,
 }: {
   rows: ReturnType<typeof atlasRows>;
   backend: string;
+  source: "live" | "probe";
   scale: ReturnType<typeof latencyScale>;
   selectedRow?: string;
   onSelect: (row: string) => void;
 }) {
-  const entries = rows.flatMap<{
-    row: (typeof rows)[number];
-    sample: RouterProvider | null;
-  }>((row) => {
-    const samples = row.samples
-      .filter((p) => p.backend === backend && p.scope === "deployment_global")
-      .sort((a, b) => a.source.localeCompare(b.source));
-    return samples.length
-      ? samples.map((sample) => ({ row, sample }))
-      : [{ row, sample: null }];
-  });
-  const step = 23,
-    height = entries.length * step;
-  const x = (ms: number) => 8 + scale.x(ms) * 5.84;
+  const points = thinkingPoints(rows, backend, source);
+  const x = (ms: number) => 14 + scale.x(ms) * 5.72;
   return (
-    <>
-      <td className="atlas-thinking-chart">
-        <svg
-          viewBox={`0 0 600 ${height}`}
-          preserveAspectRatio="none"
-          style={{ height }}
-          role="group"
-          aria-label={`${rows[0].model}, ${human(backend)}: all thinking levels on one TTFT plot`}
-        >
-          {scale.ticks.map((t) => (
-            <line
-              key={t}
-              x1={x(t)}
-              x2={x(t)}
-              y1={0}
-              y2={height}
-              className="atlas-gridline"
-            />
-          ))}
-          {entries.map(({ row, sample: p }, i) => {
-            const y = i * step + step / 2,
-              color = thinkingColors[row.effort] ?? "#549ac5";
-            if (!p) return null;
-            return (
-              <g
-                key={`${row.key}:${p.source}:${i}`}
-                role="button"
-                tabIndex={0}
-                aria-label={sampleDescription(p)}
-                aria-pressed={selectedRow === row.key}
-                onClick={() => onSelect(row.key)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    onSelect(row.key);
-                  }
-                }}
-                className="atlas-thinking-mark"
-              >
-                <title>{sampleDescription(p)}</title>
-                <rect
-                  x={0}
-                  y={i * step}
-                  width={600}
-                  height={step}
-                  fill={p.censoredCount ? "#d16b6b" : "currentColor"}
-                  opacity={
-                    p.censoredCount ? 0.09 : selectedRow === row.key ? 0.06 : 0
-                  }
-                />
-                {p.generationTtftP50Ms !== null && (
-                  <g stroke={color} strokeWidth={2}>
-                    <line
-                      x1={x(p.generationTtftP50Ms)}
-                      x2={x(p.generationTtftP95Ms ?? p.generationTtftP50Ms)}
-                      y1={y}
-                      y2={y}
-                      strokeDasharray={p.source === "probe" ? "4 3" : undefined}
-                    />
-                    {p.generationTtftP95Ms !== null && (
-                      <line
-                        x1={x(p.generationTtftP95Ms)}
-                        x2={x(p.generationTtftP95Ms)}
-                        y1={y - 4}
-                        y2={y + 4}
-                      />
-                    )}
-                    <path
-                      d={`M ${x(p.generationTtftP50Ms)} ${y} h 0`}
-                      strokeWidth={7}
-                      strokeLinecap={p.source === "live" ? "round" : "square"}
-                    />
-                    {isSparse(p) && (
-                      <path
-                        d={`M ${x(p.generationTtftP50Ms)} ${y} h 0`}
-                        stroke="var(--atlas-bg)"
-                        strokeWidth={3}
-                        strokeLinecap={p.source === "live" ? "round" : "square"}
-                      />
-                    )}
-                  </g>
-                )}
-              </g>
-            );
-          })}
-        </svg>
-      </td>
-      <td className="atlas-thinking-readings">
-        {entries.map(({ row, sample: p }, i) => (
-          <button
-            key={`${row.key}:${i}`}
-            disabled={!row.samples.some((p) => p.backend === backend)}
-            onClick={() => onSelect(row.key)}
-            aria-pressed={selectedRow === row.key}
-            aria-label={
-              p
-                ? `Inspect ${sampleDescription(p)}`
-                : `${row.effort}: no global observations`
-            }
-            className={p?.censoredCount ? "atlas-reading-failed" : ""}
-            style={{ height: step }}
-          >
-            <span
-              className="atlas-thinking-level"
-              style={{ color: thinkingColors[row.effort] ?? "#549ac5" }}
-            >
-              {row.effort}
-              <small>{p ? (p.source === "live" ? "L" : "P") : ""}</small>
-            </span>
-            {p ? (
-              <>
-                <span>
-                  <b>{formatMs(p.generationTtftP50Ms)}</b> /{" "}
-                  {formatMs(p.generationTtftP95Ms)}
-                </span>
-                <small>
-                  n{p.generationTtftSampleCount}/{p.sampleCount}
-                  {p.censoredCount > 0 && <em> · {p.censoredCount}×</em>}
-                </small>
-              </>
-            ) : (
-              <span className="atlas-unknown">— no observations</span>
-            )}
-          </button>
+    <td className="atlas-thinking-chart">
+      <svg
+        viewBox="0 0 600 44"
+        preserveAspectRatio="none"
+        role="group"
+        aria-label={`${rows[0].model}, ${human(backend)}: one line, one median TTFT point per thinking level`}
+        onClick={() => onSelect(rows[0].key)}
+      >
+        <line
+          x1={14}
+          x2={586}
+          y1={22}
+          y2={22}
+          className="atlas-provider-line"
+        />
+        {scale.ticks.map((t) => (
+          <line
+            key={t}
+            x1={x(t)}
+            x2={x(t)}
+            y1={17}
+            y2={27}
+            className="atlas-gridline"
+          />
         ))}
-      </td>
-    </>
+        {points.map(({ row, sample: p }) =>
+          p?.generationTtftP50Ms !== null &&
+          p?.generationTtftP50Ms !== undefined ? (
+            <g
+              key={row.key}
+              role="button"
+              tabIndex={0}
+              aria-label={sampleDescription(p)}
+              aria-pressed={selectedRow === row.key}
+              className="atlas-thinking-mark"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSelect(row.key);
+              }}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  onSelect(row.key);
+                }
+              }}
+            >
+              <title>{sampleDescription(p)}</title>
+              <path
+                d={`M ${x(p.generationTtftP50Ms)} 22 h 0`}
+                stroke="var(--atlas-bg)"
+                strokeWidth={13}
+                strokeLinecap="round"
+              />
+              <path
+                d={`M ${x(p.generationTtftP50Ms)} 22 h 0`}
+                stroke={thinkingColors[row.effort] ?? "#549ac5"}
+                strokeWidth={9}
+                strokeLinecap="round"
+              />
+              {isSparse(p) && (
+                <path
+                  d={`M ${x(p.generationTtftP50Ms)} 22 h 0`}
+                  stroke="var(--atlas-bg)"
+                  strokeWidth={4}
+                  strokeLinecap="round"
+                />
+              )}
+            </g>
+          ) : null,
+        )}
+      </svg>
+    </td>
   );
 }
 
@@ -372,6 +309,7 @@ export function RouterAtlas({ snapshot }: { snapshot: RouterSnapshot }) {
     row: string;
     backend: string;
   } | null>(null);
+  const [source, setSource] = useState<"live" | "probe">("probe");
   const rows = atlasRows(snapshot.providers);
   const backends = [
     ...new Set([...providerNames, ...snapshot.providers.map((p) => p.backend)]),
@@ -399,15 +337,16 @@ export function RouterAtlas({ snapshot }: { snapshot: RouterSnapshot }) {
     probe = globalTotals(snapshot.providers, "probe");
   const active = rows.find((r) => r.key === selection?.row);
   const inspected =
-    active?.samples.filter((p) => p.backend === selection?.backend) ?? [];
+    active?.samples.filter(
+      (p) => p.backend === selection?.backend && p.source === source,
+    ) ?? [];
+  const selectedModel = models.find((group) => group.model === active?.model);
   return (
     <div className="router-atlas">
       <div className="atlas-topline">
         <div>
           <h2>Inference atlas</h2>
-          <p>
-            Grouped by model. All thinking levels share one plot per provider.
-          </p>
+          <p>One line per provider · median TTFT by thinking level.</p>
         </div>
         <div className="atlas-totals">
           <span>
@@ -433,58 +372,72 @@ export function RouterAtlas({ snapshot }: { snapshot: RouterSnapshot }) {
         </div>
       </div>
       <div className="atlas-legend atlas-thinking-legend">
+        <div
+          className="atlas-source-switch"
+          role="group"
+          aria-label="Measurement source"
+        >
+          {(["probe", "live"] as const).map((value) => (
+            <button
+              key={value}
+              aria-pressed={source === value}
+              onClick={() => {
+                setSource(value);
+                setSelection(null);
+              }}
+            >
+              {value === "probe" ? "Probes" : "Live"}
+            </button>
+          ))}
+        </div>
         {efforts.map((e) => (
           <span key={e}>
             <i style={{ background: thinkingColors[e] ?? "#549ac5" }} />
             {e}
           </span>
         ))}
-        <span>● live · ■ probe · marker p50 ━┫ p95</span>
-        <span>Hollow = fewer than 3 TTFT samples</span>
-        <span className="atlas-danger">Red = failed or cancelled</span>
-        <span>n = TTFT samples / attempts</span>
+        <span className="atlas-sparse-key">○ sparse</span>
       </div>
       <div
         className="atlas-scroll"
         role="region"
-        aria-label="Models and providers with all thinking levels on each TTFT plot; scroll horizontally on small screens"
+        aria-label="Median TTFT by model and provider, one line per provider"
         tabIndex={0}
       >
         <table className="atlas-matrix atlas-by-model atlas-thinking-matrix">
           <caption>
-            Global generation TTFT · shared logarithmic milliseconds axis ·
-            lower is faster · click a marker or reading for all regions and
-            error types
+            {source === "probe" ? "Synthetic probes" : "Live traffic"} · median
+            TTFT · log axis · tap a provider for details
           </caption>
           <thead>
             <tr>
               <th scope="col">Provider</th>
               <th scope="col">
-                <span className="atlas-effort">TTFT · all thinking levels</span>
                 <div
                   className="atlas-thinking-axis"
                   role="img"
                   aria-label="Shared logarithmic milliseconds axis"
                 >
-                  {scale.ticks.map((t) => (
-                    <span
-                      key={t}
-                      style={{
-                        left: `${1.333333 + scale.x(t) * 0.9733333}%`,
-                        transform:
-                          t === 0
-                            ? "none"
-                            : t === scale.ceiling
-                              ? "translateX(-100%)"
-                              : "translateX(-50%)",
-                      }}
-                    >
-                      {t === 0 ? "0" : formatMs(t)}
-                    </span>
-                  ))}
+                  {scale.ticks
+                    .filter((t) => t === 0 || t >= 100)
+                    .map((t) => (
+                      <span
+                        key={t}
+                        style={{
+                          left: `${2.333333 + scale.x(t) * 0.9533333}%`,
+                          transform:
+                            t === 0
+                              ? "none"
+                              : t === scale.ceiling
+                                ? "translateX(-100%)"
+                                : "translateX(-50%)",
+                        }}
+                      >
+                        {t === 0 ? "0" : formatMs(t)}
+                      </span>
+                    ))}
                 </div>
               </th>
-              <th scope="col">Thinking · source · p50 / p95 · samples</th>
             </tr>
           </thead>
           {models.map((group) => (
@@ -493,7 +446,7 @@ export function RouterAtlas({ snapshot }: { snapshot: RouterSnapshot }) {
               aria-label={`${group.model} provider comparisons`}
             >
               <tr className="atlas-model-heading">
-                <th colSpan={3} scope="rowgroup">
+                <th colSpan={2} scope="rowgroup">
                   <strong>{group.model}</strong>
                   <span>
                     {group.rows.length} thinking levels · same axis for every
@@ -507,32 +460,49 @@ export function RouterAtlas({ snapshot }: { snapshot: RouterSnapshot }) {
                     row.samples.some((p) => p.backend === backend),
                   ),
                 )
-                .map((backend) => (
-                  <tr key={backend}>
-                    <th
-                      scope="row"
-                      aria-label={`${group.model}, ${human(backend)}`}
-                    >
-                      <strong
-                        className="atlas-provider"
-                        style={{ color: providerColors[backend] }}
-                      >
-                        {human(backend)}
-                      </strong>
-                    </th>
-                    <ProviderThinkingPlot
-                      rows={group.rows}
-                      backend={backend}
-                      scale={scale}
-                      selectedRow={
-                        selection?.backend === backend
-                          ? selection.row
-                          : undefined
-                      }
-                      onSelect={(row) => setSelection({ row, backend })}
-                    />
-                  </tr>
-                ))}
+                .map((backend) => {
+                  const points = thinkingPoints(group.rows, backend, source);
+                  const samples = points.flatMap((p) => p.matches);
+                  const failures = samples.reduce(
+                    (n, p) => n + p.censoredCount,
+                    0,
+                  );
+                  const hasPoint = points.some(
+                    (p) => p.sample?.generationTtftP50Ms != null,
+                  );
+                  return (
+                    <tr key={backend}>
+                      <th scope="row">
+                        <button
+                          className="atlas-provider-button"
+                          aria-label={`Inspect ${group.model}, ${human(backend)}, all thinking levels`}
+                          onClick={() =>
+                            setSelection({ row: group.rows[0].key, backend })
+                          }
+                        >
+                          <span>{human(backend)}</span>
+                          {failures > 0 ? (
+                            <small className="atlas-danger">{failures}×</small>
+                          ) : !hasPoint ? (
+                            <small>—</small>
+                          ) : null}
+                        </button>
+                      </th>
+                      <ProviderThinkingPlot
+                        rows={group.rows}
+                        backend={backend}
+                        source={source}
+                        scale={scale}
+                        selectedRow={
+                          selection?.backend === backend
+                            ? selection.row
+                            : undefined
+                        }
+                        onSelect={(row) => setSelection({ row, backend })}
+                      />
+                    </tr>
+                  );
+                })}
             </tbody>
           ))}
         </table>
@@ -544,93 +514,127 @@ export function RouterAtlas({ snapshot }: { snapshot: RouterSnapshot }) {
         )}
       </div>
       <div className="atlas-footnote">
-        TTFT excludes failures; missing ≠ zero. Values: median / p95. × = failed
-        or cancelled. Global totals count each observation once; regional
-        cohorts overlap. Empty source lanes are omitted. Model aliases align
-        visually; measurements stay separate.
+        One dot per thinking level · hollow = fewer than 3 TTFT samples · × =
+        failed/cancelled. Tap a provider for overlapping dots, exact values and
+        p95. Missing or split-cohort values are not plotted.
       </div>
-      <div className="atlas-inspector" aria-live="polite">
-        {active && selection ? (
-          <>
-            <div className="atlas-section-heading">
-              <h3>
-                {active.model}{" "}
-                <small>
-                  {active.effort} · {human(selection.backend)}
-                </small>
-              </h3>
-              <button onClick={() => setSelection(null)}>
-                Clear selection
-              </button>
-            </div>
-            <div className="router-table-wrap">
-              <table>
-                <thead>
-                  <tr>
-                    {[
-                      "Cohort / source",
-                      "Model ID",
-                      "TTFT p50 / p95",
-                      "Full p50",
-                      "TTFT / attempts",
-                      "Failures",
-                      "Last sample / TTFT",
-                    ].map((t) => (
-                      <th key={t}>{t}</th>
-                    ))}
-                  </tr>
-                </thead>
-                <tbody>
-                  {inspected.map((p, i) => (
-                    <tr key={i}>
-                      <td>
-                        <strong>{cohort(p)}</strong>
-                        <small>{p.source}</small>
-                      </td>
-                      <td>{p.model}</td>
-                      <td>
-                        {formatMs(p.generationTtftP50Ms)} /{" "}
-                        {formatMs(p.generationTtftP95Ms)}
-                        {isSparse(p) && <small>Sparse TTFT evidence</small>}
-                      </td>
-                      <td>{formatMs(p.fullResponseP50Ms)}</td>
-                      <td>
-                        {p.generationTtftSampleCount} / {p.sampleCount}
-                        <small>{p.successCount} completed</small>
-                      </td>
-                      <td className={p.censoredCount ? "atlas-danger" : ""}>
-                        {p.censoredCount}
-                        <small>
-                          HTTP {p.httpErrorCount} · network{" "}
-                          {p.networkErrorCount} · protocol{" "}
-                          {p.protocolErrorCount}
-                          <br />
-                          timeout {p.timeoutCount} · cancelled{" "}
-                          {p.cancelledCount}
-                        </small>
-                      </td>
-                      <td>
-                        {time(p.lastObservedAt)}
-                        <small>TTFT {time(p.lastTtftObservedAt)}</small>
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+      {active && selection && selectedModel && (
+        <div
+          className="atlas-inspector atlas-detail-sheet"
+          role="region"
+          aria-label="Selected provider details"
+          onKeyDown={(e) => {
+            if (e.key === "Escape") setSelection(null);
+          }}
+        >
+          <div className="atlas-section-heading">
+            <h3>
+              {active.model}
+              <small>
+                {human(selection.backend)} ·{" "}
+                {source === "probe" ? "probes" : "live"}
+              </small>
+            </h3>
+            <button
+              onClick={() => setSelection(null)}
+              aria-label="Close provider details"
+            >
+              Close
+            </button>
+          </div>
+          <div
+            className="atlas-effort-picker"
+            role="group"
+            aria-label="Thinking level details"
+          >
+            {thinkingPoints(selectedModel.rows, selection.backend, source).map(
+              ({ row, sample, matches }) => (
+                <button
+                  key={row.key}
+                  aria-pressed={row.key === active.key}
+                  onClick={() =>
+                    setSelection({ row: row.key, backend: selection.backend })
+                  }
+                >
+                  <i
+                    style={{
+                      background: thinkingColors[row.effort] ?? "#549ac5",
+                    }}
+                  />
+                  {row.effort}
+                  <strong>
+                    {sample
+                      ? formatMs(sample.generationTtftP50Ms)
+                      : matches.length > 1
+                        ? "split cohorts"
+                        : "—"}
+                  </strong>
+                </button>
+              ),
+            )}
+          </div>
+          <div className="atlas-cohort-cards">
+            {inspected.map((p, i) => (
+              <article key={i}>
+                <h4>
+                  {cohort(p)}
+                  <small>{active.effort}</small>
+                </h4>
+                <dl>
+                  <div>
+                    <dt>TTFT p50 / p95</dt>
+                    <dd>
+                      {formatMs(p.generationTtftP50Ms)} /{" "}
+                      {formatMs(p.generationTtftP95Ms)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Full response p50</dt>
+                    <dd>{formatMs(p.fullResponseP50Ms)}</dd>
+                  </div>
+                  <div>
+                    <dt>TTFT / attempts</dt>
+                    <dd>
+                      {p.generationTtftSampleCount} / {p.sampleCount}
+                      {isSparse(p) ? " · sparse" : ""}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Failed / cancelled</dt>
+                    <dd className={p.censoredCount ? "atlas-danger" : ""}>
+                      {p.censoredCount}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt>Last sample</dt>
+                    <dd>{time(p.lastObservedAt)}</dd>
+                  </div>
+                  <div>
+                    <dt>Last TTFT</dt>
+                    <dd>{time(p.lastTtftObservedAt)}</dd>
+                  </div>
+                </dl>
+                <p>
+                  HTTP {p.httpErrorCount} · network {p.networkErrorCount} ·
+                  protocol {p.protocolErrorCount} · timeout {p.timeoutCount} ·
+                  cancelled {p.cancelledCount}
+                </p>
+                <small className="atlas-model-id">{p.model}</small>
+              </article>
+            ))}
+          </div>
+          {!inspected.length && (
             <p className="router-muted">
-              Ingress is where the request entered Cloudflare. Execution is
-              where the Worker ran. These are overlapping views of the same
-              observations, not independent benchmarks.
+              No {source} observations for this provider and thinking level.
             </p>
-          </>
-        ) : (
-          <p>
-            Click a marker or reading to compare all ingress and execution
-            cohorts, full-response latency, freshness and error categories.
+          )}
+          <p className="router-muted">
+            Global and regional cohorts overlap; counts are not added together.
+            Ingress and execution locations differ. Failures are excluded from
+            latency percentiles.
           </p>
-        )}
-      </div>
+        </div>
+      )}
       <DecisionRibbon decisions={snapshot.decisions} />
     </div>
   );

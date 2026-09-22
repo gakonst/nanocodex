@@ -6,6 +6,7 @@ import {
   isSparse,
   latencyScale,
   modelFamily,
+  thinkingPoints,
 } from "./routerAtlasData.ts";
 import type { RouterProvider } from "./routerApi.ts";
 const p = (overrides: Partial<RouterProvider> = {}): RouterProvider => ({
@@ -91,4 +92,26 @@ test("sparsity uses TTFT count, not attempts; missing remains missing; log axis 
   assert.equal(scale.x(scale.ceiling), 100);
   assert.ok(scale.x(51000) < 100);
   assert.ok(scale.x(100) < scale.x(200));
+});
+
+test("one point per thinking level uses only the selected source, without alias aggregation", () => {
+  const live = p({ generationTtftP50Ms: 120 });
+  const probe = p({ source: "probe", generationTtftP50Ms: 800 });
+  const rows = atlasRows([live, probe]);
+  assert.equal(thinkingPoints(rows, "cloudflare", "probe")[0].sample, probe);
+  assert.equal(thinkingPoints(rows, "cloudflare", "live")[0].sample, live);
+  const split = atlasRows([
+    probe,
+    p({
+      source: "probe",
+      model: "openai/gpt-5.6-luna",
+      generationTtftP50Ms: 1000,
+    }),
+  ]);
+  assert.equal(thinkingPoints(split, "cloudflare", "probe")[0].sample, null);
+  assert.equal(
+    thinkingPoints(split, "cloudflare", "probe")[0].matches.length,
+    2,
+  );
+  assert.equal(thinkingPoints(rows, "vercel", "probe")[0].sample, null);
 });

@@ -83,3 +83,20 @@ export function latencyScale(providers: RouterProvider[]) {
     x: (n: number) => (Math.log1p(Math.max(0, n)) / Math.log1p(ceiling)) * 100,
   };
 }
+
+/** One point per level from an explicitly selected source. Never average aliases. */
+export function thinkingPoints(
+  rows: ReturnType<typeof atlasRows>,
+  backend: string,
+  source: "live" | "probe",
+) {
+  return rows.map((row) => {
+    const matches = row.samples.filter(
+      (p) =>
+        p.backend === backend &&
+        p.source === source &&
+        p.scope === "deployment_global",
+    );
+    return { row, matches, sample: matches.length === 1 ? matches[0] : null };
+  });
+}
