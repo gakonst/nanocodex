@@ -1,0 +1,318 @@
+{
+  "cohort": "router-repair-20260922",
+  "kind": "classifier-only synthetic diagnostics, not end-to-end latency comparison",
+  "calls": [
+    {
+      "case": 0,
+      "catalog": "three-luna-providers",
+      "trace": [
+        {
+          "ok": true,
+          "ms": 521,
+          "input_bytes": 9924,
+          "state": "Completed"
+        }
+      ],
+      "selection": "fallback",
+      "confidence_status": "low",
+      "candidate_confidence": 0.44,
+      "probabilities": {
+        "openrouter:openai/gpt-5.6-luna:low": 0.62,
+        "vercel:openai/gpt-5.6-luna:low": 0.35,
+        "cloudflare:openai/gpt-5.6-luna:low": 0.03
+      },
+      "classifier": null
+    },
+    {
+      "case": 1,
+      "catalog": "three-luna-providers",
+      "trace": [
+        {
+          "ok": true,
+          "ms": 153,
+          "input_bytes": 9924,
+          "state": "Completed"
+        }
+      ],
+      "selection": "fallback",
+      "confidence_status": "low",
+      "candidate_confidence": 0.6,
+      "probabilities": {
+        "openrouter:openai/gpt-5.6-luna:low": 0.73,
+        "vercel:openai/gpt-5.6-luna:low": 0.25,
+        "cloudflare:openai/gpt-5.6-luna:low": 0.02
+      },
+      "classifier": null
+    },
+    {
+      "case": 2,
+      "catalog": "three-luna-providers",
+      "trace": [
+        {
+          "ok": true,
+          "ms": 153,
+          "input_bytes": 9924,
+          "state": "Completed"
+        }
+      ],
+      "selection": "fallback",
+      "confidence_status": "low",
+      "candidate_confidence": 0.56,
+      "probabilities": {
+        "openrouter:openai/gpt-5.6-luna:low": 0.7,
+        "vercel:openai/gpt-5.6-luna:low": 0.27,
+        "cloudflare:openai/gpt-5.6-luna:low": 0.03
+      },
+      "classifier": null
+    },
+    {
+      "case": 3,
+      "catalog": "full",
+      "trace": [
+        {
+          "ok": true,
+          "ms": 646,
+          "input_bytes": 52797,
+          "state": "Completed"
+        }
+      ],
+      "selection": "fallback",
+      "confidence_status": "low",
+      "candidate_confidence": 0.29,
+      "probabilities": {
+        "@cf/zai-org/glm-5.3:low": 0.3,
+        "@cf/zai-org/glm-5.3:medium": 0.01,
+        "@cf/zai-org/glm-5.3:high": 0,
+        "openrouter:z-ai/glm-5.3:low": 0.04,
+        "openrouter:z-ai/glm-5.3:medium": 0,
+        "openrouter:z-ai/glm-5.3:high": 0,
+        "vercel:zai/glm-5.3:low": 0,
+        "vercel:zai/glm-5.3:medium": 0,
+        "vercel:zai/glm-5.3:high": 0,
+        "gpt-6-astra:low": 0.03,
+        "gpt-6-astra:medium": 0.01,
+        "gpt-6-astra:high": 0,
+        "openrouter:openai/gpt-6-astra:low": 0,
+        "openrouter:openai/gpt-6-astra:medium": 0,
+        "openrouter:openai/gpt-6-astra:high": 0,
+        "vercel:openai/gpt-6-astra:low": 0,
+        "vercel:openai/gpt-6-astra:medium": 0,
+        "vercel:openai/gpt-6-astra:high": 0,
+        "cloudflare:openai/gpt-6-astra:low": 0.01,
+        "cloudflare:openai/gpt-6-astra:medium": 0,
+        "cloudflare:openai/gpt-6-astra:high": 0,
+        "gpt-5.6-sol:low": 0,
+        "gpt-5.6-sol:medium": 0,
+        "gpt-5.6-sol:high": 0,
+        "openrouter:openai/gpt-5.6-sol:low": 0.01,
+        "openrouter:openai/gpt-5.6-sol:medium": 0,
+        "openrouter:openai/gpt-5.6-sol:high": 0,
+        "vercel:openai/gpt-5.6-sol:low": 0,
+        "vercel:openai/gpt-5.6-sol:medium": 0,
+        "vercel:openai/gpt-5.6-sol:high": 0,
+        "cloudflare:openai/gpt-5.6-sol:low": 0.01,
+        "cloudflare:openai/gpt-5.6-sol:medium": 0,
+        "cloudflare:openai/gpt-5.6-sol:high": 0,
+        "gpt-5.6-terra:low": 0,
+        "gpt-5.6-terra:medium": 0,
+        "gpt-5.6-terra:high": 0,
+        "openrouter:openai/gpt-5.6-terra:low": 0,
+        "openrouter:openai/gpt-5.6-terra:medium": 0,
+        "openrouter:openai/gpt-5.6-terra:high": 0,
+        "vercel:openai/gpt-5.6-terra:low": 0,
+        "vercel:openai/gpt-5.6-terra:medium": 0,
+        "vercel:openai/gpt-5.6-terra:high": 0,
+        "cloudflare:openai/gpt-5.6-terra:low": 0,
+        "cloudflare:openai/gpt-5.6-terra:medium": 0,
+        "cloudflare:openai/gpt-5.6-terra:high": 0,
+        "gpt-5.6-luna:low": 0.05,
+        "gpt-5.6-luna:medium": 0,
+        "gpt-5.6-luna:high": 0,
+        "openrouter:openai/gpt-5.6-luna:low": 0.31,
+        "openrouter:openai/gpt-5.6-luna:medium": 0.01,
+        "openrouter:openai/gpt-5.6-luna:high": 0,
+        "vercel:openai/gpt-5.6-luna:low": 0.14,
+        "vercel:openai/gpt-5.6-luna:medium": 0,
+        "vercel:openai/gpt-5.6-luna:high": 0,
+        "cloudflare:openai/gpt-5.6-luna:low": 0.06999999999999999,
+        "cloudflare:openai/gpt-5.6-luna:medium": 0,
+        "cloudflare:openai/gpt-5.6-luna:high": 0
+      },
+      "classifier": {
+        "outcome": "success",
+        "attempts": [
+          {
+            "duration_ms": 646,
+            "outcome": "success"
+          }
+        ]
+      }
+    },
+    {
+      "case": 4,
+      "catalog": "full",
+      "trace": [
+        {
+          "ok": true,
+          "ms": 219,
+          "input_bytes": 52797,
+          "state": "Completed"
+        }
+      ],
+      "selection": "fallback",
+      "confidence_status": "low",
+      "candidate_confidence": 0.31,
+      "probabilities": {
+        "@cf/zai-org/glm-5.3:low": 0.32,
+        "@cf/zai-org/glm-5.3:medium": 0.01,
+        "@cf/zai-org/glm-5.3:high": 0,
+        "openrouter:z-ai/glm-5.3:low": 0.03,
+        "openrouter:z-ai/glm-5.3:medium": 0,
+        "openrouter:z-ai/glm-5.3:high": 0,
+        "vercel:zai/glm-5.3:low": 0,
+        "vercel:zai/glm-5.3:medium": 0,
+        "vercel:zai/glm-5.3:high": 0,
+        "gpt-6-astra:low": 0.03,
+        "gpt-6-astra:medium": 0.01,
+        "gpt-6-astra:high": 0,
+        "openrouter:openai/gpt-6-astra:low": 0,
+        "openrouter:openai/gpt-6-astra:medium": 0,
+        "openrouter:openai/gpt-6-astra:high": 0,
+        "vercel:openai/gpt-6-astra:low": 0,
+        "vercel:openai/gpt-6-astra:medium": 0,
+        "vercel:openai/gpt-6-astra:high": 0,
+        "cloudflare:openai/gpt-6-astra:low": 0.01,
+        "cloudflare:openai/gpt-6-astra:medium": 0,
+        "cloudflare:openai/gpt-6-astra:high": 0,
+        "gpt-5.6-sol:low": 0,
+        "gpt-5.6-sol:medium": 0,
+        "gpt-5.6-sol:high": 0,
+        "openrouter:openai/gpt-5.6-sol:low": 0.01,
+        "openrouter:openai/gpt-5.6-sol:medium": 0,
+        "openrouter:openai/gpt-5.6-sol:high": 0,
+        "vercel:openai/gpt-5.6-sol:low": 0,
+        "vercel:openai/gpt-5.6-sol:medium": 0,
+        "vercel:openai/gpt-5.6-sol:high": 0,
+        "cloudflare:openai/gpt-5.6-sol:low": 0.01,
+        "cloudflare:openai/gpt-5.6-sol:medium": 0,
+        "cloudflare:openai/gpt-5.6-sol:high": 0,
+        "gpt-5.6-terra:low": 0,
+        "gpt-5.6-terra:medium": 0,
+        "gpt-5.6-terra:high": 0,
+        "openrouter:openai/gpt-5.6-terra:low": 0,
+        "openrouter:openai/gpt-5.6-terra:medium": 0,
+        "openrouter:openai/gpt-5.6-terra:high": 0,
+        "vercel:openai/gpt-5.6-terra:low": 0,
+        "vercel:openai/gpt-5.6-terra:medium": 0,
+        "vercel:openai/gpt-5.6-terra:high": 0,
+        "cloudflare:openai/gpt-5.6-terra:low": 0,
+        "cloudflare:openai/gpt-5.6-terra:medium": 0,
+        "cloudflare:openai/gpt-5.6-terra:high": 0,
+        "gpt-5.6-luna:low": 0.05,
+        "gpt-5.6-luna:medium": 0,
+        "gpt-5.6-luna:high": 0,
+        "openrouter:openai/gpt-5.6-luna:low": 0.33,
+        "openrouter:openai/gpt-5.6-luna:medium": 0.01,
+        "openrouter:openai/gpt-5.6-luna:high": 0,
+        "vercel:openai/gpt-5.6-luna:low": 0.12,
+        "vercel:openai/gpt-5.6-luna:medium": 0,
+        "vercel:openai/gpt-5.6-luna:high": 0,
+        "cloudflare:openai/gpt-5.6-luna:low": 0.060000000000000005,
+        "cloudflare:openai/gpt-5.6-luna:medium": 0,
+        "cloudflare:openai/gpt-5.6-luna:high": 0
+      },
+      "classifier": {
+        "outcome": "success",
+        "attempts": [
+          {
+            "duration_ms": 219,
+            "outcome": "success"
+          }
+        ]
+      }
+    },
+    {
+      "case": 5,
+      "catalog": "full",
+      "trace": [
+        {
+          "ok": true,
+          "ms": 223,
+          "input_bytes": 52797,
+          "state": "Completed"
+        }
+      ],
+      "selection": "fallback",
+      "confidence_status": "low",
+      "candidate_confidence": 0.33,
+      "probabilities": {
+        "@cf/zai-org/glm-5.3:low": 0.27,
+        "@cf/zai-org/glm-5.3:medium": 0.01,
+        "@cf/zai-org/glm-5.3:high": 0,
+        "openrouter:z-ai/glm-5.3:low": 0.02,
+        "openrouter:z-ai/glm-5.3:medium": 0,
+        "openrouter:z-ai/glm-5.3:high": 0,
+        "vercel:zai/glm-5.3:low": 0,
+        "vercel:zai/glm-5.3:medium": 0,
+        "vercel:zai/glm-5.3:high": 0,
+        "gpt-6-astra:low": 0.03,
+        "gpt-6-astra:medium": 0.01,
+        "gpt-6-astra:high": 0,
+        "openrouter:openai/gpt-6-astra:low": 0,
+        "openrouter:openai/gpt-6-astra:medium": 0,
+        "openrouter:openai/gpt-6-astra:high": 0,
+        "vercel:openai/gpt-6-astra:low": 0,
+        "vercel:openai/gpt-6-astra:medium": 0,
+        "vercel:openai/gpt-6-astra:high": 0,
+        "cloudflare:openai/gpt-6-astra:low": 0.01,
+        "cloudflare:openai/gpt-6-astra:medium": 0,
+        "cloudflare:openai/gpt-6-astra:high": 0,
+        "gpt-5.6-sol:low": 0,
+        "gpt-5.6-sol:medium": 0,
+        "gpt-5.6-sol:high": 0,
+        "openrouter:openai/gpt-5.6-sol:low": 0.01,
+        "openrouter:openai/gpt-5.6-sol:medium": 0,
+        "openrouter:openai/gpt-5.6-sol:high": 0,
+        "vercel:openai/gpt-5.6-sol:low": 0,
+        "vercel:openai/gpt-5.6-sol:medium": 0,
+        "vercel:openai/gpt-5.6-sol:high": 0,
+        "cloudflare:openai/gpt-5.6-sol:low": 0.01,
+        "cloudflare:openai/gpt-5.6-sol:medium": 0,
+        "cloudflare:openai/gpt-5.6-sol:high": 0,
+        "gpt-5.6-terra:low": 0,
+        "gpt-5.6-terra:medium": 0,
+        "gpt-5.6-terra:high": 0,
+        "openrouter:openai/gpt-5.6-terra:low": 0,
+        "openrouter:openai/gpt-5.6-terra:medium": 0,
+        "openrouter:openai/gpt-5.6-terra:high": 0,
+        "vercel:openai/gpt-5.6-terra:low": 0,
+        "vercel:openai/gpt-5.6-terra:medium": 0,
+        "vercel:openai/gpt-5.6-terra:high": 0,
+        "cloudflare:openai/gpt-5.6-terra:low": 0,
+        "cloudflare:openai/gpt-5.6-terra:medium": 0,
+        "cloudflare:openai/gpt-5.6-terra:high": 0,
+        "gpt-5.6-luna:low": 0.06999999999999999,
+        "gpt-5.6-luna:medium": 0,
+        "gpt-5.6-luna:high": 0,
+        "openrouter:openai/gpt-5.6-luna:low": 0.35000000000000003,
+        "openrouter:openai/gpt-5.6-luna:medium": 0.01,
+        "openrouter:openai/gpt-5.6-luna:high": 0,
+        "vercel:openai/gpt-5.6-luna:low": 0.12,
+        "vercel:openai/gpt-5.6-luna:medium": 0,
+        "vercel:openai/gpt-5.6-luna:high": 0,
+        "cloudflare:openai/gpt-5.6-luna:low": 0.06999999999999999,
+        "cloudflare:openai/gpt-5.6-luna:medium": 0,
+        "cloudflare:openai/gpt-5.6-luna:high": 0
+      },
+      "classifier": {
+        "outcome": "success",
+        "attempts": [
+          {
+            "duration_ms": 223,
+            "outcome": "success"
+          }
+        ]
+      }
+    }
+  ]
+}

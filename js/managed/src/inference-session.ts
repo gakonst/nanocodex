@@ -1,3 +1,4 @@
+import { routeObservation, type RouterObservation } from "./router-telemetry";
 import { DurableObject } from "cloudflare:workers";
 import { z } from "zod";
 import { createGatewayResponses } from "nanocodex/cloudflare/gateway-responses";
@@ -28,7 +29,7 @@ export type InferenceSessionEnv = {
   NANOCODEX_PROVIDER_PROBES?: string;
   /** Deployment-global, content-free probe aggregates; never an account service. */
   NANOCODEX_PROVIDER_PROBE_COORDINATOR?: {
-    getByName(name: string): { snapshot(origin?: InferenceOrigin): Promise<unknown>; observe?(observation: ProviderObservation): Promise<unknown> };
+    getByName(name: string): { snapshot(origin?: InferenceOrigin): Promise<unknown>; observe?(observation: ProviderObservation): Promise<unknown>; observeRoute?(observation: RouterObservation): Promise<unknown> };
   };
 };
 export const INFERENCE_KEY_ID_HEADER = "x-inference-key-id";
@@ -158,11 +159,19 @@ export function normalizeInferencePolicy(value: unknown = {}): ThreadRoutingPoli
  */
 export async function inferenceRoutingAvailability(env: InferenceSessionEnv, signal: AbortSignal, origin: InferenceOrigin = unknownOrigin): Promise<RoutingAvailability> {
   const availability: RoutingAvailability = {
-    ...gatewayAvailability(env),
+    ...gatewayAvailability(env), signal,
     workerColo: null, clientIngressColo: origin.clientIngressColo, provider_performance: [],
   };
   const coordinator = env.NANOCODEX_PROVIDER_PROBE_COORDINATOR;
   if (!coordinator || signal.aborted) return availability;
+  availability.observeRoute = async route => {
+    const observation = routeObservation(route, origin.clientIngressColo);
+    const target = coordinator.getByName(PROBE_OWNER);
+    if (!observation || !target.observeRoute) return;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try { await Promise.race([target.observeRoute(observation), new Promise(resolve => { timer = setTimeout(resolve, INFERENCE_PROBE_TIMEOUT_MS); })]); }
+    finally { clearTimeout(timer); }
+  };
   let timer: ReturnType<typeof setTimeout> | undefined;
   let abort: (() => void) | undefined;
   try {
@@ -239,6 +248,7 @@ async function resolveInferenceRoute(env: InferenceSessionEnv, input: InferenceR
   if (!ROUTING_CANDIDATES.some(c => constrained.candidates!.includes(c.id)
     && (c.backend === "workers_ai" || c.backend !== "chatgpt" && availability[c.backend])))
     throw new InferenceRequestError("no_inference_candidates");
+  availability.bypassSingleCandidate = input.model !== "auto";
   const route = await abortable(resolveThreadRoute(env.AI, input.input, constrained, availability), signal);
   signal.throwIfAborted();
   if (!admittedRoute(route, constrained)) throw new InferenceRequestError("invalid_pinned_route", 503);

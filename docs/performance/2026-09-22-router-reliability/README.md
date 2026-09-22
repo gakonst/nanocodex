@@ -1,0 +1,15 @@
+# Router dashboard and reliability follow-up
+
+The Sep 21 benchmark's nine early Jev binding failures did not retain error details, so their root cause remains unknown. Six fresh synthetic classifier-only probes succeeded: three with the original three-provider Luna choice and three with the full routing catalog. These small availability checks do not demonstrate that the intermittent failure is eliminated, establish regional latency gains, or retune confidence policy.
+
+The direct resolver now records a fixed error category and duration for each binding attempt. It retries one explicitly transient server/network failure within a shared ten-second deadline. Authentication, validation, rate limits, unknown errors, invalid classifier responses and timeouts are not retried. A binding timeout cannot be cancelled, so it never launches a duplicate attempt. Generation calls are not retried or switched by this change.
+
+Requests constrained to one explicit inference candidate bypass Jev when no measured-success threshold needs classification. This removes the redundant inner classifier from the prior fixed-provider benchmark harness. Model/provider pins, automatic-routing opt-in, and the existing low-confidence policy remain unchanged. Low confidence is not relabelled as acceptance or as a failed binding.
+
+`/router` leads with zero-based provider latency plots and a stacked routing-outcome chart; raw tables and probabilities are behind an inspect toggle. It presents the unchanged historical benchmark and a separate live two-hour view: provider/model/effort, ingress cohorts, live versus synthetic observations, TTFT p50/p95, generation failures, classifier attempts, retry recoveries, and expandable choice probabilities. The retained windows cap at 512 observations each; they are not full traffic totals. Global and ingress cohorts overlap and must not be added together. The UI selects one scope at a time.
+
+Live deployment-wide telemetry requires the configured platform administrator's account session. User API keys, standalone inference keys, Connect grants and other account owners cannot read it. The account `/api/router` proxy preserves authentication and forwards to managed `/v1/router`. The coordinator stores only allowlisted operational fields; no prompt text, account or session identifiers, credentials, raw errors or provider bodies.
+
+Verification includes retry/deadline and no-retry cases, fixed-provider bypass, existing pin/subagent/inference isolation tests, actual coordinator persistence and cohort projection, dashboard authorization, and account proxy/route tests. The production account build was inspected in the local browser, including the historical benchmark and unavailable-live-telemetry state. Production browser access was blocked by Brave; no browser protection was bypassed.
+
+`classifier-probes.json` preserves the new six-call cohort. The temporary diagnostic Worker reserves each case before invoking Jev and allows at most twelve distinct cases; no synthetic provider generations ran in these classifier checks. The diagnostic Worker is removed after live deployment verification.
