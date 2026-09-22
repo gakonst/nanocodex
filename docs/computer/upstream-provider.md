@@ -227,6 +227,25 @@ system directory and wrap the launcher with the desktop-session environment.
 The script does not obtain or authenticate an upstream Linux distribution;
 automatic `computer setup` remains limited to macOS and Windows.
 
+For a Linux VM, add `--register-managed` to publish the launcher selection under
+`$NANOCODEX_DIR/runtimes/openai-cua/provider.json` (or
+`$HOME/.nanocodex/runtimes/openai-cua/provider.json`). The guest runtime discovers
+this receipt at Hand startup. Install it in the guest, not on the VM host, and
+restart the guest Hand to refresh its tool catalog. Host and guest binaries must
+use the same VM tool protocol; an older factory binary can advertise tools yet
+fail when forwarding a call to a newer guest.
+
+OpenAI's Linux distribution includes both `x86_64` and `aarch64` packages. The
+26.915.31945 ARM64 package is published at
+`https://persistent.oaistatic.com/codex-app-prod/linux/arch/26.915.31945/aarch64/chatgpt-bin-26.915.31945-1-aarch64.pkg.tar.zst`.
+Use the package's matching `resources/codex` and complete `resources/cua_node`
+together, and verify the package signature against the fingerprint published in
+the upstream installer. This version contains `sky_linux_arm64`; the x86 package
+contains `sky_linux_x64`. A macOS ARM64 bundle is not a Linux ARM64 bundle.
+Bundled Node and the native Linux Sky executable require glibc, so a bare Alpine
+image needs a compatible userspace before this runtime can start. None of these
+installation steps require changing Sky's input behavior.
+
 The host serializes native calls, bounds frames and queues, and owns a private
 Unix socket. Disconnect, cancellation, reset and turn completion reject queued
 work, release tracked drags through upstream `drag_end`, and terminate the
