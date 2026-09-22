@@ -40,16 +40,24 @@ export async function boundedMemoryOperation<T>(operation: () => Promise<T>, sig
     if (aborted) signal?.removeEventListener('abort', aborted);
   }
 }
-export function createMarkdownMemoryCompletion(ai: MarkdownMemoryAi, options: { timeoutMs?: number } = {}): MarkdownMemoryCompletion {
+export function createMarkdownMemoryCompletion(ai: MarkdownMemoryAi | undefined, options: { timeoutMs?: number } = {}): MarkdownMemoryCompletion {
   return async request => {
+    if (!ai) throw new MarkdownMemoryError('memory inference is unavailable', 503, 'memory_inference_unavailable');
     const content = JSON.stringify(request.input);
     if (typeof content !== 'string' || bytes(content) + bytes(request.system) > 80_000 || bytes(JSON.stringify(request.schema)) > 8192)
       throw new MarkdownMemoryError('memory inference prompt is too large');
-    const raw = await boundedMemoryOperation(() => ai.run(MARKDOWN_MEMORY_MODEL, {
-      messages: [{ role: 'system', content: request.system }, { role: 'user', content }],
-      response_format: { type: 'json_schema', json_schema: request.schema },
-      temperature: 0, max_tokens: 2048, stream: false,
-    }), request.signal, options.timeoutMs);
+    let raw: unknown;
+    try {
+      raw = await boundedMemoryOperation(() => ai.run(MARKDOWN_MEMORY_MODEL, {
+        messages: [{ role: 'system', content: request.system }, { role: 'user', content }],
+        response_format: { type: 'json_schema', json_schema: request.schema },
+        temperature: 0, max_tokens: 2048, stream: false,
+      }), request.signal, options.timeoutMs);
+    } catch (error) {
+      // Provider errors may echo prompt content or credentials; expose only our bounded-operation errors.
+      if (error instanceof MarkdownMemoryError) throw error;
+      throw new MarkdownMemoryError('memory inference is unavailable', 503, 'memory_inference_unavailable');
+    }
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw invalidOutput();
     const result = raw as Record<string, unknown>;
     if (result.tool_calls !== undefined && (!Array.isArray(result.tool_calls) || result.tool_calls.length)) throw invalidOutput();
