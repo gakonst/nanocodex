@@ -25,7 +25,11 @@ export function createBeforeCompaction(callback, { timeoutMs = 30_000 } = {}) {
         const input = Object.freeze({ ...request,
           messages: Object.freeze(request.messages.map(message => Object.freeze({ ...message }))),
           signal: controller.signal });
-        const receipt = await Promise.race([Promise.resolve().then(() => callback(input)), interrupted]);
+        const receipt = await Promise.race([Promise.resolve().then(() => {
+          controller.signal.throwIfAborted();
+          return callback(input);
+        }), interrupted]);
+        controller.signal.throwIfAborted();
         if (!receipt || typeof receipt.receiptId !== "string" || !receipt.receiptId.trim()
           || new TextEncoder().encode(receipt.receiptId).byteLength > 256) {
           throw new TypeError("beforeCompaction must return a durable receiptId (1–256 UTF-8 bytes)");
