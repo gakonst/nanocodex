@@ -27,6 +27,9 @@ mod transport;
 
 #[derive(Args, Default)]
 pub(crate) struct DeviceHand {
+    /// Report service update compatibility without reading account credentials.
+    #[arg(long, hide = true, conflicts_with_all = ["describe", "daemon", "parent_pipe"])]
+    service_protocol: bool,
     /// Print the shared identity without publishing a Hand.
     #[arg(long)]
     describe: bool,
@@ -242,6 +245,10 @@ fn emit(value: &Value) {
 }
 
 pub(crate) async fn serve(command: DeviceHand) -> Result<(), ManagedError> {
+    if command.service_protocol {
+        emit(&json!({"serviceProtocol": 1, "version": env!("CARGO_PKG_VERSION")}));
+        return Ok(());
+    }
     let daemon = command.daemon;
     match serve_inner(command).await {
         Err(error)
@@ -339,7 +346,7 @@ async fn share(
                 state.advertise_vm_provider(&recipe.name)?;
             }
             let status = std::sync::Arc::new(std::sync::Mutex::new(
-                json!({"machine": machine, "status": "connecting"}),
+                json!({"machine": machine, "status": "connecting", "daemon": {"pid": std::process::id(), "executable": std::env::current_exe().ok(), "version": env!("CARGO_PKG_VERSION")}}),
             ));
             {
                 let mut status = status.lock().unwrap();
@@ -424,7 +431,6 @@ async fn share(
             let _ = fs::remove_file(directory.join("status.json"));
             result
         }
-        Err(e) if e.to_string().contains("another native Hand") => Ok(()),
         Err(e) => Err(e),
     }
 }

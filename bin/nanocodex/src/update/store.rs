@@ -28,6 +28,60 @@ pub(super) struct VersionStore {
 }
 
 impl VersionStore {
+    pub(super) fn root(&self) -> &Path {
+        &self.root
+    }
+
+    /// Serialize staging, service handover, and CLI activation across processes.
+    pub(super) fn update_lock(&self) -> Result<fs::File> {
+        fs::create_dir_all(&self.root)?;
+        let path = self.root.join("update.lock");
+        if fs::symlink_metadata(&path).is_ok_and(|m| !m.is_file()) {
+            bail!("update lock must be a regular file");
+        }
+        let file = fs::OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(path)?;
+        fs2::FileExt::try_lock_exclusive(&file)
+            .wrap_err("another Nanocodex update is already running")?;
+        Ok(file)
+    }
+
+    pub(super) fn pending(&self) -> Result<Option<String>> {
+        match fs::read_to_string(self.root.join("pending-update")) {
+            Ok(key) => {
+                let key = key.trim();
+                validate_key(key)?;
+                Ok(Some(key.to_owned()))
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub(super) fn stage_pending(&self, key: &str) -> Result<()> {
+        validate_key(key)?;
+        if !self.is_cached_bundle(key, false)? {
+            bail!("cannot stage an incomplete update bundle");
+        }
+        atomic_write(
+            &self.root.join("pending-update"),
+            format!("{key}\n").as_bytes(),
+            false,
+        )
+    }
+
+    pub(super) fn clear_pending(&self) -> Result<()> {
+        match fs::remove_file(self.root.join("pending-update")) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub(super) fn discover() -> Result<Self> {
         let root = if let Some(root) = std::env::var_os("NANOCODEX_DIR") {
             PathBuf::from(root)
@@ -44,7 +98,7 @@ impl VersionStore {
     }
 
     #[cfg(test)]
-    fn at(root: impl Into<PathBuf>) -> Self {
+    pub(super) fn at(root: impl Into<PathBuf>) -> Self {
         Self { root: root.into() }
     }
 
@@ -221,7 +275,7 @@ impl VersionStore {
                 )?))
     }
 
-    pub(super) fn activate(&self, key: &str) -> Result<()> {
+    pub(super) fn validate_activation(&self, key: &str) -> Result<()> {
         if !self.is_cached(key)? {
             bail!("Nanocodex version {key} is not installed or its checksum is invalid");
         }
@@ -234,6 +288,11 @@ impl VersionStore {
             bail!("Nanocodex version {key} has an incomplete or corrupt voice runtime");
         }
 
+        Ok(())
+    }
+
+    pub(super) fn activate(&self, key: &str) -> Result<()> {
+        self.validate_activation(key)?;
         #[cfg(unix)]
         {
             self.activate_symlink(key)?;
@@ -286,6 +345,12 @@ impl VersionStore {
                 }
             }
         }
+    }
+
+    pub(super) fn promote_running_manager(&self) -> Result<()> {
+        let contents = fs::read(std::env::current_exe()?)?;
+        atomic_write(&self.updater_path(), &contents, true)?;
+        self.write_updater_checksum(&contents)
     }
 
     pub(super) fn promote_manager(&self, key: &str) -> Result<()> {
@@ -408,7 +473,7 @@ impl VersionStore {
         self.root.join("versions")
     }
 
-    fn version_dir(&self, key: &str) -> PathBuf {
+    pub(super) fn version_dir(&self, key: &str) -> PathBuf {
         self.versions_dir().join(key)
     }
 
@@ -938,5 +1003,45 @@ mod tests {
             .unwrap();
         assert!(helper.status.success());
         assert!(!helper.stdout.is_empty());
+    }
+    #[test]
+    fn pending_update_requires_complete_verified_bundle_and_preserves_active() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = VersionStore::at(directory.path());
+        store.prepare_with_contents("old", b"old").unwrap();
+        store.install("incomplete", b"new").unwrap();
+        assert!(store.stage_pending("incomplete").is_err());
+        store
+            .install_bundle("new", b"new", b"hand", None, None)
+            .unwrap();
+        store.stage_pending("new").unwrap();
+        assert_eq!(store.active().unwrap().as_deref(), Some("old"));
+        assert_eq!(store.pending().unwrap().as_deref(), Some("new"));
+        fs::write(
+            store.version_dir("new").join(NANOCODEX2_BINARY_NAME),
+            b"corrupt",
+        )
+        .unwrap();
+        assert!(store.stage_pending("new").is_err());
+        store.clear_pending().unwrap();
+        assert_eq!(store.pending().unwrap(), None);
+    }
+
+    #[test]
+    fn update_lock_excludes_concurrent_activation_and_releases_on_exit() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = VersionStore::at(directory.path());
+        let lock = store.update_lock().unwrap();
+        assert!(store.update_lock().is_err());
+        drop(lock);
+        assert!(store.update_lock().is_ok());
+    }
+
+    #[test]
+    fn pending_update_rejects_path_traversal() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = VersionStore::at(directory.path());
+        fs::write(directory.path().join("pending-update"), "../../other").unwrap();
+        assert!(store.pending().is_err());
     }
 }

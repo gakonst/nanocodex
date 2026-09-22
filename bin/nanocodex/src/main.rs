@@ -17,6 +17,7 @@ mod eval;
 )))]
 #[path = "eval_unsupported.rs"]
 mod eval;
+mod hand_service;
 mod hand_setup;
 mod login;
 mod managed_memory;
@@ -97,7 +98,7 @@ struct Cli {
 enum Command {
     /// Install or refresh the upstream computer-use runtime.
     Computer(computer::Computer),
-    /// Add a Linux Hand and VM factory through your existing SSH connection.
+    /// Manage this computer’s Hand service or add a Linux Hand over SSH.
     Hand(hand_setup::Hand),
     /// Sign in to the managed Nanocodex account shared with nanocodex2.
     Account(nanocodex_cli_auth::Account),
