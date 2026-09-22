@@ -113,7 +113,7 @@ it("persists voice start and end in Worker SQLite while Responses preconnect sta
   });
 }, 20_000);
 
-it("admits more than eight children with prepared tools and keeps checkpointed messaging usable", async () => {
+it("admits more than eight children with prepared tools and keeps live messaging usable", async () => {
   const namespace = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace }).NANOCODEX_MEMORY;
   await runInDurableObject(namespace.getByName(crypto.randomUUID()), async (_instance, ctx) => {
     const owner = { ctx, env: { NANOCODEX: { async fetch() {
@@ -140,11 +140,11 @@ it("admits more than eight children with prepared tools and keeps checkpointed m
   });
 }, 30_000);
 
-it("retains interrupted children and bounds new delegation after Worker SQLite reconstruction", async () => {
+it("discards children and bounds new delegation after Worker SQLite reconstruction", async () => {
   const namespace = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace }).NANOCODEX_MEMORY;
   await runInDurableObject(namespace.getByName(crypto.randomUUID()), async (_instance, ctx) => {
     // Transport stays open without making provider calls, so both children
-    // remain active while directed messages are durably admitted.
+    // remain active while directed messages are admitted in memory.
     const owner = { ctx, env: { NANOCODEX: { async fetch() {
       return {
         status: 101, headers: new Headers(),
@@ -176,11 +176,13 @@ it("retains interrupted children and bounds new delegation after Worker SQLite r
       } }, restoredOptions);
       agent.dispose();
       const restoredChildren = (await Subagents.list(reopened, { includeCompleted: true })).agents;
-      expect(restoredChildren).toHaveLength(2);
-      expect(restoredChildren.map(({ agent_id }) => agent_id).sort()).toEqual(children.map(({ agent_id }) => agent_id).sort());
-      for (const child of restoredChildren) expect(child.status).toEqual({ state: "interrupted" });
-      // Reconstruction preserves logical children, not their running harnesses.
-      // Fresh work must still obey the replacement host's concurrency policy.
+      expect(restoredChildren).toEqual([]);
+      for (const child of children) {
+        await expect(Subagents.send(reopened, {
+          agentId: child.agent_id, priority: "urgent", message: "Do not resurrect",
+        })).rejects.toThrow();
+      }
+      // Fresh work still obeys the replacement host's concurrency policy.
       const fresh = await Subagents.spawn(reopened, {
         role: "replacement", task: "Continue research after restart", outputSchema: { type: "object" },
       });

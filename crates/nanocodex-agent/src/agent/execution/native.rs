@@ -20,10 +20,9 @@ impl Config {
         self.rollout = Some(rollout);
     }
 
-    pub(super) fn for_new_thread(&self) -> Self {
-        Self {
-            rollout: self.rollout.as_ref().map(RolloutConfig::for_new_thread),
-        }
+    pub(super) const fn for_new_thread(&self) -> Self {
+        // Child history belongs to the running parent, never a resumable disk session.
+        Self { rollout: None }
     }
 
     #[allow(clippy::too_many_arguments)]

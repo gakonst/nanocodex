@@ -32,16 +32,6 @@ fn completed_turn_with_effort(prompt: &str, final_message: &str, effort: Thinkin
 }
 
 #[test]
-fn child_rollout_policy_does_not_inherit_a_resume_path() {
-    let resumed =
-        RolloutConfig::new("/codex").resumed(PathBuf::from("/codex/sessions/parent.jsonl"));
-    let child = resumed.for_new_thread();
-
-    assert_eq!(child.codex_home(), Path::new("/codex"));
-    assert!(child.resume_path.is_none());
-}
-
-#[test]
 fn discovers_active_and_archived_rollouts_newest_first() {
     let home = tempdir().expect("temporary Codex home");
     let active_id = "019c0d31-c308-7d91-bff4-5dca82d15ac6";

@@ -12,6 +12,14 @@ depend on orchestration policy:
 - `interrupt_agent`
 - `close_agent`
 
+Subagents are ephemeral and exist only within the running parent runtime. Completed
+or interrupted children can receive more work while that runtime remains alive.
+Idle child drivers may be evicted and rehydrated from in-memory snapshots to
+limit resident resources; those snapshots are never persisted. Restarting the
+parent runtime drops the task tree, child history, messages, and results. A fresh
+registry starts empty. Historical agent IDs do not identify recovered children;
+use `list_agents` to discover the current live registry before addressing agents.
+
 `spawn_agent` accepts optional `model` (`sol`, `terra`, `luna`, or `astra`) and
 `thinking` (`none` through `max`) overrides. Omitted values inherit the
 invoking agent's current settings; an override configures only the new child.

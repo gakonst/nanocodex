@@ -17,6 +17,7 @@ mod eval;
 )))]
 #[path = "eval_unsupported.rs"]
 mod eval;
+mod hand_service;
 mod hand_setup;
 mod login;
 mod managed_memory;
@@ -99,7 +100,7 @@ enum Command {
     Tui(nanocodex_tui_control::Cli),
     /// Install or refresh the upstream computer-use runtime.
     Computer(computer::Computer),
-    /// Add a Linux Hand and VM factory through your existing SSH connection.
+    /// Manage this computer’s Hand service or add a Linux Hand over SSH.
     Hand(hand_setup::Hand),
     /// Sign in to the managed Nanocodex account shared with nanocodex2.
     Account(nanocodex_cli_auth::Account),
@@ -207,6 +208,11 @@ fn process_exit_code(error: &eyre::Report) -> u8 {
 }
 
 async fn run(cli: Cli) -> Result<()> {
+    if !matches!(&cli.command, Some(Command::Update(_)))
+        && let Err(error) = update::ensure_default_automatic_updates()
+    {
+        eprintln!("Could not configure automatic updates: {error:#}");
+    }
     match cli.command {
         Some(Command::Tui(command)) => command.run().await.map_err(Into::into),
         Some(Command::Computer(command)) => command.run().await.map_err(|error| eyre!(error)),

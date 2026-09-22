@@ -75,13 +75,9 @@ export function createBrowserHost(options?: {
   mcp?: McpServers;
   codeEvaluator?: CodeEvaluator;
   toolMode?: "code" | "direct";
-  /** @internal Durable host lifecycle for Rust-owned subagent descriptors. */
+  /** @internal Live host lifecycle for ephemeral Rust-owned subagents. */
   subagentRouting?: Pick<import('../runtime/subagent-routing.mjs').SubagentRouting, 'resolve' | 'bind'>;
   subagentSessions?: {
-    restore(): readonly SubagentToolContext[];
-    restoreCheckpoint?(): string | undefined;
-    checkpoint?(encoded: string): void;
-    hostContextRef?(sessionId: string): string | undefined;
     bindingDescriptor?(sessionId: string, descriptor: SubagentToolContext, hostContextRef?: string): SubagentToolContext;
     bind(sessionId: string, descriptor: SubagentToolContext, hostContextRef?: string): void;
     release(sessionId: string, hostContextRef?: string): void;

@@ -133,12 +133,13 @@ export function create(options = {}) {
     adopt(raw) {
       host.retain();
       try {
-        durabilityOwner?.retain();
+        // Adopted child handles are ephemeral and do not own the root store.
+        if (raw.sessionId === stableSessionId) durabilityOwner?.retain();
         bindHostSession(host, raw.sessionId);
         events.addSource(raw);
       } catch (error) {
         events.removeSource(raw);
-        durabilityOwner?.release();
+        if (raw.sessionId === stableSessionId) durabilityOwner?.release();
         releaseHost(host);
         throw error;
       }
@@ -147,7 +148,7 @@ export function create(options = {}) {
       events.removeSource(raw);
       host.releaseSession(raw.sessionId);
       releaseHostSession(host, raw.sessionId);
-      durabilityOwner?.release();
+      if (raw.sessionId === stableSessionId) durabilityOwner?.release();
       releaseHost(host);
     },
     decorate: (agent) => agent.extend(agentActions()),

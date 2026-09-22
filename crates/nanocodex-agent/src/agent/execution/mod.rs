@@ -437,31 +437,19 @@ pub trait ExecutionPolicy: Send + Sync {
 pub(crate) struct ExecutionConfig {
     platform: platform::Config,
     policy: Option<ExecutionPolicyRecipe>,
-    spawned_policy: Option<SpawnedExecutionPolicyFactory>,
-    restored_policy: Option<RestoredExecutionPolicyFactory>,
 }
-
-type SpawnedExecutionPolicyFactory =
-    Arc<dyn Fn(&str) -> Result<Arc<dyn ExecutionPolicy>> + Send + Sync>;
-
-type RestoredExecutionPolicyFactory =
-    Arc<dyn Fn(&str, Option<&SessionSnapshot>) -> Result<Arc<dyn ExecutionPolicy>> + Send + Sync>;
 
 #[derive(Clone)]
 enum ExecutionPolicyRecipe {
     Shared(Arc<dyn ExecutionPolicy>),
     PerAgent(Arc<dyn Fn() -> Result<Arc<dyn ExecutionPolicy>> + Send + Sync>),
-    Spawned(SpawnedExecutionPolicyFactory),
-    Restored(RestoredExecutionPolicyFactory, Option<Box<SessionSnapshot>>),
 }
 
 impl ExecutionPolicyRecipe {
-    fn instantiate(&self, session_id: &str) -> Result<Arc<dyn ExecutionPolicy>> {
+    fn instantiate(&self) -> Result<Arc<dyn ExecutionPolicy>> {
         match self {
             Self::Shared(policy) => Ok(Arc::clone(policy)),
             Self::PerAgent(factory) => factory(),
-            Self::Spawned(factory) => factory(session_id),
-            Self::Restored(factory, snapshot) => factory(session_id, snapshot.as_deref()),
         }
     }
 }
@@ -483,55 +471,15 @@ impl ExecutionConfig {
         self.policy = Some(ExecutionPolicyRecipe::PerAgent(factory));
     }
 
-    pub(crate) fn set_spawned_policy_factory(&mut self, factory: SpawnedExecutionPolicyFactory) {
-        self.spawned_policy = Some(factory);
-    }
-
-    pub(crate) fn set_restored_policy_factory(&mut self, factory: RestoredExecutionPolicyFactory) {
-        self.restored_policy = Some(factory);
-    }
-
-    pub(crate) fn for_restored_thread(&self, snapshot: Option<&SessionSnapshot>) -> Result<Self> {
-        if (self.policy.is_some() || self.spawned_policy.is_some())
-            && self.restored_policy.is_none()
-        {
-            return Err(NanocodexError::ExecutionPolicyBranchUnsupported {
-                operation: "restore",
-            });
-        }
-        Ok(Self {
-            platform: self.platform.for_new_thread(),
-            policy: self.restored_policy.as_ref().map(|factory| {
-                ExecutionPolicyRecipe::Restored(
-                    Arc::clone(factory),
-                    snapshot.cloned().map(Box::new),
-                )
-            }),
-            spawned_policy: self.spawned_policy.as_ref().map(Arc::clone),
-            restored_policy: self.restored_policy.as_ref().map(Arc::clone),
-        })
-    }
-
-    // The WASM platform configuration is const, while native rollout cloning is not.
+    // Root execution policies never propagate into ephemeral children.
     #[cfg_attr(target_family = "wasm", allow(clippy::missing_const_for_fn))]
     pub(crate) fn for_new_thread(&self, operation: &'static str) -> Result<Self> {
-        if (self.policy.is_some()
-            || self.spawned_policy.is_some()
-            || self.restored_policy.is_some())
-            && operation != "spawn"
-        {
+        if self.policy.is_some() && !matches!(operation, "spawn" | "restore") {
             return Err(NanocodexError::ExecutionPolicyBranchUnsupported { operation });
         }
         Ok(Self {
             platform: self.platform.for_new_thread(),
-            // A clean child never shares its parent's owner. A configured
-            // child recipe is instantiated under the child's own session ID.
-            policy: self
-                .spawned_policy
-                .as_ref()
-                .map(|factory| ExecutionPolicyRecipe::Spawned(Arc::clone(factory))),
-            spawned_policy: self.spawned_policy.as_ref().map(Arc::clone),
-            restored_policy: self.restored_policy.as_ref().map(Arc::clone),
+            policy: None,
         })
     }
 
@@ -559,7 +507,7 @@ impl ExecutionConfig {
             policy: self
                 .policy
                 .as_ref()
-                .map(|recipe| recipe.instantiate(session_id))
+                .map(|recipe| recipe.instantiate())
                 .transpose()?,
         })
     }

@@ -286,44 +286,6 @@ impl<F> NanocodexBuilder<F> {
         self.codex.execution.set_policy_factory(Arc::new(factory));
         self
     }
-
-    /// Builds an independent higher-layer execution policy for every clean
-    /// spawned agent under that agent's own stable session ID.
-    ///
-    /// The factory is synchronous so spawning never runs host persistence on
-    /// the parent agent's driver. Stateful adapters may defer initialization
-    /// until the child first uses the returned policy.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn spawned_execution_policy_factory<P>(mut self, factory: P) -> Self
-    where
-        P: Fn(&str) -> Result<Arc<dyn execution::ExecutionPolicy>> + Send + Sync + 'static,
-    {
-        self.codex
-            .execution
-            .set_spawned_policy_factory(Arc::new(factory));
-        self
-    }
-
-    /// Builds a policy for a restored child under its retained session ID.
-    ///
-    /// The optional snapshot is the exact retained conversation boundary (absent
-    /// before the first turn). Stateful adapters must verify it against their
-    /// fenced storage before admitting work; a fresh-spawn policy is insufficient.
-    #[doc(hidden)]
-    #[must_use]
-    pub fn restored_execution_policy_factory<P>(mut self, factory: P) -> Self
-    where
-        P: Fn(&str, Option<&SessionSnapshot>) -> Result<Arc<dyn execution::ExecutionPolicy>>
-            + Send
-            + Sync
-            + 'static,
-    {
-        self.codex
-            .execution
-            .set_restored_policy_factory(Arc::new(factory));
-        self
-    }
 }
 
 #[cfg(not(target_family = "wasm"))]

@@ -430,7 +430,7 @@ export function releaseHostSession(host, sessionId) {
   hostSessions.delete(sessionId);
 }
 
-/** Drops only this host's in-memory registrations, without durable child release. */
+/** Drops only this host's in-memory registrations. */
 export function releaseHostSessions(host) {
   for (const [sessionId, owner] of hostSessions) {
     if (owner === host) releaseHostSession(host, sessionId);
@@ -558,31 +558,10 @@ const hostBridge = Object.freeze({
     if (!cloudflareHostMayBindSubagent(host)) return;
     const existing = hostSessions.get(sessionId);
     if (existing && existing !== host) {
-      const ownerId = cloudflareHostReservations.get(host)?.ownerId;
-      if (ownerId === undefined
-        || cloudflareHostReservations.get(existing)?.ownerId !== ownerId) {
-        throw new Error(`Nanocodex subagent session ID is already active: ${sessionId}`);
-      }
+      throw new Error(`Nanocodex subagent session ID is already active: ${sessionId}`);
     }
     host.bindSubagentSession(sessionId, JSON.parse(contextJson), hostContextRef);
-    const reservation = cloudflareHostReservations.get(host);
-    if (existing !== undefined && existing !== host && reservation !== undefined && !reservation.committed) {
-      (reservation.predecessorSubagentHosts ??= new Map()).set(sessionId, existing);
-    }
     hostSessions.set(sessionId, host);
-  },
-  canCheckpointSubagents(hostDefinitionId, rootSessionId) {
-    const host = definitionHosts.get(hostDefinitionId);
-    const reservation = cloudflareHostReservations.get(host);
-    return !!(host && reservation?.committed && reservation.sessionId === rootSessionId
-      && mayReleaseCloudflareSubagentSession(reservation));
-  },
-  checkpointSubagents(hostDefinitionId, rootSessionId, encoded) {
-    const host = definitionHosts.get(hostDefinitionId);
-    const reservation = cloudflareHostReservations.get(host);
-    if (!host || !reservation?.committed || reservation.sessionId !== rootSessionId
-      || !mayReleaseCloudflareSubagentSession(reservation)) return;
-    host.checkpointSubagents?.(encoded);
   },
   releaseSubagentSession(hostDefinitionId, rootSessionId, sessionId) {
     let host;
@@ -868,7 +847,7 @@ export function prepareCloudflareAgentSession(sessionId, ownerId) {
   return reservation;
 }
 
-/** @internal Whether this exact Cloudflare generation may publish child descriptors. */
+/** @internal Whether this exact Cloudflare generation may bind live children. */
 export function mayBindCloudflareSubagentSession(reservation) {
   return cloudflareAgentSessions.has(reservation)
     && !reservation.released
@@ -876,7 +855,7 @@ export function mayBindCloudflareSubagentSession(reservation) {
       || activeAgentSessions.get(reservation.sessionId) === reservation);
 }
 
-/** @internal Whether this committed current generation may delete child descriptors. */
+/** @internal Whether this committed current generation may release live children. */
 export function mayReleaseCloudflareSubagentSession(reservation) {
   return cloudflareAgentSessions.has(reservation)
     && !reservation.released
@@ -925,7 +904,6 @@ export function commitCloudflareAgentSession(reservation, beforeCommit) {
   reservation.committed = true;
   reservation.predecessor = undefined;
   reservation.predecessorHost = undefined;
-  reservation.predecessorSubagentHosts = undefined;
 }
 
 function adoptAgentSession(reservation, sessionId) {
@@ -958,9 +936,6 @@ export function releaseAgentSession(reservation) {
       activeAgentSessions.set(reservation.sessionId, reservation.predecessor);
       if (reservation.predecessorHost !== undefined) {
         hostSessions.set(reservation.sessionId, reservation.predecessorHost);
-      }
-      for (const [sessionId, previous] of reservation.predecessorSubagentHosts ?? []) {
-        if (!hostSessions.has(sessionId)) hostSessions.set(sessionId, previous);
       }
     } else {
       activeAgentSessions.delete(reservation.sessionId);

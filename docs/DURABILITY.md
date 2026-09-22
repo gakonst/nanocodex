@@ -74,25 +74,22 @@ and running attempts in memory under its fenced owner capability. Losing the
 driver loses those claims; it does not require a state mutation to release
 them.
 
-## Agent identity and clean descendants
+## Agent identity and ephemeral children
 
-Attaching durability to an agent also attaches it to every clean spawned
-descendant. A clean spawn first chooses its own UUIDv7 session ID. That exact ID
-is the child's durability state key; no parent ID or tree path participates in
-storage routing. Each descendant has an independent owner fence, operation
-journal, checkpoint, and recursive clean-spawn lifecycle.
+Durability attaches only to the agent explicitly configured with it. Spawned
+children and their descendants do not inherit execution policies, storage owners,
+operation journals, checkpoints, or resumable rollout files.
 
-Opening child storage is deferred until the child first crosses an execution
-policy boundary. Spawn itself therefore remains synchronous inside the parent
-driver and never awaits host storage. A serialized store handle lets these
-independent state drivers share a caller-supplied backend whose contract takes
-exclusive mutable access.
+Subagent topology, routing pins, mailboxes, and conversation history live only in
+the running parent runtime. Idle child resources may be unloaded and rehydrated
+from memory within that runtime; this does not write persistent state. Closing or
+reconstructing the parent drops its children. Historical child identifiers are
+not restored as active agents; new work requires a fresh spawn. Parent history
+can retain task descriptions and results without retaining child execution state.
 
-Agent durability does not persist orchestration topology. Tree-local IDs,
-parent/child relationships, mailboxes, roles, task status, and the mapping from
-an orchestrator ID to an agent session ID belong to the orchestrator. Reopening
-an individual child by its retained session ID restores that agent; rebuilding
-a complete task tree requires a separate durable registry.
+Root admission, effect recovery, and checkpoint behavior are unchanged. Durable
+replay of a root tool receipt does not recreate a subagent that belonged to a
+previous runtime.
 
 ## Store contract
 

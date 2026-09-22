@@ -98,12 +98,4 @@ impl RolloutConfig {
         self.resume_path = Some(rollout_path);
         self
     }
-
-    pub(crate) fn for_new_thread(&self) -> Self {
-        Self {
-            codex_home: self.codex_home.clone(),
-            resume_path: None,
-            root_session_id: self.root_session_id.clone(),
-        }
-    }
 }
