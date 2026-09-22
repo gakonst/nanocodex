@@ -69,7 +69,7 @@ test("attachment publishes one exact catalog and exchanges ready, call, result, 
 });
 
 test("attachment forwards provider-qualified and auto-route models to tool handlers", async () => {
-  const models = ["openai/gpt-6-astra", "@openai/gpt-6-astra", "auto(openai/gpt-6-astra,anthropic/claude)"];
+  const models = ["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro", "auto", "openrouter/auto", "openai/gpt-6-astra", "@openai/gpt-6-astra", "auto(openai/gpt-6-astra,anthropic/claude)"];
   const received = [];
   const tools = await createTools({ tools: {
     echo: { description: "Echo.", handler: (_, context) => { received.push(context.model); return "ok"; } },
