@@ -33,7 +33,7 @@ export declare namespace create {
     transport: ManagedTransport;
     tools?: Tools | undefined;
   }>;
-  type Options = AgentOptions & WorkerToolExposureOptions & {
+  type Options = Omit<AgentOptions, "beforeCompaction"> & WorkerToolExposureOptions & {
     /** Precompiled browser module; WebAssembly modules are structured-clone-safe. */
     module?: WebAssembly.Module | undefined;
     /** Fixed browser workspace facts, including its AGENTS.md snapshot. */

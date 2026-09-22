@@ -27,9 +27,9 @@ pub struct BeforeCompactionRequest {
     pub session_id: String,
     /// Root provider-session scope, retained across child threads.
     pub root_session_id: String,
-    /// At most 64 messages and 32 KiB of UTF-8 text, in source order.
+    /// At most 64 whole messages and 32 KiB of UTF-8 text, in source order.
     pub messages: Vec<CompactionMessage>,
-    /// Older text was omitted to stay within the bounded context budget.
+    /// Whole older messages were omitted to stay within the bounded context budget.
     pub truncated: bool,
 }
 
@@ -72,7 +72,7 @@ impl BeforeCompactionRequest {
         let mut remaining = 32 * 1024;
         let mut truncated = false;
         // Take the recent suffix without allocating an unbounded copy of history.
-        for item in history.iter_rev() {
+        'history: for item in history.iter_rev() {
             let ResponseItem::Message {
                 role: role @ (MessageRole::User | MessageRole::Assistant),
                 content,
@@ -86,37 +86,35 @@ impl BeforeCompactionRequest {
             if *role == MessageRole::User && content.iter().any(|part| matches!(part,
                 ContentItem::InputText { text } if text.starts_with("<environment_context>")
                     || text.starts_with("# AGENTS.md instructions") || text.starts_with("<turn_aborted>"))) { continue; }
-            let mut parts = Vec::new();
-            for part in content.iter().rev() {
-                let text = match (role, part) {
+            let mut text = String::new();
+            for part in content {
+                let part = match (role, part) {
                     (MessageRole::User, ContentItem::InputText { text })
-                    | (MessageRole::Assistant, ContentItem::OutputText { text, .. }) => text,
+                    | (MessageRole::Assistant, ContentItem::OutputText { text, .. })
+                        if !text.is_empty() =>
+                    {
+                        text
+                    }
                     _ => continue,
                 };
-                if text.is_empty() {
-                    continue;
-                }
-                if messages.len() >= 64 || remaining == 0 {
+                // Partial source can reverse the meaning (for example by dropping
+                // a negation). Preserve only whole messages, including separators.
+                let bytes = text
+                    .len()
+                    .saturating_add(part.len())
+                    .saturating_add(usize::from(!text.is_empty()));
+                if messages.len() == 64 || bytes > remaining {
                     truncated = true;
-                    break;
+                    break 'history;
                 }
-                let mut start = text.len().saturating_sub(remaining);
-                while !text.is_char_boundary(start) {
-                    start += 1;
+                if !text.is_empty() {
+                    text.push('\n');
                 }
-                truncated |= start != 0;
-                let suffix = &text[start..];
-                remaining -= suffix.len();
-                if !suffix.is_empty() {
-                    parts.push(suffix);
-                }
+                text.push_str(part);
             }
-            if !parts.is_empty() {
-                parts.reverse();
-                messages.push(CompactionMessage {
-                    role: *role,
-                    text: parts.concat(),
-                });
+            if !text.is_empty() {
+                remaining -= text.len();
+                messages.push(CompactionMessage { role: *role, text });
             }
         }
         messages.reverse();
@@ -162,14 +160,65 @@ mod tests {
         let request =
             BeforeCompactionRequest::from_history("b".into(), "s".into(), "r".into(), &history);
         assert!(request.truncated);
-        assert_eq!(request.messages.len(), 2);
-        assert_eq!(request.messages[0].role, MessageRole::User);
-        assert_eq!(request.messages[1].role, MessageRole::Assistant);
+        assert_eq!(request.messages.len(), 1);
+        assert_eq!(request.messages[0].role, MessageRole::Assistant);
+        assert_eq!(request.messages[0].text, "😀".repeat(8000));
         assert!(request.messages.iter().map(|m| m.text.len()).sum::<usize>() <= 32768);
         assert!(
             !serde_json::to_string(&request)
                 .unwrap()
                 .contains("fake user facts")
         );
+    }
+
+    #[test]
+    fn never_promotes_partial_messages_or_merges_text_parts() {
+        let history = ResponseHistory::from(vec![
+            ResponseItem::message(
+                MessageRole::User,
+                [ContentItem::input_text(format!(
+                    "I do NOT {}want this remembered",
+                    " ".repeat(32768)
+                ))],
+            ),
+            ResponseItem::message(
+                MessageRole::User,
+                [
+                    ContentItem::input_text("Do not forget the qualifier:"),
+                    ContentItem::input_text("this is fictional."),
+                ],
+            ),
+        ]);
+        let request =
+            BeforeCompactionRequest::from_history("b".into(), "s".into(), "r".into(), &history);
+        assert!(request.truncated);
+        assert_eq!(request.messages.len(), 1);
+        assert_eq!(
+            request.messages[0].text,
+            "Do not forget the qualifier:\nthis is fictional."
+        );
+    }
+
+    #[test]
+    fn source_message_and_utf8_byte_limits_are_exact() {
+        for (texts, expected, truncated) in [
+            (vec!["😀".repeat(8192)], 1, false),
+            (vec!["😀".repeat(8193)], 0, true),
+            (vec!["a".into(); 65], 64, true),
+            (vec!["a".into(); 64], 64, false),
+        ] {
+            let history = ResponseHistory::from(
+                texts
+                    .into_iter()
+                    .map(|text| {
+                        ResponseItem::message(MessageRole::User, [ContentItem::input_text(text)])
+                    })
+                    .collect::<Vec<_>>(),
+            );
+            let request =
+                BeforeCompactionRequest::from_history("b".into(), "s".into(), "r".into(), &history);
+            assert_eq!(request.messages.len(), expected);
+            assert_eq!(request.truncated, truncated);
+        }
     }
 }

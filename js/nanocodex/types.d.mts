@@ -39,6 +39,7 @@ export type AgentOptions = {
   /** Optional host barrier. Rejection/timeout stops compaction and retains context.
    * Durable execution replays completed receipts; hosts must deduplicate by boundaryId
    * for interruption between host commit and receipt persistence. Disabled by default.
+   * Available in Node, nanocodex/host, and Cloudflare; never inherited by subagents.
    */
   beforeCompaction?: ((request: BeforeCompactionRequest) => Promise<CompactionReceipt>) | undefined;
 

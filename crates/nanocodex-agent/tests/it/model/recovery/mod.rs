@@ -1,5 +1,6 @@
 use super::*;
 
+mod before_compaction;
 mod compaction;
 mod compaction_images;
 mod durable_provider;
