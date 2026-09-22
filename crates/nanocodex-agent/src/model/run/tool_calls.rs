@@ -215,6 +215,9 @@ where
         let session_id = events.request_id().to_owned();
         let model = self.model;
         let host_context = self.host_context.clone();
+        // Every call in this response retains the revision consumed by its model request,
+        // including calls queued behind the execution gate.
+        let instruction_revision = self.instruction_revision;
         let execution_steps = self.execution_steps.clone();
         let mut executions = prepared
             .into_iter()
@@ -269,6 +272,7 @@ where
                                     &turn_id,
                                     model,
                                     host_context.as_deref(),
+                                    instruction_revision,
                                     started_at,
                                     &active.progress,
                                     &active.span,
@@ -292,6 +296,7 @@ where
                                     &turn_id,
                                     model,
                                     host_context.as_deref(),
+                                    instruction_revision,
                                     started_at,
                                     &active.progress,
                                     &active.span,
@@ -556,6 +561,7 @@ where
         turn_id: &str,
         model: Model,
         host_context: Option<&str>,
+        instruction_revision: Option<u64>,
         started_at: Instant,
         progress: &Mutex<ActiveToolProgress>,
         tool_span: &tracing::Span,
@@ -597,6 +603,7 @@ where
                 &[],
                 DEFAULT_TOOL_OUTPUT_TOKENS,
             )
+            .with_instruction_revision(instruction_revision)
             .with_host_context(host_context)
             .with_turn_id(Some(turn_id));
             let mut execution = match call.kind {
@@ -664,6 +671,7 @@ where
                 search_history,
                 DEFAULT_TOOL_OUTPUT_TOKENS,
             )
+            .with_instruction_revision(instruction_revision)
             .with_host_context(host_context)
             .with_turn_id(Some(turn_id));
             let execution = match RawValue::from_string(call.input.clone()) {
@@ -705,8 +713,15 @@ where
                 metadata: execution.metadata,
             });
         }
-        let owned_context =
-            owned_code_context(&call, history, session_id, turn_id, model, host_context)?;
+        let owned_context = owned_code_context(
+            &call,
+            history,
+            session_id,
+            turn_id,
+            model,
+            host_context,
+            instruction_revision,
+        )?;
         let context = ToolContext::new(
             model.as_str(),
             session_id,
@@ -714,6 +729,7 @@ where
             &[],
             DEFAULT_TOOL_OUTPUT_TOKENS,
         )
+        .with_instruction_revision(instruction_revision)
         .with_host_context(host_context)
         .with_turn_id(Some(turn_id));
         let mut observer = NestedToolEventObserver {

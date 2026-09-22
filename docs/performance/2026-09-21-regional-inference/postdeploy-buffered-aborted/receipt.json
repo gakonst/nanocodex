@@ -1,0 +1,80 @@
+{
+  "status": "aborted_wrong_delivery_mode",
+  "production_version": "79e821a2-e468-499c-90f7-7e1283feb79a",
+  "source": "ce18887f",
+  "completed_recorded_attempts": 24,
+  "additional_possible_inflight_attempts": 3,
+  "conservative_attempts_this_stage": 27,
+  "total_prior_attempts": 72,
+  "total_attempts_upper_bound": 99,
+  "remaining_of_200_lower_bound": 101,
+  "reason": "Every saved response reported buffered after deployment; not valid streaming arm. Controller stopped; up to one unrecorded in-flight call per regional runner counted conservatively.",
+  "regions": [
+    {
+      "runner": "nanocodex-bench-ap-20260921",
+      "completed": 8,
+      "buffering": [
+        "buffered"
+      ],
+      "last_timestamp": "2026-09-21T23:07:52.358Z",
+      "last_headers": {
+        "cf-ray": "a3ecba84381ed534-NRT",
+        "cf-placement": null,
+        "x-nanocodex-provider": "cloudflare",
+        "x-nanocodex-model": "gpt-5.6-luna",
+        "x-nanocodex-thinking": "low"
+      },
+      "last_model": "gpt-5.6-luna",
+      "last_pair": 2,
+      "last_requested_model": "cloudflare:openai/gpt-5.6-luna:low",
+      "last_event_count": 8,
+      "last_delta_count": 1,
+      "last_first_meaningful_ms": 1609,
+      "last_total_ms": 1609
+    },
+    {
+      "runner": "nanocodex-bench-eu-20260921",
+      "completed": 8,
+      "buffering": [
+        "buffered"
+      ],
+      "last_timestamp": "2026-09-21T23:07:52.331Z",
+      "last_headers": {
+        "cf-ray": "a3ecba841cbdef13-LHR",
+        "cf-placement": null,
+        "x-nanocodex-provider": "cloudflare",
+        "x-nanocodex-model": "gpt-5.6-luna",
+        "x-nanocodex-thinking": "low"
+      },
+      "last_model": "gpt-5.6-luna",
+      "last_pair": 2,
+      "last_requested_model": "cloudflare:openai/gpt-5.6-luna:low",
+      "last_event_count": 8,
+      "last_delta_count": 1,
+      "last_first_meaningful_ms": 1882,
+      "last_total_ms": 1882
+    },
+    {
+      "runner": "nanocodex-bench-us-20260921",
+      "completed": 8,
+      "buffering": [
+        "buffered"
+      ],
+      "last_timestamp": "2026-09-21T23:07:52.455Z",
+      "last_headers": {
+        "cf-ray": "a3ecba84ef333920-IAD",
+        "cf-placement": null,
+        "x-nanocodex-provider": "cloudflare",
+        "x-nanocodex-model": "gpt-5.6-luna",
+        "x-nanocodex-thinking": "low"
+      },
+      "last_model": "gpt-5.6-luna",
+      "last_pair": 2,
+      "last_requested_model": "cloudflare:openai/gpt-5.6-luna:low",
+      "last_event_count": 8,
+      "last_delta_count": 1,
+      "last_first_meaningful_ms": 1442,
+      "last_total_ms": 1442
+    }
+  ]
+}

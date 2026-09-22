@@ -1395,6 +1395,7 @@ async fn execute_nested_call(
         context.history(),
         context.output_token_budget(),
     )
+    .with_instruction_revision(context.instruction_revision())
     .with_host_context(context.host_context())
     .with_turn_id(context.turn_id());
     let execution = tools.execute_nested(&name, input.clone(), context).await;

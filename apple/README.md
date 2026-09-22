@@ -16,6 +16,23 @@ Mac destination are disabled. It connects directly to the managed HTTP/SSE
 contract without a bundled Node runtime.
 Its authenticated native Hand can also bridge [Bluetooth Low Energy devices](../docs/bluetooth-le.md), including typed [Flipper Zero](../docs/flipper-zero.md) RPC tools without custom Flipper firmware.
 
+For Lock Screen voice tasks, add the **Speak to Nanocodex** widget after
+signing in and granting Microphone and Speech Recognition access in the app.
+Record, then tap **Send** or **Cancel** in the Live Activity. Send waits for
+transcription and cloud admission; the activity shows **Sent** only after the
+service accepts the message. English and Greek use the language selected in
+the app's quick voice sheet.
+
+On iPhones with an Action Button, select **Settings → Action Button → Shortcut
+→ Choose a Shortcut → Nanocodex → Record Voice Task**. The shortcut uses the
+same background recording flow. iOS owns this hardware assignment; the app
+cannot select it for the user. The right-side Camera Control below the side
+button is different: Apple's APIs require a camera capture experience and do
+not provide a general voice-task shortcut binding. See Apple's
+[capture controls overview](https://developer.apple.com/videos/play/wwdc2025/253/).
+Locked recording, speech recognition, and hardware activation still require
+physical-device verification; simulator tests do not establish these behaviors.
+
 The local `apple/NanocodexUI` package owns the shared chat palette, Markdown
 block rendering, and copy feedback. Both Apple apps render headings, lists,
 links, quotes, tables, and code using Foundation’s Markdown parser. Copy

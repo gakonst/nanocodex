@@ -13,6 +13,7 @@ use serde_json::{Value, value::RawValue};
 /// form retains shared history without copying it again when execution crosses
 /// an asynchronous embedding boundary.
 pub struct OwnedToolContext {
+    pub(crate) instruction_revision: Option<u64>,
     pub(crate) model: String,
     pub(crate) session_id: String,
     pub(crate) call_id: String,
@@ -33,6 +34,7 @@ impl OwnedToolContext {
         output_token_budget: usize,
     ) -> Self {
         Self {
+            instruction_revision: None,
             model: model.into(),
             session_id: session_id.into(),
             call_id: call_id.into(),
@@ -53,6 +55,7 @@ impl OwnedToolContext {
             Arc::new(context.history().to_vec()),
             context.output_token_budget(),
         )
+        .with_instruction_revision(context.instruction_revision())
         .with_host_context(context.host_context().map(Arc::from))
         .with_turn_id(context.turn_id().map(Arc::from))
     }
@@ -67,8 +70,16 @@ impl OwnedToolContext {
             self.history.as_slice(),
             self.output_token_budget,
         )
+        .with_instruction_revision(self.instruction_revision)
         .with_host_context(self.host_context.as_deref())
         .with_turn_id(self.turn_id.as_deref())
+    }
+
+    /// Retains the originating model call's revision across asynchronous work.
+    #[must_use]
+    pub const fn with_instruction_revision(mut self, revision: Option<u64>) -> Self {
+        self.instruction_revision = revision;
+        self
     }
 
     /// Retains the originating logical turn across asynchronous tool calls.
