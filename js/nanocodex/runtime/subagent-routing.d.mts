@@ -1,5 +1,5 @@
 import type { Model, Thinking } from '../types.mjs';
-export type ChildRouteModel = Model | 'sol' | 'terra' | 'luna' | 'astra' | 'glm-5.3' | 'glm53';
+export type ChildRouteModel = Model | 'sol' | 'terra' | 'luna' | 'astra' | 'glm-5.3' | 'glm53' | 'kimi' | 'mimo';
 export type ChildRoute = Readonly<{
   provider: string;
   model: ChildRouteModel;

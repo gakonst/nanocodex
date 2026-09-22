@@ -34,7 +34,7 @@ export type InferenceSessionEnv = {
 };
 export const INFERENCE_KEY_ID_HEADER = "x-inference-key-id";
 export const INFERENCE_MAX_OUTPUT_TOKENS_HEADER = "x-inference-max-output-tokens";
-export const INFERENCE_MAX_BODY_BYTES = 256 * 1024;
+export const INFERENCE_MAX_BODY_BYTES = 8 * 1024 * 1024;
 export const INFERENCE_MAX_INPUT_BYTES = 32 * 1024;
 export const INFERENCE_MAX_OUTPUT_TOKENS = 4096;
 export const INFERENCE_TIMEOUT_MS = 120_000;
@@ -47,7 +47,11 @@ const textPart = z.object({
   type: z.enum(["input_text", "output_text", "text"]), text: z.string(),
   annotations: z.array(z.unknown()).max(0).optional(),
 }).strict();
-const content = z.union([z.string(), z.array(textPart).max(1024)]);
+const imagePart = z.object({ type: z.literal("input_image"),
+  image_url: z.string().max(6 * 1024 * 1024).regex(/^(https:\/\/|data:image\/(png|jpeg|jpg|webp|gif);base64,)/),
+  detail: z.enum(["auto", "low", "high", "original"]).optional(),
+}).strict();
+const content = z.union([z.string(), z.array(z.union([textPart, imagePart])).max(1024)]);
 const historyItem = z.union([
   z.object({ type: z.literal("message").optional(), id: name.optional(), status,
     role: z.enum(["user", "assistant", "system", "developer"]), content }).strict(),
@@ -60,6 +64,7 @@ const historyItem = z.union([
   z.object({ type: z.literal("reasoning"), id: name.optional(), status,
     summary: z.array(z.object({ type: z.literal("summary_text"), text: z.string() }).strict()).optional(),
     content: z.array(z.object({ type: z.literal("reasoning_text"), text: z.string() }).strict()).optional(),
+    encrypted_content: z.string().max(4 * 1024 * 1024).optional(),
   }).strict(),
 ]);
 const tool = z.union([
@@ -112,7 +117,8 @@ export function validateInferenceRequest(value: unknown, tokenLimit = INFERENCE_
   const body = parsed.data;
   if (body.model !== "auto" && !ROUTING_CANDIDATES.some(c => c.backend !== "chatgpt"
     && (c.model === body.model || c.id === body.model))) throw new InferenceRequestError("unknown_model");
-  if (bytes(body.input) + bytes(body.instructions ?? "") > INFERENCE_MAX_INPUT_BYTES)
+  const textBytes = new TextEncoder().encode(JSON.stringify(body.input, (key, value) => key === "image_url" ? "" : value)).byteLength;
+  if (textBytes + bytes(body.instructions ?? "") > INFERENCE_MAX_INPUT_BYTES)
     throw new InferenceRequestError("input_too_large", 413);
   body.max_output_tokens ??= tokenLimit;
   if (body.max_output_tokens > tokenLimit) throw new InferenceRequestError("max_output_tokens_exceeds_key_limit");

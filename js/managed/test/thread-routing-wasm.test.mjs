@@ -114,3 +114,38 @@ test("Jev failure persists configured ChatGPT fallback without live credentials"
   assert.equal(store.settings().thinking, route.thinking);
   assert.equal(jevCalls, 1);
 }));
+
+for (const model of ["kimi-k3", "mimo-v2.6-pro"]) test(`${model} real WASM executes a host tool and replays provider reasoning`, { timeout: 30_000 }, async () => {
+  const { createGatewayResponses } = await import("../../nanocodex/cloudflare/gateway-responses.mjs");
+  let calls = 0, executions = 0;
+  const details = [{ type: "reasoning.encrypted", data: "synthetic-replay", index: 0 }];
+  const transport = createGatewayResponses({ provider: "openrouter", model, reasoningEffort: "low", apiKey: "synthetic-key",
+    fetch: async (_url, init) => {
+      const body = JSON.parse(init.body); calls++;
+      const reply = (message, finish_reason) => new Response([
+        { choices: [{ index: 0, delta: { ...message, ...(message.tool_calls ? { tool_calls: message.tool_calls.map((call, index) => ({ ...call, index })) } : {}) }, finish_reason: null }] },
+        { choices: [{ index: 0, delta: {}, finish_reason }] }, "[DONE]",
+      ].map(value => `data: ${typeof value === "string" ? value : JSON.stringify(value)}\n\n`).join(""), { headers: { "content-type": "text/event-stream" } });
+      if (calls === 1) {
+        const tool = body.tools.find(t => t.function.description.startsWith("runtimeInfo\n"));
+        assert.ok(tool);
+        return reply({
+          reasoning_details: details, tool_calls: [{ id: "fixture-host-call", type: "function", function: { name: tool.function.name, arguments: "{}" } }],
+        }, "tool_calls");
+      }
+      assert.equal(calls, 2);
+      const assistant = body.messages.find(m => m.tool_calls?.length);
+      assert.deepEqual(assistant.reasoning_details, details);
+      assert.match(body.messages.find(m => m.role === "tool").content, /gateway-host-fixture/);
+      return reply({ content: "HOST_TOOL_OK" }, "stop");
+    } });
+  const agent = await Agent.create({ module: await readFile(new URL("../../nanocodex/pkg-web/nanocodex_bg.wasm", import.meta.url)),
+    model, thinking: "low", toolMode: "direct",
+    transport: Transport.hostManaged({ ...transport, websocketPreconnect: false, createWebSocket() { assert.fail("gateway attempted account WebSocket"); } }),
+    tools: { runtimeInfo: { description: "Inspect fixture", parameters: { type: "object", properties: {} }, handler() { executions++; return { runtime: "gateway-host-fixture" }; } } },
+  });
+  try {
+    assert.equal((await agent.turn.prompt({ input: "Inspect runtime" }).result()).finalMessage, "HOST_TOOL_OK");
+    assert.equal(executions, 1); assert.equal(calls, 2);
+  } finally { agent.dispose(); }
+});

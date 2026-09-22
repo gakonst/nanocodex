@@ -164,6 +164,12 @@ pub enum Model {
     /// Z.ai GLM-5.3 served by Cloudflare Workers AI.
     #[serde(rename = "glm-5.3")]
     Glm53,
+    /// Moonshot Kimi K3 through a host-managed gateway.
+    #[serde(rename = "kimi-k3")]
+    Kimi,
+    /// Xiaomi MiMo V2.6 Pro through a host-managed gateway.
+    #[serde(rename = "mimo-v2.6-pro")]
+    Mimo,
 }
 
 impl Model {
@@ -174,7 +180,7 @@ impl Model {
     #[must_use]
     pub const fn default_thinking(self) -> Thinking {
         match self {
-            Self::Sol | Self::Astra | Self::Glm53 => Thinking::Low,
+            Self::Sol | Self::Astra | Self::Glm53 | Self::Kimi | Self::Mimo => Thinking::Low,
             Self::Terra | Self::Luna => Thinking::Medium,
         }
     }
@@ -187,6 +193,8 @@ impl Model {
             Self::Luna => "gpt-5.6-luna",
             Self::Astra => "gpt-6-astra",
             Self::Glm53 => "@cf/zai-org/glm-5.3",
+            Self::Kimi => "kimi-k3",
+            Self::Mimo => "mimo-v2.6-pro",
         }
     }
 
@@ -194,7 +202,10 @@ impl Model {
     #[must_use]
     pub const fn supports_thinking(self, thinking: Thinking) -> bool {
         match self {
-            Self::Glm53 => matches!(thinking, Thinking::Low | Thinking::Medium | Thinking::High),
+            Self::Kimi => matches!(thinking, Thinking::Low | Thinking::High),
+            Self::Glm53 | Self::Mimo => {
+                matches!(thinking, Thinking::Low | Thinking::Medium | Thinking::High)
+            }
             _ => !matches!((self, thinking), (Self::Astra, Thinking::None)),
         }
     }
@@ -204,7 +215,10 @@ impl Model {
     pub const fn supports_reasoning_mode(self, mode: ReasoningMode) -> bool {
         !matches!(
             (self, mode),
-            (Self::Astra | Self::Glm53, ReasoningMode::Pro)
+            (
+                Self::Astra | Self::Glm53 | Self::Kimi | Self::Mimo,
+                ReasoningMode::Pro
+            )
         )
     }
 
@@ -213,6 +227,8 @@ impl Model {
     pub const fn max_context_window_tokens(self) -> u64 {
         match self {
             Self::Glm53 => 1_310_720,
+            Self::Kimi => 1_000_000,
+            Self::Mimo => 1_048_576,
             _ => MAX_CONTEXT_WINDOW_TOKENS,
         }
     }
@@ -234,8 +250,10 @@ impl FromStr for Model {
             "gpt-5.6-luna" | "luna" => Ok(Self::Luna),
             "gpt-6-astra" | "astra" => Ok(Self::Astra),
             "@cf/zai-org/glm-5.3" | "glm-5.3" | "glm53" => Ok(Self::Glm53),
+            "kimi-k3" | "kimi" => Ok(Self::Kimi),
+            "mimo-v2.6-pro" | "mimo" => Ok(Self::Mimo),
             _ => Err(format!(
-                "invalid model {value:?}; expected gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-6-astra, or @cf/zai-org/glm-5.3"
+                "invalid model {value:?}; expected gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-6-astra, @cf/zai-org/glm-5.3, kimi-k3, or mimo-v2.6-pro"
             )),
         }
     }
@@ -754,6 +772,27 @@ mod tests {
             assert!(!Model::Glm53.supports_thinking(effort));
         }
         assert!(!Model::Glm53.supports_reasoning_mode(ReasoningMode::Pro));
+    }
+
+    #[test]
+    fn gateway_models_keep_identity_and_supported_effort() {
+        for (model, alias, canonical) in [
+            (Model::Kimi, "kimi", "kimi-k3"),
+            (Model::Mimo, "mimo", "mimo-v2.6-pro"),
+        ] {
+            assert_eq!(alias.parse(), Ok(model));
+            assert_eq!(canonical.parse(), Ok(model));
+            assert_eq!(model.as_str(), canonical);
+            assert_eq!(serde_json::to_value(model).unwrap(), json!(canonical));
+            assert_eq!(model.default_thinking(), Thinking::Low);
+            assert!(model.supports_thinking(Thinking::Low));
+            assert!(model.supports_thinking(Thinking::High));
+            assert!(!model.supports_thinking(Thinking::None));
+            assert!(!model.supports_thinking(Thinking::Max));
+            assert!(!model.supports_reasoning_mode(ReasoningMode::Pro));
+        }
+        assert!(!Model::Kimi.supports_thinking(Thinking::Medium));
+        assert!(Model::Mimo.supports_thinking(Thinking::Medium));
     }
 
     #[test]

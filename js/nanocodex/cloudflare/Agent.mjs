@@ -334,7 +334,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
     || workersAi.model !== internalConfiguration.model || workersAi.thinking !== internalConfiguration.thinking)) {
     throw new TypeError("Workers AI profile must match the pinned model and thinking");
   }
-  if (internalConfiguration?.model === "@cf/zai-org/glm-5.3" && !directInference) {
+  if (["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"].includes(internalConfiguration?.model) && !directInference) {
     throw new TypeError("GLM-5.3 requires a Workers AI or gateway transport binding");
   }
   const endpoint = gateway !== undefined ? createGatewayResponses(gateway) : workersAi === undefined ? cloudflareEgress({
@@ -628,13 +628,13 @@ function validateInternalConfiguration(configuration) {
       "reasoning_mode",
       "fast_mode",
     ].includes(key))
-    || !["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "@cf/zai-org/glm-5.3"]
+    || !["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-astra", "@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"]
       .includes(configuration.model)
     || !["none", "low", "medium", "high", "xhigh", "max"].includes(configuration.thinking)
     || !["standard", "pro"].includes(configuration.reasoning_mode)
     || typeof configuration.fast_mode !== "boolean"
-    || (configuration.model === "@cf/zai-org/glm-5.3"
-      && (!["low", "medium", "high"].includes(configuration.thinking) || configuration.reasoning_mode !== "standard"))
+    || (["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"].includes(configuration.model)
+      && (!(configuration.model === "kimi-k3" ? ["low", "high"] : ["low", "medium", "high"]).includes(configuration.thinking) || configuration.reasoning_mode !== "standard"))
     || (configuration.model === "gpt-6-astra" && configuration.thinking === "none")) {
     throw new TypeError("Cloudflare Agent internal configuration is invalid");
   }

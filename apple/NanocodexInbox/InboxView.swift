@@ -756,6 +756,7 @@ private struct AgentComposerView: View {
         let stopRequest = sendShowsStop ? card.flatMap { model.cancellation(agentID: $0.id, turnID: stopTarget) } : nil
         let canSend = model.canSend
         VStack(spacing: 0) {
+            MobileModelControls(model: model)
             if let error = model.creationError {
                 HStack {
                     Text(error).font(.caption).foregroundStyle(Ink.muted)
@@ -3580,5 +3581,69 @@ private struct NativeAppUpdateSection: View {
                 .accessibilityIdentifier("check-nanocodex-update")
         }
         .task { await updater.check() }
+    }
+}
+
+
+/// Compact controls remain visible while the selected route is pinned.
+private struct MobileModelControls: View {
+    @ObservedObject var model: InboxModel
+    var body: some View {
+        if let card = model.focused {
+            let selected = ModelChoice.find(card.model.isEmpty ? "gpt-6-astra" : card.model)
+            let waiting = model.modelSettingsBusy.contains(card.id)
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 12) {
+                    Menu {
+                        ForEach(ModelChoice.all) { choice in
+                            Button { model.chooseModel(choice.id) } label: {
+                                if card.model == choice.id { Label(choice.name, systemImage: "checkmark") }
+                                else { Text(choice.name) }
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Text(card.routingAutomatic && !card.modelPinned ? "Auto" : selected?.name ?? card.model)
+                                .lineLimit(1)
+                            Image(systemName: model.modelChoiceLocked ? "lock.fill" : "chevron.down").font(.caption2)
+                        }.frame(minHeight: 44)
+                    }
+                    .disabled(model.modelChoiceLocked || waiting)
+                    .accessibilityLabel("Model: \(selected?.name ?? card.model)")
+                    .accessibilityIdentifier("model-picker")
+                    Spacer(minLength: 0)
+                    Menu {
+                        ForEach(selected?.efforts ?? [], id: \.self) { effort in
+                            Button { model.chooseEffort(effort) } label: {
+                                if effort == card.thinking { Label(ModelChoice.effortName(effort), systemImage: "checkmark") }
+                                else { Text(ModelChoice.effortName(effort)) }
+                            }
+                        }
+                    } label: {
+                        Label(ModelChoice.effortName(card.thinking.isEmpty ? "low" : card.thinking), systemImage: "dial.low")
+                            .lineLimit(1).frame(minHeight: 44)
+                    }
+                    .disabled(waiting || card.effortLocked || card.routingAutomatic)
+                    .accessibilityLabel("Thinking effort: \(card.thinking)")
+                    .accessibilityIdentifier("effort-dial")
+                    Button { model.toggleAutoRoute() } label: {
+                        Label("Auto", systemImage: "arrow.triangle.branch").frame(minWidth: 60, minHeight: 44)
+                            .background(card.routingAutomatic ? Color.accentColor.opacity(0.12) : .clear, in: Capsule())
+                    }
+                    .disabled(model.modelChoiceLocked || waiting)
+                    .accessibilityLabel(card.routingAutomatic ? "Disable auto route" : "Enable auto route")
+                    .accessibilityValue(card.routingAutomatic ? "On" : "Off")
+                    .accessibilityIdentifier("auto-route")
+                }.font(.caption.weight(.medium)).buttonStyle(.plain)
+                if waiting { ProgressView().controlSize(.mini).accessibilityLabel("Updating model settings") }
+                else if !card.provider.isEmpty {
+                    Text(card.provider + " · " + (card.modelLocked ? "Pinned to this conversation" : "Ready"))
+                        .font(.caption2).foregroundStyle(.secondary).accessibilityIdentifier("selected-provider")
+                } else if card.routingEnabled {
+                    Text("Provider chosen on first message").font(.caption2).foregroundStyle(.secondary)
+                }
+                if let error = model.modelSettingsError { Text(error).font(.caption).foregroundStyle(.red) }
+            }.padding(.horizontal, 16).padding(.bottom, 4)
+        }
     }
 }

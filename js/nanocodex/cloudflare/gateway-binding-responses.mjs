@@ -13,7 +13,11 @@ export function toBindingResponsesInput(chat, effort) {
     // Portable reasoning is plaintext history, never a provider-issued opaque
     // reasoning item or encrypted state. Replay it as assistant text.
     if (message.reasoning_content) input.push({ role: "assistant", content: message.reasoning_content });
-    if (message.content != null) input.push({ role: message.role, content: message.content });
+    if (message.content != null) input.push({ role: message.role, content: Array.isArray(message.content)
+      ? message.content.map(part => part.type === "image_url"
+        ? { type: "input_image", image_url: part.image_url.url, ...(part.image_url.detail ? { detail: part.image_url.detail } : {}) }
+        : { type: message.role === "assistant" ? "output_text" : "input_text", text: part.text })
+      : message.content });
     for (const call of message.tool_calls ?? []) input.push({ type: "function_call", call_id: call.id,
       name: call.function.name, arguments: call.function.arguments });
   }

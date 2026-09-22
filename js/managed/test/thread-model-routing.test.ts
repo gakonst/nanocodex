@@ -253,15 +253,15 @@ describe("cross-provider candidate routing", () => {
   } })) });
   const openrouter = "openrouter:openai/gpt-6-astra:high";
   const vercel = "vercel:openai/gpt-6-astra:high";
-  it("offers 57 unique candidates, preserving every old identity", async () => {
-    expect(ROUTING_CANDIDATES).toHaveLength(57);
-    expect(new Set(ROUTING_CANDIDATES.map(c => c.id)).size).toBe(57);
+  it("offers 67 unique candidates, preserving every old identity", async () => {
+    expect(ROUTING_CANDIDATES).toHaveLength(67);
+    expect(new Set(ROUTING_CANDIDATES.map(c => c.id)).size).toBe(67);
     const p = routingPolicySchema.parse({ candidates: ROUTING_CANDIDATES.map(c => c.id) });
     const ai = choose(vercel);
     const route = await resolveThreadRoute(ai, "task", p, available);
-    expect(route.audit?.eligible_candidates).toHaveLength(45);
+    expect(route.audit?.eligible_candidates).toHaveLength(55);
     expect(route).toMatchObject({ backend: "vercel", model: FRONTIER_MODEL, provider_model: "openai/gpt-6-astra" });
-    expect(JSON.parse((ai.run.mock.calls[0][1] as {state:string}).state).candidates).toHaveLength(45);
+    expect(JSON.parse((ai.run.mock.calls[0][1] as {state:string}).state).candidates).toHaveLength(55);
   });
   it("sends dated provider token rates separately from measured task costs", async () => {
     const ai = choose(vercel);
@@ -273,7 +273,7 @@ describe("cross-provider candidate routing", () => {
     expect(hint("openrouter:z-ai/glm-5.3:low")).toMatchObject({input:.91,output:2.86,cached_input:.169});
     expect(hint("vercel:zai/glm-5.3:low")).toMatchObject({input:1.4,output:4.4,cached_input:.14});
     expect(hint("gpt-6-astra:high")).toBeNull();
-    expect(hint(vercel).note).toContain("exclude long-context tiers");
+    expect(state.uncertainty).toContain("dated base token rates");
     expect(hint(vercel)).not.toHaveProperty("expected_duration_ms");
     expect(hint(vercel)).not.toHaveProperty("expected_cost_usd");
     expect(state.measurements).toEqual([]);
@@ -281,7 +281,7 @@ describe("cross-provider candidate routing", () => {
     expect(route.selection).toBe("prior");
   });
   it.each([
-    [undefined, 15], [{openrouter:true,vercel:false},30], [{openrouter:false,vercel:true},30], [available,45], [{...available,cloudflare:true},57], [{openrouter:false,vercel:false,cloudflare:true},27],
+    [undefined, 15], [{openrouter:true,vercel:false},35], [{openrouter:false,vercel:true},35], [available,55], [{...available,cloudflare:true},67], [{openrouter:false,vercel:false,cloudflare:true},27],
   ])("filters unavailable providers before Jev: %j", async (availability, count) => {
     const ai = choose("gpt-6-astra:high");
     const route = await resolveThreadRoute(ai, "task", routingPolicySchema.parse({}), availability);
@@ -370,8 +370,8 @@ describe("trusted regional provider telemetry", () => {
   it("bounds and deduplicates aggregates without merging probe/live cohorts", async () => {
     const samples = ROUTING_CANDIDATES.filter(c=>c.backend==="openrouter").flatMap(c=>[metric({model:c.model,effort:c.thinking}),metric({model:c.model,effort:c.thinking,source:"probe",scope:"deployment_global",workerColo:null})]);
     const route = await resolveThreadRoute(ai(),"task",routingPolicySchema.parse({}),runtime([samples[0],...samples]));
-    expect(route.audit?.provider_telemetry?.provider_performance).toHaveLength(30);
-    expect(new Set(route.audit?.provider_telemetry?.provider_performance.map(m => `${m.source}/${m.candidateId}`)).size).toBe(30);
+    expect(route.audit?.provider_telemetry?.provider_performance).toHaveLength(40);
+    expect(new Set(route.audit?.provider_telemetry?.provider_performance.map(m => `${m.source}/${m.candidateId}`)).size).toBe(40);
   });
   it("cannot satisfy a measured-success threshold or trust policy/request telemetry", async () => {
     expect(()=>routingPolicySchema.parse({provider_performance:[metric()]})).toThrow();
@@ -445,7 +445,7 @@ describe("preference-preserving confidence fallback", () => {
 describe("captured preference-distribution policy replay (not accuracy labels)", () => {
   it.each(preferenceObservations.cases)("retains $catalog/$id without inflating confidence", async observation => {
     const ai = {run:vi.fn(async()=>({state:"Completed",result:{answers:observation.answers}}))};
-    const route = await resolveThreadRoute(ai,observation.prompt,routingPolicySchema.parse({preferences:observation.preferences}),
+    const route = await resolveThreadRoute(ai,observation.prompt,routingPolicySchema.parse({preferences:observation.preferences, candidates: ROUTING_CANDIDATES.filter(c => !["kimi-k3", "mimo-v2.6-pro"].includes(c.model)).map(c => c.id)}),
       {openrouter:observation.catalog===45,vercel:observation.catalog===45});
     expect(route.audit?.candidate_choice).toBe(observation.expected_choice);
     expect(route.audit?.candidate_confidence).toBe(observation.answers.candidate.confidence);
@@ -566,7 +566,7 @@ describe("Cloudflare frontier opt-in", () => {
   it("adds exactly twelve frontier entries with unknown prices and retains all old IDs", () => {
     const cloudflare = ROUTING_CANDIDATES.filter(c => c.backend === "cloudflare");
     expect(cloudflare).toHaveLength(12);
-    expect(ROUTING_CANDIDATES.filter(c => c.backend !== "chatgpt")).toHaveLength(45);
+    expect(ROUTING_CANDIDATES.filter(c => c.backend !== "chatgpt")).toHaveLength(55);
     for (const model of [FRONTIER_MODEL, "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
       for (const thinking of ["low", "medium", "high"]) {
         expect(cloudflare.find(c => c.id === `cloudflare:openai/${model}:${thinking}`)).toMatchObject({model, thinking, provider_model:`openai/${model}`,catalog_price_hint:null});

@@ -595,6 +595,8 @@ mod model_serde {
             "gpt-5.6-luna" => Ok(Model::Luna),
             "gpt-6-astra" => Ok(Model::Astra),
             "@cf/zai-org/glm-5.3" => Ok(Model::Glm53),
+            "kimi-k3" => Ok(Model::Kimi),
+            "mimo-v2.6-pro" => Ok(Model::Mimo),
             value => Err(de::Error::unknown_variant(
                 value,
                 &[

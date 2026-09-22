@@ -26,6 +26,8 @@ export function modelFamily(model: string): string {
     return model.replace(/^openai\//, "");
   if (["@cf/zai-org/glm-5.3", "z-ai/glm-5.3", "zai/glm-5.3"].includes(model))
     return "glm-5.3";
+  if (model === "moonshotai/kimi-k3") return "kimi-k3";
+  if (model === "xiaomi/mimo-v2.6-pro") return "mimo-v2.6-pro";
   return model;
 }
 export function atlasRows(providers: RouterProvider[]) {

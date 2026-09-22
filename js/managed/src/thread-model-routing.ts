@@ -6,6 +6,7 @@ export const OSS_MODEL = "@cf/zai-org/glm-5.3" as const;
 export const FRONTIER_MODEL = "gpt-6-astra" as const;
 export const ROUTING_VERSION = "jev-direct-v3" as const;
 const frontierModel = z.enum(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]);
+const gatewayModel = z.enum(["kimi-k3", "mimo-v2.6-pro"]);
 const thinking = z.enum(["low", "medium", "high"]);
 export const taskFamily = z.enum([
   "repository_repair", "long_engineering", "terminal", "research", "science",
@@ -24,12 +25,12 @@ export type RoutingAvailability = {
 };
 const backendSchema = z.enum(["workers_ai", "chatgpt", "openrouter", "vercel", "cloudflare"]);
 const estimate = z.object({
-  family: taskFamily, backend: backendSchema, model: z.enum([OSS_MODEL, ...frontierModel.options]), thinking,
+  family: taskFamily, backend: backendSchema, model: z.enum([OSS_MODEL, ...frontierModel.options, ...gatewayModel.options]), thinking,
   success_rate: z.number().positive().max(1), expected_cost_usd: z.number().nonnegative(),
   expected_duration_ms: z.number().positive(), sample_size: z.number().int().positive(),
   source: z.string().min(1).max(512),
 }).strict().refine(e => (e.backend !== "workers_ai" || e.model === OSS_MODEL)
-  && ((e.backend !== "chatgpt" && e.backend !== "cloudflare") || e.model !== OSS_MODEL), "Unsupported backend/model combination");
+  && ((e.backend !== "chatgpt" && e.backend !== "cloudflare") || frontierModel.safeParse(e.model).success), "Unsupported backend/model combination");
 // Catalog base token prices are dated hints, not matched task-cost or duration measurements.
 const gatewayTokenPrices = {
   openrouter: {
@@ -41,9 +42,10 @@ const gatewayTokenPrices = {
     "gpt-5.6-luna": [.2, 1.2, .02], "gpt-5.6-terra": [2, 12, .2], "gpt-5.6-sol": [4, 20, .4],
   },
 } as const;
-function catalogPriceHint(backend: z.infer<typeof backendSchema>, model: typeof OSS_MODEL | z.infer<typeof frontierModel>) {
+function catalogPriceHint(backend: z.infer<typeof backendSchema>, model: typeof OSS_MODEL | z.infer<typeof frontierModel> | z.infer<typeof gatewayModel>) {
   if (backend !== "openrouter" && backend !== "vercel") return null;
-  const [input, output, cached_input] = gatewayTokenPrices[backend][model];
+  if (gatewayModel.safeParse(model).success) return null;
+  const [input, output, cached_input] = gatewayTokenPrices[backend][model as keyof typeof gatewayTokenPrices[typeof backend]];
   return {
     as_of: "2026-09-20", unit: "USD per million tokens", input, output, cached_input,
     source: backend === "openrouter" ? "https://openrouter.ai/api/v1/models" : "https://ai-gateway.vercel.sh/v1/models",
@@ -52,14 +54,15 @@ function catalogPriceHint(backend: z.infer<typeof backendSchema>, model: typeof 
 }
 // Gateway IDs verified against public /v1/models catalogs on 2026-09-20.
 // Cloudflare frontier IDs follow https://developers.cloudflare.com/ai/models/openai/gpt-6-astra/.
-export const ROUTING_CANDIDATES = [OSS_MODEL, ...frontierModel.options].flatMap(model => {
+export const ROUTING_CANDIDATES = [OSS_MODEL, ...frontierModel.options, ...gatewayModel.options].flatMap(model => {
   const nativeBackend = model === OSS_MODEL ? "workers_ai" as const : "chatgpt" as const;
-  return [nativeBackend, "openrouter" as const, "vercel" as const,
-    ...(model === OSS_MODEL ? [] : ["cloudflare" as const])].flatMap(backend => {
-    const provider_model = backend === "openrouter" ? (model === OSS_MODEL ? "z-ai/glm-5.3" : `openai/${model}`)
+  const gatewayOnly = gatewayModel.safeParse(model).success;
+  return [...(gatewayOnly ? [] : [nativeBackend]), "openrouter" as const, "vercel" as const,
+    ...(model === OSS_MODEL || gatewayOnly ? [] : ["cloudflare" as const])].flatMap(backend => {
+    const provider_model = model === "kimi-k3" ? "moonshotai/kimi-k3" : model === "mimo-v2.6-pro" ? "xiaomi/mimo-v2.6-pro" : backend === "openrouter" ? (model === OSS_MODEL ? "z-ai/glm-5.3" : `openai/${model}`)
       : backend === "cloudflare" ? `openai/${model}`
       : backend === "vercel" ? (model === OSS_MODEL ? "zai/glm-5.3" : `openai/${model}`) : model;
-    return thinking.options.map(effort => ({
+    return thinking.options.filter(effort => model !== "kimi-k3" || effort !== "medium").map(effort => ({
       id: backend === nativeBackend ? `${model}:${effort}` : `${backend}:${provider_model}:${effort}`,
       model, provider_model, thinking: effort, backend,
       catalog_price_hint: catalogPriceHint(backend, model),
@@ -67,7 +70,7 @@ export const ROUTING_CANDIDATES = [OSS_MODEL, ...frontierModel.options].flatMap(
         : effort === "high" ? "More deliberate reasoning for complex tasks; no quantified success guarantee."
         : "Intermediate reasoning effort for tasks requiring some deliberation; measured performance unknown.",
       profile: model === OSS_MODEL ? "Text-only open model; published evals are proxies, local performance unknown."
-        : "Supported frontier model; relative completion, cost and duration require matched measurements for this provider.",
+        : gatewayOnly ? "Vision and tools via gateway; local performance unmeasured. Model/provider pinned for the thread." : "Supported frontier model; relative completion, cost and duration require matched measurements for this provider.",
     }));
   });
 });
@@ -215,7 +218,7 @@ export const EVAL_EVIDENCE = {
 export type ThreadRoute = {
   version: 1; policy_version: typeof ROUTING_VERSION | "jev-direct-v2" | "jev-evals-v1"; backend: z.infer<typeof backendSchema>;
   provider_model: string;
-  model: typeof OSS_MODEL | z.infer<typeof frontierModel>; thinking: "low" | "medium" | "high";
+  model: typeof OSS_MODEL | z.infer<typeof frontierModel> | z.infer<typeof gatewayModel>; thinking: "low" | "medium" | "high";
   reasoning_mode: "standard"; fast_mode: false; family: TaskFamily; confidence: number;
   objective: ThreadRoutingPolicy["objective"]; selection: "measured" | "prior" | "fallback";
   reason: string; evidence: (typeof EVAL_EVIDENCE)[TaskFamily];
@@ -454,7 +457,7 @@ async function resolveDirect(ai: RoutingAi, input: unknown, p: ThreadRoutingPoli
   const availabilitySignal = (id: string, source: "live" | "probe") => {
     const m = metricFor(id, source);
     return m ? { sampleCount: m.sampleCount, failureCount: m.censoredCount, ageMs: m.ageMs,
-      scope: m.scope, fullResponseP50Ms: m.fullResponseP50Ms } : null;
+      scope: m.scope } : null;
   };
   let family: TaskFamily = "other", confidence = 0, candidateConfidence = 0;
   let selected: typeof eligible[number] | undefined, routerUsage: unknown = null;
@@ -467,8 +470,8 @@ async function resolveDirect(ai: RoutingAi, input: unknown, p: ThreadRoutingPoli
       const response = await runJev(ai, {
           state: JSON.stringify({ opening_prompt: opening.state, task_profiles: taskFamily.options,
             candidates: eligible.map(({ profile: _profile, effort_profile: _effort, ...candidate }) => ({ ...candidate,
+              catalog_price_hint: candidate.catalog_price_hint ? (({ note: _note, ...rates }) => rates)(candidate.catalog_price_hint) : null,
               responsiveness: {
-                signalKind: "generation_ttft_not_task_duration",
                 live: responsiveness(candidate.id, "live"),
                 probe: responsiveness(candidate.id, "probe"),
               },

@@ -687,9 +687,15 @@ impl<'a> ResponseCreate<'a> {
                 // Astra rejects the legacy `reasoning.mode` field. Standard
                 // already serializes as absent; keep this model guard as a
                 // final wire-level invariant for custom service factories.
-                mode: (!matches!(policy.model, crate::Model::Astra | crate::Model::Glm53))
-                    .then(|| reasoning_mode.request_value())
-                    .flatten(),
+                mode: (!matches!(
+                    policy.model,
+                    crate::Model::Astra
+                        | crate::Model::Glm53
+                        | crate::Model::Kimi
+                        | crate::Model::Mimo
+                ))
+                .then(|| reasoning_mode.request_value())
+                .flatten(),
                 effort: policy.thinking.as_str(),
                 summary: None,
                 context: "all_turns",
@@ -704,7 +710,7 @@ impl<'a> ResponseCreate<'a> {
             // Astra standard mode is explicit so a project-level Fast default
             // cannot silently change processing or the local cost estimate.
             service_tier: match (policy.model, policy.fast_mode) {
-                (crate::Model::Glm53, _) => None,
+                (crate::Model::Glm53 | crate::Model::Kimi | crate::Model::Mimo, _) => None,
                 (_, true) => Some("priority"),
                 (crate::Model::Astra, false) => Some("default"),
                 (_, false) => None,

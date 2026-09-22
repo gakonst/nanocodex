@@ -100,6 +100,50 @@ describe("managed routing admission", () => {
     });
   }));
 
+  it.each([
+    ["kimi-k3", "low", 2], ["kimi-k3", "high", 2], ["mimo-v2.6-pro", "medium", 2],
+    ["@cf/zai-org/glm-5.3", "high", 3],
+  ])("manually constrains %s/%s while leaving its provider choice to first input", (model, thinking, count) => fixture(async (instance, state) => {
+    await withRouting(instance, async () => {
+      const response = await instance.fetch(routingRequest(JSON.stringify({ model, thinking })));
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({ enabled: true, automatic: false, settings: { model, thinking } });
+      const configuration = await (await instance.fetch(request("/configuration", "GET"))).json() as { model_routing: { candidates: string[] } };
+      expect(configuration.model_routing.candidates).toHaveLength(count as number);
+      expect(configuration.model_routing.candidates.every(id => id.endsWith(`:${thinking}`))).toBe(true);
+      expect(await (await instance.fetch(request("/state", "GET"))).json()).toMatchObject({ model_routing_enabled: true, model_routing_automatic: false, model_route: null });
+      state.storage.sql.exec("UPDATE session_state SET accepted_turns = 1");
+      expect((await instance.fetch(routingRequest(JSON.stringify({ model: "gpt-6-astra", thinking: "low" })))).status).toBe(409);
+      expect((await instance.fetch(routingRequest("{}"))).status).toBe(409);
+      expect(await (await instance.fetch(request("/configuration", "GET"))).json()).toEqual(configuration);
+    });
+  }));
+
+  it("switches manual to automatic and back before the first message without inferring", () => fixture(async (instance, state) => {
+    await withRouting(instance, async () => {
+      const choose = (model: string, thinking: string) => instance.fetch(routingRequest(JSON.stringify({ model, thinking })));
+      expect((await choose("kimi-k3", "high")).status).toBe(200);
+      expect((await instance.fetch(routingRequest("{}"))).status).toBe(200);
+      expect(await (await instance.fetch(request("/state", "GET"))).json()).toMatchObject({ model_routing_automatic: true });
+      const manual = await choose("gpt-6-astra", "max");
+      expect(manual.status).toBe(200);
+      expect(await manual.json()).toMatchObject({ enabled: false, automatic: false, settings: { model: "gpt-6-astra", thinking: "max" } });
+      expect(await (await instance.fetch(request("/configuration", "GET"))).json()).not.toHaveProperty("model_routing");
+      expect(state.storage.sql.exec("SELECT * FROM managed_thread_route").toArray()).toEqual([]);
+      expect(state.storage.sql.exec<{ accepted_turns: number }>("SELECT accepted_turns FROM session_state").one().accepted_turns).toBe(0);
+    });
+  }));
+
+  it.each([{ model: "kimi-k3", thinking: "medium" }, { model: "mimo-v2.6-pro", thinking: "max" }, { model: "unknown", thinking: "low" }])(
+    "rejects invalid manual model/effort without changing retained selection %#", selection => fixture(async instance => {
+      await withRouting(instance, async () => {
+        expect((await instance.fetch(routingRequest("{}"))).status).toBe(200);
+        const before = await (await instance.fetch(request("/configuration", "GET"))).json();
+        expect((await instance.fetch(routingRequest(JSON.stringify(selection)))).status).toBe(400);
+        expect(await (await instance.fetch(request("/configuration", "GET"))).json()).toEqual(before);
+      });
+    }));
+
   it("reports pending opt-in and the actual pinned provider/model for the footer", () => fixture(async (instance, state) => {
     await withRouting(instance, async () => {
       expect(await (await instance.fetch(request("/state", "GET"))).json()).toMatchObject({ model_routing_enabled: false, model_route: null });

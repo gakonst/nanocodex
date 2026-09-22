@@ -5,6 +5,8 @@ export const AGENT_MODELS = [
   "gpt-5.6-luna",
   "gpt-6-astra",
   "@cf/zai-org/glm-5.3",
+  "kimi-k3",
+  "mimo-v2.6-pro",
 ] as const;
 
 export const AGENT_THINKING = [
@@ -140,9 +142,9 @@ export function parseCompleteAgentSettings(value: unknown): ManagedAgentSettings
 export function validateAgentSettings(
   settings: ManagedAgentSettings,
 ): ManagedAgentSettings {
-  if (settings.model === "@cf/zai-org/glm-5.3"
-    && (!["low", "medium", "high"].includes(settings.thinking) || settings.reasoning_mode !== "standard" || settings.fast_mode)) {
-    throw new TypeError("GLM-5.3 requires low/medium/high thinking, standard mode, and no fast mode");
+  if (["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"].includes(settings.model)
+    && (!(settings.model === "kimi-k3" ? ["low", "high"] : ["low", "medium", "high"]).includes(settings.thinking) || settings.reasoning_mode !== "standard" || settings.fast_mode)) {
+    throw new TypeError("Gateway model requires a supported effort, standard mode, and no fast mode");
   }
   if (settings.model === "gpt-6-astra" && settings.thinking === "none") {
     throw new TypeError("GPT-6 Astra requires low, medium, high, xhigh, or max thinking");
@@ -155,8 +157,8 @@ export function validateAgentSettings(
 
 /** Public admission cannot select the OSS model without a committed thread route. */
 export function validateAgentAdmissionSettings(settings: ManagedAgentSettings): ManagedAgentSettings {
-  if (settings.model === "@cf/zai-org/glm-5.3") {
-    throw new TypeError("GLM-5.3 is available only through model_routing; omit explicit model settings");
+  if (["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"].includes(settings.model)) {
+    throw new TypeError("Gateway model is available only through model_routing; omit explicit model settings");
   }
   return validateAgentSettings(settings);
 }

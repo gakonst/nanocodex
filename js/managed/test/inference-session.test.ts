@@ -176,12 +176,19 @@ describe("strict Responses boundary", () => {
     { tools: [{ type: "function", name: "f", strict: true }] },
     { input: [{ type: "configuration_update", reasoning: { effort: "high" } }] },
     { input: [{ type: "additional_tools", tools: [{ type: "mcp" }] }] },
-    { input: [{ role: "user", content: [{ type: "input_image", image_url: "https://example.invalid/a" }] }] },
+    { input: [{ role: "user", content: [{ type: "input_image", image_url: "file:///private/image.png" }] }] },
     { tools: [{ type: "function", name: "x", handler: "execute" }] },
   ])("rejects unsupported or authority-bearing fields %#", async extra => {
     const f = fixture(); await f.create();
     expect((await f.call("POST", "/responses", { input: "x", ...extra })).status).toBe(400);
     expect(f.ai).not.toHaveBeenCalled();
+  });
+  it("accepts bounded image history without granting hosted tool authority", () => {
+    const input = [{ role: "user", content: [{ type: "input_text", text: "Describe" },
+      { type: "input_image", image_url: "data:image/png;base64," + "A".repeat(64 * 1024), detail: "high" }] }];
+    expect(validateInferenceRequest({ model: "kimi-k3", input }).input).toEqual(input);
+    expect(() => validateInferenceRequest({ model: "mimo-v2.6-pro", input, tools: [{ type: "computer", name: "hand" }] })).toThrow("invalid_inference_request");
+    expect(() => validateInferenceRequest({ input: [{ role: "user", content: [{ type: "input_image", image_url: "data:image/png;base64," + "A".repeat(6 * 1024 * 1024) }] }] })).toThrow("invalid_inference_request");
   });
   it("bounds input/body bytes, including multibyte strings and absent content-length", async () => {
     const f = fixture(); await f.create();
@@ -352,7 +359,7 @@ describe("trusted deployment probe context", () => {
       expect(state.preferences).toMatchObject({ duration: 90, cost: 1 });
       expect(state.candidates).toHaveLength(2);
       for (const c of state.candidates) expect(c.responsiveness).toMatchObject({
-        signalKind: "generation_ttft_not_task_duration", live: null,
+        live: null,
         probe: { generationTtftSampleCount: 3, workerColo: null, regionalMatch: false },
       });
       const best = state.candidates.sort((a: any, b: any) =>

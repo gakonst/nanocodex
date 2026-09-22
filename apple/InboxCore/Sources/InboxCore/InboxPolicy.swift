@@ -16,6 +16,14 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
     public var outcomeCursor: Cursor { statusCursor }
     private var terminalStatus: String?
     public var model = ""
+    public var thinking = "low"
+    public var provider = ""
+    public var routingEnabled = false
+    public var routingAutomatic = false
+    public var modelPinned = false
+    public var acceptedTurns = 0
+    public var modelLocked: Bool { modelPinned || acceptedTurns > 0 || turnCount > 0 || isRunning }
+    public var effortLocked: Bool { modelLocked && (routingEnabled || model != "gpt-6-astra") }
     private var previewCursor: Cursor = .zero
     /// Last history event actually projected into the card, excluding newer
     /// state snapshots whose events have not been read yet.
@@ -99,6 +107,17 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
         if previousTurns != activeTurns { activitySummary = "Working"; activityDetail = "" }
         stateCursor = cursor; latestCursor = max(latestCursor, cursor)
         model = state["settings"]["model"].string
+        thinking = state["settings"]["thinking"].string
+        routingEnabled = state["model_routing_enabled"].bool
+        routingAutomatic = state["model_routing_automatic"].bool
+        modelPinned = !state["model_route"]["model"].string.isEmpty
+        provider = state["model_route"]["backend"].string
+        if provider.isEmpty && !routingEnabled && model.hasPrefix("gpt-") { provider = "ChatGPT" }
+        acceptedTurns = max(acceptedTurns, Int(state["accepted_turns"].number))
+        if modelPinned {
+            model = state["model_route"]["model"].string
+            thinking = state["model_route"]["thinking"].string
+        }
         checked = true; error = nil
         if isRunning {
             if status != "Running" { activitySummary = "Working" }
@@ -118,7 +137,10 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
             // A state read may already include these events. It owns active-turn
             // membership until the replay catches up to that read's cursor.
             if event.cursor > stateCursor {
-                if event.type == "turn_accepted", !activeTurns.contains(event.turnID) { activeTurns.append(event.turnID) }
+                if event.type == "turn_accepted" {
+                    acceptedTurns = max(acceptedTurns, 1)
+                    if !activeTurns.contains(event.turnID) { activeTurns.append(event.turnID) }
+                }
                 if ["turn_completed", "turn_cancelled", "turn_failed"].contains(event.type) { activeTurns.removeAll { $0 == event.turnID } }
                 stateCursor = event.cursor
             }

@@ -116,6 +116,8 @@ final class InboxModel: ObservableObject {
     private var protectedHistoryCursors: ClosedRange<Cursor>?
     private var protectedHistorySelection: (ids: Set<String>, revision: UUID)?
     @Published var selectedTurn = ""
+    @Published private(set) var modelSettingsBusy = Set<String>()
+    @Published private(set) var modelSettingsError: String?
     @Published private var pendingCreations = Set<String>()
     @Published private var creationErrors: [String: String] = [:]
     private var creationTasks: [String: Task<String, Error>] = [:]
@@ -492,6 +494,7 @@ final class InboxModel: ObservableObject {
     var attachmentError: String? { attachmentErrors[focused?.id ?? ""] }
     var canSend: Bool {
         focused != nil && !hasUnconfirmedMessage && !preparingAttachments
+            && !modelSettingsBusy.contains(focused?.id ?? "")
             && !busy.contains(focused?.id ?? "")
             && (!draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !focusedAttachments.isEmpty)
     }
@@ -1130,6 +1133,7 @@ final class InboxModel: ObservableObject {
         scheduledJobs = []; scheduledJobAgents = [:]; schedulesLoading = false; schedulesLoaded = false; schedulesError = nil
         for task in creationTasks.values { task.cancel() }
         creationTasks = [:]; pendingCreations = []; creationErrors = [:]; createdAgentIDs = [:]
+        modelSettingsBusy = []; modelSettingsError = nil
         cancellationTasks.cancelAll(); cancellations = []; steeringTasks.cancelAll(); steeringTransfers = []
         deviceHand?.close(); deviceHand = nil; deviceHandConnected = false
         endHandBackgroundTime()
@@ -2908,6 +2912,52 @@ final class InboxModel: ObservableObject {
             self.error = error.localizedDescription + (command.kind == .followUp ? " Retry the same follow-up to avoid sending it twice." : " The action was not confirmed; check the latest state before trying again.")
         }
     }
+    var modelChoiceLocked: Bool {
+        guard let card = focused else { return true }
+        return card.modelLocked || busy.contains(card.id) || pending.contains { $0.agentID == card.id }
+    }
+    func chooseModel(_ modelID: String) {
+        guard let card = focused, !modelChoiceLocked, let choice = ModelChoice.find(modelID) else { return }
+        let effort = choice.efforts.contains(card.thinking) ? card.thinking : "low"
+        updateModelControls(["model": .string(modelID), "thinking": .string(effort)])
+    }
+    func toggleAutoRoute() {
+        guard let card = focused, !modelChoiceLocked else { return }
+        if card.routingAutomatic { chooseModel(card.model.isEmpty ? "gpt-6-astra" : card.model) }
+        else { updateModelControls([:]) }
+    }
+    func chooseEffort(_ effort: String) {
+        guard let card = focused, !card.effortLocked, !card.routingAutomatic,
+              let choice = ModelChoice.find(card.model.isEmpty ? "gpt-6-astra" : card.model), choice.efforts.contains(effort) else { return }
+        if card.modelLocked {
+            // Only the existing native settings path can append a cache-safe effort update.
+            updateModelControls(["thinking": .string(effort)], effortOnly: true)
+        } else {
+            updateModelControls(["model": .string(choice.id), "thinking": .string(effort)])
+        }
+    }
+    private func updateModelControls(_ body: [String: JSON], effortOnly: Bool = false) {
+        guard let localID = focused?.id, !modelSettingsBusy.contains(localID), connected else { return }
+        modelSettingsBusy.insert(localID); modelSettingsError = nil
+        let epoch = generation
+        Task { @MainActor in
+            var id = localID
+            defer { modelSettingsBusy.remove(localID); modelSettingsBusy.remove(id) }
+            do {
+                id = try await readyAgent(localID)
+                guard generation == epoch, let client else { throw CancellationError() }
+                modelSettingsBusy.insert(id)
+                _ = try await client.json(path: "/v1/agents/" + id + (effortOnly ? "/settings" : "/routing"),
+                    method: effortOnly ? "PATCH" : "POST", body: .object(body))
+                let current = try await client.state(id)
+                guard generation == epoch else { return }
+                if let index = cards.firstIndex(where: { $0.id == id }) { try cards[index].apply(state: current) }
+            } catch {
+                if generation == epoch { modelSettingsError = error.localizedDescription }
+            }
+        }
+    }
+
     func newAgent() {
         guard connected else { return }
         let id = "draft-" + UUID().uuidString
@@ -2990,6 +3040,7 @@ final class InboxModel: ObservableObject {
         if let value = selectedContext.removeValue(forKey: localID) { selectedContext[id] = value }
         if let value = excludedContext.removeValue(forKey: localID) { excludedContext[id] = value }
         if busy.remove(localID) != nil { busy.insert(id) }
+        if modelSettingsBusy.contains(localID) { modelSettingsBusy.insert(id) }
         for index in pending.indices where pending[index].agentID == localID {
             let old = pending[index]
             var rebound = PendingMessage(agentID: id, input: old.input, predecessor: old.predecessor, id: old.id, contextIDs: old.contextIDs, attachments: old.attachments)

@@ -56,6 +56,7 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
   const iterator = records(reader);
   let controller, settled = false, first = false, sequence = 0, finalSeen = false;
   const id = `resp_${crypto.randomUUID()}`;
+  const reasoningDetails = [];
   let retainedSize = 0;
   const retain = text => {
     retainedSize += encoder.encode(text).byteLength;
@@ -155,6 +156,11 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
     }
     if (part.content != null) delta("message", part.content);
     if (part.reasoning_content != null || part.reasoning != null) delta("reasoning", part.reasoning_content ?? part.reasoning);
+    if (part.reasoning_details != null) {
+      if (!Array.isArray(part.reasoning_details) || part.reasoning_details.some(d => !d || typeof d !== "object" || Array.isArray(d))) invalid();
+      retain(JSON.stringify(part.reasoning_details));
+      reasoningDetails.push(...part.reasoning_details);
+    }
     if (part.tool_calls != null) {
       if (!Array.isArray(part.tool_calls)) invalid();
       for (const fragment of part.tool_calls) {
@@ -242,7 +248,7 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
         if (!started) {
           started = true;
           // Obtain canonical model identity without admitting provider data.
-          const base = normalize({ choices: [{ message: { content: "" }, finish_reason: "stop" }] });
+          const base = normalize({ choices: [{ message: { content: "" }, finish_reason: "stop" }] }, true);
           emit("response.created", { response: { ...base, id, status: "in_progress", output: [], usage: null, end_turn: false } });
           return;
         }
@@ -258,7 +264,7 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
               return call;
             });
             await complete({ choices: [{ message: { content: live.get("message")?.text ?? "",
-              reasoning_content: live.get("reasoning")?.text ?? "", tool_calls }, finish_reason: finishReason }], usage });
+              reasoning_content: live.get("reasoning")?.text ?? "", ...(reasoningDetails.length ? { reasoning_details: reasoningDetails } : {}), tool_calls }, finish_reason: finishReason }], usage });
           } else {
             const value = JSON.parse(record.value.data);
             if (source.format === "responses") {

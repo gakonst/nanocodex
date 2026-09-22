@@ -25,15 +25,15 @@ export type GatewayResponsesOptions = GatewayResponsesCommonOptions & (Readonly<
   accountId?: never;
 }> | Readonly<{
   provider: "cloudflare";
-  model: Exclude<ResponsesCanonicalModel, "@cf/zai-org/glm-5.3">;
+  model: Extract<ResponsesCanonicalModel, `gpt-${string}`>;
   /** Native Responses binding; credentials stay with Cloudflare. Cancellation stops waiting, not inference. */
-  ai: { run(model: `openai/${Exclude<ResponsesCanonicalModel, "@cf/zai-org/glm-5.3">}`, input: Record<string, unknown>): Promise<unknown> };
+  ai: { run(model: `openai/${Extract<ResponsesCanonicalModel, `gpt-${string}`>}`, input: Record<string, unknown>): Promise<unknown> };
   apiKey?: never;
   fetch?: never;
   accountId?: never;
 }> | Readonly<{
   provider: "cloudflare";
-  model: Exclude<ResponsesCanonicalModel, "@cf/zai-org/glm-5.3">;
+  model: Extract<ResponsesCanonicalModel, `gpt-${string}`>;
   /** Account-scoped native Responses REST; no provider API key or connector access. */
   accountId: string;
   /** Deployment-owned Cloudflare API token with inference access. */

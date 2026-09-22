@@ -62,7 +62,7 @@ test('explicit child choices must be honored or rejected; never silently substit
 
 test('equivalent public model aliases preserve explicit overrides and pin canonical models', async () => {
   for (const [model, alias] of [['sol', 'gpt-5.6-sol'], ['terra', 'gpt-5.6-terra'],
-    ['luna', 'gpt-5.6-luna'], ['astra', 'gpt-6-astra'], ['glm-5.3', '@cf/zai-org/glm-5.3'], ['glm-5.3', 'glm53']]) {
+    ['luna', 'gpt-5.6-luna'], ['astra', 'gpt-6-astra'], ['glm-5.3', '@cf/zai-org/glm-5.3'], ['glm-5.3', 'glm53'], ['kimi', 'kimi-k3'], ['mimo', 'mimo-v2.6-pro']]) {
     for (const [requested, selected] of [[model, alias], [alias, model]]) {
       const { router } = fixture(new Map(), () => ({ provider: 'test', model: selected, thinking: 'low' }));
       const request = { parentSessionId: 'large-parent', hostContextRef: 'owned', model: requested };

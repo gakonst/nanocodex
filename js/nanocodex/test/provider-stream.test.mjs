@@ -431,3 +431,31 @@ for (const scenario of ["no-usage", "changed-finish", "new-text", "new-reasoning
     assert.deepEqual(fixture.observed, [200, "first", "protocol_error"]);
   });
 }
+
+for (const model of ["kimi-k3", "mimo-v2.6-pro"]) test(`${model}: streamed opaque reasoning survives a real tool-history replay`, async () => {
+  const upstream = feed();
+  const details = [{ type: "reasoning.encrypted", data: "fixture-part-a", index: 0 }, { type: "reasoning.encrypted", data: "fixture-part-b", index: 0 }];
+  let count = 0;
+  const transport = createGatewayResponses({ provider: "openrouter", model, reasoningEffort: "low", apiKey: "synthetic-key",
+    fetch: async (_url, init) => {
+      if (++count === 1) return new Response(upstream.body, { headers: { "content-type": "text/event-stream" } });
+      const messages = JSON.parse(init.body).messages;
+      assert.deepEqual(messages[1].reasoning_details, details);
+      assert.equal(messages[1].tool_calls[0].id, "fixture-call");
+      return Response.json({ choices: [{ message: { content: "done" }, finish_reason: "stop" }] });
+    } });
+  const invoke = body => transport.createResponse(`${transport.apiBaseUrl}/responses`, "fixture", { authorization: "host_managed", body: JSON.stringify(body) });
+  const tools = [{ type: "function", name: "read", parameters: { type: "object", properties: {} } }];
+  const response = await invoke({ input: "Read fixture", tools, stream: true });
+  const pending = all(response);
+  for (const detail of details) upstream.send(chunk({ reasoning_details: [detail] }));
+  upstream.send(chunk({ tool_calls: [{ index: 0, id: "fixture-call", type: "function", function: { name: "tool_0", arguments: "{}" } }] }));
+  upstream.send(chunk({}, "tool_calls")); upstream.send("[DONE]");
+  const terminal = (await pending).at(-1).response;
+  assert.equal(terminal.output[0].type, "reasoning");
+  assert.deepEqual(terminal.output[0].content, []);
+  assert.ok(terminal.output[0].encrypted_content.startsWith("nanocodex-chat-reasoning-v1:"));
+  const result = await all(await invoke({ input: [{ role: "user", content: "Read fixture" }, ...terminal.output,
+    { type: "function_call_output", call_id: "fixture-call", output: "fixture value" }], tools }));
+  assert.equal(result.at(-1).response.output[0].content[0].text, "done");
+});

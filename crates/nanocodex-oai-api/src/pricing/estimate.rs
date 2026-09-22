@@ -109,6 +109,20 @@ const GLM53_STANDARD: TokenRates = TokenRates {
     cache_write_input: 1_400,
     output: 4_400,
 };
+// Gateway catalog base hints verified 2026-09-22; not actual provider billing.
+// MiMo cached input rounds $0.0036/M up to the estimator's $0.001/M unit.
+const KIMI_STANDARD: TokenRates = TokenRates {
+    input: 3_000,
+    cached_input: 300,
+    cache_write_input: 3_000,
+    output: 15_000,
+};
+const MIMO_STANDARD: TokenRates = TokenRates {
+    input: 435,
+    cached_input: 4,
+    cache_write_input: 435,
+    output: 870,
+};
 const LONG_CONTEXT_THRESHOLD: u64 = 272_000;
 
 #[derive(Clone, Copy)]
@@ -125,6 +139,8 @@ impl TokenRates {
         let long = input_tokens > LONG_CONTEXT_THRESHOLD;
         match (model, fast, long) {
             (Model::Glm53, _, _) => GLM53_STANDARD,
+            (Model::Kimi, _, _) => KIMI_STANDARD,
+            (Model::Mimo, _, _) => MIMO_STANDARD,
             (Model::Sol, false, false) => SOL_STANDARD,
             (Model::Sol, true, false) => SOL_PRIORITY,
             (Model::Sol, false, true) => SOL_LONG_CONTEXT_STANDARD,
@@ -173,7 +189,7 @@ impl ServiceTier {
     #[must_use]
     pub const fn for_model(model: Model, fast_mode: bool) -> Self {
         match (model, fast_mode) {
-            (Model::Glm53, _) | (_, false) => Self::Standard,
+            (Model::Glm53 | Model::Kimi | Model::Mimo, _) | (_, false) => Self::Standard,
             (Model::Astra, true) => Self::Fast,
             (_, true) => Self::Priority,
         }

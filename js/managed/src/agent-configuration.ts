@@ -23,9 +23,11 @@ export const environmentSchema = z.object({
 }).strict();
 export const configurationSchema = z.object({
   model_routing: routingPolicySchema.optional(),
+  /** Manual root selection does not constrain independently routed children. */
+  model_routing_selection: z.literal("manual").optional(),
   chatgpt_account_id: z.string().regex(/^[\x21-\x7e]{1,256}$/).optional(),
   settings: z.object({
-    model: z.enum(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "@cf/zai-org/glm-5.3"]),
+    model: z.enum(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"]),
     thinking: z.enum(["none", "low", "medium", "high", "xhigh", "max"]),
     reasoning_mode: z.enum(["standard", "pro"]), fast_mode: z.boolean(),
   }).strict().refine(s => s.model !== "gpt-6-astra" || s.thinking !== "none" && s.reasoning_mode !== "pro").optional(),
@@ -39,6 +41,7 @@ export const configurationSchema = z.object({
   prompt_cache: z.enum(["implicit", "explicit"]).optional(),
   environment: environmentSchema.optional(),
 }).strict()
+  .refine(c => !c.model_routing_selection || !!c.model_routing, "manual selection requires routing")
   .refine(c => !c.model_routing || c.settings === undefined, "model_routing owns model and thinking; omit settings");
 export type AgentConfiguration = z.infer<typeof configurationSchema>;
 export type AgentEnvironment = z.infer<typeof environmentSchema>;

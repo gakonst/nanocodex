@@ -6,7 +6,7 @@ const ENDPOINTS = Object.freeze({
   openrouter: "https://openrouter.ai/api/v1/chat/completions",
   vercel: "https://ai-gateway.vercel.sh/v1/chat/completions",
 });
-const MODELS = ["@cf/zai-org/glm-5.3", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const MODELS = ["@cf/zai-org/glm-5.3", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "kimi-k3", "mimo-v2.6-pro"];
 const fail = message => { throw new Error(`Gateway Responses: ${message}`); };
 
 /** Server-side, full-history transport; no WebSocket or opaque compaction. */
@@ -14,10 +14,10 @@ export function createGatewayResponses(options) {
   const { provider, model, reasoningEffort, apiKey, fetch: fetchImpl = globalThis.fetch } = options;
   if (provider !== "cloudflare" && !Object.hasOwn(ENDPOINTS, provider)) fail("unsupported provider");
   if (!MODELS.includes(model)) fail("unsupported canonical model");
-  if (!["low", "medium", "high"].includes(reasoningEffort)) fail("unsupported reasoning effort");
+  if (!(model === "kimi-k3" ? ["low", "high"] : ["low", "medium", "high"]).includes(reasoningEffort)) fail("unsupported reasoning effort");
   const cloudflareHttp = provider === "cloudflare" && (options.accountId !== undefined || apiKey !== undefined);
   if (provider === "cloudflare") {
-    if (model === MODELS[0]) fail("Cloudflare gateway requires an OpenAI canonical model");
+    if (!model.startsWith("gpt-")) fail("Cloudflare gateway requires an OpenAI canonical model");
     if (cloudflareHttp) {
       if (options.ai !== undefined) fail("choose one Cloudflare transport");
       if (typeof options.accountId !== "string" || !/^[a-f0-9]{32}$/i.test(options.accountId)) fail("a valid Cloudflare account ID is required");
@@ -31,7 +31,7 @@ export function createGatewayResponses(options) {
   const endpoint = cloudflareHttp
     ? `https://api.cloudflare.com/client/v4/accounts/${options.accountId}/ai/v1/responses` : ENDPOINTS[provider];
   const gatewayModel = model === MODELS[0]
-    ? (provider === "openrouter" ? "z-ai/glm-5.3" : "zai/glm-5.3") : `openai/${model}`;
+    ? (provider === "openrouter" ? "z-ai/glm-5.3" : "zai/glm-5.3") : model === "kimi-k3" ? "moonshotai/kimi-k3" : model === "mimo-v2.6-pro" ? "xiaomi/mimo-v2.6-pro" : `openai/${model}`;
   const apiBaseUrl = `https://${provider}-responses.invalid/v1`;
   const adapter = (signal, attempt) => createWorkersAiResponses({
     async run(_model, input) {
@@ -65,6 +65,16 @@ export function createGatewayResponses(options) {
       const payload = cloudflareHttp
         ? { ...toBindingResponsesInput(input, reasoningEffort), model: gatewayModel }
         : { ...input, model: gatewayModel, reasoning_effort: reasoningEffort };
+      if (["kimi-k3", "mimo-v2.6-pro"].includes(model)) {
+        // Both providers document these models through the unified reasoning field.
+        delete payload.reasoning_effort;
+        payload.reasoning = { effort: reasoningEffort };
+        if (payload.max_completion_tokens !== undefined) {
+          payload.max_tokens = payload.max_completion_tokens;
+          delete payload.max_completion_tokens;
+        }
+        if (payload.parallel_tool_calls === false) delete payload.parallel_tool_calls;
+      }
       if (provider === "openrouter") {
         delete payload.reasoning_effort;
         payload.reasoning = { effort: reasoningEffort };
@@ -75,6 +85,18 @@ export function createGatewayResponses(options) {
         if (input.parallel_tool_calls === false) delete payload.parallel_tool_calls;
       }
       let response;
+      if (provider === "openrouter" && model === "mimo-v2.6-pro") {
+        // MiMo endpoints currently support automatic tool selection only. Keep
+        // forced-choice semantics locally: restrict advertised tools, then the
+        // portable normalizer validates the completed call before dispatch.
+        if (payload.tool_choice === "none") {
+          delete payload.tools;
+          delete payload.tool_choice;
+        } else if (payload.tool_choice === "required" || typeof payload.tool_choice === "object") {
+          if (typeof payload.tool_choice === "object") payload.tools = payload.tools.filter(tool => tool.function.name === payload.tool_choice.function.name);
+          payload.tool_choice = "auto";
+        }
+      }
       attempt.outcome = "network_error";
       try { attempt.observer = options.onRequest?.(); } catch { /* telemetry is best effort */ }
       try {

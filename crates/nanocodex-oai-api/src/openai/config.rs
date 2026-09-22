@@ -82,14 +82,24 @@ impl ModelConfig {
     pub fn system_prompt(&self) -> Cow<'_, str> {
         let base = self.system_prompt.as_deref().unwrap_or(match self.model {
             Model::Astra => ASTRA_SYSTEM_PROMPT,
-            Model::Glm53 => GLM_SYSTEM_PROMPT,
+            Model::Glm53 | Model::Kimi | Model::Mimo => GLM_SYSTEM_PROMPT,
             Model::Sol | Model::Terra | Model::Luna => SYSTEM_PROMPT,
         });
+        let base =
+            if self.system_prompt.is_none() && matches!(self.model, Model::Kimi | Model::Mimo) {
+                Cow::Owned(base.replacen(
+                    "powered by Z.ai GLM-5.3",
+                    &format!("powered by {}", self.model.as_str()),
+                    1,
+                ))
+            } else {
+                Cow::Borrowed(base)
+            };
         match self.additional_instructions.as_deref() {
             Some(additional) if !additional.is_empty() => {
                 Cow::Owned(format!("{base}\n\n{additional}"))
             }
-            _ => Cow::Borrowed(base),
+            _ => base,
         }
     }
 

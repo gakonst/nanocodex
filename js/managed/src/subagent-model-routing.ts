@@ -19,6 +19,7 @@ const bindingSchema = z.object({
   hostContextRef: z.string().min(1).max(256),
 }).strict();
 const aliases = new Map([
+  ["kimi", "kimi-k3"], ["mimo", "mimo-v2.6-pro"],
   ["sol", "gpt-5.6-sol"], ["terra", "gpt-5.6-terra"], ["luna", "gpt-5.6-luna"],
   ["astra", "gpt-6-astra"], ["glm-5.3", "@cf/zai-org/glm-5.3"],
 ]);
@@ -36,6 +37,11 @@ export interface ChildRouteStore {
 // A maximum-sized batch may spend 64 × 10 seconds classifying before binding.
 // Expiry bounds abandoned tickets without invalidating a normal bounded batch.
 export const CHILD_ROUTE_TICKET_TTL_MS = 15 * 60_000;
+
+/** A mobile manual choice pins only the root; explicit routing policies still constrain children. */
+export function subagentRoutingPolicy(policy: ThreadRoutingPolicy, manualRoot: boolean): ThreadRoutingPolicy {
+  return manualRoot ? routingPolicySchema.parse({ ...policy, candidates: undefined }) : policy;
+}
 
 /** One decision per newly spawned child, committed before its first inference. */
 export function createSubagentRouteController(options: {

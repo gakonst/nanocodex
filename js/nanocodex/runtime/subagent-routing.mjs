@@ -1,4 +1,5 @@
 const modelAliases = new Map([
+  ["kimi", "kimi"], ["kimi-k3", "kimi"], ["mimo", "mimo"], ["mimo-v2.6-pro", "mimo"],
   ['sol', 'sol'], ['gpt-5.6-sol', 'sol'],
   ['terra', 'terra'], ['gpt-5.6-terra', 'terra'],
   ['luna', 'luna'], ['gpt-5.6-luna', 'luna'],

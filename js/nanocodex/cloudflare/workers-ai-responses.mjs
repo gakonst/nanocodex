@@ -1,6 +1,6 @@
 import { providerStream, streamResponse } from "./provider-stream.mjs";
 const MODEL = "@cf/zai-org/glm-5.3";
-const MODELS = [MODEL, "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const MODELS = [MODEL, "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "kimi-k3", "mimo-v2.6-pro"];
 const BASE = "https://workers-ai.invalid/v1";
 const fail = (message) => { throw new Error(`Workers AI Responses: ${message}`); };
 const json = (value) => typeof value === "string" ? value : JSON.stringify(value);
@@ -39,7 +39,7 @@ export function createWorkersAiResponses(ai, options = {}) {
       if (body.stream === true) {
         const source = result instanceof ReadableStream ? providerStream(result) : result;
         if (source?.providerStream) {
-          return streamResponse(source, value => normalizeResponse(value, registry, model), responseEvents,
+          return streamResponse(source, (value, prologue = false) => normalizeResponse(value, registry, model, prologue ? undefined : body.tool_choice), responseEvents,
             request.signal, input.parallel_tool_calls);
         }
         // Some bindings return a completed object despite stream:true. Validate
@@ -48,7 +48,7 @@ export function createWorkersAiResponses(ai, options = {}) {
       if (input.parallel_tool_calls === false && result?.choices?.[0]?.message?.tool_calls?.length > 1) {
         fail("provider returned parallel tool calls despite a single-call contract");
       }
-      return toResponse(result, registry, model);
+      return toResponse(result, registry, model, body.tool_choice);
     },
   });
 }
@@ -69,7 +69,7 @@ function translate(body, model) {
   if (!body || typeof body !== "object" || Array.isArray(body)) fail("expected a Responses request object");
   if (body.model !== undefined && body.model !== model) fail("unsupported model override; expected pinned model");
   const effort = (value) => {
-    if (value !== undefined && !["low", "medium", "high"].includes(value)) fail("unsupported reasoning effort; expected low, medium or high");
+    if (value !== undefined && !(model === "kimi-k3" ? ["low", "high"] : ["low", "medium", "high"]).includes(value)) fail("unsupported reasoning effort; expected low, medium or high");
     return value;
   };
   if (body.previous_response_id) fail("previous_response_id is unsupported; send the complete Responses history");
@@ -114,6 +114,8 @@ function translate(body, model) {
   }
   const messages = [];
   if (body.instructions) messages.push({ role: "system", content: body.instructions });
+  const vision = model !== MODEL;
+  const pendingImages = [];
   const pending = new Set();
   const seenCallIds = new Set();
   let reasoningEffort = effort(body.reasoning?.effort);
@@ -126,7 +128,10 @@ function translate(body, model) {
       case "message": {
         if (pending.size) fail("tool calls require their outputs before the next message");
         if (!["user", "assistant", "system", "developer"].includes(item.role)) fail(`unsupported message role ${item.role}`);
-        messages.push({ role: item.role === "developer" ? "system" : item.role, content: textContent(item.content) });
+        const content = vision && item.role === "user" ? visionContent(item.content) : textContent(item.content);
+        const previous = messages.at(-1);
+        if (item.role === "assistant" && previous?.role === "assistant" && previous.content === null && !previous.tool_calls) previous.content = content;
+        else messages.push({ role: item.role === "developer" ? "system" : item.role, content });
         break;
       }
       case "agent_message": {
@@ -138,10 +143,12 @@ function translate(body, model) {
       case "reasoning": {
         // Encrypted provider reasoning is not portable, but is not user history.
         const text = [...(item.summary ?? []), ...(item.content ?? [])].map(part => part.text ?? "").join("\n");
-        if (text) {
+        const details = decodeReasoning(item.encrypted_content, model);
+        if (text || details) {
           const previous = messages.at(-1);
-          if (previous?.role === "assistant") previous.reasoning_content = text;
-          else messages.push({ role: "assistant", content: null, reasoning_content: text });
+          const fields = { ...(text ? { reasoning_content: text } : {}), ...(details ? { reasoning_details: details } : {}) };
+          if (previous?.role === "assistant") Object.assign(previous, fields);
+          else messages.push({ role: "assistant", content: null, ...fields });
         }
         break;
       }
@@ -171,8 +178,19 @@ function translate(body, model) {
       case "custom_tool_call_output":
       case "tool_search_output": {
         if (!pending.delete(item.call_id)) fail("tool output has no matching call in full history");
-        messages.push({ role: "tool", tool_call_id: item.call_id,
-          content: item.type === "tool_search_output" ? JSON.stringify({ tools: item.tools }) : textContent(item.output) });
+        const content = item.type === "tool_search_output" ? JSON.stringify({ tools: item.tools })
+          : vision ? visionContent(item.output) : textContent(item.output);
+        // Chat providers accept screenshots as user image parts, not tool text.
+        // Keep every call/result matched before appending the image observations.
+        if (Array.isArray(content)) {
+          messages.push({ role: "tool", tool_call_id: item.call_id,
+            content: content.filter(part => part.type === "text").map(part => part.text).join("\n") });
+          const images = content.filter(part => part.type === "image_url");
+          if (images.length) pendingImages.push({ role: "user", content: [
+            { type: "text", text: `Image observations returned by tool call ${item.call_id}:` }, ...images,
+          ] });
+        } else messages.push({ role: "tool", tool_call_id: item.call_id, content });
+        if (!pending.size) messages.push(...pendingImages.splice(0));
         break;
       }
       case "compaction": case "compaction_summary": case "context_compaction": case "compaction_trigger":
@@ -214,7 +232,37 @@ function textContent(content) {
   }).join("\n");
 }
 
-function normalizeResponse(result, registry, model) {
+// Opaque transport envelope, not encryption. Keep provider reasoning metadata
+// byte-for-byte at the JSON value level across Responses history/tool replay.
+const REASONING_PREFIX = "nanocodex-chat-reasoning-v1:";
+function encodeReasoning(details, model) {
+  const value = JSON.stringify({ model, details });
+  if (value.length > 4 * 1024 * 1024) fail("reasoning details exceed limit");
+  return REASONING_PREFIX + value;
+}
+function decodeReasoning(value, model) {
+  if (typeof value !== "string" || !value.startsWith(REASONING_PREFIX)) return undefined;
+  if (value.length > 4 * 1024 * 1024 + REASONING_PREFIX.length) fail("reasoning details exceed limit");
+  let parsed;
+  try { parsed = JSON.parse(value.slice(REASONING_PREFIX.length)); } catch { fail("invalid reasoning replay"); }
+  if (parsed.model !== model || !Array.isArray(parsed.details)
+    || parsed.details.some(d => !d || typeof d !== "object" || Array.isArray(d))) fail("invalid reasoning replay");
+  return parsed.details;
+}
+function visionContent(content) {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) fail("expected text or image content");
+  return content.map(part => {
+    if (["input_text", "output_text", "text"].includes(part.type) && typeof part.text === "string") return { type: "text", text: part.text };
+    if (part.type !== "input_image" || typeof part.image_url !== "string"
+      || !(/^(https:\/\/|data:image\/(png|jpeg|jpg|webp|gif);base64,)/.test(part.image_url))
+      || (part.detail !== undefined && !["auto", "low", "high", "original"].includes(part.detail))) fail("unsupported image content");
+    return { type: "image_url", image_url: { url: part.image_url,
+      ...(part.detail === undefined ? {} : { detail: part.detail === "original" ? "high" : part.detail }) } };
+  });
+}
+
+function normalizeResponse(result, registry, model, toolChoice) {
   const choice = result?.choices?.[0];
   if (result?.error || !choice?.message || typeof choice.message !== "object" || Array.isArray(choice.message)
     || !["stop", "tool_calls", "length", "content_filter"].includes(choice.finish_reason)) {
@@ -230,14 +278,22 @@ function normalizeResponse(result, registry, model) {
   const output = [];
   const id = `resp_${crypto.randomUUID()}`;
   const reasoning = message.reasoning_content ?? message.reasoning;
-  if (typeof reasoning === "string" && reasoning) {
+  const details = message.reasoning_details;
+  if (details !== undefined && (!Array.isArray(details) || details.some(d => !d || typeof d !== "object" || Array.isArray(d)))) fail("invalid reasoning details");
+  if ((typeof reasoning === "string" && reasoning) || details?.length) {
     output.push({ type: "reasoning", id: `rs_${crypto.randomUUID()}`, status: "completed",
-      summary: [], content: [{ type: "reasoning_text", text: reasoning }] });
+      summary: [], content: reasoning ? [{ type: "reasoning_text", text: reasoning }] : [],
+      ...(details?.length ? { encrypted_content: encodeReasoning(details, model) } : {}) });
   }
   if (typeof message.content === "string" && message.content) {
     output.push({ type: "message", id: `msg_${crypto.randomUUID()}`, role: "assistant", status: "completed",
       content: [{ type: "output_text", text: message.content, annotations: [] }] });
   }
+  // Validate the caller's tool-choice contract even when a gateway needs to
+  // emulate forcing with a restricted tool set. Never dispatch a violating call.
+  if (toolChoice === "none" && message.tool_calls?.length) fail("tool choice forbids calls");
+  if (choice.finish_reason === "stop" && (toolChoice === "required" || typeof toolChoice === "object")
+    && !message.tool_calls?.length) fail("required tool call missing");
   const callIds = new Set();
   for (const call of message.tool_calls ?? []) {
     if (!call || (call.type !== undefined && call.type !== "function")) fail("unsupported completion tool call");
@@ -252,6 +308,8 @@ function normalizeResponse(result, registry, model) {
       if (matches.length === 1) entry = matches[0];
     }
     if (!entry) fail("model returned an unknown tool alias");
+    if (toolChoice && typeof toolChoice === "object" && (entry.name !== (toolChoice.name ?? "tool_search")
+      || entry.namespace !== toolChoice.namespace)) fail("model returned a different forced tool");
     const argumentsText = json(call.function.arguments);
     let args;
     try { args = JSON.parse(argumentsText); } catch { fail("model returned invalid tool JSON"); }
@@ -309,7 +367,7 @@ function responseEvents(response) {
       const value = custom ? item.input : item.arguments;
       emit(`response.${stem}.delta`, { ...fields, call_id: item.call_id, delta: value });
       emit(`response.${stem}.done`, { ...fields, call_id: item.call_id, [custom ? "input" : "arguments"]: value });
-    } else if (item.type === "reasoning") {
+    } else if (item.type === "reasoning" && item.content.length) {
       emit("response.content_part.added", { ...fields, content_index: 0, part: { type: "reasoning_text", text: "" } });
       emit("response.reasoning_text.delta", { ...fields, content_index: 0, delta: item.content[0].text });
       emit("response.reasoning_text.done", { ...fields, content_index: 0, text: item.content[0].text });
@@ -321,8 +379,8 @@ function responseEvents(response) {
   return events;
 }
 
-function toResponse(result, registry, model) {
-  const events = responseEvents(normalizeResponse(result, registry, model));
+function toResponse(result, registry, model, toolChoice) {
+  const events = responseEvents(normalizeResponse(result, registry, model, toolChoice));
   return new Response(events.map(event => `event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`).join(""), {
     headers: { "content-type": "text/event-stream", "cache-control": "no-cache", "x-nanocodex-inference-buffering": "buffered" },
   });

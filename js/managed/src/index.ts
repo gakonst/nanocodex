@@ -7,9 +7,9 @@ import { ProviderProbeCoordinator } from "./provider-probe-coordinator";
 import { PROBE_OWNER, type ProviderProbeEnvironment } from "./provider-probe-schedule";
 export { ProviderProbeCoordinator };
 import { gatewayAvailability, gatewayRuntime } from "./gateway-runtime";
-import { createSubagentRouteController, type RetainedChildRoute } from "./subagent-model-routing";
+import { createSubagentRouteController, subagentRoutingPolicy, type RetainedChildRoute } from "./subagent-model-routing";
 import { SqliteProviderTelemetryStore, summarizeProviderObservationGroups, normalizeProviderColo, type ProviderObservation } from "./provider-telemetry";
-import { resolveThreadRoute, ThreadRoutePin, type ThreadRoute, type RoutingAi } from "./thread-model-routing";
+import { resolveThreadRoute, ROUTING_CANDIDATES, ThreadRoutePin, type ThreadRoute, type RoutingAi } from "./thread-model-routing";
 import { AgentPresentationWriter, generatePresentationText, presentationPending } from "./agent-presentation";
 import { retireSessionProjects, isRetiredProjectCompletion } from "./retired-projects";
 import { downloadPath, downloadBrainFile, downloadHandFile, fileDownloadFailure, FileDownloadError } from "./file-download";
@@ -3602,7 +3602,7 @@ export class DurableAgentSession extends DurableComputerSession {
       return this.#commitPreparedCredential();
     }
     if (request.method === "POST" && url.pathname === "/durability/import") {
-      if (this.#configuration().model_routing || this.#threadRoute() || this.#settings().model === "@cf/zai-org/glm-5.3") {
+      if (this.#configuration().model_routing || this.#threadRoute() || ["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"].includes(this.#settings().model)) {
         return json({ error: "routed_session_not_portable", message: "Thread-routed sessions cannot import durability state." }, { status: 409 });
       }
       if (this.#settingsRequests.size > 0) {
@@ -3657,7 +3657,7 @@ export class DurableAgentSession extends DurableComputerSession {
       }
     }
     if (request.method === "POST" && url.pathname === "/durability/export") {
-      if (this.#configuration().model_routing || this.#threadRoute() || this.#settings().model === "@cf/zai-org/glm-5.3") {
+      if (this.#configuration().model_routing || this.#threadRoute() || ["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"].includes(this.#settings().model)) {
         return json({ error: "routed_session_not_portable", message: "Thread-routed sessions are not yet portable." }, { status: 409 });
       }
       if (Object.keys(this.#configuration()).length || this.ctx.storage.sql.exec("SELECT singleton FROM managed_webhook").toArray().length
@@ -4164,6 +4164,7 @@ export class DurableAgentSession extends DurableComputerSession {
         settings: this.#settings(),
         model_route: this.#threadRoute() ?? null,
         model_routing_enabled: !!this.#configuration().model_routing,
+        model_routing_automatic: !!this.#configuration().model_routing && this.#configuration().model_routing_selection !== "manual",
         routing_observations: this.ctx.storage.sql.exec("SELECT * FROM managed_routing_observations ORDER BY rowid DESC LIMIT 20").toArray(),
       });
     }
@@ -5189,19 +5190,25 @@ export class DurableAgentSession extends DurableComputerSession {
     try {
       const text = await request.text();
       const body = text.trim() === "" ? {} : JSON.parse(text);
-      if (!body || typeof body !== "object" || Array.isArray(body) || Object.keys(body).length) {
-        return json({ error: "invalid_request", message: "routing accepts only an empty object" }, { status: 400 });
+      if (!body || typeof body !== "object" || Array.isArray(body)
+        || Object.keys(body).some(key => !["model", "thinking"].includes(key))
+        || (Object.keys(body).length !== 0 && (typeof body.model !== "string" || typeof body.thinking !== "string"))) {
+        return json({ error: "invalid_request", message: "routing accepts an empty object or model and thinking" }, { status: 400 });
       }
+      let manual: ManagedAgentSettings | undefined;
+      try { if (body.model !== undefined) manual = parseCompleteAgentSettings({ model: body.model, thinking: body.thinking, reasoning_mode: "standard", fast_mode: false }); }
+      catch { return json({ error: "invalid_request", message: "unsupported model or effort" }, { status: 400 }); }
+      const gatewayOnly = manual && ["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"].includes(manual.model);
       await previous;
       this.#assertSettingsLifecycle();
       const session = this.#session();
       if (!session) return json({ error: "not_found" }, { status: 404 });
-      if (this.env.NANOCODEX_THREAD_ROUTING !== "true" || !this.env.AI) {
+      if ((!manual || gatewayOnly) && (this.env.NANOCODEX_THREAD_ROUTING !== "true" || !this.env.AI)) {
         return json({ error: "routing_unavailable", message: "thread routing requires enabled Workers AI binding" }, { status: 503 });
       }
       const configuration = this.#configuration();
       // A retry reports the retained opt-in without changing a pinned conversation.
-      if (configuration.model_routing) return json({ enabled: true,
+      if (!manual && configuration.model_routing && configuration.model_routing_selection !== "manual") return json({ enabled: true,
         model_routing: configuration.model_routing, settings: this.#settings(), route: this.#threadRoute() });
       if (session.runtime_profile !== "managed" || session.accepted_turns !== 0
         || session.completed_turns !== 0 || this.#durabilityImportState !== undefined
@@ -5213,12 +5220,18 @@ export class DurableAgentSession extends DurableComputerSession {
       }
       // Persist the explicit opt-in synchronously before retiring the prepared runtime.
       // Admissions await this reservation, including after their archive lookups.
-      const { settings: _settings, ...retained } = configuration;
-      const routed = parseConfiguration({ ...retained, model_routing: {} });
-      this.ctx.storage.sql.exec("INSERT OR REPLACE INTO managed_configuration (singleton, body) VALUES (1, ?)", JSON.stringify(routed));
+      const { settings: _settings, model_routing: _routing, model_routing_selection: _selection, ...retained } = configuration;
+      const candidates = gatewayOnly ? ROUTING_CANDIDATES.filter(c => c.model === manual!.model && c.thinking === manual!.thinking).map(c => c.id) : undefined;
+      if (gatewayOnly && !candidates?.length) return json({ error: "invalid_request" }, { status: 400 });
+      const routed = parseConfiguration({ ...retained, ...(!manual ? { model_routing: {} }
+        : gatewayOnly ? { model_routing: { strategy: "direct", candidates }, model_routing_selection: "manual" } : {}) });
+      this.ctx.storage.transactionSync(() => {
+        this.ctx.storage.sql.exec("INSERT OR REPLACE INTO managed_configuration (singleton, body) VALUES (1, ?)", JSON.stringify(routed));
+        if (manual) this.#storeSettings(manual);
+      });
       await this.#shutdownAgent(true);
       this.#assertSettingsLifecycle();
-      return json({ enabled: true, model_routing: routed.model_routing, settings: this.#settings() });
+      return json({ enabled: !!routed.model_routing, automatic: !manual, model_routing: routed.model_routing, settings: this.#settings() });
     } catch (error) {
       return error instanceof SyntaxError
         ? json({ error: "invalid_json" }, { status: 400 })
@@ -7907,7 +7920,7 @@ export class DurableAgentSession extends DurableComputerSession {
     const bindings = this.#subagentBindings;
     const readChildRoute = (sessionId: string): RetainedChildRoute | undefined => bindings.routes.get(sessionId);
     const subagentRouting = configuration.model_routing && this.#threadRoute() ? createSubagentRouteController({
-      ai: this.env.AI!, policy: configuration.model_routing,
+      ai: this.env.AI!, policy: subagentRoutingPolicy(configuration.model_routing, configuration.model_routing_selection === "manual"),
       availability: () => this.#routingAvailability(),
       authorize: (parentSessionId, hostContextRef) => {
         assertRoutingOwned();
@@ -11421,7 +11434,7 @@ function validManagedSessionPortability(value: unknown): value is ManagedSession
     && nonnegativeSafeInteger(value.last_active)
     && (value.stream_error === null || typeof value.stream_error === "string")
     && validAgentSettings(value.settings)
-    && value.settings.model !== "@cf/zai-org/glm-5.3"
+    && !["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"].includes(value.settings.model)
     && typeof value.title === "string"
     && value.title === conversationTitle(value.first_prompt);
 }

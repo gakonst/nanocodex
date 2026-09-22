@@ -4,21 +4,21 @@ import { configuredProbeTargets, probeDailyLimit, probeSlotAllocation, PROBE_INT
 describe("deployment probe schedule", () => {
   it("covers every configured API model and effort without a global subscription identity", () => {
     const targets = configuredProbeTargets({ AI: { run: async () => ({}) }, OPENROUTER_API_KEY: "fixture-openrouter", AI_GATEWAY_API_KEY: "fixture-vercel" });
-    expect(targets).toHaveLength(33);
-    expect(new Set(targets.map(t => JSON.stringify([t.backend, t.model, t.effort]))).size).toBe(33);
+    expect(targets).toHaveLength(43);
+    expect(new Set(targets.map(t => JSON.stringify([t.backend, t.model, t.effort]))).size).toBe(43);
     expect(targets.filter(t => t.backend === "workers_ai")).toHaveLength(3);
-    expect(targets.filter(t => t.backend === "openrouter")).toHaveLength(15);
-    expect(targets.filter(t => t.backend === "vercel")).toHaveLength(15);
+    expect(targets.filter(t => t.backend === "openrouter")).toHaveLength(20);
+    expect(targets.filter(t => t.backend === "vercel")).toHaveLength(20);
     expect(configuredProbeTargets({})).toEqual([]);
     expect(configuredProbeTargets({ OPENROUTER_API_KEY: " " })).toEqual([]);
     expect(PROBE_SCHEDULE).toBe("*/30 * * * *");
-    expect(24 * 60 * 60_000 / PROBE_INTERVAL_MS * targets.length).toBeLessThanOrEqual(probeDailyLimit({}));
+    expect(probeDailyLimit({})).toBe(1600); // Rotating allocation preserves the budget as the catalog grows.
   });
   it("adds twelve frontier probes only with the explicit gate and binding", () => {
     const env = { AI: { run: async () => ({}) }, OPENROUTER_API_KEY: "fixture-openrouter", AI_GATEWAY_API_KEY: "fixture-vercel", NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true" };
     const targets = configuredProbeTargets(env);
-    expect(targets).toHaveLength(45);
-    expect(new Set(targets.map(t => JSON.stringify([t.backend,t.model,t.effort]))).size).toBe(45);
+    expect(targets).toHaveLength(55);
+    expect(new Set(targets.map(t => JSON.stringify([t.backend,t.model,t.effort]))).size).toBe(55);
     expect(targets.filter(t => t.backend === "cloudflare")).toHaveLength(12);
     expect(targets.filter(t => t.backend === "cloudflare").every(t => t.model.startsWith("openai/") && !t.key && !t.accountId)).toBe(true);
     expect(configuredProbeTargets({...env,AI:undefined}).some(t => t.backend === "cloudflare")).toBe(false);

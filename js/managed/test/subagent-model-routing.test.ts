@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { CHILD_ROUTE_TICKET_TTL_MS, createSubagentRouteController, type RetainedChildRoute } from "../src/subagent-model-routing";
+import { CHILD_ROUTE_TICKET_TTL_MS, createSubagentRouteController, subagentRoutingPolicy, type RetainedChildRoute } from "../src/subagent-model-routing";
 import { ROUTING_CANDIDATES, routingPolicySchema } from "../src/thread-model-routing";
 
 const request = { parentSessionId: "root", hostContextRef: "account-turn", role: "worker", task: "Inspect fixtures" };
@@ -13,6 +13,27 @@ function fixture(extra: Partial<Parameters<typeof createSubagentRouteController>
 }
 
 describe("hosted child routing", () => {
+  it("manual root selection leaves child models independent while explicit policy constraints remain", async () => {
+    const policy = routingPolicySchema.parse({ candidates: ["openrouter:moonshotai/kimi-k3:low"] });
+    expect(subagentRoutingPolicy(policy, false)).toBe(policy);
+    const children = subagentRoutingPolicy(policy, true);
+    expect(children.candidates).toBeUndefined();
+    expect(policy.candidates).toEqual(["openrouter:moonshotai/kimi-k3:low"]);
+    const { controller } = fixture({ policy: children, availability: () => ({ openrouter: false, vercel: true }) });
+    const selected = await controller.resolve({ ...request, model: "mimo", thinking: "medium" });
+    controller.bind({ ...requestBinding(selected.routeId), sessionId: "independent-child" });
+    expect(controller.routeForSession("independent-child")).toMatchObject({ backend: "vercel", model: "mimo-v2.6-pro", thinking: "medium" });
+  });
+
+  it.each([["kimi", "kimi-k3"], ["mimo", "mimo-v2.6-pro"]])("routes %s children through an authorized gateway without account-model fallback", async (alias, model) => {
+    const { controller } = fixture({ availability: () => ({ openrouter: false, vercel: true }) });
+    const choice = await controller.resolve({ ...request, model: alias, thinking: "high" });
+    controller.bind({ ...requestBinding(choice.routeId), sessionId: "gateway-child" });
+    expect(controller.routeForSession("gateway-child")).toMatchObject({ backend: "vercel", model, thinking: "high" });
+    const unavailable = fixture();
+    await expect(unavailable.controller.resolve({ ...request, model: alias, thinking: "high" })).rejects.toThrow();
+  });
+
   it("pins live siblings independently and drops routes when their runtime is replaced", async () => {
     const { controller, ai } = fixture();
     const first = await controller.resolve({ ...request, model: "glm-5.3", thinking: "low" });

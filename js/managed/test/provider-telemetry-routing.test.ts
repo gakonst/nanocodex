@@ -86,13 +86,13 @@ describe("successful generation TTFT and honest deployment scope", () => {
 });
 
 describe("Jev responsiveness trust boundary", () => {
-  it("includes all 57 candidates and their matching global TTFT, without a sixteen-group cutoff", async () => {
+  it("includes all 67 candidates and their matching global TTFT, without a sixteen-group cutoff", async () => {
     vi.spyOn(Date, "now").mockReturnValue(now);
     try {
       const metrics = ROUTING_CANDIDATES.map(c => aggregate({ backend: c.backend, model: c.provider_model, effort: c.thinking }));
       const { result, state } = await route(metrics);
-      expect(state.candidates).toHaveLength(57);
-      expect(result.audit?.provider_telemetry?.provider_performance).toHaveLength(57);
+      expect(state.candidates).toHaveLength(67);
+      expect(result.audit?.provider_telemetry?.provider_performance).toHaveLength(67);
       for (const c of state.candidates) {
         expect(c.responsiveness).toMatchObject({ live: null, probe: {
           generationTtftSampleCount: 3, generationTtftP50Ms: 100,
@@ -111,8 +111,8 @@ describe("Jev responsiveness trust boundary", () => {
         aggregate({ backend: c.backend, model: c.provider_model, effort: c.thinking, source: "live", scope: "worker_colo", workerColo: "LHR" }),
       ]);
       const { result, state } = await route(metrics);
-      expect(result.audit?.provider_telemetry?.provider_performance).toHaveLength(114);
-      expect(state.candidates).toHaveLength(57);
+      expect(result.audit?.provider_telemetry?.provider_performance).toHaveLength(134);
+      expect(state.candidates).toHaveLength(67);
       expect(state.provider_telemetry).not.toHaveProperty("provider_performance");
       expect(JSON.stringify(state).length).toBeLessThan(64_000);
       expect(state.candidates.every((c: any) => c.responsiveness.live && c.responsiveness.probe)).toBe(true);

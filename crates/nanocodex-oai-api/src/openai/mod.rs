@@ -147,7 +147,7 @@ impl<F> OpenAiBuilder<F> {
         self.config.model = model;
         // Workers AI is a stateless chat binding behind the host Responses adapter.
         // Preserve the agent loop while selecting its existing full-replay HTTP path.
-        if matches!(model, Model::Glm53) {
+        if matches!(model, Model::Glm53 | Model::Kimi | Model::Mimo) {
             self.config.responses_transport = ResponsesTransport::Https;
             self.config.responses_history = ResponsesHistory::FullReplay;
             self.config.store_responses = false;

@@ -225,7 +225,7 @@ for (const wire of ["binding", "rest"]) for (const model of models.slice(1)) {
         assert.equal(input.max_completion_tokens, undefined);
         assert.ok(input.tools.every(tool => tool.type === "function" && !tool.function && tool.strict === false));
         if (requests.length === 1) {
-          assert.deepEqual(input.tool_choice, { type: "function", name: input.tools[0].name });
+          assert.equal(input.tool_choice, "auto");
           return nativeResponse([
             { type: "reasoning", summary: [{ type: "summary_text", text: "plan" }], content: [{ type: "reasoning_text", text: "considered" }], encrypted_content: "opaque" },
             ...[JSON.stringify({ input: "text(42)\n" }), '{"path":"a"}', '{"query":"read"}'].map((args, i) => ({
@@ -258,7 +258,7 @@ for (const wire of ["binding", "rest"]) for (const model of models.slice(1)) {
         } }),
     });
     const common = { model, tools: declared, max_output_tokens: 512 };
-    const first = (await events(await invoke(transport, { ...common, input: "run", tool_choice: { type: "custom", namespace: "functions", name: "exec" } }))).at(-1).response;
+    const first = (await events(await invoke(transport, { ...common, input: "run", tool_choice: "auto" }))).at(-1).response;
     assert.equal(first.model, model); assert.equal(first.end_turn, false);
     assert.deepEqual(first.output.map(item => item.type), ["reasoning", "custom_tool_call", "function_call", "tool_search_call"]);
     assert.equal(first.output[1].namespace, "functions"); assert.equal(first.output[1].input, "text(42)\n");
@@ -369,12 +369,12 @@ test("Cloudflare replays portable text and historical tools in native Responses 
       { role: "user", content: "continue" },
     ]);
     assert.equal(payload.tools.length, 1); assert.equal(payload.tools[0].name, "tool_0");
-    assert.equal(payload.tool_choice, "required"); assert.equal(payload.parallel_tool_calls, true);
+    assert.equal(payload.tool_choice, "auto"); assert.equal(payload.parallel_tool_calls, true);
     assert.equal(payload.temperature, 0.4); assert.equal(payload.top_p, 0.8);
     return nativeResponse([{ type: "reasoning", content: [], summary: [], encrypted_content: "opaque" }, nativeText("done")]);
   } } });
   const stream = await events(await invoke(transport, {
-    instructions: "instructions", temperature: 0.4, top_p: 0.8, parallel_tool_calls: true, tool_choice: "required",
+    instructions: "instructions", temperature: 0.4, top_p: 0.8, parallel_tool_calls: true, tool_choice: "auto",
     input: [
       { role: "developer", content: [{ type: "input_text", text: "developer text" }] },
       { type: "agent_message", author: "peer", recipient: "parent", content: "update" },
@@ -417,4 +417,79 @@ test("Cloudflare REST validates native Responses bodies and propagates caller ca
   const cancelled=createGatewayResponses({...bindingOptions,accountId:"a".repeat(32),apiKey:secret,
     fetch:async(_url,init)=>{sent=init.signal;controller.abort(new DOMException("Stopped","AbortError"));throw controller.signal.reason;}});
   await assert.rejects(()=>invoke(cancelled,{input:"fixture"},controller.signal),{name:"AbortError"});assert.equal(sent,controller.signal);
+});
+
+for (const provider of ["openrouter", "vercel"]) for (const model of ["kimi-k3", "mimo-v2.6-pro"]) {
+  test(`${provider}/${model} preserves vision, namespaced tools and reasoning across a tool round trip`, async () => {
+    const requests = [];
+    const details = [{ type: "reasoning.text", text: "provider trace", signature: "fixture", index: 0 }];
+    const image = "data:image/png;base64,aW1hZ2U=";
+    const transport = createGatewayResponses({ ...options, provider, model, reasoningEffort: "low", fetch: async (_url, init) => {
+      const body = JSON.parse(init.body); requests.push(body);
+      assert.equal(body.model, model === "kimi-k3" ? "moonshotai/kimi-k3" : "xiaomi/mimo-v2.6-pro");
+      assert.deepEqual(body.reasoning, { effort: "low" });
+      if (requests.length === 1) {
+        assert.equal(body.messages[0].content[1].image_url.url, image);
+        return completion({ reasoning_content: "reasoning", reasoning_details: details,
+          tool_calls: [{ id: "call", function: { name: "tool_0", arguments: '{"input":"text(42)"}' } }] }, "tool_calls");
+      }
+      assert.deepEqual(body.messages[1].reasoning_details, details);
+      assert.equal(body.messages[1].reasoning_content, "reasoning");
+      assert.equal(body.messages[1].tool_calls[0].id, "call");
+      assert.equal(body.messages[2].role, "tool");
+      assert.equal(body.messages[2].content, "tool result");
+      assert.equal(body.messages[3].content[1].image_url.url, image);
+      return completion({ content: "observed" });
+    }});
+    const tools = [{ type: "namespace", name: "functions", tools: [{ type: "custom", name: "exec" }] }];
+    const input = [{ role: "user", content: [{ type: "input_text", text: "Observe" }, { type: "input_image", image_url: image }] }];
+    const first = (await events(await invoke(transport, { model, tools, input }))).at(-1).response;
+    assert.equal(first.output.at(-1).namespace, "functions");
+    const second = (await events(await invoke(transport, { model, tools, input: [...input, ...first.output,
+      { type: "custom_tool_call_output", call_id: "call", output: [{ type: "input_text", text: "tool result" }, { type: "input_image", image_url: image }] }] }))).at(-1).response;
+    assert.equal(second.output[0].content[0].text, "observed");
+  });
+}
+test("gateway-only model and unsupported effort fail before network access", () => {
+  for (const model of ["kimi-k3", "mimo-v2.6-pro"]) assert.throws(() => createGatewayResponses({provider:"cloudflare",model,reasoningEffort:"low", ai:{run(){throw Error("network")}}}));
+  assert.throws(() => createGatewayResponses({...options,model:"kimi-k3",reasoningEffort:"medium"}));
+});
+
+test("parallel image tool outputs stay paired before user observations", async () => {
+  const image = "data:image/png;base64,aW1hZ2U=";
+  const transport = createGatewayResponses({ ...options, model: "mimo-v2.6-pro", fetch: async (_url, init) => {
+    const messages = JSON.parse(init.body).messages;
+    assert.deepEqual(messages.map(m => m.role), ["user", "assistant", "tool", "tool", "user", "user"]);
+    assert.deepEqual(messages.slice(2, 4).map(m => m.tool_call_id), ["a", "b"]);
+    assert.ok(messages[4].content[0].text.includes("a"));
+    assert.ok(messages[5].content[0].text.includes("b"));
+    return completion({ content: "observed both" });
+  }});
+  await invoke(transport, { tools: [{ type: "function", name: "screenshot" }], input: [
+    { role: "user", content: "Compare" },
+    ...["a", "b"].map(call_id => ({ type: "function_call", name: "screenshot", call_id, arguments: "{}" })),
+    ...["a", "b"].map(call_id => ({ type: "function_call_output", call_id, output: [{ type: "input_image", image_url: image }] })),
+  ] });
+});
+
+test("Cloudflare frontier binding keeps screenshot history in Responses format", async () => {
+  const image = "https://example.invalid/screenshot.png";
+  const transport = createGatewayResponses({ provider: "cloudflare", model: "gpt-6-astra", reasoningEffort: "low",
+    ai: { async run(_model, body) {
+      assert.deepEqual(body.input[0].content, [{ type: "input_text", text: "Observe" }, { type: "input_image", image_url: image, detail: "high" }]);
+      return { object: "response", status: "completed", output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "observed" }] }] };
+    }} });
+  await invoke(transport, { input: [{ role: "user", content: [{ type: "input_text", text: "Observe" }, { type: "input_image", image_url: image, detail: "original" }] }] });
+});
+
+for (const incorrect of [false, true]) test(`MiMo OpenRouter emulates forced tool choice and rejects a missing call=${incorrect}`, async () => {
+  const transport = createGatewayResponses({ ...options, model: "mimo-v2.6-pro", fetch: async (_url, init) => {
+    const body = JSON.parse(init.body);
+    assert.equal(body.tool_choice, "auto"); assert.equal(body.tools.length, 1);
+    assert.equal(body.tools[0].function.name, "tool_1");
+    return incorrect ? completion({ content: "ignored" }) : completion({ tool_calls: [{ id: "forced", function: { name: "tool_1", arguments: "{}" } }] }, "tool_calls");
+  }});
+  const pending = invoke(transport, { tools: [{ type: "function", name: "other" }, { type: "function", name: "chosen" }], tool_choice: { type: "function", name: "chosen" }, input: "Use chosen" });
+  if (incorrect) await assert.rejects(pending);
+  else assert.equal((await events(await pending)).at(-1).response.output[0].name, "chosen");
 });
