@@ -18,18 +18,6 @@ struct TaskNode {
 }
 
 impl TaskTree {
-    pub(super) const fn next_agent_id(&self) -> u64 {
-        self.next_id.saturating_add(1)
-    }
-
-    pub(super) fn restore_next_agent_id(&mut self, next: u64) -> std::io::Result<()> {
-        if next == 0 || next == u64::MAX || next <= self.next_id {
-            return Err(std::io::Error::other("invalid next subagent ID"));
-        }
-        self.next_id = next - 1;
-        Ok(())
-    }
-
     pub(super) fn reserve(&mut self, parent: Option<AgentId>) -> std::io::Result<AgentId> {
         if let Some(parent) = parent
             && !self.nodes.contains_key(&parent)

@@ -86,8 +86,4 @@ impl RolloutConfig {
         self.resume_path = Some(rollout_path);
         self
     }
-
-    pub(crate) fn for_new_thread(&self) -> Self {
-        Self::new(self.codex_home.clone())
-    }
 }

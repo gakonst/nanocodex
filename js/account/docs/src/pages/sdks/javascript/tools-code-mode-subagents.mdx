@@ -81,5 +81,6 @@ second WASM plugin or maintain a parallel scheduler.
 
 The extension exposes `spawn_agent`, `submit_result`, `send_agent_message`,
 `list_agents`, `wait_agent`, `interrupt_agent`, and `close_agent`. Root shutdown
-closes its children. Read the [binding guide](https://github.com/gakonst/nanocodex/blob/master/js/nanocodex/README.md#standard-web-and-browser-tools)
+closes its children. All subagents are ephemeral, including children of a durable
+root: root restart resumes only the root and discards the child tree. Read the [binding guide](https://github.com/gakonst/nanocodex/blob/master/js/nanocodex/README.md#standard-web-and-browser-tools)
 and [branches and subagents](/core/branching).

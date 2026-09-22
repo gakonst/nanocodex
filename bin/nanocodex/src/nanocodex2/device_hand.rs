@@ -15,7 +15,7 @@ use std::{
     time::Duration,
 };
 use tokio::{
-    io::{AsyncBufReadExt, AsyncReadExt, BufReader},
+    io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
     process::{Child, Command},
 };
 use tokio_util::sync::CancellationToken;
@@ -29,6 +29,12 @@ mod transport;
 
 #[derive(Args, Default)]
 pub(crate) struct DeviceHand {
+    /// Report service update compatibility without reading account credentials.
+    #[arg(long, hide = true, conflicts_with_all = ["describe", "daemon", "parent_pipe", "prepare_update"])]
+    service_protocol: bool,
+    /// Request an authoritative idle barrier from the currently running daemon.
+    #[arg(long, hide = true, conflicts_with_all = ["describe", "daemon", "parent_pipe"])]
+    prepare_update: bool,
     /// Print the shared identity without publishing a Hand.
     #[arg(long)]
     describe: bool,
@@ -330,6 +336,21 @@ fn emit(value: &Value) {
 }
 
 pub(crate) async fn serve(command: DeviceHand) -> Result<(), ManagedError> {
+    if command.service_protocol {
+        emit(&json!({"serviceProtocol": 1, "version": env!("CARGO_PKG_VERSION")}));
+        return Ok(());
+    }
+    if command.prepare_update {
+        let prepared = prepare_idle_update().await?;
+        emit(&json!({"prepared": prepared}));
+        return if prepared {
+            Ok(())
+        } else {
+            Err(error(
+                "Computer Hand update deferred: idleness is not established",
+            ))
+        };
+    }
     let daemon = command.daemon;
     match serve_inner(command).await {
         Err(error)
@@ -341,6 +362,17 @@ pub(crate) async fn serve(command: DeviceHand) -> Result<(), ManagedError> {
         }
         result => result,
     }
+}
+
+/// Requests the running publisher's barrier. Missing/old daemons and timeouts
+/// are errors, never evidence that replacing a running service is safe.
+pub(crate) async fn prepare_idle_update() -> Result<bool, ManagedError> {
+    let (origin, key) = nanocodex_cli_auth::enrollment_credentials(None)?;
+    let _client = super::client_from_environment(None)?;
+    let directory = directory(&origin, &key).await?;
+    transport::prepare_idle_update(&socket_path(&directory)?)
+        .await
+        .map_err(error)
 }
 
 async fn serve_inner(command: DeviceHand) -> Result<(), ManagedError> {
@@ -427,7 +459,7 @@ async fn share(
                 state.advertise_vm_provider(&recipe.name)?;
             }
             let status = std::sync::Arc::new(std::sync::Mutex::new(
-                json!({"machine": machine, "status": "connecting"}),
+                json!({"machine": machine, "status": "connecting", "daemon": {"pid": std::process::id(), "executable": std::env::current_exe().ok(), "version": env!("CARGO_PKG_VERSION")}}),
             ));
             {
                 let mut status = status.lock().unwrap();
@@ -512,7 +544,6 @@ async fn share(
             let _ = fs::remove_file(directory.join("status.json"));
             result
         }
-        Err(e) if e.to_string().contains("another native Hand") => Ok(()),
         Err(e) => Err(e),
     }
 }
@@ -579,18 +610,56 @@ async fn connect(directory: &Path, cancel: &CancellationToken) -> Result<(), Man
         }
     }
 }
-async fn watch_clients(mut listener: transport::Listener, cancel: CancellationToken) {
+async fn watch_clients(listener: transport::Listener, cancel: CancellationToken) {
+    // No safe runtime barrier exists yet: lease absence does not prove remote
+    // tools, retained CUA/process sessions, or independently hosted VMs idle.
+    // Keep the wire request usable by updaters but fail closed until all those
+    // owners participate in the admission barrier.
+    watch_clients_with_barrier(listener, cancel, || async { false }).await;
+}
+
+async fn watch_clients_with_barrier<F, Fut>(
+    mut listener: transport::Listener,
+    cancel: CancellationToken,
+    mut prepare: F,
+) where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = bool>,
+{
     let mut clients = tokio::task::JoinSet::new();
     loop {
         tokio::select! {
             () = cancel.cancelled() => break,
             accepted = listener.accept() => match accepted {
                 Ok(mut stream) => {
-                    clients.spawn(async move { let mut bytes = [0u8; 1]; let _ = stream.read(&mut bytes).await; });
+                    clients.spawn(async move {
+                        match stream.read_u8().await {
+                            Ok(transport::PREPARE_IDLE_UPDATE) => Some(stream),
+                            _ => None,
+                        }
+                    });
                 }
                 Err(_) => break,
             },
-            _ = clients.join_next(), if !clients.is_empty() => {},
+            completed = clients.join_next(), if !clients.is_empty() => {
+                if let Some(Ok(Some(mut stream))) = completed {
+                    // This loop owns lease admission. While the authoritative
+                    // barrier runs it cannot admit another client. The barrier
+                    // must itself atomically reject new remote/runtime work.
+                    let prepared = clients.is_empty()
+                        && tokio::time::timeout(Duration::from_secs(2), prepare())
+                            .await.unwrap_or(false);
+                    if prepared {
+                        // Close local admission before acknowledging. A queued
+                        // connection cannot become a lease in the old daemon.
+                        drop(listener);
+                        cancel.cancel();
+                        let _ = stream.write_all(&[transport::UPDATE_PREPARED]).await;
+                        return;
+                    }
+                    let _ = stream.write_all(&[transport::UPDATE_DEFERRED]).await;
+                }
+            },
         }
     }
     cancel.cancel();
@@ -971,5 +1040,101 @@ mod tests {
         cancel.cancel();
         drop(second);
         watching.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod idle_update_tests {
+    use super::*;
+    use std::sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    };
+
+    fn endpoint() -> PathBuf {
+        #[cfg(unix)]
+        {
+            PathBuf::from(format!("/tmp/ncx-update-{}.sock", uuid::Uuid::new_v4()))
+        }
+        #[cfg(windows)]
+        {
+            PathBuf::from(format!(r"\\.\pipe\ncx-update-{}", uuid::Uuid::new_v4()))
+        }
+    }
+
+    #[tokio::test]
+    async fn update_request_fails_closed_without_runtime_barrier() {
+        let path = endpoint();
+        let listener = transport::Listener::bind(&path).unwrap();
+        let cancel = CancellationToken::new();
+        let watching = tokio::spawn(watch_clients(listener, cancel.clone()));
+        assert!(!transport::prepare_idle_update(&path).await.unwrap());
+        assert!(!cancel.is_cancelled());
+        assert!(transport::connect(&path).await.is_ok());
+        cancel.cancel();
+        watching.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn lease_prevents_barrier_and_success_closes_admission_before_ack() {
+        let path = endpoint();
+        let listener = transport::Listener::bind(&path).unwrap();
+        let cancel = CancellationToken::new();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let recorded = calls.clone();
+        let watching = tokio::spawn(watch_clients_with_barrier(
+            listener,
+            cancel.clone(),
+            move || {
+                recorded.fetch_add(1, Ordering::SeqCst);
+                async { true }
+            },
+        ));
+        let lease = transport::connect(&path).await.unwrap();
+        assert!(!transport::prepare_idle_update(&path).await.unwrap());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(!cancel.is_cancelled());
+        drop(lease);
+        // EOF processing is asynchronous; retry only the explicit deferred
+        // response, never an ambiguous connection failure.
+        let accepted = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if transport::prepare_idle_update(&path).await.unwrap() {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+        accepted.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert!(cancel.is_cancelled());
+        watching.await.unwrap();
+        assert!(transport::connect(&path).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn old_daemon_eof_is_not_an_update_acknowledgement() {
+        let path = endpoint();
+        let mut listener = transport::Listener::bind(&path).unwrap();
+        let old_daemon = tokio::spawn(async move {
+            let mut stream = listener.accept().await.unwrap();
+            let _ = stream.read_u8().await;
+        });
+        assert!(transport::prepare_idle_update(&path).await.is_err());
+        old_daemon.await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn unresponsive_daemon_request_is_bounded() {
+        let path = endpoint();
+        let mut listener = transport::Listener::bind(&path).unwrap();
+        let stalled = tokio::spawn(async move {
+            let _stream = listener.accept().await.unwrap();
+            std::future::pending::<()>().await;
+        });
+        let request = transport::prepare_idle_update(&path).await.unwrap_err();
+        assert_eq!(request.kind(), std::io::ErrorKind::TimedOut);
+        stalled.abort();
     }
 }

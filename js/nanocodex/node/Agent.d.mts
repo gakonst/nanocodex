@@ -40,7 +40,7 @@ export declare namespace create {
     | {
       durability: DurabilityStore;
       durabilityId: string;
-      /** The root remains durable; clean subagent children are in-memory. */
+      /** The root remains durable; all subagent children are ephemeral. */
       tools?: ToolConfiguration<SubagentTool> | undefined;
     }
   );

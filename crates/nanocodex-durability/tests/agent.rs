@@ -259,54 +259,6 @@ struct CountingAcquires {
     acquisitions: Arc<std::sync::Mutex<Vec<String>>>,
 }
 
-#[derive(Clone)]
-struct GateFirstChildAcquire {
-    inner: crate::MemoryStore,
-    root_state_id: &'static str,
-    gated: Arc<AtomicBool>,
-    started: Arc<tokio::sync::Notify>,
-    release: Arc<tokio::sync::Notify>,
-}
-
-impl crate::StateStore for GateFirstChildAcquire {
-    fn read_record<'a>(
-        &'a mut self,
-        state_id: &'a str,
-        key: &'a str,
-    ) -> crate::StoreFuture<'a, std::result::Result<Option<String>, crate::StoreError>> {
-        self.inner.read_record(state_id, key)
-    }
-
-    fn acquire<'a>(
-        &'a mut self,
-        state_id: &'a str,
-        owner_id: crate::OwnerId,
-    ) -> crate::StoreFuture<'a, std::result::Result<crate::OwnedState, crate::StoreError>> {
-        if state_id != self.root_state_id && !self.gated.swap(true, Ordering::SeqCst) {
-            let started = Arc::clone(&self.started);
-            let release = Arc::clone(&self.release);
-            return Box::pin(async move {
-                started.notify_one();
-                release.notified().await;
-                self.inner.acquire(state_id, owner_id).await
-            });
-        }
-        self.inner.acquire(state_id, owner_id)
-    }
-
-    fn replace<'a>(
-        &'a mut self,
-        state_id: &'a str,
-        owner: &'a crate::OwnerToken,
-        expected_revision: u64,
-        payload: &'a str,
-        records: &'a [nanocodex_durability::StoreRecord],
-    ) -> crate::StoreFuture<'a, std::result::Result<u64, crate::StoreError>> {
-        self.inner
-            .replace(state_id, owner, expected_revision, payload, records)
-    }
-}
-
 impl crate::StateStore for CountingAcquires {
     fn read_record<'a>(
         &'a mut self,
@@ -3987,151 +3939,17 @@ async fn model_recovery_uses_current_conversation_across_runtime_changes() -> Re
 }
 
 #[tokio::test]
-async fn durability_attached_agent_gives_each_clean_descendant_its_own_durable_state() -> Result<()>
-{
-    let store = crate::MemoryStore::new()?;
+async fn durable_parent_keeps_children_and_grandchildren_ephemeral() -> Result<()> {
+    let store = MemoryStore::new()?;
     let acquisitions = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let state = crate::DurableSession::open(
+    let state = DurableSession::open(
         CountingAcquires {
             inner: store.clone(),
             acquisitions: Arc::clone(&acquisitions),
         },
-        "spawn-policy",
+        "ephemeral-parent",
     )
     .await?;
-    let service_factories = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let openai = OpenAi::builder("test-key")
-        .service({
-            let service_factories = Arc::clone(&service_factories);
-            let generations = Arc::clone(&generations);
-            move || {
-                service_factories.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                DurableReplayService {
-                    generations: Arc::clone(&generations),
-                }
-            }
-        })
-        .build()?;
-    let workspace = temporary_workspace("durability-spawn-policy")?;
-    let builder = Nanocodex::builder(openai)
-        .workspace(&workspace)
-        .session_id(test_session_id())
-        .durability(state)
-        .await?;
-    let (agent, events) = builder.build()?;
-
-    let (child, child_events) = agent.spawn().await?;
-    let child_id = child.session_id().parse::<SessionId>()?;
-    assert_eq!(
-        *acquisitions
-            .lock()
-            .expect("acquisition recorder lock is not poisoned"),
-        ["spawn-policy", "spawn-policy"],
-        "root spawn must not acquire the new child's state"
-    );
-    let (grandchild, grandchild_events) = child.spawn().await?;
-    let grandchild_id = grandchild.session_id().parse::<SessionId>()?;
-    assert_eq!(
-        service_factories.load(std::sync::atomic::Ordering::SeqCst),
-        3,
-        "each clean descendant must receive its own service and driver"
-    );
-    assert_eq!(
-        *acquisitions
-            .lock()
-            .expect("acquisition recorder lock is not poisoned"),
-        ["spawn-policy".to_owned(), "spawn-policy".to_owned(),],
-        "clean spawn must not acquire either the parent or new child state"
-    );
-
-    let child_result = child
-        .prompt(PromptRequest::new("child work").request_id("child-turn"))
-        .await?
-        .result()
-        .await?;
-    let grandchild_result = grandchild
-        .prompt(PromptRequest::new("grandchild work").request_id("grandchild-turn"))
-        .await?
-        .result()
-        .await?;
-    assert_eq!(child_result.final_message(), "durably replayed");
-    assert_eq!(grandchild_result.final_message(), "durably replayed");
-    assert_eq!(generations.load(std::sync::atomic::Ordering::SeqCst), 2);
-    assert_eq!(
-        *acquisitions
-            .lock()
-            .expect("acquisition recorder lock is not poisoned"),
-        [
-            "spawn-policy".to_owned(),
-            "spawn-policy".to_owned(),
-            child_id.to_string(),
-            child_id.to_string(),
-            grandchild_id.to_string(),
-            grandchild_id.to_string(),
-        ],
-        "each descendant must open and attach exactly its own state ID"
-    );
-
-    grandchild.shutdown().await?;
-    drop((grandchild, grandchild_events));
-    child.shutdown().await?;
-    drop((child, child_events));
-    agent.shutdown().await?;
-    drop((agent, events));
-
-    for (session_id, request_id, input) in [
-        (child_id, "child-turn", "child work"),
-        (grandchild_id, "grandchild-turn", "grandchild work"),
-    ] {
-        let reopened_state =
-            crate::DurableSession::open(store.clone(), session_id.to_string()).await?;
-        let reopened_builder = Nanocodex::builder(
-            OpenAi::builder("test-key")
-                .service({
-                    let generations = Arc::clone(&generations);
-                    move || DurableReplayService {
-                        generations: Arc::clone(&generations),
-                    }
-                })
-                .build()?,
-        )
-        .workspace(&workspace)
-        .session_id(session_id)
-        .durability(reopened_state)
-        .await?;
-        let (reopened, reopened_events) = reopened_builder.build()?;
-        let replayed = reopened
-            .prompt(PromptRequest::new(input).request_id(request_id))
-            .await?
-            .result()
-            .await?;
-        assert_eq!(replayed.final_message(), "durably replayed");
-        reopened.shutdown().await?;
-        drop((reopened, reopened_events));
-    }
-    assert_eq!(
-        generations.load(std::sync::atomic::Ordering::SeqCst),
-        2,
-        "reopening either descendant must replay without another model call"
-    );
-
-    std::fs::remove_dir_all(workspace)?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn blocked_child_state_acquisition_does_not_block_the_parent_driver() -> Result<()> {
-    let started = Arc::new(tokio::sync::Notify::new());
-    let release = Arc::new(tokio::sync::Notify::new());
-    let store = GateFirstChildAcquire {
-        inner: crate::MemoryStore::new()?,
-        root_state_id: "nonblocking-spawn-policy",
-        gated: Arc::new(AtomicBool::new(false)),
-        started: Arc::clone(&started),
-        release: Arc::clone(&release),
-    };
-    let state = crate::DurableSession::open(store, "nonblocking-spawn-policy").await?;
     let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
     let openai = OpenAi::builder("test-key")
         .service({
@@ -4141,37 +3959,94 @@ async fn blocked_child_state_acquisition_does_not_block_the_parent_driver() -> R
             }
         })
         .build()?;
-    let workspace = temporary_workspace("durability-nonblocking-spawn")?;
-    let (agent, events) = Nanocodex::builder(openai)
+    let workspace = temporary_workspace("ephemeral-descendants")?;
+    let rollout = nanocodex_agent::rollout::RolloutConfig::new(workspace.join("codex"));
+    let (parent, parent_events) = Nanocodex::builder(openai)
         .workspace(&workspace)
-        .durability(state)
+        .rollout(rollout.clone())
+        .durability(state.clone())
         .await?
         .build()?;
-    let (child, child_events) = agent.spawn().await?;
-    let child_prompt = child.clone();
-    let child_result = tokio::spawn(async move {
-        child_prompt
-            .prompt(PromptRequest::new("blocked child work").request_id("blocked-child-turn"))
+    assert!(parent.rollout().is_some());
+    for _ in 0..2 {
+        parent
+            .prompt(PromptRequest::new("parent work").request_id("parent-turn"))
             .await?
             .result()
-            .await
-    });
-
-    tokio::time::timeout(Duration::from_secs(1), started.notified())
-        .await
-        .map_err(|_| eyre!("the child never reached its gated durability acquisition"))?;
-    let (sibling, sibling_events) = tokio::time::timeout(Duration::from_secs(1), agent.spawn())
-        .await
-        .map_err(|_| eyre!("the child store blocked the parent driver"))??;
-
-    release.notify_one();
-    assert_eq!(child_result.await??.final_message(), "durably replayed");
-    sibling.shutdown().await?;
-    drop((sibling, sibling_events));
-    child.shutdown().await?;
-    drop((child, child_events));
-    agent.shutdown().await?;
-    drop((agent, events));
+            .await?;
+    }
+    assert_eq!(
+        generations.load(Ordering::SeqCst),
+        1,
+        "parent receipts must still replay"
+    );
+    let (child, child_events) = parent.spawn().await?;
+    let (grandchild, grandchild_events) = child.spawn().await?;
+    for agent in [&child, &grandchild] {
+        assert!(
+            agent.rollout().is_none(),
+            "children must not create resumable rollout files"
+        );
+        assert!(matches!(
+            agent
+                .prompt(PromptRequest::new("identified").request_id("child-turn"))
+                .await,
+            Err(NanocodexError::ExecutionPolicyNotConfigured)
+        ));
+        for _ in 0..2 {
+            assert_eq!(
+                agent
+                    .prompt("child work")
+                    .await?
+                    .result()
+                    .await?
+                    .final_message(),
+                "durably replayed"
+            );
+        }
+    }
+    assert_eq!(
+        generations.load(Ordering::SeqCst),
+        5,
+        "each ephemeral prompt must execute normally"
+    );
+    assert_eq!(
+        *acquisitions.lock().unwrap(),
+        ["ephemeral-parent", "ephemeral-parent"],
+        "descendants must never acquire a durable owner"
+    );
+    assert!(state.agent_snapshot().await?.is_some());
+    assert!(matches!(
+        state
+            .state()
+            .await?
+            .operation("parent-turn")
+            .unwrap()
+            .status,
+        OperationStatus::Completed { .. }
+    ));
+    for agent in [&grandchild, &child] {
+        agent.shutdown().await?;
+    }
+    parent.shutdown().await?;
+    assert_eq!(
+        rollout.list_sessions()?.len(),
+        1,
+        "only the parent has a disk session"
+    );
+    for id in [child.session_id(), grandchild.session_id()] {
+        let empty = DurableSession::open(store.clone(), id).await?;
+        assert!(empty.agent_snapshot().await?.is_none());
+        assert!(empty.state().await?.operations().is_empty());
+    }
+    drop((
+        grandchild,
+        grandchild_events,
+        child,
+        child_events,
+        parent,
+        parent_events,
+    ));
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
@@ -4507,98 +4382,49 @@ async fn compaction_misalignment_receipt_stops_session_after_cold_reopen() -> Re
 }
 
 #[tokio::test]
-async fn restored_nested_children_replay_and_continue_under_their_retained_durable_states()
--> Result<()> {
-    let store = MemoryStore::new()?;
+async fn in_memory_child_rehydration_does_not_reattach_parent_durability() -> Result<()> {
+    let acquisitions = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let state = DurableSession::open(
+        CountingAcquires {
+            inner: MemoryStore::new()?,
+            acquisitions: Arc::clone(&acquisitions),
+        },
+        "ephemeral-rehydrate-parent",
+    )
+    .await?;
     let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let workspace = temporary_workspace("durability-child-restore")?;
-    let root_id = test_session_id();
-    let mut snapshots: Option<(
-        nanocodex_agent::ChildRuntimeSnapshot,
-        nanocodex_agent::ChildRuntimeSnapshot,
-    )> = None;
-    for generation in 0..3 {
-        let openai = OpenAi::builder("test-key")
-            .service({
-                let generations = Arc::clone(&generations);
-                move || DurableReplayService {
-                    generations: Arc::clone(&generations),
-                }
-            })
-            .build()?;
-        let state = DurableSession::open(store.clone(), "restore-parent").await?;
-        let (parent, parent_events) = Nanocodex::builder(openai)
-            .workspace(&workspace)
-            .session_id(root_id)
-            .durability(state)
-            .await?
-            .build()?;
-        let ((child, child_events), (grandchild, grandchild_events)) = if generation > 0 {
-            let (child_snapshot, grandchild_snapshot) = snapshots.take().unwrap();
-            let child_id = child_snapshot.session_id.clone();
-            let grandchild_id = grandchild_snapshot.session_id.clone();
-            let expected_child = serde_json::to_value(&child_snapshot)?;
-            let expected_grandchild = serde_json::to_value(&grandchild_snapshot)?;
-            let child = parent.restore_child(child_snapshot, None).await?;
-            let grandchild = child.0.restore_child(grandchild_snapshot, None).await?;
-            assert_eq!(child.0.session_id(), child_id);
-            assert_eq!(grandchild.0.session_id(), grandchild_id);
-            assert_eq!(
-                serde_json::to_value(child.0.child_snapshot().await?)?,
-                expected_child
-            );
-            assert_eq!(
-                serde_json::to_value(grandchild.0.child_snapshot().await?)?,
-                expected_grandchild
-            );
-            (child, grandchild)
-        } else {
-            let child = parent.spawn().await?;
-            let grandchild = child.0.spawn().await?;
-            (child, grandchild)
-        };
-        if generation != 1 {
-            for agent in [&child, &grandchild] {
-                let result = agent
-                    .prompt(PromptRequest::new("retained work").request_id("first"))
-                    .await?
-                    .result()
-                    .await?;
-                assert_eq!(result.final_message(), "durably replayed");
+    let openai = OpenAi::builder("test-key")
+        .service({
+            let generations = Arc::clone(&generations);
+            move || DurableReplayService {
+                generations: Arc::clone(&generations),
             }
-            assert_eq!(
-                generations.load(Ordering::SeqCst),
-                2,
-                "restored receipts must replay without inference"
-            );
-        }
-        if generation == 2 {
-            for agent in [&child, &grandchild] {
-                agent
-                    .prompt(PromptRequest::new("continue").request_id("second"))
-                    .await?
-                    .result()
-                    .await?;
-            }
-            assert_eq!(generations.load(Ordering::SeqCst), 4);
-        } else {
-            snapshots = Some((
-                child.child_snapshot().await?,
-                grandchild.child_snapshot().await?,
-            ));
-        }
-        grandchild.shutdown().await?;
-        child.shutdown().await?;
-        parent.shutdown().await?;
-        drop((
-            grandchild,
-            grandchild_events,
-            child,
-            child_events,
-            parent,
-            parent_events,
-        ));
-    }
+        })
+        .build()?;
+    let workspace = temporary_workspace("ephemeral-rehydrate")?;
+    let (parent, _events) = Nanocodex::builder(openai)
+        .workspace(&workspace)
+        .durability(state)
+        .await?
+        .build()?;
+    let (child, _events) = parent.spawn().await?;
+    child.prompt("retained in memory").await?.result().await?;
+    let snapshot = child.child_snapshot().await?;
+    let expected = serde_json::to_value(&snapshot)?;
+    child.shutdown().await?;
+    let (restored, _events) = parent.restore_child(snapshot, None).await?;
+    assert_eq!(
+        serde_json::to_value(restored.child_snapshot().await?)?,
+        expected
+    );
+    restored.prompt("continue").await?.result().await?;
+    assert_eq!(generations.load(Ordering::SeqCst), 2);
+    assert_eq!(
+        *acquisitions.lock().unwrap(),
+        ["ephemeral-rehydrate-parent", "ephemeral-rehydrate-parent"]
+    );
+    restored.shutdown().await?;
+    parent.shutdown().await?;
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }

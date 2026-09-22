@@ -7,7 +7,7 @@ import { ROUTING_CANDIDATES, OSS_MODEL } from "../src/thread-model-routing";
 
 // Keyless integration: only identity/ancillary services and model responses are
 // synthetic. Admission, Jev policy, provider adapters, Rust/WASM subagent tools,
-// Just Bash, SQLite route bindings and graceful reconstruction are production.
+// Just Bash, live child bindings and durable root reconstruction are production.
 const principal: Principal = {
   kind: "api_key", userId: "11111111-1111-4111-8111-111111111111",
   organizationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa", teamId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -55,7 +55,7 @@ it.each([
   ["openrouter", "workers_ai", "binding"], ["vercel", "workers_ai", "binding"],
   ["cloudflare", "workers_ai", "binding"], ["openrouter", "cloudflare", "binding"], ["cloudflare", "cloudflare", "binding"],
   ["cloudflare", "workers_ai", "rest"], ["openrouter", "cloudflare", "rest"], ["cloudflare", "cloudflare", "rest"],
-] as const)("opt-in %s root and %s child (%s) pin independent transports across real tools, reconnect and two reconstructions", async (provider, childProvider, transport) => {
+] as const)("opt-in %s root and %s child (%s) pin independent live transports and never resurrect children after unload", async (provider, childProvider, transport) => {
   const childModel = childProvider === "cloudflare" ? "gpt-6-astra" : OSS_MODEL;
   const childCandidate = ROUTING_CANDIDATES.find(c => c.backend === childProvider && c.model === childModel && c.thinking === "high")!;
   const rootCandidate = ROUTING_CANDIDATES.find(c => c.backend === provider && c.model === "gpt-5.6-sol" && c.thinking === "low")!;
@@ -63,9 +63,13 @@ it.each([
   await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
     let choices = 0, rootCalls = 0, childCalls = 0, childToolResults = 0, submissions = 0;
     let phase = 1, step = 0, childId: number | undefined;
+    const childInference = Promise.withResolvers<void>();
     const observedTools: string[] = [];
     const sql = state.storage.sql;
     const table = (name: string) => sql.exec(`SELECT * FROM ${name}`).toArray();
+    const expectNoDurableChildren = () => {
+      expect(sql.exec("SELECT name FROM sqlite_master WHERE name IN ('managed_subagent_routes', 'managed_subagent_authorizations', 'nanocodex_cloudflare_subagents', 'nanocodex_cloudflare_subagent_checkpoints')").toArray()).toEqual([]);
+    };
     const request = (path: string, method: string, body?: unknown) => {
       const headers = new Headers({ "content-type": "application/json" });
       if (path !== "/create") forwardPrincipalAssertions(headers, principal);
@@ -98,29 +102,27 @@ it.each([
         }
         const handleChild = async () => {
           childCalls++;
+          if (childCalls === 1) await childInference.promise;
           expect(childCalls).toBeLessThanOrEqual(6);
           if (childProvider === "workers_ai") {
             expect(model).toBe(OSS_MODEL);
             expect(nativeInput.reasoning_effort).toBe("high");
           }
-          expect(table("managed_subagent_routes")).toHaveLength(1);
-          const binding = JSON.parse(String(table("managed_subagent_routes")[0].binding_json));
-          expect(binding.route).toMatchObject({ backend: childProvider, model: childModel, thinking: "high" });
-          expect(table("managed_subagent_authorizations")).toHaveLength(1);
-          // Result revisions are runtime-owned; the model only returns its value.
+          expectNoDurableChildren();
+          // Result revisions remain runtime-owned after child durability is removed.
           expect(JSON.stringify(input.messages)).not.toMatch(/turn_token: \d+/);
-          const token = phase;
+          const childTurn = phase;
           const last = input.messages.at(-1);
           if (last?.role === "tool" && last.content.includes('"accepted":true')) {
-            expect(JSON.parse(last.content)).toMatchObject({ accepted: true, decoded_json_text: true });
+            expect(JSON.parse(last.content)).toMatchObject({ accepted: true, status: "accepted", decoded_json_text: true });
             submissions++;
-            return completion({ content: `CHILD_DONE_${token}` });
+            return completion({ content: `CHILD_DONE_${childTurn}` });
           }
-          if (token === 1 && childCalls === 1) {
+          if (childTurn === 1 && childCalls === 1) {
             observedTools.push("child:exec_command");
             return toolCall(input, "exec_command", { cmd: "cat /brain/child-input.txt", workdir: "/brain" }, "child-read");
           }
-          if (token === 1) {
+          if (childTurn === 1) {
             expect(last.role).toBe("tool");
             expect(last.content).toContain(marker);
             childToolResults++;
@@ -129,7 +131,7 @@ it.each([
             expect(JSON.stringify(input.messages)).toContain("CHILD_DONE_1");
           }
           observedTools.push("child:submit_result");
-          return toolCall(input, "submit_result", { output: JSON.stringify({ value: marker, turn: token }) }, `submit-${token}`);
+          return toolCall(input, "submit_result", { output: JSON.stringify({ value: marker, turn: childTurn }) }, `submit-${childTurn}`);
         };
         const result = await handleChild();
         return childProvider === "cloudflare" ? toNative(result) : result;
@@ -166,6 +168,7 @@ it.each([
       if (phase === 1 && childId === undefined) {
         childId = JSON.parse(last.content).agent_id;
         expect(childId).toBeTypeOf("number");
+        return Response.json(completion({ content: "ROOT_DONE_1" }));
       }
       if (phase === 2 && step++ === 0) return Response.json(call(body, "send_agent_message", {
         agent_id: childId, message: "Recall the prior value from history and submit it for turn 2.", purpose: "delegate",
@@ -181,7 +184,7 @@ it.each([
       }
       if (step++ === 0) return Response.json(call(body, "list_agents", { include_completed: true }));
       if (step === 2) {
-        expect(JSON.stringify(last.content)).toContain(marker);
+        expect(JSON.parse(last.content).agents).toEqual([]);
         return Response.json(call(body, "close_agent", { agent_id: childId }));
       }
       return Response.json(completion({ content: "ROOT_DONE_3" }));
@@ -223,7 +226,7 @@ it.each([
       expect(await (await request("/state", "GET")).json()).toMatchObject({ model_routing_enabled: true, model_route: null });
       expect(choices).toBe(0);
       expect(table("managed_thread_route")).toHaveLength(0);
-      let rootPin: unknown, childPin: unknown, retainedDescriptor: unknown;
+      let rootPin: unknown;
       for (phase = 1; phase <= 3; phase++) {
         step = 0;
         const id = `fixture-turn-${phase}`;
@@ -232,7 +235,16 @@ it.each([
           .toEqual({ state: "completed", error: null });
         const receipt: any = await (await request(`/turns/${id}`, "GET")).json();
         expect(receipt.terminal.final_message).toBe(`ROOT_DONE_${phase}`);
-        if (phase === 1) { rootPin = table("managed_thread_route"); childPin = table("managed_subagent_routes"); retainedDescriptor = table("nanocodex_cloudflare_subagents"); }
+        if (phase === 1) {
+          rootPin = table("managed_thread_route");
+          // The root is finished, but a child still owns an in-flight model call.
+          // Aging the root must not unload that ephemeral child.
+          sql.exec("UPDATE session_state SET last_active=0");
+          await session.alarm();
+          expect(await (await request("/state", "GET")).json()).toMatchObject({ agent_loaded: true });
+          childInference.resolve();
+          await expect.poll(() => submissions, { timeout: 15_000 }).toBe(1);
+        }
         expect(table("managed_thread_route")).toEqual(rootPin);
         // Footer/status must report the retained root route even while a child
         // has used another provider/model and after the child is closed.
@@ -241,17 +253,16 @@ it.each([
         expect(status.model_route).toEqual(JSON.parse(String(table("managed_thread_route")[0].route_json)));
         expect(status.model_route).toMatchObject({ backend: provider, model: "gpt-5.6-sol", thinking: "low" });
         expect(choices).toBe(2);
-        if (phase < 3) {
-          expect(table("managed_subagent_routes")).toEqual(childPin);
-          expect(table("nanocodex_cloudflare_subagents")).toEqual(retainedDescriptor);
+        expectNoDurableChildren();
+        if (phase === 2) {
           if (provider !== "cloudflare" && childProvider !== "cloudflare") {
             (session as unknown as { env: Record<string, unknown> }).env.NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED = "false";
           }
           // Drive the production idle alarm after aging only its activity clock.
           sql.exec("UPDATE session_state SET last_active=0");
           await session.alarm();
-          await expect.poll(() => table("nanocodex_cloudflare_subagent_checkpoints").length).toBeGreaterThan(0);
-          expect(table("managed_subagent_routes")).toEqual(childPin);
+          expect(await (await request("/state", "GET")).json()).toMatchObject({ agent_loaded: false });
+          expectNoDurableChildren();
           // A fresh client connection reads the retained root settings without
           // selecting a route or reconstructing a child on the read itself.
           const headers = new Headers({ upgrade: "websocket" });
@@ -267,17 +278,16 @@ it.each([
           socket.close(1000, "fixture reconnect complete");
           expect(choices).toBe(2);
           expect(table("managed_thread_route")).toEqual(rootPin);
-          expect(table("managed_subagent_routes")).toEqual(childPin);
+          expectNoDurableChildren();
         }
       }
-      expect(table("managed_subagent_routes")).toHaveLength(0);
-      expect(table("managed_subagent_authorizations")).toHaveLength(0);
-      expect(table("nanocodex_cloudflare_subagents")).toHaveLength(0);
+      expectNoDurableChildren();
       expect(childToolResults).toBe(1);
       expect(submissions).toBe(2);
       expect(childCalls).toBe(5);
       expect(observedTools).toEqual(expect.arrayContaining(["spawn_agent", "wait_agent", "send_agent_message", "list_agents", "close_agent", "child:exec_command", "child:submit_result"]));
     } finally {
+      childInference.resolve();
       fetchSpy.mockRestore();
       await state.storage.deleteAlarm();
     }

@@ -46,8 +46,7 @@ impl RolloutSessionInfo {
 /// A completed model boundary materialized from a Codex-compatible rollout.
 ///
 /// This value is intentionally single-use: [`Self::into_parts`] transfers the
-/// rollout continuation into a builder. Forks and spawned agents always receive
-/// fresh rollout files.
+/// rollout continuation into a builder. Child agents do not inherit rollout recording.
 #[derive(Debug)]
 pub struct DurableSession {
     codex_home: PathBuf,

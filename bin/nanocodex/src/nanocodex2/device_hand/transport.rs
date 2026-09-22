@@ -3,6 +3,7 @@
 use std::{
     io,
     path::{Path, PathBuf},
+    time::Duration,
 };
 
 #[cfg(unix)]
@@ -91,4 +92,28 @@ pub(super) async fn connect(path: &Path) -> io::Result<Client> {
             }
         }
     }
+}
+
+// Existing lease clients send no bytes. A single versioned opcode requests an
+// update barrier; older daemons close this stream without an acknowledgement.
+pub(super) const PREPARE_IDLE_UPDATE: u8 = 0xA1;
+pub(super) const UPDATE_PREPARED: u8 = 0xA2;
+pub(super) const UPDATE_DEFERRED: u8 = 0xA3;
+
+pub(super) async fn prepare_idle_update(path: &Path) -> io::Result<bool> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    tokio::time::timeout(Duration::from_secs(3), async {
+        let mut stream = connect(path).await?;
+        stream.write_all(&[PREPARE_IDLE_UPDATE]).await?;
+        match stream.read_u8().await? {
+            UPDATE_PREPARED => Ok(true),
+            UPDATE_DEFERRED => Ok(false),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "invalid Hand update acknowledgement",
+            )),
+        }
+    })
+    .await
+    .map_err(|_| io::Error::new(io::ErrorKind::TimedOut, "Hand update request timed out"))?
 }

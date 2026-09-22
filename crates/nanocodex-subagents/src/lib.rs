@@ -1,4 +1,6 @@
-//! Reusable, application-composed subagent tools and task-tree runtime.
+//! Ephemeral, reusable subagent tools and in-memory task-tree runtime.
+//!
+//! Children and their retained history exist only for the lifetime of this runtime.
 
 mod capacity;
 mod diagnostics;
@@ -20,8 +22,7 @@ pub use model::{
     MessagePurpose, MessageSender, ScopedAgentUpdate, SubagentRuntimeId, ThreadId,
 };
 pub use runtime::{
-    AgentDirectoryEntry, AgentSummary, ChildCheckpoint, MAX_SUBAGENT_CHECKPOINT_BYTES,
-    MessageReceipt, Registry, SubagentCheckpoint, SubagentControl, channel,
+    AgentDirectoryEntry, AgentSummary, MessageReceipt, Registry, SubagentControl, channel,
 };
 pub use tools::{
     AgentStartReport, AgentTask, AgentToolResult, install_tools, start_agent, start_agent_with,

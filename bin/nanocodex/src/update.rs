@@ -18,6 +18,7 @@ use sha2::{Digest, Sha256};
 
 use crate::version;
 
+mod automatic;
 mod pr;
 mod store;
 mod voice;
@@ -109,6 +110,27 @@ pub(crate) fn prepare_legacy_nightly_bootstrap() -> Result<()> {
     Ok(())
 }
 
+/// Repair missing default scheduling only for an installed, managed CLI.
+pub(crate) fn ensure_default_automatic_updates() -> Result<()> {
+    if !cfg!(target_os = "macos") {
+        return Ok(());
+    }
+    let store = VersionStore::discover()?;
+    let executable = std::env::current_exe()?.canonicalize()?;
+    let Ok(root) = store.root().canonicalize() else {
+        return Ok(());
+    };
+    if !executable.starts_with(root.join("versions"))
+        && !executable.starts_with(root.join("updater"))
+    {
+        return Ok(());
+    }
+    if store.active()?.is_some() && root.join("updater/nanocodex").is_file() {
+        automatic::ensure_default(&root, version::IS_NIGHTLY)?;
+    }
+    Ok(())
+}
+
 #[derive(Debug, thiserror::Error)]
 enum DownloadError {
     #[error(transparent)]
@@ -152,6 +174,30 @@ pub(crate) struct Update {
     /// Reinstall the selected release even when it is already installed.
     #[arg(long, conflicts_with_all = ["pr", "path"])]
     force: bool,
+
+    /// Matching nanocodex2 binary when installing a local CLI build.
+    #[arg(long, requires = "path", value_name = "PATH")]
+    hand_binary: Option<PathBuf>,
+
+    /// Packaged voice runtime for a complete local CLI and Hand installation.
+    #[arg(long, requires_all = ["path", "hand_binary"], value_name = "ARCHIVE")]
+    voice_archive: Option<PathBuf>,
+
+    /// Enable, disable, or inspect hourly automatic update downloads.
+    #[arg(long, value_enum, conflicts_with_all = ["version", "pr", "path", "force", "apply", "background", "restart_hand"])]
+    auto: Option<automatic::AutoUpdate>,
+
+    /// Activate the verified update staged by the background updater.
+    #[arg(long, conflicts_with_all = ["version", "nightly", "pr", "path", "force", "background"])]
+    apply: bool,
+
+    /// Download and stage an update without interrupting running work.
+    #[arg(long, hide = true, conflicts_with_all = ["version", "pr", "path", "force"])]
+    background: bool,
+
+    /// Restart the running Hand and its VM host to activate this update now.
+    #[arg(long, conflicts_with = "background")]
+    restart_hand: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -183,16 +229,69 @@ impl Update {
         let manager_version = Version::parse(env!("CARGO_PKG_VERSION"))
             .wrap_err("the installed Nanocodex version is invalid")?;
         let store = VersionStore::discover()?;
+        let _lock = if matches!(&self.auto, Some(automatic::AutoUpdate::Status)) {
+            None
+        } else {
+            Some(store.update_lock()?)
+        };
+        if let Some(action) = self.auto {
+            if matches!(action, automatic::AutoUpdate::Enable) {
+                store.prepare(&manager_key(&manager_version))?;
+                store.promote_running_manager()?;
+            }
+            let show_status = matches!(action, automatic::AutoUpdate::Status);
+            automatic::configure(action, store.root(), self.nightly)?;
+            if show_status {
+                println!(
+                    "Active version: {}",
+                    store.active()?.as_deref().unwrap_or("none")
+                );
+                println!(
+                    "Pending update: {}",
+                    store.pending()?.as_deref().unwrap_or("none")
+                );
+            }
+            return Ok(());
+        }
+        if self.apply {
+            let key = store
+                .pending()?
+                .ok_or_else(|| eyre!("no staged update; run nanocodex update first"))?;
+            if !activate_coordinated(&store, &key, false, self.restart_hand).await? {
+                return Ok(());
+            }
+            store.promote_manager(&key)?;
+            println!("activated staged Nanocodex update {key}");
+            return Ok(());
+        }
         let manager_key = manager_key(&manager_version);
         store.prepare(&manager_key)?;
+        automatic::ensure_default(store.root(), self.nightly || version::IS_NIGHTLY)?;
         VersionStore::promote_running_legacy_nightly_manager()?;
         let previous = store.active()?.unwrap_or_else(|| manager_key.clone());
+        // A verified pending bundle can activate even if the release server is offline.
+        if self.background
+            && let Some(key) = store.pending()?
+            && activate_coordinated(&store, &key, true, false).await?
+        {
+            store.promote_manager(&key)?;
+            report_activation(&previous, &key, false);
+            return Ok(());
+        }
 
         if let Some(path) = &self.path {
-            return install_local_binary(path, &store, &previous);
+            return install_local_binary(
+                path,
+                self.hand_binary.as_deref(),
+                self.voice_archive.as_deref(),
+                &store,
+                &previous,
+                self.restart_hand,
+            )
+            .await;
         }
         if let Some(pr) = self.pr {
-            return install_pr_binary(pr, &store, &previous).await;
+            return install_pr_binary(pr, &store, &previous, self.restart_hand).await;
         }
 
         // Complete cached releases can still be selected offline. A legacy
@@ -203,7 +302,9 @@ impl Update {
                 && store.is_cached_bundle(&key, false)?
                 && store.is_cached_voice(&key, None)?
             {
-                store.activate(&key)?;
+                if !activate_coordinated(&store, &key, self.background, self.restart_hand).await? {
+                    return Ok(());
+                }
                 maybe_promote_manager(&store, &key, requested, &manager_version)?;
                 report_activation(&previous, &key, false);
                 return Ok(());
@@ -257,7 +358,9 @@ impl Update {
             && cached
             && (voice_asset.is_none() || store.is_cached_voice(&key, voice_checksum.as_deref())?)
         {
-            store.activate(&key)?;
+            if !activate_coordinated(&store, &key, self.background, self.restart_hand).await? {
+                return Ok(());
+            }
             if self.nightly {
                 store.promote_manager(&key)?;
             } else if let Some(latest) = &latest {
@@ -304,7 +407,9 @@ impl Update {
             guest_contents.as_deref(),
             voice_contents.as_deref(),
         )?;
-        store.activate(&key)?;
+        if !activate_coordinated(&store, &key, self.background, self.restart_hand).await? {
+            return Ok(());
+        }
         if self.nightly {
             store.promote_manager(&key)?;
         } else if let Some(latest) = &latest {
@@ -323,6 +428,260 @@ impl Update {
             Cow::Borrowed("latest stable Nanocodex release")
         }
     }
+}
+
+pub(crate) fn lock_service_operation() -> Result<fs::File> {
+    VersionStore::discover()?.update_lock()
+}
+
+#[derive(Debug, PartialEq)]
+enum RecoveryPlan {
+    Rollback(String),
+    Finalize { candidate: String, service: bool },
+}
+fn recovery_plan(value: &serde_json::Value, active: Option<&str>) -> Result<RecoveryPlan> {
+    if value["phase"] == "committed" {
+        let candidate = value["candidate"]
+            .as_str()
+            .ok_or_else(|| eyre!("invalid committed update record"))?;
+        if active != Some(candidate) {
+            bail!("Committed update no longer matches the active CLI; inspect before recovery");
+        }
+        let service = value["service"]
+            .as_bool()
+            .ok_or_else(|| eyre!("invalid committed service state"))?;
+        Ok(RecoveryPlan::Finalize {
+            candidate: candidate.to_owned(),
+            service,
+        })
+    } else if value.get("phase").is_none() {
+        Ok(RecoveryPlan::Rollback(
+            value["previous"]
+                .as_str()
+                .ok_or_else(|| eyre!("invalid update recovery record"))?
+                .to_owned(),
+        ))
+    } else {
+        bail!("unknown update recovery phase")
+    }
+}
+
+/// Recover both halves of an interrupted activation before another update.
+pub(crate) async fn recover_hand_update() -> Result<()> {
+    let store = VersionStore::discover()?;
+    let journal = store.root().join("update-transaction.json");
+    let previous = if journal.exists() {
+        let value: serde_json::Value = serde_json::from_slice(&fs::read(&journal)?)?;
+        let plan = recovery_plan(&value, store.active()?.as_deref())?;
+        if let RecoveryPlan::Finalize { candidate, service } = &plan {
+            store.validate_activation(candidate)?;
+            if *service {
+                let executable = store.version_dir(candidate).join("nanocodex2");
+                let state = crate::hand_service::status().await?;
+                if state.loaded {
+                    crate::hand_service::verify_connected(
+                        &executable,
+                        std::time::SystemTime::UNIX_EPOCH,
+                        Duration::from_secs(60),
+                    )
+                    .await?;
+                } else if state.executable.as_deref() != Some(executable.as_path()) {
+                    bail!(
+                        "Committed Hand executable no longer matches the update; inspect before recovery"
+                    );
+                }
+                crate::hand_service::finish_recovery().await?;
+            }
+            fs::remove_file(&journal)?;
+            println!("Finalized the verified Nanocodex update {candidate}");
+            return Ok(());
+        }
+        let RecoveryPlan::Rollback(previous) = plan else {
+            unreachable!()
+        };
+        store.validate_activation(&previous)?;
+        Some(previous)
+    } else {
+        None
+    };
+    crate::hand_service::recover().await?;
+    if let Some(previous) = previous {
+        store.activate(&previous)?;
+        fs::remove_file(&journal)?;
+        println!("Restored Nanocodex {previous} and its Hand service");
+    }
+    Ok(())
+}
+
+const fn defer_activation(service_installed: bool, restart_hand: bool) -> bool {
+    service_installed && !restart_hand
+}
+
+fn stage_update(store: &VersionStore, key: &str) -> Result<bool> {
+    if store.active()?.as_deref() == Some(key) {
+        store.clear_pending()?;
+        println!("Nanocodex {key} is already active");
+        return Ok(false);
+    }
+    store.stage_pending(key)?;
+    println!(
+        "Verified update {key} is ready. It will apply when you next start the stopped Hand; use nanocodex update --apply --restart-hand to restart the Hand and VM host now."
+    );
+    Ok(false)
+}
+
+pub(crate) async fn start_hand() -> Result<()> {
+    let store = VersionStore::discover()?;
+    if !crate::hand_service::status().await?.loaded
+        && let Some(key) = store.pending()?
+    {
+        activate_coordinated(&store, &key, false, true).await?;
+        store.promote_manager(&key)?;
+    }
+    crate::hand_service::start().await
+}
+
+pub(crate) async fn restart_hand() -> Result<()> {
+    let store = VersionStore::discover()?;
+    if let Some(key) = store.pending()? {
+        activate_coordinated(&store, &key, false, true).await?;
+        store.promote_manager(&key)?;
+        return crate::hand_service::start().await;
+    }
+    crate::hand_service::restart().await
+}
+
+/// Background updates defer any installed Hand until an explicit start/restart.
+/// An explicit activation changes the service first and commits the CLI only
+/// after the exact new publisher has registered with the account.
+async fn activate_coordinated(
+    store: &VersionStore,
+    key: &str,
+    background: bool,
+    restart_hand: bool,
+) -> Result<bool> {
+    store.validate_activation(key)?;
+    if cfg!(target_os = "macos") {
+        let companion = store.version_dir(key).join("nanocodex2");
+        if companion.exists() {
+            if !store.is_cached_bundle(key, false)? {
+                bail!("update Hand binary failed checksum verification");
+            }
+            crate::hand_service::validate_candidate(&companion).await?;
+        }
+    }
+    let installed = if cfg!(target_os = "macos") {
+        let state = crate::hand_service::status().await?;
+        state.installed || state.loaded
+    } else {
+        false
+    };
+    if defer_activation(installed, restart_hand) {
+        return stage_update(store, key);
+    }
+    if background && store.active()?.as_deref() == Some(key) {
+        store.clear_pending()?;
+        return Ok(false);
+    }
+    store.validate_activation(key)?;
+    let companion = store.version_dir(key).join(if cfg!(windows) {
+        "nanocodex2.exe"
+    } else {
+        "nanocodex2"
+    });
+    if companion.exists() && !store.is_cached_bundle(key, false)? {
+        bail!("update Hand binary failed checksum verification");
+    }
+    let journal = store.root().join("update-transaction.json");
+    if journal.exists() {
+        bail!("An interrupted update needs recovery; run nanocodex hand recover first");
+    }
+    let previous = store.active()?;
+    if previous.is_none() {
+        bail!("An active CLI version is required before coordinated activation");
+    }
+    store::atomic_write(
+        &journal,
+        &serde_json::to_vec(&serde_json::json!({"previous":previous,"candidate":key}))?,
+        false,
+    )?;
+    let mut service = match crate::hand_service::prepare_update(&companion, restart_hand).await {
+        Ok(service) => service,
+        Err(error) => {
+            fs::remove_file(&journal)?;
+            return Err(error);
+        }
+    };
+    let result = activate_transaction(store, key, service.as_mut()).await;
+    if result.is_ok() {
+        store::atomic_write(
+            &journal,
+            &serde_json::to_vec(
+                &serde_json::json!({"previous":previous,"candidate":key,"phase":"committed","service":service.is_some()}),
+            )?,
+            false,
+        )?;
+        if let Some(service) = service.as_mut() {
+            service.commit().await?;
+        }
+        fs::remove_file(&journal)?;
+    }
+    result
+}
+
+#[async_trait::async_trait]
+trait ServiceTransaction: Send {
+    async fn apply(&mut self) -> Result<()>;
+    async fn rollback(&mut self) -> Result<()>;
+}
+#[async_trait::async_trait]
+impl ServiceTransaction for crate::hand_service::ServiceUpdate {
+    async fn apply(&mut self) -> Result<()> {
+        self.apply().await
+    }
+    async fn rollback(&mut self) -> Result<()> {
+        self.rollback().await
+    }
+}
+
+async fn activate_transaction<S: ServiceTransaction>(
+    store: &VersionStore,
+    key: &str,
+    mut service: Option<&mut S>,
+) -> Result<bool> {
+    let previous = store.active()?;
+    if let Some(service) = service.as_mut() {
+        eprintln!("Updating the Hand service and checking account reconnection…");
+        if let Err(error) = service.apply().await {
+            if let Err(rollback) = service.rollback().await {
+                bail!(
+                    "Hand update failed: {error:#}; rollback also failed: {rollback:#}. Run nanocodex hand recover"
+                );
+            }
+            return Err(
+                error.wrap_err("Hand update failed; previous service restored and CLI unchanged")
+            );
+        }
+    }
+    if let Err(error) = store.activate(key) {
+        let cli_rollback = previous
+            .as_deref()
+            .map(|key| store.activate(key))
+            .transpose();
+        let service_rollback = match service.as_mut() {
+            Some(service) => service.rollback().await,
+            None => Ok(()),
+        };
+        if let Err(rollback) = cli_rollback {
+            bail!("Update failed: {error:#}; restoring the CLI also failed: {rollback:#}");
+        }
+        if let Err(rollback) = service_rollback {
+            bail!("Update failed: {error:#}; restoring the Hand service also failed: {rollback:#}");
+        }
+        return Err(error.wrap_err("update failed; previous CLI and Hand service restored"));
+    }
+    store.clear_pending()?;
+    Ok(true)
 }
 
 async fn fetch_release(client: &Client, url: &str, description: &str) -> Result<Release> {
@@ -381,12 +740,45 @@ fn manager_key(version_number: &Version) -> String {
     }
 }
 
-fn install_local_binary(path: &Path, store: &VersionStore, previous: &str) -> Result<()> {
+async fn install_local_binary(
+    path: &Path,
+    companion: Option<&Path>,
+    voice_archive: Option<&Path>,
+    store: &VersionStore,
+    previous: &str,
+    restart_hand: bool,
+) -> Result<()> {
     let contents = fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
-    let digest = hex::encode(Sha256::digest(&contents));
-    let key = format!("local-{}", &digest[..12]);
-    store.install(&key, &contents)?;
-    store.activate(&key)?;
+    let companion = companion
+        .map(fs::read)
+        .transpose()
+        .wrap_err("failed to read the local Hand binary")?;
+    let voice = voice_archive
+        .map(fs::read)
+        .transpose()
+        .wrap_err("failed to read the voice archive")?;
+    let mut digest = Sha256::new();
+    for item in [
+        Some(contents.as_slice()),
+        companion.as_deref(),
+        voice.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        digest.update((item.len() as u64).to_le_bytes());
+        digest.update(item);
+    }
+    let key = format!("local-{}", &hex::encode(digest.finalize())[..12]);
+    if let Some(companion) = companion {
+        store.install_bundle(&key, &contents, &companion, None, voice.as_deref())?;
+    } else {
+        store.install(&key, &contents)?;
+    }
+    if !activate_coordinated(store, &key, false, restart_hand).await? {
+        return Ok(());
+    }
+    store.promote_manager(&key)?;
     println!(
         "installed and activated nanocodex {key} from {} (previously {previous})",
         path.canonicalize()
@@ -396,7 +788,12 @@ fn install_local_binary(path: &Path, store: &VersionStore, previous: &str) -> Re
     Ok(())
 }
 
-async fn install_pr_binary(number: u64, store: &VersionStore, previous: &str) -> Result<()> {
+async fn install_pr_binary(
+    number: u64,
+    store: &VersionStore,
+    previous: &str,
+    restart_hand: bool,
+) -> Result<()> {
     let asset_name = binary_asset_name()?;
     let artifact = pr::download(number, asset_name).await?;
     let key = format!("pr-{number}-{}", artifact.head_sha);
@@ -413,7 +810,9 @@ async fn install_pr_binary(number: u64, store: &VersionStore, previous: &str) ->
     } else {
         store.install(&key, &artifact.contents)?;
     }
-    store.activate(&key)?;
+    if !activate_coordinated(store, &key, false, restart_hand).await? {
+        return Ok(());
+    }
     println!(
         "installed and activated nanocodex PR #{number} at {} ({}, previously {previous})",
         artifact.head_sha, artifact.run_url,
@@ -1085,6 +1484,113 @@ mod tests {
             validate_immutable_nightly(
                 &wrong_target,
                 "nightly-0123456789abcdef0123456789abcdef01234567"
+            )
+            .is_err()
+        );
+    }
+    struct FailingService {
+        rollback_called: bool,
+        rollback_fails: bool,
+    }
+    #[async_trait::async_trait]
+    impl ServiceTransaction for FailingService {
+        async fn apply(&mut self) -> Result<()> {
+            bail!("candidate never reconnected")
+        }
+        async fn rollback(&mut self) -> Result<()> {
+            self.rollback_called = true;
+            if self.rollback_fails {
+                bail!("old service failed")
+            }
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_hand_update_restores_service_without_switching_cli() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = VersionStore::at(temp.path());
+        store.install("old", b"old").unwrap();
+        store
+            .install_bundle("new", b"new", b"new hand", None, None)
+            .unwrap();
+        store.activate("old").unwrap();
+        store.stage_pending("new").unwrap();
+        let mut service = FailingService {
+            rollback_called: false,
+            rollback_fails: false,
+        };
+        let error = activate_transaction(&store, "new", Some(&mut service))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("previous service restored"));
+        assert!(service.rollback_called);
+        assert_eq!(store.active().unwrap().as_deref(), Some("old"));
+        assert_eq!(store.pending().unwrap().as_deref(), Some("new"));
+    }
+
+    #[tokio::test]
+    async fn rollback_failure_is_reported_without_claiming_success() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = VersionStore::at(temp.path());
+        store.install("old", b"old").unwrap();
+        store.activate("old").unwrap();
+        let mut service = FailingService {
+            rollback_called: false,
+            rollback_fails: true,
+        };
+        let error = activate_transaction(&store, "new", Some(&mut service))
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("rollback also failed"));
+        assert!(error.to_string().contains("hand recover"));
+        assert_eq!(store.active().unwrap().as_deref(), Some("old"));
+    }
+
+    #[tokio::test]
+    async fn automatic_update_stages_without_service_operations_or_cli_switch() {
+        let temp = tempfile::tempdir().unwrap();
+        let store = VersionStore::at(temp.path());
+        store.install("old", b"old").unwrap();
+        store
+            .install_bundle("new", b"new", b"new hand", None, None)
+            .unwrap();
+        store.activate("old").unwrap();
+        assert!(!stage_update(&store, "new").unwrap());
+        assert!(defer_activation(true, false));
+        assert!(!defer_activation(false, false));
+        assert!(!defer_activation(true, true));
+        assert_eq!(store.active().unwrap().as_deref(), Some("old"));
+        assert_eq!(store.pending().unwrap().as_deref(), Some("new"));
+    }
+    #[test]
+    fn interrupted_activation_rolls_back_before_commit_even_after_cli_flip() {
+        let receipt = serde_json::json!({"previous":"old", "candidate":"new"});
+        for active in [Some("old"), Some("new"), None] {
+            assert_eq!(
+                recovery_plan(&receipt, active).unwrap(),
+                RecoveryPlan::Rollback("old".into())
+            );
+        }
+    }
+
+    #[test]
+    fn committed_recovery_preserves_candidate_and_rejects_drift() {
+        for service in [false, true] {
+            let receipt = serde_json::json!({"previous":"old", "candidate":"new", "phase":"committed", "service":service});
+            assert_eq!(
+                recovery_plan(&receipt, Some("new")).unwrap(),
+                RecoveryPlan::Finalize {
+                    candidate: "new".into(),
+                    service
+                }
+            );
+            assert!(recovery_plan(&receipt, Some("old")).is_err());
+        }
+        assert!(
+            recovery_plan(
+                &serde_json::json!({"phase":"unexpected", "previous":"old"}),
+                Some("old")
             )
             .is_err()
         );

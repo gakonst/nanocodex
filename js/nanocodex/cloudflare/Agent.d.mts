@@ -115,7 +115,7 @@ export declare namespace create {
      * The caller must preserve older exact-ID results before selecting this.
      */
     terminalReceiptRetention?: number | undefined;
-    /** Live child execution is in-memory; interrupted descriptors survive reconstruction. */
+    /** Children exist only in memory and are discarded when the root runtime shuts down. */
     tools?: ToolConfiguration<SubagentTool> | undefined;
   }>;
   type ReturnType = Agent;
