@@ -16,7 +16,7 @@ export function jevFailure(error: unknown): JevFailure {
 /** At most one retry of an explicitly transient binding failure, within a shared
  * deadline. No retry of timeouts (binding cancellation is unavailable), rate
  * limits, invalid payloads or unknown failures. Never retries generation. */
-export async function runJev(ai: RoutingAi, input: unknown, diagnostics: JevDiagnostics, budgetMs = 10_000): Promise<unknown> {
+export async function runJev(ai: RoutingAi, input: unknown, diagnostics: JevDiagnostics, budgetMs = 10_000, signal?: AbortSignal): Promise<unknown> {
   const deadline = Date.now() + budgetMs;
   for (let i = 0; i < 2; i++) {
     const started = Date.now();
@@ -33,7 +33,7 @@ export async function runJev(ai: RoutingAi, input: unknown, diagnostics: JevDiag
       const failure = jevFailure(error);
       diagnostics.attempts.push({ duration_ms: Date.now() - started, outcome: failure });
       diagnostics.outcome = failure;
-      if (failure !== "unavailable" || i !== 0 || deadline - Date.now() < 500) throw error;
+      if (signal?.aborted || failure !== "unavailable" || i !== 0 || deadline - Date.now() < 500) throw error;
     } finally { clearTimeout(timer); }
   }
   throw new Error("Jev retry budget exhausted");

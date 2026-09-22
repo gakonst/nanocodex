@@ -159,7 +159,7 @@ export function normalizeInferencePolicy(value: unknown = {}): ThreadRoutingPoli
  */
 export async function inferenceRoutingAvailability(env: InferenceSessionEnv, signal: AbortSignal, origin: InferenceOrigin = unknownOrigin): Promise<RoutingAvailability> {
   const availability: RoutingAvailability = {
-    ...gatewayAvailability(env),
+    ...gatewayAvailability(env), signal,
     workerColo: null, clientIngressColo: origin.clientIngressColo, provider_performance: [],
   };
   const coordinator = env.NANOCODEX_PROVIDER_PROBE_COORDINATOR;

@@ -15,6 +15,12 @@ describe("bounded Jev recovery", () => {
     const run = vi.fn().mockRejectedValue(Object.assign(new Error("private"),{status}));
     await expect(runJev({run},{},diagnostics())).rejects.toThrow(); expect(run).toHaveBeenCalledTimes(1);
   });
+  it("does not retry after its request was cancelled", async () => {
+    const controller=new AbortController();
+    const run=vi.fn(async()=>{controller.abort();throw Object.assign(new Error("unavailable"),{status:503});});
+    await expect(runJev({run},{},diagnostics(),1000,controller.signal)).rejects.toThrow();
+    expect(run).toHaveBeenCalledOnce();
+  });
   it("never exceeds two transient attempts", async () => {
     const run = vi.fn().mockRejectedValue(Object.assign(new Error("private"),{status:502}));
     const trace=diagnostics(); await expect(runJev({run},{},trace)).rejects.toThrow();
