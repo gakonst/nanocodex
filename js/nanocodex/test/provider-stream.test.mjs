@@ -515,3 +515,60 @@ for (const scenario of ["before-finish", "nonempty-response", "missing-usage", "
     await assert.rejects(pending, { message: "Responses: invalid provider stream" });
   });
 }
+
+for (const model of ["kimi-k3", "mimo-v2.6-pro", "@cf/zai-org/glm-5.3"]) {
+  test(`${model}: visible reasoning details and text cross the host HTTP bridge before gated completion`, { timeout: 2_000 }, async () => {
+    const { createResponsesHttp } = await import("../runtime/responses-http.mjs");
+    const upstream = feed(), requests = [];
+    const transport = createGatewayResponses({ provider: "openrouter", model, reasoningEffort: "low", apiKey: "synthetic-key",
+      fetch: async (_url, init) => {
+        requests.push(JSON.parse(init.body));
+        return new Response(upstream.body, { headers: { "content-type": "text/event-stream" } });
+      } });
+    const http = createResponsesHttp((_endpoint, _key, id, _metadata, body, signal) => transport.createResponse(
+      `${transport.apiBaseUrl}/responses`, id, { authorization: "host_managed", body, signal }));
+    const handle = http.httpOpen("fixture", "fixture", "fixture", {}, JSON.stringify({ input: "Inspect fixture", stream: true }));
+    const event = async () => JSON.parse(new TextDecoder().decode(await http.httpNext(handle)).split("\ndata: ")[1]);
+    const readUntil = async type => { for (;;) { const value = await event(); if (value.type === type) return value; } };
+    try {
+      await http.httpReady(handle);
+      assert.equal(requests[0].stream, true);
+      assert.equal((await event()).type, "response.created");
+      // No finish chunk exists until both live reads below have resolved. A
+      // buffered implementation times out instead of passing on terminal output.
+      upstream.send(chunk({ reasoning: "", reasoning_details: [{ type: "reasoning.text", text: "Inspect ", index: 0 }] }));
+      assert.equal((await readUntil("response.reasoning_text.delta")).delta, "Inspect ");
+      await new Promise(resolve => setTimeout(resolve, 15));
+      upstream.send(chunk({ reasoning_details: [{ type: "reasoning.summary", summary: "fixture", index: 1 },
+        { type: "reasoning.encrypted", data: "synthetic-opaque", index: 2 }] }));
+      assert.equal((await readUntil("response.reasoning_text.delta")).delta, "fixture");
+      upstream.send(chunk({ content: "Result" }));
+      assert.equal((await readUntil("response.output_text.delta")).delta, "Result");
+      assert.equal(upstream.cancelled, 0);
+      upstream.send(chunk({}, "stop")); upstream.send("[DONE]");
+      const terminal = await readUntil("response.completed");
+      assert.equal(terminal.response.output[0].content[0].text, "Inspect fixture");
+      assert.ok(terminal.response.output[0].encrypted_content.startsWith("nanocodex-chat-reasoning-v1:"));
+      assert.equal(terminal.response.output[1].content[0].text, "Result");
+      assert.equal(await http.httpNext(handle), null);
+    } finally { http.dispose(); }
+  });
+}
+
+test("mirrored reasoning details produce one live delta and preserve their replay payload", async () => {
+  const upstream = feed(), fixture = setup("openrouter", upstream), pending = all(await fixture.invoke());
+  upstream.send(chunk({ reasoning: "Inspect", reasoning_details: [{ type: "reasoning.text", text: "Inspect", signature: "fixture-signature" }] }));
+  upstream.send(chunk({}, "stop")); upstream.send("[DONE]");
+  const events = await pending;
+  assert.deepEqual(events.filter(e => e.type === "response.reasoning_text.delta").map(e => e.delta), ["Inspect"]);
+  assert.equal(events.at(-1).response.output[0].content[0].text, "Inspect");
+});
+
+for (const detail of [{ type: "reasoning.text", text: { private: "fixture" } }, { type: "reasoning.summary", summary: 42 }]) {
+  test(`malformed visible ${detail.type} fails sanitized`, async () => {
+    const upstream = feed(), fixture = setup("openrouter", upstream), pending = all(await fixture.invoke());
+    upstream.send(chunk({ reasoning_details: [detail] }));
+    upstream.send(chunk({}, "stop")); upstream.send("[DONE]");
+    await assert.rejects(pending, { message: "Responses: invalid provider stream" });
+  });
+}

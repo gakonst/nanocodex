@@ -493,3 +493,16 @@ for (const incorrect of [false, true]) test(`MiMo OpenRouter emulates forced too
   if (incorrect) await assert.rejects(pending);
   else assert.equal((await events(await pending)).at(-1).response.output[0].name, "chosen");
 });
+
+test("buffered gateway reasoning details retain visible text without duplicating legacy mirrors", async () => {
+  for (const mirrored of [false, true]) {
+    const transport = createGatewayResponses({ provider: "openrouter", model: "kimi-k3", reasoningEffort: "low", apiKey: "synthetic-key",
+      fetch: async () => Response.json({ choices: [{ message: { content: "Answer", ...(mirrored ? { reasoning: "Inspect fixture" } : {}),
+        reasoning_details: [{ type: "reasoning.text", text: "Inspect " }, { type: "reasoning.summary", summary: "fixture" },
+          { type: "reasoning.encrypted", data: "synthetic-opaque" }] }, finish_reason: "stop" }] }) });
+    const response = await transport.createResponse(`${transport.apiBaseUrl}/responses`, "fixture", {
+      authorization: "host_managed", body: JSON.stringify({ input: "Inspect" }) });
+    const events = (await response.text()).split("\n\n").filter(Boolean).map(frame => JSON.parse(frame.split("\ndata: ")[1]));
+    assert.deepEqual(events.filter(e => e.type === "response.reasoning_text.delta").map(e => e.delta), ["Inspect fixture"]);
+  }
+});

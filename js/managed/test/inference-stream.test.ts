@@ -51,3 +51,44 @@ describe("incremental Responses projection", () => {
    const upstream = new ReadableStream<Uint8Array>({ start(c) { c.enqueue(frame({type:"response.completed", response})); c.close(); } });
    await expect(new Response(projectInferenceStream(upstream, e => e, () => {})).text()).rejects.toThrow("invalid_provider_protocol");
  });
+
+it.each(["kimi-k3", "mimo-v2.6-pro", "@cf/zai-org/glm-5.3"] as const)("public %s inference forwards visible reasoning and answer before provider completion", async model => {
+  const { createGatewayResponses } = await import("nanocodex/cloudflare/gateway-responses");
+  let source!: ReadableStreamDefaultController<Uint8Array>;
+  const upstream = new ReadableStream<Uint8Array>({ start(controller) { source = controller; } });
+  const transport = createGatewayResponses({ provider: "openrouter", model, reasoningEffort: "low", apiKey: "synthetic-key",
+    fetch: async (_url, init) => {
+      expect(JSON.parse(init!.body as string).stream).toBe(true);
+      return new Response(upstream, { headers: { "content-type": "text/event-stream" } });
+    } });
+  const response = await transport.createResponse(`${transport.apiBaseUrl}/responses`, "fixture", {
+    authorization: "host_managed", signal: new AbortController().signal, body: JSON.stringify({ input: "Inspect fixture", stream: true }) });
+  const token = vi.fn(), finish = vi.fn(), abort = new AbortController();
+  const reader = finalizeInferenceResponse(new Response(projectInferenceStream(response.body!, event => ({ ...event, fixture: true }), token)),
+    abort.signal, finish).body!.getReader();
+  const until = async (type: string) => {
+    for (;;) {
+      const next = await reader.read();
+      expect(next.done).toBe(false);
+      const event = JSON.parse(new TextDecoder().decode(next.value).split("\ndata: ")[1]);
+      expect(event.fixture).toBe(true);
+      if (event.type === type) return event;
+    }
+  };
+  const send = (delta: object, finish_reason: string | null = null) => source.enqueue(frame({ choices: [{ index: 0, delta, finish_reason }] }));
+  try {
+    await until("response.created");
+    send({ reasoning_details: [{ type: "reasoning.text", text: "Inspect fixture" }] });
+    expect((await until("response.reasoning_text.delta")).delta).toBe("Inspect fixture");
+    expect(token).not.toHaveBeenCalled();
+    expect(finish).not.toHaveBeenCalled();
+    send({ content: "Answer" });
+    expect((await until("response.output_text.delta")).delta).toBe("Answer");
+    expect(token).toHaveBeenCalledOnce();
+    expect(finish).not.toHaveBeenCalled();
+    send({}, "stop"); source.enqueue(encoder.encode("data: [DONE]\r\n\r\n"));
+    await until("response.completed");
+    expect((await reader.read()).done).toBe(true);
+    expect(finish).toHaveBeenCalledExactlyOnceWith(true);
+  } finally { await reader.cancel(); }
+}, 2_000);

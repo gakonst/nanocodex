@@ -1,5 +1,5 @@
 import { routeObservation, type RouterObservation } from "./router-telemetry";
-import { DurableObject } from "cloudflare:workers";
+import { DurableObject, waitUntil } from "cloudflare:workers";
 import { z } from "zod";
 import { createGatewayResponses } from "nanocodex/cloudflare/gateway-responses";
 import { createWorkersAiResponses } from "nanocodex/cloudflare/workers-ai-responses";
@@ -159,9 +159,8 @@ export function normalizeInferencePolicy(value: unknown = {}): ThreadRoutingPoli
   return { ...policy, strategy: "direct", candidates, estimates: policy.estimates.filter(e => e.backend !== "chatgpt") };
 }
 
-/** Read trusted live cohorts and enabled deployment probes only before the first pin. Missing, slow or invalid
- * telemetry remains unknown; it never blocks routing or becomes retained session data.
- * The shared resolver validates freshness, sample counts and candidate/effort matching.
+/** Routing never waits for geographic/probe snapshots. Passive observations are
+ * retained for the dashboard; regional latency selection is deferred until proven.
  */
 export async function inferenceRoutingAvailability(env: InferenceSessionEnv, signal: AbortSignal, origin: InferenceOrigin = unknownOrigin): Promise<RoutingAvailability> {
   const availability: RoutingAvailability = {
@@ -170,33 +169,12 @@ export async function inferenceRoutingAvailability(env: InferenceSessionEnv, sig
   };
   const coordinator = env.NANOCODEX_PROVIDER_PROBE_COORDINATOR;
   if (!coordinator || signal.aborted) return availability;
-  availability.observeRoute = async route => {
+  availability.observeRoute = route => {
     const observation = routeObservation(route, origin.clientIngressColo);
-    const target = coordinator.getByName(PROBE_OWNER);
-    if (!observation || !target.observeRoute) return;
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    try { await Promise.race([target.observeRoute(observation), new Promise(resolve => { timer = setTimeout(resolve, INFERENCE_PROBE_TIMEOUT_MS); })]); }
-    finally { clearTimeout(timer); }
+    if (!observation) return;
+    // Persist diagnostics out of band; the first token must not wait for an RPC.
+    waitUntil(Promise.resolve().then(() => coordinator.getByName(PROBE_OWNER).observeRoute?.(observation)).catch(() => {}));
   };
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  let abort: (() => void) | undefined;
-  try {
-    const snapshot = await Promise.race([
-      coordinator.getByName(PROBE_OWNER).snapshot(origin),
-      new Promise<unknown>(resolve => { timer = setTimeout(() => resolve([]), INFERENCE_PROBE_TIMEOUT_MS); }),
-      new Promise<unknown>(resolve => { abort = () => resolve([]); signal.addEventListener("abort", abort, { once: true }); }),
-    ]);
-    if (Array.isArray(snapshot)) availability.provider_performance = snapshot.slice(0, 512).filter(metric =>
-      metric && typeof metric === "object"
-      && (((metric.source === "live" || (metric.source === "probe" && env.NANOCODEX_PROVIDER_PROBES === "true")) && metric.scope === "deployment_global" && metric.workerColo === null)
-        || (metric.source === "live" && metric.scope === "client_ingress" && origin.clientIngressColo !== null
-          && metric.clientIngressColo === origin.clientIngressColo))
-      && ["workers_ai", "openrouter", "vercel", "cloudflare"].includes(metric.backend));
-  } catch { /* No retry or provider fallback: unavailable telemetry is unknown. */ }
-  finally {
-    clearTimeout(timer);
-    if (abort) signal.removeEventListener("abort", abort);
-  }
   return availability;
 }
 

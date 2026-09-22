@@ -8,7 +8,7 @@ import { PROBE_OWNER, type ProviderProbeEnvironment } from "./provider-probe-sch
 export { ProviderProbeCoordinator };
 import { gatewayAvailability, gatewayRuntime } from "./gateway-runtime";
 import { createSubagentRouteController, subagentRoutingPolicy, type RetainedChildRoute } from "./subagent-model-routing";
-import { SqliteProviderTelemetryStore, summarizeProviderObservationGroups, normalizeProviderColo, type ProviderObservation } from "./provider-telemetry";
+import { SqliteProviderTelemetryStore, normalizeProviderColo, type ProviderObservation } from "./provider-telemetry";
 import { resolveThreadRoute, ROUTING_CANDIDATES, ThreadRoutePin, type ThreadRoute, type RoutingAi } from "./thread-model-routing";
 import { AgentPresentationWriter, generatePresentationText, presentationPending } from "./agent-presentation";
 import { retireSessionProjects, isRetiredProjectCompletion } from "./retired-projects";
@@ -10333,32 +10333,15 @@ export class DurableAgentSession extends DurableComputerSession {
 
   async #routingAvailability() {
     const origin = this.#routingOrigin();
-    const live = summarizeProviderObservationGroups(new SqliteProviderTelemetryStore(this.ctx.storage.sql).read(), Date.now(), origin);
-    let shared: typeof live = [];
+    // Regional TTFT has not demonstrated a routing gain. Keep measurements for
+    // the dashboard, but perform no telemetry reads or RPCs before generation.
     const coordinator = this.env.NANOCODEX_PROVIDER_PROBE_COORDINATOR;
-    // Shared live observations do not require enabling paid scheduled probes.
-    if (coordinator) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      try {
-        shared = await Promise.race([
-          coordinator.getByName(PROBE_OWNER).snapshot(origin),
-          new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new Error("provider telemetry timeout")), 250); }),
-        ]);
-      } catch { /* Missing telemetry stays unknown; it never blocks inference. */ }
-      finally { if (timer) clearTimeout(timer); }
-    }
-    // Shared writes are asynchronous. Keep local cohorts absent from the shared
-    // snapshot, but never add overlapping local/shared counts together.
-    const liveCohorts = new Map([...live, ...shared.filter(sample => sample.source === "live")].map(sample => [
-      JSON.stringify([sample.source, sample.scope, sample.workerColo, sample.clientIngressColo, sample.backend, sample.model, sample.effort]), sample,
-    ]));
-    const probes = this.env.NANOCODEX_PROVIDER_PROBES === "true" ? shared.filter(sample => sample.source === "probe") : [];
     return { ...gatewayAvailability(this.env), ...origin,
       observeRoute: (route: ThreadRoute) => {
         const observation = routeObservation(route, origin.clientIngressColo);
         if (coordinator && observation) this.ctx.waitUntil(coordinator.getByName(PROBE_OWNER).observeRoute(observation).catch(() => false));
       },
-      provider_performance: [...liveCohorts.values(), ...probes] };
+      provider_performance: [] };
   }
 
   async #ensureThreadRoute(row: ManagedTurnRow, assertActive: () => void): Promise<void> {

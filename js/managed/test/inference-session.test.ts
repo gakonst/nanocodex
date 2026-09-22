@@ -2,11 +2,10 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi, afterEach } from "vitest";
 import {
   InferenceSession, InferenceSessionRuntime, executeStatelessInferenceResponse, INFERENCE_KEY_ID_HEADER, INFERENCE_MAX_OUTPUT_TOKENS_HEADER,
-  INFERENCE_MAX_BODY_BYTES, INFERENCE_TIMEOUT_MS, INFERENCE_PROBE_TIMEOUT_MS, normalizeInferencePolicy, validateInferenceRequest,
+  INFERENCE_MAX_BODY_BYTES, INFERENCE_TIMEOUT_MS, normalizeInferencePolicy, validateInferenceRequest,
   type InferenceSessionEnv, type InferenceSessionMetadata,
 } from "../src/inference-session";
 import { OSS_MODEL, ROUTING_CANDIDATES, taskFamily } from "../src/thread-model-routing";
-import { PROBE_OWNER } from "../src/provider-probe-schedule";
 
 const owner = "test_inference_key_a", other = "test_inference_key_b";
 const sessionId = "dca2a2b4-23e7-4fe4-a888-b1767105e382";
@@ -343,111 +342,46 @@ function probe(effort = "medium", ttft = 90, patch: Record<string, unknown> = {}
     generationTtftSampleCount: 3, lastTtftObservedAt: now, ...patch };
 }
 
-describe("trusted deployment probe context", () => {
-  it("supplies matched global TTFT only before first pin; reversed latency cannot reselect after restart", async () => {
-    let fastEffort = "medium";
-    const snapshot = vi.fn(async () => [probe("medium", fastEffort === "medium" ? 90 : 900),
-      probe("high", fastEffort === "high" ? 90 : 900)]);
-    const getByName = vi.fn(() => ({ snapshot }));
-    const bindings = { NANOCODEX_PROVIDER_PROBES: "true", NANOCODEX_PROVIDER_PROBE_COORDINATOR: { getByName } };
+describe("telemetry stays off the routing path", () => {
+  it("never reads a stalled coordinator and preserves the first pin across restart", async () => {
+    const snapshot = vi.fn(() => new Promise<never>(() => {}));
+    const bindings = { NANOCODEX_PROVIDER_PROBES: "true", NANOCODEX_PROVIDER_PROBE_COORDINATOR: { getByName: () => ({ snapshot }) } };
     const first = fixture(bindings);
     await first.create({ candidates: [candidate, `${OSS_MODEL}:high`], preferences: { duration: 90, cost: 1 } });
-    const chooser = async (model: string, input: unknown) => {
-      if (model !== "typesafe/jev") return completion();
-      const state = JSON.parse((input as { state: string }).state);
-      expect(state.provider_telemetry).toMatchObject({ provenance: "trusted_runtime_aggregate", workerColo: null, clientIngressColo: null });
-      expect(state.preferences).toMatchObject({ duration: 90, cost: 1 });
-      expect(state.candidates).toHaveLength(2);
-      for (const c of state.candidates) expect(c.responsiveness).toMatchObject({
-        live: null,
-        probe: { generationTtftSampleCount: 3, workerColo: null, regionalMatch: false },
-      });
-      const best = state.candidates.sort((a: any, b: any) =>
-        a.responsiveness.probe.generationTtftP50Ms - b.responsiveness.probe.generationTtftP50Ms)[0];
-      return classification(best.id);
-    };
-    first.ai.mockImplementation(chooser);
+    first.ai.mockImplementation(async model => model === "typesafe/jev" ? classification() : completion());
     expect((await first.call("POST", "/responses", { input: "first task" })).status).toBe(200);
-    expect(first.commits.at(-1)?.route?.thinking).toBe("medium");
-    expect(getByName).toHaveBeenCalledWith(PROBE_OWNER);
     const pinned = first.commits.at(-1)!.route;
-    fastEffort = "high";
     first.restart();
     expect((await first.call("POST", "/responses", { input: "complete followup history" })).status).toBe(200);
     expect(first.commits.at(-1)?.route).toEqual(pinned);
-    expect(snapshot).toHaveBeenCalledTimes(1);
+    expect(snapshot).not.toHaveBeenCalled();
     expect(first.ai.mock.calls.filter(([model]) => model === "typesafe/jev")).toHaveLength(1);
     expect(JSON.stringify(first.commits)).not.toContain("generationTtft");
-    const next = fixture(bindings);
-    await next.create({ candidates: [candidate, `${OSS_MODEL}:high`], preferences: { duration: 90, cost: 1 } });
-    next.ai.mockImplementation(chooser);
-    expect((await next.call("POST", "/responses", { input: "new session task" })).status).toBe(200);
-    expect(next.commits.at(-1)?.route?.thinking).toBe("high");
-    expect(snapshot).toHaveBeenCalledTimes(2);
   });
 
-  it("limits the shared snapshot read to250ms and safely ignores a later rejection", async () => {
-    vi.useFakeTimers();
-    let reject!: (reason: unknown) => void;
-    let entered!: () => void;
-    const started = new Promise<void>(resolve => { entered = resolve; });
-    const snapshot = vi.fn(() => { entered(); return new Promise<unknown>((_resolve, fail) => { reject = fail; }); });
-    const f = fixture({ NANOCODEX_PROVIDER_PROBES: "true", NANOCODEX_PROVIDER_PROBE_COORDINATOR: { getByName: () => ({ snapshot }) } });
-    await f.create();
-    f.ai.mockImplementation(async (model, input) => {
-      if (model !== "typesafe/jev") return completion();
-      const state = JSON.parse((input as { state: string }).state);
-      expect(state.candidates[0].responsiveness.probe).toBeNull();
-      return classification();
-    });
-    const pending = f.call("POST", "/responses", { input: "hello" });
-    await started;
-    await vi.advanceTimersByTimeAsync(INFERENCE_PROBE_TIMEOUT_MS - 1);
-    expect(f.ai).not.toHaveBeenCalled();
-    await vi.advanceTimersByTimeAsync(1);
-    expect((await pending).status).toBe(200);
-    reject(Error("private-late-coordinator-error"));
-    await Promise.resolve();
-    expect(snapshot).toHaveBeenCalledTimes(1);
-    expect(JSON.stringify(f.commits)).not.toContain("private");
+  it("returns inference while route diagnostics are still being written", async () => {
+    let finish!: () => void;
+    const write = new Promise<void>(resolve => { finish = resolve; });
+    const observeRoute = vi.fn(() => write);
+    const f = fixture({ NANOCODEX_PROVIDER_PROBE_COORDINATOR: {
+      getByName: () => ({ snapshot: async () => [], observeRoute }),
+    } });
+    try {
+      await f.create();
+      const response = await f.call("POST", "/responses", { input: "hello" });
+      expect(response.status).toBe(200);
+      expect(observeRoute).toHaveBeenCalledOnce();
+    } finally { finish(); }
   });
 
-  it.each(["failure", "malformed", "disabled"])("treats %s probe context as unknown without blocking inference", async mode => {
+  it.each(["failure", "malformed", "disabled"])("does not consult %s probe context", async mode => {
     const snapshot = vi.fn(async () => { if (mode === "failure") throw Error("private-probe-error"); return { invalid: true }; });
     const f = fixture({ NANOCODEX_PROVIDER_PROBES: mode === "disabled" ? "false" : "true",
       NANOCODEX_PROVIDER_PROBE_COORDINATOR: { getByName: () => ({ snapshot }) } });
     await f.create();
-    f.ai.mockImplementation(async (model, input) => {
-      if (model !== "typesafe/jev") return completion();
-      const state = JSON.parse((input as { state: string }).state);
-      expect(state.candidates[0].responsiveness.probe).toBeNull();
-      return classification();
-    });
     expect((await f.call("POST", "/responses", { input: "hello" })).status).toBe(200);
-    expect(snapshot).toHaveBeenCalledTimes(1);
+    expect(snapshot).not.toHaveBeenCalled();
     expect(JSON.stringify(f.commits)).not.toContain("private");
-  });
-
-  it("excludes stale, insufficient, unmatched regional, noncandidate and subscription measurements", async () => {
-    const snapshot = vi.fn(async () => [
-      probe("medium", 1, { lastObservedAt: Date.now() - 400_000, lastTtftObservedAt: Date.now() - 400_000 }),
-      probe("medium", 2, { generationTtftSampleCount: 2 }),
-      probe("medium", 3, { workerColo: "LHR", scope: "worker_colo" }),
-      probe("medium", 4, { source: "live", scope: "client_ingress", clientIngressColo: "NRT" }),
-      probe("medium", 5, { model: "uncataloged-model" }),
-      probe("medium", 6, { backend: "chatgpt", model: "gpt-6-astra" }),
-    ]);
-    const f = fixture({ NANOCODEX_PROVIDER_PROBES: "true", NANOCODEX_PROVIDER_PROBE_COORDINATOR: { getByName: () => ({ snapshot }) } });
-    await f.create();
-    f.ai.mockImplementation(async (model, input) => {
-      if (model !== "typesafe/jev") return completion();
-      const state = JSON.parse((input as { state: string }).state);
-      expect(state.candidates).toHaveLength(1);
-      expect(state.candidates[0].responsiveness).toMatchObject({ live: null, probe: null });
-      return classification();
-    });
-    expect((await f.call("POST", "/responses", { input: "hello" })).status).toBe(200);
-    expect(f.commits.at(-1)?.route?.backend).toBe("workers_ai");
   });
 
   it("rejects client telemetry fields before any coordinator or model call", async () => {
@@ -526,10 +460,11 @@ describe("stateless standard Responses", () => {
     const f = fixture({ OPENROUTER_API_KEY: "synthetic-key", AI_GATEWAY_API_KEY: "synthetic-key" });
     for (const model of ["gpt-6-astra", exact]) {
       f.ai.mockImplementation(async (_backend, input) => {
-        const state = JSON.parse((input as { state: string }).state);
-        expect(state.candidates.every((c: any) => c.model === "gpt-6-astra")).toBe(true);
-        if (model === exact) expect(state.candidates.map((c: any) => c.id)).toEqual([exact]);
-        else expect(new Set(state.candidates.map((c: any) => c.backend))).toEqual(new Set(["openrouter", "vercel"]));
+        const ids = Object.keys((input as { questions: { candidate: { criteria: Record<string, string> } } }).questions.candidate.criteria);
+        const candidates = ROUTING_CANDIDATES.filter(c => ids.includes(c.id));
+        expect(candidates.every(c => c.model === "gpt-6-astra")).toBe(true);
+        if (model === exact) expect(ids).toEqual([exact]);
+        else expect(new Set(candidates.map(c => c.backend))).toEqual(new Set(["openrouter", "vercel"]));
         return classification(exact);
       });
       const response = await call(f.bindings, { model, input: "hello" });

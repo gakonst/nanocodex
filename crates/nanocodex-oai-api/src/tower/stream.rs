@@ -309,8 +309,11 @@ where
                     delta.len(),
                 )?;
             }
+            // Chat-compatible providers expose visible reasoning as content
+            // deltas. Feed the same live display channel as Responses summaries.
             ServerEvent::ReasoningSummaryTextDelta { delta, .. }
-            | ServerEvent::ReasoningSummaryDelta { delta, .. } => {
+            | ServerEvent::ReasoningSummaryDelta { delta, .. }
+            | ServerEvent::ReasoningContentDelta { delta, .. } => {
                 emit_display_delta(
                     &observer.events,
                     &mut timing,
@@ -591,6 +594,7 @@ where
         ServerEvent::OutputTextDelta { .. }
             | ServerEvent::ReasoningSummaryTextDelta { .. }
             | ServerEvent::ReasoningSummaryDelta { .. }
+            | ServerEvent::ReasoningContentDelta { .. }
             | ServerEvent::OutputItemAdded { .. }
             | ServerEvent::OutputItemDone { .. }
     ) {

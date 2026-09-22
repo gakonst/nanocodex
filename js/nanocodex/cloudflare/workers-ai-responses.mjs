@@ -1,3 +1,4 @@
+import { chatReasoningText } from "./chat-reasoning.mjs";
 import { providerStream, streamResponse } from "./provider-stream.mjs";
 const MODEL = "@cf/zai-org/glm-5.3";
 const MODELS = [MODEL, "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "kimi-k3", "mimo-v2.6-pro"];
@@ -277,7 +278,7 @@ function normalizeResponse(result, registry, model, toolChoice) {
   }
   const output = [];
   const id = `resp_${crypto.randomUUID()}`;
-  const reasoning = message.reasoning_content ?? message.reasoning;
+  const reasoning = chatReasoningText(message);
   const details = message.reasoning_details;
   if (details !== undefined && (!Array.isArray(details) || details.some(d => !d || typeof d !== "object" || Array.isArray(d)))) fail("invalid reasoning details");
   if ((typeof reasoning === "string" && reasoning) || details?.length) {

@@ -1,3 +1,4 @@
+import { chatReasoningText } from "./chat-reasoning.mjs";
 import { fromBindingResponsesResult } from "./gateway-binding-responses.mjs";
 
 const invalid = () => { throw new Error("Responses: invalid provider stream"); };
@@ -165,7 +166,7 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
       return;
     }
     if (part.content != null) delta("message", part.content);
-    if (part.reasoning_content != null || part.reasoning != null) delta("reasoning", part.reasoning_content ?? part.reasoning);
+    delta("reasoning", chatReasoningText(part));
     if (part.reasoning_details != null) {
       if (!Array.isArray(part.reasoning_details) || part.reasoning_details.some(d => !d || typeof d !== "object" || Array.isArray(d))) invalid();
       retain(JSON.stringify(part.reasoning_details));

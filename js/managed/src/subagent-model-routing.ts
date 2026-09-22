@@ -34,8 +34,7 @@ export interface ChildRouteStore {
   commit(sessionId: string, value: RetainedChildRoute): void;
 }
 
-// A maximum-sized batch may spend 64 × 10 seconds classifying before binding.
-// Expiry bounds abandoned tickets without invalidating a normal bounded batch.
+// Expiry bounds abandoned tickets while allowing normal batch admission and binding.
 export const CHILD_ROUTE_TICKET_TTL_MS = 15 * 60_000;
 
 /** A mobile manual choice pins only the root; explicit routing policies still constrain children. */
@@ -79,7 +78,8 @@ export function createSubagentRouteController(options: {
       resolving++;
       try {
         const route = await resolveThreadRoute(options.ai, JSON.stringify({ role: request.role, task: request.task }),
-          routingPolicySchema.parse({ ...options.policy, strategy: "direct", candidates }), await options.availability());
+          routingPolicySchema.parse({ ...options.policy, strategy: "direct", candidates }),
+          { ...await options.availability(), bypassSingleCandidate: true });
         // Authority can change while the classifier is in flight. Bind checks it again.
         options.authorize(request.parentSessionId, request.hostContextRef);
         const routeId = options.id ? options.id() : crypto.randomUUID();

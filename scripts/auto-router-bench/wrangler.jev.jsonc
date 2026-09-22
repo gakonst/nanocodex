@@ -1,0 +1,6 @@
+{
+  "name": "nanocodex-auto-router-local-bench",
+  "compatibility_date": "2026-09-22",
+  "ai": { "binding": "AI", "remote": true },
+  "observability": { "enabled": false }
+}

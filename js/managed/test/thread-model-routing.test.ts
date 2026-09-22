@@ -156,7 +156,7 @@ describe("v2 direct candidate routing", () => {
   it("defaults to one direct typed choice across fifteen model/effort candidates", async () => {
     const ai = answer();
     const route = await resolveThreadRoute(ai, "Fix build quickly and cheaply", direct());
-    expect(route).toMatchObject({ policy_version: "jev-direct-v3", model: "gpt-5.6-luna", thinking: "low", estimate: null });
+    expect(route).toMatchObject({ policy_version: "jev-direct-v4", model: "gpt-5.6-luna", thinking: "low", estimate: null });
     expect(ai.run).toHaveBeenCalledOnce();
     const request = ai.run.mock.calls[0][1] as { state: string; questions: { candidate: { criteria: object } } };
     expect(Object.keys(request.questions.candidate.criteria)).toHaveLength(15);
@@ -261,13 +261,13 @@ describe("cross-provider candidate routing", () => {
     const route = await resolveThreadRoute(ai, "task", p, available);
     expect(route.audit?.eligible_candidates).toHaveLength(55);
     expect(route).toMatchObject({ backend: "vercel", model: FRONTIER_MODEL, provider_model: "openai/gpt-6-astra" });
-    expect(JSON.parse((ai.run.mock.calls[0][1] as {state:string}).state).candidates).toHaveLength(55);
+    expect(Object.keys((ai.run.mock.calls[0][1] as {questions:{candidate:{criteria:object}}}).questions.candidate.criteria)).toHaveLength(55);
   });
   it("sends dated provider token rates separately from measured task costs", async () => {
     const ai = choose(vercel);
     const route = await resolveThreadRoute(ai, "compare cost", routingPolicySchema.parse({}), available);
     const state = JSON.parse((ai.run.mock.calls[0][1] as {state:string}).state);
-    const hint = (id: string) => state.candidates.find((c: {id:string}) => c.id === id).catalog_price_hint;
+    const hint = (id: string) => { const c = ROUTING_CANDIDATES.find(c => c.id === id)!; return state.catalog_price_hints[`${c.backend}/${c.model}`]; };
     expect(hint("openrouter:openai/gpt-5.6-sol:low")).toMatchObject({as_of:"2026-09-20", unit:"USD per million tokens", input:2, output:10, cached_input:.2, source:"https://openrouter.ai/api/v1/models"});
     expect(hint("vercel:openai/gpt-5.6-sol:low")).toMatchObject({input:4, output:20, cached_input:.4, source:"https://ai-gateway.vercel.sh/v1/models"});
     expect(hint("openrouter:z-ai/glm-5.3:low")).toMatchObject({input:.91,output:2.86,cached_input:.169});
@@ -324,62 +324,6 @@ describe("cross-provider candidate routing", () => {
   });
 });
 
-
-describe("trusted regional provider telemetry", () => {
-  const id = "openrouter:openai/gpt-6-astra:high";
-  const metric = (patch = {}) => ({backend:"openrouter",model:"openai/gpt-6-astra",effort:"high",source:"live",workerColo:"LHR",
-    signalKind:"context_only_not_completion_probability",usable:true,sampleCount:6,successCount:5,censoredCount:1,
-    successRate:5/6,lastObservedAt:Date.now()-1000,fullResponseP50Ms:120,fullResponseEwmaMs:140,...patch});
-  const ai = () => ({run:vi.fn(async (_model:string,_input:unknown)=>({answers:{candidate:{choice:id,confidence:.99},family:{choice:"terminal",confidence:.99}}}))});
-  const runtime = (provider_performance: unknown[]) => ({openrouter:true,vercel:false,workerColo:"LHR",clientIngressColo:"SJC",provider_performance});
-  it("projects trusted aggregates into Jev and the audit while distinguishing execution from ingress", async () => {
-    const router = ai();
-    const route = await resolveThreadRoute(router,"task",routingPolicySchema.parse({}),runtime([metric({apiKey:"secret",prompt:"private",errorBody:"sensitive"}),metric({source:"probe",scope:"deployment_global",workerColo:null})]));
-    const snapshot = route.audit?.provider_telemetry;
-    expect(snapshot).toMatchObject({provenance:"trusted_runtime_aggregate",workerColo:"LHR",clientIngressColo:"SJC",windowMs:7200000});
-    expect(snapshot?.provider_performance).toHaveLength(2);
-    expect(snapshot?.provider_performance[0]).toMatchObject({model:FRONTIER_MODEL,fullResponseP50Ms:120});
-    const state = JSON.parse((router.run.mock.calls[0][1] as {state:string}).state);
-    expect(state.provider_telemetry).not.toHaveProperty("provider_performance");
-    expect(state.provider_telemetry).toMatchObject({ provenance: "trusted_runtime_aggregate", workerColo: "LHR" });
-    expect(state.candidates.find((c: {id:string}) => c.id === id).availability.live).toMatchObject({ sampleCount: 6, failureCount: 1 });
-    for (const privateField of ["apiKey","prompt","errorBody","successRate"]) expect(snapshot?.provider_performance[0]).not.toHaveProperty(privateField);
-    expect(route.estimate).toBeNull();
-    expect(route.selection).toBe("prior");
-  });
-  it("rejects stale, future, inconsistent, wrong-region, unknown and unavailable groups", async () => {
-    const samples = [metric({lastObservedAt:Date.now()-300001}),metric({lastObservedAt:Date.now()+60000}),metric({successCount:4}),metric({workerColo:"SJC"}),metric({model:"unlisted"}),metric({backend:"vercel"}),metric({effort:null}),metric({fullResponseP50Ms:Infinity}),metric({successCount:20})];
-    const route = await resolveThreadRoute(ai(),"task",routingPolicySchema.parse({}),runtime(samples));
-    expect(route.audit?.provider_telemetry?.provider_performance).toEqual([]);
-    const unknownColo = await resolveThreadRoute(ai(),"task",routingPolicySchema.parse({}),{...runtime([metric()]),workerColo:null});
-    expect(unknownColo.audit?.provider_telemetry?.provider_performance).toEqual([]);
-  });
-  it("retains availability-only context without presenting it as generation latency", async () => {
-    const router = ai();
-    const route = await resolveThreadRoute(router,"task",routingPolicySchema.parse({}),runtime([metric({usable:false})]));
-    expect(route.audit?.provider_telemetry?.provider_performance).toHaveLength(1);
-    expect(route.audit?.provider_telemetry?.provider_performance[0]).toMatchObject({
-      sampleCount:6,successCount:5,availabilityFailureCount:1,usable:false,ttftUsable:false,
-      generationTtftP50Ms:null,generationTtftEwmaMs:null,generationTtftSampleCount:0,
-    });
-    const state = JSON.parse((router.run.mock.calls[0][1] as {state:string}).state);
-    expect(state.candidates.find((candidate: {id:string}) => candidate.id === id).responsiveness).toMatchObject({live:null,probe:null});
-    expect(route.estimate).toBeNull();
-    expect(route.selection).toBe("prior");
-  });
-  it("bounds and deduplicates aggregates without merging probe/live cohorts", async () => {
-    const samples = ROUTING_CANDIDATES.filter(c=>c.backend==="openrouter").flatMap(c=>[metric({model:c.model,effort:c.thinking}),metric({model:c.model,effort:c.thinking,source:"probe",scope:"deployment_global",workerColo:null})]);
-    const route = await resolveThreadRoute(ai(),"task",routingPolicySchema.parse({}),runtime([samples[0],...samples]));
-    expect(route.audit?.provider_telemetry?.provider_performance).toHaveLength(40);
-    expect(new Set(route.audit?.provider_telemetry?.provider_performance.map(m => `${m.source}/${m.candidateId}`)).size).toBe(40);
-  });
-  it("cannot satisfy a measured-success threshold or trust policy/request telemetry", async () => {
-    expect(()=>routingPolicySchema.parse({provider_performance:[metric()]})).toThrow();
-    await expect(resolveThreadRoute(ai(),"task",routingPolicySchema.parse({min_success_rate:.5}),runtime([metric()]))).rejects.toThrow("no route admitted");
-    const route = await resolveThreadRoute(ai(),{provider_performance:[metric()],workerColo:"LHR"},routingPolicySchema.parse({}),{openrouter:true,vercel:false});
-    expect(route.audit?.provider_telemetry?.provider_performance).toEqual([]);
-  });
-});
 
 describe("preference-preserving confidence fallback", () => {
   const economy = `${OSS_MODEL}:low`;
@@ -454,7 +398,7 @@ describe("captured preference-distribution policy replay (not accuracy labels)",
     expect(ai.run).toHaveBeenCalledOnce();
     const state = JSON.parse((ai.run.mock.calls[0] as unknown as [string,{state:string}])[1].state);
     expect(state.preferences).toEqual(observation.preferences);
-    expect(state.candidates).toHaveLength(observation.catalog);
+    expect(Object.keys((ai.run.mock.calls[0] as unknown as [string,{questions:{candidate:{criteria:object}}}])[1].questions.candidate.criteria)).toHaveLength(observation.catalog);
   });
 });
 

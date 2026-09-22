@@ -62,7 +62,7 @@ it("real key issuance and public gateway sessions isolate two callers", async ()
     const result = await call("/models", "GET", undefined, key1.api_key);
     expect(result.status).toBe(200);
     const expanded = await result.json<{ data: Array<{ id: string; provider: string }> }>();
-    expect(expanded.data).toHaveLength(gate === "true" ? 45 : 33);
+    expect(expanded.data).toHaveLength(gate === "true" ? 55 : 43);
     expect(expanded.data.some(c => c.provider === "chatgpt")).toBe(false);
     const cloudflare = expanded.data.filter(c => c.provider === "cloudflare");
     expect(cloudflare).toHaveLength(gate === "true" ? 12 : 0);
@@ -151,7 +151,8 @@ it("takes inference origin only from Cloudflare metadata and rebuilds private se
     expect(response.headers.get("x-nanocodex-ingress-colo")).toBe(origin ?? null);
     await response.text();
   }
-  expect(states.map(state => state.provider_telemetry.clientIngressColo)).toEqual([null, "LHR"]);
+  expect(states).toHaveLength(2);
+  for (const state of states) expect(state).not.toHaveProperty("provider_telemetry");
   bindings.NANOCODEX_INFERENCE_SESSIONS = { getByName: () => ({ fetch: async (request: Request) => {
     forwarded.push(request); return Response.json({ fixture: true });
   } }) } as unknown as DurableObjectNamespace;

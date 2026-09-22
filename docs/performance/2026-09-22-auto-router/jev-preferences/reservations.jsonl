@@ -1,0 +1,6 @@
+{"arm":"baseline","prompt":"cheap-careful","at":"2026-09-22T14:57:47.352Z"}
+{"arm":"compact","prompt":"cheap-careful","at":"2026-09-22T14:57:48.819Z"}
+{"arm":"baseline","prompt":"explicit-override","at":"2026-09-22T14:57:49.741Z"}
+{"arm":"compact","prompt":"explicit-override","at":"2026-09-22T14:57:50.567Z"}
+{"arm":"baseline","prompt":"negated-speed","at":"2026-09-22T14:57:51.075Z"}
+{"arm":"compact","prompt":"negated-speed","at":"2026-09-22T14:57:51.675Z"}

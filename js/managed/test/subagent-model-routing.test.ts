@@ -43,7 +43,9 @@ describe("hosted child routing", () => {
     expect(controller.routeForSession("child-1")).toMatchObject({ backend: "workers_ai", model: "@cf/zai-org/glm-5.3", thinking: "low" });
     expect(controller.routeForSession("child-2")).toMatchObject({ backend: "chatgpt", model: "gpt-6-astra", thinking: "high" });
     expect(() => controller.routeForSession("unknown")).toThrow("missing");
-    expect(ai.run).toHaveBeenCalledTimes(2);
+    expect(ai.run).not.toHaveBeenCalled();
+    expect(controller.routeForSession("child-1").classifier).toEqual({ outcome: "not_requested", attempts: [] });
+    expect(controller.routeForSession("child-1").audit).toBeUndefined();
     const replacement = fixture().controller;
     expect(() => replacement.routeForSession("child-1")).toThrow("missing");
     expect(() => replacement.routeForSession("child-2")).toThrow("missing");
@@ -83,7 +85,7 @@ describe("hosted child routing", () => {
     enabled.controller.bind({...requestBinding(resolved.routeId),sessionId:"cloudflare-child"});
     cloudflare = false;
     expect(enabled.controller.routeForSession("cloudflare-child")).toMatchObject({backend:"cloudflare",model:"gpt-6-astra",provider_model:"openai/gpt-6-astra",thinking:"high"});
-    expect(ai.run).toHaveBeenCalledTimes(1);
+    expect(ai.run).not.toHaveBeenCalled();
   });
 
   it("rejects policy-ineligible explicit model or effort without classification", async () => {

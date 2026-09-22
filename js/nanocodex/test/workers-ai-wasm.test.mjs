@@ -45,3 +45,58 @@ test("GLM adapter executes a tool and completes through the real Rust WASM loop"
     assert.equal(executions, 1);
   } finally { agent.dispose(); }
 });
+
+for (const model of ["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"]) {
+  test(`${model} real WASM emits reasoning and answer deltas before provider completion`, { timeout: 5_000 }, async () => {
+    const { createGatewayResponses } = await import("../cloudflare/gateway-responses.mjs");
+    const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+    let source, requested, reasoning, answer;
+    const ready = new Promise(resolve => { requested = resolve; });
+    const liveReasoning = new Promise(resolve => { reasoning = resolve; });
+    const liveAnswer = new Promise(resolve => { answer = resolve; });
+    const stream = new ReadableStream({ start(controller) { source = controller; } });
+    const send = (delta, finish_reason = null) => source.enqueue(new TextEncoder().encode(
+      `data: ${JSON.stringify({ choices: [{ index: 0, delta, finish_reason }] })}\n\n`));
+    const open = input => { assert.equal(input.stream, true); requested(); return stream; };
+    const transport = model.startsWith("@cf/") ? createWorkersAiResponses({ async run(_model, input) { return open(input); } })
+      : createGatewayResponses({ provider: "openrouter", model, reasoningEffort: "low", apiKey: "synthetic-key",
+        fetch: async (_url, init) => new Response(open(JSON.parse(init.body)), { headers: { "content-type": "text/event-stream" } }) });
+    const agent = await Agent.create({ module, model, thinking: "low", tools: [],
+      transport: Transport.hostManaged({ ...transport, websocketPreconnect: false,
+        createWebSocket() { assert.fail("gateway must use streaming HTTP"); } }) });
+    const watch = agent.events.watch();
+    watch.onEvent(event => {
+      if (event.type === "reasoning.summary.delta") reasoning(event.payload.text);
+      if (event.type === "assistant.delta") answer(event.payload.text);
+    });
+    let finished = false, terminalSent = false;
+    const complete = () => {
+      if (terminalSent) return;
+      terminalSent = true;
+      send({}, "stop"); source.enqueue(new TextEncoder().encode("data: [DONE]\n\n"));
+    };
+    const result = agent.turn.prompt({ input: "Inspect fixture and answer" }).result();
+    void result.then(() => { finished = true; }, () => {});
+    const live = async promise => {
+      let timer;
+      try { return await Promise.race([promise, new Promise((_, reject) => { timer = setTimeout(() => reject(new Error("live delta was held until completion")), 1_000); })]); }
+      finally { clearTimeout(timer); }
+    };
+    try {
+      await ready;
+      send(model.startsWith("@cf/") ? { reasoning_content: "Inspect fixture" }
+        : { reasoning_details: [{ type: "reasoning.text", text: "Inspect fixture" }] });
+      assert.equal(await live(liveReasoning), "Inspect fixture");
+      assert.equal(finished, false);
+      send({ content: "Answer" });
+      assert.equal(await live(liveAnswer), "Answer");
+      assert.equal(finished, false);
+      complete();
+      assert.equal((await result).finalMessage, "Answer");
+    } finally {
+      complete();
+      await result.catch(() => {});
+      agent.dispose();
+    }
+  });
+}

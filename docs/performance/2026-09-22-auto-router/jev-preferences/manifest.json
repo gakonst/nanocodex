@@ -1,0 +1,12 @@
+{
+  "created_at": "2026-09-22T14:57:44.183Z",
+  "baseline_revision": "18452080c9e463ddef8ab56efe47ef54fe163cf8",
+  "source_hashes": {
+    "baseline": "7f3d33141d9ce182ab24254636af9a3a786d57387429ed4bbc14ef3ed6850c4f",
+    "compact": "4b8a5181d5d4c314666e9d92a8f96757f36b485ec63e7c94e8b276bf4cb80aae"
+  },
+  "classification_attempt_cap": 6,
+  "downstream_generation_attempts": 0,
+  "location": "Local Mac through Wrangler remote AI binding; not production Worker latency",
+  "timing": "resolver completion and underlying binding settlement measured separately; no retries"
+}

@@ -1,0 +1,27 @@
+{
+  "suite": "preferences",
+  "prompts": [
+    {
+      "id": "cheap-careful",
+      "text": "Fix the failing build carefully and verify the tests. Prefer the cheapest adequate model; avoid unnecessary cost.",
+      "policy": {}
+    },
+    {
+      "id": "explicit-override",
+      "text": "Fix the failing build urgently; use the fastest and cheapest route.",
+      "policy": {
+        "preferences": {
+          "completion": 100,
+          "cost": 0,
+          "duration": 0,
+          "text": "Prioritize careful correct completion over the speed and cost requested in the opening prompt."
+        }
+      }
+    },
+    {
+      "id": "negated-speed",
+      "text": "Fix the failing build and verify the tests. Do not prioritize speed or the cheapest model. Take time to reason carefully and prioritize correctness.",
+      "policy": {}
+    }
+  ]
+}
