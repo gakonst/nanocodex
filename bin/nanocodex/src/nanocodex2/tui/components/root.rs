@@ -471,6 +471,10 @@ pub(crate) struct RootNode {
 impl RootNode {
     pub(crate) fn control_snapshot(&self) -> serde_json::Value {
         let menu = self.overlay.as_ref().map(|overlay| match overlay {
+            Overlay::VaultReview(_) => "vault_review",
+            Overlay::VoiceOutput { .. } => "voice_output",
+            Overlay::VoiceMenu(_) => "voice_menu",
+            Overlay::VoiceClone(..) => "voice_clone",
             Overlay::AgentId(_) => "agent_id",
             Overlay::Actions(_) => "actions",
             Overlay::ContextDiagnostics(_) => "context",
