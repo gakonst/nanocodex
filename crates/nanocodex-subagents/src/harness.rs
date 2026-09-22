@@ -9,6 +9,7 @@ use super::{
     platform::{self, Task, TaskError},
     runtime::{DelegationChange, Registry, completion_instructions},
 };
+use nanocodex_agent::input::Prompt;
 use nanocodex_agent::{
     ChildRuntimeSnapshot, Nanocodex, NanocodexError, Result as AgentResult, TurnControl, TurnResult,
 };
@@ -345,14 +346,14 @@ impl Harness {
             let prompt = format!(
                 "{}\n\n{}",
                 command.message.prompt(),
-                completion_instructions(&self.output_schema, steer.token())
+                completion_instructions(&self.output_schema)
             );
             let result = self
                 .active
                 .as_ref()
                 .expect("steering requires an active turn")
                 .control
-                .steer(prompt)
+                .steer(Prompt::new(prompt).with_instruction_revision(steer.revision()))
                 .await;
             if let Some(registry) = self.registry.upgrade() {
                 registry
@@ -560,7 +561,7 @@ impl Harness {
             .agent
             .as_ref()
             .ok_or_else(|| std::io::Error::other(format!("agent {} is closed", self.id)))?;
-        let Some(turn_token) = registry
+        let Some(instruction_revision) = registry
             .harness_turn_started(&self.root_session_id, self.id)
             .await
         else {
@@ -578,9 +579,12 @@ impl Harness {
         };
         let prompt = format!(
             "{prompt}\n\n{}",
-            completion_instructions(&self.output_schema, turn_token)
+            completion_instructions(&self.output_schema)
         );
-        let turn = match agent.prompt(prompt).await {
+        let turn = match agent
+            .prompt(Prompt::new(prompt).with_instruction_revision(instruction_revision))
+            .await
+        {
             Ok(turn) => turn,
             Err(error) => {
                 let error = format!("could not start agent {}: {error}", self.id);

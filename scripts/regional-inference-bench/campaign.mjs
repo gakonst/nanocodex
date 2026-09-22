@@ -6,7 +6,7 @@ if(!['baseline','streaming'].includes(stage)||!runnersFile||!outputRoot)throw Er
 const runners=JSON.parse(await fs.readFile(runnersFile,'utf8'));
 const dir=path.join(outputRoot,stage);await fs.mkdir(dir);
 const models=['cloudflare','openrouter','vercel'].map(p=>`${p}:openai/gpt-5.6-luna:low`);
-const manifest={stage,run_id:'regional-20260921-matched',intended_calls:45,prior_local_calls:4,max_total_calls:200,incremental_budget_usd:5,max_output_tokens:256,source:stage==='baseline'?'89439eb':'parent-deployment-receipt',protocol:'5 samples per provider/caller; pairs 0,1,2 calibration,3,4 heldout. Families alternate short/long/short/long/short. Explicit same Luna low. No retries. SSE requested in both stages.',reserve_usd_per_call:.015};
+const manifest={stage,run_id:'regional-20260921-matched',intended_calls:45,prior_attempts_upper_bound:99,max_total_calls:200,incremental_budget_usd:5,max_output_tokens:256,source:stage==='baseline'?'89439eb':'ce18887f:5d343432-7e2f-440d-a720-f60bff2add7f',protocol:'5 samples per provider/caller; pairs 0,1,2 calibration,3,4 heldout. Families alternate short/long/short/long/short. Explicit same Luna low. No retries. SSE requested in both stages.',reserve_usd_per_call:.015};
 await fs.writeFile(path.join(dir,'manifest.json'),JSON.stringify(manifest,null,2));
 const all=[];
 await Promise.all(runners.map(async runner=>{
@@ -21,6 +21,7 @@ await Promise.all(runners.map(async runner=>{
   const serial=JSON.stringify(row).replaceAll(token,'[REDACTED]');rows.push(JSON.parse(serial));all.push(JSON.parse(serial));
   await fs.appendFile(path.join(dir,runner.id+'.jsonl'),serial+'\n');
   console.log(JSON.stringify({stage,runner:runner.region,pair,model,http_status:row.http_status,error:row.error,ttft_ms:row.first_meaningful_ms,total_ms:row.total_ms,placement:row.runner_response_placement}));
+  if(stage==='streaming'&&row.buffering!=='streaming')throw Error(`expected streaming delivery; observed ${row.buffering}; saved receipt for ${runner.id}`);
   if(row.error||row.status!=='completed'||row.first_meaningful_ms===null)throw Error(`case failed; inspect saved receipt for ${runner.id}`);
   await new Promise(r=>setTimeout(r,Math.max(0,7500-(Date.now()-start))));
  }

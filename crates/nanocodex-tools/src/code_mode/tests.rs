@@ -2777,3 +2777,61 @@ async fn terminated_store_writes_are_discarded_and_concurrent_snapshots_only_com
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
+
+struct RevisionProbe {
+    revisions: Arc<std::sync::Mutex<Vec<Option<u64>>>>,
+    release: Arc<Semaphore>,
+}
+
+#[async_trait::async_trait]
+impl Tool for RevisionProbe {
+    fn definition(&self) -> ToolDefinition {
+        ToolDefinition::function(
+            "revision_probe",
+            "Capture revision and wait.",
+            serde_json::json!({
+                "type":"object", "properties":{}, "additionalProperties":false
+            }),
+        )
+    }
+    async fn execute(&self, _input: ToolInput, context: ToolContext<'_>) -> ToolResult {
+        self.revisions
+            .lock()
+            .unwrap()
+            .push(context.instruction_revision());
+        self.release.acquire().await.unwrap().forget();
+        Ok(ToolOutput::text("done"))
+    }
+}
+
+#[tokio::test]
+async fn instruction_revision_survives_yield_and_nested_calls_after_newer_wait() -> Result<()> {
+    let workspace = temporary_workspace("revision-yield")?;
+    let revisions = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let release = Arc::new(Semaphore::new(0));
+    let tools = Tools::builder()
+        .without_defaults()
+        .tool(RevisionProbe {
+            revisions: revisions.clone(),
+            release: release.clone(),
+        })
+        .build()?;
+    let runtime = ToolRuntime::new_with_tools(&workspace, None, None, &tools);
+    let execution = runtime.execute_code(
+        "// @exec: {\"yield_time_ms\": 1}\nawait tools.revision_probe({}); await tools.revision_probe({});",
+        test_context(&[]).with_instruction_revision(Some(41)),
+    ).await?;
+    assert!(execution.cell.as_ref().unwrap().running);
+    release.add_permits(2);
+    let completed = runtime
+        .wait_for_code(
+            r#"{"cell_id":"1","yield_time_ms":5000}"#,
+            test_context_with_call(&[], "newer-wait").with_instruction_revision(Some(42)),
+        )
+        .await?;
+    assert!(completed.success, "{}", execution_output(&completed));
+    assert!(!completed.cell.as_ref().unwrap().running);
+    assert_eq!(*revisions.lock().unwrap(), vec![Some(41), Some(41)]);
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}

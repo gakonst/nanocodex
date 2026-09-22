@@ -203,7 +203,7 @@ describe("strict Responses boundary", () => {
     expect(() => validateInferenceRequest({ input: [{ type: "function_call", call_id: "x", name: "f", arguments: "{}" }] })).toThrow("invalid_tool_history");
     expect(f.ai).not.toHaveBeenCalled();
     expect((await f.call("POST", "/responses", { input: "x" }, owner, header)).status).toBe(200);
-    expect(f.ai.mock.calls[1]?.[1]).toMatchObject({ max_completion_tokens: 32 });
+    expect(f.ai.mock.calls.find(([model]) => model === OSS_MODEL)?.[1]).toMatchObject({ max_completion_tokens: 32 });
   });
   it.each([false, true])("returns canonical Responses format with honest buffered stream=%s", async stream => {
     const f = fixture(); await f.create();
@@ -508,7 +508,7 @@ describe("stateless standard Responses", () => {
     const response = await call(f.bindings, { model, input: "hello" }, 32);
     expect(response.status).toBe(200);
     expect(await response.json()).toMatchObject({ model: OSS_MODEL, route: { thinking: "low" } });
-    expect(f.ai.mock.calls[1]?.[1]).toMatchObject({ max_completion_tokens: 32 });
+    expect(f.ai.mock.calls.find(([model]) => model === OSS_MODEL)?.[1]).toMatchObject({ max_completion_tokens: 32 });
     expect(f.persisted.size).toBe(0);
   });
 
@@ -620,7 +620,7 @@ it("accepts matching session models and rejects models conflicting with the pin"
     expect((await f.call("POST", "/responses", { input: "full history", model })).status).toBe(409);
   expect((await f.call("POST", "/responses", { input: "full history", model: "unknown-model" })).status).toBe(400);
   expect(f.ai).toHaveBeenCalledTimes(count);
-  expect(f.ai.mock.calls.filter(([model]) => model === "typesafe/jev")).toHaveLength(1);
+  expect(f.ai.mock.calls.filter(([model]) => model === "typesafe/jev")).toHaveLength(0);
 });
 
 
@@ -723,7 +723,7 @@ describe("Cloudflare frontier public Responses compatibility", () => {
     expect(body).not.toHaveProperty("session_id");
     expect(text).not.toContain("private");
     expect(f.persisted.size).toBe(0);
-    expect(f.ai.mock.calls.map(([model]) => model)).toEqual(["typesafe/jev", "openai/gpt-6-astra"]);
+    expect(f.ai.mock.calls.map(([model]) => model)).toEqual(["openai/gpt-6-astra"]);
     expect(f.network).not.toHaveBeenCalled();
   });
   it("persists the native provider pin before generation and replays function results after restart", async () => {
@@ -771,7 +771,7 @@ describe("Cloudflare frontier public Responses compatibility", () => {
     }
     expect((await f.call("POST", "/responses", { input: history, routing: {} })).status).toBe(400);
     expect(f.ai).toHaveBeenCalledTimes(count);
-    expect(f.ai.mock.calls.filter(([model]) => model === "typesafe/jev")).toHaveLength(1);
+    expect(f.ai.mock.calls.filter(([model]) => model === "typesafe/jev")).toHaveLength(0);
     expect(JSON.stringify(f.commits)).not.toContain("private");
     expect(f.network).not.toHaveBeenCalled();
   });
@@ -807,7 +807,7 @@ describe("Cloudflare REST inference transport", () => {
       expect(response.status).toBe(200); expect(response.headers.get("x-nanocodex-provider")).toBe("cloudflare");
       const text = await response.text(); expect(text).not.toContain(token); expect(text).not.toContain(accountId);
     }
-    expect(send).toHaveBeenCalledTimes(2); expect(f.ai).toHaveBeenCalledTimes(2); expect(f.persisted.size).toBe(0);
+    expect(send).toHaveBeenCalledTimes(2); expect(f.ai).not.toHaveBeenCalled(); expect(f.persisted.size).toBe(0);
   });
   it("keeps the session pin across REST tool replay, restart and credential loss", async () => {
     const f = fixture({ NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true", CLOUDFLARE_AI_API_TOKEN: token,
@@ -832,7 +832,7 @@ describe("Cloudflare REST inference transport", () => {
     expect((await f.call("POST","/responses",{model:"openrouter:openai/gpt-5.6-sol:low",input:"fixture"})).status).toBe(409);
     delete f.bindings.CLOUDFLARE_AI_API_TOKEN;
     expect((await f.call("POST","/responses",{input:"fixture"})).status).toBe(503);
-    expect(send).toHaveBeenCalledTimes(2); expect(f.ai).toHaveBeenCalledTimes(1);
+    expect(send).toHaveBeenCalledTimes(2); expect(f.ai).not.toHaveBeenCalled();
     expect(JSON.stringify(f.commits)).not.toContain(token); expect(JSON.stringify(f.commits)).not.toContain(accountId);
   });
 });

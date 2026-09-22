@@ -92,6 +92,11 @@ function identityEnv(): ChiefOfStaffPrincipalEnv {
             accounts.set(userId, { id: userId, organizationId, persistent: true });
           }
           const account = accounts.get(userId);
+          if (new URL(request.url).pathname === "/authorization" && account) {
+            return Response.json({ userId, grant: { authorizationEpoch: 1,
+              capabilities: ["agents:read", "agents:write", "tools:use", "organization:write"],
+              organizationId, role: "owner", teamId } });
+          }
           return account
             ? Response.json({ ...account, createdAt: 1, lastAuthenticatedAt: 1 })
             : new Response(null, { status: 404 });

@@ -1,0 +1,15 @@
+{
+  "source": "1d4e2288160c6ca5fd98ea0e0d584b9fadd3d10c",
+  "pull_request": 505,
+  "managed_version": "96503f2c-48f5-4411-8979-38b9f4fab240",
+  "account_version": "8a7ef547-eb34-489e-9ce0-67f51bc7904e",
+  "url": "https://nanocodex.gakonst.workers.dev/router",
+  "live_generation_checks": 5,
+  "live_generation_completed": 5,
+  "diagnostic_classifier_calls": 6,
+  "diagnostic_classifier_successes": 6,
+  "live_classifier_calls": 1,
+  "live_classifier_successes": 1,
+  "temporary_inference_session_cleanup": 204,
+  "diagnostic_worker_deleted": true
+}

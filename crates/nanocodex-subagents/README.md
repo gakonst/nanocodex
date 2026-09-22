@@ -44,13 +44,16 @@ The crate supports native executors and `wasm32-unknown-unknown`. JavaScript
 consumers use the same runtime through `Subagents.create()` in the `nanocodex`
 Node and browser packages.
 
-Completion requires an accepted `submit_result` for the active turn token. Plain
+Completion requires an accepted `submit_result({output})` for the active trusted
+instruction revision. The model does not supply a turn token. The tool returns
+`{accepted: true, status: "accepted"}` on acceptance. A superseded model request
+returns `{accepted: false, status: "superseded"}` as normal continuation: incorporate
+the updated instructions and submit again. Plain
 assistant JSON is not accepted implicitly. Rejected submissions expose a stable
 `CompletionErrorCode`, `recoverable`, and `recovery` guidance; native callers can
 downcast the underlying `io::Error` to `CompletionError` or serialize it for
 structured diagnostics. Tool-error text stays readable in failure cards. Schema diagnostics contain bounded instance
-and schema paths, never rejected values. A stale-token correction must incorporate
-steering instructions before submitting again.
+and schema paths, never rejected values. Schema corrections can be submitted again within the current turn.
 
 `recoverable` refers to correcting a submission in the current turn, not replaying
 the delegated task. Missing-result completion remains fail-closed: the reusable
@@ -61,5 +64,5 @@ the actual callable tool catalog rather than assuming a Code Mode binding.
 
 If cancellation or closure wins settlement after result acceptance, execution
 keeps its interrupted/closing status and `last_output` retains the accepted result
-as evidence. The active token and submission slot are cleared; that result cannot
+as evidence. The active revision and submission slot are cleared; that result cannot
 satisfy the next turn's contract.

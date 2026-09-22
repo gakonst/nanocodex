@@ -14,7 +14,9 @@ The coordinator owns the recorder independently of app scenes and refreshes reco
 
 ## Verification
 
-Automated checks cover capture callback fencing and model delivery behavior. Simulator builds do not establish actual microphone availability while locked.
+Locked capture uses a dedicated temporary directory with `completeUntilFirstUserAuthentication` protection. The recorder prepares its output before the same protection is applied to the actual file, so protection does not depend on a placeholder surviving preparation. Audio remains encrypted and accessible after the first unlock following reboot, including when Send closes the recorder and speech recognition reopens the file. Completion, cancellation, and failed preparation delete the file; the next capture reaps orphan recordings, including files from the previous temporary-root layout.
+
+Automated checks cover directory/output protection ordering, failed preparation/protection cleanup, capture callback fencing, and model delivery behavior. The filesystem test adapter models file replacement; it cannot validate iOS Data Protection itself. Simulator builds do not establish actual microphone availability while locked.
 
 Physical-device acceptance requires:
 

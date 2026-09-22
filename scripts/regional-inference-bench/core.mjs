@@ -27,7 +27,7 @@ export async function measure({url, key, body, fetchImpl=fetch, timeoutMs=120000
       body:JSON.stringify(body), redirect:'manual',signal:AbortSignal.timeout(timeoutMs)});
     result.headers_ms=performance.now()-started; result.http_status=response.status;
     result.buffering=response.headers.get('x-nanocodex-inference-buffering');
-    result.headers=Object.fromEntries(['cf-ray','cf-placement','x-nanocodex-provider','x-nanocodex-model','x-nanocodex-thinking'].map(k=>[k,response.headers.get(k)]));
+    result.headers=Object.fromEntries(['cf-ray','cf-placement','x-nanocodex-provider','x-nanocodex-model','x-nanocodex-thinking','x-nanocodex-ingress-colo'].map(k=>[k,response.headers.get(k)]));
     const sse=(response.headers.get('content-type')??'').includes('text/event-stream');
     result.transport=sse?'sse':'json';
     const decoder=new TextDecoder(); let pending='';

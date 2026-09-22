@@ -107,9 +107,9 @@ it.each([
           const binding = JSON.parse(String(table("managed_subagent_routes")[0].binding_json));
           expect(binding.route).toMatchObject({ backend: childProvider, model: childModel, thinking: "high" });
           expect(table("managed_subagent_authorizations")).toHaveLength(1);
-          const tokens = [...JSON.stringify(input.messages).matchAll(/turn_token: (\d+)/g)];
-          const token = Number(tokens.at(-1)?.[1]);
-          expect(token).toBe(phase);
+          // Result revisions are runtime-owned; the model only returns its value.
+          expect(JSON.stringify(input.messages)).not.toMatch(/turn_token: \d+/);
+          const token = phase;
           const last = input.messages.at(-1);
           if (last?.role === "tool" && last.content.includes('"accepted":true')) {
             expect(JSON.parse(last.content)).toMatchObject({ accepted: true, decoded_json_text: true });
@@ -129,7 +129,7 @@ it.each([
             expect(JSON.stringify(input.messages)).toContain("CHILD_DONE_1");
           }
           observedTools.push("child:submit_result");
-          return toolCall(input, "submit_result", { turn_token: token, output: JSON.stringify({ value: marker, turn: token }) }, `submit-${token}`);
+          return toolCall(input, "submit_result", { output: JSON.stringify({ value: marker, turn: token }) }, `submit-${token}`);
         };
         const result = await handleChild();
         return childProvider === "cloudflare" ? toNative(result) : result;
