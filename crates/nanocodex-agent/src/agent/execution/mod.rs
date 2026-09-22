@@ -1,3 +1,8 @@
+mod preservation;
+pub use preservation::{
+    BeforeCompaction, BeforeCompactionRequest, CompactionMessage, CompactionReceipt,
+};
+
 #[cfg(not(target_family = "wasm"))]
 #[path = "native.rs"]
 mod platform;
@@ -939,6 +944,10 @@ pub(crate) enum ExecutionStep<O> {
 }
 
 impl ExecutionSteps {
+    pub(crate) fn operation_id(&self) -> &str {
+        &self.operation_id
+    }
+
     pub(crate) async fn continuation<T: DeserializeOwned>(
         &self,
     ) -> Result<

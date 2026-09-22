@@ -178,6 +178,11 @@ pub enum NanocodexError {
     #[error("invalid execution policy state: {0}")]
     InvalidExecutionPolicy(String),
 
+    /// The host could not durably preserve context before compaction.
+    #[cfg(feature = "openai")]
+    #[error("pre-compaction preservation failed: {0}")]
+    BeforeCompactionFailed(String),
+
     /// An execution policy relied on a fail-closed default for a capability
     /// that must explicitly acknowledge durable authority.
     #[cfg(feature = "openai")]

@@ -49,6 +49,7 @@ export async function create(options = {}) {
     rawApiEvents,
     instructions,
     additionalInstructions,
+    beforeCompaction,
     sessionId,
     workspace,
     resume,
@@ -119,6 +120,7 @@ export async function create(options = {}) {
     hostManagedProtocol,
     mpp,
     onEvent: events.emit,
+    beforeCompaction,
     filesystem,
     filesystemTools,
     tools: hostTools,
@@ -171,6 +173,7 @@ export async function create(options = {}) {
           subagents: subagentConfig,
           subagentRouting: internalRuntime?.subagentRouting !== undefined,
           hostDefinitionId,
+          beforeCompaction: beforeCompaction !== undefined,
           ...config,
           durabilityHostId: durabilityOwner?.id,
         }));

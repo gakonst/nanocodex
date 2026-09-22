@@ -60,7 +60,18 @@ export class MarkdownMemoryStore {
         owner UNINDEXED, path UNINDEXED, revision UNINDEXED, from_line UNINDEXED, to_line UNINDEXED, content);
       CREATE TABLE IF NOT EXISTS markdown_memory_operations (
         owner TEXT NOT NULL, operation_id TEXT NOT NULL, request TEXT NOT NULL, result TEXT NOT NULL,
-        PRIMARY KEY(owner,operation_id));`);
+        PRIMARY KEY(owner,operation_id));
+      CREATE TABLE IF NOT EXISTS markdown_memory_ai_items (
+        chunk_id INTEGER PRIMARY KEY, owner TEXT NOT NULL, path TEXT NOT NULL, revision INTEGER NOT NULL,
+        operation TEXT NOT NULL, item_id TEXT, attempts INTEGER NOT NULL DEFAULT 0, retry_at INTEGER);
+      CREATE INDEX IF NOT EXISTS markdown_memory_ai_retry ON markdown_memory_ai_items(retry_at);
+      CREATE INDEX IF NOT EXISTS markdown_memory_ai_document ON markdown_memory_ai_items(owner,path);
+      CREATE TABLE IF NOT EXISTS markdown_memory_migrations (name TEXT PRIMARY KEY);
+      INSERT OR IGNORE INTO markdown_memory_ai_items(chunk_id,owner,path,revision,operation,retry_at)
+        SELECT c.id,c.owner,c.path,CAST(f.revision AS INTEGER),'upload',0
+        FROM markdown_memory_chunks c JOIN markdown_memory_fts f ON f.rowid=c.id
+        WHERE NOT EXISTS (SELECT 1 FROM markdown_memory_migrations WHERE name='ai-items');
+      INSERT OR IGNORE INTO markdown_memory_migrations VALUES('ai-items');`);
   }
   private row(owner: string, path: string): Row {
     return this.storage.sql.exec<Row>('SELECT revision,deleted,content FROM markdown_memory_documents WHERE owner=? AND path=?', owner, path).toArray()[0]
@@ -157,6 +168,10 @@ export class MarkdownMemoryStore {
       this.storage.sql.exec(`INSERT INTO markdown_memory_documents VALUES(?,?,?,?,?)
         ON CONFLICT(owner,path) DO UPDATE SET revision=excluded.revision,deleted=excluded.deleted,content=excluded.content`,
       owner, path, revision, Number(deleted), body);
+      // Persist cleanup intent before removing the canonical chunks. An upload may
+      // still be in flight; immutable revision keys and retained tombstones reconcile it.
+      this.storage.sql.exec(`UPDATE markdown_memory_ai_items SET operation='delete',attempts=0,retry_at=0
+        WHERE owner=? AND path=? AND operation='upload'`, owner, path);
       this.storage.sql.exec(`DELETE FROM markdown_memory_fts WHERE rowid IN
         (SELECT id FROM markdown_memory_chunks WHERE owner=? AND path=?)`, owner, path);
       this.storage.sql.exec('DELETE FROM markdown_memory_chunks WHERE owner=? AND path=?', owner, path);
@@ -175,6 +190,8 @@ export class MarkdownMemoryStore {
           'INSERT INTO markdown_memory_chunks(owner,path) VALUES(?,?) RETURNING id', owner, path,
         ).one();
         this.storage.sql.exec('INSERT INTO markdown_memory_fts(rowid,owner,path,revision,from_line,to_line,content) VALUES(?,?,?,?,?,?,?)', id, owner, path, revision, from, to, chunk);
+        this.storage.sql.exec(`INSERT INTO markdown_memory_ai_items(chunk_id,owner,path,revision,operation,retry_at)
+          VALUES(?,?,?,?,'upload',0)`, id, owner, path, revision);
       }
       chunk = '';
     };

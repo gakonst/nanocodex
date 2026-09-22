@@ -38,6 +38,7 @@ export function create(options = {}) {
     rawApiEvents,
     instructions,
     additionalInstructions,
+    beforeCompaction,
     sessionId,
     workspace,
     resume,
@@ -73,6 +74,7 @@ export function create(options = {}) {
       ? undefined
       : tempoMcp ? { ...tempoMcp, ...mcp } : mcp,
     onEvent: events.emit,
+    beforeCompaction,
     filesystem,
     tools: hostTools,
     toolMode,
@@ -115,6 +117,7 @@ export function create(options = {}) {
           websocketWarmup,
           subagents: subagentConfig,
           hostDefinitionId,
+          beforeCompaction: beforeCompaction !== undefined,
           ...config,
           durabilityHostId: durabilityOwner?.id,
         }));

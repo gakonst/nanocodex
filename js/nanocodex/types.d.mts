@@ -17,7 +17,31 @@ export type AgentEvent = {
   payload: Record<string, unknown>;
 };
 
+/** An awaited preservation barrier before manual or automatic compaction. */
+export type BeforeCompactionRequest = Readonly<{
+  /** Stable across durable retries. Deduplicate preservation by this identity. */
+  boundaryId: string;
+  sessionId: string;
+  rootSessionId: string;
+  /** Source order, at most 64 messages / 32 KiB UTF-8 text. No tools or harness context. */
+  messages: readonly Readonly<{ role: "user" | "assistant"; text: string }>[];
+  truncated: boolean;
+  /** Aborted on interruption, host disposal, or the 30-second deadline. */
+  signal: AbortSignal;
+}>;
+
+export type CompactionReceipt = Readonly<{
+  /** Return only after preservation or an intentional no-op is durable (1–256 UTF-8 bytes). */
+  receiptId: string;
+}>;
+
 export type AgentOptions = {
+  /** Optional host barrier. Rejection/timeout stops compaction and retains context.
+   * Durable execution replays completed receipts; hosts must deduplicate by boundaryId
+   * for interruption between host commit and receipt persistence. Disabled by default.
+   */
+  beforeCompaction?: ((request: BeforeCompactionRequest) => Promise<CompactionReceipt>) | undefined;
+
   /** Replaces the selected model's built-in instructions. */
   instructions?: string | undefined;
   /** Appends host instructions while retaining the selected model's prompt. */

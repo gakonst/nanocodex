@@ -1,3 +1,4 @@
+import { createBeforeCompaction } from "../runtime/before-compaction.mjs";
 import { createResponsesHttp, responsesHttpHeaders } from "../runtime/responses-http.mjs";
 import { Console } from "node:console";
 import { createRequire } from "node:module";
@@ -23,6 +24,7 @@ const DEFAULT_MAX_FRAME_BYTES = 16 * 1024 * 1024;
 const MPP_CLIENT_PROTOCOL_ERROR_CLOSE_CODE = 3008;
 
 export function createNodeHost(options = {}) {
+  const preservation = createBeforeCompaction(options.beforeCompaction);
   const toolMode = options.toolMode ?? "code";
   if (toolMode !== "code" && toolMode !== "direct") {
     throw new TypeError("toolMode must be code or direct");
@@ -295,6 +297,7 @@ export function createNodeHost(options = {}) {
 
   function dispose() {
     if (disposal) return disposal;
+    preservation.dispose();
     http.dispose();
     disposal = Promise.resolve().then(() => settleCleanup([
       ...[...connections.keys()].map((handle) => () => close(handle)),
@@ -317,6 +320,8 @@ export function createNodeHost(options = {}) {
       if (references > 0) references -= 1;
       return references === 0 ? dispose() : Promise.resolve();
     },
+    beforeCompaction: preservation.preserve,
+    cancelBeforeCompaction: preservation.cancel,
     httpOpen: http.httpOpen,
     httpReady: http.httpReady,
     httpNext: http.httpNext,
