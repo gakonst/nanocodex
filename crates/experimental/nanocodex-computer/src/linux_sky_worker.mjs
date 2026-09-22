@@ -1,6 +1,7 @@
 // A disposable desktop-user process around the unmodified OpenAI Sky service.
 // The model and its trusted worker remain in their existing Codex sandbox.
 import { pathToFileURL } from 'node:url';
+import { executeSkyRequest } from './linux_sky_text.mjs';
 const { handleRpc } = await import(pathToFileURL(process.argv[2]).href);
 const drags = new Set();
 let queue = Promise.resolve();
@@ -19,7 +20,7 @@ process.on('message', message => {
       const request = message.request;
       // Track before starting: a partial native failure still needs release.
       if (request.type === 'drag_start') drags.add(request.handle_id);
-      const value = await handleRpc(request);
+      const value = await executeSkyRequest(handleRpc, request);
       if (request.type === 'drag_end') drags.delete(request.handle_id);
       process.send?.({ id: message.id, value });
     } catch (error) {
