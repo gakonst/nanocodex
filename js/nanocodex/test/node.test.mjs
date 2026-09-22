@@ -1097,7 +1097,7 @@ for (const [options, effort] of [
       const request = await reader.next();
       assert.equal(request.model, options.model);
       assert.equal(request.reasoning.effort, effort);
-      if (options.reasoningMode) assert.equal(request.reasoning.mode, options.reasoningMode);
+      assert.equal(request.reasoning.mode, options.reasoningMode === "pro" ? "pro" : undefined);
       sendWarmup(socket, "defaults-warmup");
       await reader.next();
       sendFinal(socket, "defaults-final", "done");
