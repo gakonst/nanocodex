@@ -66,7 +66,7 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
   const calls = new Map();
   const nativeItems = new Map();
   const nativeParts = new Map();
-  let usage, finishReason, started = false;
+  let usage, finishReason, started = false, bindingUsageSeen = false;
   const emit = (type, fields) => controller.enqueue(frame({ type, sequence_number: sequence++, ...fields }));
   const firstToken = () => { if (!first) { first = true; try { source.firstToken?.(); } catch { /* best effort */ } } };
   const finish = async outcome => {
@@ -137,20 +137,30 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
     controller.close();
   };
   const chat = async value => {
-    if (!value || value.error || !Array.isArray(value.choices) || value.choices.length > 1) invalid();
+    // Workers AI appends its aggregate usage as a binding-specific envelope,
+    // after the Chat finish chunk and before [DONE]. It is metadata, not output.
+    if (source.format === "workers_ai_chat" && value && Object.hasOwn(value, "response")) {
+      if (!finishReason || bindingUsageSeen || value.response !== "" || !value.usage
+        || typeof value.usage !== "object" || Array.isArray(value.usage)
+        || Object.keys(value).some(key => !["response", "usage"].includes(key))) invalid();
+      bindingUsageSeen = true;
+      usage = value.usage;
+      return;
+    }
+    if (bindingUsageSeen || !value || value.error || !Array.isArray(value.choices) || value.choices.length > 1) invalid();
     if (value.usage != null) usage = value.usage;
     const choice = value.choices[0];
     if (!choice) { if (!finishReason || value.usage == null) invalid(); return; }
     if (choice.index !== undefined && choice.index !== 0) invalid();
     const part = choice.delta;
     if (!part || typeof part !== "object" || Array.isArray(part) || part.refusal
-      || (part.role !== undefined && part.role !== "assistant")) invalid();
+      || (part.role != null && part.role !== "assistant")) invalid();
     if (finishReason) {
       // OpenRouter repeats its finish choice with an empty delta on the usage
       // trailer before [DONE]. Admit metadata only, never additional output or
       // a changed terminal reason after the first finish chunk.
       if (value.usage == null || choice.finish_reason !== finishReason
-        || Object.entries(part).some(([field, fragment]) => field === "role" ? fragment !== "assistant"
+        || Object.entries(part).some(([field, fragment]) => field === "role" ? fragment != null && fragment !== "assistant"
           : !["content", "reasoning_content", "reasoning"].includes(field) || (fragment !== null && fragment !== ""))) invalid();
       return;
     }
@@ -165,14 +175,14 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
       if (!Array.isArray(part.tool_calls)) invalid();
       for (const fragment of part.tool_calls) {
         if (!Number.isSafeInteger(fragment.index) || fragment.index < 0 || fragment.index >= 1024
-          || (fragment.type !== undefined && fragment.type !== "function")) invalid();
+          || (fragment.type != null && fragment.type !== "function")) invalid();
         let call = calls.get(fragment.index);
         if (!call) { call = { type: "function", function: { name: "", arguments: "" } }; calls.set(fragment.index, call); }
-        if (fragment.id !== undefined) {
+        if (fragment.id != null) {
           if (typeof fragment.id !== "string" || !fragment.id || (call.id && call.id !== fragment.id)) invalid();
           call.id = fragment.id;
         }
-        for (const field of ["name", "arguments"]) if (fragment.function?.[field] !== undefined) {
+        for (const field of ["name", "arguments"]) if (fragment.function?.[field] != null) {
           if (typeof fragment.function[field] !== "string") invalid();
           retain(fragment.function[field]);
           call.function[field] += fragment.function[field];
@@ -258,7 +268,7 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
           if (settled) return;
           if (record.done) invalid();
           if (record.value.data === "[DONE]") {
-            if (source.format !== "chat" || !finishReason) invalid();
+            if (!["chat", "workers_ai_chat"].includes(source.format) || !finishReason) invalid();
             const tool_calls = [...calls].sort(([a], [b]) => a - b).map(([index, call], position) => {
               if (index !== position || !call.id) invalid();
               return call;
@@ -276,7 +286,8 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
       } catch (error) {
         if (settled) return;
         cancelReader();
-        controller.error(new Error("Responses: invalid provider stream"));
+        controller.error(new Error(error instanceof StreamReadError
+          ? "Responses: provider stream read failed" : "Responses: invalid provider stream"));
         await finish(error instanceof StreamReadError ? "network_error" : "protocol_error");
       }
     },

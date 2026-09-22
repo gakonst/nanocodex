@@ -246,6 +246,19 @@ it.each([
           await expect.poll(() => submissions, { timeout: 15_000 }).toBe(1);
         }
         expect(table("managed_thread_route")).toEqual(rootPin);
+        // Route selection must reach live/reconnecting clients through durable
+        // history, exactly once and before the first turn settles.
+        const routeEvents = sql.exec<{ cursor: number; message_json: string }>(
+          "SELECT cursor,message_json FROM managed_events WHERE json_extract(message_json, '$.type') = 'model_route_selected'",
+        ).toArray();
+        expect(routeEvents).toHaveLength(1);
+        expect(JSON.parse(routeEvents[0].message_json)).toMatchObject({ type: "model_route_selected",
+          model_route: { backend: provider, model: "gpt-5.6-sol", thinking: "low" }, model_routing_automatic: true });
+        const opening = sql.exec<{ accepted_cursor: number; terminal_cursor: number }>(
+          "SELECT accepted_cursor,terminal_cursor FROM managed_turns WHERE id = 'fixture-turn-1'",
+        ).one();
+        expect(routeEvents[0].cursor).toBeGreaterThan(opening.accepted_cursor);
+        expect(routeEvents[0].cursor).toBeLessThan(opening.terminal_cursor);
         // Footer/status must report the retained root route even while a child
         // has used another provider/model and after the child is closed.
         const status: any = await (await request("/state", "GET")).json();

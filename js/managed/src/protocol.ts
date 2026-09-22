@@ -32,6 +32,7 @@ export type AgentCapabilities = Readonly<{
 export type ServerMessage = (
   | { type: "ready"; session_id: string; restored: boolean; active_turns: string[]; capabilities: AgentCapabilities; latest_event_cursor: string; settings: ManagedAgentSettings }
   | { type: "agent_created"; agent_id: string; capabilities: AgentCapabilities }
+  | { type: "model_route_selected"; model_route: ManagedAgentSettings & { backend: string }; model_routing_automatic: boolean }
   | { type: "turn_accepted"; id: string; input: PromptInput; replayed: boolean }
   | { type: "turn_cancelling"; id: string; error?: string; retry_at?: number }
   | TurnCompleted

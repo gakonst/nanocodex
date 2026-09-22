@@ -4504,3 +4504,107 @@ async fn in_memory_child_rehydration_does_not_reattach_parent_durability() -> Re
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
+
+#[derive(Clone)]
+struct HostedStreamFailureService {
+    calls: Arc<std::sync::atomic::AtomicUsize>,
+    deterministic: bool,
+}
+
+impl tower::Service<nanocodex_oai_api::tower::ResponsesAttempt> for HostedStreamFailureService {
+    type Response = nanocodex_oai_api::tower::ResponsesServiceResponse;
+    type Error = ResponseError;
+    type Future = std::future::Ready<std::result::Result<Self::Response, Self::Error>>;
+
+    fn poll_ready(
+        &mut self,
+        _: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::result::Result<(), Self::Error>> {
+        std::task::Poll::Ready(Ok(()))
+    }
+
+    fn call(&mut self, _: nanocodex_oai_api::tower::ResponsesAttempt) -> Self::Future {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        std::future::ready(Err(
+            nanocodex_oai_api::transport::ResponsesError::HttpRequest {
+                detail: if self.deterministic {
+                    "Error: Responses: invalid provider stream\n    at Object.pull (index.js:1:1)"
+                } else {
+                    "network connection lost"
+                }
+                .into(),
+                // The legacy WASM reader marks every rejected read reconnectable.
+                retryable: true,
+                timeout: false,
+            }
+            .into(),
+        ))
+    }
+}
+
+async fn assert_hosted_stream_failure_recovery(deterministic: bool) -> Result<()> {
+    let store = MemoryStore::new()?;
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let workspace = temporary_workspace("hosted-stream-failure")?;
+    for cold_reopen in [false, true] {
+        let state = DurableSession::open(store.clone(), "hosted-stream-failure").await?;
+        let service = HostedStreamFailureService {
+            calls: Arc::clone(&calls),
+            deterministic,
+        };
+        let (agent, events) = Nanocodex::builder(
+            OpenAi::builder("test-key")
+                .websocket_warmup(false)
+                .service(move || service.clone())
+                .build()?,
+        )
+        .workspace(&workspace)
+        .durability(state)
+        .await?
+        .build()?;
+        let error = match agent
+            .prompt(PromptRequest::new("test stream failure").request_id("stream-turn"))
+            .await
+        {
+            Ok(turn) => turn.result().await.expect_err("provider must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(
+            error.execution_policy_disposition(),
+            if deterministic {
+                None
+            } else {
+                Some(ExecutionPolicyDisposition::Retry)
+            },
+            "deterministic failures must settle; transient failures must remain recoverable: {error}",
+        );
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            if cold_reopen && !deterministic { 2 } else { 1 },
+            "cold replay of a deterministic failure must not call the provider"
+        );
+        agent.shutdown().await?;
+        drop((agent, events));
+    }
+    let state = DurableSession::open(store, "hosted-stream-failure").await?;
+    let retained = state.state().await?;
+    let status = &retained.operations()["stream-turn"].status;
+    if deterministic {
+        assert!(matches!(status, OperationStatus::Failed { .. }));
+        assert!(retained.pending_operations().is_empty());
+    } else {
+        assert!(matches!(status, OperationStatus::Pending));
+    }
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn deterministic_hosted_stream_failure_is_terminal_across_cold_reopen() -> Result<()> {
+    assert_hosted_stream_failure_recovery(true).await
+}
+
+#[tokio::test]
+async fn transient_hosted_stream_failure_remains_retryable_across_cold_reopen() -> Result<()> {
+    assert_hosted_stream_failure_recovery(false).await
+}

@@ -154,7 +154,7 @@ test("upstream body read errors are redacted network failures", async () => {
   const fixture = setup("vercel", upstream), response = await fixture.invoke();
   const pending = all(response);
   controller.error(new Error("synthetic-secret"));
-  await assert.rejects(pending, error => error.message === "Responses: invalid provider stream");
+  await assert.rejects(pending, error => error.message === "Responses: provider stream read failed");
   assert.deepEqual(fixture.observed, [200, "network_error"]);
 });
 
@@ -459,3 +459,59 @@ for (const model of ["kimi-k3", "mimo-v2.6-pro"]) test(`${model}: streamed opaqu
     { type: "function_call_output", call_id: "fixture-call", output: "fixture value" }], tools }));
   assert.equal(result.at(-1).response.output[0].content[0].text, "done");
 });
+
+async function bindingFixture(upstream) {
+  const transport = createWorkersAiResponses({ async run() { return upstream.body; } });
+  return transport.createResponse(`${transport.apiBaseUrl}/responses`, "fixture", {
+    authorization: "host_managed", body: JSON.stringify({ input: "Read the synthetic nonce", stream: true,
+      tools: [{ type: "function", name: "read_nonce" }], parallel_tool_calls: false }),
+  });
+}
+
+test("Workers AI live GLM tool shape accepts null continuation fields and aggregate usage envelope", async () => {
+  const upstream = feed(), pending = all(await bindingFixture(upstream));
+  upstream.send({ ...chunk({ content: "", reasoning_content: null, role: "assistant" }), usage: { prompt_tokens: 162, completion_tokens: 0 } });
+  upstream.send(chunk({ content: null, reasoning_content: null, role: null, tool_calls: [{ index: 0, id: "fixture-call", type: "function", function: { name: "tool_0", arguments: "" } }] }));
+  upstream.send(chunk({ content: null, reasoning_content: null, role: null, tool_calls: [{ index: 0, id: null, type: "function", function: { name: null, arguments: "{}" } }] }));
+  upstream.send(chunk({ reasoning_content: null }, "tool_calls"));
+  upstream.send({ choices: [], usage: { prompt_tokens: 0, completion_tokens: 1, total_tokens: 1 } });
+  upstream.send({ response: "", usage: { prompt_tokens: 162, completion_tokens: 7, total_tokens: 169, prompt_tokens_details: { cached_tokens: 0 }, neurons: 23 } });
+  upstream.send("[DONE]");
+  const events = await pending, result = events.at(-1).response;
+  assert.equal(events.at(-1).type, "response.completed");
+  assert.equal(result.output[0].type, "function_call");
+  assert.equal(result.output[0].name, "read_nonce");
+  assert.equal(result.output[0].arguments, "{}");
+  assert.equal(result.usage.input_tokens, 162);
+  assert.equal(result.usage.output_tokens, 7);
+  assert.equal(result.usage.total_tokens, 169);
+});
+
+test("Workers AI text arrives before its final usage envelope", async () => {
+  const upstream = feed(), reader = (await bindingFixture(upstream)).body.getReader();
+  await next(reader);
+  upstream.send(chunk({ content: "hello", role: null }));
+  assert.equal((await until(reader, "response.output_text.delta")).delta, "hello");
+  upstream.send(chunk({ content: null, role: null }, "stop"));
+  upstream.send({ response: "", usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 } });
+  upstream.send("[DONE]");
+  assert.equal((await until(reader, "response.completed")).response.output[0].content[0].text, "hello");
+});
+
+for (const scenario of ["before-finish", "nonempty-response", "missing-usage", "extra-fields", "duplicate-trailer", "output-after-trailer", "missing-DONE", "gateway-envelope"]) {
+  test(`Workers AI usage envelope rejects ${scenario}`, async () => {
+    const upstream = feed();
+    const pending = all(scenario === "gateway-envelope" ? await setup("vercel", upstream).invoke() : await bindingFixture(upstream));
+    upstream.send(chunk({ content: "hello" }, scenario === "before-finish" ? null : "stop"));
+    const trailer = { response: "", usage: { prompt_tokens: 3, completion_tokens: 1, total_tokens: 4 } };
+    if (scenario === "nonempty-response") trailer.response = "synthetic-secret";
+    if (scenario === "missing-usage") delete trailer.usage;
+    if (scenario === "extra-fields") trailer.error = "synthetic-secret";
+    upstream.send(trailer);
+    if (scenario === "duplicate-trailer") upstream.send(trailer);
+    if (scenario === "output-after-trailer") upstream.send(chunk({ content: "unexpected" }));
+    if (scenario !== "missing-DONE") upstream.send("[DONE]");
+    upstream.close();
+    await assert.rejects(pending, { message: "Responses: invalid provider stream" });
+  });
+}

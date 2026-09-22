@@ -691,6 +691,7 @@ type ManagedTurnRow = {
 
 type StreamMessage = Extract<ServerMessage,
   | { type: "agent_created" }
+  | { type: "model_route_selected" }
   | { type: "turn_accepted" }
   | { type: "turn_cancelling" }
   | { type: "turn_completed" }
@@ -3146,11 +3147,20 @@ export class DurableAgentSession extends DurableComputerSession {
   #settingsMutationTail: Promise<void> = Promise.resolve();
   #threadRoutePin = new ThreadRoutePin({
     read: () => this.#threadRoute(),
-    commit: (route) => this.ctx.storage.transactionSync(() => {
-      this.#assertDurabilityAdmissionActive();
-      this.ctx.storage.sql.exec("INSERT INTO managed_thread_route (singleton, route_json) VALUES (1, ?)", JSON.stringify(route));
-      this.#storeSettings(route);
-    }),
+    commit: (route) => {
+      const event = this.ctx.storage.transactionSync(() => {
+        this.#assertDurabilityAdmissionActive();
+        this.ctx.storage.sql.exec("INSERT INTO managed_thread_route (singleton, route_json) VALUES (1, ?)", JSON.stringify(route));
+        this.#storeSettings(route);
+        // Route selection happens after admission. Publish it in the same durable
+        // log so live clients and reconnects do not wait for a state poll.
+        return this.#eventLog.append({ type: "model_route_selected",
+          model_route: { model: route.model, thinking: route.thinking, reasoning_mode: route.reasoning_mode,
+            fast_mode: route.fast_mode, backend: route.backend },
+          model_routing_automatic: this.#configuration().model_routing_selection !== "manual" });
+      });
+      this.#publish(event);
+    },
   });
   #attachments?: SessionAttachments;
   readonly #settingsRequests = new Set<Promise<Response>>();

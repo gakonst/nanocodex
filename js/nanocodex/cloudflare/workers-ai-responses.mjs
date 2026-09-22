@@ -37,7 +37,7 @@ export function createWorkersAiResponses(ai, options = {}) {
       const result = await abortable(pending, request.signal);
       request.signal?.throwIfAborted();
       if (body.stream === true) {
-        const source = result instanceof ReadableStream ? providerStream(result) : result;
+        const source = result instanceof ReadableStream ? providerStream(result, "workers_ai_chat") : result;
         if (source?.providerStream) {
           return streamResponse(source, (value, prologue = false) => normalizeResponse(value, registry, model, prologue ? undefined : body.tool_choice), responseEvents,
             request.signal, input.parallel_tool_calls);

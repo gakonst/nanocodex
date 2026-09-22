@@ -21,6 +21,7 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
     public var routingEnabled = false
     public var routingAutomatic = false
     public var modelPinned = false
+    private var modelRouteCursor = Cursor.zero
     public var acceptedTurns = 0
     public var modelLocked: Bool { modelPinned || acceptedTurns > 0 || turnCount > 0 || isRunning }
     public var effortLocked: Bool { modelLocked && (routingEnabled || model != "gpt-6-astra") }
@@ -100,30 +101,38 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
     public mutating func apply(state: JSON) throws {
         guard let cursor = Cursor(rawValue: state["latest_event_cursor"].string), state["agent_id"].string == id,
               case .array = state["active_turns"] else { throw APIError.invalidResponse }
+        // Live events can outrun a state request. Accept independently versioned
+        // route metadata without letting that snapshot resurrect finished turns.
+        applyModelRoute(state["model_route"], automatic: state["model_routing_automatic"].bool, cursor: cursor)
         guard cursor >= stateCursor else { return }
         observedAt = Date()
         let previousTurns = activeTurns
         activeTurns = state["active_turns"].array.map(\.string)
         if previousTurns != activeTurns { activitySummary = "Working"; activityDetail = "" }
         stateCursor = cursor; latestCursor = max(latestCursor, cursor)
-        model = state["settings"]["model"].string
-        thinking = state["settings"]["thinking"].string
-        routingEnabled = state["model_routing_enabled"].bool
-        routingAutomatic = state["model_routing_automatic"].bool
-        modelPinned = !state["model_route"]["model"].string.isEmpty
-        provider = state["model_route"]["backend"].string
-        if provider.isEmpty && !routingEnabled && model.hasPrefix("gpt-") { provider = "ChatGPT" }
-        acceptedTurns = max(acceptedTurns, Int(state["accepted_turns"].number))
-        if modelPinned {
-            model = state["model_route"]["model"].string
-            thinking = state["model_route"]["thinking"].string
+        // Once pinned, a delayed pre-selection snapshot cannot restore Auto.
+        if !modelPinned {
+            model = state["settings"]["model"].string
+            thinking = state["settings"]["thinking"].string
+            routingEnabled = state["model_routing_enabled"].bool
+            routingAutomatic = state["model_routing_automatic"].bool
+            provider = !routingEnabled && model.hasPrefix("gpt-") ? "ChatGPT" : ""
         }
+        acceptedTurns = max(acceptedTurns, Int(state["accepted_turns"].number))
         checked = true; error = nil
         if isRunning {
             if status != "Running" { activitySummary = "Working" }
             status = "Running"; terminalStatus = nil
             statusCursor = max(statusCursor, cursor)
         } else if status == "Running" || status == "Checking" { status = terminalStatus ?? "Idle" }
+    }
+    private mutating func applyModelRoute(_ route: JSON, automatic: Bool, cursor: Cursor) {
+        guard cursor >= modelRouteCursor, !route["model"].string.isEmpty,
+              !route["backend"].string.isEmpty else { return }
+        modelRouteCursor = cursor
+        modelPinned = true; routingEnabled = true; routingAutomatic = automatic
+        model = route["model"].string; thinking = route["thinking"].string
+        provider = route["backend"].string
     }
     public mutating func apply(events: [AgentEvent], transcriptRows: [TranscriptRow]? = nil) {
         let previousTurns = activeTurns
@@ -134,6 +143,11 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
                 updatedAt = max(updatedAt, time)
             }
             latestCursor = max(latestCursor, event.cursor)
+            // Route history is independent of active-turn snapshots. A replay
+            // may carry the first selected provider after newer activity arrived.
+            if event.type == "model_route_selected" {
+                applyModelRoute(event.data["model_route"], automatic: event.data["model_routing_automatic"].bool, cursor: event.cursor)
+            }
             // A state read may already include these events. It owns active-turn
             // membership until the replay catches up to that read's cursor.
             if event.cursor > stateCursor {

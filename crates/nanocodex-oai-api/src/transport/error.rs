@@ -203,6 +203,11 @@ impl ResponsesError {
                 ..
             } => ("receive_transport", None),
             Self::Api { event } => retryable_api_error(event)?,
+            // Hosted stream adapters surface parser failures through the same
+            // reader rejection as network failures. Replaying a malformed
+            // provider stream cannot repair its protocol and must also remain
+            // terminal when durability consults this retry policy.
+            Self::HttpRequest { detail, .. } if invalid_provider_stream(detail) => return None,
             Self::HttpRequest { timeout: true, .. } => ("https_timeout", None),
             Self::HttpRequest {
                 retryable: true, ..
@@ -254,6 +259,9 @@ impl ResponsesError {
             Self::ContextWindowExceeded { .. } => "context_window_exceeded",
             Self::InvalidImageRequest { .. } => "invalid_image_request",
             Self::InvalidToolSchema { .. } => "invalid_tool_schema",
+            Self::HttpRequest { detail, .. } if invalid_provider_stream(detail) => {
+                "invalid_provider_stream"
+            }
             Self::HttpRequest { timeout: true, .. } => "https_timeout",
             Self::HttpRequest { .. } => "https_transport",
             Self::HttpRejected { body, .. }
@@ -410,6 +418,17 @@ impl ResponsesError {
             Self::Api { event }
         }
     }
+}
+
+// This is the adapter-owned diagnostic, not a heuristic for arbitrary provider
+// messages. Older hosts include an Error prefix and a JavaScript stack trace.
+fn invalid_provider_stream(detail: &str) -> bool {
+    detail.lines().next().is_some_and(|line| {
+        matches!(
+            line.trim(),
+            "Responses: invalid provider stream" | "Error: Responses: invalid provider stream"
+        )
+    })
 }
 
 /// Retry metadata derived from one typed transport or API error.
@@ -734,6 +753,60 @@ mod tests {
             .expect("HTTP 403 handshake rejection must allow bounded recovery");
         assert_eq!(advice.class, "handshake_forbidden");
         assert_eq!(advice.server_delay, None);
+    }
+
+    #[test]
+    fn deterministic_hosted_stream_failures_are_terminal() {
+        for detail in [
+            "Responses: invalid provider stream",
+            "Error: Responses: invalid provider stream\n    at Object.pull (index.js:1:1)",
+        ] {
+            let error = ResponsesError::HttpRequest {
+                detail: detail.to_owned(),
+                retryable: true,
+                timeout: false,
+            };
+            assert!(error.retry_advice().is_none());
+            assert_eq!(error.class(), "invalid_provider_stream");
+        }
+    }
+
+    #[test]
+    fn transient_https_failures_keep_their_retry_policy() {
+        for (detail, retryable, timeout, expected) in [
+            (
+                "network connection lost",
+                true,
+                false,
+                Some("https_transport"),
+            ),
+            (
+                "Responses: provider stream read failed",
+                true,
+                false,
+                Some("https_transport"),
+            ),
+            ("deadline exceeded", false, true, Some("https_timeout")),
+            ("host rejected request", false, false, None),
+        ] {
+            let error = ResponsesError::HttpRequest {
+                detail: detail.to_owned(),
+                retryable,
+                timeout,
+            };
+            assert_eq!(error.retry_advice().map(|advice| advice.class), expected);
+        }
+        for status in [429, 500, 503] {
+            let error = ResponsesError::HttpRejected {
+                status,
+                body: "temporary failure".into(),
+                retry_after: Some(Duration::from_secs(2)),
+            };
+            assert_eq!(
+                error.retry_advice().unwrap().server_delay,
+                Some(Duration::from_secs(2))
+            );
+        }
     }
 
     #[test]
