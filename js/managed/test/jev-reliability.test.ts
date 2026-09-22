@@ -38,7 +38,7 @@ describe("single-attempt foreground Jev", () => {
   });
   it("skips fixed-provider classification without inventing probabilities", async () => {
     const run=vi.fn(); const observed=vi.fn();
-    const route=await resolveThreadRoute({run},"hello",routingPolicySchema.parse({candidates:["openrouter:openai/gpt-6-luna:low"]}),
+    const route=await resolveThreadRoute({run},"hello",routingPolicySchema.parse({candidates:["openrouter:openai/gpt-6-astra:low"]}),
       {openrouter:true,vercel:false,bypassSingleCandidate:true,observeRoute:observed});
     expect(run).not.toHaveBeenCalled(); expect(route.classifier).toEqual({outcome:"not_requested",attempts:[]});
     expect(route.audit).toBeUndefined(); expect(observed).toHaveBeenCalledOnce();

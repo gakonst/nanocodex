@@ -70,7 +70,7 @@ function translate(body, model) {
   if (!body || typeof body !== "object" || Array.isArray(body)) fail("expected a Responses request object");
   if (body.model !== undefined && body.model !== model) fail("unsupported model override; expected pinned model");
   const effort = (value) => {
-    if (value !== undefined && !(model === "kimi-k3" ? ["low", "high"] : ["low", "medium", "high"]).includes(value)) fail("unsupported reasoning effort; expected low, medium or high");
+    if (value !== undefined && !(["gpt-6-sol", "gpt-6-luna"].includes(model) ? ["none", "low", "medium", "high", "xhigh", "max"] : model === "kimi-k3" ? ["low", "high"] : ["low", "medium", "high"]).includes(value)) fail("unsupported reasoning effort for pinned model");
     return value;
   };
   if (body.previous_response_id) fail("previous_response_id is unsupported; send the complete Responses history");
