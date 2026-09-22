@@ -7,16 +7,17 @@ search is a derived index. This adapts the core file model from
 [OpenClaw's memory design](https://github.com/openclaw/openclaw/blob/main/docs/concepts/memory.md)
 to the existing authenticated MemoryScope Durable Object.
 
-No sandbox, mounted filesystem, filesystem watcher, native SQLite extension,
-embedding service, or new Cloudflare binding is needed. The implementation uses
-Durable Object SQLite transactions and FTS5, already used for session history.
+No sandbox, mounted filesystem, filesystem watcher, or native SQLite extension
+is needed. The implementation uses Durable Object SQLite transactions and FTS5,
+the existing `HISTORY_AI_SEARCH` binding for semantic retrieval, and the existing
+`AI` binding for bounded extraction and consolidation.
 Bodies, revisions, deletion tombstones, and index updates commit together. A
 Worker restart does not lose files or an acknowledged append receipt.
 
 ## Tools and API
 
-`memory_search` returns bounded lexical excerpts with paths, line ranges and
-revisions. `memory_get` reads a bounded range; continue using the returned cursor
+`memory_search` returns bounded hybrid lexical/semantic excerpts with paths, line
+ranges and revisions, plus explicit retrieval availability. `memory_get` reads a bounded range; continue using the returned cursor
 and revision rather than assuming an excerpt is the whole file. `memory_write`
 accepts `put`, `append`, and `delete`. Every write requires `expected_revision`
 (use zero only for a never-created file). Read the current file after a conflict
@@ -33,6 +34,7 @@ The same handlers are available over authenticated POST endpoints:
 - `/v1/markdown-memory/get`
 - `/v1/markdown-memory/search`
 - `/v1/markdown-memory/write`
+- `/v1/markdown-memory/status`
 
 For example, read `{ "path": "MEMORY.md" }`, then write
 `{ "operation": "put", "path": "MEMORY.md", "expected_revision": 0,
@@ -68,15 +70,80 @@ notes remain intact and available through their existing APIs. Canonical Markdow
 files are also visible through the existing memories list/read/search adapter. There is no
 silent migration or reclassification of personal facts as team knowledge.
 
-## Deliberate boundaries
+## Semantic retrieval
 
-This implements the Markdown source-of-truth, retrieval, revision-safe editing,
-daily journal, and bootstrap parts of OpenClaw's design. Retrieval is lexical
-FTS5; semantic embeddings, hybrid ranking, background dreaming/consolidation,
-and an automatic model turn before compaction are not implemented here. Agents
-are instructed to save useful context during work; that is not a guarantee of a
-pre-compaction flush. These features require separate lifecycle and inference
-work rather than a local daemon transplanted into a Worker.
+Every canonical edit atomically enqueues immutable revision/chunk projections.
+Durable Object alarms drain bounded batches into AI Search. Provider responses
+supply candidate identities; returned text is always rehydrated from live,
+authorized SQLite rows after the request finishes. Stale revisions, deleted
+notes and foreign owner metadata cannot become recall results. Lexical search
+continues when the binding is missing, unavailable or times out; responses report
+that fallback rather than claiming semantic retrieval worked.
+
+Hybrid search uses reciprocal rank fusion, recency decay for dated notes and
+MMR diversity. Evergreen curated files do not decay. Index retry state survives
+eviction. Deletion is immediately effective in canonical reads and recall,
+while remote index cleanup is asynchronous and visible in `memory_status`.
+`DREAMS.md` is readable explicitly but excluded from search and bootstrap.
+
+## Awaited pre-compaction preservation
+
+The SDK's optional `beforeCompaction` callback runs before context is trimmed or
+compacted, including explicit and automatic compaction. It receives a bounded
+suffix of user/assistant text and a stable boundary identity, then returns a
+durable receipt. Execution replay reuses acknowledged receipts. The host must
+also make its own writes idempotent to cover a lost response after commit.
+Cancellation and a 30-second host deadline stop the barrier; errors leave the
+compaction unperformed. Subagents do not inherit this root callback.
+
+Managed direct-account sessions connect this barrier to an internal personal
+memory extraction RPC. It selects complete, exact firsthand user statements;
+assistant output, recalled material, secrets and unsupported prose are excluded.
+The daily note and boundary receipt commit together. Overlapping boundaries are
+deduplicated, and replaying a receipt after deletion cannot recreate its note.
+The receipt reports whether the supplied context was truncated. Empty extraction
+is a valid durable result; it does not imply every message was saved.
+
+The hook requires both memory capabilities, configured memory tools and network
+access. Disabled automation, Connect, shared-room and subagent contexts receive
+a durable skip receipt rather than promoting private transcripts to team memory.
+The internal flush RPC is not exposed as a model tool or public HTTP endpoint.
+Inference failure or a missing required AI binding fails enabled preservation;
+there is no silent compaction after an unacknowledged save.
+
+## Background consolidation
+
+Successful daily writes queue durable work for the next UTC day. Alarms process
+bounded source batches using a tool-free Workers AI completion. Every selected
+candidate must match exact source lines and revisions; generated prose cannot
+invent a new fact. The pass may add, merge or supersede its own attributed
+entries in `MEMORY.md` and `USER.md`, preserving unrelated manual curation.
+
+Revision checks and durable source/curation fences reject stale proposals after
+concurrent edits or deletion. Provenance and preimages support audit; deleting a
+source invalidates dependent generated entries and retained preimages. Recalled
+material and consolidation reports never become new reinforcement evidence.
+`DREAMS.md` records bounded outcomes without being fed back into retrieval.
+Model attempts and retry leases are bounded and persist across eviction.
+
+`memory_status` (and its authenticated HTTP endpoint) exposes semantic backlog,
+consolidation work and receipts, and extraction receipts without invoking a
+model. `NANOCODEX_MEMORY_AUTOMATION=false` disables automatic extraction and
+consolidation while retaining authored Markdown and search. The configured
+Workers AI model is `@cf/meta/llama-3.3-70b-instruct-fp8-fast`; automatic passes
+consume Workers AI usage within the enforced per-owner budgets. Existing
+Cloudflare bindings are reused; no local daemon or additional resource is
+required.
+
+## References and limits
+
+This is a Workers adaptation of the requested Markdown, hybrid retrieval,
+consolidation and compaction-preservation behavior. It is not a claim of exact
+OpenClaw scheduler or model parity. See OpenClaw's
+[memory search](https://docs.openclaw.ai/concepts/memory-search) and
+[dreaming](https://docs.openclaw.ai/concepts/dreaming) designs. Automatic extraction
+and consolidation are conservative and bounded; explicit memory saves remain
+useful for technical progress not present as firsthand user statements.
 
 Muse motivated the requested behavior. Meta's [personal Muse design](https://introducing.muse.ai/)
 describes a persistent main conversation and side chats; its memory internals

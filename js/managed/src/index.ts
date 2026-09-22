@@ -322,6 +322,7 @@ import {
 } from "./durable-memory";
 import { memorySessionTools } from "./memory-session-tools";
 import { managedExtensionTools } from "./extension-tools";
+import { preserveManagedMemory } from "./managed-memory-preservation";
 import { markdownMemoryTools, injectMarkdownMemoryBootstrap, markdownMemoryEnabled, MARKDOWN_MEMORY_TOOL_NAMES, MARKDOWN_MEMORY_INSTRUCTIONS } from "./markdown-memory-tools";
 import { ManagedStartupContext } from "./startup-context";
 import { performanceScope, performanceSyncScope, performanceStage, performanceRead, performanceState } from "./performance";
@@ -394,6 +395,7 @@ export interface Env extends
   NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED?: string;
   /** Opt-in paid inference PoC; absent/false preserves current routing. */
   NANOCODEX_THREAD_ROUTING?: string;
+  NANOCODEX_MEMORY_AUTOMATION?: string;
   NANOCODEX_PROVIDER_PROBE_COORDINATOR?: DurableObjectNamespace<ProviderProbeCoordinator>;
   NANOCODEX_PERFORMANCE_TRACE?: string;
   NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
@@ -8271,6 +8273,22 @@ export class DurableAgentSession extends DurableComputerSession {
       const agentOptions: NonNullable<Parameters<typeof CloudflareAgent.create>[1]> = {
         durabilityId,
         eventPersistence: "caller",
+        beforeCompaction: request => preserveManagedMemory({
+          storage: this.ctx.storage, memories: this.env.NANOCODEX_MEMORY,
+          organizationId: session.organization_id, teamId: session.team_id,
+          ownerId: session.owner_id, sessionId: session.session_id,
+          enabled: !multiplayer && session.runtime_profile === "managed"
+            && this.env.NANOCODEX_MEMORY_AUTOMATION !== "false"
+            && configuration.environment?.network.access !== "disabled"
+            && markdownMemoryEnabled(configuration.tools)
+            && (configuration.tools === undefined || configuration.tools.some(name => name === "memory" || name === "memory_write")),
+          authority: context => this.#authorizationForToolContext(context),
+          assertActive: () => {
+            this.#assertDurabilityAdmissionActive();
+            if (this.#session()?.authorization_epoch !== session.authorization_epoch)
+              throw new Error("Memory preservation authority is no longer active");
+          },
+        }, request),
         terminalReceiptRetention: MANAGED_TERMINAL_RECEIPT_RETENTION,
         // Astra's model prompt owns general behavior; these rules describe its host.
         [this.#settings().model === "gpt-6-astra" ? "additionalInstructions" : "instructions"]: multiplayer
@@ -11633,7 +11651,7 @@ async function routeHistoryRequest(
   const read = url.pathname.match(/^\/v1\/history\/sessions\/([^/]+)\/read$/);
   const memory = url.pathname === "/v1/memory";
   const memoryDelete = url.pathname.match(/^\/v1\/memory\/([^/]+)$/);
-  const markdown = url.pathname.match(/^\/v1\/markdown-memory\/(get|search|write)$/);
+  const markdown = url.pathname.match(/^\/v1\/markdown-memory\/(get|search|write|status)$/);
   const canonical = url.pathname.match(/^\/v1\/memories\/(list|read|search|add_ad_hoc_note)$/);
   if (!find && !read && !memory && !memoryDelete && !canonical && !markdown) return undefined;
   const validMethod = (find || read || canonical || markdown) ? request.method === "POST"

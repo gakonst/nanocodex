@@ -22,6 +22,16 @@ export async function preserveManagedMemory(options: ManagedMemoryPreservationOp
   request: BeforeCompactionRequest): Promise<CompactionReceipt> {
   request.signal.throwIfAborted();
   options.assertActive();
+  options.storage.sql.exec(`CREATE TABLE IF NOT EXISTS managed_memory_preservation_skips (
+    boundary_id TEXT PRIMARY KEY, request_hash TEXT NOT NULL, reason TEXT NOT NULL)`);
+  const requestHash = hash(JSON.stringify({ session: request.sessionId, root: request.rootSessionId,
+    messages: request.messages, truncated: request.truncated }));
+  const skipped = options.storage.sql.exec<{request_hash: string}>(
+    'SELECT request_hash FROM managed_memory_preservation_skips WHERE boundary_id=?', request.boundaryId).toArray()[0];
+  if (skipped) {
+    if (skipped.request_hash !== requestHash) throw new Error('Memory preservation boundary reused with different evidence');
+    return { receiptId: `memory-skip:${hash(request.boundaryId)}` };
+  }
   const authority = options.authority(request);
   const disabled = !options.enabled ? 'disabled'
     : request.sessionId !== request.rootSessionId ? 'subagent'
@@ -30,9 +40,7 @@ export async function preserveManagedMemory(options: ManagedMemoryPreservationOp
     : !authority.capabilities.includes('memory:read') || !authority.capabilities.includes('memory:write') ? 'memory_capability_disabled' : undefined;
   if (disabled) {
     // A durable local no-op keeps replay from expanding authority after settings change.
-    options.storage.sql.exec(`CREATE TABLE IF NOT EXISTS managed_memory_preservation_skips (
-      boundary_id TEXT PRIMARY KEY, reason TEXT NOT NULL)`);
-    options.storage.sql.exec('INSERT OR IGNORE INTO managed_memory_preservation_skips VALUES(?,?)', request.boundaryId, disabled);
+    options.storage.sql.exec('INSERT OR IGNORE INTO managed_memory_preservation_skips VALUES(?,?,?)', request.boundaryId, requestHash, disabled);
     return { receiptId: `memory-skip:${hash(request.boundaryId)}` };
   }
   const target = memoryTarget(options.organizationId, options.teamId, options.ownerId, 'personal');

@@ -1,4 +1,8 @@
 import { MarkdownMemoryStore, MarkdownMemoryError } from "./markdown-memory";
+import { MarkdownMemorySemantic } from "./markdown-memory-semantic";
+import { MarkdownMemoryConsolidation } from "./markdown-memory-consolidation";
+import { MarkdownMemoryFlush } from "./markdown-memory-flush";
+import { createMarkdownMemoryCompletion, type MarkdownMemoryAi } from "./markdown-memory-ai";
 import { scopeMemoryFiles, scopeFileMemories } from "./extension-memory-storage";
 import { PreparedPersonalizationStore } from "./personalization";
 import { initializeMemoryContent, memoryIdentityDigest, readMemoryContent, storeMemoryContent } from "./durable-memory-storage";
@@ -57,6 +61,8 @@ const EMPTY_VECTOR_SEARCH_CACHE_MS = 1_000;
 
 export interface MemoryScopeEnv {
   NANOCODEX_PERFORMANCE_TRACE?: string;
+  AI?: MarkdownMemoryAi;
+  NANOCODEX_MEMORY_AUTOMATION?: string;
   HISTORY_AI_SEARCH?: AiSearchInstance;
   NANOCODEX_SESSIONS?: DurableObjectNamespace;
 }
@@ -150,6 +156,33 @@ const json = (body: unknown, init: ResponseInit = {}) => Response.json(body, {
 
 export class MemoryScope extends DurableObject<MemoryScopeEnv> {
   #aiTask?: Promise<void>;
+  #markdown?: {
+    store: MarkdownMemoryStore; semantic: MarkdownMemorySemantic;
+    consolidation: MarkdownMemoryConsolidation; flush: MarkdownMemoryFlush;
+  };
+
+  #markdownServices() {
+    if (this.#markdown) return this.#markdown;
+    const organization = this.#organizationId();
+    if (!organization) throw new Error("memory scope is not initialized");
+    const store = new MarkdownMemoryStore(this.ctx.storage);
+    const complete = createMarkdownMemoryCompletion(this.env.AI);
+    const consolidation = new MarkdownMemoryConsolidation(this.ctx.storage, store, {
+      complete, containsSecret: containsLikelySecret,
+    });
+    return this.#markdown = {
+      store, consolidation,
+      semantic: new MarkdownMemorySemantic(this.ctx.storage, organization, this.env.HISTORY_AI_SEARCH),
+      flush: new MarkdownMemoryFlush(this.ctx.storage, complete, {
+        containsSecret: containsLikelySecret,
+        onPersist: (owner, path, revision) => consolidation.noteChange(owner, path, revision, 'precompaction'),
+      }),
+    };
+  }
+
+  #markdownAutomationEnabled(): boolean {
+    return this.env.NANOCODEX_MEMORY_AUTOMATION !== "false" && this.env.AI !== undefined;
+  }
   readonly #personalization: PreparedPersonalizationStore;
   #vectorSearches = new Map<string, Promise<RankedMemoryTurnRow[]>>();
   #vectorCache = new Map<string, { expiresAt: number; rows: RankedMemoryTurnRow[] }>();
@@ -184,6 +217,7 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
     this.#personalization = new PreparedPersonalizationStore(this.ctx.storage);
     this.ctx.blockConcurrencyWhile(async () => {
       this.#scheduleAiOutbox();
+      await this.#scheduleNextAlarm();
     });
   }
 
@@ -219,18 +253,41 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
           || (assertedTeam.startsWith("personal:") && (!owner || assertedTeam !== `personal:${owner}`)))
           return json({ error: "forbidden" }, { status: 403 });
         const operation = url.pathname.slice("/markdown-memory/".length);
-        if (!["get", "search", "write", "bootstrap"].includes(operation))
+        if (!["get", "search", "write", "bootstrap", "status", "flush"].includes(operation))
           return json({ error: "not_found" }, { status: 404 });
-        if (operation === "write" && request.headers.get(MEMORY_MUTATION_ASSERTION) !== "1")
+        if ((operation === "write" || operation === "flush") && request.headers.get(MEMORY_MUTATION_ASSERTION) !== "1")
           return json({ error: "memory_read_only" }, { status: 403 });
-        const store = new MarkdownMemoryStore(this.ctx.storage);
+        const services = this.#markdownServices();
         const input = await parseJsonBody<unknown>(request);
-        if (operation === "bootstrap") return json(store.bootstrap(assertedTeam, Date.now()));
-        if (operation === "get") return json(store.get(assertedTeam, input));
-        if (operation === "search") return json(store.search(assertedTeam, input));
+        if (operation === "bootstrap") return json(services.store.bootstrap(assertedTeam, Date.now()));
+        if (operation === "get") return json(services.store.get(assertedTeam, input));
+        if (operation === "search") return json(await services.semantic.search(assertedTeam, input));
+        if (operation === "status") return json({
+          automation: this.#markdownAutomationEnabled() ? "enabled" : "disabled",
+          semantic: services.semantic.status(assertedTeam),
+          consolidation: services.consolidation.status(assertedTeam),
+          flush: services.flush.status(assertedTeam),
+        });
+        if (operation === "flush") {
+          // Only the root runtime can attest its own transcript. This operation
+          // is absent from public routes and model-visible tools.
+          if (!assertedTeam.startsWith("personal:") || !isRecord(input)
+            || request.headers.get(SUBJECT_ASSERTION) !== `agent:${input.session_id}`)
+            return json({ error: "memory_flush_forbidden" }, { status: 403 });
+          if (!this.#markdownAutomationEnabled())
+            return json({ error: "memory_automation_unavailable" }, { status: 503 });
+          try { return json(await services.flush.flush(assertedTeam, input, request.signal)); }
+          finally { await this.#scheduleNextAlarm(); }
+        }
         if (isRecord(input) && typeof input.content === "string" && containsLikelySecret(input.content))
           return json({ error: "memory_secret_rejected", message: "memory content was rejected as a likely secret" }, { status: 422 });
-        return json(store.write(assertedTeam, input));
+        const result = this.ctx.storage.transactionSync(() => {
+          const result = services.store.write(assertedTeam, input);
+          if (result.ok) services.consolidation.noteChange(assertedTeam, result.path, result.revision);
+          return result;
+        });
+        await this.#scheduleNextAlarm();
+        return json(result);
       }
       if (request.method === "POST" && url.pathname.startsWith("/extension-memories/")) {
         const owner = request.headers.get("x-nanocodex-private-memory-owner");
@@ -349,7 +406,13 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
     await this.#invalidatePersonalization();
     if (this.#aiTask) await this.#aiTask.catch(() => {});
     else await this.#drainAiOutbox();
-    await this.#scheduleNextAlarm();
+    try {
+      if (this.#organizationId()) {
+        const services = this.#markdownServices();
+        if (this.#markdownAutomationEnabled()) await services.consolidation.runDue();
+        await services.semantic.drain();
+      }
+    } finally { await this.#scheduleNextAlarm(); }
   }
 
   async #invalidatePersonalization(): Promise<void> {
@@ -1112,11 +1175,14 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
       "SELECT retry_at FROM memory_ai_outbox ORDER BY retry_at LIMIT 1",
     ).toArray()[0];
     const invalidationRetry = this.#personalization.invalidationPending() ? Date.now() + 1_000 : undefined;
-    if (!row && invalidationRetry === undefined) {
+    const services = this.#organizationId() ? this.#markdownServices() : undefined;
+    const semanticRetry = services?.semantic.nextRetryAt();
+    const consolidationAt = this.#markdownAutomationEnabled() ? services?.consolidation.nextAlarm() ?? undefined : undefined;
+    if (!row && invalidationRetry === undefined && semanticRetry === undefined && consolidationAt === undefined) {
       await this.ctx.storage.deleteAlarm();
       return;
     }
-    await this.ctx.storage.setAlarm(Math.max(Date.now() + 1, Math.min(row?.retry_at ?? Infinity, invalidationRetry ?? Infinity)));
+    await this.ctx.storage.setAlarm(Math.max(Date.now() + 1, Math.min(row?.retry_at ?? Infinity, invalidationRetry ?? Infinity, semanticRetry ?? Infinity, consolidationAt ?? Infinity)));
   }
 }
 
