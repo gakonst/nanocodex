@@ -173,6 +173,22 @@ final class ChatMarkdownTests: XCTestCase {
         XCTAssertEqual(String(empty.characters), "\n\t ")
     }
 
+    func testReturningCodeHasColoredTextAvailableBeforeAnAsyncTask() async {
+        // A fresh source makes this a cold request even when tests share a cache.
+        let source = "\n\tconst cacheTest = \"" + UUID().uuidString + "\";\n"
+            + String(repeating: "    console.log(cacheTest); // preserve every line\n", count: 200)
+            + "\n  "
+        XCTAssertNil(ChatCodeHighlighter.cachedText(source, language: "javascript", dark: false))
+        let rendered = await ChatCodeHighlighter.highlight(source, language: "javascript", dark: false)
+        let firstLayout = ChatCodeHighlighter.cachedText(source, language: "JAVASCRIPT extra-fence-hint", dark: false)
+        XCTAssertEqual(firstLayout, rendered)
+        XCTAssertEqual(firstLayout.map { String($0.characters) }, source)
+        XCTAssertGreaterThan(rendered.runs.count, 200)
+        XCTAssertNil(ChatCodeHighlighter.cachedText(source, language: "javascript", dark: true))
+        XCTAssertNil(ChatCodeHighlighter.cachedText(source + " ", language: "javascript", dark: false))
+        XCTAssertNil(ChatCodeHighlighter.cachedText(source, language: "bash", dark: false))
+    }
+
     func testRevisitedCodeKeepsSourceLanguageAndAppearanceIndependent() async {
         let source = "let value = 7\n"
         let light = await ChatCodeHighlighter.highlight(source, language: "swift", dark: false)

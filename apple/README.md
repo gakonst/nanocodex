@@ -82,6 +82,10 @@ another row's streamed updates do not reparse completed messages. Parsing runs o
 a background actor with a bounded cache; streamed changes coalesce for 32 ms,
 and cancelled parses cannot replace newer content. The
 `ChatMarkdownParse` Points of Interest signpost measures actual parsing work.
+Returning code blocks render cached syntax colors on their first layout. Cold syntax
+highlighting starts near the visible scroll area instead of across offscreen code
+blocks; the complete source remains available throughout. The `ChatCodeHighlight`
+Points of Interest signpost measures cold highlighting work.
 
 Commentary and reasoning summaries appear inline in chronological order. Each
 tool call has a compact card with expandable input and result details. Short shell
