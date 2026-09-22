@@ -38,7 +38,27 @@ fn summary(tool: &ToolEntry) -> (&'static str, String) {
         "interrupt_agent" => ("Interrupted", agent_target(&tool.arguments)),
         "close_agent" => ("Closed", agent_target(&tool.arguments)),
         "list_agents" => ("Listed", "subagents".to_owned()),
-        "submit_result" => ("Submitted", "subagent result".to_owned()),
+        "submit_result" => {
+            let title = match tool
+                .result
+                .as_ref()
+                .and_then(|result| string(result, "status"))
+            {
+                Some("accepted") => "Accepted",
+                Some("superseded") => "Superseded",
+                _ if tool
+                    .result
+                    .as_ref()
+                    .and_then(|result| result.get("accepted"))
+                    .and_then(Value::as_bool)
+                    == Some(true) =>
+                {
+                    "Accepted"
+                }
+                _ => "Submit",
+            };
+            (title, "subagent result".to_owned())
+        }
         _ => ("Subagent", String::new()),
     }
 }

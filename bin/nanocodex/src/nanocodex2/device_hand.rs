@@ -23,6 +23,8 @@ use tokio_util::sync::CancellationToken;
 use super::native_hand::NativeState;
 
 mod account;
+#[cfg(any(target_os = "macos", target_os = "linux", test))]
+mod service_start;
 mod transport;
 
 #[derive(Args, Default)]
@@ -41,7 +43,7 @@ pub(crate) struct BackgroundHand {
     child: Option<Child>,
 }
 impl BackgroundHand {
-    pub(crate) fn start(client: &ManagedClient) -> Result<Self, ManagedError> {
+    pub(crate) async fn start(client: &ManagedClient) -> Result<Self, ManagedError> {
         if std::env::var_os("NANOCODEX_DISABLE_HAND").is_some_and(|v| v == "1") {
             return Ok(Self { child: None });
         }
@@ -55,19 +57,42 @@ impl BackgroundHand {
             })
             .map_err(|()| error("invalid origin"))?;
         origin.set_path("");
+        #[cfg(any(target_os = "macos", target_os = "linux"))]
+        ensure_service().await?;
         let mut command = Command::new(std::env::current_exe().map_err(error)?);
         #[cfg(windows)]
         command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        let child = command
+        let mut child = command
             .args(["__device-hand", "--parent-pipe"])
             .env("NANOCODEX_API_KEY", target.bearer())
             .env("NANOCODEX_MANAGED_URL", origin.as_str())
             .stdin(Stdio::piped())
-            .stdout(Stdio::null())
+            .stdout(Stdio::piped())
             .stderr(log_file(&home()?.join(".nanocodex/logs"), "hand.log")?)
             .kill_on_drop(true)
             .spawn()
             .map_err(error)?;
+        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
+        let ready = tokio::time::timeout(Duration::from_secs(30), async {
+            let line = lines.next_line().await.map_err(error)?.ok_or_else(|| {
+                error("The computer Hand observer exited before connecting. Check ~/.nanocodex/logs/hand.log and the service owner's saved login; the CLI and service must use the same account. Set NANOCODEX_DISABLE_HAND=1 to continue without a local Hand.")
+            })?;
+            observer_ready(&line)
+        }).await;
+        match ready {
+            Ok(Ok(())) => {}
+            result => {
+                let _ = child.kill().await;
+                return Err(match result {
+                    Ok(Err(e)) => error(e.to_string().replace(target.bearer(), "[redacted]")),
+                    _ => error(
+                        "Timed out connecting to the computer Hand OS service. Check its logs and saved login; the CLI and service must use the same account. Set NANOCODEX_DISABLE_HAND=1 to continue without a local Hand.",
+                    ),
+                });
+            }
+        }
+        // Keep the observer's status pipe drained for its entire lifetime.
+        tokio::spawn(async move { while matches!(lines.next_line().await, Ok(Some(_))) {} });
         Ok(Self { child: Some(child) })
     }
     pub(crate) async fn stop(&mut self) {
@@ -81,6 +106,69 @@ impl BackgroundHand {
             }
         }
     }
+}
+
+fn observer_ready(line: &str) -> Result<(), ManagedError> {
+    let status: Value = serde_json::from_str(line).map_err(error)?;
+    if status["status"] == "error" {
+        return Err(error(
+            status["error"]
+                .as_str()
+                .unwrap_or("Computer Hand connection failed"),
+        ));
+    }
+    if status.get("machine").is_none() {
+        return Err(error(
+            "The computer Hand observer returned an invalid readiness status",
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+async fn ensure_service() -> Result<(), ManagedError> {
+    use service_start::{Platform, Reply};
+    let platform = if cfg!(target_os = "macos") {
+        Platform::Mac
+    } else {
+        Platform::Linux
+    };
+    #[cfg(target_os = "macos")]
+    let gui = Some((
+        nix::unistd::geteuid().as_raw(),
+        home()?.join("Library/LaunchAgents/com.nanocodex.hand.plist"),
+    ));
+    #[cfg(not(target_os = "macos"))]
+    let gui: Option<(u32, PathBuf)> = None;
+    let gui_context = gui.as_ref().map(|(uid, path)| (*uid, path.as_path()));
+    service_start::ensure_with(
+        platform,
+        Path::new("/Library/LaunchDaemons/com.nanocodex.hand.plist").is_file(),
+        gui.as_ref().map(|(_, path)| path.is_file()),
+        |action| async move {
+            let (program, args) = action.command(gui_context);
+            // Service managers need no account credentials or interactive input.
+            let output = tokio::time::timeout(
+                Duration::from_secs(10),
+                Command::new(program)
+                    .args(args)
+                    .env_clear()
+                    .stdin(Stdio::null())
+                    .stderr(Stdio::null())
+                    .kill_on_drop(true)
+                    .output(),
+            )
+            .await
+            .map_err(|_| "service manager timed out".to_owned())?
+            .map_err(|_| format!("cannot execute {program}"))?;
+            Ok(Reply {
+                success: output.status.success(),
+                stdout: String::from_utf8_lossy(&output.stdout).into_owned(),
+            })
+        },
+    )
+    .await
+    .map_err(error)
 }
 
 fn error(value: impl std::fmt::Display) -> ManagedError {
@@ -465,9 +553,15 @@ fn unix_socket_path(base: PathBuf, directory: &Path) -> Result<PathBuf, ManagedE
 
 async fn connect(directory: &Path, cancel: &CancellationToken) -> Result<(), ManagedError> {
     let socket = socket_path(directory)?;
-    let mut stream = transport::connect(&socket).await.map_err(|_| {
-        error("The computer Hand service is not running; start the installed OS service")
-    })?;
+    // A successful service-manager start can precede account lookup and IPC bind.
+    let mut stream = tokio::time::timeout(Duration::from_secs(15), async {
+        loop {
+            match transport::connect(&socket).await {
+                Ok(stream) => return stream,
+                Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+            }
+        }
+    }).await.map_err(|_| error("The computer Hand OS service did not accept a connection. Check the service logs and saved login; the CLI and service must use the same account. Set NANOCODEX_DISABLE_HAND=1 to continue without a local Hand."))?;
     let mut previous = Value::Null;
     let mut bytes = [0u8; 1];
     loop {
@@ -739,6 +833,20 @@ async fn supervise_factory(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn observer_failure_reaches_cli_startup() {
+        assert!(observer_ready(r#"{"status":"connecting","machine":{"id":"test"}}"#).is_ok());
+        let failure =
+            observer_ready(r#"{"status":"error","error":"service did not accept a connection"}"#)
+                .unwrap_err();
+        assert!(
+            failure
+                .to_string()
+                .contains("service did not accept a connection")
+        );
+        assert!(observer_ready(r#"{"status":"connecting"}"#).is_err());
+        assert!(observer_ready("not JSON").is_err());
+    }
     #[test]
     #[cfg(unix)]
     fn long_home_directory_uses_a_private_short_socket_path() {

@@ -359,6 +359,11 @@ native and WASM consumers run the same Rust implementation and receive the
 same seven tools: `spawn_agent`, `submit_result`, `send_agent_message`,
 `list_agents`, `wait_agent`, `interrupt_agent`, and `close_agent`.
 
+Children call `submit_result({output})`; the runtime supplies the trusted
+instruction revision. The response is `{accepted: true, status: "accepted"}` or
+`{accepted: false, status: "superseded"}`. Superseded submissions are normal
+continuations: incorporate the updated instructions and submit again.
+
 Inside a caller-owned Worker or server isolate, host capabilities stay as
 ordinary functions without crossing another compatibility protocol:
 

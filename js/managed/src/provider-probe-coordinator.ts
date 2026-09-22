@@ -1,3 +1,4 @@
+import { RouterTelemetryStore } from "./router-telemetry";
 import { DurableObject } from "cloudflare:workers";
 import { ROUTING_CANDIDATES } from "./thread-model-routing";
 import { runProviderProbes } from "./provider-probes";
@@ -10,9 +11,11 @@ import { configuredProbeTargets, claimProbeSlot, probeDailyLimit, probeSlotAlloc
 export class ProviderProbeCoordinator extends DurableObject<ProviderProbeEnvironment> {
   #running?: Promise<number>;
   #store: SqliteProviderTelemetryStore;
+  #router: RouterTelemetryStore;
   constructor(ctx: DurableObjectState, env: ProviderProbeEnvironment) {
     super(ctx, env);
     this.#store = new SqliteProviderTelemetryStore(ctx.storage.sql);
+    this.#router = new RouterTelemetryStore(ctx.storage.sql);
   }
   async tick(scheduledTime: number): Promise<number> {
     if (this.env.NANOCODEX_PROVIDER_PROBES !== "true" || !probeDailyLimit(this.env)) return 0;
@@ -38,6 +41,14 @@ export class ProviderProbeCoordinator extends DurableObject<ProviderProbeEnviron
     if (!candidate) return false;
     // Aliases describe the same candidate; retain one canonical live cohort.
     try { this.#store.append({ ...sample, model: candidate.model }); return true; } catch { return false; }
+  }
+  observeRoute(value: unknown): boolean { return this.#router.append(value); }
+  dashboardSnapshot() {
+    const now = Date.now();
+    const rows = this.#store.read().filter(row => row.timestamp <= now && now - row.timestamp <= 7_200_000);
+    return { version: 1, capturedAt: now, windowMs: 7_200_000, retentionLimit: 512,
+      probesEnabled: this.env.NANOCODEX_PROVIDER_PROBES === "true", probeIntervalMs: PROBE_INTERVAL_MS,
+      providers: summarizeProviderObservationGroups(rows, now), decisions: this.#router.read(now) };
   }
   snapshot(origin?: ProviderOriginContext) {
     // Explicit field projection also bounds malformed private callers.

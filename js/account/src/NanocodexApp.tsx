@@ -13,6 +13,8 @@ import {
   X,
 } from "lucide-react";
 import {
+  lazy,
+  Suspense,
   startTransition,
   useCallback,
   useEffect,
@@ -37,6 +39,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "./DropdownMenu";
+const RouterDashboard = lazy(() => import("./RouterDashboard"));
 import { Evals, preloadEvalOverview } from "./Evals";
 import { HostedToolsDemo } from "./HostedToolsDemo";
 import { MonsterWorld } from "./MonsterWorld";
@@ -1567,6 +1570,8 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
                 for now.
               </p>
             </section>
+          ) : surface === "router" ? (
+            <Suspense fallback={<p role="status">Loading router…</p>}><RouterDashboard /></Suspense>
           ) : (
             <Evals />
           )}

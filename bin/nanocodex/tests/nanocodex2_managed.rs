@@ -1,3 +1,4 @@
+// Fake-account CLI fixtures must not contact the host's installed Hand service.
 use std::{
     collections::HashMap,
     convert::Infallible,
@@ -29,6 +30,7 @@ const PROCESS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 #[tokio::test]
 async fn hand_help_exposes_the_vm_and_machine_contract() {
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .env("NANOCODEX_DISABLE_HAND", "1")
         .args(["hand", "--help"])
         .output()
         .await
@@ -111,6 +113,7 @@ async fn hand_rejects_mixed_options_and_removed_native_command() {
         ],
     ] {
         let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .args(&args)
             .env_remove("NANOCODEX_VM_GUEST_RUNTIME")
             .env_remove("NANOCODEX_KRUNFW_DIR")
@@ -129,6 +132,7 @@ async fn hand_rejects_mixed_options_and_removed_native_command() {
 #[tokio::test]
 async fn host_help_exposes_the_bounded_vm_pool_contract() {
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .env("NANOCODEX_DISABLE_HAND", "1")
         .args(["host", "--help"])
         .output()
         .await
@@ -178,6 +182,7 @@ async fn hand_json_tracing_exposes_resources_without_paths_or_credentials() {
     let root_parent = tempfile::tempdir().unwrap();
     let missing_root = root_parent.path().join("private-root-sentinel.ext4");
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .env("NANOCODEX_DISABLE_HAND", "1")
         .args([
             "hand",
             "--vm",
@@ -247,6 +252,7 @@ async fn vm_child_entrypoint_does_not_require_managed_credentials() {
         .path()
         .join("missing-launch-record");
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .env("NANOCODEX_DISABLE_HAND", "1")
         .args(["__vm-run-config", "--config"])
         .arg(missing)
         .env_remove("NANOCODEX_API_KEY")
@@ -315,6 +321,7 @@ async fn run_flushes_each_assistant_delta_before_completion() {
     let workspace = tempfile::tempdir().unwrap();
     let (config_home, decoy) = configure_workspace(workspace.path());
     let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+        .env("NANOCODEX_DISABLE_HAND", "1")
         .args([
             "run",
             "stream answer",
@@ -442,6 +449,7 @@ async fn run_workspace_lifecycle(pinned: bool) {
     let output = tokio::time::timeout(
         PROCESS_TIMEOUT,
         tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .args([
                 "run",
                 "answer from managed",
@@ -549,6 +557,7 @@ async fn run_rejects_a_malformed_create_live_ready_frame() {
     let output = tokio::time::timeout(
         PROCESS_TIMEOUT,
         tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .args(["run", "this turn must not submit"])
             .env("NANOCODEX_COMPUTER", "off")
             .env("NANOCODEX_MANAGED_URL", &state.origin)
@@ -606,6 +615,7 @@ async fn run_keeps_the_durable_agent_when_local_tools_are_initially_unavailable(
     let output = tokio::time::timeout(
         PROCESS_TIMEOUT,
         tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .args([
                 "run",
                 "answer from managed",
@@ -677,6 +687,7 @@ async fn run_reconnects_the_same_local_host_after_a_ready_socket_disconnect() {
     let output = tokio::time::timeout(
         PROCESS_TIMEOUT,
         tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .args([
                 "run",
                 "answer from managed",
@@ -763,6 +774,7 @@ async fn run_reopens_one_durable_agent_and_falls_back_when_local_tools_are_absen
     let first = tokio::time::timeout(
         PROCESS_TIMEOUT,
         tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .args([
                 "run",
                 "first durable turn",
@@ -805,6 +817,7 @@ async fn run_reopens_one_durable_agent_and_falls_back_when_local_tools_are_absen
     let second = tokio::time::timeout(
         PROCESS_TIMEOUT,
         tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .args([
                 "run",
                 "second durable turn",
@@ -1819,6 +1832,7 @@ async fn headless_settings_and_cron_use_the_managed_contract() {
         let output = tokio::time::timeout(
             PROCESS_TIMEOUT,
             tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+                .env("NANOCODEX_DISABLE_HAND", "1")
                 .args(&args)
                 .current_dir(cwd.path())
                 .env("NANOCODEX_MANAGED_URL", &origin)
@@ -1859,6 +1873,7 @@ async fn headless_settings_and_cron_use_the_managed_contract() {
         let output = tokio::time::timeout(
             PROCESS_TIMEOUT,
             tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+                .env("NANOCODEX_DISABLE_HAND", "1")
                 .args(&args)
                 .current_dir(cwd.path())
                 .env("NANOCODEX_MANAGED_URL", &origin)
@@ -2093,6 +2108,7 @@ mod docker_hand_live {
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let config = tempfile::tempdir().unwrap();
         let mut child = tokio::process::Command::new(env!("CARGO_BIN_EXE_nanocodex2"))
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .args([
                 "hand",
                 "--docker",
@@ -2212,6 +2228,7 @@ async fn docker_preflight_errors_are_actionable_before_account_login() {
             .args(["hand", "--docker", "image", "--volume", "work"])
             .args(extra)
             .env_clear()
+            .env("NANOCODEX_DISABLE_HAND", "1")
             .env("PATH", dir.path())
             .env("NANOCODEX_HOME", dir.path())
             // VM environment defaults must not invalidate Docker selection.

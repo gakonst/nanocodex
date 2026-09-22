@@ -9,10 +9,11 @@ use super::{
     platform::{self, Task, TaskError},
     runtime::{DelegationChange, Registry, completion_instructions},
 };
-use futures_util::{Stream, future::poll_fn};
-use nanocodex_agent::events::AgentEventKind;
-use nanocodex_agent::{ChildRuntimeSnapshot, Nanocodex, NanocodexError, Result as AgentResult, TurnControl, TurnResult};
-use std::{collections::VecDeque, future::Future, pin::Pin, sync::Weak, task::Poll};
+use nanocodex_agent::input::Prompt;
+use nanocodex_agent::{
+    ChildRuntimeSnapshot, Nanocodex, NanocodexError, Result as AgentResult, TurnControl, TurnResult,
+};
+use std::{collections::VecDeque, sync::Weak};
 use tokio::sync::{mpsc, oneshot, watch};
 use tracing::Instrument;
 
@@ -345,14 +346,14 @@ impl Harness {
             let prompt = format!(
                 "{}\n\n{}",
                 command.message.prompt(),
-                completion_instructions(&self.output_schema, steer.token())
+                completion_instructions(&self.output_schema)
             );
             let result = self
                 .active
                 .as_ref()
                 .expect("steering requires an active turn")
                 .control
-                .steer(prompt)
+                .steer(Prompt::new(prompt).with_instruction_revision(steer.revision()))
                 .await;
             if let Some(registry) = self.registry.upgrade() {
                 registry
@@ -560,7 +561,7 @@ impl Harness {
             .agent
             .as_ref()
             .ok_or_else(|| std::io::Error::other(format!("agent {} is closed", self.id)))?;
-        let Some(turn_token) = registry
+        let Some(instruction_revision) = registry
             .harness_turn_started(&self.root_session_id, self.id)
             .await
         else {
@@ -578,9 +579,12 @@ impl Harness {
         };
         let prompt = format!(
             "{prompt}\n\n{}",
-            completion_instructions(&self.output_schema, turn_token)
+            completion_instructions(&self.output_schema)
         );
-        let turn = match agent.prompt(prompt).await {
+        let turn = match agent
+            .prompt(Prompt::new(prompt).with_instruction_revision(instruction_revision))
+            .await
+        {
             Ok(turn) => turn,
             Err(error) => {
                 let error = format!("could not start agent {}: {error}", self.id);
@@ -592,35 +596,7 @@ impl Harness {
         };
         self.restored_assignment = None;
         let control = turn.control();
-        let root_session_id = self.root_session_id.clone();
-        let id = self.id;
-        let registry = self.registry.clone();
-        let result = platform::spawn(async move {
-            let mut turn = turn;
-            loop {
-                // Turn's event receiver is independent of its Future. Drain it
-                // while awaiting completion, and apply steering barriers only
-                // from this exact turn's events.
-                let next = poll_fn(|cx| {
-                    if let Poll::Ready(Some(event)) = Pin::new(&mut turn).poll_next(cx) {
-                        return Poll::Ready(Ok(event));
-                    }
-                    Pin::new(&mut turn).poll(cx).map(Err)
-                })
-                .await;
-                match next {
-                    Ok(event) if event.kind == AgentEventKind::RunSteered => {
-                        if let Some(registry) = registry.upgrade() {
-                            registry
-                                .steer_applied(&root_session_id, id, turn_token)
-                                .await;
-                        }
-                    }
-                    Ok(_) => {}
-                    Err(result) => return result,
-                }
-            }
-        });
+        let result = platform::spawn(turn);
         self.active = Some(ActiveTurn {
             control,
             result,

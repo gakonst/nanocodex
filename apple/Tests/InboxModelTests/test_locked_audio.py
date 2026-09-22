@@ -10,14 +10,36 @@ root = Path(__file__).resolve().parents[2]
 view = (root / 'NanocodexInbox/QuickVoiceView.swift').read_text()
 start = view.index('@MainActor\nfinal class LockedAudioRecorder:')
 recorder = view[start:view.index('\nstruct QuickVoiceView:', start)]
-# OSLog interpolation and iOS file protection are unavailable in Linux Foundation.
-# Only those platform adapters are removed; capture and callback logic is unchanged.
+# OSLog interpolation is unavailable in the portable harness. File protection
+# operations are observed by a filesystem adapter; capture logic is unchanged.
 recorder = re.sub(r'^    private let log = Logger.*\n', '', recorder, flags=re.M)
 recorder = re.sub(r'^        log\.error\(.*\n', '', recorder, flags=re.M)
-recorder = recorder.replace(
-    '[.protectionKey: FileProtectionType.completeUntilFirstUserAuthentication]', '[:]')
+recorder = recorder.replace('FileManager.default', 'TestFiles.shared')
 source = r'''
 import Foundation
+extension FileAttributeKey { static let protectionKey = FileAttributeKey("testProtection") }
+enum FileProtectionType { case completeUntilFirstUserAuthentication }
+final class TestFiles {
+    static let shared = TestFiles()
+    let temporaryDirectory = FileManager.default.temporaryDirectory
+    var protected = Set<String>()
+    var rejectFileProtection = false
+    func createDirectory(at url: URL, withIntermediateDirectories: Bool, attributes: [FileAttributeKey: Any]) throws {
+        precondition(attributes[.protectionKey] is FileProtectionType)
+        try FileManager.default.createDirectory(at: url, withIntermediateDirectories: withIntermediateDirectories)
+        protected.insert(url.path)
+    }
+    func setAttributes(_ attributes: [FileAttributeKey: Any], ofItemAtPath path: String) throws {
+        precondition(attributes[.protectionKey] is FileProtectionType)
+        precondition(FileManager.default.fileExists(atPath: path))
+        if rejectFileProtection && path.hasSuffix(".m4a") { throw CocoaError(.fileWriteNoPermission) }
+        protected.insert(path)
+    }
+    func contentsOfDirectory(at url: URL, includingPropertiesForKeys keys: [URLResourceKey]?) throws -> [URL] {
+        try FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: keys)
+    }
+    func removeItem(at url: URL) throws { try FileManager.default.removeItem(at: url); protected.remove(url.path) }
+}
 let AVFormatIDKey = "format", AVSampleRateKey = "rate"
 let AVNumberOfChannelsKey = "channels", AVEncoderAudioQualityKey = "quality"
 let kAudioFormatMPEG4AAC = 1
@@ -32,7 +54,17 @@ final class AVAudioRecorder {
         self.url = url
         Self.created.append(self)
     }
-    func record() -> Bool { true }
+    static var preparationSucceeds = true
+    func prepareToRecord() -> Bool {
+        precondition(TestFiles.shared.protected.contains(url.deletingLastPathComponent().path), "output directory must be protected before preparation")
+        TestFiles.shared.protected.remove(url.path) // Framework replaces any placeholder.
+        FileManager.default.createFile(atPath: url.path, contents: Data())
+        return Self.preparationSucceeds
+    }
+    func record() -> Bool {
+        precondition(TestFiles.shared.protected.contains(url.path), "actual prepared output must be protected before recording")
+        return true
+    }
     func stop() { stopped = true }
 }
 final class AVAudioSession {
@@ -110,7 +142,17 @@ source += r'''
         recorder.onStatus = { statuses.append($0) }
         recorder.onAudioEnded = { audioEnded += 1 }
 
+        let temporary = FileManager.default.temporaryDirectory
+        let storage = temporary.appendingPathComponent("locked-voice", isDirectory: true)
+        try! FileManager.default.createDirectory(at: storage, withIntermediateDirectories: true)
+        let legacy = temporary.appendingPathComponent("locked-voice-orphan.m4a")
+        let orphan = storage.appendingPathComponent("locked-voice-orphan.m4a")
+        let unrelated = temporary.appendingPathComponent("other-feature.m4a")
+        for url in [legacy, orphan, unrelated] { try! Data().write(to: url) }
         await recorder.start(locale: "el-GR", permissions: .preauthorized)
+        precondition(!FileManager.default.fileExists(atPath: legacy.path))
+        precondition(!FileManager.default.fileExists(atPath: orphan.path))
+        precondition(FileManager.default.fileExists(atPath: unrelated.path))
         let cancelledAudio = AVAudioRecorder.created.last!
         precondition(recorder.recording && AVAudioSession.shared.active)
         precondition(FileManager.default.fileExists(atPath: cancelledAudio.url.path))
@@ -171,7 +213,17 @@ source += r'''
         precondition(submissions.count == 1 && errors.isEmpty)
         precondition(statuses == ["listening", "listening", "transcribing", "listening", "transcribing"])
         precondition(audioEnded == 3 && !recorder.recording && !AVAudioSession.shared.active)
-        print("PASS: capture without recognition; finish-only transcription; Greek locale; cancel cleanup; stale callbacks ignored; final submitted once")
+        for rejectProtection in [false, true] {
+            AVAudioRecorder.preparationSucceeds = rejectProtection
+            TestFiles.shared.rejectFileProtection = rejectProtection
+            await recorder.start(locale: "en-US", permissions: .preauthorized)
+            let failed = AVAudioRecorder.created.last!
+            precondition(!recorder.recording && !AVAudioSession.shared.active && failed.stopped)
+            precondition(!FileManager.default.fileExists(atPath: failed.url.path))
+            precondition(QuickVoiceRecorder.audioOwner == nil && submissions.count == 1)
+        }
+        precondition(errors == ["Microphone could not start.", "Microphone could not start."])
+        print("PASS: protected directory and prepared output; preparation/protection failures clean up; capture without recognition; finish-only transcription; Greek locale; cancel cleanup; stale callbacks ignored; final submitted once")
     }
 }
 '''
