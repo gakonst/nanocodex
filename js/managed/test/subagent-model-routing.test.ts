@@ -13,17 +13,19 @@ function fixture(extra: Partial<Parameters<typeof createSubagentRouteController>
 }
 
 describe("hosted child routing", () => {
-  it("pins siblings independently, restores without classification, and never inherits a missing route", async () => {
-    const { controller, options, ai } = fixture();
+  it("pins live siblings independently and drops routes when their runtime is replaced", async () => {
+    const { controller, ai } = fixture();
     const first = await controller.resolve({ ...request, model: "glm-5.3", thinking: "low" });
     const second = await controller.resolve({ ...request, model: "astra", thinking: "high" });
     controller.bind({ ...requestBinding(first.routeId), sessionId: "child-1" });
     controller.bind({ ...requestBinding(second.routeId), sessionId: "child-2" });
-    const restored = createSubagentRouteController(options);
-    expect(restored.routeForSession("child-1")).toMatchObject({ backend: "workers_ai", model: "@cf/zai-org/glm-5.3", thinking: "low" });
-    expect(restored.routeForSession("child-2")).toMatchObject({ backend: "chatgpt", model: "gpt-6-astra", thinking: "high" });
-    expect(() => restored.routeForSession("unknown")).toThrow("missing");
+    expect(controller.routeForSession("child-1")).toMatchObject({ backend: "workers_ai", model: "@cf/zai-org/glm-5.3", thinking: "low" });
+    expect(controller.routeForSession("child-2")).toMatchObject({ backend: "chatgpt", model: "gpt-6-astra", thinking: "high" });
+    expect(() => controller.routeForSession("unknown")).toThrow("missing");
     expect(ai.run).toHaveBeenCalledTimes(2);
+    const replacement = fixture().controller;
+    expect(() => replacement.routeForSession("child-1")).toThrow("missing");
+    expect(() => replacement.routeForSession("child-2")).toThrow("missing");
   });
 
   it("retains distinct provider choices for the same canonical model and routes nested tasks anew", async () => {
@@ -47,18 +49,19 @@ describe("hosted child routing", () => {
     expect(ai.run).toHaveBeenCalledTimes(2);
   });
 
-  it("selects Cloudflare for a new child only with availability and restores its pin independently", async () => {
+  it("selects Cloudflare for a new child only with availability and keeps its live pin", async () => {
     const id = "cloudflare:openai/gpt-6-astra:high";
     const ai = {run:vi.fn(async()=>({answers:{candidate:{choice:id,confidence:.99},family:{choice:"terminal",confidence:.99}}}))};
     const policy = routingPolicySchema.parse({candidates:[id]});
     const disabled = fixture({ai,policy});
     await expect(disabled.controller.resolve({...request,model:"astra",thinking:"high"})).rejects.toThrow("No eligible");
     expect(ai.run).not.toHaveBeenCalled();
-    const enabled = fixture({ai,policy,availability:()=>({openrouter:false,vercel:false,cloudflare:true})});
+    let cloudflare = true;
+    const enabled = fixture({ai,policy,availability:()=>({openrouter:false,vercel:false,cloudflare})});
     const resolved = await enabled.controller.resolve({...request,model:"astra",thinking:"high"});
     enabled.controller.bind({...requestBinding(resolved.routeId),sessionId:"cloudflare-child"});
-    const restored = createSubagentRouteController({...enabled.options,availability:()=>({openrouter:false,vercel:false,cloudflare:false})});
-    expect(restored.routeForSession("cloudflare-child")).toMatchObject({backend:"cloudflare",model:"gpt-6-astra",provider_model:"openai/gpt-6-astra",thinking:"high"});
+    cloudflare = false;
+    expect(enabled.controller.routeForSession("cloudflare-child")).toMatchObject({backend:"cloudflare",model:"gpt-6-astra",provider_model:"openai/gpt-6-astra",thinking:"high"});
     expect(ai.run).toHaveBeenCalledTimes(1);
   });
 

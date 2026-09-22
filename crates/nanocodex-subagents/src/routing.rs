@@ -43,8 +43,8 @@ impl SpawnRoute {
 }
 
 /// Implemented by the embedding host. Resolve must enforce the invoking child's
-/// authority and explicit overrides; bind must durably pin the choice before any
-/// child turn starts. Returning an error fails the spawn closed.
+/// authority and explicit overrides; bind must retain the choice in memory before
+/// any child turn starts. Returning an error fails the spawn closed.
 #[cfg_attr(target_family = "wasm", async_trait(?Send))]
 #[cfg_attr(not(target_family = "wasm"), async_trait)]
 pub trait SpawnRouter: Send + Sync {

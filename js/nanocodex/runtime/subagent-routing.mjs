@@ -20,7 +20,7 @@ function synchronous(value, operation) {
   return value;
 }
 
-// Host-only routing lifecycle. Persist public choices, never transports or credentials.
+// Host-only routing lifecycle. Retain live public choices, never transports or credentials.
 export function createSubagentRouting({ resolve, authorize, load, save }) {
   for (const [name, callback] of Object.entries({ resolve, authorize, load, save })) {
     if (typeof callback !== "function") throw new TypeError(`subagent routing ${name} must be a function`);
@@ -48,7 +48,7 @@ export function createSubagentRouting({ resolve, authorize, load, save }) {
         throw new Error("subagent router cannot replace an explicit thinking override");
       }
       // Allowlisted public fields only. Resolution may use credentials, but they
-      // must never enter a descriptor, durable route, or the Rust bridge.
+      // must never enter a descriptor, live route, or the Rust bridge.
       const route = Object.freeze({ provider: choice.provider, model,
         thinking: choice.thinking, ...(choice.providerModel === undefined ? {} : { providerModel: choice.providerModel }) });
       const routeId = crypto.randomUUID();
@@ -66,7 +66,7 @@ export function createSubagentRouting({ resolve, authorize, load, save }) {
       if (existing !== undefined && existing !== null) {
         throw new Error("subagent route is already pinned");
       }
-      // save must be synchronous and durable; a failure keeps the choice available
+      // save must synchronously pin the live route; a failure keeps the choice available
       // for retry and prevents the Rust child from starting.
       synchronous(save(request.sessionId, prepared.route), 'save');
       pending.delete(request.routeId);

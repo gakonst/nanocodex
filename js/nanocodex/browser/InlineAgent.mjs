@@ -12,7 +12,6 @@ import {
   defineRuntime,
   loadDurabilityRuntime,
   loadSubscriptionRuntime,
-  mayReleaseCloudflareSubagentSession,
   reportError,
   registerDefinitionHost,
   releaseDefinitionHost,
@@ -182,53 +181,13 @@ export async function create(options = {}) {
             );
         if (cloudflareReservation !== undefined) {
           activateCloudflareAgentSession(cloudflareReservation);
-          const restoredSubagents = subagentSessions?.restore?.() ?? [];
-          const checkpoint = subagentSessions?.restoreCheckpoint?.();
-          let reusableCheckpoint = checkpoint;
-          if (checkpoint !== undefined) {
-            const complete = validateRestoredChildBindings(checkpoint, raw.sessionId, restoredSubagents, subagentSessions);
-            raw.validateSubagentCheckpoint(checkpoint);
-            if (!complete) {
-              // Preserve valid saved children. Only bindings without a runtime
-              // boundary are archival; one missing child must not disable siblings.
-              const merged = JSON.parse(checkpoint);
-              const saved = new Set(merged.children.map((child) => child.descriptor.session_id));
-              for (const binding of restoredSubagents) {
-                if (saved.has(binding.sessionId)) continue;
-                const id = Number(binding.agentId);
-                merged.children.push({
-                  descriptor: { id, session_id: binding.sessionId, role: binding.role,
-                    task: binding.task, parent: binding.parentAgentId == null ? null : Number(binding.parentAgentId) },
-                  runtime: null, output_schema: true, next_turn_token: 0,
-                  status: { state: "interrupted" }, last_output: null,
-                  host_context: subagentSessions?.hostContextRef?.(binding.sessionId) ?? null,
-                });
-                merged.next_agent_id = Math.max(merged.next_agent_id, id + 1);
-              }
-              reusableCheckpoint = JSON.stringify(merged);
-              raw.validateSubagentCheckpoint(reusableCheckpoint);
-            }
-          }
-          if (restoredSubagents.length > 0 || checkpoint !== undefined) {
-            const restoredHostContextRefs = Object.fromEntries(
-              restoredSubagents.map((descriptor) => {
-                const hostContextRef = subagentSessions?.hostContextRef?.(descriptor.sessionId);
-                return [descriptor.sessionId, hostContextRef ?? null];
-              }),
-            );
-            await raw.restoreSubagents(
-              reusableCheckpoint ?? JSON.stringify(restoredSubagents),
-              JSON.stringify(restoredHostContextRefs),
-            );
-          }
         }
         return raw;
       } catch (error) {
         const cleanupErrors = [];
         if (raw !== undefined) {
           try {
-            if (cloudflareReservation !== undefined) await raw.shutdownDurable();
-            else await raw.shutdown();
+            await raw.shutdown();
           }
           catch (cleanupError) { cleanupErrors.push(cleanupError); }
           try { raw.free(); }
@@ -249,40 +208,19 @@ export async function create(options = {}) {
       }
     },
     async shutdown(raw) {
-      if (cloudflareReservation === undefined || raw.sessionId !== cloudflareReservation.sessionId
-        || subagentSessions?.checkpoint === undefined) {
-        await raw.shutdown();
-        return;
-      }
-      const errors = [];
-      try {
-        if (mayReleaseCloudflareSubagentSession(cloudflareReservation)) {
-          const checkpoint = await raw.checkpointSubagents();
-          if (mayReleaseCloudflareSubagentSession(cloudflareReservation)) {
-            subagentSessions.checkpoint(checkpoint);
-          }
-        }
-      } catch (error) {
-        errors.push(error);
-      }
-      try { await raw.shutdownDurable(); }
-      catch (error) { errors.push(error); }
-      // Durable unload keeps descriptors, but relinquishes this host's in-memory
-      // registrations. The released Cloudflare generation has no host authority.
-      releaseHostSessions(host);
-      if (errors.length === 1) throw errors[0];
-      if (errors.length > 1) throw new AggregateError(errors, "Subagent checkpoint and shutdown failed");
+      await raw.shutdown();
     },
     subscribe: events.subscribe,
     adopt(raw) {
       host.retain();
       try {
-        durabilityOwner?.retain();
+        // Adopted child handles are ephemeral and do not own the root store.
+        if (raw.sessionId === stableSessionId) durabilityOwner?.retain();
         bindHostSession(host, raw.sessionId, cloudflareReservation);
         events.addSource(raw);
       } catch (error) {
         events.removeSource(raw);
-        durabilityOwner?.release();
+        if (raw.sessionId === stableSessionId) durabilityOwner?.release();
         releaseHost(host);
         throw error;
       }
@@ -291,7 +229,7 @@ export async function create(options = {}) {
       events.removeSource(raw);
       host.releaseSession(raw.sessionId);
       releaseHostSession(host, raw.sessionId);
-      durabilityOwner?.release();
+      if (raw.sessionId === stableSessionId) durabilityOwner?.release();
       releaseHost(host);
     },
     decorate: (agent) => agent.extend(agentActions()),
@@ -327,26 +265,4 @@ export async function create(options = {}) {
 
 function releaseHost(host) {
   void host.release().catch(reportError);
-}
-
-function validateRestoredChildBindings(encoded, rootSessionId, bindings, sessions) {
-  const checkpoint = JSON.parse(encoded);
-  if (checkpoint.version !== 1 || checkpoint.root_session_id !== rootSessionId
-    || !Array.isArray(checkpoint.children) || checkpoint.children.length > bindings.length) {
-    throw new Error("Durable child checkpoint does not match its session bindings");
-  }
-  const retained = new Map(bindings.map((binding) => [binding.sessionId, binding]));
-  for (const child of checkpoint.children) {
-    const descriptor = child?.descriptor;
-    const binding = retained.get(descriptor?.session_id);
-    if (binding === undefined || String(descriptor.id) !== binding.agentId || descriptor.role !== binding.role
-      || (descriptor.parent == null ? null : String(descriptor.parent)) !== (binding.parentAgentId ?? null)) {
-      throw new Error("Durable child checkpoint identity differs from its session binding");
-    }
-    if ((child.host_context ?? null) !== (sessions.hostContextRef?.(binding.sessionId) ?? null)) {
-      throw new Error("child checkpoint host context differs from its retained binding");
-    }
-    retained.delete(descriptor.session_id);
-  }
-  return retained.size === 0;
 }

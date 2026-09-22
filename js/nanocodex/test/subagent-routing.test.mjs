@@ -17,7 +17,7 @@ function fixture(routes = new Map(), resolve = async ({ task }) => task === 'sim
   return { router, routes, calls: () => calls };
 }
 
-test('large parent downgrades and small parent escalates across providers; routes survive reconstruction', async () => {
+test('large parent downgrades and small parent escalates across providers; routes stay pinned in live memory', async () => {
   const { router, routes, calls } = fixture();
   for (const [parentSessionId, task, sessionId, provider, model] of [
     ['large-parent', 'simple', 'small-child', 'vercel', 'astra'],
@@ -35,6 +35,9 @@ test('large parent downgrades and small parent escalates across providers; route
   assert.deepEqual(reopened.router.route('small-child'), router.route('small-child'));
   assert.deepEqual(reopened.router.route('large-child'), router.route('large-child'));
   assert.equal(reopened.calls(), 0);
+  const restarted = fixture();
+  assert.throws(() => restarted.router.route('small-child'), /missing/);
+  assert.throws(() => restarted.router.route('large-child'), /missing/);
 });
 
 test('authorization fails before routing; route tickets cannot cross parent authority', async () => {
@@ -91,7 +94,7 @@ test('authorization and explicit overrides use the request captured before await
   router.bind({ parentSessionId: 'parent', hostContextRef: 'owned', sessionId: 'child', routeId: choice.routeId });
 });
 
-test('failed durable saves block binding and keep the ticket available for retry', async () => {
+test('failed live route saves block binding and keep the ticket available for retry', async () => {
   const routes = new Map();
   let fail = true;
   const router = createSubagentRouting({
@@ -108,7 +111,7 @@ test('failed durable saves block binding and keep the ticket available for retry
   assert.throws(() => router.bind({ ...binding, routeId: second.routeId }), /already pinned/);
 });
 
-test('asynchronous durable load and save implementations fail closed', async () => {
+test('asynchronous route load and save implementations fail closed', async () => {
   for (const operation of ['load', 'save']) {
     const router = createSubagentRouting({
       authorize: () => {}, resolve: () => ({ provider: 'test', model: 'sol', thinking: 'high' }),
@@ -120,7 +123,7 @@ test('asynchronous durable load and save implementations fail closed', async () 
   }
 });
 
-test('invalid models and public route fields cannot be persisted', async () => {
+test('invalid models and public route fields cannot be bound', async () => {
   for (const fields of [{ model: 'unknown' }, { thinking: 'unknown' }, { provider: ' ' }, { providerModel: {} }]) {
     const { router } = fixture(new Map(), () => ({ provider: 'test', model: 'sol', thinking: 'high', ...fields }));
     await assert.rejects(router.resolve({ parentSessionId: 'large-parent', hostContextRef: 'owned' }), /invalid/);
@@ -130,7 +133,7 @@ test('invalid models and public route fields cannot be persisted', async () => {
 test('the WASM bridge refuses asynchronous custom route bindings', async () => {
   const { installHostBridge, registerDefinitionHost, releaseDefinitionHost } = await import('../internal.mjs');
   installHostBridge();
-  const id = registerDefinitionHost({ bindSubagentRoute: async () => { throw new Error('not durable'); } });
+  const id = registerDefinitionHost({ bindSubagentRoute: async () => { throw new Error('not synchronous'); } });
   try {
     assert.throws(() => globalThis.nanocodexHost.bindSubagentRoute(id, '{}'), /binding must be synchronous/);
   } finally {

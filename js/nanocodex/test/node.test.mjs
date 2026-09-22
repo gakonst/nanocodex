@@ -572,10 +572,9 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
       event.request_id === agent.sessionId
       && event.type === "tool.call"
       && event.payload.tool === "wait_agent"));
-    const childState = durability.load(childSessionId);
-    assert.notEqual(childState.revision, "0");
-    assert.match(childState.payload, /nanocodex_durable_state/);
-    assert.notDeepEqual(childState, durability.load(durabilityId));
+    assert.throws(() => durability.load(childSessionId), /unknown durability state/,
+      "child sessions never acquire or persist a durable state");
+    assert.notEqual(durability.load(durabilityId).revision, "0", "the root remains durable");
   } finally {
     watch.off();
     await agent.session.shutdown();

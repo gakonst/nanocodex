@@ -551,13 +551,51 @@ provider may still be connecting; mount verifies current readiness and capacity.
 
 ## Computer Hands on macOS, Linux, and Windows
 
-Running the CLI (including `run` and `attach`) publishes the native computer in
-background. The desktop runtime joins that same publisher. All clients signed
-into the same account under the same OS user share one identity; closing one
-client preserves the others' native host and VMs. The last client stops the
-publisher after a short grace period. `NANOCODEX_DISABLE_HAND=1` opts out of
-CLI publication. `nanocodex2 hand` keeps the shared computer online explicitly;
-`hand --workspace PATH` publishes a separately retained workspace.
+The Hand publisher is owned by an OS service. The CLI and desktop app connect
+as clients; closing the last client leaves the Hand and VM host running.
+`NANOCODEX_DISABLE_HAND=1` opts out of CLI attachment. `nanocodex2 hand` runs the
+publisher in the foreground; `hand --workspace PATH` publishes a separately
+retained workspace.
+
+On macOS, install and manage the login service from the standard Rust CLI:
+
+```sh
+nanocodex hand install
+nanocodex hand status
+nanocodex hand restart
+nanocodex hand stop
+nanocodex hand start
+```
+
+The per-user LaunchAgent runs the installed `nanocodex2` directly and starts at
+login. It does not require Python or a shell service wrapper. It refuses to
+compete with an existing system LaunchDaemon. Use `--executable PATH` with
+`hand install` for an explicitly selected Hand binary. Starting before user
+login is not supported by these user-service commands.
+
+`nanocodex update --nightly --restart-hand` stages a complete verified release, switches the
+installed Hand service, waits for that exact executable to publish a connected
+catalog, and then activates the CLI. A failed Hand startup restores the previous
+service and leaves the CLI unchanged. An explicit update restarts the Hand and
+its VM host; finish active work first. For a matching local build, use
+`nanocodex update --path PATH_TO_NANOCODEX --hand-binary PATH_TO_NANOCODEX2`.
+
+```sh
+nanocodex update --auto enable --nightly
+nanocodex update --auto status
+nanocodex update --apply --restart-hand
+nanocodex update --auto disable
+```
+
+Automatic checks run hourly. When a Hand service is installed, they download and verify
+a pending release without starting or restarting the Hand or switching the active
+CLI. `hand start` applies a pending update while starting a stopped service, and
+keeps the candidate running only after account reconnection succeeds. To update a running
+Hand, explicitly use `nanocodex update --apply --restart-hand`; this restarts its
+VM host as well. Ordinary updates defer activation when a Hand service is installed. Automatic
+checks use the stable channel unless enabled with `--nightly`. Interrupted
+activation retains a recovery record; `nanocodex hand recover` restores the
+previous service and CLI, or finishes cleanup of an already committed update.
 
 Optional VM assets live in a `vm.json` recipe. `NANOCODEX_DESKTOP_DATA` overrides
 its containing directory:

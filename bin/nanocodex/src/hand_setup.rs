@@ -16,6 +16,23 @@ pub(crate) struct Hand {
 enum HandCommand {
     /// Install or update a persistent Linux Hand and KVM factory over SSH.
     Add(Add),
+    /// Install the current macOS user Hand LaunchAgent.
+    Install {
+        #[arg(long)]
+        executable: Option<PathBuf>,
+        #[arg(long)]
+        account_file: Option<PathBuf>,
+    },
+    /// Show local Hand service status as JSON.
+    Status,
+    /// Start the local Hand service.
+    Start,
+    /// Stop the local Hand service.
+    Stop,
+    /// Restart the local Hand service.
+    Restart,
+    /// Restore the LaunchAgent saved by an interrupted update.
+    Recover,
     /// Install or update the Hand and VM factory on this device after account login.
     Setup(Setup),
 }
@@ -284,7 +301,30 @@ impl Setup {
 
 impl Hand {
     pub(crate) async fn run(self) -> Result<()> {
+        let _service_lock = if matches!(
+            &self.command,
+            HandCommand::Add(_) | HandCommand::Setup(_) | HandCommand::Status
+        ) {
+            None
+        } else {
+            Some(crate::update::lock_service_operation()?)
+        };
         match self.command {
+            HandCommand::Install {
+                executable,
+                account_file,
+            } => crate::hand_service::install(executable, account_file).await,
+            HandCommand::Status => {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&crate::hand_service::status().await?)?
+                );
+                Ok(())
+            }
+            HandCommand::Start => crate::update::start_hand().await,
+            HandCommand::Stop => crate::hand_service::stop().await,
+            HandCommand::Restart => crate::update::restart_hand().await,
+            HandCommand::Recover => crate::update::recover_hand_update().await,
             HandCommand::Add(add) => {
                 add.setup
                     .run(Destination::Ssh {
@@ -306,6 +346,24 @@ mod tests {
     struct TestCli {
         #[command(flatten)]
         hand: Hand,
+    }
+    #[test]
+    fn accepts_local_service_commands() {
+        for action in ["install", "status", "start", "stop", "restart"] {
+            assert!(TestCli::try_parse_from(["hand", action]).is_ok());
+        }
+        assert!(
+            TestCli::try_parse_from([
+                "hand",
+                "install",
+                "--executable",
+                "/a path/nanocodex2",
+                "--account-file",
+                "/private/account.json"
+            ])
+            .is_ok()
+        );
+        assert!(TestCli::try_parse_from(["hand", "stop", "--system"]).is_err());
     }
     #[test]
     fn accepts_ssh_config_aliases_and_rejects_options_or_shell_programs() {

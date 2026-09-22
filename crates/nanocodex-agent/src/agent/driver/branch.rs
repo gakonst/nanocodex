@@ -149,12 +149,8 @@ where
         let session_id = snapshot.session_id.parse::<SessionId>().map_err(|error| {
             NanocodexError::InvalidSessionSnapshot(format!("invalid child session ID: {error}"))
         })?;
-        // Restore under the retained child's identity and checkpoint, never
-        // under a fresh-spawn recipe or the parent's execution owner.
-        let mut spawner = self.with_execution(
-            self.execution
-                .for_restored_thread(snapshot.conversation.as_ref())?,
-        );
+        // Rehydrate an in-memory idle child without inheriting the parent's policy.
+        let mut spawner = self.with_execution(self.execution.for_new_thread("restore")?);
         spawner.restored_snapshot = snapshot.conversation.clone();
         spawner.depth = self.depth.saturating_add(1);
         spawner.context_source = spawner.context_config.build();

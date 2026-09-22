@@ -3,10 +3,10 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyManagedSubagentLifecycle,
-  initializeManagedSubagentDigests,
+  ManagedSubagentBindings,
+  discardObsoleteManagedSubagents,
   managedAuthorizationForToolContext,
   managedAuthorizationForRouting,
-  pruneOrphanedManagedSubagentRoutes,
   type DurableAgentSession,
 } from "../src/index";
 
@@ -25,57 +25,30 @@ const connect = {
 };
 
 describe("managed subagent authorization ownership", () => {
-  it("removes unpublished route bindings between runtimes while preserving restorable child pins", async () => {
-    await withSession(async (state) => {
-      const { storage } = state;
-      storage.sql.exec(`CREATE TABLE nanocodex_cloudflare_subagents (
-        session_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL UNIQUE,
-        descriptor_json TEXT NOT NULL, host_context_ref TEXT)`);
-      for (const [sessionId, agentId, parentAgentId] of [
-        [ACCOUNT_SESSION, "parent", null], [NESTED_SESSION, "nested", "parent"],
-      ] as const) {
-        const child = descriptor(agentId, parentAgentId, sessionId, "restorable child");
-        storage.sql.exec(`INSERT INTO nanocodex_cloudflare_subagents
-          (session_id, agent_id, descriptor_json, host_context_ref) VALUES (?, ?, ?, ?)`,
-        sessionId, agentId, JSON.stringify(child), "account-turn");
+  it("discards obsolete child metadata without touching root turns or routes", async () => {
+    await withSession(async (state, bindings) => {
+      insertTurn(state.storage, "account-turn", account);
+      state.storage.sql.exec("INSERT INTO managed_thread_route VALUES (1, '{}')");
+      for (const table of ["managed_subagent_authorizations", "managed_subagent_routes"]) {
+        state.storage.sql.exec(`CREATE TABLE ${table} (legacy TEXT)`);
+        state.storage.sql.exec(`INSERT INTO ${table} VALUES ('obsolete child')`);
       }
-      for (const sessionId of [ACCOUNT_SESSION, NESTED_SESSION, CONNECT_SESSION]) {
-        storage.sql.exec(`INSERT INTO managed_subagent_routes (session_id, route_id, binding_json)
-          VALUES (?, ?, ?)`, sessionId, `route-${sessionId}`, JSON.stringify({ retained: sessionId }));
-      }
-      const retained = () => storage.sql.exec<{ session_id: string; binding_json: string }>(
-        "SELECT session_id, binding_json FROM managed_subagent_routes ORDER BY session_id",
-      ).toArray();
-      const expected = retained().filter(row => row.session_id !== CONNECT_SESSION);
-      pruneOrphanedManagedSubagentRoutes(storage);
-      expect(retained()).toEqual(expected);
-      pruneOrphanedManagedSubagentRoutes(storage);
-      expect(retained()).toEqual(expected);
-      expect(storage.sql.exec<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM nanocodex_cloudflare_subagents",
-      ).one().count).toBe(2);
-    });
-  });
-
-  it("cleans failed startup routes when the descriptor table was never created", async () => {
-    await withSession(async (state) => {
-      state.storage.sql.exec(`INSERT INTO managed_subagent_routes (session_id, route_id, binding_json)
-        VALUES (?, ?, ?)`, ACCOUNT_SESSION, "unpublished-route", "{}");
-      pruneOrphanedManagedSubagentRoutes(state.storage);
-      expect(state.storage.sql.exec<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM managed_subagent_routes",
-      ).one().count).toBe(0);
+      discardObsoleteManagedSubagents(state.storage);
+      discardObsoleteManagedSubagents(state.storage);
+      expect(state.storage.sql.exec("SELECT name FROM sqlite_master WHERE name IN ('managed_subagent_authorizations', 'managed_subagent_routes')").toArray()).toEqual([]);
+      expect(state.storage.sql.exec("SELECT id FROM managed_turns").toArray()).toEqual([{ id: "account-turn" }]);
+      expect(state.storage.sql.exec("SELECT route_json FROM managed_thread_route").one()).toEqual({ route_json: "{}" });
     });
   });
 
   it("resolves routing authority from exact parent provenance, independently of current root authority", async () => {
-    await withSession(async (state) => {
+    await withSession(async (state, bindings) => {
       insertTurn(state.storage, "account-turn", account);
       insertTurn(state.storage, "connect-turn", connect);
       const direct = descriptor("route-parent", null, ACCOUNT_SESSION, "parent task");
-      bind(state.storage, "bind", direct, "account-turn");
+      bind(state.storage, bindings, direct, "account-turn");
       const routeAuthorization = (parent: string, ref: string, root = ROOT_SESSION) =>
-        managedAuthorizationForRouting(state.storage, root, parent, ref);
+        managedAuthorizationForRouting(state.storage, bindings, root, parent, ref);
       expect(routeAuthorization(ROOT_SESSION, "account-turn")).toEqual(account);
       expect(routeAuthorization(ROOT_SESSION, "connect-turn")).toEqual(connect);
       expect(routeAuthorization(ACCOUNT_SESSION, "account-turn")).toEqual(account);
@@ -83,134 +56,105 @@ describe("managed subagent authorization ownership", () => {
       expect(routeAuthorization(ACCOUNT_SESSION, "account-turn", CONNECT_SESSION)).toBeUndefined();
       expect(routeAuthorization(NESTED_SESSION, "account-turn")).toBeUndefined();
       const nested = descriptor("route-nested", "route-parent", NESTED_SESSION, "nested task");
-      bind(state.storage, "bind", nested, "account-turn");
+      bind(state.storage, bindings, nested, "account-turn");
       expect(routeAuthorization(NESTED_SESSION, "account-turn")).toEqual(account);
-      release(state.storage, ACCOUNT_SESSION, "account-turn");
+      release(state.storage, bindings, ACCOUNT_SESSION, "account-turn");
       expect(routeAuthorization(ACCOUNT_SESSION, "account-turn")).toBeUndefined();
       // A retained descendant owns its snapshot even after its parent finishes.
       expect(routeAuthorization(NESTED_SESSION, "account-turn")).toEqual(account);
     });
   });
 
-  it("snapshots direct authority, inherits it for nested agents, and reconstructs exactly", async () => {
-    await withSession(async (state) => {
+  it("snapshots direct authority and inherits it only within the live runtime", async () => {
+    await withSession(async (state, bindings) => {
       insertTurn(state.storage, "account-turn", account);
       const direct = descriptor("1", null, ACCOUNT_SESSION, "account child");
-      bind(state.storage, "bind", direct, "account-turn");
+      bind(state.storage, bindings, direct, "account-turn");
 
-      expect(authorization(state.storage, direct, connect)).toEqual(account);
+      expect(authorization(bindings, direct, connect)).toEqual(account);
 
       const nested = descriptor("2", "1", NESTED_SESSION, "nested child");
-      bind(state.storage, "bind", nested, "account-turn");
-      expect(authorization(state.storage, nested, connect)).toEqual(account);
-      bind(state.storage, "reconstruct", nested, "account-turn");
-      expect(state.storage.sql.exec<{ count: number }>(
-        "SELECT COUNT(*) AS count FROM managed_subagent_authorizations",
-      ).one().count).toBe(2);
+      bind(state.storage, bindings, nested, "account-turn");
+      expect(authorization(bindings, nested, connect)).toEqual(account);
+      bind(state.storage, bindings, nested, "account-turn");
+      expect(bindings.authorizations.size).toBe(2);
 
-      expect(() => bind(state.storage, "reconstruct", {
+      expect(() => bind(state.storage, bindings, {
         ...nested,
         task: "changed task",
       }, "account-turn")).toThrow("conflicts");
-      expect(() => bind(state.storage, "bind", descriptor(
+      expect(() => bind(state.storage, bindings, descriptor(
         "orphan", "missing", crypto.randomUUID(), "orphan",
       ), "account-turn")).toThrow("parent is missing");
     });
   });
 
-  it("converts existing authorization content once and preserves exact reconstruction", async () => {
-    await withSession(async (state) => {
+  it("never restores child authority from durable root turns", async () => {
+    await withSession(async (state, bindings) => {
       insertTurn(state.storage, "account-turn", account);
       const child = descriptor("existing", null, ACCOUNT_SESSION, "existing task");
-      bind(state.storage, "bind", child, "account-turn");
-      state.storage.sql.exec("ALTER TABLE managed_subagent_authorizations RENAME COLUMN role_digest TO role");
-      state.storage.sql.exec("ALTER TABLE managed_subagent_authorizations RENAME COLUMN task_digest TO task");
-      state.storage.sql.exec("UPDATE managed_subagent_authorizations SET role = ?, task = ?", child.role, child.task);
-      initializeManagedSubagentDigests(state.storage);
-      initializeManagedSubagentDigests(state.storage);
-      expect(authorization(state.storage, child, account)).toEqual(account);
-      bind(state.storage, "reconstruct", child, "account-turn");
+      bind(state.storage, bindings, child, "account-turn");
+      const replacement = new ManagedSubagentBindings();
+      expect(authorization(replacement, child, account)).toBeUndefined();
+      expect(managedAuthorizationForRouting(state.storage, replacement, ROOT_SESSION, ACCOUNT_SESSION, "account-turn")).toBeUndefined();
+      expect(managedAuthorizationForRouting(state.storage, replacement, ROOT_SESSION, ROOT_SESSION, "account-turn")).toEqual(account);
     });
   });
 
   it("retains only identity digests for large task and role content", async () => {
-    await withSession(async (state) => {
+    await withSession(async (state, bindings) => {
       insertTurn(state.storage, "account-turn", account);
       const child = { ...descriptor("large", null, ACCOUNT_SESSION, "x".repeat(2 * 1024 * 1024)), role: "r".repeat(2 * 1024 * 1024) };
-      bind(state.storage, "bind", child, "account-turn");
-      expect(authorization(state.storage, child, account)).toEqual(account);
-      bind(state.storage, "reconstruct", child, "account-turn");
-      expect(state.storage.sql.exec<{ role: string; task: string }>(
-        "SELECT role_digest AS role, task_digest AS task FROM managed_subagent_authorizations WHERE session_id = ?", ACCOUNT_SESSION,
-      ).one()).toEqual({ role: expect.stringMatching(/^[a-f0-9]{64}$/), task: expect.stringMatching(/^[a-f0-9]{64}$/) });
-      expect(authorization(state.storage, { ...child, task: child.task + "different" }, account)).toBeUndefined();
-      expect(authorization(state.storage, { ...child, role: child.role + "different" }, account)).toBeUndefined();
+      bind(state.storage, bindings, child, "account-turn");
+      expect(authorization(bindings, child, account)).toEqual(account);
+      bind(state.storage, bindings, child, "account-turn");
+      expect(bindings.authorizations.get(ACCOUNT_SESSION)).toMatchObject({
+        role: expect.stringMatching(/^[a-f0-9]{64}$/), task: expect.stringMatching(/^[a-f0-9]{64}$/),
+      });
+      expect(authorization(bindings, { ...child, task: child.task + "different" }, account)).toBeUndefined();
+      expect(authorization(bindings, { ...child, role: child.role + "different" }, account)).toBeUndefined();
     });
   });
 
   it("keeps a Connect child denied after a later account root and deletes only an exact ref", async () => {
-    await withSession(async (state) => {
+    await withSession(async (state, bindings) => {
       insertTurn(state.storage, "connect-turn", connect);
       const child = descriptor("3", null, CONNECT_SESSION, "connect child");
-      bind(state.storage, "bind", child, "connect-turn");
+      bind(state.storage, bindings, child, "connect-turn");
 
-      expect(authorization(state.storage, child, account)).toEqual(connect);
+      expect(authorization(bindings, child, account)).toEqual(connect);
       expect(managedAuthorizationForToolContext(
-        state.storage,
+        bindings,
         ROOT_SESSION,
         account,
         { ...context(ROOT_SESSION), subagent: child },
       )).toBeUndefined();
-      expect(() => release(state.storage, child.sessionId, "wrong-turn")).toThrow("does not match");
-      release(state.storage, child.sessionId, "connect-turn");
-      expect(authorization(state.storage, child, account)).toBeUndefined();
+      expect(() => release(state.storage, bindings, child.sessionId, "wrong-turn")).toThrow("does not match");
+      release(state.storage, bindings, child.sessionId, "connect-turn");
+      expect(authorization(bindings, child, account)).toBeUndefined();
     });
   });
 
-  it("reconstructs legacy ref-less children fail-closed and releases them idempotently", async () => {
-    await withSession(async (state) => {
-      insertTurn(state.storage, "account-turn", account);
+  it("rejects reconstruction and missing provenance", async () => {
+    await withSession(async (state, bindings) => {
       const child = descriptor("legacy", null, ACCOUNT_SESSION, "legacy child");
-      bind(state.storage, "bind", child, "account-turn");
-      expect(authorization(state.storage, child, connect)).toEqual(account);
-
-      const lifecycle = (event: unknown) => state.storage.transactionSync(() => (
-        applyManagedSubagentLifecycle(state.storage, event)
-      ));
-      const reconstruct = {
-        type: "reconstruct",
-        rootSessionId: ROOT_SESSION,
-        sessionId: child.sessionId,
-        descriptor: child,
-        hostContextRef: undefined,
-      };
-      expect(() => lifecycle(reconstruct)).not.toThrow();
-      expect(() => lifecycle(reconstruct)).not.toThrow();
-      expect(authorization(state.storage, child, account)).toBeUndefined();
-
-      const release = {
-        type: "release",
-        rootSessionId: ROOT_SESSION,
-        sessionId: child.sessionId,
-        hostContextRef: undefined,
-      };
-      expect(() => lifecycle(release)).not.toThrow();
-      expect(() => lifecycle(release)).not.toThrow();
-      expect(() => lifecycle({ ...reconstruct, type: "bind" })).toThrow(
-        "invalid managed subagent lifecycle event",
-      );
+      for (const type of ["reconstruct", "bind", "release"]) {
+        expect(() => applyManagedSubagentLifecycle(state.storage, bindings, {
+          type, rootSessionId: ROOT_SESSION, sessionId: child.sessionId, descriptor: child,
+        })).toThrow("invalid managed subagent lifecycle event");
+      }
     });
   });
 });
 
 async function withSession(
-  run: (state: DurableObjectState) => void | Promise<void>,
+  run: (state: DurableObjectState, bindings: ManagedSubagentBindings) => void | Promise<void>,
 ): Promise<void> {
   const sessions = (env as unknown as {
     NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
   }).NANOCODEX_SESSIONS;
   const stub = sessions.getByName(crypto.randomUUID());
-  await runInDurableObject(stub, async (_session, state) => run(state));
+  await runInDurableObject(stub, async (_session, state) => run(state, new ManagedSubagentBindings()));
 }
 
 function insertTurn(storage: DurableObjectStorage, id: string, authorization: unknown): void {
@@ -240,12 +184,12 @@ function descriptor(
 
 function bind(
   storage: DurableObjectStorage,
-  type: "bind" | "reconstruct",
+  bindings: ManagedSubagentBindings,
   child: ReturnType<typeof descriptor>,
   hostContextRef: string,
 ): void {
-  storage.transactionSync(() => applyManagedSubagentLifecycle(storage, {
-    type,
+  storage.transactionSync(() => applyManagedSubagentLifecycle(storage, bindings, {
+    type: "bind",
     rootSessionId: ROOT_SESSION,
     sessionId: child.sessionId,
     descriptor: child,
@@ -253,8 +197,8 @@ function bind(
   }));
 }
 
-function release(storage: DurableObjectStorage, sessionId: string, hostContextRef: string): void {
-  storage.transactionSync(() => applyManagedSubagentLifecycle(storage, {
+function release(storage: DurableObjectStorage, bindings: ManagedSubagentBindings, sessionId: string, hostContextRef: string): void {
+  storage.transactionSync(() => applyManagedSubagentLifecycle(storage, bindings, {
     type: "release",
     rootSessionId: ROOT_SESSION,
     sessionId,
@@ -263,12 +207,12 @@ function release(storage: DurableObjectStorage, sessionId: string, hostContextRe
 }
 
 function authorization(
-  storage: DurableObjectStorage,
+  bindings: ManagedSubagentBindings,
   child: ReturnType<typeof descriptor>,
   active: typeof account | typeof connect,
 ) {
   return managedAuthorizationForToolContext(
-    storage,
+    bindings,
     ROOT_SESSION,
     active,
     { ...context(child.sessionId), subagent: child },

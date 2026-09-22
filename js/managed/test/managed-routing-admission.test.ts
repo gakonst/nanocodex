@@ -114,12 +114,12 @@ describe("managed routing admission", () => {
     });
   }));
 
-  it.each(["accepted", "completed", "snapshot", "child", "history"])("rejects %s before mutating configuration", kind => fixture(async (instance, state) => {
+  it.each(["accepted", "completed", "snapshot", "history"])("rejects %s before mutating configuration", kind => fixture(async (instance, state) => {
     await withRouting(instance, async () => {
       if (kind === "accepted") state.storage.sql.exec("UPDATE session_state SET accepted_turns = 1");
       if (kind === "completed") state.storage.sql.exec("UPDATE session_state SET accepted_turns = 1, completed_turns = 1");
-      if (kind === "snapshot" || kind === "child") {
-        const table = kind === "snapshot" ? "nanocodex_durable_states" : "nanocodex_cloudflare_subagents";
+      if (kind === "snapshot") {
+        const table = "nanocodex_durable_states";
         state.storage.sql.exec(`CREATE TABLE IF NOT EXISTS ${table} (fixture TEXT)`);
         state.storage.sql.exec(`INSERT INTO ${table} VALUES ('retained')`);
       }

@@ -22,7 +22,7 @@ use nanocodex_agent::{
     AgentEvents, AgentHandle, ChildRuntimeSnapshot, Nanocodex, NanocodexError,
     Result as AgentResult, TurnResult,
 };
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::Value;
 use std::{
     collections::HashMap,
@@ -87,125 +87,6 @@ pub(super) fn completion_instructions(schema: &str) -> String {
 pub(super) enum SubmissionOutcome {
     Accepted { decoded_json_text: bool },
     Superseded,
-}
-
-/// Bounded, versioned durable child state. No live host capabilities are serialized.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct SubagentCheckpoint {
-    pub version: u32,
-    pub root_session_id: String,
-    pub next_agent_id: u64,
-    pub children: Vec<ChildCheckpoint>,
-}
-
-#[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(deny_unknown_fields)]
-pub struct ChildCheckpoint {
-    pub descriptor: AgentDescriptor,
-    pub runtime: Option<ChildRuntimeSnapshot>,
-    pub output_schema: Value,
-    pub next_turn_token: u64,
-    pub status: AgentStatus,
-    pub last_output: Option<Value>,
-    pub host_context: Option<String>,
-}
-
-const MAX_CHECKPOINT_CHILDREN: usize = 1024;
-pub const MAX_SUBAGENT_CHECKPOINT_BYTES: usize = 16 * 1024 * 1024;
-
-impl SubagentCheckpoint {
-    /// Validates the complete document before any driver or host resource is opened.
-    pub fn validate(&self, root_session_id: &str) -> std::io::Result<()> {
-        if self.version != 1 || self.root_session_id != root_session_id {
-            return Err(std::io::Error::other(
-                "unsupported subagent checkpoint version or root identity",
-            ));
-        }
-        if self.children.len() > MAX_CHECKPOINT_CHILDREN
-            || serde_json::to_vec(self)
-                .map_err(std::io::Error::other)?
-                .len()
-                > MAX_SUBAGENT_CHECKPOINT_BYTES
-        {
-            return Err(std::io::Error::other("subagent checkpoint exceeds limits"));
-        }
-        let mut topology = RegistryState::default();
-        topology.restore(
-            root_session_id,
-            self.children
-                .iter()
-                .map(|child| child.descriptor.clone())
-                .collect(),
-        )?;
-        topology
-            .scope_mut(root_session_id)
-            .topology
-            .restore_next_agent_id(self.next_agent_id)?;
-        for child in &self.children {
-            if child.next_turn_token == u64::MAX
-                || child
-                    .host_context
-                    .as_ref()
-                    .is_some_and(|context| context.is_empty() || context.len() > 4096)
-            {
-                return Err(std::io::Error::other("invalid child token or host context"));
-            }
-            match &child.runtime {
-                Some(runtime) => {
-                    if runtime.session_id != child.descriptor.session_id {
-                        return Err(std::io::Error::other(
-                            "child checkpoint session identity mismatch",
-                        ));
-                    }
-                    runtime.validate().map_err(std::io::Error::other)?;
-                }
-                // Legacy descriptor-only children are archival, never reusable.
-                None if matches!(child.status, AgentStatus::Closed | AgentStatus::Interrupted) => {}
-                None => {
-                    return Err(std::io::Error::other(
-                        "reusable child is missing its runtime checkpoint",
-                    ));
-                }
-            }
-            if child.runtime.is_some()
-                && !matches!(child.status, AgentStatus::Closed | AgentStatus::Closing)
-                && let Some(parent) = child.descriptor.parent
-                && self.children.iter().any(|candidate| {
-                    candidate.descriptor.id == parent && candidate.runtime.is_none()
-                })
-            {
-                return Err(std::io::Error::other(
-                    "reusable child has a parent without a runtime checkpoint",
-                ));
-            }
-            let contract = OutputContract::compile(&child.output_schema)?;
-            if let Some(output) = &child.last_output
-                && !contract.validator.is_valid(output)
-            {
-                return Err(std::io::Error::other(
-                    "checkpoint last result violates child output schema",
-                ));
-            }
-            if let AgentStatus::Completed { output } = &child.status
-                && !contract.validator.is_valid(output)
-            {
-                return Err(std::io::Error::other(
-                    "checkpoint completed result violates child output schema",
-                ));
-            }
-            if let Some(parent) = child.descriptor.parent
-                && self.children.iter().any(|candidate| {
-                    candidate.descriptor.id == parent
-                        && matches!(candidate.status, AgentStatus::Closed | AgentStatus::Closing)
-                })
-                && !matches!(child.status, AgentStatus::Closed | AgentStatus::Closing)
-            {
-                return Err(std::io::Error::other("reusable child has a closed parent"));
-            }
-        }
-        Ok(())
-    }
 }
 
 pub struct Registry {
@@ -559,101 +440,6 @@ impl RegistryState {
         Ok(())
     }
 
-    fn restore(
-        &mut self,
-        root_session_id: &str,
-        descriptors: Vec<AgentDescriptor>,
-    ) -> std::io::Result<Vec<AgentDescriptor>> {
-        if root_session_id.trim().is_empty() {
-            return Err(std::io::Error::other(
-                "restored subagent root session ID must not be empty",
-            ));
-        }
-        if descriptors.is_empty() {
-            return Ok(Vec::new());
-        }
-        if self.scopes.contains_key(root_session_id) {
-            return Err(std::io::Error::other(format!(
-                "subagent scope already exists for {root_session_id}"
-            )));
-        }
-
-        let mut ids = std::collections::HashSet::new();
-        let mut session_ids = std::collections::HashSet::new();
-        for descriptor in &descriptors {
-            if descriptor.session_id.trim().is_empty() {
-                return Err(std::io::Error::other(
-                    "restored subagent session ID must not be empty",
-                ));
-            }
-            if descriptor.session_id == root_session_id {
-                return Err(std::io::Error::other(
-                    "restored subagent session ID must differ from its root session ID",
-                ));
-            }
-            if !ids.insert(descriptor.id) {
-                return Err(std::io::Error::other(format!(
-                    "duplicate restored agent_id {}",
-                    descriptor.id
-                )));
-            }
-            if !session_ids.insert(descriptor.session_id.clone())
-                || self.root_by_session.contains_key(&descriptor.session_id)
-            {
-                return Err(std::io::Error::other(format!(
-                    "duplicate restored subagent session ID {}",
-                    descriptor.session_id
-                )));
-            }
-        }
-
-        let mut restored = Self::default();
-        let mut pending = descriptors;
-        let mut ordered = Vec::new();
-        while !pending.is_empty() {
-            let before = pending.len();
-            let mut deferred = Vec::new();
-            for descriptor in pending {
-                let parent_ready = descriptor.parent.is_none_or(|parent| {
-                    restored
-                        .scopes
-                        .get(root_session_id)
-                        .is_some_and(|scope| scope.sessions.contains_key(&parent))
-                });
-                if !parent_ready {
-                    deferred.push(descriptor);
-                    continue;
-                }
-                restored.insert(
-                    root_session_id.to_owned(),
-                    descriptor.id,
-                    descriptor.session_id.clone(),
-                    restored_tombstone(descriptor.clone(), None),
-                )?;
-                ordered.push(descriptor);
-            }
-            if deferred.len() == before {
-                return Err(std::io::Error::other(
-                    "restored subagent topology has an unknown parent or cycle",
-                ));
-            }
-            pending = deferred;
-        }
-
-        let mut scope = restored
-            .scopes
-            .remove(root_session_id)
-            .ok_or_else(|| std::io::Error::other("restored subagent scope disappeared"))?;
-        for session in scope.sessions.values_mut() {
-            session.last_used = self.next_access();
-        }
-        for (session_id, retained_root) in restored.root_by_session {
-            self.root_by_session.insert(session_id, retained_root);
-        }
-        self.scopes.insert(root_session_id.to_owned(), scope);
-        Ok(ordered)
-    }
-
     fn validate_insert(
         &self,
         root_session_id: &str,
@@ -786,7 +572,7 @@ impl RegistryState {
         }
         let harness = target.harness.clone().ok_or_else(|| {
             std::io::Error::other(format!(
-                "agent {to} has no saved runtime history and cannot resume from its retained descriptor. Call list_agents with include_completed=true and select a recipient with can_message=true, or spawn a replacement agent. Do not retry this recipient while can_message=false."
+                "agent {to} has no in-memory runtime history and cannot resume. Call list_agents with include_completed=true and select a recipient with can_message=true, or spawn a replacement agent. Do not retry this recipient while can_message=false."
             ))
         })?;
         self.next_access = self.next_access.wrapping_add(1);
@@ -1185,332 +971,6 @@ impl Registry {
             .contains_key(session_id)
     }
 
-    /// Restores persisted logical children as interrupted, nonresident tombstones.
-    ///
-    /// This preserves handles returned by an earlier runtime without claiming
-    /// that in-memory child execution survived reconstruction.
-    pub async fn restore(
-        &self,
-        root_session_id: &str,
-        descriptors: Vec<AgentDescriptor>,
-    ) -> std::io::Result<()> {
-        self.restore_with_host_contexts(root_session_id, descriptors, HashMap::new())
-            .await
-    }
-
-    /// Restores logical children with embedding-private invocation context.
-    #[doc(hidden)]
-    pub async fn restore_with_host_contexts(
-        &self,
-        root_session_id: &str,
-        descriptors: Vec<AgentDescriptor>,
-        mut host_contexts: HashMap<String, Option<Arc<str>>>,
-    ) -> std::io::Result<()> {
-        if !host_contexts.is_empty()
-            && (host_contexts.len() != descriptors.len()
-                || descriptors
-                    .iter()
-                    .any(|descriptor| !host_contexts.contains_key(&descriptor.session_id)))
-        {
-            return Err(std::io::Error::other(
-                "restored subagent host contexts must exactly match restored sessions",
-            ));
-        }
-        let mut state = self.state.lock().await;
-        let restored = state.restore(root_session_id, descriptors)?;
-        if restored.is_empty() {
-            return Ok(());
-        }
-        let scope = state
-            .scopes
-            .get_mut(root_session_id)
-            .expect("a non-empty successful restore creates its scope");
-        for descriptor in &restored {
-            scope
-                .sessions
-                .get_mut(&descriptor.id)
-                .expect("a restored descriptor has a retained session")
-                .host_context = host_contexts.remove(&descriptor.session_id).flatten();
-        }
-        drop(state);
-        for descriptor in restored {
-            let id = descriptor.id;
-            self.send(root_session_id, AgentUpdate::Added(descriptor));
-            self.send(
-                root_session_id,
-                AgentUpdate::Status {
-                    id,
-                    status: AgentStatus::Interrupted,
-                },
-            );
-        }
-        self.changed();
-        Ok(())
-    }
-
-    /// Captures the latest safe driver boundaries. Active turns restore as interrupted.
-    pub async fn checkpoint(&self, root_session_id: &str) -> std::io::Result<SubagentCheckpoint> {
-        self.capture_checkpoint(root_session_id, true).await
-    }
-
-    /// Captures committed driver history without cancelling ongoing child work.
-    pub async fn live_checkpoint(
-        &self,
-        root_session_id: &str,
-    ) -> std::io::Result<SubagentCheckpoint> {
-        self.capture_checkpoint(root_session_id, false).await
-    }
-
-    async fn capture_checkpoint(
-        &self,
-        root_session_id: &str,
-        interrupt: bool,
-    ) -> std::io::Result<SubagentCheckpoint> {
-        let _residency_guard = self.residency_lock.lock().await;
-        let _message_guard = self.message_lock.lock().await;
-        if self.state.lock().await.root_session_id(root_session_id) != root_session_id {
-            return Err(std::io::Error::other(
-                "only a root can checkpoint its subagent scope",
-            ));
-        }
-        // Joining cancellation commits the safe history boundary before we read
-        // status/results. This also rejects mailbox work that cannot survive unload.
-        while interrupt {
-            let (root, ids, harnesses) = self
-                .state
-                .lock()
-                .await
-                .request_interrupt_all(root_session_id);
-            if ids.is_empty() {
-                break;
-            }
-            self.interrupt_harnesses(&root, &ids, harnesses, Instant::now() + AGENT_STOP_TIMEOUT)
-                .await?;
-            let state = self.state.lock().await;
-            if state
-                .scopes
-                .get(root_session_id)
-                .is_none_or(|scope| scope.sessions.values().all(|session| !session.active))
-            {
-                break;
-            }
-        }
-        let runtimes = {
-            let state = self.state.lock().await;
-            if state.root_session_id(root_session_id) != root_session_id {
-                return Err(std::io::Error::other(
-                    "only a root can checkpoint its subagent scope",
-                ));
-            }
-            state
-                .scopes
-                .get(root_session_id)
-                .map(|scope| {
-                    scope
-                        .sessions
-                        .iter()
-                        .filter(|(_, session)| {
-                            !matches!(session.status, AgentStatus::Closed | AgentStatus::Closing)
-                        })
-                        .map(|(id, session)| {
-                            (*id, session.harness.clone(), session.stored_runtime.clone())
-                        })
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default()
-        };
-        let mut children = Vec::with_capacity(runtimes.len());
-        for (id, harness, stored) in runtimes {
-            let (runtime, state) = loop {
-                let before = {
-                    let state = self.state.lock().await;
-                    let session = &state.scopes[root_session_id].sessions[&id];
-                    (session.status.clone(), session.next_instruction_revision)
-                };
-                let runtime = match &harness {
-                    Some(harness) => Some(harness.snapshot().await?),
-                    None => stored.clone(),
-                };
-                let state = self.state.lock().await;
-                let session = &state.scopes[root_session_id].sessions[&id];
-                if before == (session.status.clone(), session.next_instruction_revision) {
-                    break (runtime, state);
-                }
-            };
-            let session = &state.scopes[root_session_id].sessions[&id];
-            if matches!(session.status, AgentStatus::Closed | AgentStatus::Closing) {
-                continue;
-            }
-            children.push(ChildCheckpoint {
-                descriptor: session.descriptor.clone(),
-                runtime,
-                output_schema: session.output_schema.clone(),
-                next_turn_token: session.next_instruction_revision,
-                status: match &session.status {
-                    AgentStatus::Pending | AgentStatus::Running => AgentStatus::Interrupted,
-                    AgentStatus::Closing => AgentStatus::Closed,
-                    status => status.clone(),
-                },
-                last_output: session.last_output.clone(),
-                host_context: session.host_context.as_deref().map(str::to_owned),
-            });
-        }
-        children.sort_by_key(|child| child.descriptor.id);
-        let next_agent_id = self
-            .state
-            .lock()
-            .await
-            .scopes
-            .get(root_session_id)
-            .map_or(1, |scope| scope.topology.next_agent_id());
-        let checkpoint = SubagentCheckpoint {
-            version: 1,
-            root_session_id: root_session_id.to_owned(),
-            next_agent_id,
-            children,
-        };
-        checkpoint.validate(root_session_id)?;
-        Ok(checkpoint)
-    }
-
-    /// Rebuilds real drivers in parent-first order using this host's parent capabilities.
-    pub async fn restore_checkpoint(
-        self: &Arc<Self>,
-        root: &Nanocodex,
-        checkpoint: SubagentCheckpoint,
-    ) -> std::io::Result<()> {
-        let root_session_id = root.session_id();
-        checkpoint.validate(root_session_id)?;
-        let _residency_guard = self.residency_lock.lock().await;
-        let _message_guard = self.message_lock.lock().await;
-        if self.state.lock().await.scopes.contains_key(root_session_id) {
-            return Err(std::io::Error::other("subagent scope already exists"));
-        }
-        let ordered = self.state.lock().await.restore(
-            root_session_id,
-            checkpoint
-                .children
-                .iter()
-                .map(|child| child.descriptor.clone())
-                .collect(),
-        )?;
-        self.state
-            .lock()
-            .await
-            .scope_mut(root_session_id)
-            .topology
-            .restore_next_agent_id(checkpoint.next_agent_id)?;
-        let mut children = checkpoint
-            .children
-            .into_iter()
-            .map(|child| (child.descriptor.id, child))
-            .collect::<HashMap<_, _>>();
-        let mut parents: HashMap<AgentId, Nanocodex> = HashMap::new();
-        let mut gates = Vec::new();
-        let result: std::io::Result<()> = async {
-            for descriptor in &ordered {
-                let child = children
-                    .remove(&descriptor.id)
-                    .expect("validated child checkpoint");
-                let contract = OutputContract::compile(&child.output_schema)?;
-                let closed = matches!(child.status, AgentStatus::Closed | AgentStatus::Closing);
-                let host_context = child.host_context.map(Arc::<str>::from);
-                let resources = if let Some(runtime) = child.runtime.clone().filter(|_| !closed) {
-                    let parent = match descriptor.parent {
-                        Some(id) => parents.get(&id).ok_or_else(|| {
-                            std::io::Error::other("restored parent runtime is unavailable")
-                        })?,
-                        None => root,
-                    };
-                    let needs_assignment = runtime.conversation.is_none();
-                    let (agent, events) = parent
-                        .restore_child(runtime, host_context.clone())
-                        .await
-                        .map_err(std::io::Error::other)?;
-                    parents.insert(descriptor.id, agent.clone());
-                    let (start, ready) = oneshot::channel();
-                    let event_task = forward_events(
-                        root_session_id.to_owned(),
-                        descriptor.id,
-                        events,
-                        ready,
-                        Arc::downgrade(self),
-                        self.updates.clone(),
-                    );
-                    let (harness, task) = harness::spawn(
-                        root_session_id.to_owned(),
-                        descriptor.id,
-                        agent,
-                        self.capacity.clone(),
-                        Arc::downgrade(self),
-                        contract.schema,
-                        needs_assignment
-                            .then(|| super::model::agent_prompt(descriptor.id, &descriptor.task)),
-                    );
-                    gates.push(start);
-                    Some((harness, task, event_task))
-                } else {
-                    None
-                };
-                let mut state = self.state.lock().await;
-                let session = state
-                    .scopes
-                    .get_mut(root_session_id)
-                    .expect("restored scope")
-                    .sessions
-                    .get_mut(&descriptor.id)
-                    .expect("restored child");
-                session.host_context = host_context;
-                session.output_validator = contract.validator;
-                session.output_schema = child.output_schema;
-                session.stored_runtime = child.runtime;
-                session.next_instruction_revision = child.next_turn_token;
-                session.last_output = child.last_output;
-                session.status = match child.status {
-                    AgentStatus::Pending | AgentStatus::Running => AgentStatus::Interrupted,
-                    AgentStatus::Closing => AgentStatus::Closed,
-                    status => status,
-                };
-                session.evicted = !closed && resources.is_none();
-                if let Some((harness, task, event_task)) = resources {
-                    session.harness = Some(harness);
-                    session.harness_task = Some(task);
-                    session.event_task = Some(event_task);
-                }
-            }
-            Ok(())
-        }
-        .await;
-        if let Err(error) = result {
-            // No Added notifications or event streams escape a partial reconstruction.
-            drop(gates);
-            for (_, agent) in parents {
-                drop(agent.shutdown().await);
-            }
-            let mut state = self.state.lock().await;
-            state.scopes.remove(root_session_id);
-            state
-                .root_by_session
-                .retain(|_, root_id| root_id != root_session_id);
-            return Err(error);
-        }
-        for descriptor in ordered {
-            let id = descriptor.id;
-            let status = self.state.lock().await.scopes[root_session_id].sessions[&id]
-                .status
-                .clone();
-            if !matches!(status, AgentStatus::Closed) {
-                self.send(root_session_id, AgentUpdate::Added(descriptor));
-            }
-            self.send(root_session_id, AgentUpdate::Status { id, status });
-        }
-        for gate in gates {
-            let _ = gate.send(());
-        }
-        self.changed();
-        Ok(())
-    }
-
     /// Returns embedding-private context for one retained child session.
     #[doc(hidden)]
     pub async fn host_context(&self, root_session_id: &str, id: AgentId) -> Option<Arc<str>> {
@@ -1814,7 +1274,7 @@ impl Registry {
             if harness.close().await.is_err() {
                 self.harness_closed(root_session_id, id).await;
             }
-            // Drain the old generation before another delivery may restore this
+            // Drain the old generation before another delivery may rehydrate this
             // ID. Its late runtime_closed callback must never close the new driver.
             let tasks = {
                 let mut state = self.state.lock().await;
@@ -1980,7 +1440,7 @@ impl Registry {
                 .get(&parent_session)
                 .cloned()
                 .ok_or_else(|| {
-                    std::io::Error::other("subagent parent runtime is unavailable for restoration")
+                    std::io::Error::other("subagent parent runtime is unavailable for rehydration")
                 })?;
             let contract = OutputContract::compile(&schema)?;
             let needs_assignment = snapshot.conversation.is_none();
@@ -2490,29 +1950,6 @@ fn validate_submitted_output(
     ).with_details(errors))
 }
 
-fn restored_tombstone(descriptor: AgentDescriptor, host_context: Option<Arc<str>>) -> ChildSession {
-    ChildSession {
-        descriptor,
-        host_context,
-        event_task: None,
-        harness: None,
-        harness_task: None,
-        status: AgentStatus::Interrupted,
-        active: false,
-        output_validator: jsonschema::validator_for(&Value::Bool(false))
-            .expect("the false JSON Schema is valid"),
-        output_schema: Value::Bool(false),
-        stored_runtime: None,
-        next_instruction_revision: 0,
-        active_instruction_revision: None,
-        steering: false,
-        submitted_output: None,
-        last_output: None,
-        last_used: 0,
-        evicted: true,
-    }
-}
-
 fn first_error(results: Vec<std::io::Result<()>>) -> std::io::Result<()> {
     results.into_iter().find(Result::is_err).unwrap_or(Ok(()))
 }
@@ -2730,7 +2167,7 @@ mod tests {
                 .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
                 + 1;
             if count == self.reject_binding {
-                return Err(std::io::Error::other("durable pin failed"));
+                return Err(std::io::Error::other("route binding failed"));
             }
             Ok(())
         }
@@ -2814,7 +2251,7 @@ mod tests {
             } else if explicit_override {
                 "explicit override"
             } else {
-                "durable pin failed"
+                "route binding failed"
             };
             assert!(error.to_string().contains(expected_error), "{error}");
             assert!(
@@ -2890,283 +2327,131 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn restored_tombstones_preserve_topology_wait_updates_and_allocation() {
-        let (updates, mut receiver) = mpsc::unbounded_channel();
-        let registry = Registry::new(updates, 3);
-        let parent = AgentDescriptor {
-            id: AgentId::new(2),
-            session_id: "parent-session".to_owned(),
-            role: "parent".to_owned(),
-            task: "coordinate".to_owned(),
-            parent: None,
-        };
-        let child = AgentDescriptor {
-            id: AgentId::new(7),
-            session_id: "child-session".to_owned(),
-            role: "child".to_owned(),
-            task: "investigate".to_owned(),
-            parent: Some(parent.id),
-        };
-
-        registry
-            .restore("root", vec![child.clone(), parent.clone()])
+    async fn fresh_registry_for_same_root_has_no_prior_children_and_supports_live_reuse() {
+        let (original, control, updates) = super::channel(2);
+        let (prior, prior_session) =
+            insert_pending_runtime_session(&original, "root", None, Arc::new(Notify::new())).await;
+        mark_reusable(&original, "root", prior).await;
+        original
+            .state
+            .lock()
             .await
-            .unwrap();
-
-        let directory = registry.directory("root", true, false).await;
-        assert_eq!(directory.len(), 2);
-        let restored_parent = directory
-            .iter()
-            .find(|entry| entry.agent_id == parent.id)
-            .unwrap();
-        assert_eq!(restored_parent.parent_agent_id, None);
-        assert_eq!(restored_parent.status, AgentStatus::Interrupted);
-        assert!(!restored_parent.can_message);
-        assert!(restored_parent.can_manage);
-        let restored_child = directory
-            .iter()
-            .find(|entry| entry.agent_id == child.id)
-            .unwrap();
-        assert_eq!(restored_child.parent_agent_id, Some(parent.id));
-        assert_eq!(restored_child.status, AgentStatus::Interrupted);
-        assert!(!restored_child.can_message);
-        assert!(restored_child.can_manage);
-
-        let (summaries, timed_out) = registry
-            .wait("root", &[parent.id, child.id], Duration::from_millis(1))
-            .await
-            .unwrap();
-        assert!(!timed_out);
+            .scopes
+            .get_mut("root")
+            .unwrap()
+            .sessions
+            .get_mut(&prior)
+            .unwrap()
+            .host_context = Some(Arc::from("old-root-context"));
+        let (descendant, _) = insert_pending_runtime_session(
+            &original,
+            &prior_session,
+            Some(prior),
+            Arc::new(Notify::new()),
+        )
+        .await;
+        mark_reusable(&original, "root", descendant).await;
+        original.set_max_resident(1);
+        original.enforce_resident_limit("root").await;
+        assert_eq!(original.directory("root", true, false).await.len(), 2);
         assert!(
-            summaries
-                .iter()
-                .all(|summary| summary.status == AgentStatus::Interrupted)
+            original.state.lock().await.scopes["root"]
+                .sessions
+                .values()
+                .any(|session| session.stored_runtime.is_some())
         );
-        assert_eq!(registry.reserve("root").await.unwrap().id, AgentId::new(8));
+        original.close_all("root").await.unwrap();
+        drop((original, control, updates));
 
-        for expected in [&parent, &child] {
-            let added = receiver.try_recv().unwrap();
-            assert_eq!(added.root_session_id, "root");
-            let AgentUpdate::Added(descriptor) = added.update else {
-                panic!("expected an Added update");
-            };
-            assert_eq!(descriptor, *expected);
-            let interrupted = receiver.try_recv().unwrap();
-            assert_eq!(interrupted.root_session_id, "root");
-            let AgentUpdate::Status { id, status } = interrupted.update else {
-                panic!("expected a Status update");
-            };
-            assert_eq!(id, expected.id);
-            assert_eq!(status, AgentStatus::Interrupted);
-        }
-        assert!(receiver.try_recv().is_err());
-
-        let closed = registry.close_all("root").await.unwrap();
-        assert_eq!(
-            closed
-                .iter()
-                .map(|summary| (summary.agent_id, &summary.status))
-                .collect::<Vec<_>>(),
-            [
-                (child.id, &AgentStatus::Closed),
-                (parent.id, &AgentStatus::Closed),
-            ]
+        let (registry, _control, mut updates) = super::channel(2);
+        assert!(registry.directory("root", true, false).await.is_empty());
+        assert!(
+            registry
+                .host_context_for_session(&prior_session)
+                .await
+                .is_none()
         );
-        for expected_status in [AgentStatus::Closing, AgentStatus::Closed] {
-            for expected_id in [child.id, parent.id] {
-                let update = receiver.try_recv().unwrap();
-                let AgentUpdate::Status { id, status } = update.update else {
-                    panic!("expected a cleanup Status update");
-                };
-                assert_eq!(update.root_session_id, "root");
-                assert_eq!(id, expected_id);
-                assert_eq!(status, expected_status);
-            }
-        }
-        assert!(receiver.try_recv().is_err());
-    }
+        assert!(
+            registry
+                .wait("root", &[prior], Duration::from_millis(1))
+                .await
+                .is_err()
+        );
+        assert!(
+            registry
+                .send_message(
+                    "root",
+                    prior,
+                    MessagePriority::Deferred,
+                    MessagePurpose::Coordinate,
+                    None,
+                    "old child must be gone".to_owned(),
+                )
+                .await
+                .is_err()
+        );
+        assert!(updates.try_recv().is_err());
 
-    #[tokio::test]
-    async fn restored_host_contexts_remain_private_and_session_scoped() {
-        let (updates, _receiver) = mpsc::unbounded_channel();
-        let registry = Registry::new(updates, 3);
-        let first = AgentDescriptor {
-            id: AgentId::new(1),
-            session_id: "first-session".to_owned(),
-            role: "first".to_owned(),
-            task: "inspect".to_owned(),
-            parent: None,
-        };
-        let second = AgentDescriptor {
-            id: AgentId::new(2),
-            session_id: "second-session".to_owned(),
-            role: "second".to_owned(),
-            task: "review".to_owned(),
-            parent: None,
-        };
-
+        let called = Arc::new(Notify::new());
+        let (child, child_session) =
+            insert_pending_runtime_session(&registry, "root", None, Arc::clone(&called)).await;
+        assert_eq!(child, AgentId::new(1));
+        assert_ne!(child_session, prior_session);
         registry
-            .restore_with_host_contexts(
+            .launch_initial_turn(
                 "root",
-                vec![first.clone(), second.clone()],
-                HashMap::from([
-                    (
-                        first.session_id.clone(),
-                        Some(Arc::<str>::from("opaque-first-turn")),
-                    ),
-                    (
-                        second.session_id.clone(),
-                        Some(Arc::<str>::from("opaque-second-turn")),
-                    ),
-                ]),
+                child,
+                "work".to_owned(),
+                registry.reserve_turn().unwrap(),
             )
             .await
             .unwrap();
-
+        timeout(Duration::from_secs(5), called.notified())
+            .await
+            .unwrap();
+        registry.interrupt("root", child).await.unwrap();
+        let (summaries, timed_out) = registry
+            .wait("root", &[child], Duration::from_millis(1))
+            .await
+            .unwrap();
+        assert!(!timed_out);
+        assert_eq!(summaries[0].status, AgentStatus::Interrupted);
+        let receipt = registry
+            .send_message(
+                "root",
+                child,
+                MessagePriority::Deferred,
+                MessagePurpose::Coordinate,
+                None,
+                "continue within this runtime".to_owned(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(receipt.disposition, MessageDisposition::Started);
+        timeout(Duration::from_secs(5), called.notified())
+            .await
+            .unwrap();
         assert_eq!(
-            registry.host_context("root", first.id).await.as_deref(),
-            Some("opaque-first-turn")
-        );
-        assert_eq!(
-            registry.host_context("root", second.id).await.as_deref(),
-            Some("opaque-second-turn")
+            registry
+                .submit_result(&child_session, Some(1), json!({"report":"stale"}))
+                .await
+                .unwrap(),
+            super::SubmissionOutcome::Superseded
         );
         assert_eq!(
             registry
-                .host_context_for_session("first-session")
+                .submit_result(&child_session, Some(2), json!({"report":"done"}))
                 .await
-                .as_deref(),
-            Some("opaque-first-turn")
-        );
-        assert_eq!(registry.host_context("other-root", first.id).await, None);
-        assert_eq!(
-            registry.directory("root", true, false).await.len(),
-            2,
-            "private context must not change the public directory projection"
-        );
-
-        registry.restore("root", Vec::new()).await.unwrap();
-        assert_eq!(
-            registry.host_context("root", first.id).await.as_deref(),
-            Some("opaque-first-turn"),
-            "an empty compatibility restore must not clear a live context"
-        );
-        assert_eq!(
-            registry.host_context("root", second.id).await.as_deref(),
-            Some("opaque-second-turn")
-        );
-    }
-
-    #[tokio::test]
-    async fn restored_host_context_keys_are_validated_before_registry_mutation() {
-        let first = AgentDescriptor {
-            id: AgentId::new(1),
-            session_id: "first-session".to_owned(),
-            role: "worker".to_owned(),
-            task: "inspect".to_owned(),
-            parent: None,
-        };
-        let second = AgentDescriptor {
-            id: AgentId::new(2),
-            session_id: "second-session".to_owned(),
-            role: "reviewer".to_owned(),
-            task: "review".to_owned(),
-            parent: None,
-        };
-
-        for host_contexts in [
-            HashMap::from([(
-                first.session_id.clone(),
-                Some(Arc::<str>::from("opaque-turn")),
-            )]),
-            HashMap::from([
-                (
-                    first.session_id.clone(),
-                    Some(Arc::<str>::from("opaque-turn")),
-                ),
-                (
-                    second.session_id.clone(),
-                    Some(Arc::<str>::from("second-turn")),
-                ),
-                (
-                    "unknown-session".to_owned(),
-                    Some(Arc::<str>::from("other-turn")),
-                ),
-            ]),
-        ] {
-            let (updates, _receiver) = mpsc::unbounded_channel();
-            let registry = Registry::new(updates, 3);
-            let error = registry
-                .restore_with_host_contexts(
-                    "root",
-                    vec![first.clone(), second.clone()],
-                    host_contexts,
-                )
-                .await
-                .unwrap_err();
-
-            assert!(error.to_string().contains("must exactly match"));
-            assert!(registry.directory("root", true, false).await.is_empty());
-            for descriptor in [&first, &second] {
-                assert!(registry.is_root_session(&descriptor.session_id).await);
+                .unwrap(),
+            super::SubmissionOutcome::Accepted {
+                decoded_json_text: false
             }
-        }
-    }
-
-    #[tokio::test]
-    async fn invalid_restored_topologies_are_rejected_atomically() {
-        let descriptor = |id: u64, session_id: &str, parent: Option<u64>| AgentDescriptor {
-            id: AgentId::new(id),
-            session_id: session_id.to_owned(),
-            role: "worker".to_owned(),
-            task: "work".to_owned(),
-            parent: parent.map(AgentId::new),
-        };
-        let cases = [
-            (
-                vec![descriptor(0, "zero", None)],
-                "agent ID must be greater than zero",
-            ),
-            (
-                vec![descriptor(u64::MAX, "maximum", None)],
-                "agent ID must be less than the maximum u64 value",
-            ),
-            (
-                vec![descriptor(1, "first", None), descriptor(1, "second", None)],
-                "duplicate restored agent_id 1",
-            ),
-            (
-                vec![
-                    descriptor(1, "duplicate-session", None),
-                    descriptor(2, "duplicate-session", None),
-                ],
-                "duplicate restored subagent session ID duplicate-session",
-            ),
-            (
-                vec![descriptor(1, "orphan", Some(9))],
-                "unknown parent or cycle",
-            ),
-            (
-                vec![
-                    descriptor(1, "cycle-a", Some(2)),
-                    descriptor(2, "cycle-b", Some(1)),
-                ],
-                "unknown parent or cycle",
-            ),
-        ];
-
-        for (descriptors, expected_error) in cases {
-            let (updates, mut receiver) = mpsc::unbounded_channel();
-            let registry = Registry::new(updates, 3);
-            let error = registry.restore("root", descriptors).await.unwrap_err();
-            assert!(
-                error.to_string().contains(expected_error),
-                "unexpected error: {error}"
-            );
-            assert!(registry.directory("root", true, false).await.is_empty());
-            assert_eq!(registry.reserve("root").await.unwrap().id, AgentId::new(1));
-            assert!(receiver.try_recv().is_err());
-        }
+        );
+        assert_eq!(
+            registry.close("root", child).await.unwrap()[0].status,
+            AgentStatus::Closed
+        );
+        assert!(!registry.directory("root", true, false).await[0].can_message);
     }
 
     #[tokio::test]
@@ -4635,218 +3920,6 @@ mod tests {
         assert!(registry.reserve("fork", Some(main.id)).is_err());
     }
 
-    fn checkpoint_fixture() -> super::SubagentCheckpoint {
-        super::SubagentCheckpoint {
-            version: 1,
-            root_session_id: "root".to_owned(),
-            next_agent_id: 9,
-            children: vec![super::ChildCheckpoint {
-                descriptor: AgentDescriptor {
-                    id: AgentId::new(7),
-                    session_id: "018f1f9a-7b3c-7a17-8000-000000000107".to_owned(),
-                    role: "reviewer".to_owned(),
-                    task: "review persisted history".to_owned(),
-                    parent: None,
-                },
-                runtime: Some(nanocodex_agent::ChildRuntimeSnapshot {
-                    session_id: "018f1f9a-7b3c-7a17-8000-000000000107".to_owned(),
-                    model: nanocodex_agent::Model::Sol,
-                    thinking: nanocodex_agent::Thinking::High,
-                    fast_mode: false,
-                    conversation: None,
-                }),
-                output_schema: json!({"type":"object", "properties":{"answer":{"type":"integer"}},
-                    "required":["answer"], "additionalProperties":false}),
-                next_turn_token: 3,
-                status: AgentStatus::Completed {
-                    output: json!({"answer":42}),
-                },
-                last_output: Some(json!({"answer":42})),
-                host_context: Some("opaque-test-context".to_owned()),
-            }],
-        }
-    }
-
-    #[test]
-    fn checkpoint_rejects_invalid_version_identity_topology_contract_and_counters() {
-        let valid = checkpoint_fixture();
-        valid.validate("root").unwrap();
-        let encoded = serde_json::to_string(&valid).unwrap();
-        let roundtrip: super::SubagentCheckpoint = serde_json::from_str(&encoded).unwrap();
-        roundtrip.validate("root").unwrap();
-        assert!(valid.validate("other-root").is_err());
-        let mut bad = valid.clone();
-        bad.version = 2;
-        assert!(bad.validate("root").is_err());
-        let mut bad = valid.clone();
-        bad.children[0].runtime.as_mut().unwrap().session_id = "different".to_owned();
-        assert!(bad.validate("root").is_err());
-        let mut bad = valid.clone();
-        bad.children[0].descriptor.parent = Some(AgentId::new(7));
-        assert!(bad.validate("root").is_err());
-        let mut bad = valid.clone();
-        bad.children.push(bad.children[0].clone());
-        assert!(bad.validate("root").is_err());
-        let mut bad = valid.clone();
-        bad.children[0].runtime = None;
-        assert!(bad.validate("root").is_err());
-        let mut bad = valid.clone();
-        bad.children[0].last_output = Some(json!({"answer":"invalid"}));
-        assert!(bad.validate("root").is_err());
-        let mut bad = valid.clone();
-        bad.children[0].status = AgentStatus::Completed {
-            output: json!({"answer":42,"extra":true}),
-        };
-        assert!(bad.validate("root").is_err());
-        let mut bad = valid.clone();
-        bad.children[0].next_turn_token = u64::MAX;
-        assert!(bad.validate("root").is_err());
-        let mut bad = valid.clone();
-        bad.next_agent_id = 7;
-        assert!(bad.validate("root").is_err());
-        let mut bad = valid.clone();
-        bad.next_agent_id = u64::MAX;
-        assert!(bad.validate("root").is_err());
-        let mut bad = valid;
-        bad.children = vec![bad.children[0].clone(); super::MAX_CHECKPOINT_CHILDREN + 1];
-        assert!(
-            bad.validate("root")
-                .unwrap_err()
-                .to_string()
-                .contains("limits")
-        );
-    }
-
-    #[test]
-    fn checkpoint_archives_only_interrupted_children_and_rejects_reusable_descendants() {
-        let mut checkpoint = checkpoint_fixture();
-        checkpoint.children[0].runtime = None;
-        checkpoint.children[0].status = AgentStatus::Interrupted;
-        checkpoint.validate("root").unwrap();
-        for status in [
-            AgentStatus::Pending,
-            AgentStatus::Running,
-            AgentStatus::Closing,
-        ] {
-            checkpoint.children[0].status = status;
-            assert!(checkpoint.validate("root").is_err());
-        }
-        checkpoint.children[0].status = AgentStatus::Interrupted;
-        let mut descendant = checkpoint_fixture().children.remove(0);
-        descendant.descriptor.id = AgentId::new(8);
-        descendant.descriptor.parent = Some(AgentId::new(7));
-        descendant.descriptor.session_id = "018f1f9a-7b3c-7a17-8000-000000000108".to_owned();
-        descendant.runtime.as_mut().unwrap().session_id = descendant.descriptor.session_id.clone();
-        checkpoint.children.push(descendant);
-        assert!(
-            checkpoint
-                .validate("root")
-                .unwrap_err()
-                .to_string()
-                .contains("parent without a runtime")
-        );
-        checkpoint.children[1].runtime = None;
-        checkpoint.children[1].status = AgentStatus::Interrupted;
-        checkpoint.validate("root").unwrap();
-    }
-
-    #[tokio::test]
-    async fn checkpoint_roundtrips_legacy_archives_without_making_them_messageable() {
-        let (root, _events) = pending_agent(Arc::new(Notify::new()));
-        let root_id = root.session_id();
-        let (original, _, _updates) = super::channel(2);
-        let parent = checkpoint_fixture().children.remove(0).descriptor;
-        let mut child = parent.clone();
-        child.id = AgentId::new(8);
-        child.parent = Some(parent.id);
-        child.session_id = "018f1f9a-7b3c-7a17-8000-000000000108".to_owned();
-        original
-            .restore_with_host_contexts(
-                root_id,
-                vec![child.clone(), parent.clone()],
-                HashMap::from([
-                    (parent.session_id.clone(), Some(Arc::from("parent-context"))),
-                    (child.session_id.clone(), Some(Arc::from("child-context"))),
-                ]),
-            )
-            .await
-            .unwrap();
-        let checkpoint = original.checkpoint(root_id).await.unwrap();
-        assert!(
-            checkpoint
-                .children
-                .iter()
-                .all(|child| child.runtime.is_none() && child.status == AgentStatus::Interrupted)
-        );
-        let encoded = serde_json::to_string(&checkpoint).unwrap();
-        let (restored, _, _updates) = super::channel(2);
-        restored
-            .restore_checkpoint(&root, serde_json::from_str(&encoded).unwrap())
-            .await
-            .unwrap();
-        let directory = restored.directory(root_id, true, false).await;
-        assert_eq!(directory.len(), 2);
-        assert!(directory.iter().all(|child| !child.can_message));
-        {
-            let state = restored.state.lock().await;
-            assert!(
-                state.scopes[root_id]
-                    .sessions
-                    .values()
-                    .all(|session| session.evicted
-                        && session.harness.is_none()
-                        && session.stored_runtime.is_none())
-            );
-        }
-        assert!(
-            restored
-                .send_message(
-                    root_id,
-                    child.id,
-                    MessagePriority::Deferred,
-                    MessagePurpose::Coordinate,
-                    None,
-                    "Continue".to_owned()
-                )
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            serde_json::to_value(restored.checkpoint(root_id).await.unwrap()).unwrap(),
-            serde_json::to_value(checkpoint).unwrap()
-        );
-        root.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn checkpoint_preserves_empty_scope_id_high_watermark_and_rejects_duplicate_restore() {
-        let (root, _events) = pending_agent(Arc::new(Notify::new()));
-        let (registry, _, _updates) = super::channel(1);
-        let empty = registry.checkpoint(root.session_id()).await.unwrap();
-        assert!(empty.children.is_empty());
-        assert_eq!(empty.next_agent_id, 1);
-        let mut empty = empty;
-        empty.next_agent_id = 13;
-        registry
-            .restore_checkpoint(&root, empty.clone())
-            .await
-            .unwrap();
-        assert_eq!(
-            registry.reserve(root.session_id()).await.unwrap().id,
-            AgentId::new(13)
-        );
-        assert_eq!(
-            registry
-                .checkpoint(root.session_id())
-                .await
-                .unwrap()
-                .next_agent_id,
-            14
-        );
-        assert!(registry.restore_checkpoint(&root, empty).await.is_err());
-        root.shutdown().await.unwrap();
-    }
-
     #[tokio::test]
     async fn messaging_rehydrates_evicted_ancestors_once_and_keeps_live_work_running() {
         let (registry, _, _updates) = super::channel(4);
@@ -4877,6 +3950,11 @@ mod tests {
         let reservation = registry.reserve(root_id).await.unwrap();
         let (parent, events) = root.spawn().await.unwrap();
         let (child, child_events) = parent.spawn().await.unwrap();
+        child.set_model(nanocodex_agent::Model::Sol).await.unwrap();
+        child
+            .set_thinking(nanocodex_agent::Thinking::High)
+            .await
+            .unwrap();
         child
             .append_developer_message("retain amber history across eviction")
             .await
@@ -4894,6 +3972,23 @@ mod tests {
         )
         .await;
         mark_reusable(&registry, root_id, child_reservation.id).await;
+        {
+            let mut state = registry.state.lock().await;
+            let child = state
+                .scopes
+                .get_mut(root_id)
+                .unwrap()
+                .sessions
+                .get_mut(&child_reservation.id)
+                .unwrap();
+            let schema = json!({"type":"object", "properties":{"answer":{"type":"integer"}},
+                "required":["answer"], "additionalProperties":false});
+            child.output_validator = OutputContract::compile(&schema).unwrap().validator;
+            child.output_schema = schema;
+            child.next_instruction_revision = 7;
+            child.last_output = Some(json!({"answer":42}));
+            child.host_context = Some(Arc::from("live-child-context"));
+        }
         let sibling = registry.reserve(root_id).await.unwrap();
         let (agent, events) = root.spawn().await.unwrap();
         let sibling_session =
@@ -4946,15 +4041,57 @@ mod tests {
         timeout(Duration::from_secs(2), called.notified())
             .await
             .unwrap();
-        let checkpoint = registry.live_checkpoint(root_id).await.unwrap();
+        let harness = registry.state.lock().await.scopes[root_id].sessions[&child_reservation.id]
+            .harness
+            .clone()
+            .unwrap();
+        let snapshot = harness.snapshot().await.unwrap();
+        assert_eq!(snapshot.model, nanocodex_agent::Model::Sol);
+        assert_eq!(snapshot.thinking, nanocodex_agent::Thinking::High);
+        assert_eq!(
+            registry
+                .host_context(root_id, child_reservation.id)
+                .await
+                .as_deref(),
+            Some("live-child-context")
+        );
+        assert_eq!(
+            registry
+                .host_context_for_session(&child_session)
+                .await
+                .as_deref(),
+            Some("live-child-context")
+        );
+        assert_eq!(
+            registry
+                .submit_result(&child_session, Some(7), json!({"answer":43}))
+                .await
+                .unwrap(),
+            super::SubmissionOutcome::Superseded
+        );
         assert!(
-            serde_json::to_string(&checkpoint)
+            registry
+                .submit_result(&child_session, Some(8), json!({"answer":43,"extra":true}))
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            registry
+                .submit_result(&child_session, Some(8), json!({"answer":43}))
+                .await
+                .unwrap(),
+            super::SubmissionOutcome::Accepted {
+                decoded_json_text: false
+            }
+        );
+        assert!(
+            serde_json::to_string(&snapshot.conversation)
                 .unwrap()
                 .contains("retain amber history")
         );
         assert!(
             registry.state.lock().await.scopes[root_id].sessions[&child_reservation.id].active,
-            "live persistence must not interrupt running children or discard their mailbox"
+            "reading in-memory history must not interrupt running children or discard their mailbox"
         );
         registry.close(root_id, reservation.id).await.unwrap();
         assert!(
@@ -4963,160 +4100,6 @@ mod tests {
         );
         assert_eq!(registrations.lock().unwrap()[&child_session], 2);
         registry.close_all(root_id).await.unwrap();
-        root.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn checkpoint_restores_evicted_nested_runtime_history_schema_tokens_and_host_context() {
-        let called = Arc::new(Notify::new());
-        let (root, _events) = pending_agent(Arc::clone(&called));
-        let root_id = root.session_id();
-        let (original, _, _updates) = super::channel(2);
-        let parent_reservation = original.reserve(root_id).await.unwrap();
-        let (parent, parent_events) = pending_agent(Arc::new(Notify::new()));
-        parent
-            .append_developer_message("Preserved parent marker cobalt.")
-            .await
-            .unwrap();
-        let parent_session =
-            insert_runtime_session(&original, &parent_reservation, None, parent, parent_events)
-                .await;
-        mark_reusable(&original, root_id, parent_reservation.id).await;
-        let child_reservation = original.reserve(&parent_session).await.unwrap();
-        let (child, child_events) = pending_agent(Arc::new(Notify::new()));
-        child.set_model(nanocodex_agent::Model::Sol).await.unwrap();
-        child
-            .set_thinking(nanocodex_agent::Thinking::High)
-            .await
-            .unwrap();
-        child
-            .append_developer_message("Preserved descendant marker amber.")
-            .await
-            .unwrap();
-        let child_session = insert_runtime_session(
-            &original,
-            &child_reservation,
-            Some(parent_reservation.id),
-            child,
-            child_events,
-        )
-        .await;
-        let contract = checkpoint_fixture().children.remove(0).output_schema;
-        {
-            let mut state = original.state.lock().await;
-            let child = state
-                .scopes
-                .get_mut(root_id)
-                .unwrap()
-                .sessions
-                .get_mut(&child_reservation.id)
-                .unwrap();
-            child.status = AgentStatus::Completed {
-                output: json!({"answer":42}),
-            };
-            child.last_output = Some(json!({"answer":42}));
-            child.next_instruction_revision = 7;
-            child.output_schema = contract.clone();
-            child.output_validator = OutputContract::compile(&contract).unwrap().validator;
-            child.host_context = Some(Arc::from("opaque-test-context"));
-        }
-        original.set_max_resident(1);
-        original.enforce_resident_limit(root_id).await;
-        assert!(
-            original.state.lock().await.scopes[root_id].sessions[&child_reservation.id]
-                .harness
-                .is_none()
-        );
-        let mut checkpoint = original.checkpoint(root_id).await.unwrap();
-        assert!(
-            serde_json::to_string(&checkpoint)
-                .unwrap()
-                .contains("Preserved descendant marker amber.")
-        );
-        assert_eq!(
-            checkpoint.children[1].runtime.as_ref().unwrap().model,
-            nanocodex_agent::Model::Sol
-        );
-        assert_eq!(
-            checkpoint.children[1].runtime.as_ref().unwrap().thinking,
-            nanocodex_agent::Thinking::High
-        );
-        // Parent-first reconstruction must not depend on serialized array order.
-        checkpoint.children.reverse();
-        original.close_all(root_id).await.unwrap();
-        let (restored, _, _updates) = super::channel(2);
-        restored
-            .restore_checkpoint(&root, checkpoint)
-            .await
-            .unwrap();
-        let directory = restored.directory(root_id, true, false).await;
-        assert_eq!(directory.len(), 2);
-        assert!(directory.iter().all(|child| child.can_message));
-        assert_eq!(
-            restored
-                .host_context(root_id, child_reservation.id)
-                .await
-                .as_deref(),
-            Some("opaque-test-context")
-        );
-        let again = restored.checkpoint(root_id).await.unwrap();
-        assert!(
-            serde_json::to_string(&again)
-                .unwrap()
-                .contains("Preserved descendant marker amber.")
-        );
-        assert_eq!(again.children[1].descriptor.session_id, child_session);
-        assert_eq!(again.children[1].next_turn_token, 7);
-        let receipt = restored
-            .send_message(
-                root_id,
-                child_reservation.id,
-                MessagePriority::Deferred,
-                MessagePurpose::Coordinate,
-                None,
-                "Continue from the retained marker.".to_owned(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(receipt.disposition, MessageDisposition::Started);
-        timeout(Duration::from_secs(5), called.notified())
-            .await
-            .unwrap();
-        assert_eq!(
-            restored
-                .submit_result(&child_session, Some(7), json!({"answer":43}))
-                .await
-                .unwrap(),
-            super::SubmissionOutcome::Superseded
-        );
-        assert!(
-            restored
-                .submit_result(&child_session, Some(8), json!({"answer":43,"extra":true}))
-                .await
-                .is_err()
-        );
-        assert_eq!(
-            restored
-                .submit_result(&child_session, Some(8), json!({"answer":43}))
-                .await
-                .unwrap(),
-            super::SubmissionOutcome::Accepted {
-                decoded_json_text: false
-            }
-        );
-        let interrupted = restored.checkpoint(root_id).await.unwrap();
-        let child = &interrupted.children[1];
-        assert_eq!(child.next_turn_token, 8);
-        assert_eq!(child.status, AgentStatus::Interrupted);
-        // Checkpoint cancellation preserves the latest accepted result as evidence.
-        assert_eq!(child.last_output, Some(json!({"answer":43})));
-        assert!(
-            !restored.state.lock().await.scopes[root_id].sessions[&child_reservation.id].active
-        );
-        restored.close_all(root_id).await.unwrap();
-        let closed = restored.checkpoint(root_id).await.unwrap();
-        assert!(closed.children.is_empty());
-        assert_eq!(closed.next_agent_id, 3);
         root.shutdown().await.unwrap();
     }
 }

@@ -12,7 +12,6 @@ use nanocodex_agent::{
     session::SessionSnapshot,
 };
 use serde_json::value::RawValue;
-use tokio::sync::OnceCell;
 
 use crate::{Admission, BeginStep, DurableSession, Error, OperationStatus, session::DurableOwner};
 
@@ -53,8 +52,6 @@ impl<F> DurableAgentExt for NanocodexBuilder<F> {
             builder = builder.default_prompt_cache_key(state_id);
         }
         let owner = Arc::new(Mutex::new(Some((owner, known_records))));
-        let child_states = state.clone();
-        let restored_child_states = state.clone();
         Ok(builder
             .execution_policy_factory(move || {
                 let (owner, keys) = owner
@@ -75,83 +72,20 @@ impl<F> DurableAgentExt for NanocodexBuilder<F> {
                 policy.remember(keys)?;
                 let policy: Arc<dyn ExecutionPolicy> = Arc::new(policy);
                 Ok(policy)
-            })
-            .spawned_execution_policy_factory(move |session_id| {
-                let policy: Arc<dyn ExecutionPolicy> = Arc::new(DurableExecution::lazy(
-                    child_states.clone(),
-                    session_id.to_owned(),
-                ));
-                Ok(policy)
-            })
-            .restored_execution_policy_factory(move |session_id, snapshot| {
-                let policy: Arc<dyn ExecutionPolicy> = Arc::new(DurableExecution::lazy_restore(
-                    restored_child_states.clone(),
-                    session_id.to_owned(),
-                    snapshot.cloned(),
-                ));
-                Ok(policy)
-            }))
+            }) )
     }
 }
 
 struct DurableExecution {
-    owner: DurableExecutionOwner,
+    owner: DurableOwner,
     context_records: Mutex<HashSet<String>>,
-}
-
-enum DurableExecutionOwner {
-    Ready(DurableOwner),
-    Lazy {
-        states: DurableSession,
-        state_id: String,
-        owner: OnceCell<DurableOwner>,
-        checkpoint: ChildCheckpoint,
-    },
-}
-
-// An absent restored snapshot is meaningful: storage must also have no checkpoint.
-enum ChildCheckpoint {
-    Fresh,
-    Restore(Option<Box<SessionSnapshot>>),
 }
 
 impl DurableExecution {
     fn ready(owner: DurableOwner) -> Self {
         Self {
-            owner: DurableExecutionOwner::Ready(owner),
+            owner,
             context_records: Mutex::new(HashSet::new()),
-        }
-    }
-
-    fn lazy(states: DurableSession, state_id: String) -> Self {
-        Self::lazy_with_checkpoint(states, state_id, ChildCheckpoint::Fresh)
-    }
-
-    fn lazy_restore(
-        states: DurableSession,
-        state_id: String,
-        snapshot: Option<SessionSnapshot>,
-    ) -> Self {
-        Self::lazy_with_checkpoint(
-            states,
-            state_id,
-            ChildCheckpoint::Restore(snapshot.map(Box::new)),
-        )
-    }
-
-    fn lazy_with_checkpoint(
-        states: DurableSession,
-        state_id: String,
-        checkpoint: ChildCheckpoint,
-    ) -> Self {
-        Self {
-            context_records: Mutex::new(HashSet::new()),
-            owner: DurableExecutionOwner::Lazy {
-                states,
-                state_id,
-                owner: OnceCell::new(),
-                checkpoint,
-            },
         }
     }
 
@@ -169,73 +103,6 @@ impl DurableExecution {
         })? = keys;
         Ok(())
     }
-
-    async fn owner(&self) -> AgentResult<&DurableOwner> {
-        match &self.owner {
-            DurableExecutionOwner::Ready(owner) => Ok(owner),
-            DurableExecutionOwner::Lazy {
-                states,
-                state_id,
-                owner,
-                checkpoint: expected,
-            } => {
-                owner
-                    .get_or_try_init(|| async {
-                        let state = states
-                            .open_agent_state(state_id.clone())
-                            .await
-                            .map_err(agent_error)?;
-                        let (owner, checkpoint) =
-                            state.acquire_agent().await.map_err(agent_error)?;
-                        match (expected, checkpoint) {
-                            (ChildCheckpoint::Fresh, Some(_)) => {
-                                return Err(NanocodexError::InvalidExecutionPolicy(
-                                    "a fresh spawned agent found an existing durability checkpoint"
-                                        .to_owned(),
-                                ));
-                            }
-                            (ChildCheckpoint::Restore(Some(expected)), Some(checkpoint)) => {
-                                let (restored, keys) = crate::context::load_snapshot_with_keys(
-                                    (&owner).into(),
-                                    checkpoint.decode().map_err(agent_error)?,
-                                )
-                                .await
-                                .map_err(agent_error)?;
-                                let encode = |snapshot: &SessionSnapshot| {
-                                    serde_json::to_value(snapshot).map_err(|error| {
-                                        NanocodexError::InvalidSessionSnapshot(error.to_string())
-                                    })
-                                };
-                                if encode(expected)? != encode(&restored)? {
-                                    return Err(NanocodexError::InvalidSessionSnapshot(
-                                    "restored child snapshot does not match the durability state"
-                                        .into(),
-                                ));
-                                }
-                                self.remember(keys)?;
-                            }
-                            (ChildCheckpoint::Restore(Some(_)), None)
-                            | (ChildCheckpoint::Restore(None), Some(_)) => {
-                                return Err(NanocodexError::InvalidSessionSnapshot(
-                                "restored child snapshot and durability checkpoint presence differ"
-                                    .into(),
-                            ));
-                            }
-                            (ChildCheckpoint::Fresh | ChildCheckpoint::Restore(None), None) => {}
-                        }
-                        Ok(owner)
-                    })
-                    .await
-            }
-        }
-    }
-
-    fn initialized_owner(&self) -> Option<&DurableOwner> {
-        match &self.owner {
-            DurableExecutionOwner::Ready(owner) => Some(owner),
-            DurableExecutionOwner::Lazy { owner, .. } => owner.get(),
-        }
-    }
 }
 
 impl ExecutionPolicy for DurableExecution {
@@ -251,10 +118,7 @@ impl ExecutionPolicy for DurableExecution {
             ) {
                 return error;
             }
-            let owner = match self.owner().await {
-                Ok(owner) => owner,
-                Err(error) => return error,
-            };
+            let owner = &self.owner;
             match owner.recover_failure(operation_id).await {
                 Ok(Some(OperationStatus::Failed { error, .. })) => {
                     NanocodexError::ReplayedExecutionFailed(error)
@@ -283,12 +147,7 @@ impl ExecutionPolicy for DurableExecution {
     }
 
     fn shutdown<'a>(&'a self) -> ExecutionFuture<'a, AgentResult<()>> {
-        Box::pin(async move {
-            let Some(owner) = self.initialized_owner() else {
-                return Ok(());
-            };
-            owner.shutdown().await.map_err(agent_error)
-        })
+        Box::pin(async move { self.owner.shutdown().await.map_err(agent_error) })
     }
 
     fn commit_checkpoint<'a>(
@@ -297,8 +156,7 @@ impl ExecutionPolicy for DurableExecution {
     ) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
             let prepared = self.prepare_snapshot(snapshot)?;
-            self.owner()
-                .await?
+            self.owner
                 .commit_checkpoint(prepared.payload)
                 .await
                 .map_err(agent_error)?;
@@ -313,7 +171,7 @@ impl ExecutionPolicy for DurableExecution {
     ) -> ExecutionFuture<'a, AgentResult<ExecutionAdmission>> {
         Box::pin(async move {
             let input = raw(input_json)?;
-            let owner = self.owner().await?;
+            let owner = &self.owner;
             let admission = owner
                 .admit_typed::<_, crate::context::Snapshot, ExecutionOutput>(operation_id, &input)
                 .await
@@ -330,8 +188,7 @@ impl ExecutionPolicy for DurableExecution {
         Box::pin(async move {
             let input = raw(input_json)?;
             let admission = self
-                .owner()
-                .await?
+                .owner
                 .admit_automatic_typed::<_, crate::context::Snapshot, ExecutionOutput>(
                     candidate_operation_id,
                     &input,
@@ -339,18 +196,13 @@ impl ExecutionPolicy for DurableExecution {
                 .await
                 .map_err(agent_error)?;
             let (operation_id, admission) = admission.into_parts();
-            Ok((
-                operation_id,
-                map_admission(self.owner().await?, admission).await?,
-            ))
+            Ok((operation_id, map_admission(&self.owner, admission).await?))
         })
     }
 
     fn release<'a>(&'a self, operation_id: String) -> ExecutionFuture<'a, ()> {
         Box::pin(async move {
-            if let Some(owner) = self.initialized_owner() {
-                let _ = owner.release_claim(operation_id).await;
-            }
+            let _ = self.owner.release_claim(operation_id).await;
         })
     }
 
@@ -367,8 +219,7 @@ impl ExecutionPolicy for DurableExecution {
                 Some(value) => (Some(value.payload), Some(value.keys)),
                 None => (None, None),
             };
-            self.owner()
-                .await?
+            self.owner
                 .cancel(operation_id, checkpoint)
                 .await
                 .map_err(agent_error)?;
@@ -381,8 +232,7 @@ impl ExecutionPolicy for DurableExecution {
 
     fn begin_attempt<'a>(&'a self, operation_id: String) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
-            self.owner()
-                .await?
+            self.owner
                 .begin_attempt(operation_id)
                 .await
                 .map(|_| ())
@@ -398,8 +248,7 @@ impl ExecutionPolicy for DurableExecution {
     ) -> ExecutionFuture<'a, AgentResult<u32>> {
         Box::pin(async move {
             let input = raw(input_json)?;
-            self.owner()
-                .await?
+            self.owner
                 .accept_steer(operation_id, accepted_after_model_call_index, &input)
                 .await
                 .map_err(agent_error)
@@ -411,8 +260,7 @@ impl ExecutionPolicy for DurableExecution {
         operation_id: String,
     ) -> ExecutionFuture<'a, AgentResult<Vec<ExecutionSteer>>> {
         Box::pin(async move {
-            self.owner()
-                .await?
+            self.owner
                 .retained_steers(operation_id)
                 .await
                 .and_then(|steers| {
@@ -440,8 +288,7 @@ impl ExecutionPolicy for DurableExecution {
         steer_index: u32,
     ) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
-            self.owner()
-                .await?
+            self.owner
                 .withdraw_steer(operation_id, steer_index)
                 .await
                 .map_err(agent_error)
@@ -455,8 +302,7 @@ impl ExecutionPolicy for DurableExecution {
         model_call_index: u32,
     ) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
-            self.owner()
-                .await?
+            self.owner
                 .bind_steer(operation_id, steer_index, model_call_index)
                 .await
                 .map_err(agent_error)
@@ -468,7 +314,7 @@ impl ExecutionPolicy for DurableExecution {
         operation_id: String,
     ) -> ExecutionFuture<'a, AgentResult<Option<ExecutionContinuation>>> {
         Box::pin(async move {
-            let owner = self.owner().await?;
+            let owner = &self.owner;
             match owner
                 .continuation(operation_id)
                 .await
@@ -499,8 +345,7 @@ impl ExecutionPolicy for DurableExecution {
                 })?;
                 crate::context::prepare_continuation(continuation, &known).map_err(agent_error)?
             };
-            self.owner()
-                .await?
+            self.owner
                 .advance(operation_id, prepared.payload)
                 .await
                 .map_err(agent_error)?;
@@ -518,8 +363,7 @@ impl ExecutionPolicy for DurableExecution {
         Box::pin(async move {
             let input = raw(input_json)?;
             match self
-                .owner()
-                .await?
+                .owner
                 .begin_step(operation_id, step_id, kind, &input)
                 .await
             {
@@ -540,8 +384,7 @@ impl ExecutionPolicy for DurableExecution {
     ) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
             let output = raw(output_json)?;
-            self.owner()
-                .await?
+            self.owner
                 .complete_step(operation_id, step_id, &output)
                 .await
                 .map_err(agent_error)
@@ -556,8 +399,7 @@ impl ExecutionPolicy for DurableExecution {
     ) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
             let prepared = self.prepare_snapshot(snapshot)?;
-            self.owner()
-                .await?
+            self.owner
                 .complete(operation_id, prepared.payload, &output)
                 .await
                 .map_err(agent_error)?;
@@ -571,8 +413,7 @@ impl ExecutionPolicy for DurableExecution {
         error: String,
     ) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
-            self.owner()
-                .await?
+            self.owner
                 .fail_attempt(operation_id, error)
                 .await
                 .map_err(agent_error)
@@ -587,8 +428,7 @@ impl ExecutionPolicy for DurableExecution {
     ) -> ExecutionFuture<'a, AgentResult<()>> {
         Box::pin(async move {
             let prepared = self.prepare_snapshot(snapshot)?;
-            self.owner()
-                .await?
+            self.owner
                 .fail(operation_id, prepared.payload, error)
                 .await
                 .map_err(agent_error)?;
@@ -647,109 +487,6 @@ mod tests {
 
     use super::*;
 
-    fn child_checkpoint(lineage: &str) -> SessionSnapshot {
-        let message = serde_json::json!({
-            "type": "message", "role": "user",
-            "content": [{"type": "input_text", "text": "retained child context"}]
-        });
-        serde_json::from_value(serde_json::json!({
-            "version": 1, "model": "gpt-5", "lineage_id": lineage,
-            "prompt_cache_key": "shared-cache", "workspace": "/workspace",
-            "canonical_context": message, "history": [message],
-            "request_prefix": [message]
-        }))
-        .unwrap()
-    }
-
-    #[tokio::test]
-    async fn restored_child_hydrates_checkpoint_and_fences_only_its_previous_owner() {
-        let states = DurableSession::open(crate::MemoryStore::new().unwrap(), "parent")
-            .await
-            .unwrap();
-        let (parent_owner, _) = states.acquire_agent().await.unwrap();
-        let parent = DurableExecution::ready(parent_owner);
-        let old = DurableExecution::lazy(states.clone(), "child".into());
-        let snapshot = child_checkpoint("child");
-        old.commit_checkpoint(snapshot.clone()).await.unwrap();
-        let restored =
-            DurableExecution::lazy_restore(states.clone(), "child".into(), Some(snapshot.clone()));
-        restored.owner().await.unwrap();
-        assert!(!restored.context_records.lock().unwrap().is_empty());
-        restored.commit_checkpoint(snapshot.clone()).await.unwrap();
-        let stale = old.commit_checkpoint(snapshot).await.unwrap_err();
-        assert_eq!(
-            stale.execution_policy_disposition(),
-            Some(ExecutionPolicyDisposition::Reopen)
-        );
-        parent
-            .commit_checkpoint(child_checkpoint("parent"))
-            .await
-            .unwrap();
-        restored.shutdown().await.unwrap();
-        parent.shutdown().await.unwrap();
-    }
-
-    #[tokio::test]
-    async fn restored_child_rejects_missing_unexpected_and_foreign_snapshots() {
-        for (persisted, expected) in [
-            (None, Some(child_checkpoint("child"))),
-            (Some(child_checkpoint("child")), None),
-            (
-                Some(child_checkpoint("child")),
-                Some(child_checkpoint("foreign")),
-            ),
-        ] {
-            let states = DurableSession::open(crate::MemoryStore::new().unwrap(), "parent")
-                .await
-                .unwrap();
-            if let Some(snapshot) = persisted {
-                let old = DurableExecution::lazy(states.clone(), "child".into());
-                old.commit_checkpoint(snapshot).await.unwrap();
-                old.shutdown().await.unwrap();
-            }
-            let restored = DurableExecution::lazy_restore(states, "child".into(), expected);
-            assert!(matches!(
-                restored.owner().await,
-                Err(NanocodexError::InvalidSessionSnapshot(_))
-            ));
-            assert!(restored.initialized_owner().is_none());
-            assert!(restored.context_records.lock().unwrap().is_empty());
-        }
-    }
-
-    #[tokio::test]
-    async fn fresh_child_still_rejects_existing_checkpoint() {
-        let states = DurableSession::open(crate::MemoryStore::new().unwrap(), "parent")
-            .await
-            .unwrap();
-        let old = DurableExecution::lazy(states.clone(), "child".into());
-        old.commit_checkpoint(child_checkpoint("child"))
-            .await
-            .unwrap();
-        old.shutdown().await.unwrap();
-        let fresh = DurableExecution::lazy(states, "child".into());
-        assert!(matches!(
-            fresh.owner().await,
-            Err(NanocodexError::InvalidExecutionPolicy(_))
-        ));
-        assert!(fresh.initialized_owner().is_none());
-    }
-
-    #[tokio::test]
-    async fn restored_unstarted_child_accepts_only_empty_state() {
-        let states = DurableSession::open(crate::MemoryStore::new().unwrap(), "parent")
-            .await
-            .unwrap();
-        let restored = DurableExecution::lazy_restore(states, "unstarted-child".into(), None);
-        assert!(restored.initialized_owner().is_none());
-        restored
-            .commit_checkpoint(child_checkpoint("unstarted-child"))
-            .await
-            .unwrap();
-        assert!(restored.initialized_owner().is_some());
-        restored.shutdown().await.unwrap();
-    }
-
     #[tokio::test]
     async fn corruption_is_fatal_even_when_an_operation_is_pending() {
         let state = DurableSession::open(crate::MemoryStore::new().unwrap(), "corrupt")
@@ -800,9 +537,7 @@ mod tests {
         );
 
         policy
-            .owner()
-            .await
-            .unwrap()
+            .owner
             .fail(
                 "first".into(),
                 crate::EncodedPayload::encode(&1_u32).unwrap(),
@@ -819,7 +554,7 @@ mod tests {
         ));
         assert_eq!(failure.execution_policy_disposition(), None);
 
-        let owner = policy.owner().await.unwrap();
+        let owner = &policy.owner;
         owner
             .admit_typed::<_, u32, String>("second".into(), &"input")
             .await

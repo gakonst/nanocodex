@@ -60,6 +60,7 @@ import type {
   Turn,
 } from "nanocodex";
 import { Agent as CloudflareAgent } from "nanocodex/cloudflare";
+import { Subagents } from "nanocodex/host";
 import { Agent as ManagedAgent } from "nanocodex/managed";
 import { imageGeneration, updatePlan, web } from "nanocodex/tools";
 import { createWorkspaceFilesystem, resolveNamespaceCwd } from "nanocodex-tools";
@@ -1049,20 +1050,17 @@ function descriptorDigest(value: string): string {
   return createHash("sha256").update(JSON.stringify(value)).digest("hex");
 }
 
-/** One-time atomic conversion; runtime authorization has one digest format. */
-export function initializeManagedSubagentDigests(storage: DurableObjectStorage): void {
-  const columns = storage.sql.exec<{ name: string }>("PRAGMA table_info(managed_subagent_authorizations)");
-  if (![...columns].some(({ name }) => name === "task")) return;
+/** Child authority and routes belong only to the current live runtime. */
+export class ManagedSubagentBindings {
+  readonly authorizations = new Map<string, ManagedSubagentAuthorizationRow>();
+  readonly routes = new Map<string, RetainedChildRoute>();
+}
+
+/** Old child metadata cannot authorize or resurrect a child after deployment. */
+export function discardObsoleteManagedSubagents(storage: DurableObjectStorage): void {
   storage.transactionSync(() => {
-    storage.sql.exec("ALTER TABLE managed_subagent_authorizations RENAME COLUMN role TO role_digest");
-    storage.sql.exec("ALTER TABLE managed_subagent_authorizations RENAME COLUMN task TO task_digest");
-    // Iterate rows directly: never materialize all retained tasks together.
-    for (const row of storage.sql.exec<{ session_id: string; role_digest: string; task_digest: string }>(
-      "SELECT session_id, role_digest, task_digest FROM managed_subagent_authorizations",
-    )) {
-      storage.sql.exec(`UPDATE managed_subagent_authorizations SET role_digest = ?, task_digest = ? WHERE session_id = ?`,
-        descriptorDigest(row.role_digest), descriptorDigest(row.task_digest), row.session_id);
-    }
+    storage.sql.exec("DROP TABLE IF EXISTS managed_subagent_authorizations");
+    storage.sql.exec("DROP TABLE IF EXISTS managed_subagent_routes");
   });
 }
 
@@ -1077,9 +1075,10 @@ function sameManagedSubagentDescriptor(
     && row.task === descriptorDigest(descriptor.task);
 }
 
-/** Managed half of the private Cloudflare subagent lifecycle transaction. */
+/** Managed half of the private live Cloudflare subagent lifecycle. */
 export function applyManagedSubagentLifecycle(
   storage: DurableObjectStorage,
+  bindings: ManagedSubagentBindings,
   value: unknown,
 ): void {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -1087,62 +1086,27 @@ export function applyManagedSubagentLifecycle(
   }
   const event = value as Record<string, unknown>;
   const type = event.type;
-  if ((type !== "bind" && type !== "reconstruct" && type !== "release")
+  if ((type !== "bind" && type !== "release")
     || typeof event.rootSessionId !== "string" || !SESSION_ID.test(event.rootSessionId)
     || typeof event.sessionId !== "string" || !SESSION_ID.test(event.sessionId)) {
     throw new TypeError("invalid managed subagent lifecycle event");
   }
   const rootSessionId = event.rootSessionId;
   const sessionId = event.sessionId;
-  if (event.hostContextRef === undefined && (type === "reconstruct" || type === "release")) {
-    const allowedKeys = type === "release"
-      ? ["type", "rootSessionId", "sessionId", "hostContextRef"]
-      : ["type", "rootSessionId", "sessionId", "descriptor", "hostContextRef"];
-    if (Object.keys(event).some((key) => !allowedKeys.includes(key))) {
-      throw new TypeError("invalid managed subagent lifecycle event");
-    }
-    if (type === "reconstruct") {
-      const descriptor = managedSubagentDescriptor(event.descriptor);
-      if (descriptor.sessionId !== sessionId) {
-        throw new Error("managed subagent session does not match its descriptor");
-      }
-    }
-    // Rows created before private host provenance cannot inherit authority.
-    // Revoke any divergent retained snapshot while allowing the Cloudflare
-    // adapter to reconstruct or release the child itself. This is idempotent,
-    // and the absent managed row makes every capability lookup fail closed.
-    storage.sql.exec(
-      `DELETE FROM managed_subagent_authorizations
-       WHERE session_id = ? AND root_session_id = ?`,
-      sessionId,
-      rootSessionId,
-    );
-    return;
-  }
   if (typeof event.hostContextRef !== "string" || !TURN_ID.test(event.hostContextRef)) {
     throw new TypeError("invalid managed subagent lifecycle event");
   }
   const hostContextRef = event.hostContextRef;
-  const retained = storage.sql.exec<ManagedSubagentAuthorizationRow>(
-    `SELECT root_session_id, session_id AS sessionId, agent_id AS agentId,
-            parent_agent_id AS parentAgentId, role_digest AS role, task_digest AS task, host_context_ref, authorization_json
-     FROM managed_subagent_authorizations WHERE session_id = ?`,
-    sessionId,
-  ).toArray()[0];
+  const retained = bindings.authorizations.get(sessionId);
   if (type === "release") {
     if (Object.keys(event).some((key) => !["type", "rootSessionId", "sessionId", "hostContextRef"].includes(key))
       || retained === undefined
       || retained.root_session_id !== rootSessionId
       || retained.host_context_ref !== hostContextRef) {
-      throw new Error("managed subagent release does not match retained authorization");
+      throw new Error("managed subagent release does not match live authorization");
     }
-    storage.sql.exec(
-      `DELETE FROM managed_subagent_authorizations
-       WHERE session_id = ? AND root_session_id = ? AND host_context_ref = ?`,
-      sessionId,
-      rootSessionId,
-      hostContextRef,
-    );
+    bindings.authorizations.delete(sessionId);
+    bindings.routes.delete(sessionId);
     return;
   }
   if (Object.keys(event).some((key) => ![
@@ -1158,7 +1122,7 @@ export function applyManagedSubagentLifecycle(
     if (retained.root_session_id !== rootSessionId
       || retained.host_context_ref !== hostContextRef
       || !sameManagedSubagentDescriptor(retained, descriptor)) {
-      throw new Error("managed subagent binding conflicts with retained authorization");
+      throw new Error("managed subagent binding conflicts with live authorization");
     }
     return;
   }
@@ -1171,37 +1135,27 @@ export function applyManagedSubagentLifecycle(
     if (turn === undefined) throw new Error("managed subagent authorization turn is missing");
     authorizationJson = JSON.stringify(parseTurnAuthorization(turn.authorization_json));
   } else {
-    const parent = storage.sql.exec<ManagedSubagentAuthorizationRow>(
-      `SELECT authorization_json, host_context_ref
-       FROM managed_subagent_authorizations
-       WHERE root_session_id = ? AND agent_id = ?`,
-      rootSessionId,
-      descriptor.parentAgentId,
-    ).toArray()[0];
+    const parent = [...bindings.authorizations.values()].find(row =>
+      row.root_session_id === rootSessionId && row.agentId === descriptor.parentAgentId);
     if (parent === undefined || parent.host_context_ref !== hostContextRef) {
       throw new Error("managed nested subagent authorization parent is missing");
     }
     authorizationJson = JSON.stringify(parseTurnAuthorization(parent.authorization_json));
   }
-  storage.sql.exec(
-    `INSERT INTO managed_subagent_authorizations
-       (session_id, root_session_id, agent_id, parent_agent_id, role_digest, task_digest,
-        host_context_ref, authorization_json, created_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    descriptor.sessionId,
-    rootSessionId,
-    descriptor.agentId,
-    descriptor.parentAgentId,
-    descriptorDigest(descriptor.role),
-    descriptorDigest(descriptor.task),
-    hostContextRef,
-    authorizationJson,
-    Date.now(),
-  );
+  if (descriptor.sessionId === rootSessionId || [...bindings.authorizations.values()].some(row =>
+    row.root_session_id === rootSessionId && row.agentId === descriptor.agentId)) {
+    throw new Error("managed subagent identity conflicts with live authorization");
+  }
+  bindings.authorizations.set(descriptor.sessionId, {
+    ...descriptor,
+    role: descriptorDigest(descriptor.role), task: descriptorDigest(descriptor.task),
+    root_session_id: rootSessionId, host_context_ref: hostContextRef,
+    authorization_json: authorizationJson,
+  });
 }
 
 export function managedAuthorizationForToolContext(
-  storage: DurableObjectStorage,
+  bindings: ManagedSubagentBindings,
   rootSessionId: string | undefined,
   activeAuthorization: TurnAuthorization | undefined,
   context: Pick<ToolContext, "sessionId" | "subagent">,
@@ -1215,52 +1169,31 @@ export function managedAuthorizationForToolContext(
   try { descriptor = managedSubagentDescriptor(context.subagent); }
   catch { return undefined; }
   if (descriptor.sessionId !== context.sessionId) return undefined;
-  const retained = storage.sql.exec<ManagedSubagentAuthorizationRow>(
-    `SELECT root_session_id, session_id AS sessionId, agent_id AS agentId,
-            parent_agent_id AS parentAgentId, role_digest AS role, task_digest AS task, host_context_ref, authorization_json
-     FROM managed_subagent_authorizations WHERE session_id = ?`,
-    context.sessionId,
-  ).toArray()[0];
+  const retained = bindings.authorizations.get(context.sessionId);
   if (retained === undefined || retained.root_session_id !== rootSessionId
     || !sameManagedSubagentDescriptor(retained, descriptor)) return undefined;
   try { return parseTurnAuthorization(retained.authorization_json); }
   catch { return undefined; }
 }
 
-/** Run only between runtimes, after prior shutdown and before child reconstruction. */
-export function pruneOrphanedManagedSubagentRoutes(storage: DurableObjectStorage): void {
-  storage.transactionSync(() => {
-    const hasDescriptors = storage.sql.exec<{ name: string }>(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'nanocodex_cloudflare_subagents'",
-    ).toArray().length > 0;
-    if (!hasDescriptors) {
-      storage.sql.exec("DELETE FROM managed_subagent_routes");
-      return;
-    }
-    storage.sql.exec(`DELETE FROM managed_subagent_routes
-      WHERE NOT EXISTS (SELECT 1 FROM nanocodex_cloudflare_subagents
-        WHERE nanocodex_cloudflare_subagents.session_id = managed_subagent_routes.session_id)`);
-  });
-}
-
-/** Routing uses the invoking parent's retained provenance, never a later root turn. */
+/** Routing uses the invoking parent's live provenance, never a later root turn. */
 export function managedAuthorizationForRouting(
   storage: DurableObjectStorage,
+  bindings: ManagedSubagentBindings,
   rootSessionId: string,
   parentSessionId: string,
   hostContextRef: string,
 ): TurnAuthorization | undefined {
   if (!SESSION_ID.test(rootSessionId) || !SESSION_ID.test(parentSessionId)
     || !TURN_ID.test(hostContextRef)) return undefined;
+  const child = bindings.authorizations.get(parentSessionId);
+  if (parentSessionId !== rootSessionId && (!child || child.root_session_id !== rootSessionId
+    || child.host_context_ref !== hostContextRef)) return undefined;
   const row = parentSessionId === rootSessionId
     ? storage.sql.exec<{ authorization_json: string }>(
       "SELECT authorization_json FROM managed_turns WHERE id = ?", hostContextRef,
     ).toArray()[0]
-    : storage.sql.exec<{ authorization_json: string }>(
-      `SELECT authorization_json FROM managed_subagent_authorizations
-       WHERE session_id = ? AND root_session_id = ? AND host_context_ref = ?`,
-      parentSessionId, rootSessionId, hostContextRef,
-    ).toArray()[0];
+    : child;
   try { return row ? parseTurnAuthorization(row.authorization_json) : undefined; }
   catch { return undefined; }
 }
@@ -3162,6 +3095,7 @@ export class DurableAgentSession extends DurableComputerSession {
   #operations: SessionOperations;
   #brainStorage?: R2Bucket;
   #agent?: CloudflareAgent.Agent;
+  #subagentBindings = new ManagedSubagentBindings();
   #agentPromise?: Promise<CloudflareAgent.Agent>;
   #agentConstruction?: AgentConstructionOwnership;
   readonly #agentConstructions = new Set<AgentConstructionOwnership>();
@@ -3294,9 +3228,6 @@ export class DurableAgentSession extends DurableComputerSession {
       CREATE TABLE IF NOT EXISTS managed_thread_route (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1), route_json TEXT NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS managed_subagent_routes (
-        session_id TEXT PRIMARY KEY, route_id TEXT NOT NULL UNIQUE, binding_json TEXT NOT NULL
-      );
       CREATE TABLE IF NOT EXISTS managed_routing_observations (
         turn_id TEXT PRIMARY KEY, backend TEXT NOT NULL, model TEXT NOT NULL,
         thinking TEXT NOT NULL, terminal_type TEXT NOT NULL,
@@ -3327,18 +3258,6 @@ export class DurableAgentSession extends DurableComputerSession {
       );
       CREATE UNIQUE INDEX IF NOT EXISTS managed_turns_request_key
         ON managed_turns(request_key) WHERE request_key IS NOT NULL;
-      CREATE TABLE IF NOT EXISTS managed_subagent_authorizations (
-        session_id TEXT PRIMARY KEY,
-        root_session_id TEXT NOT NULL,
-        agent_id TEXT NOT NULL,
-        parent_agent_id TEXT,
-        role_digest TEXT NOT NULL,
-        task_digest TEXT NOT NULL,
-        host_context_ref TEXT NOT NULL,
-        authorization_json TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        UNIQUE (root_session_id, agent_id)
-      );
       CREATE TABLE IF NOT EXISTS managed_turn_cancel_intents (
         turn_id TEXT PRIMARY KEY,
         created_at INTEGER NOT NULL
@@ -3414,7 +3333,7 @@ export class DurableAgentSession extends DurableComputerSession {
     initializeManagedAgentSettingsSchema(this.ctx.storage);
     initializeVmHostScopeSchema(this.ctx.storage);
     this.#operations = new SessionOperations(this.ctx.storage);
-    initializeManagedSubagentDigests(this.ctx.storage);
+    discardObsoleteManagedSubagents(this.ctx.storage);
     // A pending realtime mutation belonged to the previous in-memory owner.
     // Its external outcome is unknown, so cold construction must not replay it.
     this.ctx.storage.sql.exec(
@@ -4380,6 +4299,8 @@ export class DurableAgentSession extends DurableComputerSession {
     // Archive cleanup can yield to incoming requests; recheck runtime ownership.
     if (this.#recoverableTurnCount() > 0 || this.#agentPromise
       || this.#managedRealtimeSession() !== undefined
+      || await this.#hasActiveSubagents()
+      || this.#turns.size > 0 || this.#pendingTurnIds.size > 0 || this.#agentPromise
       || Math.max((this.#session()?.last_active ?? 0) + this.#idleTimeoutMs(), this.#preparationExpiresAt) > Date.now()) {
       this.#scheduleRecovery();
       await this.#scheduleNextAlarm();
@@ -5282,12 +5203,11 @@ export class DurableAgentSession extends DurableComputerSession {
   }
 
   #hasRoutingHistory(): boolean {
-    // Runtime tables are lazy. Any retained checkpoint, event, operation, or child
+    // Runtime tables are lazy. Any retained root checkpoint, event, or operation
     // disqualifies opt-in, even if legacy/imported counters say zero.
     for (const table of ["nanocodex_durable_states", "nanocodex_durable_records",
-      "nanocodex_cloudflare_subagents", "nanocodex_cloudflare_subagent_checkpoints",
       "nanocodex_cloudflare_events", "managed_turns", "managed_portability_restoration",
-      "managed_subagent_authorizations", "managed_realtime_operations"]) {
+      "managed_realtime_operations"]) {
       if (this.ctx.storage.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?", table).toArray().length
         && this.ctx.storage.sql.exec(`SELECT 1 FROM ${table} LIMIT 1`).toArray().length) return true;
     }
@@ -7318,8 +7238,7 @@ export class DurableAgentSession extends DurableComputerSession {
       this.ctx.storage.sql.exec("DELETE FROM managed_hand_paths");
       this.ctx.storage.sql.exec("DELETE FROM managed_prepared_personalization");
       this.ctx.storage.sql.exec("DELETE FROM managed_personalization_state");
-      this.ctx.storage.sql.exec("DELETE FROM managed_subagent_authorizations");
-      this.ctx.storage.sql.exec("DELETE FROM managed_subagent_routes");
+      this.#subagentBindings = new ManagedSubagentBindings();
       this.#goalRuntime.clear();
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_triggers");
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_deliveries");
@@ -7611,10 +7530,8 @@ export class DurableAgentSession extends DurableComputerSession {
       }
       return this.#ensureAgent();
     }
-    // Earlier gates have drained shutdown/failed construction and excluded a live
-    // runtime. A route saved before a failed batch published its descriptor can
-    // now be removed without racing a spawn; retained children keep their pins.
-    pruneOrphanedManagedSubagentRoutes(this.ctx.storage);
+    // Shutdown has drained the previous runtime; no child bindings cross this boundary.
+    this.#subagentBindings = new ManagedSubagentBindings();
     const construction: AgentConstructionOwnership = {
       deletionGeneration: this.#deletionGeneration,
       runtimeGeneration: this.#runtimeOwnershipGeneration,
@@ -7757,10 +7674,9 @@ export class DurableAgentSession extends DurableComputerSession {
       // retires that published runtime instead of permanently accepting a
       // stale construction.
       if (this.#agentPromise || this.#agentConstructions.size > 0) return;
-      if (this.#agent
-        && (this.#turns.size > 0 || this.#managedRealtimeSession() !== undefined)) {
-        return;
-      }
+      const activeChildren = await this.#hasActiveSubagents();
+      if (this.#agentPromise || this.#agentConstructions.size > 0 || activeChildren
+        || this.#turns.size > 0 || this.#managedRealtimeSession() !== undefined) return;
       this.#accountMcpConnections = Object.freeze(connected);
       if (this.#agent) await this.#shutdownAgent();
     })();
@@ -7929,33 +7845,29 @@ export class DurableAgentSession extends DurableComputerSession {
         throw new Error("Session routing requires full account tool authority");
       }
     };
-    const readChildRoute = (sessionId: string): RetainedChildRoute | undefined => {
-      const row = this.ctx.storage.sql.exec<{ binding_json: string }>(
-        "SELECT binding_json FROM managed_subagent_routes WHERE session_id = ?", sessionId,
-      ).toArray()[0];
-      return row ? JSON.parse(row.binding_json) as RetainedChildRoute : undefined;
-    };
+    const bindings = this.#subagentBindings;
+    const readChildRoute = (sessionId: string): RetainedChildRoute | undefined => bindings.routes.get(sessionId);
     const subagentRouting = configuration.model_routing && this.#threadRoute() ? createSubagentRouteController({
       ai: this.env.AI!, policy: configuration.model_routing,
       availability: () => this.#routingAvailability(),
       authorize: (parentSessionId, hostContextRef) => {
         assertRoutingOwned();
         assertRoutingAuthority(managedAuthorizationForRouting(
-          this.ctx.storage, rootRoutingSessionId(), parentSessionId, hostContextRef,
+          this.ctx.storage, bindings, rootRoutingSessionId(), parentSessionId, hostContextRef,
         ));
       },
       store: {
         read: readChildRoute,
         commit: (sessionId, binding) => {
           if (sessionId === rootRoutingSessionId()) throw new Error("Child route cannot replace root route");
-          this.ctx.storage.sql.exec(
-            "INSERT INTO managed_subagent_routes (session_id, route_id, binding_json) VALUES (?, ?, ?)",
-            sessionId, binding.routeId, JSON.stringify(binding),
-          );
+          if (bindings.routes.has(sessionId) || [...bindings.routes.values()].some(route => route.routeId === binding.routeId)) {
+            throw new Error("Child route conflicts with live binding");
+          }
+          bindings.routes.set(sessionId, binding);
         },
       },
     }) : undefined;
-    // Called for every provider request, including child continuations after restore.
+    // Called for every provider request, including live child continuations.
     const inferenceForSession = subagentRouting === undefined ? undefined : (sessionId: string) => {
       const assertSessionActive = () => {
         assertRoutingOwned();
@@ -7966,7 +7878,7 @@ export class DurableAgentSession extends DurableComputerSession {
           const binding = readChildRoute(sessionId);
           if (!binding) throw new Error("Child route is missing; refusing parent transport");
           assertRoutingAuthority(managedAuthorizationForRouting(
-            this.ctx.storage, rootSessionId, sessionId, binding.hostContextRef,
+            this.ctx.storage, bindings, rootSessionId, sessionId, binding.hostContextRef,
           ));
         }
       };
@@ -8329,11 +8241,7 @@ export class DurableAgentSession extends DurableComputerSession {
         subagentRouting,
         inferenceForSession,
         subagentLifecycle: (event: unknown) => {
-          applyManagedSubagentLifecycle(this.ctx.storage, event);
-          const lifecycle = event as { type: string; sessionId: string };
-          if (lifecycle.type === "release") this.ctx.storage.sql.exec(
-            "DELETE FROM managed_subagent_routes WHERE session_id = ?", lifecycle.sessionId,
-          );
+          applyManagedSubagentLifecycle(this.ctx.storage, bindings, event);
         },
         ...(this.#threadRoute()?.backend === "workers_ai" ? {
           workersAi: {
@@ -8729,7 +8637,7 @@ export class DurableAgentSession extends DurableComputerSession {
       ).toArray()[0]?.session_id;
     } catch { /* The adapter creates the identity table during construction. */ }
     return managedAuthorizationForToolContext(
-      this.ctx.storage,
+      this.#subagentBindings,
       rootSessionId,
       this.#activeTurnAuthorization(),
       context,
@@ -10255,6 +10163,19 @@ export class DurableAgentSession extends DurableComputerSession {
     this.#turnInputs.clear();
   }
 
+  async #hasActiveSubagents(): Promise<boolean> {
+    const agent = this.#agent;
+    if (!agent || this.#subagentBindings.authorizations.size === 0) return false;
+    try {
+      const { agents } = await Subagents.list(agent);
+      return agents.some(({ status }) => status.state === "pending"
+        || status.state === "running" || status.state === "closing");
+    } catch {
+      // A transient directory failure must not destroy work owned by this runtime.
+      return this.#agent === agent;
+    }
+  }
+
   async #shutdownAgent(strict = false): Promise<void> {
     this.#accountCatalog.invalidate();
     this.#preparedAccountInfo = undefined;
@@ -10774,7 +10695,9 @@ export class DurableAgentSession extends DurableComputerSession {
       && this.#managedRealtimeSession() === undefined) {
       const session = this.#session();
       const lastActive = session?.last_active ?? now;
-      targets.push(Math.max(now + 1, lastActive + this.#idleTimeoutMs(), this.#preparationExpiresAt));
+      targets.push(await this.#hasActiveSubagents()
+        ? now + MAX_RETRY_DELAY_MS
+        : Math.max(now + 1, lastActive + this.#idleTimeoutMs(), this.#preparationExpiresAt));
     }
     if (!this.#streamError) {
       for (const row of this.#managedTurns(
