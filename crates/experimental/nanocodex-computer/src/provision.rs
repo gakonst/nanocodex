@@ -23,8 +23,10 @@ fn runtime_root() -> Result<PathBuf, String> {
 
 /// The managed provider location. A broken selection remains discoverable so
 /// callers surface its error instead of silently switching to another provider.
+/// Linux guests reuse this receipt convention for a preinstalled upstream launcher;
+/// runtime arguments and environment belong in the launcher.
 pub fn managed_provider_path() -> Option<PathBuf> {
-    if !cfg!(target_os = "macos") {
+    if !cfg!(any(target_os = "macos", target_os = "linux")) {
         return None;
     }
     let path = runtime_root().ok()?.join("provider.json");
