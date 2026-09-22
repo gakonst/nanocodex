@@ -196,12 +196,11 @@ pub fn managed_startup_context(context: &Value) -> Option<String> {
             Some(VoiceHistoryEntry::new(role, text))
         })
         .collect::<Vec<_>>();
-    let history_context = build_browser_startup_context(
+    build_browser_startup_context(
         &history,
         context["workspace"].as_str().unwrap_or_default(),
         &[],
-    );
-    history_context
+    )
 }
 
 #[cfg(test)]
