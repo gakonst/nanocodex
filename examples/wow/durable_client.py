@@ -14,7 +14,7 @@ import stat
 import threading
 import time
 
-from server import Backend, APIError, identifier, stable_id, prompt_for, make_server
+from server import Backend, APIError, identifier, stable_id, prompt_for, make_server, metadata
 
 
 class ProtocolError(Exception):
@@ -227,7 +227,9 @@ class DurableBackend(Backend):
     """Drop-in make_server backend; existing REST routes remain available."""
     def __init__(self, storage_dir=None):
         super().__init__()
-        self.storage_dir = Path(storage_dir or Path.home() / '.local/share/nanocodex-wow/durable')
+        self._default_storage = storage_dir is None
+        self.storage_dir = Path(Path.home() / '.local/share/nanocodex-wow/durable'
+                                if self._default_storage else storage_dir)
         self.lock = threading.RLock()
         self.store = None
         self.fingerprint = None
@@ -248,6 +250,14 @@ class DurableBackend(Backend):
             if self.fingerprint is not None and fingerprint != self.fingerprint:
                 raise APIError('Account changed; restart the durable backend.', 401)
             if self.store is None:
+                if self._default_storage:
+                    # EventStore's parents=True mkdir gives intermediate paths
+                    # the process umask, which can make the app root 0755 on a
+                    # fresh install. Reuse metadata's safe 0700 directory walk
+                    # before creating the durable child; never repair or loosen
+                    # permissions on an existing unsafe app directory.
+                    with metadata(self):
+                        pass
                 self.store = EventStore(self.storage_dir / (fingerprint + '.sqlite3'))
                 self.fingerprint = fingerprint
 

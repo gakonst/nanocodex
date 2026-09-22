@@ -147,7 +147,7 @@ fi
         self.assertIn('start deferred', result.stdout)
         unit = (self.home / '.config/systemd/user/nanocodex-wow-bridge.service').read_text()
         self.assertIn('Restart=no\n', unit)
-        self.assertIn('--allow-input --duration 0 --key-hold-ms 1', unit)
+        self.assertIn('--allow-input --duration 0 --key-hold-ms 5', unit)
         self.assertEqual((app / 'auto-bridge').stat().st_mode & 0o777, 0o700)
 
 

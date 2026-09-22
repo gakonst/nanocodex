@@ -7,8 +7,9 @@ tools in their independent Cargo/npm packages; an equality test checks both
 consumed copies. No other tool catalog is included.
 The native CLI calls the managed `/v1/memories/{method}` API. The managed agent
 uses the same file adapter. The old `memory` model tool is no longer registered;
-old configuration entries select the four replacements, while an empty tool
-list remains empty.
+old configuration entries select these compatibility tools plus the managed
+[Markdown memory tools](workers-markdown-memory.md), while an empty tool list
+remains empty. The pinned Codex schemas themselves remain unchanged.
 
 No existing memories are migrated or deleted. Versioned records appear as
 `legacy/<id>-v<version>.md`, and reads use the existing ownership and lifecycle

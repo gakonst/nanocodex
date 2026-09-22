@@ -24,6 +24,8 @@ export type {
   AgentEvent,
   AgentLifecycle,
   AgentOptions,
+  BeforeCompactionRequest,
+  CompactionReceipt,
   AgentSessionContext,
   ChatGptCredential,
   ChatGptCredentialSeed,

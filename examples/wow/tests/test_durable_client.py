@@ -65,6 +65,53 @@ class DurableTests(unittest.TestCase):
                 cursor(value)
         self.assertEqual(cursor('9223372036854775807'), 9223372036854775807)
 
+    def test_fresh_home_durable_start_preserves_private_roster_storage(self):
+        home = Path(self.tmp.name) / 'fresh-home'
+        home.mkdir(mode=0o700)
+        old_umask = os.umask(0o022)
+        try:
+            with patch.dict(os.environ, {'HOME': str(home)}):
+                backend = DurableBackend()
+                self.addCleanup(backend.close)
+                with patch.object(backend, 'credentials', return_value='synthetic-test-key'), \
+                        patch.object(backend, 'agents', return_value={'data': ['thread1']}):
+                    backend._open_store()
+                    app = home / '.local/share/nanocodex-wow'
+                    self.assertEqual(app.stat().st_mode & 0o777, 0o700)
+                    self.assertEqual((app / 'durable').stat().st_mode & 0o777, 0o700)
+                    result = backend.handle('GET', '/api/workspace', {}, {})
+                    self.assertEqual(result['threads'][0]['id'], 'thread1')
+                    self.assertEqual(result['projects'][0]['id'], 'thread1')
+        finally:
+            os.umask(old_umask)
+
+    def test_default_storage_rejects_existing_unsafe_app_directory(self):
+        home = Path(self.tmp.name) / 'unsafe-home'
+        app = home / '.local/share/nanocodex-wow'
+        app.mkdir(parents=True)
+        app.chmod(0o755)
+        with patch.dict(os.environ, {'HOME': str(home)}):
+            backend = DurableBackend()
+            self.addCleanup(backend.close)
+            with patch.object(backend, 'credentials', return_value='synthetic-test-key'):
+                with self.assertRaises(APIError):
+                    backend._open_store()
+                self.assertIsNone(backend.store)
+                self.assertEqual(app.stat().st_mode & 0o777, 0o755)
+                self.assertFalse((app / 'durable').exists())
+
+    def test_custom_storage_does_not_initialize_account_metadata(self):
+        home = Path(self.tmp.name) / 'unused-home'
+        home.mkdir(mode=0o700)
+        with patch.dict(os.environ, {'HOME': str(home)}):
+            backend = DurableBackend(storage_dir=Path(self.tmp.name) / 'custom')
+            self.addCleanup(backend.close)
+            with patch.object(backend, 'credentials', return_value='synthetic-test-key'), \
+                    patch('durable_client.metadata', side_effect=AssertionError('Metadata accessed')):
+                backend._open_store()
+                self.assertIsNotNone(backend.store)
+                self.assertFalse((home / '.local').exists())
+
     def test_private_storage(self):
         unsafe = Path(self.tmp.name) / 'unsafe'
         unsafe.mkdir(mode=0o755)

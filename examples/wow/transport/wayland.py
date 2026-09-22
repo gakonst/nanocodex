@@ -20,6 +20,18 @@ except ImportError:
     from calibrate import decode_grid
 
 RESERVED = frozenset('F'+str(n) for n in range(13,25))
+# Native helper: two syncs per symbol, five lifecycle syncs, 20ms setup and
+# 40ms tail settle. Keep the whole budget below the receiver's 30s frame limit.
+NATIVE_ROUNDTRIP_ALLOWANCE = .020
+NATIVE_TIMEOUT_LIMIT = 29.0
+
+
+def native_timeout(symbol_count, hold_ms):
+    timeout = (2 + .060 + (2 * symbol_count + 5) * NATIVE_ROUNDTRIP_ALLOWANCE
+               + 2 * symbol_count * hold_ms / 1000)
+    if timeout >= NATIVE_TIMEOUT_LIMIT:
+        raise ValueError('native batch timing exceeds receiver frame deadline')
+    return timeout
 
 
 class Desktop:
@@ -130,6 +142,7 @@ class Desktop:
     def send_keys(self, keys):
         if not keys or len(keys)>(890 if self.key_encoding == 'binary' else 335) or any(key not in self.carrier_keys for key in keys):
             raise ValueError('bounded reserved-key batch required')
+        timeout = native_timeout(len(keys), self.key_hold_ms) if self.input_backend == 'native-chord' else 2
         codes = None
         if self.input_backend == 'x11':
             try:
@@ -147,7 +160,6 @@ class Desktop:
             # No --window/stack (XTEST), focus mutation, or modifier mutation.
             # Pad short codes so XStringToKeysym cannot interpret a digit key.
             args = ['xdotool', 'key', '--delay', '0'] + [str(codes[key]).zfill(3) for key in keys]
-        timeout = 2
         if self.input_backend == 'native-chord':
             if any(not 13 <= int(key[1:]) <= 22 for key in keys):
                 raise ValueError('chord alphabet')
@@ -158,7 +170,6 @@ class Desktop:
                     raise ValueError('native helper differs from tested no-Alt/no-F4 protocol')
                 self._native_verified = True
             args = [binary, str(self.key_hold_ms)] + ['C'+str(int(key[1:])-12) for key in keys]
-            timeout += len(keys)*self.key_hold_ms*2/1000
         self.run(args,stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=timeout,check=True)
         # Input APIs cannot retract events after a focus race. An observed race is
         # ambiguous and stops Pump; successful command exit is NOT carrier ACK.

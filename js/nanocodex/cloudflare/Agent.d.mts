@@ -100,6 +100,8 @@ export function create(owner: create.Owner, options?: create.Options): Promise<c
 export declare namespace create {
   type Owner = DurableObjectOwner;
   type Options = Readonly<{
+    /** Awaited host preservation barrier; scoped to this root, never inherited by children. */
+    beforeCompaction?: AgentOptions["beforeCompaction"];
     /** Stable portable state identity. It cannot change after first construction or import. */
     durabilityId?: string | undefined;
     /**

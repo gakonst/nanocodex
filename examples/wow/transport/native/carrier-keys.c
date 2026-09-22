@@ -65,6 +65,9 @@ int main(int argc,char **argv) {
   if(hold)usleep((useconds_t)hold*1000);
  }
  if(chord){
+  /* Keep the chord held while the game consumes the final symbol. A Wayland
+     roundtrip confirms compositor processing, not the game's key callback. */
+  usleep(40000);
   zwp_virtual_keyboard_v1_key(keyboard,now(),42,0);
   zwp_virtual_keyboard_v1_key(keyboard,now(),29,0);
   zwp_virtual_keyboard_v1_modifiers(keyboard,0,0,0,0);

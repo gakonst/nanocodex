@@ -46,13 +46,13 @@ end
 local sustained=fresh()
 assert(sustained.ReceiveStream(event('active','s',1,0,'append','unfinished')))
 -- More than a lifetime's former block cap; preserve an interleaved active turn.
-for i=1,160 do finish(sustained,'r'..i,'reply'..i) end
-assert(sustained.StreamState().blocks==32)
+for i=1,400 do finish(sustained,'r'..i,'reply'..i) end
+assert(sustained.StreamState().blocks==256)
 assert(sustained.ReceiveStream(event('active','s',2,10,'append',' still here')))
 assert(sustained.StreamState().text=='unfinished still here')
 local before=sustained.StreamState()
-assert(not sustained.ReceiveStream(event('r159','s',1,0,'append','conflict')))
-assert(sustained.ReceiveStream(event('r160','s',3,8,'done'))) -- Retained exact replay.
+assert(not sustained.ReceiveStream(event('r399','s',1,0,'append','conflict')))
+assert(sustained.ReceiveStream(event('r400','s',3,8,'done'))) -- Retained exact replay.
 assert(not sustained.ReceiveStream(event('r100','s',1,0,'append','reply100'))) -- Retired replay.
 assert(sustained.StreamState().text==before.text and sustained.StreamState().bytes==before.bytes)
 
@@ -69,19 +69,19 @@ for request=1,3 do
 end
 
 local blocked=fresh()
-for i=1,32 do
+for i=1,256 do
  assert(blocked.ReceiveStream(event('waiting'..i,'s',1,0,'append','a')))
  assert(blocked.ReceiveStream(event('waiting'..i,'s',2,1,'end')))
 end
 -- Sealed is not completed: preserve every block still awaiting turn done.
 assert(not blocked.ReceiveStream(event('new','s',1,0,'append','b')))
-assert(blocked.StreamState().blocks==32 and blocked.StreamState().bytes==32)
+assert(blocked.StreamState().blocks==256 and blocked.StreamState().bytes==256)
 assert(blocked.ReceiveStream(event('waiting1','s',3,1,'done')))
 assert(blocked.ReceiveStream(event('new','s',1,0,'append','b')))
-assert(blocked.StreamState().blocks==32 and blocked.StreamState().bytes==32)
+assert(blocked.StreamState().blocks==256 and blocked.StreamState().bytes==256)
 
 local failed=fresh()
-for i=1,32 do
+for i=1,256 do
  assert(failed.ReceiveStream(event('failed'..i,'s',1,0,'append','a')))
  assert(failed.ReceiveStream(event('failed'..i,'s',2,1,'error')))
 end

@@ -8,6 +8,7 @@ import { isAbsolute } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { StringDecoder } from 'node:string_decoder';
+import { createMediaDiagnostics } from './phone-media-diagnostics.mjs';
 import { createPhoneDelegation, stopPhoneDelegate } from './phone-delegation.mjs';
 import {
   createTwilioVoiceCall, fetchTwilioVoiceCall, hangupTwilioVoiceCall,
@@ -64,10 +65,10 @@ export function nativeVoice(binary, instructions, onEvent, onFailure, agentId) {
   child.stdin.on('error', fail);
   child.stdout.on('data', chunk => {
     buffer += decoder.write(chunk);
-    if (Buffer.byteLength(buffer) > MAX_BUFFER) { fail(); child.kill(); return; }
     let end;
     while ((end = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
+      if (Buffer.byteLength(line) > MAX_BUFFER) { fail(); child.kill(); return; }
       try {
         const event = JSON.parse(line);
         if (event.type === 'ready' && !settled) { settled = true; clearTimeout(timer); resolveReady(); }
@@ -75,10 +76,12 @@ export function nativeVoice(binary, instructions, onEvent, onFailure, agentId) {
         else Promise.resolve(onEvent(event)).catch(fail);
       } catch { fail(); child.kill(); }
     }
+    if (Buffer.byteLength(buffer) > MAX_BUFFER) { fail(); child.kill(); }
   });
   const send = event => {
-    if (stopped || child.stdin.destroyed || child.stdin.writableLength > MAX_BUFFER) throw failure(503, 'voice_backpressure');
-    child.stdin.write(JSON.stringify(event) + '\n');
+    const line = JSON.stringify(event) + '\n';
+    if (stopped || child.stdin.destroyed || child.stdin.writableLength + Buffer.byteLength(line) > MAX_BUFFER) throw failure(503, 'voice_backpressure');
+    child.stdin.write(line);
   };
   send({ type: 'start', agent_id: agentId, instructions });
   return { ready, send, close() {
@@ -129,6 +132,8 @@ export function createPhoneBridge({ env = process.env, database = env.NANOCODEX_
     return stateTail;
   };
   const save = record => {
+    const active = live.get(record.call_id);
+    if (active?.media) record.audio_diagnostics = active.media.snapshot();
     db.prepare('UPDATE calls SET record = ? WHERE id = ?').run(JSON.stringify(record), record.call_id);
     return publish(record.call_id);
   };
@@ -158,6 +163,7 @@ export function createPhoneBridge({ env = process.env, database = env.NANOCODEX_
   };
   const read = id => { const row = db.prepare('SELECT record FROM calls WHERE id = ?').get(id); return row && JSON.parse(row.record); };
   const snapshot = record => ({ call_id: record.call_id, ...(record.to ? { to: record.to } : {}), status: record.status, transcript: record.transcript, transcript_truncated: record.transcript_truncated === true,
+    ...((live.get(record.call_id)?.media || record.audio_diagnostics) ? { audio_diagnostics: live.get(record.call_id)?.media.snapshot() ?? record.audio_diagnostics } : {}),
     ...(record.error ? { error: record.error } : {}),
     ...(record.delegate_agent_id ? { call_agent_id: record.delegate_agent_id } : {}), max_duration_seconds: record.max_duration_seconds });
   const delegateCleanup = new Map();
@@ -176,6 +182,7 @@ export function createPhoneBridge({ env = process.env, database = env.NANOCODEX_
   const cleanup = id => {
     const active = live.get(id);
     if (active) {
+      console.info('Phone media diagnostics', JSON.stringify({ call_id: id, ...active.media.snapshot() }));
       live.delete(id); clearTimeout(active.timer); clearTimeout(active.attachTimer);
       active.voice?.close(); if (active.socket && active.socket !== true) active.socket.close(1000);
     }
@@ -226,7 +233,7 @@ export function createPhoneBridge({ env = process.env, database = env.NANOCODEX_
   })));
   recovering.catch(() => {});
   const eventFor = id => async event => {
-    const active = live.get(id); if (!active) return;
+    const active = live.get(id); if (!active || finishing.has(id)) return;
     if (event.type === 'delegation') {
       if (typeof event.id !== 'string' || !/^[A-Za-z0-9_.:-]{1,256}$/.test(event.id)
         || typeof event.input !== 'string' || !event.input.trim() || Buffer.byteLength(event.input) > 8000
@@ -256,12 +263,12 @@ export function createPhoneBridge({ env = process.env, database = env.NANOCODEX_
       if (active.socket.bufferedAmount > MAX_BUFFER) { void finish(id, 'media_backpressure'); return; }
       if (event.type === 'clear') {
         active.socket.send(JSON.stringify({ event: 'clear', streamSid: active.stream }));
-        active.marks.clear();
+        active.media.clear();
       } else {
         if (!audioPayload(event.audio)) { void finish(id, 'invalid_voice_audio'); return; }
-        if (active.marks.size >= 100) { void finish(id, 'playback_backpressure'); return; }
+        if (!active.media.canQueue(Buffer.from(event.audio, 'base64').length)) { void finish(id, 'playback_backpressure'); return; }
         active.socket.send(JSON.stringify({ event: 'media', streamSid: active.stream, media: { payload: event.audio } }));
-        const name = String(++active.sequence); active.marks.add(name);
+        const name = String(++active.sequence); active.media.queue(name, Buffer.from(event.audio, 'base64').length);
         active.socket.send(JSON.stringify({ event: 'mark', streamSid: active.stream, mark: { name } }));
       }
     }
@@ -286,7 +293,7 @@ export function createPhoneBridge({ env = process.env, database = env.NANOCODEX_
     db.prepare('INSERT INTO calls VALUES (?, ?, ?, ?, ?)').run(id, value.agent_id, value.operation_id, fingerprint, JSON.stringify(record));
     await publish(id);
     if (read(id).stop_requested) return snapshot(read(id));
-    const active = { marks: new Set(), sequence: 0, goal: value.instructions, parentAgent: value.agent_id };
+    const active = { media: createMediaDiagnostics(), sequence: 0, goal: value.instructions, parentAgent: value.agent_id };
     live.set(id, active);
     try {
       active.delegate = startDelegation({ env, goal: active.goal, parent_agent_id: active.parentAgent, onAgentCreated: async (agentId, sessionId) => {
@@ -469,9 +476,11 @@ export function createPhoneBridge({ env = process.env, database = env.NANOCODEX_
         ws.on('close', () => { clearTimeout(startTimer); if (live.has(match[1])) void finish(match[1]); });
         ws.on('message', async (data, binary) => {
           try {
+            if (live.get(match[1]) !== active || finishing.has(match[1])) return;
             if (binary) throw new Error();
             const event = JSON.parse(data.toString());
             if (event.event === 'connected') return;
+            if (!active.media.sequence(event.sequenceNumber)) return;
             if (event.event === 'start' && !active.stream) {
               const start = event.start, record = read(match[1]);
               if (start?.accountSid !== env.TWILIO_ACCOUNT_SID || start?.customParameters?.callId !== match[1]
@@ -483,8 +492,10 @@ export function createPhoneBridge({ env = process.env, database = env.NANOCODEX_
             } else if (event.streamSid !== active.stream || !active.stream) throw new Error();
             else if (event.event === 'media') {
               if (event.media?.track !== 'inbound' || !audioPayload(event.media?.payload)) throw new Error();
-              active.voice.send({ type: 'audio', audio: event.media.payload });
-            } else if (event.event === 'mark') active.marks.delete(event.mark?.name);
+              active.media.input(event.media, Buffer.from(event.media.payload, 'base64'));
+              try { active.voice.send({ type: 'audio', audio: event.media.payload }); }
+              catch { active.media.inputBackpressure(); void finish(match[1], 'voice_backpressure'); }
+            } else if (event.event === 'mark') active.media.mark(event.mark?.name);
             else if (event.event === 'stop') void finish(match[1]);
             else if (event.event !== 'dtmf') throw new Error();
           } catch { void finish(match[1], 'invalid_media'); }

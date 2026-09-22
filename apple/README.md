@@ -1,9 +1,8 @@
 # Nanocodex for iPhone and iPad
 
 A native SwiftUI app for iPhone and iPad. Each managed agent has an independent
-conversation in a searchable drawer. The compact conversation header, blue user
-bubbles, unboxed replies, and rounded composer keep the conversation in focus.
-Use the compose button to start another conversation. Back, per-conversation screens,
+conversation in a searchable native list. The system navigation bar, blue user bubbles, unboxed replies, and rounded
+composer keep the conversation in focus. Use the compose button to start another conversation. Back, per-conversation screens,
 and captured context are available in the app menu. Queue and steering controls
 remain with each conversation.
 Nanocodex retains per-agent drafts, steering, voice, and remote screens.
@@ -64,16 +63,20 @@ when the view appears, preserves EXIF orientation, and shares a bounded cache
 so scrolling does not repeatedly blank and decode the same images.
 
 
-The current conversation stays mounted while the session drawer opens. The drawer
-uses lightweight roster summaries and search, without tabs, preview grids, or status
-filters. The drawer uses the shared neutral sidebar palette and system sans-serif typography.
-Titles stay neutral, with a small green dot for running agents and explicit status
-labels available to VoiceOver. Titles, status and current-work text scale with Dynamic
-Type. Search and compose sit at the top; Settings stays at the bottom.
-Selecting a row restores that agent's draft and reading position. Swipe right from
-the left 28 points of the screen to open the drawer; swipe left to close. The
-conversation follows the finger and settles with a short spring over the stationary list. Vertical scrolling
-keeps it open. Previously hidden conversations are available in this same list.
+Conversation navigation uses `NavigationSplitView`: iPhone uses the system
+list/detail navigation and iPad uses the native sidebar. The sidebar is a searchable
+`List` of lightweight roster summaries; selecting a conversation restores its draft
+and saved reading position. The navigation bar supplies the title, compose action,
+and app menu. There is no separate drawer gesture or offset animation engine.
+The composer and its notices use `safeAreaInset`, with system keyboard avoidance.
+
+The transcript uses `UICollectionView` and `UIHostingConfiguration`. Stable observable
+row models update mounted SwiftUI content directly; diffable snapshots handle only
+structural changes. UIKit handles cell sizing and safe-area insets. The native
+coordinator owns scrolling and exact reading-offset restoration, while the SwiftUI
+screen records reading intent and requests navigation. See
+[chat UI architecture](CHAT_UI_ARCHITECTURE.md) for alternatives and boundaries.
+
 Reply bubbles hug their content with 12-point horizontal and 9-point vertical padding.
 Long-press a reply to copy it; code blocks retain their own copy controls. The composer
 uses 4-point vertical padding around controls with 44-point touch targets.
@@ -82,6 +85,10 @@ another row's streamed updates do not reparse completed messages. Parsing runs o
 a background actor with a bounded cache; streamed changes coalesce for 32 ms,
 and cancelled parses cannot replace newer content. The
 `ChatMarkdownParse` Points of Interest signpost measures actual parsing work.
+Returning code blocks render cached syntax colors on their first layout. Cold syntax
+highlighting starts near the visible scroll area instead of across offscreen code
+blocks; the complete source remains available throughout. The `ChatCodeHighlight`
+Points of Interest signpost measures cold highlighting work.
 
 Commentary and reasoning summaries appear inline in chronological order. Each
 tool call has a compact card with expandable input and result details. Short shell
@@ -188,9 +195,9 @@ Return/Tab/Esc controls below the video.
 | Action | Result |
 | --- | --- |
 | Header → Conversations | Search and switch agents while preserving each agent’s draft and queued messages |
-| Dock plus | Open a new agent immediately and start composing |
-| Swipe right from the left edge | Open the conversation drawer, including while composing |
-| Swipe drawer left | Return to the current conversation without losing the draft |
+| Navigation bar compose button | Open a new agent immediately and start composing |
+| System Back / sidebar control | Open the conversation list |
+| Select a conversation | Return to its draft and saved reading position |
 | Drag down while typing | Interactively dismiss the keyboard while keeping the current conversation and draft |
 | Scroll a conversation | Read the full history, reasoning, and expandable tool details while keeping the composer available |
 | Attachment plus → Camera / Photos & Videos / Files | Take a photo or attach photos/videos; preview or remove attachments before sending |
@@ -201,12 +208,10 @@ Return/Tab/Esc controls below the video.
 | Header menu → Account settings | Manage the account and device Hand in a dismissible sheet |
 | Header menu → Scheduled jobs | View, edit, pause, resume, or cancel jobs across the account; open the source chat and latest run |
 
-The compact header shows the selected conversation, its running indicator, a
-Conversations button, and the app menu. Below the composer, the floating dock
-groups Back, Remote screens, new-agent plus, and captured context.
-Back returns to the previous conversation, retaining its draft and reading position.
-The sidebar owns conversation switching. The drawer uses a short, damped horizontal transition and respects
-Reduce Motion. Glass controls use opaque surfaces with Reduce Transparency.
+The system navigation bar shows the selected conversation, compose action, and
+app menu. Previous conversation, Remote screens, and captured context are in the
+menu. NavigationSplitView owns compact list/detail transitions and the iPad
+sidebar. System controls inherit accessibility and motion preferences.
 
 Attachments open in a native sheet, then hand off to the existing photo, camera,
 or file picker after dismissal. Settings has its own navigation stack in a sheet;

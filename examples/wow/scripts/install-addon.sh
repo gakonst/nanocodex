@@ -6,6 +6,8 @@ if [[ $# != 1 || ! -d "$1" ]]; then
   exit 2
 fi
 if [[ ! -d "$1/Interface" ]]; then echo 'Expected a WoW client directory containing Interface; refusing ambiguous target.' >&2; exit 2; fi
+# Refuse an incomplete source tree before touching an installed addon.
+python3 "$src/scripts/package-addon.py" --check
 mkdir -p "$1/Interface/AddOns"
 if [[ -e "$1/Interface/AddOns/Nanocodex" ]]; then
   mkdir -p "$1/Interface/NanocodexBackups"

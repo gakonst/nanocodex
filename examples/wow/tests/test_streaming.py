@@ -198,3 +198,30 @@ class RestartAndReplayTests(unittest.TestCase):
             dispatcher = self.setup_dispatcher(directory, Backend())
             outputs = dispatcher.poll('request-1')
             self.assertEqual(outputs[-1]['state'], 'completed')
+
+class ToolHeavyStressTests(unittest.TestCase):
+    def test_128_tools_and_commentary_blocks_keep_the_final_answer(self):
+        record = dict(turn='stress-turn', outputs=[], done=False)
+        for i in range(128):
+            payload = dict(text=f'Tool {i+1}/128', model_call_index=i, item_id=f'c{i}', phase='commentary')
+            for kind in ('assistant.delta', 'assistant.message'):
+                project('stress', record, dict(type='event', event=dict(type=kind, payload=payload)))
+            for kind in ('tool.call', 'tool.result'):
+                project('stress', record, dict(type='event', event=dict(type=kind, payload=dict(
+                    tool='exec_command', call_id=f'call{i}', status='completed', arguments={'private':'not for display'}, result='x'*100000))))
+        project('stress', record, dict(type='turn_completed', final_message='STRESS PASS Ω'))
+        self.assertTrue(record['done'])
+        self.assertEqual(len(record['streams']), 129)
+        self.assertEqual(record['streams'][record['answer_stream']]['text'], 'STRESS PASS Ω')
+        tools = [o for o in record['outputs'] if o['kind']=='ack']
+        self.assertEqual(len(tools), 256)
+        self.assertTrue(all('private' not in o['value'] and len(o['value'])<180 for o in tools))
+        self.assertEqual(len({o['event_id'] for o in record['outputs']}), len(record['outputs']))
+        self.assertEqual(record['outputs'][-1]['state'], 'completed')
+
+    def test_tool_activity_is_bounded_and_child_events_do_not_leak(self):
+        record=dict(turn='t',outputs=[],done=False)
+        project('r',record,dict(type='event',agent_id=2,event=dict(type='tool.call',payload={'tool':'child'})))
+        self.assertEqual(record['outputs'],[])
+        project('r',record,dict(type='event',event=dict(type='tool.result',payload={'tool':'bad\n|Ttexture|t','status':'failed'})))
+        self.assertEqual(record['outputs'][0]['value'],'ncm1\ttool\tr\tt\ttool\tfailed')

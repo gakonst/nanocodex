@@ -48,9 +48,21 @@ pub(super) struct PromptCacheConfig {
 pub(super) struct CodexCompatibility {
     pub(super) context: ContextSourceConfig,
     pub(super) execution: ExecutionConfig,
+    pub(super) before_compaction: Option<Arc<dyn execution::BeforeCompaction>>,
 }
 
 impl<F> NanocodexBuilder<F> {
+    /// Awaits durable host preservation before automatic or manual compaction.
+    ///
+    /// The host must deduplicate by boundary ID, return only after durable success,
+    /// and bound its work. Dropping its future cancels an interrupted compaction.
+    /// Failure stops compaction without trimming history. Disabled by default.
+    #[must_use]
+    pub fn before_compaction(mut self, hook: impl execution::BeforeCompaction + 'static) -> Self {
+        self.codex.before_compaction = Some(Arc::new(hook));
+        self
+    }
+
     /// Overrides the `OpenAi` recipe's model for this agent.
     ///
     /// Without this call the agent inherits the client default. The selected

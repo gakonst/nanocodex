@@ -7,6 +7,7 @@ pub(in crate::agent) struct BranchSpawner<S> {
     pub(in crate::agent) provider_session_id: Arc<str>,
     pub(in crate::agent) prompt_cache_key: Option<Arc<str>>,
     pub(in crate::agent) shared_prompt_cache: Option<SharedPromptCache>,
+    pub(in crate::agent) before_compaction: Option<Arc<dyn execution::BeforeCompaction>>,
     pub(in crate::agent) context_config: ContextSourceConfig,
     pub(in crate::agent) context_source: ContextSource,
     pub(in crate::agent) depth: u32,
@@ -36,6 +37,8 @@ impl<S> BranchSpawner<S> {
             provider_session_id: Arc::clone(&self.provider_session_id),
             prompt_cache_key: self.prompt_cache_key.as_ref().map(Arc::clone),
             shared_prompt_cache: self.shared_prompt_cache.clone(),
+            // Preservation belongs to the host that explicitly configured this root.
+            before_compaction: None,
             context_config: self.context_config.clone(),
             context_source: self.context_source.clone(),
             depth: self.depth,
@@ -121,6 +124,8 @@ where
             provider_session_id: Arc::clone(&self.provider_session_id),
             prompt_cache_key: Some(prompt_cache_key),
             shared_prompt_cache: self.shared_prompt_cache.clone(),
+            // Preservation belongs to the host that explicitly configured this root.
+            before_compaction: None,
             context_config: self.context_config.clone(),
             context_source: self.context_config.build(),
             depth,

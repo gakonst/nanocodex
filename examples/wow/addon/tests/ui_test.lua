@@ -5,7 +5,14 @@ local methods = {}
 function methods:SetScript(event, callback) self.scripts[event] = callback end
 function methods:RegisterEvent(event) self.events[event] = true end
 function methods:UnregisterEvent(event) self.events[event] = nil end
-function methods:SetPoint(...) self.point = {...} end
+function methods:SetPoint(...)
+    for _, value in pairs({...}) do
+        if type(value) == "number" then
+            assert(value == value and value > -math.huge and value < math.huge, "non-finite coordinate passed to SetPoint")
+        end
+    end
+    self.point = {...}
+end
 function methods:ClearAllPoints() self.point = nil end
 function methods:GetPoint() return (table.unpack or unpack)(self.point or {"CENTER", UIParent, "CENTER", 0, 0}) end
 function methods:Show() local was = self.visible self.visible = true if not was and self.scripts.OnShow then self.scripts.OnShow(self) end end
@@ -52,7 +59,7 @@ local messages = {}
 print = function(message) messages[#messages+1] = message end
 SetBinding = function() error("must never overwrite bindings") end
 SetOverrideBinding = SetBinding
-NanocodexWowDB = { hidden=true, position={point="TOPLEFT", relativePoint="TOPLEFT", x=10, y=-20} }
+NanocodexWowDB = nil
 local NS = {}
 assert(loadfile("addon/Nanocodex/Context.lua"))("Nanocodex", NS)
 assert(loadfile("addon/Nanocodex/Core.lua"))("Nanocodex", NS)
@@ -61,10 +68,13 @@ for _, f in ipairs(frames) do if f.events.ADDON_LOADED then eventFrame = f end e
 assert(eventFrame)
 eventFrame.scripts.OnEvent(eventFrame, "ADDON_LOADED", "OtherAddon")
 assert(NanocodexWowPanel == nil)
+assert(NanocodexWowDB == nil, "file loading and unrelated ADDON_LOADED must not initialize saved data")
+-- WoW restores SavedVariables after loading the addon files.
+NanocodexWowDB = { hidden=true, position={point="TOPLEFT", relativePoint="TOPLEFT", x=10, y=-20} }
 eventFrame.scripts.OnEvent(eventFrame, "ADDON_LOADED", "Nanocodex")
 assert(not NanocodexWowPanel:IsShown())
 assert(NanocodexWowPanel.template == "BackdropTemplate")
-assert(NanocodexWowPanel.backdrop.bgFile == "Interface\\DialogFrame\\UI-DialogBox-Background")
+assert(NanocodexWowPanel.backdrop.bgFile == "Interface\\Buttons\\WHITE8X8")
 assert(NanocodexWowPanel.backdrop.edgeFile == "Interface\\DialogFrame\\UI-DialogBox-Border")
 assert(NanocodexWowPanel.point[1] == "TOPLEFT")
 assert(eventFrame.events.ADDON_LOADED == nil)
@@ -269,14 +279,25 @@ local queued, state = NS.QueueRequest(request)
 assert(queued and state == "pending")
 assert(NS.TransportDisplay():find("Queued",1,true))
 assert(NS.TransportDisplay():find("Disconnected",1,true))
-local id = T.app.request.id
-assert(not NS.QueueRequest({type="nanocodex.ask",prompt="different"}))
-assert(T.app.request.id == id and NS.TransportDisplay():find("Queued",1,true))
+local firstRequest, id = T.app.request, T.app.request.id
+local firstPacket = link:Packet()
+assert(NS.QueueRequest({type="nanocodex.ask",prompt="different"}))
+assert(T.app.request.id == id + 1 and NS.TransportDisplay():find("Queued",1,true))
+assert(link:Packet() == firstPacket, "queue admission must preserve unacknowledged carrier bytes")
+assert(NS.TransportStatus().message_id == id + 1 and NS.TransportStatus().active_message_id == id)
 assert(peer:Receive(link:Packet()))
 assert(link:Receive(peer:Packet()))
 assert(NS.TransportDisplay():find("Bridge linked",1,true))
 assert(NS.TransportDisplay():find("Queued",1,true), "partial ACK must remain queued")
+assert(firstRequest.offset > 0 and not firstRequest.done and T.app.request.offset == 0)
 local callsBeforeStatus = sendCalls
+while not firstRequest.done do
+    assert(peer:Receive(link:Packet()))
+    assert(link:Receive(peer:Packet()))
+    NS.TransportDisplay()
+end
+assert(NS.TransportStatus().pending and not T.app.request.done, "first request ACK must not acknowledge the waiting request")
+assert(NS.TransportStatus().active_message_id == id + 1)
 while not T.app.request.done do
     assert(peer:Receive(link:Packet()))
     assert(link:Receive(peer:Packet()))
@@ -284,14 +305,27 @@ while not T.app.request.done do
 end
 assert(sendCalls == callsBeforeStatus, "status refresh must not resubmit")
 assert(NS.TransportDisplay():find("Transport acknowledged",1,true))
+assert(NS.TransportStatus().acknowledged and NS.TransportStatus().pending_requests == 0)
 assert(NS.QueueRequest(request))
-assert(T.app.request.id == id + 1, "explicit identical action needs a fresh message identity")
-assert(not NS.QueueRequest(request), "a second click while pending must be busy")
+assert(T.app.request.id == id + 2, "explicit identical action needs a fresh message identity")
+local duplicate, duplicateReason = NS.QueueRequest(request)
+assert(not duplicate and duplicateReason == "busy", "repeat click must not duplicate pending bytes")
+assert(T.app.request.id == id + 2)
+for n=2,T.MAX_REQUESTS do assert(NS.QueueRequest({type="nanocodex.ask",prompt="independent "..n})) end
+local fullID, fullPacket = T.app.request.id, link:Packet()
+local accepted, reason = NS.QueueRequest({type="nanocodex.ask",prompt="overflow"})
+assert(not accepted and reason == "busy", "a full application queue must be busy")
+assert(T.app.request.id == fullID and link:Packet() == fullPacket, "capacity rejection must not consume an identity or replace bytes")
+assert(NS.TransportStatus().pending_requests == T.MAX_REQUESTS)
+callsBeforeStatus = sendCalls
 while not T.app.request.done do
     assert(peer:Receive(link:Packet()))
     assert(link:Receive(peer:Packet()))
     NS.TransportDisplay()
 end
+assert(sendCalls == callsBeforeStatus, "draining queued requests must not resubmit")
+assert(NS.TransportStatus().acknowledged and NS.TransportStatus().pending_requests == 0)
+assert(NS.TransportDisplay():find("Transport acknowledged",1,true))
 clock = clock + 11
 assert(NS.TransportDisplay():find("Disconnected",1,true), "peer connection must expire")
 local function deliver(kind, messageID, value)
@@ -367,11 +401,11 @@ local catalog = {"ncw1", "P\tp\tProject"}
 for i=1,4095 do catalog[#catalog+1] = "T\tp\tt"..i.."\tChat "..i.."\tidle" end
 NanocodexWowPanel.threadSearch:SetText("")
 assert(NS.ImportProjects(table.concat(catalog, "\n")))
-assert(#NanocodexWowPanel.threadRows == 6, "114px viewport needs at most six reusable rows")
+assert(#NanocodexWowPanel.threadRows == 8, "448px quest tracker needs at most eight reusable rows")
 local threadScroll = NanocodexWowPanel.threadScroll
-threadScroll.scripts.OnVerticalScroll(threadScroll, 980*26)
+threadScroll.scripts.OnVerticalScroll(threadScroll, 980*64)
 assert(NanocodexWowPanel.threadRows[1].threadID == "t981")
-assert(#NanocodexWowPanel.threadRows == 6)
+assert(#NanocodexWowPanel.threadRows == 8)
 NanocodexWowPanel.threadSearch:SetText("Chat 999")
 assert(threadScroll:GetVerticalScroll() == 0 and NanocodexWowPanel.threadRows[1].threadID == "t999")
 assert(not NanocodexWowPanel.threadRows[2]:IsShown())
@@ -379,7 +413,7 @@ UIParent.height = 560
 UIParent.width = 400
 eventFrame.scripts.OnEvent(eventFrame, "UI_SCALE_CHANGED")
 assert(NanocodexWowPanel.scale*700 <= UIParent.height-24)
-assert(NanocodexWowPanel.scale*460 <= UIParent.width-24)
+assert(NanocodexWowPanel.scale*NanocodexWowPanel:GetWidth() <= UIParent.width-24)
 -- Continuations and passive rendering keep moving while hidden, without focus.
 NanocodexWowPanel:Hide()
 assert(NS.RefreshWorkspace())
@@ -390,7 +424,7 @@ NS.OnTransportMessage("reply", "Hidden event pump")
 eventFrame.scripts.OnUpdate(eventFrame, .05)
 assert(NanocodexWowPanel.answer:GetText() == "Hidden event pump")
 assert(not NanocodexWowPanel:IsShown() and not NanocodexWowPrompt.focus)
-io.write("PASS: six-row virtualization, deep scrolling/search reset, display bounds, hidden continuation/render pump\n")
+io.write("PASS: eight-row virtualization, deep scrolling/search reset, display bounds, hidden continuation/render pump\n")
 
 -- Slash entry before ADDON_LOADED must open the newly constructed panel.
 local fresh = {}
@@ -400,3 +434,40 @@ assert(NanocodexWowPanel:IsShown())
 SlashCmdList.NANOCODEXWOW("")
 assert(not NanocodexWowPanel:IsShown())
 io.write("PASS: bounded automatic reply and first slash entry\n")
+
+-- Exercise saved-position repair through the real startup handler. Restore the
+-- catalog only after loading Core/Projects in TOC order, just as WoW does.
+for _, position in ipairs({
+    {point="TOPLEFT", relativePoint="TOPLEFT", x=math.huge, y=10},
+    {point="TOPLEFT", relativePoint="TOPLEFT", x=10, y=-math.huge},
+    {point="TOPLEFT", relativePoint="TOPLEFT", x=0/0, y=10},
+    {point="TOPLEFT", relativePoint="TOPLEFT", x=10, y=0/0},
+    {point="INVALID", relativePoint="TOPLEFT", x=10, y=20},
+    {point="TOPLEFT", relativePoint="TOPLEFT", x="10", y=20},
+    "invalid position",
+}) do
+    NanocodexWowDB = nil
+    local startup = {}
+    assert(loadfile("addon/Nanocodex/Core.lua"))("Nanocodex", startup)
+    local owner = frames[#frames]
+    assert(owner.events.ADDON_LOADED)
+    assert(loadfile("addon/Nanocodex/Projects.lua"))("Nanocodex", startup)
+    assert(NanocodexWowDB == nil)
+    local restored = {
+        hidden=true, minimized=true, draft="Saved draft", position=position,
+        projectSnapshot="ncw1\nP\tp\tProject\nT\tp\tt\tChat\tidle",
+        project_id="p", thread_id="t", unrelated="preserve me",
+    }
+    NanocodexWowDB = restored
+    owner.scripts.OnEvent(owner, "ADDON_LOADED", "Nanocodex")
+    assert(NanocodexWowDB == restored and restored.unrelated == "preserve me")
+    assert(restored.position == nil, "invalid saved position must be repaired independently")
+    assert(NanocodexWowPanel.point[1] == "RIGHT", "invalid placement must retain the default anchor")
+    assert(not NanocodexWowPanel:IsShown() and restored.hidden and restored.minimized)
+    assert(NanocodexWowPrompt:GetText() == "Saved draft")
+    local project, thread = startup.ProjectSelection()
+    assert(project == "p" and thread == "t")
+    assert(NanocodexWowPanel.threadRows[1].threadID == "t")
+    assert(owner.events.ADDON_LOADED == nil)
+end
+io.write("PASS: post-load saved-state restoration, invalid position repair, preserved draft/catalog/selection/visibility\n")

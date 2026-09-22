@@ -51,12 +51,12 @@ local function surface(name, width, height)
     frame:SetScript("OnDragStop", function(self) self:StopMovingOrSizing() end)
     if frame.SetBackdrop then
         frame:SetBackdrop({
-            bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+            bgFile = "Interface\\Buttons\\WHITE8X8",
             edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
             tile = true, tileSize = 32, edgeSize = 32,
             insets = { left = 11, right = 12, top = 12, bottom = 11 },
         })
-        frame:SetBackdropColor(1, 1, 1, 1)
+        frame:SetBackdropColor(0.025, 0.02, 0.015, 0.98)
         frame:SetBackdropBorderColor(1, 1, 1, 1)
     end
     local close = CreateFrame("Button", nil, frame, "UIPanelCloseButton")
@@ -91,15 +91,27 @@ NS.BridgeSurface = surface
 NS.BridgeText = text
 local function makePanel()
     if panel then return end
-    panel = surface("NanocodexWowPanel", 460, 700)
-    text(panel, "Nanocodex · threads", "GameFontNormalLarge", 16, -16, 280)
+    panel = surface("NanocodexWowPanel", 820, 700)
+    text(panel, "Nanocodex · quest log", "GameFontNormalLarge", 16, -16, 280)
     panel:ClearAllPoints()
     panel:SetPoint("RIGHT", UIParent, "RIGHT", -12, 0)
     summary = text(panel, "Account sign-in stays in the desktop companion.", "GameFontHighlightSmall", 16, -48, 425)
-    panel.conversationTitle = text(panel, "Select a thread, or ask WoW for a separate game conversation.", "GameFontHighlightSmall", 16, -318, 425)
+    panel.currentQuestLabel = text(panel, "CURRENT QUEST", "GameFontNormal", 20, -116, 450)
+    panel.conversationTitle = text(panel, "Choose a chat from your quest tracker.", "GameFontNormalLarge", 20, -140, 450)
+    panel.conversationTitle:SetHeight(42)
+    panel.questHeading = text(panel, "Quest tracker", "GameFontNormalLarge", 526, -60, 270)
+    panel.questCount = text(panel, "Waiting for your chats…", "GameFontHighlightSmall", 526, -88, 270)
+    panel.questHint = text(panel, "Select a chat to make it your current quest.", "GameFontHighlightSmall", 526, -617, 262)
+    local divider = CreateFrame("Frame", "NanocodexWowQuestDivider", panel, BackdropTemplateMixin and "BackdropTemplate" or nil)
+    divider:SetSize(1, 594) divider:SetPoint("TOPLEFT", 506, -72)
+    if divider.SetBackdrop then
+        divider:SetBackdrop({bgFile="Interface\\Buttons\\WHITE8X8"})
+        divider:SetBackdropColor(0.55, 0.45, 0.25, 0.5)
+    end
+    panel.questDivider = divider
     transportLabel = text(panel, "Disconnected · transport unavailable", "GameFontHighlightSmall", 16, -72, 425)
     local prompt = CreateFrame("EditBox", "NanocodexWowPrompt", panel, "InputBoxTemplate")
-    prompt:SetSize(410, 30)
+    prompt:SetSize(444, 30)
     prompt:SetPoint("TOPLEFT", 22, -613)
     prompt:SetAutoFocus(false)
     prompt:SetFontObject(ChatFontNormal or "GameFontHighlight")
@@ -117,13 +129,13 @@ local function makePanel()
     panel.askButton = button(panel, "Ask", 224, ask)
     panel.wowButton = button(panel, "Ask WoW", 329, function() if NS.Ask and NS.Ask(prompt:GetText(), true) then prompt:SetText("") end prompt:ClearFocus() end)
     local scroll = CreateFrame("ScrollFrame", nil, panel, "UIPanelScrollFrameTemplate")
-    scroll:SetPoint("TOPLEFT", 20, -346)
-    scroll:SetPoint("BOTTOMRIGHT", -36, 92)
+    scroll:SetPoint("TOPLEFT", 20, -194)
+    scroll:SetPoint("BOTTOMRIGHT", -344, 136)
     local answer = CreateFrame("EditBox", nil, scroll)
     answer:SetMultiLine(true)
     answer:SetAutoFocus(false)
     answer:SetFontObject(ChatFontNormal or "GameFontHighlight")
-    answer:SetWidth(400)
+    answer:SetWidth(444)
     answer:SetHeight(190)
     answer:SetMaxLetters(0)
     answer:SetScript("OnTextChanged", function(self, userInput)
@@ -140,13 +152,13 @@ local function makePanel()
     minimize:SetPoint("TOPRIGHT", -30, -15)
     local function resize()
         local minimized = db().minimized == true
-        panel:SetSize(460, minimized and 44 or 700)
+        panel:SetSize(minimized and 460 or 820, minimized and 44 or 700)
         -- Preserve the usable layout on short displays and UI-scale changes.
         local height = UIParent:GetHeight()
         local width = UIParent:GetWidth()
-        panel:SetScale(math.min(1, math.max(1, height - 24) / 700, math.max(1, width - 24) / 460))
+        panel:SetScale(math.min(1, math.max(1, height - 24) / 700, math.max(1, width - 24) / (minimized and 460 or 820)))
         minimize:SetText(minimized and "Expand" or "Minimize")
-        for _, child in ipairs({summary, transportLabel, prompt, scroll, panel.askButton, panel.wowButton, panel.projectsButton, panel.answerButton, panel.threadScroll, panel.threadSearch, panel.searchLabel, panel.refreshButton, panel.newButton, panel.olderButton, panel.stopButton, panel.reconnectButton}) do
+        for _, child in ipairs({summary, transportLabel, prompt, scroll, panel.askButton, panel.wowButton, panel.projectsButton, panel.answerButton, panel.threadScroll, panel.threadSearch, panel.searchLabel, panel.refreshButton, panel.newButton, panel.olderButton, panel.stopButton, panel.reconnectButton, panel.currentQuestLabel, panel.questHeading, panel.questCount, panel.questHint, panel.questDivider}) do
             if minimized then child:Hide() else child:Show() end
         end
         if minimized then prompt:ClearFocus() answer:ClearFocus() if panel.threadSearch then panel.threadSearch:ClearFocus() end end
@@ -162,20 +174,21 @@ local function makePanel()
         b:SetSize(width, 24) b:SetPoint("TOPLEFT", x, y) b:SetText(label) b:SetScript("OnClick", callback)
         return b
     end
-    panel.searchLabel = text(panel, "Search loaded chats", "GameFontHighlightSmall", 18, -113, 300)
+    panel.searchLabel = text(panel, "Search quests", "GameFontHighlightSmall", 526, -110, 260)
     local search = CreateFrame("EditBox", nil, panel, "InputBoxTemplate")
-    search:SetSize(305, 24) search:SetPoint("TOPLEFT", 22, -128) search:SetAutoFocus(false)
+    search:SetSize(250, 24) search:SetPoint("TOPLEFT", 532, -128) search:SetAutoFocus(false)
     search:SetFontObject(ChatFontNormal or "GameFontHighlight") search:SetMaxLetters(120)
     search:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
     search:SetScript("OnTextChanged", function() if NS.RefreshThreadList then NS.RefreshThreadList() end end)
     panel.threadSearch = search
-    panel.refreshButton = action("Refresh", 340, -128, 96, function() if NS.RefreshWorkspace then NS.RefreshWorkspace() end search:ClearFocus() end)
+    panel.refreshButton = action("Refresh", 666, -654, 126, function() if NS.RefreshWorkspace then NS.RefreshWorkspace() end search:ClearFocus() end)
     local threadScroll = CreateFrame("ScrollFrame", nil, panel, "UIPanelScrollFrameTemplate")
-    threadScroll:SetPoint("TOPLEFT", 18, -159) threadScroll:SetSize(400, 114)
-    local threadChild = CreateFrame("Frame", nil, threadScroll) threadChild:SetSize(395, 114) threadScroll:SetScrollChild(threadChild)
+    threadScroll:SetPoint("TOPLEFT", 526, -164) threadScroll:SetSize(256, 448)
+    local threadChild = CreateFrame("Frame", nil, threadScroll) threadChild:SetSize(252, 448) threadScroll:SetScrollChild(threadChild)
     panel.threadScroll, panel.threadRows = threadScroll, {}
     local entries = {}
-    local ROW_HEIGHT, VISIBLE_ROWS = 26, math.ceil(114 / 26) + 1
+    local ROW_HEIGHT, VIEW_HEIGHT = 64, 448
+    local VISIBLE_ROWS = math.ceil(VIEW_HEIGHT / ROW_HEIGHT) + 1
     local function paintThreads()
         local _, selected
         if NS.ProjectSelection then _, selected = NS.ProjectSelection() end
@@ -185,8 +198,17 @@ local function makePanel()
             local entry, row = entries[index], panel.threadRows[slot]
             if entry then
                 if not row then
-                    row = CreateFrame("Button", nil, threadChild, "UIPanelButtonTemplate")
-                    row:SetSize(390, 24)
+                    row = CreateFrame("Button", nil, threadChild, BackdropTemplateMixin and "BackdropTemplate" or nil)
+                    row.questRow = true
+                    row:SetSize(250, 60)
+                    if row.SetBackdrop then
+                        row:SetBackdrop({bgFile="Interface\\Buttons\\WHITE8X8"})
+                    end
+                    row.marker = text(row, "!", "GameFontNormalLarge", 8, -8, 16)
+                    row.title = text(row, "", "GameFontNormal", 28, -7, 212)
+                    row.title:SetHeight(30)
+                    row.detail = text(row, "", "GameFontHighlightSmall", 28, -41, 212)
+                    row.detail:SetHeight(14)
                     row:SetScript("OnClick", function(self)
                         if NS.LoadThread then NS.LoadThread(self.projectID, self.threadID)
                         else NS.SelectProject(self.projectID, self.threadID) end
@@ -196,7 +218,17 @@ local function makePanel()
                 end
                 row:ClearAllPoints() row:SetPoint("TOPLEFT", 0, -(index-1)*ROW_HEIGHT)
                 row.projectID, row.threadID = entry.project_id, entry.id
-                row:SetText(((entry.id == selected and "> " or "") .. entry.title .. (entry.status == "closed" and " [closed]" or "") .. " · " .. entry.project_name):gsub("|", "||")) row:Show()
+                row.active = entry.id == selected
+                row.questLabel = ((row.active and "Current quest: " or "") .. entry.title .. " · " .. entry.project_name):gsub("|", "||")
+                row.title:SetText(entry.title:gsub("|", "||"))
+                row.marker:SetText(row.active and ">" or (entry.status == "closed" and "-" or "!"))
+                local activity = NS.ClientThreadStatus and NS.ClientThreadStatus(entry.id)
+                row.detail:SetText(((row.active and "CURRENT · " or "") .. (activity and activity .. " · " or "") .. entry.project_name .. (entry.status == "closed" and " · closed" or "")):gsub("|", "||"))
+                if row.SetBackdropColor then
+                    if row.active then row:SetBackdropColor(0.42, 0.32, 0.12, 0.55)
+                    else row:SetBackdropColor(0.12, 0.11, 0.08, 0.35) end
+                end
+                row:Show()
             elseif row then
                 row.projectID, row.threadID = nil, nil
                 row:Hide()
@@ -211,21 +243,31 @@ local function makePanel()
     panel.refreshThreads = function()
         local query = search:GetText()
         entries = NS.ThreadEntries and NS.ThreadEntries(query) or {}
-        local height = math.max(114, #entries*ROW_HEIGHT)
+        -- Keep the tracked quest visible when returning from a filtered search.
+        local _, selected
+        if NS.ProjectSelection then _, selected = NS.ProjectSelection() end
+        for index, entry in ipairs(entries) do
+            if entry.id == selected then
+                table.remove(entries, index) table.insert(entries, 1, entry) break
+            end
+        end
+        local height = math.max(VIEW_HEIGHT, #entries*ROW_HEIGHT)
         threadChild:SetHeight(height) threadScroll:UpdateScrollChildRect()
-        local offset = query ~= lastQuery and 0 or math.min(threadScroll:GetVerticalScroll(), height - 114)
+        local offset = query ~= lastQuery and 0 or math.min(threadScroll:GetVerticalScroll(), height - VIEW_HEIGHT)
         lastQuery = query
         threadScroll:SetVerticalScroll(offset)
         paintThreads()
         local title = NS.SelectedThreadTitle and NS.SelectedThreadTitle()
-        panel.conversationTitle:SetText(title and title:gsub("|", "||") or "Select a thread, or ask WoW for a separate game conversation.")
+        panel.conversationTitle:SetText(title and title:gsub("|", "||") or "Choose a chat from your quest tracker.")
+        panel.questCount:SetText(tostring(#entries) .. (query ~= "" and " matching chats" or " chats") .. " · scroll to explore")
+        panel.questHint:SetText(#entries == 0 and (query ~= "" and "No chats match your search." or "No chats loaded. Refresh or start a new chat.") or "Select a chat to make it your current quest.")
     end
-    panel.newButton = action("New chat", 16, -283, 96, function()
+    panel.newButton = action("New chat", 526, -654, 130, function()
         if NS.ProjectAction then NS.ProjectAction("create_chat", "New conversation") end prompt:ClearFocus()
     end)
-    panel.olderButton = action("Earlier", 120, -283, 96, function() if NS.LoadEarlier then NS.LoadEarlier() end prompt:ClearFocus() end)
-    panel.stopButton = action("Stop", 224, -283, 96, function() if NS.StopThread then NS.StopThread() end prompt:ClearFocus() end)
-    panel.reconnectButton = action("Reconnect", 328, -283, 108, function() if NS.ReconnectClient then NS.ReconnectClient() end prompt:ClearFocus() end)
+    panel.olderButton = action("Earlier", 20, -574, 96, function() if NS.LoadEarlier then NS.LoadEarlier() end prompt:ClearFocus() end)
+    panel.stopButton = action("Stop", 128, -574, 96, function() if NS.StopThread then NS.StopThread() end prompt:ClearFocus() end)
+    panel.reconnectButton = action("Reconnect", 236, -574, 108, function() if NS.ReconnectClient then NS.ReconnectClient() end prompt:ClearFocus() end)
     panel.refreshThreads()
     resize()
     panel:SetScript("OnUpdate", function(self, elapsed)
@@ -243,9 +285,15 @@ local function makePanel()
     panel:SetScript("OnShow", function() db().hidden = false resize() end)
     local p = db().position
     local anchors = { CENTER=true, TOP=true, BOTTOM=true, LEFT=true, RIGHT=true, TOPLEFT=true, TOPRIGHT=true, BOTTOMLEFT=true, BOTTOMRIGHT=true }
-    if type(p) == "table" and anchors[p.point] and anchors[p.relativePoint] and type(p.x) == "number" and type(p.y) == "number" then
+    local function finite(value)
+        return type(value) == "number" and value == value and value > -math.huge and value < math.huge
+    end
+    if type(p) == "table" and anchors[p.point] and anchors[p.relativePoint] and finite(p.x) and finite(p.y) then
         panel:ClearAllPoints()
         panel:SetPoint(p.point, UIParent, p.relativePoint, p.x, p.y)
+    elseif p ~= nil then
+        -- Repair only placement; retain the default anchor and other saved state.
+        db().position = nil
     end
     table.insert(UISpecialFrames, "NanocodexWowPanel")
 end
@@ -311,6 +359,20 @@ local function slash(message)
             local link, err = transport.Enable(session, nil, mode)
             NS.Notify(link and "status" or "error", link and "Bridge enabled; awaiting peer. Authentication unverified." or tostring(err))
         end)
+    elseif command == "search" then
+        makePanel() panel:Show()
+        panel.threadSearch:SetText((message or ""):match("^%s*%S+%s*(.*)$") or "")
+        panel.threadSearch:ClearFocus()
+    elseif command == "chat" then
+        local wanted = (message or ""):match("^%s*%S+%s*(.-)%s*$")
+        for _, entry in ipairs(NS.ThreadEntries and NS.ThreadEntries() or {}) do
+            if entry.id == wanted then
+                NS.OpenConversation()
+                NS.LoadThread(entry.project_id, entry.id)
+                return
+            end
+        end
+        NS.Notify("error", "Chat not found in the local quest tracker.")
     elseif command == "threads" then NS.OpenConversation() if NS.RefreshWorkspace then NS.RefreshWorkspace() end
     elseif command == "projects" then if NS.Projects then NS.Projects() else say("Project browser unavailable.") end
     else say("/nc [show | hide | ask <question> | game <question> | reply | threads | projects | capture | reset | clear | settings]") end
@@ -336,6 +398,12 @@ events:SetScript("OnEvent", function(self, event, name)
         return
     end
     if name ~= ADDON then return end
+    local cached = NS.CatalogCache
+    if type(cached) == "table" and type(cached.revision) == "string" and
+        cached.revision ~= db().catalogCacheRevision and NS.ImportProjects then
+        if NS.ImportProjects(cached.snapshot) then db().catalogCacheRevision = cached.revision end
+    end
+    NS.CatalogCache = nil
     local hidden = db().hidden
     makePanel()
     if hidden then panel:Hide() end

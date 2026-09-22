@@ -81,6 +81,45 @@ destination to verify two-way intelligibility, interruption, final transcripts,
 no-answer, hangup, duplicate operation replay, and disconnect cleanup. A silent
 voice-ready signal alone does not establish two-way audio quality.
 
+## Audio quality and diagnostics
+
+Capture arrives as mono 8 kHz G.711 mu-law, as required by
+[Twilio Media Streams](https://www.twilio.com/docs/voice/media-streams/websocket-messages).
+The native bridge converts it to 24 kHz PCM with a streaming bandlimited
+interpolator before Opus encoding. Upsampling preserves the available telephone
+band; it cannot recover detail absent from the telephone signal. The output path
+low-pass filters before returning to 8 kHz. Filter state is preserved across
+arbitrary input frame boundaries. Capture is assembled into 20 ms frames and
+paced before encoding, so a large input chunk is not emitted as a burst of RTP
+packets. Capture backlog is bounded; overload fails explicitly instead of
+silently discarding words.
+
+Speech-start events clear telephone playback and discard already-decoded queued
+speech. Transcript events provide a fallback when the provider does not send a
+speech-start event first. Speech-stop allows another interruption without waiting
+for a final transcript; a late transcript for that same utterance does not trigger
+a second clear. Audio still in flight has no response identity, so clearing local
+queues is not a guarantee that every late packet belongs to the next response.
+The ChatGPT voice session does not configure OpenAI Platform-specific VAD fields.
+
+Call status includes optional numeric `audio_diagnostics`, with a final snapshot
+retained in the call checkpoint. Existing calls may have no diagnostics. These
+measure transport gaps/duplicates, playback backlog/clears, input backpressure,
+input RMS and peak dBFS, silent frames, and samples at the mu-law codec ceiling.
+They contain no recording. A low whole-call RMS includes ordinary silence and is
+not by itself proof of a microphone problem; codec-ceiling samples are a warning
+signal rather than proof of upstream clipping. Sequence gaps measure missing
+WebSocket events, which are not necessarily audio events. Timestamp gaps measure
+missing intervals in received audio. Diagnostics detect these intervals but do
+not reconstruct missing speech.
+
+Before claiming better recognition, compare an authorized live test against a
+known script containing names, numbers, quiet speech, pauses, and interruptions.
+Check the transcript against what was actually spoken and inspect diagnostics.
+Include call screening, goodbye, network stalls, and repeated interruptions.
+Synthetic resampling and transport tests establish those boundaries, not a live
+word-error rate or guaranteed conversational behavior.
+
 ## Deployment phone admin
 
 `NANOCODEX_PHONE_ADMIN_ID` selects the single phone admin in Worker deployment

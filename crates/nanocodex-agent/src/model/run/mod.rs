@@ -99,6 +99,7 @@ pub(crate) struct ModelRun<S> {
     force_compaction: bool,
     pending_developer_messages: Vec<ResponseItem>,
     execution_steps: Option<ExecutionSteps>,
+    before_compaction: Option<Arc<dyn crate::execution::BeforeCompaction>>,
 }
 
 pub(crate) struct TurnSteering {
@@ -294,6 +295,7 @@ impl<S> ModelRun<S> {
             force_compaction: false,
             pending_developer_messages: Vec::new(),
             execution_steps: None,
+            before_compaction: None,
         }
     }
 
@@ -372,7 +374,15 @@ impl<S> ModelRun<S> {
             force_compaction: false,
             pending_developer_messages: Vec::new(),
             execution_steps: None,
+            before_compaction: None,
         }
+    }
+
+    pub(crate) fn set_before_compaction(
+        &mut self,
+        hook: Option<Arc<dyn crate::execution::BeforeCompaction>>,
+    ) {
+        self.before_compaction = hook;
     }
 
     pub(crate) fn set_host_context(&mut self, host_context: Option<Arc<str>>) {

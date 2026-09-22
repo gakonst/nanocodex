@@ -72,6 +72,34 @@ class DiscoveryTests(unittest.TestCase):
         cls.image = carrier()
         cls.located = auto.locate(cls.image)
 
+    def test_cached_geometry_still_requires_two_fresh_captures(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'calibration.json'
+            io_run = FakeIO([self.image, self.image.copy()])
+            clock = Clock()
+            discovery = auto.Discovery(io_run, clock=clock, pause=clock.pause, calibration_path=path)
+            discovery._remember_calibration(auto.Window.parse(WINDOW), self.located)
+            with patch.object(auto, 'locate', side_effect=AssertionError('cache should decode')):
+                window, located = discovery.discover(attempts=1)
+            self.assertEqual(located.packet, PACKET)
+            self.assertEqual(discovery.captures, 2)
+            # Cache is only a geometry hint; differing live frames cannot authorize input.
+            changed = carrier(Frame(53281, 1, 0, bytes(range(95)) + b'X', True).encode())
+            discovery = auto.Discovery(FakeIO([self.image, changed]), clock=clock, pause=clock.pause, calibration_path=path)
+            with self.assertRaises(auto.DiscoveryError):
+                discovery.discover(attempts=1)
+
+    def test_invalid_cached_geometry_falls_back_to_locator(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'calibration.json'
+            path.write_text('{invalid')
+            path.chmod(0o600)
+            clock = Clock()
+            discovery = auto.Discovery(FakeIO([self.image, self.image.copy()]), clock=clock, pause=clock.pause, calibration_path=path)
+            with patch.object(auto, 'locate', return_value=self.located) as locate:
+                self.assertEqual(discovery.discover(attempts=1)[1].packet, PACKET)
+                locate.assert_called_once()
+
     def test_full_nc1_noninteger_axes_and_offset(self):
         found = self.located
         self.assertEqual(found.packet, PACKET)
@@ -341,7 +369,7 @@ class JournalTests(unittest.TestCase):
         self.assertGreaterEqual(self.clock(), 40.1)
         self.assertGreaterEqual(sum(t >= 40 for t in captures), 2)
         self.assertFalse(any(.03 <= t < 40 for t in captures))
-        self.assertEqual(self.desktop.send_keys.call_count, 1)
+        self.assertEqual(self.desktop.send_keys.call_count, 2)  # Initial handshake and resumed idle heartbeat.
         directory = auto.journal_directory(self.state, 53281)
         resumed = Bridge(self.desktop, 53281, self.dispatcher, directory / 'bridge.sqlite3', clock=self.clock)
         self.assertTrue(resumed.restored)

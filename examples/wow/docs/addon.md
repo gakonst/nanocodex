@@ -6,6 +6,8 @@
 
 Run `bash scripts/install-addon.sh "/path/to/the/running/WoW/client"` from `examples/wow`. This copies all addon modules and the shared `addon/Transport.lua` into the target client's `Interface/AddOns/Nanocodex`, preserving a backup of an existing installation. All six TOCs load `Client.lua` after `Bridge.lua`. Enable the addon and `/reload` through the normal game UI.
 
+For a portable addon-only release, run `python3 scripts/package-addon.py Nanocodex.zip`. Extract that ZIP directly into `Interface/AddOns`; it contains `Nanocodex/Nanocodex.toc`, all client manifests, bindings and the shared transport module. Do not copy the source `addon/Nanocodex` directory alone: the transport source lives one directory above it. The builder and installer validate every manifest entry before writing. Packaging does not install or configure the desktop companion.
+
 The TOCs cover Mainline, Era, TBC, Mists and the previously targeted Classic Beta interface 16001. These declarations are compatibility targets. The new side view has **not** been visually verified in the running client; mocked Lua APIs do not prove actual rendering or protected API behavior.
 
 ## Controls

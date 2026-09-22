@@ -84,6 +84,7 @@ class Bridge:
         self.wake = threading.Event()
         self.worker = None
         self.error = None
+        self.carrier_error = None
         self.stats = {'captures': 0, 'input_batches': 0, 'accepted_requests': 0,
                       'delivered_outputs': 0, 'account_connected': False}
         with self.store.db:
@@ -117,8 +118,9 @@ class Bridge:
             self.uncertain = state['uncertain']
             self.uncertain_seq = state.get('uncertain_seq')
             self.error = state.get('error')
+            self.carrier_error = state.get('carrier_error') if self.error else None
         self.pump = Pump(self.link, desktop.foreground, None, clock, desktop.reserved,
-                         interval=0, send_keys=self._send, burst_size=890 if getattr(desktop, 'key_encoding', 'octal') == 'binary' else 335, encoding=getattr(desktop, 'key_encoding', 'octal'))
+                         interval=0, send_keys=self._send, burst_size=890 if getattr(desktop, 'key_encoding', 'octal') == 'binary' else 335, encoding=getattr(desktop, 'key_encoding', 'octal'), heartbeat=3)
         self.last_capture = None
         self.started = clock()
         self.poll_cursor = 0
@@ -131,7 +133,7 @@ class Bridge:
         state.update(last_id=self.assembler.last_id,
                      current=None if current is None else [*current[:3], current[3].hex()],
                      active=self.active, next_mid=self.next_mid, uncertain=self.uncertain,
-                     uncertain_seq=self.uncertain_seq, error=self.error)
+                     uncertain_seq=self.uncertain_seq, error=self.error, carrier_error=self.carrier_error)
         with self.store.db:
             self.store.db.execute('INSERT INTO bridge_state VALUES(?,?) ON CONFLICT(session) DO UPDATE SET body=excluded.body',
                                   (self.session, json.dumps(state)))
@@ -346,7 +348,10 @@ class Bridge:
                 self._checkpoint()  # Commit received bytes/state before emitting ACK.
                 sent = self.pump.tick()
                 if self.pump.error:
-                    self.error = 'carrier input outcome uncertain; reconcile before restart'
+                    self.carrier_error = {'category': self.pump.error_category,
+                                          'message': self.pump.error,
+                                          'attempts': self.pump.attempts}
+                    self.error = 'carrier ' + self.pump.error
                 self._checkpoint()
                 return sent
         except Exception:
@@ -357,7 +362,9 @@ class Bridge:
 
     def evidence(self):
         return {'schema': 1, 'session': self.session, 'lifecycle': 'stopped' if self.error or self.stop.is_set() else 'running',
-                'error': self.error, 'stats': dict(self.stats), 'last_capture': self.last_capture,
+                'error': self.error, 'carrier_error': self.carrier_error,
+                'uncertain': self.uncertain, 'uncertain_seq': self.uncertain_seq,
+                'stats': dict(self.stats), 'last_capture': self.last_capture,
                 'tx': self.link.tx, 'rx': self.link.rx,
                 'model_roundtrip_proven': False, 'carrier_ack_is_model_completion': False}
 

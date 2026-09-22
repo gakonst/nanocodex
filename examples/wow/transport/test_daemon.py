@@ -121,3 +121,72 @@ class OutputCapacityTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+class CarrierFailureEvidenceTests(unittest.TestCase):
+    def test_failure_category_and_uncertainty_survive_restart_without_reemit(self):
+        import subprocess
+        from transport.protocol import Frame
+        cases = (
+            ('ack_timeout', True, False, 3),
+            ('input_unconfirmed', False, True, 1),
+            ('input_timeout', subprocess.TimeoutExpired(['private-fixture'], 2), True, 1),
+            ('input_exit', subprocess.CalledProcessError(6, ['private-fixture']), True, 1),
+            ('input_error', RuntimeError('private-fixture'), True, 1),
+        )
+        for category, outcome, uncertain, attempts in cases:
+            with self.subTest(category=category), tempfile.TemporaryDirectory() as directory:
+                desktop = Mock()
+                desktop.key_encoding = 'octal'
+                desktop.foreground.return_value = desktop.reserved.return_value = True
+                desktop.capture.return_value = Frame(17, ready=True).encode()
+                if isinstance(outcome, Exception):
+                    desktop.send_keys.side_effect = outcome
+                else:
+                    desktop.send_keys.return_value = outcome
+                now = [0.0]
+                path = Path(directory) / 'bridge.sqlite3'
+                bridge = Bridge(desktop, 17, Mock(), path, clock=lambda: now[0])
+                try:
+                    bridge.link.send(b'x' * 96)
+                    for _ in range(6):
+                        bridge.step()
+                        now[0] += 1.1
+                    evidence = bridge.evidence()
+                    self.assertEqual(evidence['carrier_error']['category'], category)
+                    self.assertEqual(evidence['carrier_error']['attempts'], attempts)
+                    self.assertEqual(evidence['uncertain'], uncertain)
+                    self.assertEqual(evidence['uncertain_seq'], 1 if uncertain else None)
+                    self.assertIn('ack timeout' if category == 'ack_timeout' else 'input outcome uncertain', evidence['error'])
+                    self.assertNotIn('private-fixture', json.dumps(evidence))
+                    self.assertEqual(desktop.send_keys.call_count, attempts)
+                    bridge.close()
+                    bridge = Bridge(desktop, 17, Mock(), path)
+                    self.assertEqual(bridge.evidence()['carrier_error'], evidence['carrier_error'])
+                    self.assertEqual(bridge.link.pending, b'x' * 96)
+                    self.assertFalse(bridge.step())
+                    self.assertEqual(desktop.send_keys.call_count, attempts)
+                finally:
+                    bridge.close()
+
+    def test_legacy_journal_without_carrier_error_still_stops(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'bridge.sqlite3'
+            desktop = Mock(key_encoding='octal')
+            bridge = Bridge(desktop, 17, Mock(), path)
+            try:
+                bridge.error = 'carrier input outcome uncertain; reconcile before restart'
+                bridge._checkpoint()
+                state = json.loads(bridge.store.db.execute('SELECT body FROM bridge_state').fetchone()[0])
+                del state['carrier_error']
+                bridge.store.db.execute('UPDATE bridge_state SET body=?', (json.dumps(state),))
+                bridge.store.db.commit()
+                # Read the legacy row before close writes the current schema.
+                saved = bridge._checkpoint
+                bridge._checkpoint = lambda: None
+                bridge.close()
+                bridge = Bridge(desktop, 17, Mock(), path)
+                self.assertIsNone(bridge.carrier_error)
+                self.assertFalse(bridge.step())
+                desktop.send_keys.assert_not_called()
+            finally:
+                bridge.close()

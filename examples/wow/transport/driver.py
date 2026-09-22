@@ -7,6 +7,8 @@ explicitly after measuring actual event loss. Binary fallback callers should use
 encoding='binary', send_keys, interval=0 and burst_size=890 for a single batch.
 ACK/CRC, not emission, prove delivery.
 """
+import subprocess
+
 try:
     from .protocol import Frame, Link, keys
 except ImportError:
@@ -14,7 +16,7 @@ except ImportError:
 
 class Pump:
     def __init__(self, link, foreground, send_key, clock, reserved, interval=0,
-                 send_keys=None, burst_size=335, retry_delay=1.0, encoding='octal'):
+                 send_keys=None, burst_size=335, retry_delay=1.0, encoding='octal', heartbeat=None):
         if not isinstance(link, Link) or interval < 0 or not isinstance(burst_size, int) or not 1 <= burst_size <= 890 or retry_delay < .02:
             raise ValueError('link/rate/burst')
         if encoding not in ('octal', 'binary'):
@@ -31,8 +33,11 @@ class Pump:
         self.attempts = 0
         self.sent_ack = 0
         self.error = None
+        self.error_category = None
         self.inflight = None
         self.last_wire = None
+        self.heartbeat = heartbeat
+        self.last_sent_at = float("-inf")
 
     def observe(self, packet):
         f = Frame.decode(packet)
@@ -66,8 +71,11 @@ class Pump:
             return False
         if not self.stream:
             if self.link.pending is None and self.sent_ack == self.link.rx and not self.stable.seq:
-                return False
+                if self.heartbeat is None or now - self.last_sent_at < self.heartbeat:
+                    return False
+                self.attempts = 0  # Idle heartbeats carry no data requiring an ACK.
             if self.attempts >= 3:
+                self.error_category = 'ack_timeout'
                 self.error = 'ack timeout: delivery unknown; reconcile before new session'
                 return False
             self.inflight = Frame.decode(packet)
@@ -78,11 +86,20 @@ class Pump:
         try:
             confirmed = self.send_keys(batch) if self.send_keys else self.send_key(batch[0])
             if confirmed is not True:
+                self.error_category = 'input_unconfirmed'
                 raise RuntimeError('input adapter did not confirm press/release')
-        except Exception:
+        except Exception as exc:
+            # Categories are safe to persist; exception text/argv may contain input.
+            if isinstance(exc, subprocess.TimeoutExpired):
+                self.error_category = 'input_timeout'
+            elif isinstance(exc, subprocess.CalledProcessError):
+                self.error_category = 'input_exit'
+            elif self.error_category is None:
+                self.error_category = 'input_error'
             self.error = 'input outcome uncertain; stopped without retry'
             self.stream = []
             return False
+        self.last_sent_at = self.clock()
         del self.stream[:count]
         self.due = now + self.interval
         if not self.stream:
