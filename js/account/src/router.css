@@ -691,3 +691,45 @@
 .atlas-ribbon > button[aria-pressed="true"] > i {
   opacity: 1;
 }
+
+.atlas-by-model {
+  min-width: 760px;
+}
+.atlas-effort {
+  font-size: 12px;
+  font-weight: 550;
+  text-transform: capitalize;
+}
+.atlas-by-model .atlas-model-heading th {
+  padding: 11px 18px;
+  position: static;
+  border-top: 1px solid var(--atlas-line);
+  border-bottom: 1px solid var(--atlas-line);
+  background: color-mix(in srgb, currentColor 5%, var(--atlas-bg));
+}
+.atlas-by-model .atlas-model-heading strong {
+  display: inline;
+  font-size: 13px;
+}
+.atlas-model-heading span {
+  margin-left: 16px;
+  font-size: 10px;
+  opacity: 0.55;
+  font-weight: 400;
+}
+.atlas-by-model tbody tr:not(.atlas-model-heading) > th {
+  vertical-align: middle;
+  padding-top: 0;
+}
+.atlas-unobserved {
+  display: block;
+  padding: 12px;
+  font-size: 10px;
+  opacity: 0.45;
+}
+@media (max-width: 800px) {
+  .atlas-model-heading span {
+    display: block;
+    margin: 3px 0 0;
+  }
+}
