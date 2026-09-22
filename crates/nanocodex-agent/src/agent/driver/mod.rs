@@ -93,7 +93,11 @@ where
         let mut latest_fork_checkpoint = inherited_checkpoint;
         let mut queued_turns = VecDeque::new();
         let mut pending_compact = None;
-        let mut pending_developer_messages = Vec::new();
+        let mut pending_developer_messages: Vec<(
+            String,
+            oneshot::Sender<Result<AgentSessionContext>>,
+        )> = Vec::new();
+        let mut developer_checkpoint_ready = true;
         let mut commands_open = true;
         let mut shutdown_failures = Vec::new();
         loop {
@@ -197,6 +201,7 @@ where
                             } else {
                                 Ok(())
                             };
+                            developer_checkpoint_ready &= persisted.is_ok();
                             let outcome = match persisted {
                                 Ok(()) => {
                                     model.set_events(events);
@@ -248,6 +253,62 @@ where
                             drop(_guard);
                             drop(result.send(outcome));
                             continue;
+                        }
+                    }
+                }
+                // Standalone checkpoints cannot overtake any admitted turn, including
+                // cancelled turns awaiting settlement. Retryable operations keep this
+                // barrier closed even after their in-memory queue has drained.
+                if developer_checkpoint_ready && !pending_developer_messages.is_empty() {
+                    let mut developer_messages = pending_developer_messages.drain(..);
+                    while let Some((text, message_result)) = developer_messages.next() {
+                        let committed = commit_developer_message(
+                            &mut model,
+                            &self.execution,
+                            Arc::clone(&self.spawner.lineage_id),
+                            thread_model,
+                            text,
+                            self.workspace.as_deref(),
+                        )
+                        .await;
+                        let message_outcome = match committed {
+                            Ok(checkpoint) => {
+                                if let Some(checkpoint) = checkpoint {
+                                    latest_fork_checkpoint = Some(checkpoint);
+                                }
+                                agent_session_context(
+                                    latest_fork_checkpoint.as_deref(),
+                                    self.workspace.as_deref(),
+                                    &self.spawner.context_source,
+                                )
+                            }
+                            Err(error) => {
+                                model = model_from_checkpoint(
+                                    &self.events,
+                                    &self.transport_stats,
+                                    &self.tools,
+                                    &self.spawner,
+                                    &prompt_cache,
+                                    latest_fork_checkpoint.as_deref(),
+                                );
+                                Err(error)
+                            }
+                        };
+                        let message_reopens = outcome_requires_reopen(&message_outcome);
+                        drop(message_result.send(message_outcome));
+                        if message_reopens {
+                            begin_shutdown(
+                                &mut self.commands,
+                                &mut queued_turns,
+                                default_thinking,
+                                default_fast_mode,
+                            )
+                            .await;
+                            commands_open = false;
+                            for (_, pending_result) in developer_messages {
+                                drop(pending_result.send(Err(NanocodexError::AgentStopped)));
+                            }
+                            break;
                         }
                     }
                 }
@@ -920,53 +981,10 @@ where
                         "duration_ns",
                         u64::try_from(compact_started.elapsed().as_nanos()).unwrap_or(u64::MAX),
                     );
-                    let mut reopen_after_compaction = outcome_requires_reopen(&outcome);
-                    if compact_checkpoint_committed && !reopen_after_compaction {
-                        let mut developer_messages = pending_developer_messages.drain(..);
-                        while let Some((text, message_result)) = developer_messages.next() {
-                            let committed = commit_developer_message(
-                                &mut model,
-                                &self.execution,
-                                Arc::clone(&self.spawner.lineage_id),
-                                thread_model,
-                                text,
-                                self.workspace.as_deref(),
-                            )
-                            .await;
-                            let message_outcome = match committed {
-                                Ok(checkpoint) => {
-                                    if let Some(checkpoint) = checkpoint {
-                                        latest_fork_checkpoint = Some(checkpoint);
-                                    }
-                                    agent_session_context(
-                                        latest_fork_checkpoint.as_deref(),
-                                        self.workspace.as_deref(),
-                                        &self.spawner.context_source,
-                                    )
-                                }
-                                Err(error) => {
-                                    model = model_from_checkpoint(
-                                        &self.events,
-                                        &self.transport_stats,
-                                        &self.tools,
-                                        &self.spawner,
-                                        &prompt_cache,
-                                        latest_fork_checkpoint.as_deref(),
-                                    );
-                                    Err(error)
-                                }
-                            };
-                            let message_reopens = outcome_requires_reopen(&message_outcome);
-                            drop(message_result.send(message_outcome));
-                            if message_reopens {
-                                reopen_after_compaction = true;
-                                for (_, pending_result) in developer_messages {
-                                    drop(pending_result.send(Err(NanocodexError::AgentStopped)));
-                                }
-                                break;
-                            }
-                        }
-                    } else if let Err(error) = &outcome {
+                    let reopen_after_compaction = outcome_requires_reopen(&outcome);
+                    developer_checkpoint_ready =
+                        compact_checkpoint_committed && !reopen_after_compaction;
+                    if !developer_checkpoint_ready && let Err(error) = &outcome {
                         let detail = error.to_string();
                         for (_, message_result) in pending_developer_messages.drain(..) {
                             drop(message_result.send(Err(
@@ -1034,6 +1052,7 @@ where
                 ));
                 continue;
             }
+            developer_checkpoint_ready = false;
             model.set_host_context(
                 self.spawner
                     .host_context
@@ -1669,8 +1688,7 @@ where
                 "otel.status_code",
                 if outcome.is_ok() { "OK" } else { "ERROR" },
             );
-            let mut reopen_after_turn =
-                requires_reopen_after_turn(provider_requires_stop, &outcome);
+            let reopen_after_turn = requires_reopen_after_turn(provider_requires_stop, &outcome);
             if commands_open && reopen_after_turn {
                 begin_shutdown(
                     &mut self.commands,
@@ -1686,52 +1704,9 @@ where
                 for (_, message_result) in pending_developer_messages.drain(..) {
                     drop(message_result.send(Err(NanocodexError::AgentStopped)));
                 }
-            } else if terminal_failure_committed || execution_operation.is_none() {
-                let mut developer_messages = pending_developer_messages.drain(..);
-                while let Some((text, message_result)) = developer_messages.next() {
-                    let committed = commit_developer_message(
-                        &mut model,
-                        &self.execution,
-                        Arc::clone(&self.spawner.lineage_id),
-                        thread_model,
-                        text,
-                        self.workspace.as_deref(),
-                    )
-                    .await;
-                    let message_outcome = match committed {
-                        Ok(checkpoint) => {
-                            if let Some(checkpoint) = checkpoint {
-                                latest_fork_checkpoint = Some(checkpoint);
-                            }
-                            agent_session_context(
-                                latest_fork_checkpoint.as_deref(),
-                                self.workspace.as_deref(),
-                                &self.spawner.context_source,
-                            )
-                        }
-                        Err(error) => {
-                            model = model_from_checkpoint(
-                                &self.events,
-                                &self.transport_stats,
-                                &self.tools,
-                                &self.spawner,
-                                &prompt_cache,
-                                latest_fork_checkpoint.as_deref(),
-                            );
-                            Err(error)
-                        }
-                    };
-                    let message_reopens = outcome_requires_reopen(&message_outcome);
-                    drop(message_result.send(message_outcome));
-                    if message_reopens {
-                        reopen_after_turn = true;
-                        for (_, pending_result) in developer_messages {
-                            drop(pending_result.send(Err(NanocodexError::AgentStopped)));
-                        }
-                        break;
-                    }
-                }
             }
+            developer_checkpoint_ready =
+                !reopen_after_turn && (terminal_failure_committed || execution_operation.is_none());
             if commands_open && reopen_after_turn {
                 begin_shutdown(
                     &mut self.commands,
