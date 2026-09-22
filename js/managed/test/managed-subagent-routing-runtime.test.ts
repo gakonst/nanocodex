@@ -109,6 +109,8 @@ it.each([
             expect(nativeInput.reasoning_effort).toBe("high");
           }
           expectNoDurableChildren();
+          // Result revisions remain runtime-owned after child durability is removed.
+          expect(JSON.stringify(input.messages)).not.toMatch(/turn_token: \d+/);
           const childTurn = phase;
           const last = input.messages.at(-1);
           if (last?.role === "tool" && last.content.includes('"accepted":true')) {
