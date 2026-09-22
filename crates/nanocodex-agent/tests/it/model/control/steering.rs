@@ -94,16 +94,20 @@ async fn assistant_events_preserve_commentary_and_final_answer_phases() -> Resul
 }
 
 fn assert_assistant_phase_events(deltas: &[Value], messages: &[Value], timeline: &[Value]) {
+    let turn_id = deltas[0]["turn_id"].as_str().expect("turn identity");
+    assert!(!turn_id.is_empty());
     let expected_messages = [
         json!({
             "model_call_index": 1,
             "item_id": "msg-commentary",
+            "turn_id": turn_id,
             "phase": "commentary",
             "text": "I’ll verify."
         }),
         json!({
             "model_call_index": 2,
             "item_id": "msg-final",
+            "turn_id": turn_id,
             "phase": "final_answer",
             "text": "Done."
         }),
