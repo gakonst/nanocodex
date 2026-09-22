@@ -152,11 +152,9 @@ pub const MODEL: &str = Model::Astra.as_str();
 #[serde(rename_all = "kebab-case")]
 #[non_exhaustive]
 pub enum Model {
-    /// GPT-5.6 Sol.
+    /// GPT-6 Sol.
     Sol,
-    /// GPT-5.6 Terra.
-    Terra,
-    /// GPT-5.6 Luna.
+    /// GPT-6 Luna.
     Luna,
     /// GPT-6 Astra.
     #[default]
@@ -174,23 +172,22 @@ pub enum Model {
 
 impl Model {
     /// Supported model catalog in picker order.
-    pub const ALL: [Self; 4] = [Self::Sol, Self::Terra, Self::Luna, Self::Astra];
+    pub const ALL: [Self; 3] = [Self::Astra, Self::Sol, Self::Luna];
 
     /// Default reasoning effort from the pinned Codex model catalog.
     #[must_use]
     pub const fn default_thinking(self) -> Thinking {
         match self {
-            Self::Sol | Self::Astra | Self::Glm53 | Self::Kimi | Self::Mimo => Thinking::Low,
-            Self::Terra | Self::Luna => Thinking::Medium,
+            Self::Astra | Self::Glm53 | Self::Kimi | Self::Mimo => Thinking::Low,
+            Self::Sol | Self::Luna => Thinking::Medium,
         }
     }
     /// Returns the Responses API model identifier.
     #[must_use]
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Sol => "gpt-5.6-sol",
-            Self::Terra => "gpt-5.6-terra",
-            Self::Luna => "gpt-5.6-luna",
+            Self::Sol => "gpt-6-sol",
+            Self::Luna => "gpt-6-luna",
             Self::Astra => "gpt-6-astra",
             Self::Glm53 => "@cf/zai-org/glm-5.3",
             Self::Kimi => "kimi-k3",
@@ -206,7 +203,8 @@ impl Model {
             Self::Glm53 | Self::Mimo => {
                 matches!(thinking, Thinking::Low | Thinking::Medium | Thinking::High)
             }
-            _ => !matches!((self, thinking), (Self::Astra, Thinking::None)),
+            Self::Sol | Self::Luna => true,
+            Self::Astra => !matches!(thinking, Thinking::None),
         }
     }
 
@@ -245,21 +243,20 @@ impl FromStr for Model {
 
     fn from_str(value: &str) -> Result<Self, Self::Err> {
         match value {
-            "gpt-5.6-sol" | "sol" => Ok(Self::Sol),
-            "gpt-5.6-terra" | "terra" => Ok(Self::Terra),
-            "gpt-5.6-luna" | "luna" => Ok(Self::Luna),
+            "gpt-6-sol" | "sol" => Ok(Self::Sol),
+            "gpt-6-luna" | "luna" => Ok(Self::Luna),
             "gpt-6-astra" | "astra" => Ok(Self::Astra),
             "@cf/zai-org/glm-5.3" | "glm-5.3" | "glm53" => Ok(Self::Glm53),
             "kimi-k3" | "kimi" => Ok(Self::Kimi),
             "mimo-v2.6-pro" | "mimo" => Ok(Self::Mimo),
             _ => Err(format!(
-                "invalid model {value:?}; expected gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-6-astra, @cf/zai-org/glm-5.3, kimi-k3, or mimo-v2.6-pro"
+                "invalid model {value:?}; expected gpt-6-astra, gpt-6-sol, gpt-6-luna, @cf/zai-org/glm-5.3, kimi-k3, or mimo-v2.6-pro"
             )),
         }
     }
 }
 
-/// Default GPT-5.6 context window used for accounting and automatic compaction.
+/// Default GPT-6 context window used for accounting and automatic compaction.
 pub const CONTEXT_WINDOW_TOKENS: u64 = 272_000;
 /// Largest Codex-compatible prompt context currently accepted by supported models.
 ///
@@ -798,11 +795,11 @@ mod tests {
     #[test]
     fn model_parses_short_and_api_names() {
         assert_eq!("sol".parse(), Ok(Model::Sol));
-        assert_eq!("gpt-5.6-sol".parse(), Ok(Model::Sol));
-        assert_eq!("terra".parse(), Ok(Model::Terra));
-        assert_eq!("gpt-5.6-terra".parse(), Ok(Model::Terra));
+        assert_eq!("gpt-6-sol".parse(), Ok(Model::Sol));
         assert_eq!("luna".parse(), Ok(Model::Luna));
-        assert_eq!("gpt-5.6-luna".parse(), Ok(Model::Luna));
+        assert_eq!("gpt-6-luna".parse(), Ok(Model::Luna));
+        assert!("terra".parse::<Model>().is_err());
+        assert!("gpt-5.6-sol".parse::<Model>().is_err());
         assert_eq!("astra".parse(), Ok(Model::Astra));
         assert_eq!("gpt-6-astra".parse(), Ok(Model::Astra));
         assert_eq!(Model::default().as_str(), "gpt-6-astra");

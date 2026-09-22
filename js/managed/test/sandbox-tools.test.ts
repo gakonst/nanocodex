@@ -20,7 +20,7 @@ const SHARED_BRAIN = { resourceId: "durable-agent" } as const;
 
 const context = {
   callId: "call",
-  model: "gpt-5.6-sol",
+  model: "gpt-6-sol",
   parentCallId: "parent",
   sessionId: "session",
   signal: new AbortController().signal,

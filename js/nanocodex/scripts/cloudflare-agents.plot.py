@@ -8,7 +8,7 @@ from matplotlib.lines import Line2D
 
 folder=Path(sys.argv[1])
 rows=json.loads((folder/'measurements.json').read_text())['records']
-models=['gpt-5.6-luna','gpt-5.6-terra','gpt-5.6-sol','gpt-6-astra']
+models=list(dict.fromkeys(r['model'] for r in rows))
 efforts=['low','medium','high']
 paths=['nanocodex_cloudflare','openai_agents','responses_http']
 names={'nanocodex_cloudflare':'Nanocodex / Cloudflare','openai_agents':'OpenAI Agents','responses_http':'Responses HTTP'}
@@ -40,8 +40,8 @@ for tier in ['default','fast']:
    ax.set_title(titles[task]+' · '+('visible TTFT' if mi==0 else 'completion'))
    ax.set_ylabel('Seconds from fresh request')
    ax.set_ylim(bottom=0);ax.grid(axis='y',alpha=.2)
-   for x in [2.5,5.5,8.5]:ax.axvline(x,color='#dddddd',linewidth=.7)
-   ax.set_xticks(range(12),[m.removeprefix('gpt-5.6-').removeprefix('gpt-6-')+'\n'+e for m in models for e in efforts])
+   for x in [i*3-.5 for i in range(1,len(models))]:ax.axvline(x,color='#dddddd',linewidth=.7)
+   ax.set_xticks(range(len(models)*3),[m+'\n'+e for m in models for e in efforts])
  fig.suptitle('Same tasks and requested settings · '+tier+' service tier',fontsize=20,y=.995)
  fig.legend([Line2D([0],[0],marker='o',color=colors[p],linestyle='') for p in paths],[names[p] for p in paths],loc='upper center',bbox_to_anchor=(.5,.969),ncol=3,frameon=False)
  fig.text(.05,.005,'Dots: median; whiskers: observed min–max (2 planned trials per cell). Completed runs only; correctness and failures are reported separately.\nFresh Nanocodex includes create, durable admission and streaming. Built-in harness prompts differ. These are not confidence intervals.',fontsize=10,color='#444444')
@@ -56,7 +56,7 @@ if warm:
     for si,state in enumerate(['fresh','warm']):
      vals=[r[metric]/1000 for r in warm if successful(r) and r.get(metric) is not None and (r['path'],r['model'],r['state'])==(path,model,state)]
      if vals:ax.scatter(model_index+(pi-.5)*.28,statistics.median(vals),marker='o' if state=='fresh' else 'D',s=65,color=colors[path],facecolors=colors[path] if state=='warm' else 'none')
-  ax.set_xticks(range(4),['Luna','Terra','Sol','Astra']);ax.set_ylabel('Seconds');ax.grid(axis='y',alpha=.2);ax.set_ylim(bottom=0)
+  ax.set_xticks(range(len(models)),models);ax.set_ylabel('Seconds');ax.grid(axis='y',alpha=.2);ax.set_ylim(bottom=0)
   ax.set_title('Visible TTFT' if metric=='ttft_ms' else 'Completion')
  fig.suptitle('Repeated schedule prompt in the same session · default tier',fontsize=17)
  fig.text(.05,.01,'Hollow circle: fresh; filled diamond: warm. Teal: Nanocodex; orange: OpenAI Agents. Medians across low/high efforts and repetitions.\nWarm repeats include conversation context and provider cache effects, so this does not isolate connection reuse.',fontsize=10)
@@ -109,7 +109,7 @@ if advanced:
      vals=[r[metric]/1000 for r in relevant if successful(r) and r.get(metric) is not None and (r['path'],r['model'],r['effort'])==(path,model,effort)]
      if not vals:continue
      med=statistics.median(vals);ax.errorbar(mi*3+ei+(pi-.5)*.23,med,yerr=[[med-min(vals)],[max(vals)-med]],fmt='o',color=colors[path],capsize=2)
-  ax.set_xticks(range(12),[m.split('-')[-1]+'\n'+e for m in models for e in ['high','xhigh','max']]);ax.set_ylim(bottom=0);ax.grid(axis='y',alpha=.2);ax.set_ylabel('Seconds')
+  ax.set_xticks(range(len(models)*3),[m+'\n'+e for m in models for e in ['high','xhigh','max']]);ax.set_ylim(bottom=0);ax.grid(axis='y',alpha=.2);ax.set_ylabel('Seconds')
   ax.set_title('Visible TTFT' if metric=='ttft_ms' else 'Completion')
  fig.suptitle('Higher reasoning efforts · fresh schedule task · default tier',fontsize=17)
  fig.text(.05,.01,'Teal: Nanocodex; orange: OpenAI Agents. Dots: medians; whiskers: observed ranges, not confidence intervals.\nHigh comes from the main matrix; xhigh/max are a later cohort at concurrency two. Unsupported configurations and failures remain in the table.',fontsize=10)
@@ -141,18 +141,19 @@ if main:
 
 disabled=[r for r in rows if r['label']=='delegation-disabled']
 if disabled:
+ disabled_models=list(dict.fromkeys(r['model'] for r in disabled))
  fig,axes=plt.subplots(3,2,figsize=(12,10),sharex=True)
  for ti,task in enumerate(tasks):
   for mi,metric in enumerate(['ttft_ms','completion_ms']):
    ax=axes[ti,mi]
    for pi,path in enumerate(paths[:2]):
-    for model_index,model in enumerate(['gpt-5.6-luna','gpt-5.6-sol']):
+    for model_index,model in enumerate(disabled_models):
      for ei,effort in enumerate(['low','high']):
       vals=[r[metric]/1000 for r in disabled if successful(r) and r.get(metric) is not None and (r['path'],r['model'],r['workload'],r['effort'])==(path,model,task,effort)]
       if not vals:continue
       med=statistics.median(vals);ax.errorbar(model_index*2+ei+(pi-.5)*.2,med,yerr=[[med-min(vals)],[max(vals)-med]],fmt='o',color=colors[path],capsize=3)
    ax.set_title(titles[task]+' · '+('TTFT' if mi==0 else 'completion'));ax.set_ylim(bottom=0);ax.grid(axis='y',alpha=.2);ax.set_ylabel('Seconds')
-   ax.set_xticks(range(4),['Luna / low','Luna / high','Sol / low','Sol / high'])
+   ax.set_xticks(range(len(disabled_models)*2),[m+' / '+e for m in disabled_models for e in ['low','high']])
  fig.suptitle('Explicitly disabled delegation · both hosted-agent APIs · default tier',fontsize=16)
  fig.text(.05,.012,'Teal: Nanocodex; orange: OpenAI Agents. Fresh sessions, two trials per cell, concurrency two.\nDots: medians; whiskers: observed ranges. This later cohort uses the final Worker version and is separate from the main matrix.',fontsize=10)
  fig.tight_layout(rect=(0,.065,1,.95));save(fig,'delegation-disabled')

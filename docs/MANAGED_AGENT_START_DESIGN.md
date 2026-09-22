@@ -53,7 +53,7 @@ const agent = await Agent.create({
   ...client,
   idempotencyKey: `create:${job.id}`,
   settings: {
-    model: "gpt-5.6-luna", thinking: "high",
+    model: "gpt-6-luna", thinking: "high",
     reasoningMode: "standard", fastMode: false,
   },
   configuration: {
@@ -112,7 +112,7 @@ const { agent, turn } = await Agent.createAndPrompt({
   ...client,
   idempotencyKey: "invoice-42:first-run",
   settings: {
-    model: "gpt-5.6-luna", thinking: "high",
+    model: "gpt-6-luna", thinking: "high",
     reasoningMode: "standard", fastMode: false,
   },
   configuration: { tools: [], multi_agent: { enabled: false } },

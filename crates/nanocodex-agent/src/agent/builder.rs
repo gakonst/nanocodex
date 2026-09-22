@@ -516,9 +516,28 @@ mod tests {
             MessageRole::User,
             [ContentItem::input_text("resume with the retained model")],
         );
-        let snapshot = serde_json::from_value(serde_json::json!({
+        let obsolete: SessionSnapshot = serde_json::from_value(serde_json::json!({
             "version": 1,
             "model": "gpt-5.6-luna",
+            "lineage_id": "019c0d31-c308-7d91-bff4-5dca82d15ac6",
+            "prompt_cache_key": "obsolete-model",
+            "workspace": workspace,
+            "canonical_context": canonical_context,
+            "history": [canonical_context],
+        }))
+        .expect("snapshot envelope should decode before model validation");
+        let result = Nanocodex::builder(OpenAi::builder("test-key").build().unwrap())
+            .resume(obsolete)
+            .build();
+        let error = match result {
+            Ok(_) => panic!("an obsolete snapshot model must not continue as another model"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("snapshot model is unsupported"));
+
+        let snapshot = serde_json::from_value(serde_json::json!({
+            "version": 1,
+            "model": "gpt-6-luna",
             "lineage_id": "019c0d31-c308-7d91-bff4-5dca82d15ac6",
             "prompt_cache_key": "retained-model",
             "workspace": workspace,

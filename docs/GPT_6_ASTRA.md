@@ -31,30 +31,28 @@ This support is based on OpenAI's current contracts:
 | Knowledge cutoff | April 30, 2026; this is documentation only and does not affect request encoding. |
 | Base token rates | Estimates $10 input, $1 cached input, $12.50 cache write, and $50 output per million tokens. |
 | Long-context rates | For more than 272,000 input tokens, estimates 2x input/cache rates and 1.5x output rates for the whole request. |
-| Fast mode | Keeps Astra fast mode off by default. Astra standard requests explicitly send `service_tier: "default"` so a project Fast default cannot change their accounting. Fast requests use Codex's accepted compatibility value `priority`; requested-tier cost estimates label Astra fast mode as `fast`, while GPT-5.6 retains `priority`. Deployments using EU data residency must not enable Astra fast mode. |
+| Fast mode | Keeps Astra fast mode off by default. Astra standard requests explicitly send `service_tier: "default"` so a project Fast default cannot change their accounting. Fast requests use Codex's accepted compatibility value `priority`; requested-tier cost estimates label GPT-6 fast mode as `fast`. Deployments using EU data residency must not enable Astra fast mode. |
 
 OpenAI currently describes Astra as rolling out first through its Trusted Access
 Program, with API and Plus, Pro, Business, and Enterprise access following in the
 coming days. That announcement is not an entitlement API and must not be used as
 a client-side availability signal.
 
-OpenAI's current short-context rates per million tokens are:
+OpenAI's [short-context rates](https://developers.openai.com/api/docs/pricing) per million tokens are:
 
 | Model | Tier | Input | Cached | Cache write | Output |
 | --- | --- | ---: | ---: | ---: | ---: |
-| GPT-5.6 Sol | Standard | $4 | $0.40 | $5 | $20 |
-| GPT-5.6 Sol | Fast | $8 | $0.80 | $10 | $40 |
-| GPT-5.6 Terra | Standard | $2 | $0.20 | $2.50 | $12 |
-| GPT-5.6 Terra | Fast | $4 | $0.40 | $5 | $24 |
-| GPT-5.6 Luna | Standard | $0.20 | $0.02 | $0.25 | $1.20 |
-| GPT-5.6 Luna | Fast | $0.40 | $0.04 | $0.50 | $2.40 |
+| GPT-6 Sol | Standard | $2 | $0.20 | $2.50 | $10 |
+| GPT-6 Sol | Fast | $4 | $0.40 | $5 | $20 |
+| GPT-6 Luna | Standard | $0.10 | $0.01 | $0.125 | $0.50 |
+| GPT-6 Luna | Fast | $0.20 | $0.02 | $0.25 | $1 |
 | GPT-6 Astra | Standard | $10 | $1 | $12.50 | $50 |
 | GPT-6 Astra | Fast | $20 | $2 | $25 | $100 |
 
 For every supported model, requests above 272,000 input tokens use 2x input,
 cached-input, and cache-write rates and 1.5x output rates across the whole request.
 Fast mode then uses the corresponding fast rates. Nanocodex's estimator applies
-these thresholds to Sol, Terra, Luna, and Astra.
+these thresholds to Sol, Luna, and Astra.
 
 The provider prices Batch and Flex at 50% of Standard and Fast at 2x the
 applicable short- or long-context rates. Nanocodex currently estimates only its
@@ -138,7 +136,7 @@ an API key with `api.safety.alerts.read` for the same project.
 
 ## Existing Responses capabilities
 
-Astra inherits the GPT-5.6 contracts Nanocodex already uses: Responses streaming,
+Astra uses the shared Nanocodex contracts: Responses streaming,
 Structured Outputs, direct and programmatic tool calling, computer-use-compatible
 tool transport, multi-agent orchestration, prompt caching, persisted encrypted
 reasoning and explicit compaction. Astra rejects the legacy Pro execution-mode
@@ -214,7 +212,7 @@ account app select Astra directly for new conversations; an explicit provider
 rejection is the availability signal. The selector is available only before the
 first accepted turn, while thinking and Fast remain live settings.
 
-Both native terminal clients expose the complete Sol, Terra, Luna, and Astra
+Both native terminal clients expose the complete Sol, Luna, and Astra
 roster through `/model`; `/model astra` applies the same selection directly.
 `/effort`, `/reasoning`, and `/thinking` are aliases for the reasoning picker and
 accept a direct `low`, `medium`, `high`, `xhigh`, or `max` value. In the managed

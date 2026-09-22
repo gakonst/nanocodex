@@ -38,7 +38,7 @@ fn events_only_decodes_common_lifecycle_projections() {
         AgentEventKind::RunStarted,
         json!({
             "mode": "managed",
-            "model": "gpt-5.6-sol",
+            "model": "gpt-6-sol",
             "reasoning_mode": "summary",
             "effort": "high",
             "transport": "managed",
@@ -75,7 +75,7 @@ fn events_only_decodes_common_lifecycle_projections() {
         AgentEventKind::ModelCallFailed,
         json!({
             "call_index": 2,
-            "model": "gpt-5.6-sol",
+            "model": "gpt-6-sol",
             "duration_ns": 42,
             "error": "unavailable"
         }),

@@ -16,7 +16,7 @@ const envelope = (cursor, text = "hello") => Object.freeze({
 });
 const snapshot = (events, metadata = {}) => Object.freeze({
   type: "thread", thread: Object.freeze({ id: "agent-1", events: Object.freeze(events), connected: true,
-    hasMore: false, activeTurns: ["turn-1"], acceptedTurns: 1, settings: { model: "gpt-5.6-sol" }, ...metadata }),
+    hasMore: false, activeTurns: ["turn-1"], acceptedTurns: 1, settings: { model: "gpt-6-sol" }, ...metadata }),
 });
 
 test("native JSONL streams exact suffixes and metadata without retransmitting history", () => {

@@ -38,7 +38,7 @@ describe("single-attempt foreground Jev", () => {
   });
   it("skips fixed-provider classification without inventing probabilities", async () => {
     const run=vi.fn(); const observed=vi.fn();
-    const route=await resolveThreadRoute({run},"hello",routingPolicySchema.parse({candidates:["openrouter:openai/gpt-5.6-luna:low"]}),
+    const route=await resolveThreadRoute({run},"hello",routingPolicySchema.parse({candidates:["openrouter:openai/gpt-6-luna:low"]}),
       {openrouter:true,vercel:false,bypassSingleCandidate:true,observeRoute:observed});
     expect(run).not.toHaveBeenCalled(); expect(route.classifier).toEqual({outcome:"not_requested",attempts:[]});
     expect(route.audit).toBeUndefined(); expect(observed).toHaveBeenCalledOnce();
@@ -88,7 +88,7 @@ describe("routing cancellation", () => {
       await rejected;
       expect(vi.getTimerCount()).toBe(0);
       expect(removeListener).toHaveBeenCalledWith("abort", expect.any(Function));
-      release({ answers: { candidate: { choice: "gpt-5.6-luna:low", confidence: .99 },
+      release({ answers: { candidate: { choice: "gpt-6-luna:low", confidence: .99 },
         family: { choice: "terminal", confidence: .99 } } });
       await Promise.resolve();
       expect(observeRoute).not.toHaveBeenCalled(); expect(commit).not.toHaveBeenCalled();
@@ -98,7 +98,7 @@ describe("routing cancellation", () => {
     const controller = new AbortController(), commit = vi.fn();
     const pin = new ThreadRoutePin({ read: () => undefined, commit });
     const pending = pin.resolve(() => resolveThreadRoute({ run: vi.fn() }, "task",
-      routingPolicySchema.parse({ candidates: ["gpt-5.6-luna:low"] }),
+      routingPolicySchema.parse({ candidates: ["gpt-6-luna:low"] }),
       { openrouter: false, vercel: false, signal: controller.signal, bypassSingleCandidate: true,
         observeRoute: () => { controller.abort(); } }));
     await expect(pending).rejects.toMatchObject({ name: "AbortError" });

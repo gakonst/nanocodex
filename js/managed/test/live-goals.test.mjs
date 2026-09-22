@@ -12,7 +12,7 @@ test("production goal completes through real tools and survives pause, reconnect
     ...init, signal: init?.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
   }) };
   const agent = await Agent.create({ ...options, settings: {
-    model: "gpt-5.6-luna", thinking: "low", reasoningMode: "standard", fastMode: false,
+    model: "gpt-6-luna", thinking: "low", reasoningMode: "standard", fastMode: false,
   } });
   // Never list or delete unrelated account resources, even on failure.
   t.after(async () => { await agent.delete(); });

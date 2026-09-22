@@ -17,7 +17,7 @@ test("caller-owned creation keys survive retries and separate SDK invocations", 
   assert.equal(first.id, recovered.id);
   assert.equal(requests.length, 3);
   assert.deepEqual(requests, Array(3).fill({ key: "create:job-42", body: JSON.stringify({ configuration }) }));
-  await Agent.create({ ...options, idempotencyKey: "create:job-43", settings: { model: "gpt-5.6-luna", thinking: "low", reasoningMode: "standard", fastMode: false } });
+  await Agent.create({ ...options, idempotencyKey: "create:job-43", settings: { model: "gpt-6-luna", thinking: "low", reasoningMode: "standard", fastMode: false } });
   assert.equal(requests[3].key, "create:job-43");
   assert.equal(JSON.parse(requests[3].body).settings.reasoning_mode, "standard");
   assert.equal(Object.hasOwn(JSON.parse(requests[3].body), "idempotencyKey"), false);

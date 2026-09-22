@@ -73,7 +73,7 @@ test("remote Hand calls create, reuse, stop and restart a retained private VM", 
   async function call(name, input = {}) {
     const call_id = `vm-call-${++sequence}`;
     const result = new Promise(resolve => results.set(call_id, resolve));
-    socket.send(JSON.stringify({ type: "call", session_id: "phone", call_id, model: "gpt-5.6-sol", name, input, output_token_budget: 2048, output_byte_budget: 65536, deadline_at: Date.now() + 15_000 }));
+    socket.send(JSON.stringify({ type: "call", session_id: "phone", call_id, model: "gpt-6-sol", name, input, output_token_budget: 2048, output_byte_budget: 65536, deadline_at: Date.now() + 15_000 }));
     const frame = await result;
     assert.equal(frame.outcome.status, "completed", JSON.stringify(frame));
     assert.equal(frame.outcome.output.success, true, JSON.stringify(frame));

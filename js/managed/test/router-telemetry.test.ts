@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DatabaseSync } from "node:sqlite";
 import { RouterTelemetryStore, parseRouterObservation } from "../src/router-telemetry";
 const now=1_000_000_000;
-const sample={timestamp:now,clientIngressColo:"IAD",chosen:"openrouter:openai/gpt-5.6-luna:low",decision:"low",durationMs:50,
+const sample={timestamp:now,clientIngressColo:"IAD",chosen:"openrouter:openai/gpt-6-luna:low",decision:"low",durationMs:50,
   classifier:{outcome:"success",attempts:[{duration_ms:50,outcome:"success"}]},confidence:.4,probabilities:null};
 describe("content-free router telemetry",()=>{
   it("strips identities, text and nested errors and rejects unknown candidate labels",()=>{

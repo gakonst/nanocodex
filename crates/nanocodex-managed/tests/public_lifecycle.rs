@@ -452,7 +452,7 @@ async fn public_managed_lifecycle_preserves_durable_identity_control_and_replay(
         let (observed_sender, mut observed_events) = mpsc::unbounded_channel();
         let (agent, mut events): (Nanocodex, AgentEvents) = Nanocodex::builder(
             Managed::create(client.clone()).with_settings(AgentSettings {
-                model: Model::Terra,
+                model: Model::Sol,
                 thinking: Thinking::Medium,
                 reasoning_mode: ReasoningMode::Pro,
                 fast_mode: true,
@@ -818,7 +818,7 @@ async fn public_managed_lifecycle_preserves_durable_identity_control_and_replay(
             lock(&fixture.inner.create_bodies).as_slice(),
             [json!({
                 "settings": {
-                    "model": "gpt-5.6-terra",
+                    "model": "gpt-6-sol",
                     "thinking": "medium",
                     "reasoning_mode": "pro",
                     "fast_mode": true
@@ -828,7 +828,7 @@ async fn public_managed_lifecycle_preserves_durable_identity_control_and_replay(
         assert_eq!(
             lock(&fixture.inner.settings).clone(),
             json!({
-                "model": "gpt-5.6-luna",
+                "model": "gpt-6-luna",
                 "thinking": "xhigh",
                 "reasoning_mode": "pro",
                 "fast_mode": false
@@ -1001,7 +1001,7 @@ fn agent_state_json(agent_id: &str, latest_event_cursor: &str) -> Value {
             "native_cross_mounts": false
         },
         "settings": {
-            "model": "gpt-5.6-sol",
+            "model": "gpt-6-sol",
             "thinking": "high",
             "reasoning_mode": "standard",
             "fast_mode": false
@@ -1283,7 +1283,7 @@ fn exact_usage() -> Value {
 
 fn default_settings() -> Value {
     json!({
-        "model": "gpt-5.6-sol",
+        "model": "gpt-6-sol",
         "thinking": "high",
         "reasoning_mode": "standard",
         "fast_mode": false

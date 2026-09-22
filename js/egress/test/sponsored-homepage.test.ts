@@ -145,7 +145,7 @@ describe("sponsored homepage model access", () => {
     for (let index = 1; index <= 3; index += 1) {
       socket.send(JSON.stringify({
         type: "response.create",
-        model: "gpt-5.6-sol",
+        model: "gpt-6-sol",
         reasoning: { effort: "max", mode: "pro" },
         service_tier: "priority",
         input: [{
@@ -159,10 +159,10 @@ describe("sponsored homepage model access", () => {
       expect(received).toMatchObject({ type: "provider.received" });
       const forwarded = JSON.parse(String(received.frame));
       expect(forwarded).toMatchObject({
-        model: "gpt-5.6-luna",
+        model: "gpt-6-luna",
         reasoning: { effort: "none", mode: "standard" },
+        service_tier: "default",
       });
-      expect(forwarded).not.toHaveProperty("service_tier");
       expect(await nextSocketMessage(socket)).toMatchObject({ type: "response.completed" });
     }
 

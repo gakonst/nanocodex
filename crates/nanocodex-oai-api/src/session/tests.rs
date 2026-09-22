@@ -137,7 +137,7 @@ fn luna_usage_receives_a_model_specific_estimate() {
     };
     let (estimate, status) = estimate_cost(Some(&usage), crate::Model::Luna, false);
 
-    assert_eq!(estimate.unwrap().amount().decimal(), "2.2");
+    assert_eq!(estimate.unwrap().amount().decimal(), "0.95");
     assert_eq!(status, crate::CostStatus::EstimatedFromUsage);
 }
 

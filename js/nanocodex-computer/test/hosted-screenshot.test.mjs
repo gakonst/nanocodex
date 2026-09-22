@@ -51,17 +51,17 @@ test("provider screenshots cross MCP attachment, broker, and model output", { ti
   const sessions = Array.from({ length: 4 }, (_, index) => `conversation:${index}`);
   await Promise.all(sessions.map((sessionId, index) => tool.handler(
     { set: "selected" },
-    { sessionId, callId: `select:${index}`, model: "gpt-5.6-sol" },
+    { sessionId, callId: `select:${index}`, model: "gpt-6-sol" },
   )));
   const results = await Promise.all(sessions.map((sessionId, index) => tool.handler(
     { image: true },
-    { sessionId, callId: `shot:${index}`, model: "gpt-5.6-sol" },
+    { sessionId, callId: `shot:${index}`, model: "gpt-6-sol" },
   )));
   for (const result of results) assertPng(result);
-  await reset.handler({}, { sessionId: sessions[0], callId: "reset:0", model: "gpt-5.6-sol" });
+  await reset.handler({}, { sessionId: sessions[0], callId: "reset:0", model: "gpt-6-sol" });
   const cleared = await tool.handler(
     { get: true },
-    { sessionId: sessions[0], callId: "after-reset:0", model: "gpt-5.6-sol" },
+    { sessionId: sessions[0], callId: "after-reset:0", model: "gpt-6-sol" },
   );
   assert.equal(cleared.output.at(-1).text, "undefined");
 });

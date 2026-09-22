@@ -12,7 +12,7 @@ import type { RouterProvider } from "./routerApi.ts";
 const p = (overrides: Partial<RouterProvider> = {}): RouterProvider => ({
   source: "live",
   backend: "cloudflare",
-  model: "gpt-5.6-luna",
+  model: "gpt-6-luna",
   effort: "low",
   scope: "deployment_global",
   clientIngressColo: null,
@@ -59,7 +59,7 @@ test("global totals exclude overlapping ingress/execution and keep probes separa
 test("known aliases align without merging observations, sources, efforts or cohorts", () => {
   const rows = [
     p(),
-    p({ model: "openai/gpt-5.6-luna", source: "probe" }),
+    p({ model: "openai/gpt-6-luna", source: "probe" }),
     p({ effort: "high" }),
     p({ scope: "client_ingress", clientIngressColo: "LHR" }),
   ];
@@ -104,7 +104,7 @@ test("one point per thinking level uses only the selected source, without alias 
     probe,
     p({
       source: "probe",
-      model: "openai/gpt-5.6-luna",
+      model: "openai/gpt-6-luna",
       generationTtftP50Ms: 1000,
     }),
   ]);

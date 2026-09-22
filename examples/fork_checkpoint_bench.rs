@@ -22,7 +22,7 @@ use tokio_tungstenite::{
 
 const DEFAULT_ENDPOINT: &str = "wss://api.openai.com/v1/responses";
 const DEFAULT_HTTP_BASE: &str = "https://api.openai.com/v1";
-const MODEL: &str = "gpt-5.6-sol";
+const MODEL: &str = "gpt-6-sol";
 const BETA: &str = "responses_websockets=2026-02-06";
 const DEFAULT_TURNS: usize = 10;
 const DEFAULT_PREFIX_FACTS: usize = 600;

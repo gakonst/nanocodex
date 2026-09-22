@@ -39,7 +39,7 @@ it("continues a real managed model turn and stops at the goal token budget", asy
     state.storage.sql.exec(`INSERT INTO session_state (singleton,session_id,owner_id,organization_id,team_id,authorization_epoch,public_origin,runtime_profile,last_active)
       VALUES (1,?,'fixture-owner','fixture-org','fixture-team',1,'https://nanocodex.example/','managed',?)`, threadId, now);
     state.storage.sql.exec("INSERT INTO managed_configuration VALUES (1, ?)", JSON.stringify({ tools: [], environment: { files: [], skills: [], setup_commands: [], network: { access: "disabled" } } }));
-    state.storage.sql.exec("UPDATE managed_agent_settings SET model='gpt-5.6-sol', thinking='low'");
+    state.storage.sql.exec("UPDATE managed_agent_settings SET model='gpt-6-sol', thinking='low'");
     const goals = new Goals(state.storage, () => threadId);
     goals.create({ objective: "Complete every acceptance criterion", token_budget: 65 });
     state.storage.sql.exec(`INSERT INTO managed_turns (id,request_hash,input_json,authorization_json,state,accepted_cursor,dispatch_input_chunks,may_have_inner_operation,attempt_count,created_at,accepted_at,updated_at)

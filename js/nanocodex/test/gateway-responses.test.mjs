@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { createGatewayResponses } from "../cloudflare/gateway-responses.mjs";
-const models = ["@cf/zai-org/glm-5.3", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
+const models = ["@cf/zai-org/glm-5.3", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"];
 const secret = "synthetic-server-only-key";
 const options = { provider: "openrouter", model: models[0], reasoningEffort: "high", apiKey: secret };
 const completion = (message, finish_reason = "stop") => Response.json({ choices: [{ message, finish_reason }] });
@@ -285,7 +285,7 @@ test("Cloudflare validates model, effort, full history and hosted tools before d
   assert.throws(() => createGatewayResponses(bindingOptions));
   const transport = createGatewayResponses({ ...bindingOptions, ai });
   for (const body of [
-    { model: "gpt-5.6-sol" }, { reasoning: { effort: "low" } },
+    { model: "gpt-6-sol" }, { reasoning: { effort: "low" } },
     { input: [{ type: "configuration_update", reasoning: { effort: "medium" } }] },
     { previous_response_id: "opaque" }, { context_management: [{}] },
     { input: [{ type: "compaction", encrypted_content: "opaque" }] },

@@ -4361,7 +4361,6 @@ fn is_file_query_character(character: char) -> bool {
 fn model_name(model: Model) -> &'static str {
     match model {
         Model::Luna => "Luna",
-        Model::Terra => "Terra",
         Model::Sol => "Sol",
         Model::Astra => "Astra",
         _ => model.as_str(),

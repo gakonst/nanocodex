@@ -1108,7 +1108,6 @@ fn unix_time_ms() -> u64 {
 fn model_name(model: Model) -> &'static str {
     match model {
         Model::Luna => "Luna",
-        Model::Terra => "Terra",
         Model::Sol => "Sol",
         Model::Astra => "Astra",
         _ => model.as_str(),

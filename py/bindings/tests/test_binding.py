@@ -23,9 +23,9 @@ class BindingTests(unittest.TestCase):
         secret = "private-test-value"
         agent, events = Nanocodex(
             secret,
-            model="gpt-5.6-terra",
-            thinking="none",
-            reasoning_mode="pro",
+            model="gpt-6-sol",
+            thinking="medium",
+            reasoning_mode="standard",
         )
         self.assertNotIn(secret, repr(agent))
         self.assertTrue(callable(agent.prompt))
@@ -62,7 +62,7 @@ class BindingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "expected standard or pro"):
             Nanocodex("test-key", reasoning_mode="impossible")
 
-        with self.assertRaisesRegex(ValueError, "expected gpt-5.6-sol"):
+        with self.assertRaisesRegex(ValueError, "expected gpt-6-astra"):
             Nanocodex("test-key", model="impossible")
 
         agent, _ = Nanocodex("test-key")

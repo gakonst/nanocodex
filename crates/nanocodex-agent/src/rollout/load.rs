@@ -457,11 +457,18 @@ fn materialize_rollout(path: &Path, thread_id: &str) -> io::Result<MaterializedR
                 context_baseline = None;
             }
             Some("turn_context") => {
-                if let Some(selected) = value["payload"]["model"]
-                    .as_str()
-                    .and_then(|model| model.parse().ok())
-                {
-                    model = selected;
+                if let Some(selected) = value["payload"]["model"].as_str() {
+                    if selected.starts_with("gpt-5.6-") {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "rollout model {selected:?} is unsupported; continuation requires its original model"
+                            ),
+                        ));
+                    }
+                    if let Ok(selected) = selected.parse() {
+                        model = selected;
+                    }
                 }
             }
             Some("world_state") => {

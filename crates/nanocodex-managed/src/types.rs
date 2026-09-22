@@ -590,9 +590,8 @@ mod model_serde {
         D: Deserializer<'de>,
     {
         match String::deserialize(deserializer)?.as_str() {
-            "gpt-5.6-sol" => Ok(Model::Sol),
-            "gpt-5.6-terra" => Ok(Model::Terra),
-            "gpt-5.6-luna" => Ok(Model::Luna),
+            "gpt-6-sol" => Ok(Model::Sol),
+            "gpt-6-luna" => Ok(Model::Luna),
             "gpt-6-astra" => Ok(Model::Astra),
             "@cf/zai-org/glm-5.3" => Ok(Model::Glm53),
             "kimi-k3" => Ok(Model::Kimi),
@@ -600,9 +599,8 @@ mod model_serde {
             value => Err(de::Error::unknown_variant(
                 value,
                 &[
-                    "gpt-5.6-sol",
-                    "gpt-5.6-terra",
-                    "gpt-5.6-luna",
+                    "gpt-6-sol",
+                    "gpt-6-luna",
                     "gpt-6-astra",
                     "@cf/zai-org/glm-5.3",
                 ],
@@ -906,15 +904,17 @@ mod settings_tests {
 
     #[test]
     fn settings_reject_aliases_and_patch_only_selected_fields() {
-        assert!(
-            serde_json::from_value::<AgentSettings>(json!({
-                "model": "sol",
-                "thinking": "high",
-                "reasoning_mode": "standard",
-                "fast_mode": false
-            }))
-            .is_err()
-        );
+        for model in ["sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
+            assert!(
+                serde_json::from_value::<AgentSettings>(json!({
+                    "model": model,
+                    "thinking": "high",
+                    "reasoning_mode": "standard",
+                    "fast_mode": false
+                }))
+                .is_err()
+            );
+        }
         assert_eq!(
             serde_json::to_value(AgentSettingsPatch {
                 model: Some(Model::Astra),

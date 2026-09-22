@@ -10,7 +10,7 @@ import {
 
 const context = () => ({
   callId: "call",
-  model: "gpt-5.6-sol",
+  model: "gpt-6-sol",
   parentCallId: "cell",
   sessionId: "session",
   signal: new AbortController().signal,

@@ -44,7 +44,7 @@ describe("managed agent settings", () => {
     "thinking=extreme",
     "reasoning_mode=professional",
     "fast_mode=1",
-    "model=gpt-5.6-sol&model=gpt-5.6-luna",
+    "model=gpt-6-sol&model=gpt-6-luna",
     "unknown=value",
   ])("rejects a non-canonical live query: %s", (query) => {
     expect(() => parseAgentSettingsQuery(new URLSearchParams(query))).toThrow(
@@ -57,8 +57,8 @@ describe("managed agent settings", () => {
       thinking: "xhigh",
       fast_mode: true,
     });
-    expect(parseAgentSettingsPatch({ model: "gpt-5.6-terra", reasoning_mode: "pro" }))
-      .toEqual({ model: "gpt-5.6-terra", reasoning_mode: "pro" });
+    expect(() => parseAgentSettingsPatch({ model: "gpt-5.6-terra", reasoning_mode: "pro" }))
+      .toThrow("invalid agent model");
 
     for (const invalid of [
       {},
@@ -66,7 +66,7 @@ describe("managed agent settings", () => {
       { thinking: "HIGH" },
       { thinking: undefined },
       { fast_mode: "true" },
-      { model: "gpt-5.6-sol", extra: true },
+      { model: "gpt-6-sol", extra: true },
     ]) {
       expect(() => parseAgentSettingsPatch(invalid)).toThrow();
     }
@@ -100,6 +100,10 @@ describe("managed agent settings", () => {
       .toThrow("GPT-6 Astra requires low");
     expect(() => parseCompleteAgentSettings({ ...settings, reasoning_mode: "pro" }))
       .toThrow("does not support pro");
+    for (const model of ["gpt-6-sol", "gpt-6-luna"] as const) {
+      expect(parseCompleteAgentSettings({ ...settings, model, thinking: "none", reasoning_mode: "pro" }))
+        .toEqual({ ...settings, model, thinking: "none", reasoning_mode: "pro" });
+    }
     for (const encoded of ["{}", "[]", JSON.stringify({ settings: { ...settings, extra: true } })]) {
       expect(() => parseAgentCreateBody(encoded)).toThrow();
     }
@@ -107,7 +111,7 @@ describe("managed agent settings", () => {
 
   it("validates and splits combined create-and-prompt bodies before mutation", () => {
     const settings = {
-      model: "gpt-5.6-luna",
+      model: "gpt-6-luna",
       thinking: "low",
       reasoning_mode: "standard",
       fast_mode: false,

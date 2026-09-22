@@ -24,7 +24,7 @@ test("managed transport requires an explicit create or open-existing identity", 
     assert.throws(() => NodeTransport.managed(invalid), /explicit create|requires agent/);
   }
   assert.throws(
-    () => NodeTransport.managed({ agent: { create: true }, model: "gpt-5.6-sol" }),
+    () => NodeTransport.managed({ agent: { create: true }, model: "gpt-6-sol" }),
     /does not accept model/,
   );
   assert.doesNotThrow(() => NodeTransport.managed({ agent: { create: true } }));
@@ -396,7 +396,7 @@ test("managed Agent.create rejects local-only policy even when JavaScript bypass
     fetch: async () => Response.json({ agent_id: agentId, session_id: sessionId }),
   });
   await assert.rejects(
-    NodeAgent.create({ transport, model: "gpt-5.6-sol" }),
+    NodeAgent.create({ transport, model: "gpt-6-sol" }),
     /does not accept model/,
   );
   await assert.rejects(

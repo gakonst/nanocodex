@@ -305,7 +305,7 @@ async function check() {
     {
       instructions: "Search the caller's account history.",
       additionalInstructions: "Cite the matching thread.",
-      model: "gpt-5.6-sol",
+      model: "gpt-6-sol",
       tools: [{
         name: "search",
         description: "Search account history",
@@ -335,7 +335,7 @@ async function check() {
   });
   await CloudflareAgent.create(cloudflareOwner, {
     // @ts-expect-error Cloudflare policy is fixed by the adapter.
-    model: "gpt-5.6-sol",
+    model: "gpt-6-sol",
   });
   await CloudflareAgent.create(cloudflareOwner, {
     // @ts-expect-error Cloudflare filesystem policy is fixed by the adapter.
@@ -513,7 +513,7 @@ async function check() {
   // @ts-expect-error create and open-existing identities are mutually exclusive.
   Transport.managed({ agent: { create: true, id: "0198d3f0-8844-7000-8000-000000000001" } });
   // @ts-expect-error managed service owns model policy.
-  await Agent.create({ transport: managedTransport, model: "gpt-5.6-sol" });
+  await Agent.create({ transport: managedTransport, model: "gpt-6-sol" });
   // @ts-expect-error managed transport accepts only the unified Tools recipe.
   await Agent.create({ transport: managedTransport, tools: { echo: { handler() {} } } });
   // @ts-expect-error authentication belongs to the selected transport.
@@ -648,7 +648,7 @@ async function check() {
 
   const rolloutSnapshot: SessionSnapshot = {
     version: 1,
-    model: "gpt-5.6-sol",
+    model: "gpt-6-sol",
     lineage_id: "thread",
     prompt_cache_key: "thread",
     workspace: "/tmp",

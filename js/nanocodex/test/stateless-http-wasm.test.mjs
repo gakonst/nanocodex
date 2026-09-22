@@ -10,7 +10,7 @@ test("stateless GPT transport executes a tool with full replay through the real 
   let executions = 0;
   const transport = createWorkersAiResponses({
     async run(model, input) {
-      assert.equal(model, "gpt-5.6-sol");
+      assert.equal(model, "gpt-6-sol");
       assert.equal(input.reasoning_effort, "low");
       calls += 1;
       if (calls === 1) {
@@ -27,9 +27,9 @@ test("stateless GPT transport executes a tool with full replay through the real 
       assert.ok(input.messages.some(message => message.tool_calls?.[0]?.id === "gpt-runtime"), "full call history replayed");
       return { choices: [{ finish_reason: "stop", message: { content: "GPT_LOOP_OK" } }], usage: { prompt_tokens: 20, completion_tokens: 5, total_tokens: 25 } };
     },
-  }, { model: "gpt-5.6-sol" });
+  }, { model: "gpt-6-sol" });
   const agent = await Agent.create({
-    module, model: "gpt-5.6-sol", thinking: "low", toolMode: "direct",
+    module, model: "gpt-6-sol", thinking: "low", toolMode: "direct",
     transport: Transport.hostManaged({ ...transport, stateless: true,
       websocketPreconnect: true, websocketWarmup: true, websocketUrl: "wss://stateless.invalid/responses",
       createResponse(endpoint, sessionId, request) {

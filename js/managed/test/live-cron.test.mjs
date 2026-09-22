@@ -14,7 +14,7 @@ test("production cron creates isolated sessions and also continues existing conv
     ...init, signal: init?.signal ? AbortSignal.any([init.signal, AbortSignal.timeout(15_000)]) : AbortSignal.timeout(15_000),
   }) };
   const agent = await Agent.create({ ...options, settings: {
-    model: "gpt-5.6-luna", thinking: "low", reasoningMode: "standard", fastMode: false,
+    model: "gpt-6-luna", thinking: "low", reasoningMode: "standard", fastMode: false,
   } });
   const id = `cron-ci-${randomUUID()}`;
   const children = new Set();

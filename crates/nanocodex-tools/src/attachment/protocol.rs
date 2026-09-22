@@ -167,10 +167,10 @@ mod tests {
 
     #[test]
     fn parses_and_bounds_calls() {
-        let frame = r#"{"type":"call","session_id":"session:1","call_id":"call:1","model":"gpt-5.6-sol","name":"lookup","input":{},"output_token_budget":1000,"output_byte_budget":131072,"deadline_at":1}"#;
+        let frame = r#"{"type":"call","session_id":"session:1","call_id":"call:1","model":"gpt-6-sol","name":"lookup","input":{},"output_token_budget":1000,"output_byte_budget":131072,"deadline_at":1}"#;
         assert!(matches!(
             RemoteFrame::parse(frame),
-            Ok(RemoteFrame::Call { model, .. }) if model == "gpt-5.6-sol"
+            Ok(RemoteFrame::Call { model, .. }) if model == "gpt-6-sol"
         ));
         let mut with_turn: serde_json::Value = serde_json::from_str(frame).unwrap();
         with_turn["turn_id"] = serde_json::json!("session:1:7");
@@ -186,6 +186,6 @@ mod tests {
             with_turn["turn_id"] = invalid;
             assert!(RemoteFrame::parse(&with_turn.to_string()).is_err());
         }
-        assert!(RemoteFrame::parse(&frame.replace("\"model\":\"gpt-5.6-sol\",", "")).is_err());
+        assert!(RemoteFrame::parse(&frame.replace("\"model\":\"gpt-6-sol\",", "")).is_err());
     }
 }

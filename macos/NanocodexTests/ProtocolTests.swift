@@ -1035,7 +1035,7 @@ final class ProtocolTests: XCTestCase {
         }
         model.updateDraft("Keep this unsent draft")
         model.changeSettings(tabID: "draft") {
-            $0.selectModel("gpt-5.6-luna"); $0.thinking = "low"; $0.fast_mode = true
+            $0.selectModel("gpt-6-luna"); $0.thinking = "low"; $0.fast_mode = true
         }
         await model.prepareToQuit()
         let restored = AppModel(runtimeDirectory: "/tmp/native-draft-settings-restored-" + UUID().uuidString)
@@ -1047,10 +1047,10 @@ final class ProtocolTests: XCTestCase {
         restored.runtime.receiveForTesting(wire)
         for _ in 0..<30 where restored.activeTabID != "draft" { try await Task.sleep(for: .milliseconds(10)) }
         XCTAssertEqual(restored.activeTab?.draft, "Keep this unsent draft")
-        XCTAssertEqual(restored.settingsForTab("draft"), AgentSettings(model: "gpt-5.6-luna", thinking: "low", fast_mode: true))
+        XCTAssertEqual(restored.settingsForTab("draft"), AgentSettings(model: "gpt-6-luna", thinking: "low", fast_mode: true))
         XCTAssertEqual(restored.settingsForTab("other"), AgentSettings(), "A draft's selection must not alter another tab's defaults")
         restored.closeTab("draft"); restored.reopenTab()
-        XCTAssertEqual(restored.settingsForTab("draft").model, "gpt-5.6-luna")
+        XCTAssertEqual(restored.settingsForTab("draft").model, "gpt-6-luna")
     }
 
     @MainActor
@@ -1825,7 +1825,7 @@ final class ProtocolTests: XCTestCase {
         "defaults": .object([:]), "platform": .string("darwin"), "version": .string("0.1.0")
     ]) }
     func testAstraSelectionNormalizesUnsupportedSettings() throws {
-        var settings = AgentSettings(model: "gpt-5.6-sol", thinking: "none", reasoning_mode: "pro", fast_mode: true)
+        var settings = AgentSettings(model: "gpt-6-sol", thinking: "none", reasoning_mode: "pro", fast_mode: true)
         settings.selectModel("gpt-6-astra")
 
         XCTAssertEqual(settings.modelName, "Astra")
@@ -1839,9 +1839,9 @@ final class ProtocolTests: XCTestCase {
         ]))
     }
     func testAstraRetainsSupportedEffortsAndExistingDefaults() throws {
-        XCTAssertEqual(AgentSettings(), AgentSettings(model: "gpt-5.6-sol", thinking: "high", reasoning_mode: "standard", fast_mode: false))
+        XCTAssertEqual(AgentSettings(), AgentSettings(model: "gpt-6-sol", thinking: "medium", reasoning_mode: "standard", fast_mode: false))
         for effort in ["low", "medium", "high", "xhigh", "max"] {
-            var settings = AgentSettings(model: "gpt-5.6-terra", thinking: effort, reasoning_mode: "pro", fast_mode: false)
+            var settings = AgentSettings(model: "gpt-6-luna", thinking: effort, reasoning_mode: "pro", fast_mode: false)
             settings.selectModel("gpt-6-astra")
             XCTAssertEqual(settings.thinking, effort)
             XCTAssertEqual(settings.reasoning_mode, "standard")
@@ -1849,12 +1849,22 @@ final class ProtocolTests: XCTestCase {
             let retained = try JSONValue.encoded(settings).decode(AgentSettings.self)
             XCTAssertEqual(retained, settings)
         }
-        var existing = AgentSettings(model: "gpt-5.6-sol", thinking: "none", reasoning_mode: "pro", fast_mode: true)
-        existing.selectModel("gpt-5.6-sol")
-        XCTAssertEqual(existing.thinking, "none")
-        XCTAssertEqual(existing.reasoning_mode, "pro")
-        XCTAssertTrue(existing.supportsNoReasoning)
-        XCTAssertTrue(existing.supportsProReasoning)
+    }
+    func testGPT6SolAndLunaRetainNoneAndPro() {
+        for model in ["gpt-6-sol", "gpt-6-luna"] {
+            var settings = AgentSettings(model: "legacy", thinking: "none", reasoning_mode: "pro", fast_mode: false)
+            settings.selectModel(model)
+            XCTAssertEqual(settings.thinking, "none")
+            XCTAssertEqual(settings.reasoning_mode, "pro")
+            XCTAssertTrue(settings.supportsNoReasoning)
+            XCTAssertTrue(settings.supportsProReasoning)
+        }
+    }
+    func testLegacyPinnedSettingsDecodeWithoutMigration() throws {
+        let legacy = AgentSettings(model: "gpt-5.6-sol", thinking: "high", reasoning_mode: "standard", fast_mode: false)
+        let restored = try JSONValue.encoded(legacy).decode(AgentSettings.self)
+        XCTAssertEqual(restored.model, "gpt-5.6-sol")
+        XCTAssertEqual(restored.modelName, "gpt-5.6-sol")
     }
     func testDurableReplayDoesNotDuplicateOutput() throws {
         let events: [ManagedEvent] = [

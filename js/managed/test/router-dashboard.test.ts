@@ -36,9 +36,9 @@ describe("router dashboard authorization",()=>{
 it("real coordinator persists content-free decisions and returns separate ingress/global cohorts",async()=>{
  const binding=(env as unknown as {NANOCODEX_PROVIDER_PROBE_COORDINATOR:{getByName(name:string):any}}).NANOCODEX_PROVIDER_PROBE_COORDINATOR;
  const stub=binding.getByName("dashboard-test-"+crypto.randomUUID());const now=Date.now();
- expect(await stub.observeRoute({timestamp:now,clientIngressColo:"IAD",chosen:"openrouter:openai/gpt-5.6-luna:low",decision:"not_requested",durationMs:0,
+ expect(await stub.observeRoute({timestamp:now,clientIngressColo:"IAD",chosen:"openrouter:openai/gpt-6-luna:low",decision:"not_requested",durationMs:0,
    classifier:{outcome:"not_requested",attempts:[]},confidence:null,probabilities:null,prompt:"never persist"})).toBe(true);
- expect(await stub.observe({timestamp:now,source:"live",workerColo:null,clientIngressColo:"IAD",backend:"openrouter",model:"gpt-5.6-luna",effort:"low",
+ expect(await stub.observe({timestamp:now,source:"live",workerColo:null,clientIngressColo:"IAD",backend:"openrouter",model:"gpt-6-luna",effort:"low",
    outcome:"success",status:200,headersMs:5,fullResponseMs:30,generationTtftMs:10,clientDeliveryMs:null,elapsedMs:30})).toBe(true);
  const snapshot=await stub.dashboardSnapshot();expect(snapshot.version).toBe(1);
  expect(snapshot.decisions).toHaveLength(1);expect(JSON.stringify(snapshot)).not.toContain("never persist");

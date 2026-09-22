@@ -6,7 +6,7 @@ const ENDPOINTS = Object.freeze({
   openrouter: "https://openrouter.ai/api/v1/chat/completions",
   vercel: "https://ai-gateway.vercel.sh/v1/chat/completions",
 });
-const MODELS = ["@cf/zai-org/glm-5.3", "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "kimi-k3", "mimo-v2.6-pro"];
+const MODELS = ["@cf/zai-org/glm-5.3", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna", "kimi-k3", "mimo-v2.6-pro"];
 const fail = message => { throw new Error(`Gateway Responses: ${message}`); };
 
 /** Server-side, full-history transport; no WebSocket or opaque compaction. */

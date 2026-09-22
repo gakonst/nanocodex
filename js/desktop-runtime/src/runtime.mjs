@@ -19,7 +19,7 @@ import { runtimeDataDirectory } from "./data-directory.mjs";
 import { desktopFactoryRecipe, superviseVmFactory } from "./vm-factory.mjs";
 
 export const DEFAULT_ORIGIN = "https://nanocodex.gakonst.workers.dev";
-export const DEFAULT_SETTINGS = Object.freeze({ model: "gpt-5.6-sol", thinking: "high", reasoning_mode: "standard", fast_mode: false });
+export const DEFAULT_SETTINGS = Object.freeze({ model: "gpt-6-sol", thinking: "medium", reasoning_mode: "standard", fast_mode: false });
 
 export function validateSettings(settings) {
   if (!settings || typeof settings !== "object" || Array.isArray(settings)) throw new Error("Choose model settings first.");

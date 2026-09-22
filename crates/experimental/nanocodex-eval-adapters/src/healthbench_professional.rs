@@ -304,7 +304,7 @@ impl TryFrom<RawCase> for HealthBenchCase {
             difficulty: raw.difficulty,
             specialty: raw.specialty,
             scoring: ScoringContract {
-                grader_model: "gpt-5.6-sol",
+                grader_model: "gpt-6-sol",
                 grader_reasoning_effort: "low",
                 length_center_chars: 2_000,
                 length_penalty_per_500_chars: 0.0147,

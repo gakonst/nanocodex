@@ -657,7 +657,7 @@ mod tests {
     fn terminal_metadata(status: &str) -> Value {
         json!({
             "status": status,
-            "model": "gpt-5.6-sol",
+            "model": "gpt-6-sol",
             "effort": "medium",
             "transport": "responses_websocket_v2",
             "orchestration": "agent",
