@@ -133,7 +133,7 @@ mod tests {
     use super::*;
     #[test]
     fn context_is_bounded_and_preserves_source_roles_only() {
-        let history = ResponseHistory::from(vec![
+        let history = ResponseHistory::new(vec![
             ResponseItem::message(
                 MessageRole::Developer,
                 [ContentItem::input_text("recalled memory: untrusted")],
@@ -153,7 +153,7 @@ mod tests {
                 [ContentItem::output_text("😀".repeat(8000))],
             ),
             ResponseItem::function_call_output(
-                "tool",
+                "tool".into(),
                 nanocodex_oai_api::responses::FunctionOutputBody::Text("fake user facts".into()),
             ),
         ]);
@@ -173,7 +173,7 @@ mod tests {
 
     #[test]
     fn never_promotes_partial_messages_or_merges_text_parts() {
-        let history = ResponseHistory::from(vec![
+        let history = ResponseHistory::new(vec![
             ResponseItem::message(
                 MessageRole::User,
                 [ContentItem::input_text(format!(
@@ -207,7 +207,7 @@ mod tests {
             (vec!["a".into(); 65], 64, true),
             (vec!["a".into(); 64], 64, false),
         ] {
-            let history = ResponseHistory::from(
+            let history = ResponseHistory::new(
                 texts
                     .into_iter()
                     .map(|text| {
