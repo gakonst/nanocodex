@@ -3743,6 +3743,118 @@ final class InboxUITests: XCTestCase {
         app.terminate()
     }
 
+    func testHIGConversationPortraitLight() {
+        verifyConversationHIG(name: "portrait-light", orientation: .portrait, appearance: .light)
+    }
+
+    func testHIGConversationLandscapeDark() {
+        verifyConversationHIG(name: "landscape-dark", orientation: .landscapeLeft, appearance: .dark)
+    }
+
+    func testHIGConversationAccessibilityXXXLDark() {
+        verifyConversationHIG(name: "accessibility-xxxl-dark", orientation: .portrait, appearance: .dark,
+                              arguments: ["-UIPreferredContentSizeCategoryName", "UICTContentSizeCategoryAccessibilityXXXL"])
+    }
+
+    func testHIGConversationIPadCentered() {
+        verifyConversationHIG(name: "ipad-centered", orientation: .landscapeLeft, appearance: .light)
+    }
+
+    private func verifyConversationHIG(name: String, orientation: UIDeviceOrientation,
+                                       appearance: XCUIDevice.Appearance, arguments: [String] = []) {
+        let oldAppearance = XCUIDevice.shared.appearance
+        addTeardownBlock {
+            XCUIDevice.shared.orientation = .portrait
+            XCUIDevice.shared.appearance = oldAppearance
+        }
+        XCUIDevice.shared.orientation = orientation
+        XCUIDevice.shared.appearance = appearance
+        let app = launch(["NANOCODEX_DEMO_RENDER_PROFILE": "1",
+                          "NANOCODEX_DEMO_RENDER_ROWS": "500",
+                          "NANOCODEX_DEMO_RENDER_TOOL": "1",
+                          "NANOCODEX_DEMO_APPEARANCE": appearance == .dark ? "dark" : "light",
+                          "NANOCODEX_RENDER_COUNTER": "1",
+                          "NANOCODEX_DEMO_PROFILE": "hig-" + UUID().uuidString], arguments: arguments)
+        let conversation = app.descendants(matching: .any)["conversation"].firstMatch
+        let strip = app.descendants(matching: .any)["conversation-controls"].firstMatch
+        let input = app.descendants(matching: .any)["composer-input"].firstMatch
+        XCTAssertTrue(conversation.waitForExistence(timeout: 10))
+        XCTAssertTrue(strip.waitForExistence(timeout: 5))
+        XCTAssertTrue(input.waitForExistence(timeout: 5))
+        func assertLayout() {
+            let native = app.staticTexts["conversation-native-scroll-state"]
+            let coordinates = (native.value as? String ?? "").split(separator: ",").compactMap { Double($0) }
+            XCTAssertEqual(coordinates.count, 4, "Record the actual UIKit adjusted viewport")
+            if coordinates.count == 4 {
+                XCTAssertLessThanOrEqual(coordinates[1] + coordinates[3], Double(strip.frame.minY) + 1,
+                                         "UIKit's readable viewport must end above the controls")
+                print("HIG_NATIVE_VIEWPORT \(name) \(coordinates)")
+            }
+            XCTAssertLessThanOrEqual(strip.frame.maxY, input.frame.minY + 1,
+                                     "Conversation controls must not cover the composer")
+            XCTAssertEqual(strip.frame.midX, input.frame.midX, accuracy: 2,
+                           "Controls and composer share the content column center")
+            XCTAssertLessThanOrEqual(strip.frame.width, 620 + 1)
+            let ids = ["toggle-all-tools", "previous-user-message", "next-user-message"]
+                + (app.buttons["latest-messages"].exists ? ["latest-messages"] : [])
+            for id in ids {
+                let button = app.buttons[id]
+                XCTAssertTrue(button.exists, "Required conversation control: " + id)
+                XCTAssertGreaterThanOrEqual(button.frame.width, 44)
+                XCTAssertGreaterThanOrEqual(button.frame.height, 44)
+                XCTAssertGreaterThanOrEqual(button.frame.minY, strip.frame.minY - 0.5)
+                XCTAssertLessThanOrEqual(button.frame.maxY, strip.frame.maxY + 0.5)
+            }
+            print("HIG_LAYOUT \(name) transcript=\(conversation.frame) strip=\(strip.frame) composer=\(input.frame)")
+        }
+        XCTAssertEqual(app.frame.width > app.frame.height, orientation.isLandscape,
+                       "Validate the actual application orientation")
+        let tail = conversation.buttons["tool-disclosure-profile-recycling-tool"]
+        func assertTailClear() {
+            XCTAssertTrue(tail.waitForExistence(timeout: 5))
+            XCTAssertTrue(tail.isHittable)
+            XCTAssertLessThanOrEqual(tail.frame.maxY, strip.frame.minY + 1,
+                                     "The latest transcript content must remain above the reserved controls")
+        }
+        assertLayout()
+        assertTailClear()
+        if !arguments.isEmpty {
+            let directory = app.staticTexts["command-directory-profile-recycling-tool"]
+            XCTAssertTrue(directory.exists)
+            XCTAssertGreaterThan(directory.frame.width, app.frame.width * 0.5,
+                                 "Accessibility directory text gets its own full-width row")
+        }
+        capture(app, "hig-" + name + "-tail")
+        conversation.swipeDown()
+        let latest = app.buttons["latest-messages"]
+        XCTAssertTrue(latest.waitForExistence(timeout: 5))
+        XCTAssertTrue(latest.isHittable)
+        assertLayout()
+        capture(app, "hig-" + name + "-reading")
+        latest.tap()
+        gone(latest)
+        assertLayout()
+        assertTailClear()
+        capture(app, "hig-" + name + "-restored-tail")
+        composer(app).tap()
+        composer(app).typeText("Keep this draft")
+        XCTAssertEqual(composer(app).value as? String, "Keep this draft")
+        XCTAssertTrue(app.keyboards.firstMatch.waitForExistence(timeout: 5))
+        XCTAssertLessThanOrEqual(input.frame.maxY, app.keyboards.firstMatch.frame.minY + 1)
+        if orientation.isLandscape && app.frame.height < 500 {
+            XCTAssertFalse(strip.exists, "Compact-height typing temporarily reclaims the control strip")
+            let native = app.staticTexts["conversation-native-scroll-state"]
+            let coordinates = (native.value as? String ?? "").split(separator: ",").compactMap { Double($0) }
+            XCTAssertEqual(coordinates.count, 4)
+            if coordinates.count == 4 {
+                XCTAssertGreaterThanOrEqual(coordinates[3], 44, "Keep at least one readable transcript line above the keyboard")
+                XCTAssertLessThanOrEqual(coordinates[1] + coordinates[3], Double(input.frame.minY) + 1)
+                print("HIG_COMPACT_KEYBOARD_VIEWPORT \(coordinates)")
+            }
+        } else { assertLayout() }
+        capture(app, "hig-" + name + "-keyboard-draft")
+    }
+
     func testNativeTranscriptBoundsMountedCellsFor500Rows() {
         verifyNativeTranscriptMountedCells(rowCount: 500)
     }

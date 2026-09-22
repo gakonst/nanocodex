@@ -378,6 +378,10 @@ struct NativeConversationTranscript: UIViewRepresentable {
             view.bringSubviewToFront(mountedCounter)
             let anchorFrame = anchor.flatMap { value in dataSource.indexPath(for: value.id).flatMap { view.layoutAttributesForItem(at: $0)?.frame } }
             scrollDiagnostics.accessibilityLabel = "offset=\(view.contentOffset.y) size=\(view.contentSize.height) anchor=\(String(describing: anchor)) frame=\(String(describing: anchorFrame)) following=\(parent.followsLatest) phase=\(phase) target=\(String(describing: retainedTarget))"
+            // Expose the actual UIKit readable viewport to simulator UI audits.
+            // The collection frame can extend beneath SwiftUI safe-area insets.
+            let readable = view.convert(view.bounds.inset(by: view.adjustedContentInset), to: nil)
+            scrollDiagnostics.accessibilityValue = "\(readable.minX),\(readable.minY),\(readable.width),\(readable.height)"
             scrollDiagnostics.frame = mountedCounter.frame
             view.bringSubviewToFront(scrollDiagnostics)
         }

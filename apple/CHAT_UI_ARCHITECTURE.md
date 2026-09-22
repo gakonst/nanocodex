@@ -96,3 +96,27 @@ progress is logged, but the configured interval is not a measured throughput or
 network rate. Host counts and accessibility assertions are sampled checkpoints;
 simulator recordings are visual review evidence, not physical-device frame-time
 benchmarks.
+
+## Adaptive layout and visual review
+
+The transcript controls occupy a bottom `safeAreaInset` instead of floating over
+message text. The composer has its own native inset, so the collection viewport,
+controls, and input reserve distinct space as the keyboard and orientation change.
+The control strip shares the composer's centered 620-point maximum width; the
+transcript keeps its wider reading column. An invisible 44-point leading slot
+prevents the remaining controls from shifting when Latest appears. Controls use
+44-point targets, and queued-message text uses semantic text styles to participate
+in Dynamic Type.
+
+These choices follow Apple's [layout guidance](https://developer.apple.com/design/human-interface-guidelines/layout),
+[button guidance](https://developer.apple.com/design/human-interface-guidelines/buttons),
+and [typography guidance](https://developer.apple.com/design/human-interface-guidelines/typography).
+Recorded visual checks cover portrait and landscape, light and dark appearance,
+accessibility text size, keyboard presentation, and the iPad detail column. This
+is a focused chat-screen review, not a claim of whole-app HIG certification.
+
+In compact vertical layouts, focusing the composer temporarily hides the
+conversation-control strip to leave room for the transcript above the keyboard.
+Tool header icons retain fixed visual sizes inside their controls, while command,
+Code Mode, and generic tool headers stack at accessibility text sizes. This avoids
+squeezing large text between decorative icons and status indicators.
