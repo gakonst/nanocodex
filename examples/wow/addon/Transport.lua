@@ -117,6 +117,8 @@ function T.NewKeys(receive,clock)
 end
 -- Application messages inside NC1: M, kind, u16 id, u16 total, u16 offset, <=88 bytes.
 T.MAX_MESSAGE=16384
+-- Bound retained request data to 256 KiB, including the active transmission.
+T.MAX_REQUESTS=16
 local kinds={Q='request',R='reply',P='projects',A='ack',E='error',S='stream'}
 function T.MessageChunk(kind,id,total,offset,text)
     assert(kinds[kind] and id>=1 and id<=65535 and id==floor(id),'message identity')
@@ -127,7 +129,10 @@ function T.MessageChunk(kind,id,total,offset,text)
 end
 function T.NewApplication(link,clock,dispatch)
     assert(not link.deliver,'application requires an unused receive callback')
-    local app={link=link,clock=clock,dispatch=dispatch,nextID=0,lastID=0,peerSerial=link.peerSerial}
+    local app={link=link,clock=clock,dispatch=dispatch,nextID=0,lastID=0,peerSerial=link.peerSerial,
+        outgoing={},reservedChunks=0}
+    -- request remains the most recently admitted operation, even while an older
+    -- operation owns the carrier. ClientGameSent reads its identity after Send.
     function app:Incoming(payload)
         if #payload<8 or #payload>96 or payload:sub(1,1)~='M' then return false end
         local kind=payload:sub(2,2)
@@ -155,18 +160,19 @@ function T.NewApplication(link,clock,dispatch)
     link.deliver=function(payload) return app:Incoming(payload) end
     function app:Update()
         if self.peerSerial~=link.peerSerial then self.peerSerial=link.peerSerial self.lastPeer=clock() end
-        local request=self.request
-        if not request or request.done then return end
+        local request=self.outgoing[1]
+        if not request then return end
         if request.awaitSeq and link.acked>=request.awaitSeq then
             request.offset=request.sentEnd request.awaitSeq=nil
             if request.offset==#request.text then
-                request.done=true
+                request.done=true table.remove(self.outgoing,1)
                 -- Delivery here means peer transport accepted every chunk, NOT model success.
                 if type(self.dispatch)=='function' then
                     local ok=pcall(self.dispatch,'transport_ack','NC1 request '..request.id..' acknowledged by peer transport')
                     if not ok then self.receiveError='ack notification failed' end
                 end
-                return
+                request=self.outgoing[1]
+                if not request then return end
             end
         end
         if not request.awaitSeq and not link.pending then
@@ -174,6 +180,7 @@ function T.NewApplication(link,clock,dispatch)
             local seq,err=link:Send(T.MessageChunk('Q',request.id,#request.text,request.offset,chunk))
             if not seq then self.sendError=err return end
             request.awaitSeq=seq request.sentEnd=request.offset+#chunk
+            self.reservedChunks=self.reservedChunks-1
         end
     end
     function app:Send(payload,newRequest)
@@ -184,11 +191,18 @@ function T.NewApplication(link,clock,dispatch)
             if request.done then return true end
             return false,'pending'
         end
-        if (request and not request.done) or link.pending then return false,'busy' end
+        -- Legacy payload-only calls are retries, never an implicit second action.
+        -- Explicit new operations may queue while the carrier ACKs older bytes.
+        if (not newRequest and #self.outgoing>0) or #self.outgoing>=T.MAX_REQUESTS or
+            (link.pending and #self.outgoing==0) then return false,'busy' end
         local chunks=math.max(1,math.ceil(#payload/88))
-        if self.nextID==65535 or link.tx+chunks>65535 then return false,'new session required' end
+        -- Reserve every queued chunk so no accepted operation can run out of
+        -- sequence numbers halfway through delivery. Rejection consumes no ID.
+        if self.nextID==65535 or link.tx+self.reservedChunks+chunks>65535 then return false,'new session required' end
         self.nextID=self.nextID+1 self.sendError=nil
         self.request={id=self.nextID,text=payload,offset=0,done=false}
+        self.outgoing[#self.outgoing+1]=self.request
+        self.reservedChunks=self.reservedChunks+chunks
         self:Update()
         return false,'pending'
     end
@@ -201,6 +215,8 @@ function T.NewApplication(link,clock,dispatch)
             acknowledged=request~=nil and request.done or false,ready=link.ready,
             session=link.session,sequence=link.tx,ack=link.acked,received=link.rx,
             message_id=request and request.id or nil,bytes_acked=request and request.offset or 0,
+            active_message_id=self.outgoing[1] and self.outgoing[1].id or nil,
+            pending_requests=#self.outgoing,queue_limit=T.MAX_REQUESTS,
             bytes_total=request and #request.text or 0,
             error=self.sendError or self.receiveError,
             message=state=='pending' and 'Awaiting peer transport ACK; backend acceptance unknown' or
@@ -281,6 +297,14 @@ function NS.TransportSend(payload,newRequest)
     if T.stopRequested then return false,'bridge is disabled' end
     if not T.app then return false,NS.TransportStatus().message end
     return T.app:Send(payload,newRequest)
+end
+function NS.TransportPending(payload)
+    if not T.app then return false end
+    T.app:Update()
+    for _, request in ipairs(T.app.outgoing) do
+        if request.text == payload then return true end
+    end
+    return false
 end
 function NS.TransportStatus()
     local status=T.app and T.app:Status() or

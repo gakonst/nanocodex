@@ -18,7 +18,7 @@ class InstallAutoConnectTests(unittest.TestCase):
             self.assertIn('Restart=no',unit)
             self.assertIn('UMask=0077',unit)
             self.assertIn(' -m transport.autoconnect ',unit)
-            self.assertIn('--allow-input --duration 0 --key-hold-ms 1',unit)
+            self.assertIn('--allow-input --duration 0 --key-hold-ms 5',unit)
             self.assertNotIn('must-not-persist',unit)
             self.assertEqual((app/'auto-bridge').stat().st_mode&0o777,0o700)
             self.assertIn('WorkingDirectory='+str(app),unit)

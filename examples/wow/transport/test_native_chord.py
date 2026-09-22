@@ -43,3 +43,41 @@ class NativeDescriptorTests(unittest.TestCase):
   self.assertNotIn('F4',spec['keys'])
   self.assertEqual(len(spec['keys']),10)
   self.assertEqual(subprocess.run([str(binary.resolve()),'0','F13'],env={}).returncode,2)
+
+class NativeTimingTests(unittest.TestCase):
+ def test_ack_and_full_frame_budget_includes_roundtrips_and_holds(self):
+  from protocol import Frame, keys
+  from wayland import NATIVE_TIMEOUT_LIMIT
+  for hold in (0, 1, 5, 20):
+   for size in (0, 96):
+    with self.subTest(hold=hold, payload=size):
+     calls=[]
+     def run(args, **kwargs):
+      if args[:2]==['hyprctl','-j']:
+       value=[] if args[2]=='binds' else {'address':'a','class':'b'}
+       return SimpleNamespace(stdout=json.dumps(value).encode())
+      self.assertNotEqual(args[-1], '--describe')
+      count=len(args)-2
+      # A 5ms compositor roundtrip previously timed out full frames even when
+      # ACKs passed. No real process, clock delay, or desktop is involved here.
+      elapsed=.060+(2*count+5)*.005+2*count*hold/1000
+      self.assertGreater(kwargs['timeout'], elapsed)
+      self.assertLess(kwargs['timeout'], NATIVE_TIMEOUT_LIMIT)
+      calls.append((count, kwargs['timeout']))
+      return SimpleNamespace(stdout=b'')
+     desktop=Desktop('a','b',0,0,4,run=run,input_backend='native-chord',key_hold_ms=hold)
+     desktop._native_verified=True
+     packet=Frame(17,seq=1 if size else 0,payload=b'x'*size).encode()
+     self.assertTrue(desktop.send_keys(keys(packet)))
+     self.assertEqual(len(calls), 1)
+     self.assertEqual(calls[0][0], 335 if size else 47)
+
+ def test_overlong_native_batch_is_rejected_before_any_desktop_io(self):
+  from protocol import Frame, keys
+  for hold in (21, 50):
+   with self.subTest(hold=hold):
+    def forbidden(*args, **kwargs):
+     self.fail('overlong batch reached desktop IO')
+    desktop=Desktop('a','b',0,0,4,run=forbidden,input_backend='native-chord',key_hold_ms=hold)
+    with self.assertRaisesRegex(ValueError, 'receiver frame deadline'):
+     desktop.send_keys(keys(Frame(17,seq=1,payload=b'x'*96).encode()))

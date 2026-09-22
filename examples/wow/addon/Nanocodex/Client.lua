@@ -3,7 +3,7 @@ local _, NS = ...
 -- application messages carried by the existing NC1 transport.
 local MAX = 256 * 1024
 local MAX_ROSTER, MAX_ROSTER_PAGES = 1024 * 1024, 128
-local client = {view=0, account="Account unchecked", history="", live="", turns={}, requests={}, requestOrder={}, reads={}}
+local client = {view=0, account="Account unchecked", history="", live="", turns={}, tools={}, requests={}, requestOrder={}, reads={}}
 local function selection() if NS.ProjectSelection then return NS.ProjectSelection() end end
 local function decode(value)
     if value:gsub("%%[%x][%x]", ""):find("%%") then return nil end
@@ -32,7 +32,8 @@ end
 function NS.PumpClient()
     if #client.reads==0 or not NS.TransportStatus then return end
     local ok,status=pcall(NS.TransportStatus)
-    if not ok or type(status)~="table" or status.pending then return end
+    if not ok or type(status)~="table" then return end
+    if status.pending and not (type(status.queue_limit)=="number" and type(status.pending_requests)=="number" and status.pending_requests<status.queue_limit) then return end
     local request=table.remove(client.reads,1)
     -- Only read-only continuation requests use this queue. Failed sends are never replayed.
     NS.QueueRequest(request)
@@ -42,11 +43,39 @@ local function discardHistoryReads()
         if client.reads[i].action=="load_history" then table.remove(client.reads,i) end
     end
 end
+-- Keep recently viewed conversations warm while independent turns keep streaming.
+-- Bound retained text to 16 views × the existing 256 KiB conversation limit.
+local views, viewOrder = {}, {}
+local function saveView()
+    if not client.thread then return end
+    if not views[client.thread] then
+        viewOrder[#viewOrder+1] = client.thread
+        if #viewOrder > 16 then views[table.remove(viewOrder,1)] = nil end
+    end
+    local history, live = client.history, client.live
+    if #history+#live > MAX then history="Conversation exceeds the in-game display limit. Open it in the desktop companion." live="" end
+    views[client.thread] = {history=history, live=live, before=client.before, hasMore=client.hasMore}
+end
+local function refreshActivity()
+    if NS.RefreshThreadList then NS.RefreshThreadList() end
+end
+function NS.ClientThreadStatus(thread)
+    return client.turns[thread] and "Working" or nil
+end
+function NS.ClientActivity()
+    local count = 0
+    for _ in pairs(client.turns) do count=count+1 end
+    if count > 0 then
+        local active=client.thread and client.tools[client.thread]
+        return tostring(count) .. (count==1 and " chat working" or " chats working") .. (active and (" · "..active) or "")
+    end
+end
 local function render()
     local text=client.history
     if client.live~="" then text=text..(text~="" and "\n\nAssistant\n" or "")..client.live end
     if #text>MAX then text="Conversation exceeds the in-game display limit. Open it in the desktop companion." end
     NS.Reply(text~="" and text or "No messages yet.")
+    saveView()
 end
 function NS.ClearThreadView()
     discardHistoryReads()
@@ -67,12 +96,19 @@ function NS.LoadThread(projectID, threadID)
     thread=threadID or thread
     if not thread then NS.Notify("error", "Select a chat first.") return false end
     local view=tostring(client.view+1)
-    if not NS.QueueRequest(action("load_history",{thread_id=thread,view_id=view})) then return false end
+    local cached = views[thread]
+    -- A running cached conversation already has its own stream subscription.
+    -- Reopening it must neither await HTTP history nor discard partial output.
+    local running = cached and client.turns[thread]
+    if not running and not NS.QueueRequest(action("load_history",{thread_id=thread,view_id=view})) then return false end
+    saveView()
     discardHistoryReads()
     if projectID then NS.SelectProject(projectID, thread) end
     client.view,client.thread=client.view+1,thread
     client.game,client.prepend=false,nil
-    client.history,client.live,client.before,client.hasMore,client.historyPage="Loading conversation…","",nil,false,nil
+    client.history = cached and cached.history or "Loading conversation…"
+    client.live = cached and cached.live or ""
+    client.before,client.hasMore,client.historyPage = cached and cached.before, cached and cached.hasMore or false, nil
     render()
     return true
 end
@@ -123,7 +159,12 @@ function NS.ClientStream(rid, turn, text, status)
     local thread=client.requests[rid]
     if not thread then return false end -- Legacy/manual streams keep their display path.
     if status=="Completed" or status=="Turn failed or was cancelled" then
-        if client.turns[thread]==turn then client.turns[thread]=nil end
+        if client.turns[thread]==turn then client.turns[thread]=nil client.tools[thread]=nil refreshActivity() end
+    end
+    local cached=views[thread]
+    if cached then
+        if #cached.history+#text <= MAX then cached.live=text
+        else cached.history="Conversation exceeds the in-game display limit. Open it in the desktop companion." cached.live="" end
     end
     if not client.thread then return client.view>0 end
     local _,selected=selection()
@@ -145,8 +186,17 @@ function NS.ReceiveClientMessage(kind,value)
     if kind=="ack" and value:sub(1,5)=="ncm1\t" then
         local f=fields(value) if not f then return false end
         if f[2]=="send" and #f==6 and (f[6]=="local_queued" or f[6]=="remoteaccepted") then
-            remember(f[3],f[4]) client.turns[f[4]]=f[5]
+            remember(f[3],f[4]) client.turns[f[4]]=f[5] client.tools[f[4]]=nil refreshActivity()
             if client.game and not client.thread and client.expectedGame==f[3] then client.thread=f[4] end
+            return true
+        elseif f[2]=="tool" and #f==6 then
+            if #f[5]<1 or #f[5]>80 or f[5]:find("[^%w_%.:/%-]") or (f[6]~="running" and f[6]~="completed" and f[6]~="failed") then return false end
+            local thread=client.requests[f[3]]
+            -- Stale tool receipts must not resurrect a finished or newer turn.
+            if thread and client.turns[thread]==f[4] then
+                client.tools[thread]=f[5].." · "..f[6]
+                refreshActivity()
+            end
             return true
         elseif f[2]=="reply" and #f==5 then
             client.reply={rid=f[3],thread=f[4],turn=f[5]} remember(f[3],f[4]) return true
@@ -206,7 +256,7 @@ function NS.ReceiveClientMessage(kind,value)
             local complete=table.concat(h.parts)..body
             if client.prepend then complete=complete.."\n\n"..client.history end
             if #complete>MAX then NS.Notify("error","History exceeds the in-game display limit; open it in the companion.")
-            else client.history=complete end
+            else client.history=complete client.live="" end
             client.historyPage,client.prepend=nil,nil
             client.before=f[6]~="" and f[6] or nil client.hasMore=f[7]=="1"
             render()

@@ -10,11 +10,13 @@ accept a higher-revision reset for canonical snapshot recovery. No JSON needed.
 import hashlib
 import json
 import re
+from urllib.parse import quote
 
 MAX_STREAM_MESSAGE = 4096
 SAFE_ID = re.compile(r'^[A-Za-z0-9._:-]{1,128}$')
 OPS = {'append', 'reset', 'end', 'error', 'done'}
 MAX_TEXT = 256 * 1024
+MAX_BLOCKS = 256
 
 class StreamLimit(ValueError):
     pass
@@ -49,7 +51,7 @@ def _stream(record, identity):
     key = hashlib.sha256(json.dumps(identity, separators=(',', ':'), ensure_ascii=True).encode()).hexdigest()[:32]
     streams = record.setdefault('streams', {})
     if key not in streams:
-        if len(streams) >= 32:
+        if len(streams) >= MAX_BLOCKS:
             raise StreamLimit('Too many assistant blocks.')
         streams[key] = dict(text='', revision=0, offset=0, sealed=False, identity=identity)
     return key, streams[key]
@@ -108,6 +110,20 @@ def project(rid, record, event):
         if event.get('agent_id') is not None:  # Child-agent text is not the root reply.
             return
         inner = event.get('event') or {}
+        if inner.get('type') in ('tool.call', 'tool.result'):
+            payload = inner.get('payload') or {}
+            # Tool arguments/results can be huge or private. Only a bounded name
+            # and lifecycle state belong in the in-game activity indicator.
+            label = payload.get('tool')
+            if not isinstance(label, str) or not re.fullmatch(r'[A-Za-z0-9_.:/-]{1,80}', label):
+                label = 'tool'
+            status = 'running' if inner['type'] == 'tool.call' else ('failed' if payload.get('status') in ('failed', 'error', 'cancelled') else 'completed')
+            revision = record.get('tool_revision', 0) + 1
+            record['tool_revision'] = revision
+            fields = ['ncm1', 'tool', rid, record['turn'], label, status]
+            record['outputs'].append(dict(kind='ack', value='\t'.join(quote(x, safe='') for x in fields),
+                request_id=rid, state='streaming', event_id=f'{rid}:tool:{revision}'))
+            return
         if inner.get('type') not in ('assistant.delta', 'assistant.message'):
             return
         payload = inner.get('payload') or {}
@@ -135,6 +151,7 @@ def project(rid, record, event):
             stream = record['streams'][key]
         else:
             key, stream = _stream(record, [None, None, 'final_answer'])
+            record['answer_stream'] = key
         if text is not None:
             _snapshot(rid, record, key, stream, text)
         final_key, final_stream = key, stream

@@ -1,4 +1,5 @@
 """Real Lua addon + Python journal/dispatcher/stream pipeline; no game/account IO."""
+import contextlib
 import json
 from pathlib import Path
 import select
@@ -88,14 +89,14 @@ class Backend:
 @unittest.skipUnless(shutil.which('lua'), 'Lua interpreter required')
 class AddonBridgeIntegrationTests(unittest.TestCase):
     def test_explicit_repeated_ask_stream_receipts_replay_and_journal(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as cleanup:
             desktop = LuaDesktop()
-            self.addCleanup(desktop.close)
+            cleanup.callback(desktop.close)
             backend = Backend()
             dispatcher = Dispatcher(backend, Path(directory) / 'dispatch.sqlite3')
-            self.addCleanup(dispatcher.close)
+            cleanup.callback(dispatcher.close)
             bridge = Bridge(desktop, 17, dispatcher, Path(directory) / 'bridge.sqlite3')
-            self.addCleanup(lambda: bridge.close())
+            cleanup.callback(lambda: bridge.close())
 
             def pump_until(predicate):
                 for _ in range(300):
@@ -201,15 +202,15 @@ class AddonBridgeIntegrationTests(unittest.TestCase):
                                 receipt=dict(turn_id=data['turn_id'], state='cancelling'))
                 raise AssertionError((method, path, query, data))
 
-        with tempfile.TemporaryDirectory() as directory:
+        with tempfile.TemporaryDirectory() as directory, contextlib.ExitStack() as cleanup:
             desktop = LuaDesktop()
-            self.addCleanup(desktop.close)
+            cleanup.callback(desktop.close)
             desktop.replay = True
             backend = ClientBackend()
             dispatcher = Dispatcher(backend, Path(directory) / 'dispatch.sqlite3')
-            self.addCleanup(dispatcher.close)
+            cleanup.callback(dispatcher.close)
             bridge = Bridge(desktop, 17, dispatcher, Path(directory) / 'bridge.sqlite3')
-            self.addCleanup(bridge.close)
+            cleanup.callback(bridge.close)
 
             def drive_until(predicate):
                 for _ in range(2400):

@@ -1,0 +1,54 @@
+const {lua,lauxlib,lualib,to_luastring,to_jsstring}=window.fengari;
+const L=lauxlib.luaL_newstate();lualib.luaL_openlibs(L);
+const $=s=>document.querySelector(s),stage=$('#stage'),root=$('#lua-root'),elements=new Map(),frames=new Map();
+let scale=1,ready=false,snapshot,ticker,drag=null,live=false,toastTimer,polling=false,lastSaved,lastFrames;
+function check(status){if(status!==lua.LUA_OK){const message=to_jsstring(lua.lua_tostring(L,-1));lua.lua_pop(L,1);throw Error(message)}}
+function run(source){check(lauxlib.luaL_dostring(L,to_luastring(source)))}
+function call(name,...args){lua.lua_getglobal(L,to_luastring(name));for(const a of args){if(typeof a==='number')lua.lua_pushnumber(L,a);else if(typeof a==='boolean')lua.lua_pushboolean(L,a);else if(a==null)lua.lua_pushnil(L);else lua.lua_pushstring(L,to_luastring(String(a)))}check(lua.lua_pcall(L,args.length,1,0));const value=lua.lua_type(L,-1)===lua.LUA_TSTRING?to_jsstring(lua.lua_tostring(L,-1)):null;lua.lua_pop(L,1);return value}
+const clean=t=>String(t??'').replace(/\|c[0-9a-fA-F]{8}|\|r/g,'').replace(/\|\|/g,'|');
+function toast(text){$('#toast').textContent=clean(text);$('#toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('#toast').classList.remove('visible'),5000)}
+function fail(e){console.error(e);$('#activity').textContent=e.message;toast(e.message)}
+function event(id,name,value){try{call('PreviewEvent',id,name,value);render()}catch(e){fail(e)}}
+const anchors={TOPLEFT:[0,0],TOP:[.5,0],TOPRIGHT:[1,0],LEFT:[0,.5],CENTER:[.5,.5],RIGHT:[1,.5],BOTTOMLEFT:[0,1],BOTTOM:[.5,1],BOTTOMRIGHT:[1,1]};
+function box(f,seen=new Set()){
+ if(f.name==='UIParent')return {x:0,y:0,w:stage.clientWidth/scale,h:stage.clientHeight/scale,s:1};
+ if(f.box)return f.box;if(seen.has(f.id))return {x:0,y:0,w:0,h:0,s:1};seen.add(f.id);
+ const parent=frames.get(f.parent),pb=parent?box(parent,seen):{x:0,y:0,w:stage.clientWidth/scale,h:stage.clientHeight/scale,s:1};
+ let w=f.width??(f.kind==='Button'?24:f.kind==='FontString'?250:0),h=f.height??(f.kind==='FontString'?String(f.text).split('\n').length*15:f.kind==='Button'?24:0),s=f.scale||1,x=pb.x,y=pb.y;
+ const target=p=>{const ref=frames.get(p.relative),r=ref?box(ref,new Set(seen)):pb,a=anchors[p.relativePoint]||[0,0];return {x:r.x+a[0]*r.w*r.s+(p.x||0)*pb.s,y:r.y+a[1]*r.h*r.s-(p.y||0)*pb.s}};
+ if(f.points?.length){const p=f.points[0],t=target(p),a=anchors[p.point]||[0,0];if(f.points.length>1){const p2=f.points[1],t2=target(p2),a2=anchors[p2.point]||[0,0];if(a[0]!==a2[0])w=(t2.x-t.x)/(a2[0]-a[0])/pb.s/s;if(a[1]!==a2[1])h=(t2.y-t.y)/(a2[1]-a[1])/pb.s/s}x=t.x-a[0]*w*pb.s*s;y=t.y-a[1]*h*pb.s*s}
+ if(f.clamped&&parent?.name==='UIParent'){x=Math.max(0,Math.min(pb.w-w*s,x));y=Math.max(0,Math.min(pb.h-h*s,y))}
+ return f.box={x,y,w:Math.max(0,w),h:Math.max(0,h),s:pb.s*s};
+}
+function make(f){let el;
+ if(f.kind==='Button'){el=document.createElement('button');el.className='wow-frame wow-button';el.addEventListener('click',()=>event(f.id,'click'));if(f.template==='UIPanelCloseButton'){el.classList.add('close');el.setAttribute('aria-label','Close window')}}
+ else if(f.kind==='EditBox'){el=document.createElement(f.multiline?'textarea':'input');el.className='wow-frame wow-edit'+(f.multiline?' multi':'');el.spellcheck=false;el.autocomplete='off';el.setAttribute('aria-label',f.name==='NanocodexWowPrompt'?'Message':f.multiline?'Conversation':'Search or edit');el.addEventListener('input',()=>event(f.id,'input',el.value));el.addEventListener('focus',()=>event(f.id,'focus'));el.addEventListener('blur',()=>event(f.id,'blur'));el.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey&&!f.multiline){e.preventDefault();event(f.id,'enter')}if(e.key==='Escape'){e.stopPropagation();el.blur();event(f.id,'escape')}})}
+ else{el=document.createElement('div');el.className='wow-frame'+(f.kind==='FontString'?' wow-label':'')+(f.kind==='ScrollFrame'?' wow-scroll':'');if(f.kind==='ScrollFrame')el.addEventListener('scroll',()=>{const now=frames.get(f.id);if(now?.scripts?.OnVerticalScroll&&Math.abs(el.scrollTop-(now.offset||0))>1)event(f.id,'scroll',el.scrollTop)})}
+ el.dataset.frame=f.id;if(f.name)el.dataset.name=f.name;
+ if(f.backdrop)el.classList.add(f.movable?'wow-surface':'wow-inset');
+ if(f.backdrop&&f.movable){const handle=document.createElement('div');handle.className='drag-handle';handle.setAttribute('aria-label','Move addon window');handle.addEventListener('pointerdown',e=>{drag={id:f.id,x:e.clientX,y:e.clientY,box:box(frames.get(f.id))};handle.setPointerCapture(e.pointerId);e.preventDefault()});handle.addEventListener('pointermove',e=>{if(drag?.id!==f.id)return;const b=drag.box;const x=Math.max(0,Math.min(stage.clientWidth/scale-b.w*b.s,b.x+(e.clientX-drag.x)/scale)),y=Math.max(0,Math.min(stage.clientHeight/scale-44*b.s,b.y+(e.clientY-drag.y)/scale));call('PreviewMove',f.id,x,y);render()});handle.addEventListener('pointerup',()=>drag=null);handle.addEventListener('lostpointercapture',()=>drag=null);el.append(handle)}
+ elements.set(f.id,el);return el;
+}
+function render(){snapshot=JSON.parse(call('PreviewSnapshot'));const signature=JSON.stringify(snapshot.frames);if(signature!==lastFrames){lastFrames=signature;frames.clear();for(const f of snapshot.frames)frames.set(f.id,f);
+ for(const f of snapshot.frames){if(f.name==='UIParent')continue;const p=frames.get(f.parent);if(!p&&!f.backdrop)continue;const el=elements.get(f.id)||make(f),container=(p?.name!=='UIParent'?elements.get(f.parent):root)||root;if(el.parentNode!==container)container.append(el);const b=box(f),pb=p?box(p):{x:0,y:0,s:1},top=container===root;
+ Object.assign(el.style,{left:(top?b.x*scale:(b.x-pb.x)/pb.s)+'px',top:(top?b.y*scale:(b.y-pb.y)/pb.s)+'px',width:b.w+'px',height:b.h+'px',transform:`scale(${top?b.s*scale:b.s/pb.s})`});el.hidden=!f.visible;if(f.threadID)el.dataset.thread=f.threadID;else delete el.dataset.thread;
+ if(f.kind==='FontString'){el.style.height=f.height>0?f.height+'px':'auto';if(el.textContent!==clean(f.text))el.textContent=clean(f.text);el.classList.toggle('large',f.font==='GameFontNormalLarge');el.classList.toggle('small',String(f.font).includes('Small'))}
+ if(f.kind==='Button'){if(f.questRow){el.classList.add('quest-row');el.classList.toggle('active',f.active);el.setAttribute('aria-pressed',String(f.active));el.setAttribute('aria-label',clean(f.text))}else {const label=f.template==='UIPanelCloseButton'?'×':clean(f.text);if(el.textContent!==label)el.textContent=label}}
+ if(f.backdrop&&!f.movable&&f.backdropColor){const [r,g,b,a]=f.backdropColor;el.style.backgroundColor=`rgba(${r*255},${g*255},${b*255},${a})`}
+ if(f.kind==='EditBox'){const text=clean(f.text);if(el.value!==text)el.value=text;if(f.maxLetters>0)el.maxLength=f.maxLetters;if(f.multiline){if(el._measuredText!==text||el._measuredWidth!==b.w){el.style.height='auto';el._textHeight=el.scrollHeight;el._measuredText=text;el._measuredWidth=b.w}el.style.height=Math.max(b.h,el._textHeight||0)+'px'}if(document.activeElement===el&&!f.focus)el.blur();if(f.focus&&document.activeElement!==el)el.focus({preventScroll:true})}
+ if(f.kind==='ScrollFrame'&&f.scripts?.OnVerticalScroll&&Math.abs(el.scrollTop-(f.offset||0))>1)el.scrollTop=f.offset||0;
+ }
+ }
+ try{const s=snapshot.saved;const saved=JSON.stringify({draft:s.draft,hidden:s.hidden,minimized:s.minimized,position:s.position});if(saved!==lastSaved){localStorage.setItem('ncw-preview-state',saved);lastSaved=saved}}catch{}
+ for(const n of snapshot.notices)toast(n);for(const request of snapshot.requests)send(request);
+}
+const seen=new Set(), watching=new Set();
+function receive(outputs){for(const o of outputs||[]){if(['completed','error','unknown'].includes(o.state))watching.delete(o.request_id);if(o.event_id&&seen.has(o.event_id))continue;if(o.event_id)seen.add(o.event_id);call('PreviewReceive',o.kind,o.value)}call('PreviewTick',.05);render()}
+async function api(path,data){const r=await fetch(path,{method:data?'POST':'GET',headers:data?{'Content-Type':'application/json'}:{},body:data?JSON.stringify(data):undefined,signal:AbortSignal.timeout(20000)});const result=await r.json();if(!r.ok)throw Error(result.error||`Request failed (${r.status})`);return result}
+async function send(request){try{const result=await api('/api/addon/dispatch',{payload:request.payload,id:request.id});call('PreviewAccepted',request.id);watching.add(request.id);receive(Array.isArray(result)?result:result.outputs)}catch(e){call('PreviewAccepted',request.id);watching.add(request.id);const message=e.name==='TimeoutError'?'This request is taking longer than expected. Checking its status; do not resend. Other chats remain available.':e.message;call('PreviewReceive','error',message);render();toast(message)}}
+async function connect(){try{const s=await api('/api/addon/status');if(!s.connected)throw Error(s.error||'Sign in using the Nanocodex CLI, then reconnect.');live=true;call('PreviewLink',true);$('#connection').textContent='● Live Nanocodex';$('#activity').textContent='Account connected';call('PreviewCommand','threads');render()}catch(e){live=false;call('PreviewLink',false);$('#connection').textContent='Not connected';fail(e)}}
+async function poll(){if(!live||polling||!watching.size)return;polling=true;try{const query=new URLSearchParams();for(const id of watching)query.append('id',id);const r=await api('/api/addon/poll?'+query);receive(Array.isArray(r)?r:r.outputs)}catch(e){$('#activity').textContent=e.message}finally{polling=false}}
+function resize(){if(!ready)return;call('PreviewResize',stage.clientWidth/scale,stage.clientHeight/scale);render()}
+$('#show').onclick=()=>{call('PreviewCommand','show');render()};$('#center').onclick=()=>{call('PreviewCommand','reset');render()};$('#connect').onclick=connect;$('#scale').oninput=e=>{scale=Number(e.target.value)/100;$('output').textContent=e.target.value+'%';resize()};window.addEventListener('resize',resize);document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!['INPUT','TEXTAREA'].includes(document.activeElement.tagName)){call('PreviewCommand','hide');render()}});
+async function start(){run(await(await fetch('wow-api.lua')).text());for(const file of ['Context','Core','Projects','Bridge','Client'])call('PreviewLoad',await(await fetch(`lua/${file}.lua`)).text());let saved={};try{saved=JSON.parse(localStorage.getItem('ncw-preview-state')||'{}')}catch{}call('PreviewRestore',saved.draft||'',!!saved.hidden,!!saved.minimized,saved.position?.x,saved.position?.y);call('PreviewLink',false,crypto.getRandomValues(new Uint32Array(1))[0]%2147483647);call('PreviewStart');ready=true;resize();$('#loading').remove();ticker=setInterval(()=>{try{call('PreviewTick',.05);render()}catch(e){clearInterval(ticker);fail(e)}},50);setInterval(poll,100);await connect()}
+window.__addonPreview={call,render,receive,frame:()=>snapshot};start().catch(fail);

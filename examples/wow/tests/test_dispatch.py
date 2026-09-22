@@ -1,7 +1,9 @@
 """Hardware-free dispatcher tests; no live account or model requests."""
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -58,6 +60,80 @@ class DispatchTests(unittest.TestCase):
         self.backend = FakeBackend()
         self.d = Dispatcher(self.backend, self.path)
         self.addCleanup(lambda: self.d.close())
+
+    def test_blocked_send_allows_other_thread_and_deduplicates_inflight_id(self):
+        entered, release = threading.Event(), threading.Event()
+        sends = []
+
+        def handle(method, path, query, data):
+            if path == '/api/send':
+                sends.append(data['idempotency_key'])
+                if data['thread_id'] == 'slow':
+                    entered.set()
+                    if not release.wait(5):
+                        raise TimeoutError('Test release timed out')
+                return {'thread_id': data['thread_id'], 'turn_id': data['idempotency_key'], 'status': 'queued'}
+            return {'message_details': [{'turn_id': 'fast', 'event_type': 'turn_completed',
+                                         'text': 'Independent answer'}], 'last_cursor': '1'}
+
+        with patch.object(self.backend, 'handle', side_effect=handle), ThreadPoolExecutor(4) as pool:
+            slow = pool.submit(self.d.dispatch, ask(thread_id='slow'), 'slow')
+            try:
+                self.assertTrue(entered.wait(2))
+                self.assertEqual(pool.submit(self.d.dispatch, ask(thread_id='slow'), 'slow').result(2), [])
+                conflict = pool.submit(self.d.dispatch, ask(thread_id='slow', prompt='changed'), 'slow').result(2)
+                self.assertEqual(conflict[0]['value'], 'Request ID conflict.')
+                self.assertEqual(pool.submit(self.d.poll, 'slow').result(2), [])
+                fast = pool.submit(self.d.dispatch, ask(thread_id='fast'), 'fast').result(2)
+                self.assertEqual(fast[0]['state'], 'local_queued')
+                self.assertEqual(pool.submit(self.d.poll, 'fast').result(2)[-1]['value'], 'Independent answer')
+                self.assertFalse(slow.done())
+                # The committed intent also prevents a second dispatcher process
+                # from re-executing this ID while its owner is blocked.
+                other = Dispatcher(self.backend, self.path)
+                try:
+                    self.assertEqual(other.dispatch(ask(thread_id='slow'), 'slow')[0]['state'], 'unknown')
+                finally:
+                    other.close()
+                self.assertEqual(sends, ['slow', 'fast'])
+            finally:
+                release.set()
+            receipt = slow.result(2)
+        self.assertEqual(self.d.dispatch(ask(thread_id='slow'), 'slow'), receipt)
+        self.assertEqual(sends, ['slow', 'fast'])
+
+    def test_blocked_poll_replays_same_request_and_other_threads_advance(self):
+        entered, release = threading.Event(), threading.Event()
+        calls = []
+
+        def handle(method, path, query, data):
+            if path == '/api/send':
+                return {'thread_id': data['thread_id'], 'turn_id': data['idempotency_key'], 'status': 'queued'}
+            thread = query['thread_id'][0]
+            calls.append(thread)
+            if thread == 'slow':
+                entered.set()
+                if not release.wait(5):
+                    raise TimeoutError('Test release timed out')
+            return {'message_details': [{'turn_id': thread, 'event_type': 'turn_completed',
+                                         'text': thread + ' reply'}], 'last_cursor': '1'}
+
+        with patch.object(self.backend, 'handle', side_effect=handle), ThreadPoolExecutor(3) as pool:
+            queued = self.d.dispatch(ask(thread_id='slow'), 'slow')
+            slow = pool.submit(self.d.poll, 'slow')
+            try:
+                self.assertTrue(entered.wait(2))
+                self.assertEqual(pool.submit(self.d.poll, 'slow').result(2), queued)
+                self.assertEqual(pool.submit(self.d.dispatch, ask(thread_id='fast'), 'fast').result(2)[0]['state'], 'local_queued')
+                fast = pool.submit(self.d.poll, 'fast').result(2)
+                self.assertEqual(fast[-1]['value'], 'fast reply')
+                self.assertFalse(slow.done())
+            finally:
+                release.set()
+            completed = slow.result(2)
+        self.assertEqual(calls, ['slow', 'fast'])
+        self.assertEqual(self.d.poll('slow'), completed)
+        self.assertEqual(len({row['event_id'] for row in completed}), len(completed))
 
     def test_queue_is_not_remote_acceptance(self):
         out = self.d.dispatch(ask(context={'character': {'level': 60}}), 'stable.1')

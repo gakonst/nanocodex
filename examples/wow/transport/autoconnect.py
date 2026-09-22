@@ -11,7 +11,9 @@ Discovery is bounded to eight attempts, 30 seconds, a 320x320 logical top-left
 crop at explicit grim scale 2, and physical cell pitches 2..16. Unsupported or
 ambiguous geometry fails closed. Continuous normal mode retries bounded discovery
 until a ready carrier appears; a started bridge is never automatically replayed.
-Screenshots and payloads stay out of evidence.
+A private calibration hint can skip the search on later starts, but never the
+two fresh captures, CRC/padding, readiness, or exact window/session checks.
+Screenshots and payloads stay out of evidence and the calibration hint.
 """
 import argparse
 from dataclasses import dataclass
@@ -243,9 +245,56 @@ def locate(image, *, deadline=None, clock=time.monotonic):
 
 
 class Discovery:
-    def __init__(self, run=subprocess.run, *, clock=time.monotonic, pause=time.sleep):
+    def __init__(self, run=subprocess.run, *, clock=time.monotonic, pause=time.sleep,
+                 calibration_path=None):
         self.run, self.clock, self.pause = run, clock, pause
         self.captures = 0
+        self.calibration_path = Path(calibration_path) if calibration_path is not None else None
+
+    def _cached_location(self, window, image):
+        """One bounded hint, never a packet or authorization from a previous run."""
+        if self.calibration_path is None:
+            return None
+        try:
+            fd = os.open(self.calibration_path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd, 'r') as stream:
+                info = os.fstat(stream.fileno())
+                if (not stat.S_ISREG(info.st_mode) or info.st_uid != os.geteuid() or
+                        info.st_mode & 0o077 or not 0 < info.st_size <= 4096):
+                    return None
+                hint = json.loads(stream.read(4097))
+            if (not isinstance(hint, dict) or type(hint.get('schema')) is not int or
+                    hint['schema'] != 1 or hint.get('output_scale') != SCALE or
+                    Window.parse(hint.get('window')) != window):
+                return None
+            grid = hint.get('calibration')
+            if not isinstance(grid, dict) or set(grid) != {'left', 'top', 'pitch_x', 'pitch_y'}:
+                return None
+            left, top, cx, cy = (grid[k] for k in ('left', 'top', 'pitch_x', 'pitch_y'))
+            if (not all(type(v) in (int, float) and math.isfinite(v) for v in (left, top, cx, cy)) or
+                    not 0 <= left <= MAX_ORIGIN or not 0 <= top <= MAX_ORIGIN or
+                    not 2 <= cx <= 16 or not 2 <= cy <= 16 or
+                    left + 32 * cx > image.width + .01 or top + 32 * cy > image.height + .01):
+                return None
+            packet, detail = decode_grid(lambda x, y: image.getpixel((x, y)), left, top, cx, cy,
+                                         min_margin=2, details=True)
+            return Located(left, top, cx, cy, packet, detail)
+        except (ValueError, OSError, IndexError, OverflowError, RecursionError):
+            return None  # Missing, obsolete or invalid hints use the ordinary locator.
+
+    def _remember_calibration(self, window, located):
+        if self.calibration_path is None:
+            return
+        hint = {'schema': 1, 'output_scale': SCALE,
+                'window': {'title': TITLE, 'address': window.address, 'class': window.window_class,
+                           'pid': window.pid, 'at': [window.x, window.y],
+                           'size': [window.width, window.height]},
+                'calibration': {'left': located.left, 'top': located.top,
+                                'pitch_x': located.pitch_x, 'pitch_y': located.pitch_y}}
+        try:
+            write_evidence(self.calibration_path, hint)
+        except OSError:
+            pass  # Optional acceleration must not prevent fresh discovery.
 
     def window(self):
         result = self.run(['hyprctl', '-j', 'activewindow'], stdout=subprocess.PIPE,
@@ -272,13 +321,17 @@ class Discovery:
             raise ValueError('discovery timeout/attempt bounds')
         deadline = self.clock() + timeout
         reason = 'no valid capture'
+        try_cached = True
         for _ in range(attempts):
             if self.clock() >= deadline:
                 break
             try:
                 window = self.window()
                 first = self.capture(window)
-                located = locate(first, deadline=min(deadline, self.clock() + 3), clock=self.clock)
+                located = self._cached_location(window, first) if try_cached else None
+                try_cached = False  # At most one cache candidate per bounded discovery round.
+                if located is None:
+                    located = locate(first, deadline=min(deadline, self.clock() + 3), clock=self.clock)
                 self.pause(.02)
                 second = self.capture(window)  # New grim process, never reuse the image.
                 if located.decode(second) != located.packet:
@@ -287,6 +340,7 @@ class Discovery:
                     raise DiscoveryError('validated carrier not ready')
                 if self.clock() >= deadline:
                     raise DiscoveryError('discovery deadline reached')
+                self._remember_calibration(window, located)
                 return window, located
             except (ValueError, OSError, subprocess.SubprocessError):
                 # No upstream stderr, image, payload, or raw exception in evidence.
@@ -497,7 +551,7 @@ def main(argv=None):
         destination = args.evidence or state / 'evidence.json'
         guard = os.open(state / 'autoconnect.lock', os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
         fcntl.flock(guard, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        discovery = Discovery()
+        discovery = Discovery(calibration_path=state / 'calibration.json')
         def discovery_report(value):
             receipt.update(value)
             write_evidence(destination, receipt)

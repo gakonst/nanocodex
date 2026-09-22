@@ -1,0 +1,14 @@
+node_modules/
+public/app.js
+public/fengari-web.js
+public/FENGARI-LICENSE
+public/lua/
+public/wow-api.lua
+public/lua-source-hashes.json
+browser-preview*.jpg
+browser-preview*.png
+runtime/
+*.zip
+*.jpg
+*.png
+__pycache__/

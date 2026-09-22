@@ -63,7 +63,11 @@ unknown outcome explicitly, not assign a fresh ID to retry it. DurableBackend
 alone owns its supported WebSocket outbox/replay behavior. Journal capacity is
 bounded and fails closed (no eviction of mutation identities). Keep one journal
 per backend account/origin, rotate only after reconciliation; never share across
-accounts. close() closes the journal, not the caller-owned backend.
+accounts. Concurrent calls for an ID still executing in this process return no
+outputs until its receipt commits; after a crash its retained unknown receipt
+prevents resubmission. Backend IO never holds the shared journal lock. Polls for
+the same ID replay committed outputs while another poll advances its cursor.
+close() waits for admitted work and closes only the journal, not its backend.
 """
 import copy
 import hashlib
@@ -306,19 +310,32 @@ class Dispatcher:
     def __init__(self, backend, journal_path):
         self.backend = backend
         self.journal = EventStore(journal_path)
-        self.lock = threading.RLock()
-        with self.journal.db:
+        self.lock = self.journal.lock
+        self.idle = threading.Condition(self.lock)
+        self._dispatching = set()
+        self._polling = set()
+        self._closed = False
+        with self.lock, self.journal.db:
             self.journal.db.execute('CREATE TABLE IF NOT EXISTS dispatch_requests (id TEXT PRIMARY KEY, digest TEXT NOT NULL, record TEXT NOT NULL)')
 
     def close(self):
-        self.journal.close()
+        with self.idle:
+            self._closed = True
+            self.idle.wait_for(lambda: not self._dispatching and not self._polling)
+            self.journal.close()
+
+    def _finish(self, pending, rid):
+        with self.idle:
+            pending.remove(rid)
+            self.idle.notify_all()
 
     def _read(self, rid):
-        row = self.journal.db.execute('SELECT digest, record FROM dispatch_requests WHERE id=?', (rid,)).fetchone()
-        return (row[0], json.loads(row[1])) if row else None
+        with self.lock:
+            row = self.journal.db.execute('SELECT digest, record FROM dispatch_requests WHERE id=?', (rid,)).fetchone()
+            return (row[0], json.loads(row[1])) if row else None
 
     def _save(self, rid, record):
-        with self.journal.db:
+        with self.lock, self.journal.db:
             self.journal.db.execute('UPDATE dispatch_requests SET record=? WHERE id=?', (json.dumps(record), rid))
 
     def dispatch(self, payload, request_id=None):
@@ -334,16 +351,26 @@ class Dispatcher:
                 return [_output(rid, 'error', 'Request exceeds 16 KiB application limit; nothing was submitted.', 'error')]
             return [_error(rid, 400)]
         with self.lock:
+            if self._closed:
+                raise APIError('Dispatcher is closed.', 503)
             # BEGIN IMMEDIATE also serializes intent admission across processes.
             with self.journal.db:
                 self.journal.db.execute('BEGIN IMMEDIATE')
                 saved = self._read(rid)
                 if saved:
-                    return _visible(saved[1]['outputs']) if saved[0] == digest else [_error(rid, 409)]
+                    if saved[0] != digest:
+                        return [_error(rid, 409)]
+                    # The persisted unknown receipt fences crash recovery. While
+                    # its original call is alive, report no premature failure.
+                    return [] if rid in self._dispatching else _visible(saved[1]['outputs'])
                 if self.journal.db.execute('SELECT count(*) FROM dispatch_requests').fetchone()[0] >= MAX_RECORDS:
                     return [_error(rid, 413)]
                 record = {'outputs': [_error(rid)], 'thread': None, 'turn': None, 'after': '0', 'done': True}
                 self.journal.db.execute('INSERT INTO dispatch_requests VALUES(?,?,?)', (rid, digest, json.dumps(record)))
+            self._dispatching.add(rid)
+        # Only this admitted caller owns record until its final commit. Neither
+        # backend IO nor snapshot construction holds the shared journal lock.
+        try:
             try:
                 if route == '/api/projects':
                     record['outputs'] = (self._project_page(rid, data, record)
@@ -396,6 +423,8 @@ class Dispatcher:
                 record['outputs'] = [_error(rid, exc.status if isinstance(exc, APIError) else 502)]
             self._save(rid, record)
             return _visible(record['outputs'])
+        finally:
+            self._finish(self._dispatching, rid)
 
     def projects(self, request_id):
         """Explicit read-only ncw1 refresh, deduplicated by its stable request ID."""
@@ -564,99 +593,108 @@ class Dispatcher:
         """
         rid = stable_id(request_id)
         with self.lock:
+            if self._closed:
+                raise APIError('Dispatcher is closed.', 503)
             saved = self._read(rid)
             if not saved:
                 return [_error(rid, 400)]
+            if rid in self._dispatching:
+                return []
             record = copy.deepcopy(saved[1])
-            if record['done'] or not record['thread']:
+            if record['done'] or not record['thread'] or rid in self._polling:
                 return _visible(record['outputs'])
-            try:
-                # Prefer committed durable events, which can be consumed offline.
-                store = getattr(self.backend, 'store', None)
-                if store is not None:
-                    from durable_client import cursor
-                    events = store.events(record['thread'], record.get('durable_after', '0'), 256)
-                    # Coalesce adjacent visible deltas from one assistant block.
-                    # Transport latency must not turn every token into a packet.
-                    merged = []
-                    seen_position = cursor(record.get('durable_after', '0'))
-                    for source_event in events:
-                        position = cursor(source_event['cursor'])
-                        if position <= seen_position:
+            # One cursor projection per request; other polls replay the last
+            # commit immediately instead of waiting for subscription/history IO.
+            self._polling.add(rid)
+        try:
+            # Prefer committed durable events, which can be consumed offline.
+            store = getattr(self.backend, 'store', None)
+            if store is not None:
+                from durable_client import cursor
+                events = store.events(record['thread'], record.get('durable_after', '0'), 256)
+                # Coalesce adjacent visible deltas from one assistant block.
+                # Transport latency must not turn every token into a packet.
+                merged = []
+                seen_position = cursor(record.get('durable_after', '0'))
+                for source_event in events:
+                    position = cursor(source_event['cursor'])
+                    if position <= seen_position:
+                        continue
+                    seen_position = position
+                    event = copy.deepcopy(source_event)
+                    inner = event.get('event') or {}
+                    payload = inner.get('payload') or {}
+                    signature = (event.get('turn_id'), event.get('agent_id'), payload.get('model_call_index'), payload.get('item_id'), payload.get('phase'))
+                    if merged and event.get('type') == 'event' and inner.get('type') == 'assistant.delta' and isinstance(payload.get('text'), str):
+                        prior = merged[-1]
+                        pi = prior.get('event') or {}; pp = pi.get('payload') or {}
+                        ps = (prior.get('turn_id'), prior.get('agent_id'), pp.get('model_call_index'), pp.get('item_id'), pp.get('phase'))
+                        if prior.get('type') == 'event' and pi.get('type') == 'assistant.delta' and ps == signature and isinstance(pp.get('text'), str):
+                            pp['text'] += payload['text']; prior['cursor'] = event['cursor']
                             continue
-                        seen_position = position
-                        event = copy.deepcopy(source_event)
-                        inner = event.get('event') or {}
-                        payload = inner.get('payload') or {}
-                        signature = (event.get('turn_id'), event.get('agent_id'), payload.get('model_call_index'), payload.get('item_id'), payload.get('phase'))
-                        if merged and event.get('type') == 'event' and inner.get('type') == 'assistant.delta' and isinstance(payload.get('text'), str):
-                            prior = merged[-1]
-                            pi = prior.get('event') or {}; pp = pi.get('payload') or {}
-                            ps = (prior.get('turn_id'), prior.get('agent_id'), pp.get('model_call_index'), pp.get('item_id'), pp.get('phase'))
-                            if prior.get('type') == 'event' and pi.get('type') == 'assistant.delta' and ps == signature and isinstance(pp.get('text'), str):
-                                pp['text'] += payload['text']; prior['cursor'] = event['cursor']
-                                continue
-                        merged.append(event)
-                    for event in merged:
-                        position = cursor(event['cursor'])
-                        if position <= cursor(record.get('durable_after', '0')):
-                            continue
-                        record['durable_after'] = str(position)
-                        kind = event.get('type')
-                        turn = event.get('turn_id') or event.get('id')
-                        if turn != record['turn'] and kind != 'stream_failed':
-                            continue
-                        if kind == 'turn_accepted':
-                            self._progress(rid, record, kind, None)
-                        else:
-                            project(rid, record, event)
-                        if record['done']:
-                            break
-                    self._save(rid, record)
-                    # Restore each waiting thread independently after restart.
-                    # The first subscription opens the shared store, so store
-                    # presence alone cannot prove this thread is subscribed.
-                    # Consume cached completion before requiring connectivity.
-                    subscribe = getattr(self.backend, 'subscribe', None)
-                    clients = getattr(self.backend, 'clients', None)
-                    if not record['done'] and subscribe is not None and clients is not None and record['thread'] not in clients:
-                        try:
-                            subscribe(record['thread'])
-                        except Exception as exc:
-                            return _visible(record['outputs']) + [_error(rid, exc.status if isinstance(exc, APIError) else 502)]
-                    return _visible(record['outputs'])
-                # A restarted DurableBackend may not have opened its event store.
+                    merged.append(event)
+                for event in merged:
+                    position = cursor(event['cursor'])
+                    if position <= cursor(record.get('durable_after', '0')):
+                        continue
+                    record['durable_after'] = str(position)
+                    kind = event.get('type')
+                    turn = event.get('turn_id') or event.get('id')
+                    if turn != record['turn'] and kind != 'stream_failed':
+                        continue
+                    if kind == 'turn_accepted':
+                        self._progress(rid, record, kind, None)
+                    else:
+                        project(rid, record, event)
+                    if record['done']:
+                        break
+                self._save(rid, record)
+                # Restore each waiting thread independently after restart.
+                # The first subscription opens the shared store, so store
+                # presence alone cannot prove this thread is subscribed.
+                # Consume cached completion before requiring connectivity.
                 subscribe = getattr(self.backend, 'subscribe', None)
-                if subscribe is not None:
-                    subscribe(record['thread'])
-                    return _visible(record['outputs'])
-                result = self.backend.handle('GET', '/api/messages',
-                    {'thread_id': [record['thread']], 'after': [record['after']], 'limit': ['256']}, {})
-                details = result['message_details']
-                if not isinstance(details, list) or len(details) > 256:
-                    raise InvalidRequest('Invalid history.')
-                for event in details:
-                    if event.get('turn_id') == record['turn']:
-                        self._progress(rid, record, event.get('event_type'), event.get('text'))
-                        if record['done']:
-                            break
-                last = result.get('last_cursor')
-                if last is not None:
-                    from durable_client import cursor
-                    if cursor(last) < cursor(record['after']):
-                        raise InvalidRequest('History cursor regressed.')
-                    record['after'] = last
-                self._save(rid, record)
+                clients = getattr(self.backend, 'clients', None)
+                if not record['done'] and subscribe is not None and clients is not None and record['thread'] not in clients:
+                    try:
+                        subscribe(record['thread'])
+                    except Exception as exc:
+                        return _visible(record['outputs']) + [_error(rid, exc.status if isinstance(exc, APIError) else 502)]
                 return _visible(record['outputs'])
-            except StreamLimit:
-                output = _output(rid, 'error', 'Answer exceeds the in-game display limit; open it in Nanocodex or request a shorter answer.', 'error')
-                output['event_id'] = rid + ':stream-limit'
-                record['outputs'].append(output); record['done'] = True
-                self._save(rid, record)
+            # A restarted DurableBackend may not have opened its event store.
+            subscribe = getattr(self.backend, 'subscribe', None)
+            if subscribe is not None:
+                subscribe(record['thread'])
                 return _visible(record['outputs'])
-            except Exception as exc:
-                # Progress remains replayable; errors do not authorize resubmission.
-                return _visible(saved[1]['outputs']) + [_error(rid, exc.status if isinstance(exc, APIError) else 502)]
+            result = self.backend.handle('GET', '/api/messages',
+                {'thread_id': [record['thread']], 'after': [record['after']], 'limit': ['256']}, {})
+            details = result['message_details']
+            if not isinstance(details, list) or len(details) > 256:
+                raise InvalidRequest('Invalid history.')
+            for event in details:
+                if event.get('turn_id') == record['turn']:
+                    self._progress(rid, record, event.get('event_type'), event.get('text'))
+                    if record['done']:
+                        break
+            last = result.get('last_cursor')
+            if last is not None:
+                from durable_client import cursor
+                if cursor(last) < cursor(record['after']):
+                    raise InvalidRequest('History cursor regressed.')
+                record['after'] = last
+            self._save(rid, record)
+            return _visible(record['outputs'])
+        except StreamLimit:
+            output = _output(rid, 'error', 'Answer exceeds the in-game display limit; open it in Nanocodex or request a shorter answer.', 'error')
+            output['event_id'] = rid + ':stream-limit'
+            record['outputs'].append(output); record['done'] = True
+            self._save(rid, record)
+            return _visible(record['outputs'])
+        except Exception as exc:
+            # Progress remains replayable; errors do not authorize resubmission.
+            return _visible(saved[1]['outputs']) + [_error(rid, exc.status if isinstance(exc, APIError) else 502)]
+        finally:
+            self._finish(self._polling, rid)
 
     @staticmethod
     def _progress(rid, record, kind, text):

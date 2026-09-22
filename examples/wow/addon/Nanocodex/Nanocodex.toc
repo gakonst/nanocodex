@@ -8,6 +8,7 @@ Context.lua
 Settings.lua
 Core.lua
 Projects.lua
+Catalog.lua
 Bridge.lua
 Client.lua
 Transport.lua

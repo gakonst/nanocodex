@@ -21,8 +21,11 @@ function NS.TransportDisplay()
     -- A recent peer frame proves only the transport link, not backend/model availability.
     local connected = type(status) == "table" and status.connected == true
     local detail = type(status) == "table" and (status.message or status.state) or status
+    local activity = NS.ClientActivity and NS.ClientActivity()
+    local inflight = type(status)=="table" and status.inflight or nil
+    local requestStatus = type(inflight)=="number" and inflight>0 and (tostring(inflight) .. " requests in flight · " .. lastRequest) or lastRequest
     return (connected and "Bridge linked" or "Disconnected") ..
-        (type(detail) == "string" and " · " .. safe(detail) or "") .. "\n" .. (NS.ClientStatus and NS.ClientStatus() .. " · " or "") .. lastRequest
+        (type(detail) == "string" and " · " .. safe(detail) or "") .. "\n" .. (NS.ClientStatus and NS.ClientStatus() .. " · " or "") .. (activity and (activity .. " · " .. requestStatus) or requestStatus)
 end
 function NS.QueueRequest(request)
     if type(NS.TransportSend) ~= "function" then
@@ -36,10 +39,17 @@ function NS.QueueRequest(request)
         NS.Notify("error", "Request could not be encoded.")
         return false, "encoding failed"
     end
+    -- Suppress repeated clicks only while these exact bytes await admission.
+    -- Other prompts and other threads remain independent.
+    if request.type == "nanocodex.ask" and NS.TransportPending and NS.TransportPending(payload) then
+        NS.Notify("status", "This message is already queued; awaiting acknowledgement.")
+        return false, "busy"
+    end
     local ok, acknowledged, err = pcall(NS.TransportSend, payload, true)
     if ok and acknowledged == false and err == "pending" then
         lastRequest = "Queued · awaiting transport acknowledgement"
-        NS.Notify("status", lastRequest)
+        -- Background history/catalog reads should not flash a stale queue toast.
+        if request.type ~= "nanocodex.action" then NS.Notify("status", lastRequest) end
         return true, "pending"
     end
     if ok and acknowledged == false and err == "busy" then
@@ -105,14 +115,16 @@ function NS.Reply(value)
 end
 -- ncs1 uses UTF-8 byte offsets, stable block identity and monotonically increasing
 -- revisions. Never execute payloads or infer backend success from carrier ACKs.
+local MAX_BLOCKS = 256
 local streams, order, activeRequest, retainedBytes = {}, {}, nil, 0
+local receipts, receiptHead, receiptBytes = {}, 1, 0
 local completed, retired, retiredOrder = {}, {}, {}
 -- Retain recent completed replies until space is needed. Never evict a request
 -- with an unfinished block, including an ended block still awaiting turn done.
 -- Recent eviction tombstones reject late application replays without retaining
 -- reply text. NC1 also rejects old application message IDs within its session.
 local function makeRoom(extraBlocks, extraBytes, protected)
-    if #order+extraBlocks<=32 and retainedBytes+extraBytes<=MAX_ANSWER then return true end
+    if #order+extraBlocks<=MAX_BLOCKS and retainedBytes+extraBytes<=MAX_ANSWER then return true end
     local candidates, seen = {}, {}
     for _,key in ipairs(order) do
         local group=streams[key].group
@@ -133,9 +145,9 @@ local function makeRoom(extraBlocks, extraBytes, protected)
     local blocks,bytes,count=#order+extraBlocks,retainedBytes+extraBytes,0
     for _,candidate in ipairs(candidates) do
         count=count+1 blocks=blocks-#candidate.keys bytes=bytes-candidate.bytes
-        if blocks<=32 and bytes<=MAX_ANSWER then break end
+        if blocks<=MAX_BLOCKS and bytes<=MAX_ANSWER then break end
     end
-    if blocks>32 or bytes>MAX_ANSWER then return false end
+    if blocks>MAX_BLOCKS or bytes>MAX_ANSWER then return false end
     for i=1,count do
         local candidate=candidates[i]
         for _,key in ipairs(candidate.keys) do streams[key]=nil end
@@ -222,7 +234,20 @@ function NS.ReceiveStream(value)
     elseif op=='end' or op=='error' then stream.sealed=true end
     if op=='done' or op=='error' then completed[group]=true end
     stream.revision=rev stream.receipts[rev]=value
-    stream.receipts[rev-256]=nil
+    receipts[#receipts+1]={stream=stream,revision=rev,value=value}
+    receiptBytes=receiptBytes+#value
+    -- Bound replay receipts globally as well as transcript text. Long tool-heavy
+    -- turns create many blocks; retaining 256 revisions per block is excessive.
+    while receiptBytes>MAX_ANSWER*2 or #receipts-receiptHead+1>2048 do
+        local old=receipts[receiptHead]
+        if old.stream.receipts[old.revision]==old.value then old.stream.receipts[old.revision]=nil end
+        receiptBytes=receiptBytes-#old.value
+        receipts[receiptHead]=false receiptHead=receiptHead+1
+    end
+    if receiptHead>1024 then
+        local kept={} for i=receiptHead,#receipts do kept[#kept+1]=receipts[i] end
+        receipts=kept receiptHead=1
+    end
     activeRequest=rid
     lastRequest=op=='done' and 'Completed' or op=='error' and 'Turn failed or was cancelled' or 'Streaming reply…'
     local texts={}
@@ -234,7 +259,7 @@ function NS.ReceiveStream(value)
     return true
 end
 function NS.StreamState()
-    return {request=activeRequest,bytes=retainedBytes,blocks=#order,text=lastReply,status=lastRequest}
+    return {request=activeRequest,bytes=retainedBytes,blocks=#order,text=lastReply,status=lastRequest,receipt_bytes=receiptBytes}
 end
 
 function NS.OnTransportMessage(kind, value)
@@ -242,7 +267,11 @@ function NS.OnTransportMessage(kind, value)
     if NS.ReceiveClientMessage then
         local handled=NS.ReceiveClientMessage(kind,value)
         if handled~=nil then
-            if handled and kind=="reply" and value:sub(1,5)~="nch1\t" then lastRequest="Reply received" end
+            if handled then
+                if kind=="reply" then lastRequest=value:sub(1,5)=="nch1\t" and "Conversation loaded" or "Reply received"
+                elseif kind=="projects" then lastRequest="Chats loaded"
+                elseif kind=="ack" and value:sub(1,16)=="ncm1\tconnection\t" then lastRequest="Ready" end
+            end
             return handled
         end
     end
