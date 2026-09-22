@@ -413,7 +413,14 @@ final class InboxModel: ObservableObject {
             let arrivalInterval = min(5_000, max(50, Int(arrivalEnvironment["NANOCODEX_DEMO_TOOL_ARRIVAL_INTERVAL_MS"] ?? "") ?? 1_000))
             Task {
                 try? await Task.sleep(for: .seconds(3))
+                let clock = ContinuousClock()
+                let started = clock.now
                 for index in 1...arrivalCount {
+                    // Fixed deadlines model arrivals independently of rendering
+                    // cost. Relative sleeps would accumulate executor delay and
+                    // silently reduce the intended load as the transcript grows.
+                    let elapsedMS = (index - 1) * arrivalInterval
+                    try? await clock.sleep(until: started.advanced(by: .milliseconds(elapsedMS)))
                     guard !Task.isCancelled, generation == epoch, focused?.id == id else { return }
                     let activity = ToolPresentation(name: "exec_command", arguments: .object([
                         "cmd": .string("echo synthetic-tool-\(index)")
@@ -421,19 +428,21 @@ final class InboxModel: ObservableObject {
                     let toolRowID = "demo-tool-arrival-\(index)"
                     rows.append(.init(id: toolRowID, role: "Tool", text: activity.title, running: true, tool: activity))
                     demoRows[id] = rows
-                    // Exercise both arrival and completion without replacing the
-                    // row identity. Each call consumes one configured interval.
-                    try? await Task.sleep(for: .milliseconds(arrivalInterval / 2))
+                    try? await clock.sleep(until: started.advanced(by: .milliseconds(elapsedMS + arrivalInterval / 2)))
                     guard !Task.isCancelled, generation == epoch, focused?.id == id,
                           let toolIndex = rows.firstIndex(where: { $0.id == toolRowID }) else { return }
-                    rows[toolIndex].tool?.finish(.object([
+                    // One completion event publishes one coherent row mutation.
+                    var completed = rows[toolIndex]
+                    completed.tool?.finish(.object([
                         "output": .string("Synthetic result \(index); no command was executed."),
                         "exit_code": .number(0)
                     ]))
-                    rows[toolIndex].running = false
+                    completed.running = false
+                    rows[toolIndex] = completed
                     demoRows[id] = rows
-                    try? await Task.sleep(for: .milliseconds(arrivalInterval - arrivalInterval / 2))
-                    guard !Task.isCancelled, generation == epoch, focused?.id == id else { return }
+                    if index % 25 == 0 || index == arrivalCount {
+                        print("STRESS_PRODUCER completed=\(index) scheduledMS=\(elapsedMS + arrivalInterval / 2) elapsed=\(started.duration(to: clock.now))")
+                    }
                 }
             }
         }

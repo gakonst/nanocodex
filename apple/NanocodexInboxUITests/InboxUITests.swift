@@ -3775,19 +3775,34 @@ final class InboxUITests: XCTestCase {
         }
         assertBoundedHosts()
         let diagnostics = app.staticTexts["conversation-native-scroll-state"]
-        func scrollOffset() -> Double {
-            let value = diagnostics.label.split(separator: " ").first ?? ""
-            return Double(value.replacingOccurrences(of: "offset=", with: "")) ?? .nan
+        func visibleReadingPoint() -> (index: Int, y: CGFloat)? {
+            let viewport = conversation.frame
+            let bottom = composer(app).frame.minY
+            let headings = conversation.staticTexts.matching(NSPredicate(format: "label BEGINSWITH %@", "Review note "))
+            return headings.allElementsBoundByIndex.compactMap { heading -> (index: Int, y: CGFloat)? in
+                guard heading.isHittable, let index = Int(heading.label.dropFirst("Review note ".count)) else { return nil }
+                let frame = heading.frame
+                guard frame.maxY > viewport.minY, frame.minY < bottom else { return nil }
+                return (index, frame.minY)
+            }.min { $0.y < $1.y }
         }
-        var previousOffset = scrollOffset()
+        guard var previousPoint = visibleReadingPoint() else {
+            return XCTFail("Expected a visible synthetic review heading: \(diagnostics.label)")
+        }
         for _ in 0..<12 {
             conversation.swipeDown()
             assertBoundedHosts()
-            let offset = scrollOffset()
-            XCTAssertLessThan(offset, previousOffset - 20,
-                              "Each upward-history gesture must advance past self-sizing rows without snapping back")
-            print("STRESS_SCROLL rows=\(rowCount) previous=\(previousOffset) current=\(offset)")
-            previousOffset = offset
+            guard let point = visibleReadingPoint() else {
+                return XCTFail("Expected a visible synthetic review heading after scrolling: \(diagnostics.label)")
+            }
+            // Measuring self-sizing rows can raise global contentOffset even
+            // while the reader advances to earlier content. Use a visible
+            // semantic landmark instead of cumulative estimated heights.
+            XCTAssertTrue(point.index < previousPoint.index
+                          || (point.index == previousPoint.index && point.y > previousPoint.y + 20),
+                          "Each upward-history gesture must advance past self-sizing rows without snapping back")
+            print("STRESS_SCROLL rows=\(rowCount) previous=\(previousPoint.index):\(previousPoint.y) current=\(point.index):\(point.y) native=\(diagnostics.label)")
+            previousPoint = point
         }
         let latest = app.buttons["latest-messages"]
         XCTAssertTrue(latest.isHittable, "Exercise real scrolling away from the tail")

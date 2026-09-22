@@ -81,7 +81,7 @@ script builds the UI tests, asks XCTest to retain successful-test recordings and
 screenshots, then runs three repetitions of each scenario without failure retries:
 
 - 2,000 variable-height Markdown rows: twelve upward-history gestures, strictly
-  decreasing offsets, at most 64 retained native cell hosts at each checkpoint,
+  earlier visible reading positions, at most 64 retained native cell hosts at each checkpoint,
   and a return to the live tail. The log includes actual host counts and offsets.
 - Expanded tool recycling: remove the tool from the realized accessibility tree,
   then return and require its expanded output to remain visible.
@@ -90,7 +90,9 @@ screenshots, then runs three repetitions of each scenario without failure retrie
   observe no latest-message jump button during the burst and settling window.
 
 The output contains `tests.log`, `stress.xcresult`, and exported attachments. The
-interval is the synthetic producer's configured delay, not a measured throughput
-or network rate. Host counts and accessibility assertions are sampled checkpoints;
+interval defines fixed producer deadlines; overdue work can catch up instead of
+accumulating relative sleep delay. Completion updates a row atomically. Producer
+progress is logged, but the configured interval is not a measured throughput or
+network rate. Host counts and accessibility assertions are sampled checkpoints;
 simulator recordings are visual review evidence, not physical-device frame-time
 benchmarks.
