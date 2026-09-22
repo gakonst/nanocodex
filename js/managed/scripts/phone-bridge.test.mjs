@@ -530,3 +530,70 @@ test('bridge rejects cumulative amendment overflow before delivery and preserves
   assert.equal(service.input.filter(event => event.type === 'steer').length, 2);
   assert.equal(service.creates(), 1);
 });
+
+test('stream diagnostics expose live counters and survive completion, restart, and cloud hydration', async t => {
+  const originalFetch = globalThis.fetch;
+  const stateUrl = 'https://phone.example/internal/state';
+  const rows = new Map();
+  globalThis.fetch = async (url, init) => {
+    if (String(url).startsWith(stateUrl)) {
+      if (init.method === 'POST') { const row = JSON.parse(init.body); rows.set(row.id, row); return Response.json({ ok: true }); }
+      return Response.json({ calls: [...rows.values()] });
+    }
+    return originalFetch(url, init);
+  };
+  t.after(() => { globalThis.fetch = originalFetch; });
+  const directory = mkdtempSync(join(tmpdir(), 'nanocodex-phone-diagnostics-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  const database = join(directory, 'calls.sqlite');
+  const service = await setup(t, { database, env: { NANOCODEX_PHONE_STATE_URL: stateUrl } });
+  const call = await (await service.call()).json();
+  const path = `/media/${call.call_id}/`;
+  const ws = new WebSocket(service.origin.replace('http:', 'ws:') + path, { headers: { 'x-twilio-signature': signature(path) } });
+  await once(ws, 'open');
+  ws.send(JSON.stringify({ event: 'start', sequenceNumber: '1', streamSid: stream, start: {
+    accountSid: env.TWILIO_ACCOUNT_SID, callSid: sid, streamSid: stream,
+    customParameters: { callId: call.call_id }, mediaFormat: { encoding: 'audio/x-mulaw', sampleRate: 8000, channels: 1 }
+  } }));
+  const payload = Buffer.alloc(160, 255).toString('base64');
+  const media = (sequenceNumber, timestamp) => ws.send(JSON.stringify({ event: 'media', sequenceNumber,
+    streamSid: stream, media: { track: 'inbound', timestamp, payload } }));
+  media('2', '0'); media('2', '0'); media('4', '60');
+  await waitFor(() => service.input.length >= 2);
+  assert.deepEqual(service.input, [{ type: 'audio', audio: payload }, { type: 'audio', audio: payload }]);
+  const live = await (await service.request(`/calls/${call.call_id}?agent_id=${agent}`)).json();
+  assert.equal(live.audio_diagnostics.version, 1);
+  assert.equal(live.audio_diagnostics.inbound_frames, 2);
+  assert.equal(live.audio_diagnostics.input_samples, 320);
+  assert.equal(live.audio_diagnostics.input_rms_dbfs, -120);
+  assert.equal(live.audio_diagnostics.timestamp_gap_ms, 40);
+  assert.equal(live.audio_diagnostics.duplicate_events, 1);
+  ws.close(); await once(ws, 'close');
+  await service.close();
+  const restarted = await setup(t, { database });
+  const persisted = await (await restarted.request(`/calls/${call.call_id}?agent_id=${agent}`)).json();
+  assert.deepEqual(persisted.audio_diagnostics, live.audio_diagnostics);
+  const hydrated = await setup(t, { env: { NANOCODEX_PHONE_STATE_URL: stateUrl } });
+  const restored = await (await hydrated.request(`/calls/${call.call_id}?agent_id=${agent}`)).json();
+  assert.deepEqual(restored.audio_diagnostics, live.audio_diagnostics);
+});
+
+test('native input backpressure is distinguished from malformed Twilio media', async t => {
+  const service = await setup(t, { startVoice() {
+    return { ready: Promise.resolve(), close() {}, send() { throw new Error('voice_backpressure'); } };
+  } });
+  const call = await (await service.call()).json();
+  const path = `/media/${call.call_id}/`;
+  const ws = new WebSocket(service.origin.replace('http:', 'ws:') + path, { headers: { 'x-twilio-signature': signature(path) } });
+  await once(ws, 'open');
+  ws.send(JSON.stringify({ event: 'start', sequenceNumber: '1', streamSid: stream, start: {
+    accountSid: env.TWILIO_ACCOUNT_SID, callSid: sid, streamSid: stream,
+    customParameters: { callId: call.call_id }, mediaFormat: { encoding: 'audio/x-mulaw', sampleRate: 8000, channels: 1 }
+  } }));
+  ws.send(JSON.stringify({ event: 'media', sequenceNumber: '2', streamSid: stream,
+    media: { track: 'inbound', timestamp: '0', payload: Buffer.alloc(160, 255).toString('base64') } }));
+  await once(ws, 'close');
+  const state = await (await service.request(`/calls/${call.call_id}?agent_id=${agent}`)).json();
+  assert.equal(state.error, 'voice_backpressure');
+  assert.equal(service.hangups(), 1);
+});

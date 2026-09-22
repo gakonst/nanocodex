@@ -134,3 +134,14 @@ it.each([undefined, "", "other"])("blocks all container routes before provider a
     expect(network).not.toHaveBeenCalled();
   }, { NANOCODEX_PHONE_ADMIN_ID: admin });
 });
+
+it("persists numeric audio diagnostics and rejects arbitrary data in checkpoints", () => {
+  const value = row();
+  const valid = (audio_diagnostics: unknown) => validPhoneCheckpoint({ ...value,
+    record: JSON.stringify({ ...value.record, audio_diagnostics }) });
+  expect(valid({ inbound_frames: 250, input_rms_dbfs: -34.5, input_peak_dbfs: -3, timestamp_gap_ms: 20.125 })).toBe(true);
+  for (const diagnostics of [null, [], {}, { audio: "private audio" }, { inbound_frames: -1 },
+    { inbound_frames: 0.5 }, { input_rms_dbfs: -121 }, { input_peak_dbfs: 1 }, { input_rms_dbfs: null }]) {
+    expect(valid(diagnostics)).toBe(false);
+  }
+});
