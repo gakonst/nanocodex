@@ -14,8 +14,6 @@ declare const apiKey: string;
 const capabilities: Capabilities = {
   durable_turns: true,
   resumable_events: true,
-  live_steer: true,
-  live_cancel: true,
   workspace: "cloudflare-computer",
   execution_environments: true,
   execution_namespace: "cwd-root-v1",

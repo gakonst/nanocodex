@@ -993,8 +993,6 @@ fn agent_state_json(agent_id: &str, latest_event_cursor: &str) -> Value {
         "capabilities": {
             "durable_turns": true,
             "resumable_events": true,
-            "live_steer": true,
-            "live_cancel": true,
             "workspace": "cloud",
             "execution_environments": true,
             "execution_namespace": "cwd-root-v1",

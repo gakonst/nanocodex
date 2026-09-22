@@ -194,8 +194,6 @@ type ConnectedAgent = (
 struct ManagedActiveTurns {
     ids: HashSet<String>,
     order: Vec<String>,
-    live_steer: bool,
-    live_cancel: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -372,8 +370,6 @@ impl ManagedActiveTurns {
         Self {
             ids: state.active_turns.iter().cloned().collect(),
             order: state.active_turns.clone(),
-            live_steer: state.capabilities.live_steer,
-            live_cancel: state.capabilities.live_cancel,
         }
     }
 
@@ -413,9 +409,6 @@ impl ManagedActiveTurns {
     }
 
     fn steer_target(&self) -> Result<&str, &'static str> {
-        if !self.live_steer {
-            return Err("this managed agent does not allow live steering");
-        }
         match self.ids.len() {
             1 => Ok(self.ids.iter().next().expect("one active managed turn")),
             0 => Err("no attached managed turn is active"),
@@ -3815,22 +3808,9 @@ async fn apply_update(
                             })
                             .collect::<Vec<_>>();
                         runtime.cancel_local_turns(pane, local_turns);
-                        if runtime.managed_active_turns.live_cancel {
-                            let managed_turns =
-                                runtime.managed_active_turns.ids.iter().cloned().collect();
-                            runtime.cancel_managed_turns(pane, managed_turns);
-                        } else if !runtime.managed_active_turns.ids.is_empty() {
-                            runtime.cancellation_failed = true;
-                            absorb(
-                                app.update(AppEvent::NotifyError {
-                                    pane,
-                                    error: "This managed agent does not allow live cancellation."
-                                        .to_owned(),
-                                }),
-                                &mut effects,
-                                scheduler,
-                            );
-                        }
+                        let managed_turns =
+                            runtime.managed_active_turns.ids.iter().cloned().collect();
+                        runtime.cancel_managed_turns(pane, managed_turns);
                         if runtime.cancel_after_admission.is_empty()
                             && runtime.cancellations.is_empty()
                             && !runtime.cancellation_fences.has_in_flight()
@@ -5069,8 +5049,6 @@ mod tests {
         let mut active = ManagedActiveTurns {
             ids: HashSet::from(["attached-1".to_owned()]),
             order: vec!["attached-1".to_owned()],
-            live_steer: true,
-            live_cancel: true,
         };
         let accepted = managed_turn("1", "new prompt");
 
@@ -5095,12 +5073,38 @@ mod tests {
     }
 
     #[test]
+    fn fresh_session_can_steer_an_observed_turn_without_capability_initialization() {
+        let mut active = ManagedActiveTurns::default();
+        assert_eq!(
+            active.steer_target().unwrap_err(),
+            "no attached managed turn is active"
+        );
+
+        active.observe(&managed_turn("1", "new prompt"), &HashMap::new());
+        assert_eq!(active.steer_target().unwrap(), "turn-1");
+
+        active.observe(
+            &ManagedEvent {
+                cursor: "2".to_owned(),
+                created_at: None,
+                turn_id: Some("turn-1".to_owned()),
+                data: ManagedEventData::TurnCancelled {
+                    id: "turn-1".to_owned(),
+                },
+            },
+            &HashMap::new(),
+        );
+        assert_eq!(
+            active.steer_target().unwrap_err(),
+            "no attached managed turn is active"
+        );
+    }
+
+    #[test]
     fn managed_active_turns_do_not_claim_known_local_admissions() {
         let mut active = ManagedActiveTurns {
             ids: HashSet::new(),
             order: Vec::new(),
-            live_steer: true,
-            live_cancel: true,
         };
         let local = HashMap::from([(TurnId::new(1), "turn-1".to_owned())]);
 
@@ -5115,8 +5119,6 @@ mod tests {
         let mut active = ManagedActiveTurns {
             ids: HashSet::new(),
             order: Vec::new(),
-            live_steer: true,
-            live_cancel: true,
         };
         let local = HashMap::from([(TurnId::new(1), "turn-1".to_owned())]);
         let accepted = managed_turn("1", "local");
@@ -5142,8 +5144,6 @@ mod tests {
         let mut active = ManagedActiveTurns {
             ids: HashSet::from(["attached-1".to_owned()]),
             order: vec!["attached-1".to_owned()],
-            live_steer: true,
-            live_cancel: true,
         };
         let failed = ManagedEvent {
             cursor: "2".to_owned(),
@@ -5166,8 +5166,6 @@ mod tests {
         let mut active = ManagedActiveTurns {
             ids: HashSet::from(["attached-1".to_owned()]),
             order: vec!["attached-1".to_owned()],
-            live_steer: true,
-            live_cancel: true,
         };
         assert_eq!(active.steer_target().unwrap(), "attached-1");
 
@@ -5176,10 +5174,10 @@ mod tests {
         assert_eq!(active.steer_target().unwrap(), "attached-1");
         active.remove("attached-1");
         assert_eq!(active.steer_target().unwrap(), "attached-2");
-        active.live_steer = false;
+        active.remove("attached-2");
         assert_eq!(
             active.steer_target().unwrap_err(),
-            "this managed agent does not allow live steering"
+            "no attached managed turn is active"
         );
     }
 

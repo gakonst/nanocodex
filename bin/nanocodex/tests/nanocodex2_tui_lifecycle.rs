@@ -477,7 +477,7 @@ async fn serve(mut socket: WebSocket, service: Service, cursor: u64, agent: Stri
         "type": "ready", "session_id": agent, "restored": false,
         "active_turns": service.active_turns(), "active_turn_details": [], "latest_event_cursor": latest_cursor,
         "capabilities": {"durable_turns": true, "resumable_events": true,
-            "live_steer": true, "live_cancel": true, "workspace": "cloudflare-computer",
+            "workspace": "cloudflare-computer",
             "execution_environments": true, "execution_namespace": "cwd-root-v1", "native_cross_mounts": false},
         "settings": {"model": "gpt-6-astra", "thinking": "low", "reasoning_mode": "standard", "fast_mode": false}
     });
@@ -547,7 +547,7 @@ async fn state(
         "completed_turns": 0, "last_active": 1, "agent_loaded": true, "connected_clients": 1,
         "active_turns": service.active_turns(), "active_turn_details": [],
         "capabilities": {"durable_turns": true, "resumable_events": true,
-            "live_steer": true, "live_cancel": true, "workspace": "cloudflare-computer",
+            "workspace": "cloudflare-computer",
             "execution_environments": true, "execution_namespace": "cwd-root-v1", "native_cross_mounts": false},
         "settings": service.settings.lock().unwrap().clone(),
         "model_routing_enabled": !service.routing_requests.lock().unwrap().is_empty(),
@@ -1628,6 +1628,33 @@ async fn terminal_delivers_rapid_attached_steers_in_order() {
     let next = fixture.submission("followup after rapid steering").await;
     fixture.complete(&next);
     assert!(fixture.submissions.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn terminal_fresh_session_can_cancel_an_external_turn_without_capabilities() {
+    let mut fixture = Fixture::start().await;
+    fixture.emit(
+        REMOTE_TURN,
+        json!({"type": "turn_accepted", "id": REMOTE_TURN,
+            "input": "work started by another client", "replayed": false}),
+    );
+    fixture.terminal.wait_text("Enter steer").await;
+    fixture.terminal.input("\x1b");
+    fixture.terminal.wait_text("Interrupt").await;
+    fixture.terminal.input("\x1b");
+    assert_eq!(
+        tokio::time::timeout(TIMEOUT, fixture.cancellations.recv())
+            .await
+            .unwrap()
+            .unwrap(),
+        REMOTE_TURN
+    );
+    fixture.emit(
+        REMOTE_TURN,
+        json!({"type": "turn_cancelled", "id": REMOTE_TURN}),
+    );
+    fixture.terminal.wait_text("Enter send").await;
+    assert!(fixture.cancellations.try_recv().is_err());
 }
 
 #[tokio::test]

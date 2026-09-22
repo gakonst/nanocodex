@@ -374,10 +374,6 @@ pub struct AgentCapabilities {
     pub durable_turns: bool,
     /// Whether durable events can resume from a cursor.
     pub resumable_events: bool,
-    /// Whether an active turn accepts steering input.
-    pub live_steer: bool,
-    /// Whether an active turn accepts cancellation.
-    pub live_cancel: bool,
     /// Server-advertised workspace mode.
     pub workspace: String,
     /// Whether tools can target explicit sandbox and connected-user environments.

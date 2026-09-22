@@ -604,7 +604,7 @@ mod tests {
             let ready = json!({ "type": "ready", "session_id": "agent-1", "restored": true,
                 "active_turns": [], "latest_event_cursor": "0",
                 "capabilities": { "durable_turns": true, "resumable_events": true,
-                    "live_steer": true, "live_cancel": true, "workspace": "cloud",
+                    "workspace": "cloud",
                     "execution_environments": true, "execution_namespace": "cwd-root-v1", "native_cross_mounts": false },
                 "settings": { "model": "gpt-6-astra", "thinking": "low", "reasoning_mode": "standard", "fast_mode": false } });
             socket
@@ -695,8 +695,6 @@ mod tests {
             "capabilities": {
                 "durable_turns": true,
                 "resumable_events": true,
-                "live_steer": true,
-                "live_cancel": true,
                 "workspace": "cloud",
                 "execution_environments": true,
                 "execution_namespace": "cwd-root-v1",

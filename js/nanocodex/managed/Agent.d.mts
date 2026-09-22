@@ -195,8 +195,6 @@ export type CreateAndPromptOptions = CreateOptions & Readonly<{
 export type Capabilities = Readonly<{
   durable_turns: true;
   resumable_events: true;
-  live_steer: true;
-  live_cancel: true;
   workspace: "cloudflare-computer";
   /** Tools can target explicit sandbox and connected-user environments. */
   execution_environments: true;
