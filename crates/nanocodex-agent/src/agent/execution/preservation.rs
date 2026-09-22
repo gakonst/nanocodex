@@ -172,6 +172,54 @@ mod tests {
     }
 
     #[test]
+    fn source_excludes_tool_output_instructions_and_harness_messages() {
+        let mut items = vec![
+            ResponseItem::message(MessageRole::User, [ContentItem::input_text("user source")]),
+            ResponseItem::message(
+                MessageRole::Assistant,
+                [ContentItem::output_text("assistant source")],
+            ),
+            ResponseItem::message(
+                MessageRole::Developer,
+                [ContentItem::input_text("recalled memory")],
+            ),
+            ResponseItem::message(
+                MessageRole::System,
+                [ContentItem::input_text("system instructions")],
+            ),
+            ResponseItem::function_call_output(
+                "tool".into(),
+                nanocodex_oai_api::responses::FunctionOutputBody::Text("tool text".into()),
+            ),
+        ];
+        for synthetic in [
+            "<environment_context>facts",
+            "# AGENTS.md instructions",
+            "<turn_aborted>cancelled",
+        ] {
+            items.push(ResponseItem::message(
+                MessageRole::User,
+                [ContentItem::input_text(synthetic)],
+            ));
+        }
+        let request = BeforeCompactionRequest::from_history(
+            "b".into(),
+            "s".into(),
+            "r".into(),
+            &ResponseHistory::new(items),
+        );
+        assert!(!request.truncated);
+        assert_eq!(
+            request
+                .messages
+                .iter()
+                .map(|message| message.text.as_str())
+                .collect::<Vec<_>>(),
+            ["user source", "assistant source"]
+        );
+    }
+
+    #[test]
     fn never_promotes_partial_messages_or_merges_text_parts() {
         let history = ResponseHistory::new(vec![
             ResponseItem::message(
