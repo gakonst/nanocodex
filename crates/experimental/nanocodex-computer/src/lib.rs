@@ -299,6 +299,18 @@ impl ComputerExecutor for LocalComputer {
         arguments: Value,
         context: ToolContext<'_>,
     ) -> ToolResult {
+        // The provider's JavaScript timer may exclude native permission UI.
+        // Bound the entire caller wait, including queueing and elicitation.
+        // Dropping the receiver cancels the owner and its pending host UI.
+        let timeout = matches!(name, "js" | "js_reset").then(|| {
+            Duration::from_millis(
+                arguments
+                    .get("timeout_ms")
+                    .and_then(Value::as_u64)
+                    .filter(|millis| *millis > 0)
+                    .unwrap_or(30_000),
+            )
+        });
         let session = context.session_id().to_owned();
         let (response, result) = oneshot::channel();
         self.dispatch
@@ -312,7 +324,13 @@ impl ComputerExecutor for LocalComputer {
                 response,
             })
             .map_err(|_| "CUA attachment is closed")?;
-        result.await.map_err(|_| "CUA attachment is closed")?
+        let result = match timeout {
+            Some(timeout) => tokio::time::timeout(timeout, result).await.map_err(|_| {
+                format!("CUA call exceeded its {} ms deadline, including any pending permission dialog. No approval was granted by this timeout. Call cua_repl.js_reset before continuing.", timeout.as_millis())
+            })?,
+            None => result.await,
+        };
+        result.map_err(|_| "CUA attachment is closed")?
     }
 }
 

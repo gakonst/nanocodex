@@ -274,3 +274,57 @@ async fn rejects_repeated_cursors_and_duplicate_tool_names() {
         assert!(error.to_string().contains(expected), "{error}");
     }
 }
+
+#[tokio::test]
+async fn requested_deadline_cancels_blocked_provider_and_requires_reset() {
+    let computer = ComputerTools::connect(config()).await.unwrap();
+    computer
+        .js()
+        .execute(input(json!({})), context("deadline"))
+        .await
+        .unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_secs(3),
+        computer.js().execute(
+            input(json!({"code":"wait", "timeout_ms":100})),
+            context("deadline"),
+        ),
+    )
+    .await
+    .expect("host ignored the requested deadline");
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("100 ms deadline")
+    );
+    assert!(
+        computer
+            .js()
+            .execute(input(json!({})), context("deadline"))
+            .await
+            .is_err()
+    );
+    assert!(
+        computer
+            .js()
+            .execute(input(json!({})), context("other"))
+            .await
+            .unwrap()
+            .success
+    );
+    computer
+        .reset()
+        .execute(input(json!({})), context("deadline"))
+        .await
+        .unwrap();
+    assert!(
+        computer
+            .js()
+            .execute(input(json!({})), context("deadline"))
+            .await
+            .unwrap()
+            .success
+    );
+}

@@ -81,3 +81,9 @@ conversation isolation, cancellation, and elicitation. The ignored
 `installed_external_provider_discovery_preserves_catalog_and_hides_lifecycle_hook`
 smoke test uses `NANOCODEX_TEST_EXTERNAL_COMPUTER` to inspect an installed upstream
 launcher. It performs discovery only and does not claim to verify native control.
+
+JavaScript calls have a host deadline covering queueing, provider startup, execution,
+and pending permission dialogs. A positive `timeout_ms` selects the deadline;
+the default is 30 seconds. Expiry cancels the affected provider and pending
+consent UI, never grants permission, and requires `js_reset` before continuation.
+Other conversations remain usable. Provider arguments are still forwarded unchanged.

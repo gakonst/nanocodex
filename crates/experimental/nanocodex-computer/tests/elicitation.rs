@@ -365,3 +365,44 @@ async fn codex_alias_uses_the_same_form_handler_and_validation() {
         }
     }
 }
+
+#[tokio::test]
+async fn tool_deadline_cancels_pending_permission_without_granting_consent() {
+    let host = host(None);
+    let mut config = config("reply", params());
+    config.elicitation_timeout = Duration::from_secs(60);
+    config.elicitation_handler = Some(host.clone());
+    let tools = ComputerTools::connect(config).await.unwrap();
+    let result = tokio::time::timeout(
+        Duration::from_secs(15),
+        tools.js().execute(
+            ToolInput::Function(
+                serde_json::value::to_raw_value(&json!({"timeout_ms":5000})).unwrap(),
+            ),
+            ToolContext::new(
+                "fixture-model",
+                "deadline-session",
+                "fixture-call",
+                &[],
+                16000,
+            ),
+        ),
+    )
+    .await
+    .expect("pending permission ignored the tool deadline");
+    assert!(
+        result
+            .err()
+            .unwrap()
+            .to_string()
+            .contains("5000 ms deadline")
+    );
+    assert_eq!(host.seen.lock().unwrap().len(), 1);
+    tokio::time::timeout(Duration::from_secs(2), async {
+        while !host.dropped.load(Ordering::SeqCst) {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .expect("permission UI survived the timed-out call");
+}
