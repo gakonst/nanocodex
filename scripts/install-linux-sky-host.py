@@ -6,6 +6,7 @@ This installs Nanocodex transport files separately; it never downloads or patche
 OpenAI binaries, supplies approvals, or disables the Codex model sandbox.
 """
 import argparse
+import json
 import os
 from pathlib import Path
 import shlex
@@ -15,6 +16,7 @@ parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--runtime', type=Path, required=True, help='Installed cua_node directory')
 parser.add_argument('--codex-cli', type=Path, required=True, help='Matching upstream Codex executable')
 parser.add_argument('--destination', type=Path, required=True, help='New, private host installation directory')
+parser.add_argument('--register-managed', action='store_true', help='Select this launcher for automatic Linux guest discovery')
 parser.add_argument('--surfaces', choices=['computer', 'browser,computer'], default='browser,computer')
 args = parser.parse_args()
 runtime, codex, destination = args.runtime.resolve(), args.codex_cli.resolve(), args.destination.resolve()
@@ -48,4 +50,19 @@ command = [str(runtime / 'bin/node'), str(destination / 'linux_sky_host.mjs'), s
 launcher = destination / 'cua-provider'
 launcher.write_text('#!/bin/sh\nset -eu\n' + ''.join(f'export {key}={shlex.quote(value)}\n' for key,value in variables.items()) + 'exec ' + ' '.join(map(shlex.quote, command)) + ' "$@"\n')
 launcher.chmod(0o700)
+if args.register_managed:
+    base = Path(os.environ.get('NANOCODEX_DIR') or Path.home() / '.nanocodex').resolve()
+    managed = base / 'runtimes/openai-cua'
+    managed.mkdir(mode=0o700, parents=True, exist_ok=True)
+    receipt = {'status': 'installed', 'transport': 'mcp', 'executable': str(launcher),
+               'args': [], 'environment': {}}
+    # Readers see either the previous complete selection or this complete receipt.
+    import tempfile
+    with tempfile.NamedTemporaryFile(mode='w', dir=managed, prefix='.provider-', delete=False) as stage:
+        json.dump(receipt, stage)
+        stage.write('\n')
+    try:
+        os.replace(stage.name, managed / 'provider.json')
+    finally:
+        Path(stage.name).unlink(missing_ok=True)
 print(launcher)
