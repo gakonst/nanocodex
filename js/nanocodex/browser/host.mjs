@@ -1,3 +1,4 @@
+import { createBeforeCompaction } from "../runtime/before-compaction.mjs";
 import { createResponsesHttp, responsesHttpHeaders } from "../runtime/responses-http.mjs";
 import { createCodeRuntime, toolResult } from "../runtime/code-runtime.mjs";
 import {
@@ -18,6 +19,7 @@ const MPP_CLIENT_PROTOCOL_ERROR_CLOSE_CODE = 3008;
 const WEBSOCKET_OPEN = 1;
 
 export function createBrowserHost(options = {}) {
+  const preservation = createBeforeCompaction(options.beforeCompaction);
   const toolMode = options.toolMode ?? "code";
   if (toolMode !== "code" && toolMode !== "direct") {
     throw new TypeError("toolMode must be code or direct");
@@ -422,6 +424,7 @@ export function createBrowserHost(options = {}) {
 
   function dispose() {
     if (disposal) return disposal;
+    preservation.dispose();
     http.dispose();
     disposalError = new Error("Nanocodex host was disposed during WebSocket connection");
     disposal = Promise.resolve().then(async () => {
@@ -528,6 +531,8 @@ export function createBrowserHost(options = {}) {
       if (references > 0) references -= 1;
       return references === 0 ? dispose() : Promise.resolve();
     },
+    beforeCompaction: preservation.preserve,
+    cancelBeforeCompaction: preservation.cancel,
     httpOpen: http.httpOpen,
     httpReady: http.httpReady,
     httpNext: http.httpNext,

@@ -113,6 +113,7 @@ where
             provider_session_id,
             prompt_cache_key,
             shared_prompt_cache: shared,
+            before_compaction: codex.before_compaction,
             context_config: codex.context,
             context_source,
             depth: 0,

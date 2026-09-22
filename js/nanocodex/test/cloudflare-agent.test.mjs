@@ -1510,3 +1510,21 @@ test("Cloudflare SDK sibling shutdown preserves live siblings without child chec
     await agent.session.shutdown();
   }
 });
+
+test("Cloudflare beforeCompaction option reaches the host unchanged and is omitted by default", async () => {
+  const creationStopped = new Error("stop before initializing WASM");
+  const captured = [];
+  const adapter = bindAgent(new Uint8Array(), {
+    async create(options) {
+      captured.push(options);
+      throw creationStopped;
+    },
+  });
+  const beforeCompaction = async () => ({ receiptId: "synthetic-cloudflare-commit" });
+  for (const options of [{ beforeCompaction }, {}]) {
+    await assert.rejects(adapter.create(durableOwner(new MemoryStorage()), options),
+      error => error === creationStopped);
+  }
+  assert.equal(captured[0].beforeCompaction, beforeCompaction);
+  assert.equal(Object.hasOwn(captured[1], "beforeCompaction"), false);
+});

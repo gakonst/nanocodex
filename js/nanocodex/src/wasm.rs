@@ -91,6 +91,15 @@ pub async fn prune_durable_receipts(
 
 #[wasm_bindgen]
 extern "C" {
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = beforeCompaction)]
+    fn host_before_compaction(host_definition_id: u32, request: &str) -> Result<Promise, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = cancelBeforeCompaction)]
+    fn host_cancel_before_compaction(
+        host_definition_id: u32,
+        boundary_id: &str,
+    ) -> Result<(), JsValue>;
+
     #[wasm_bindgen(catch, js_namespace = console, js_name = error)]
     fn host_console_error(message: &str, error: &JsValue) -> Result<(), JsValue>;
 
@@ -972,11 +981,63 @@ pub async fn apply_browser_patch(patch: &str, session_id: &str) -> Result<String
         .map_err(js_error)
 }
 
+struct JavaScriptBeforeCompaction {
+    host_definition_id: u32,
+}
+
+impl nanocodex::agent::execution::BeforeCompaction for JavaScriptBeforeCompaction {
+    fn preserve(
+        &self,
+        request: nanocodex::agent::execution::BeforeCompactionRequest,
+    ) -> nanocodex::agent::execution::ExecutionFuture<
+        '_,
+        Result<nanocodex::agent::execution::CompactionReceipt, NanocodexError>,
+    > {
+        Box::pin(async move {
+            struct Cancel {
+                host: u32,
+                boundary: String,
+                finished: bool,
+            }
+            impl Drop for Cancel {
+                fn drop(&mut self) {
+                    if !self.finished {
+                        let _ = host_cancel_before_compaction(self.host, &self.boundary);
+                    }
+                }
+            }
+            let mut cancel = Cancel {
+                host: self.host_definition_id,
+                boundary: request.boundary_id.clone(),
+                finished: false,
+            };
+            let encoded = serde_json::to_string(&request)
+                .map_err(|error| NanocodexError::BeforeCompactionFailed(error.to_string()))?;
+            let promise =
+                host_before_compaction(self.host_definition_id, &encoded).map_err(|error| {
+                    NanocodexError::BeforeCompactionFailed(host_error_message(&error))
+                })?;
+            let result = JsFuture::from(promise).await.map_err(|error| {
+                NanocodexError::BeforeCompactionFailed(host_error_message(&error))
+            })?;
+            let text = result.as_string().ok_or_else(|| {
+                NanocodexError::BeforeCompactionFailed("host receipt must be JSON".into())
+            })?;
+            let receipt = serde_json::from_str(&text)
+                .map_err(|error| NanocodexError::BeforeCompactionFailed(error.to_string()))?;
+            cancel.finished = true;
+            Ok(receipt)
+        })
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct WasmConfig {
     api_key: String,
     host_definition_id: u32,
+    #[serde(default)]
+    before_compaction: bool,
     #[serde(default = "default_model")]
     model: String,
     #[serde(default)]
@@ -1430,6 +1491,9 @@ impl WasmNanocodex {
         } else {
             (RustNanocodex::builder(openai).tools(tools), None)
         };
+        if config.before_compaction {
+            builder = builder.before_compaction(JavaScriptBeforeCompaction { host_definition_id });
+        }
         if let Some(instructions) = config.instructions {
             builder = builder.instructions(instructions);
         }

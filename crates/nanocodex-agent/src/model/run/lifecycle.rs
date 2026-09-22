@@ -361,6 +361,52 @@ where
         let thinking = self.thinking;
         let fast_mode = self.fast_mode;
         let trigger = compaction::trigger();
+        // This barrier is shared by explicit, pre-turn, and mid-turn compaction.
+        // It must settle before even tool-output trimming, and failures leave
+        // the original conversation available for retry or recovery.
+        if let Some(hook) = &self.before_compaction {
+            use crate::execution::{BeforeCompactionRequest, CompactionReceipt};
+            let preservation_step = format!("before-{step_id}");
+            let operation = self.execution_steps.as_ref().map_or_else(
+                || factory.profile().turn_id(),
+                |steps| steps.operation_id().to_owned(),
+            );
+            let boundary_id = format!(
+                "{}:{operation}:{preservation_step}",
+                self.events.request_id()
+            );
+            let request = BeforeCompactionRequest::from_history(
+                boundary_id,
+                self.events.request_id().to_owned(),
+                self.provider_session_id.to_string(),
+                &history,
+            );
+            let recovered = if let Some(steps) = &self.execution_steps {
+                match steps
+                    .begin::<_, CompactionReceipt>(
+                        &preservation_step,
+                        "before_compaction",
+                        &request,
+                    )
+                    .await?
+                {
+                    crate::agent::ExecutionStep::Replay(receipt) => {
+                        receipt.validate()?;
+                        true
+                    }
+                    crate::agent::ExecutionStep::Execute => false,
+                }
+            } else {
+                false
+            };
+            if !recovered {
+                let receipt = hook.preserve(request).await?;
+                receipt.validate()?;
+                if let Some(steps) = &self.execution_steps {
+                    steps.complete(&preservation_step, &receipt).await?;
+                }
+            }
+        }
         let mut history = history;
         let rewritten = compaction::trim_tool_outputs_to_fit_context_window(
             &mut history,

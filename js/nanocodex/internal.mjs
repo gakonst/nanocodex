@@ -347,6 +347,7 @@ export function toWasmConfig(options = {}) {
   copy(config, "terminal_receipt_retention", options.terminalReceiptRetention);
   copy(config, "subagents", options.subagents);
   copy(config, "host_definition_id", options.hostDefinitionId);
+  copy(config, "before_compaction", options.beforeCompaction);
   return config;
 }
 
@@ -525,6 +526,13 @@ const hostBridge = Object.freeze({
       throw new TypeError("the selected Nanocodex host must define sleep(milliseconds)");
     }
     return host.sleep(milliseconds);
+  },
+  async beforeCompaction(hostDefinitionId, requestJson) {
+    const host = requiredDefinitionHost(hostDefinitionId);
+    return JSON.stringify(await host.beforeCompaction(JSON.parse(requestJson)));
+  },
+  cancelBeforeCompaction(hostDefinitionId, boundaryId) {
+    definitionHosts.get(hostDefinitionId)?.cancelBeforeCompaction(boundaryId);
   },
   async routeSubagent(hostDefinitionId, requestJson) {
     const host = requiredDefinitionHost(hostDefinitionId);

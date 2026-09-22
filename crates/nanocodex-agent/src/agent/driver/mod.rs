@@ -88,6 +88,7 @@ where
                 self.spawner.host_context.as_ref().map(Arc::clone),
             )
         };
+        model.set_before_compaction(self.spawner.before_compaction.clone());
         let mut turn_index = 0_u64;
         let mut logical_turn_index = 0_u64;
         let mut latest_fork_checkpoint = inherited_checkpoint;
@@ -1871,7 +1872,7 @@ where
     S::Future: AgentSend,
 {
     let client = ResponsesClient::new((spawner.service_factory)(Arc::clone(&spawner.config)));
-    if let Some(checkpoint) = checkpoint {
+    let mut model = if let Some(checkpoint) = checkpoint {
         let prepared = prepare_checkpoint(
             checkpoint.model().clone(),
             &spawner.config,
@@ -1900,7 +1901,9 @@ where
             spawner.context_source.clone(),
             spawner.host_context.as_ref().map(Arc::clone),
         )
-    }
+    };
+    model.set_before_compaction(spawner.before_compaction.clone());
+    model
 }
 
 async fn accept_execution_command(
