@@ -242,6 +242,29 @@ struct ObservedNestedCall {
     shell_session_id: Option<i64>,
 }
 
+// Every observed start gets one terminal receipt, including root completion or
+// cancellation while its future is still pending. Dropping work cannot establish
+// whether an external effect happened, so never present interruption as rollback.
+struct PendingCallReceipts {
+    calls: HashMap<u64, (NestedToolCall, Instant)>,
+    updates: mpsc::UnboundedSender<CellUpdate>,
+}
+
+impl Drop for PendingCallReceipts {
+    fn drop(&mut self) {
+        for (id, (mut call, started)) in self.calls.drain() {
+            call.duration_ns = u64::try_from(started.elapsed().as_nanos()).unwrap_or(u64::MAX);
+            let _ = self
+                .updates
+                .send(CellUpdate::NestedCall(ObservedNestedCall {
+                    id,
+                    call,
+                    shell_session_id: None,
+                }));
+        }
+    }
+}
+
 enum CellTerminal {
     Completed {
         stored: HashMap<String, Value>,
@@ -1118,17 +1141,22 @@ impl EmbeddedHost {
     ) -> Result<CellTerminal, HostFailure> {
         let mut pending_calls: FuturesUnordered<BoxFuture<'_, CompletedNestedCall>> =
             FuturesUnordered::new();
+        let mut pending_receipts = PendingCallReceipts {
+            calls: HashMap::new(),
+            updates: updates.clone(),
+        };
         let nested_call_permits = Arc::new(Semaphore::new(MAX_CONCURRENT_NESTED_CALLS));
         let parallel_execution = Arc::new(RwLock::new(()));
         let mut event_count = 0_u64;
         loop {
             tokio::select! {
+                biased;
                 completed = pending_calls.next(), if !pending_calls.is_empty() => {
                     let Some(completed) = completed else {
                         continue;
                     };
-                    let call = self.send_completed_call(cell_id, completed)?;
-                    let _ = updates.send(CellUpdate::NestedCall(call));
+                    // A completed result wins over a simultaneously ready root terminal.
+                    self.send_completed_call(cell_id, completed, &mut pending_receipts)?;
                 }
                 event = self.read_event() => {
                     let event = event.map_err(HostFailure::new)?;
@@ -1151,6 +1179,18 @@ impl EmbeddedHost {
                             id, name, input, ..
                         } => {
                             let nested_call_id = format!("{}/code-{id}", context.call_id);
+                            let started = Instant::now();
+                            let message = "Code Mode cell ended before the tool returned; execution outcome unknown";
+                            pending_receipts.calls.insert(id, (NestedToolCall {
+                                call_id: nested_call_id.clone(), name: name.clone(), input: input.clone(),
+                                output: ToolOutputBody::Text(message.to_owned()),
+                                structured_result: serde_json::json!({
+                                    "error": message, "code": "CODE_MODE_CALL_INTERRUPTED", "outcome": "unknown",
+                                }),
+                                success: false,
+                                started_after_ns: u64::try_from(started.duration_since(actor_started_at).as_nanos()).unwrap_or(u64::MAX),
+                                duration_ns: 0, metadata: None,
+                            }, started));
                             let _ = updates.send(CellUpdate::NestedCallStarted {
                                 call_id: nested_call_id,
                                 name: name.clone(),
@@ -1226,19 +1266,27 @@ impl EmbeddedHost {
         &mut self,
         cell_id: u64,
         completed: CompletedNestedCall,
-    ) -> Result<ObservedNestedCall, HostFailure> {
-        self.send_tool_result(
-            cell_id,
-            completed.id,
-            completed.value,
-            completed.call.success,
-        )
-        .map_err(HostFailure::new)?;
-        Ok(ObservedNestedCall {
-            id: completed.id,
-            call: completed.call,
-            shell_session_id: completed.shell_session_id,
-        })
+        pending_receipts: &mut PendingCallReceipts,
+    ) -> Result<(), HostFailure> {
+        let CompletedNestedCall {
+            id,
+            value,
+            call,
+            shell_session_id,
+        } = completed;
+        let success = call.success;
+        // Host execution is already known. Publish it independently of guest
+        // delivery, which may fail after the cell or its runtime has closed.
+        pending_receipts.calls.remove(&id);
+        let _ = pending_receipts
+            .updates
+            .send(CellUpdate::NestedCall(ObservedNestedCall {
+                id,
+                call,
+                shell_session_id,
+            }));
+        self.send_tool_result(cell_id, id, value, success)
+            .map_err(HostFailure::new)
     }
 }
 

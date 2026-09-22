@@ -184,12 +184,10 @@ for (const failure of [
     }, { evaluate: createQuickJsEvaluator(quickJs) });
     const result = JSON.parse(await runtime.executeCode(`
       try { await tools.fail({}); }
-      catch (error) { text({ message: error.message, code: error.code, details: error.details }); }
+      catch (error) { text({ type: typeof error, value: error }); }
     `));
     assert.equal(result.success, true);
-    assert.deepEqual(JSON.parse(result.output.at(-1).text), typeof failure === "string"
-      ? { message: failure }
-      : { ...failure, message: failure.message ?? JSON.stringify(failure) });
+    assert.deepEqual(JSON.parse(result.output.at(-1).text), { type: typeof failure, value: failure });
   });
 }
 

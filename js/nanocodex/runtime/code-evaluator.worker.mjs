@@ -1,3 +1,4 @@
+import { createCodeTools } from "nanocodex-tools/runtime/code-tools";
 import { stringify, storeSnapshot, normalizeImage, normalizeAudio, generatedImageItems } from "nanocodex-tools/runtime/code-values";
 import { installBrowserEgressFetch } from "../tools/browser/browserEgress.mjs";
 
@@ -31,15 +32,7 @@ globalThis.onmessage = ({ data }) => {
 async function evaluate({ source, storedEntries = [], toolDefinitions = [], toolNames = [] }) {
   const stored = new Map(storedEntries);
   const storedWrites = new Map();
-  const tools = Object.create(null);
-  for (const name of toolNames) tools[name] = (input) => callTool(name, input);
-  const callableTools = new Proxy(tools, {
-    get(target, property) {
-      if (typeof property !== "string") return Reflect.get(target, property);
-      return target[property] ?? ((input) => callTool(property, input));
-    },
-  });
-  Object.freeze(tools);
+  const callableTools = createCodeTools(toolNames, callTool);
 
   const text = (value) => post("output", { kind: "text", value: stringify(value) });
   const image = (value, detail) => {

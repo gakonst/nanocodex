@@ -3,7 +3,7 @@ import { test } from "node:test";
 
 import { createCodeRuntime } from "../runtime/code-runtime.mjs";
 
-// Contract reference: openai/codex 36430b36881cf5c289cb48e671cfc9e8b542ae7b,
+// Contract reference: openai/codex 506a328dab110591d3c1449a15217596e7e9cd61,
 // code-mode-protocol/src/description.rs and code-mode-runtime/src/runtime/{value,callbacks}.rs.
 const imageUrl = "data:image/png;base64,AAAA";
 const run = async (source) => JSON.parse(await createCodeRuntime().executeCode(source));

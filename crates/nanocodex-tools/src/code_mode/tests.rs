@@ -565,6 +565,166 @@ await Promise.all([
 }
 
 #[tokio::test]
+async fn closed_guest_delivery_preserves_completed_result_and_shell_session() {
+    let mut host = super::EmbeddedHost::spawn().unwrap();
+    host.terminate().await;
+    let (updates, mut observed) = tokio::sync::mpsc::unbounded_channel();
+    let value = serde_json::json!({"session_id": 42, "output": "known result"});
+    let make_call = || NestedToolCall {
+        call_id: "parent/code-7".into(),
+        name: "exec_command".into(),
+        input: serde_json::json!({"cmd": "synthetic"}),
+        output: ToolOutputBody::Text("known result".into()),
+        structured_result: value.clone(),
+        success: true,
+        started_after_ns: 10,
+        duration_ns: 20,
+        metadata: None,
+    };
+    let mut receipts = super::PendingCallReceipts {
+        calls: std::collections::HashMap::from([(7, (make_call(), std::time::Instant::now()))]),
+        updates,
+    };
+    let delivery = host.send_completed_call(
+        1,
+        super::CompletedNestedCall {
+            id: 7,
+            value: value.clone(),
+            call: make_call(),
+            shell_session_id: Some(42),
+        },
+        &mut receipts,
+    );
+    assert!(delivery.is_err(), "closed guest must reject delivery");
+    assert!(receipts.calls.is_empty());
+    drop(receipts);
+    let Some(CellUpdate::NestedCall(receipt)) = observed.recv().await else {
+        panic!("known completion receipt missing");
+    };
+    assert_eq!(receipt.id, 7);
+    assert!(receipt.call.success);
+    assert_eq!(receipt.call.structured_result, value);
+    assert_eq!(receipt.shell_session_id, Some(42));
+    assert_eq!(receipt.call.call_id, "parent/code-7");
+    assert_eq!(receipt.call.started_after_ns, 10);
+    assert_eq!(receipt.call.duration_ns, 20);
+    assert!(
+        matches!(receipt.call.output, ToolOutputBody::Text(ref text) if text == "known result")
+    );
+    let mut content = vec![];
+    super::expose_running_shell_sessions(&mut content, &[receipt]);
+    assert!(matches!(&content[..], [ToolOutputContent::InputText { text }] if text.contains("42")));
+    assert!(
+        observed.recv().await.is_none(),
+        "no duplicate unknown receipt"
+    );
+}
+
+#[tokio::test]
+async fn root_terminal_accounts_for_pending_calls_without_overwriting_completed_calls() -> Result<()>
+{
+    let workspace = temporary_workspace("terminal-call-receipts")?;
+    let history = Vec::new();
+    for ending in ["return;", "throw new Error('root failed');"] {
+        let tools = Tools::builder()
+            .without_defaults()
+            .tool(ConcurrencyProbe {
+                state: Arc::new(ConcurrencyProbeState {
+                    active: AtomicUsize::new(0),
+                    maximum: AtomicUsize::new(0),
+                    release: Semaphore::new(1),
+                }),
+            })
+            .build()?;
+        let runtime = ToolRuntime::new_with_tools(&workspace, None, None, &tools);
+        let execution = tokio::time::timeout(Duration::from_secs(2), runtime.execute_code(
+            &format!("await tools.concurrency_probe({{}}); tools.concurrency_probe({{}}); tools.concurrency_probe({{}}); {ending}"),
+            test_context(&history),
+        )).await?.unwrap();
+        assert_eq!(execution.success, ending == "return;");
+        assert_eq!(execution.nested_calls.len(), 3);
+        assert!(execution.nested_calls[0].success);
+        for call in &execution.nested_calls[1..] {
+            assert!(!call.success);
+            assert_eq!(call.structured_result["code"], "CODE_MODE_CALL_INTERRUPTED");
+            assert_eq!(call.structured_result["outcome"], "unknown");
+            assert_eq!(
+                call.structured_result["error"],
+                "Code Mode cell ended before the tool returned; execution outcome unknown"
+            );
+        }
+    }
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn missing_nested_tool_rejects_locally_without_becoming_a_thenable() -> Result<()> {
+    let workspace = temporary_workspace("missing-tool-property")?;
+    let tools = test_tools(&workspace);
+    let history = Vec::new();
+    let execution = tools
+        .execute_code(
+            r#"
+const [result] = await Promise.allSettled([tools.missing_tool({})]);
+text([result.status, result.reason.code, result.reason.tool, typeof tools.then,
+  (await Promise.resolve(tools)) === tools, Object.keys(tools).includes("missing_tool")]);
+"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    assert!(execution.success, "{}", execution_output(&execution));
+    assert_eq!(
+        emitted_text(&execution)?,
+        "[\"rejected\",\"TOOL_NOT_AVAILABLE\",\"missing_tool\",\"undefined\",true,false]"
+    );
+    assert!(execution.nested_calls.is_empty());
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn missing_tool_rejects_without_cancelling_sibling_calls() -> Result<()> {
+    let workspace = temporary_workspace("missing-tool-all-settled")?;
+    let tools = Tools::builder()
+        .without_defaults()
+        .tool(SerialConcurrencyProbe {
+            state: Arc::new(ConcurrencyProbeState {
+                active: AtomicUsize::new(0),
+                maximum: AtomicUsize::new(0),
+                release: Semaphore::new(0),
+            }),
+        })
+        .build()?;
+    let runtime = ToolRuntime::new_with_tools(&workspace, None, None, &tools);
+    let history = Vec::new();
+    let execution = runtime
+        .execute_code(
+            r#"
+const results = await Promise.allSettled([
+  tools.serial_concurrency_probe({}),
+  tools.serial_concurrency_probe({}),
+  tools.missing_tool({}),
+]);
+text([results.map(result => result.status), results[2].reason.code === "TOOL_NOT_AVAILABLE"]);
+"#,
+            test_context(&history),
+        )
+        .await
+        .unwrap();
+    assert!(execution.success, "{}", execution_output(&execution));
+    assert_eq!(
+        emitted_text(&execution)?,
+        "[[\"fulfilled\",\"fulfilled\",\"rejected\"],true]"
+    );
+    assert_eq!(execution.nested_calls.len(), 2);
+    assert!(execution.nested_calls.iter().all(|call| call.success));
+    std::fs::remove_dir_all(workspace)?;
+    Ok(())
+}
+
+#[tokio::test]
 async fn failed_nested_tool_rejects_its_javascript_promise() -> Result<()> {
     let workspace = temporary_workspace("nested-tool-rejection")?;
     let tools = test_tools(&workspace);
@@ -576,7 +736,7 @@ try {
   await tools.view_image({ path: "missing.png" });
   text("unexpected success");
 } catch (error) {
-  text(error);
+  text({ type: typeof error, value: error });
 }
 "#,
             test_context(&history),
@@ -585,7 +745,14 @@ try {
         .unwrap();
 
     assert!(execution.success);
-    assert!(emitted_text(&execution)?.contains("unable to locate image"));
+    let rejection: Value = serde_json::from_str(emitted_text(&execution)?)?;
+    assert_eq!(rejection["type"], "string");
+    assert!(
+        rejection["value"]
+            .as_str()
+            .unwrap()
+            .contains("unable to locate image")
+    );
     assert_eq!(execution.nested_calls.len(), 1);
     assert!(!execution.nested_calls[0].success);
     std::fs::remove_dir_all(workspace)?;
@@ -757,64 +924,31 @@ async fn image_helper_requires_data_urls() -> Result<()> {
 }
 
 #[tokio::test]
-async fn image_helper_rejects_malformed_base64_without_emitting_images() -> Result<()> {
-    let workspace = temporary_workspace("code-mode-invalid-base64")?;
+async fn image_helper_defers_data_payload_validation_like_upstream() -> Result<()> {
+    let workspace = temporary_workspace("code-mode-image-payloads")?;
     let tools = test_tools(&workspace);
     let history = Vec::new();
     let execution = tools
         .execute_code(
             r#"
-const invalid = [
-  "data:", "data:image/png;base64,", "data:text/plain;base64,YQ==",
-  "data:image/;base64,YQ==", "data:image/png,YQ==",
-  "data:application/octet-stream;base64,a",
-  "data:application/octet-stream;base64,YQ==\n",
-  "data:application/octet-streamx;base64,YQ==",
-  "data:image/png;base64,a", "data:image/png;base64,YQ=",
-  "data:image/png;base64,====", "data:image/png;base64,A===",
-  "data:image/png;base64,Y=Q=", "data:image/png;base64,YQ==YQ==",
-  "data:image/png;base64,YQ==\n", "data:image/png;base64,Y Q=",
-  "data:image/png;base64,YQ-_", "data:image/png;base64,YQé=",
-  "data:image/png;base64,YQ%3D%3D",
-  "data:image/png;base64\n,AAAA", "data:image/png;base64\r,AAAA",
-  "data:image/png;base64\r\n,AAAA", "data:image/png;base64\u2028,AAAA",
-  "data:image/png;base64\u2029,AAAA",
-];
-let rejected = 0;
-for (const image_url of invalid) {
-  for (const value of [image_url, { image_url }, { type: "image", data: image_url }]) {
-    try { image(value); } catch (error) {
-      if (error !== "Tool call failed: invalid image output. Pass a base64 data URI instead") throw error;
-      rejected++;
-    }
-  }
-}
-for (const value of [
-  { type: "image", data: "a", mimeType: "image/png" },
-  { type: "image", data: "YQ==", mimeType: "text/plain" },
-  { type: "image", data: "YQ==", mimeType: "application/json" },
-]) {
-  try { image(value); } catch (error) {
-    if (error !== "Tool call failed: invalid image output. Pass a base64 data URI instead") throw error;
-    rejected++;
-  }
-}
-if (rejected !== invalid.length * 3 + 3) throw new Error("accepted malformed image");
-text("all rejected");
+image("data:garbage");
+image({ image_url: "DATA:image/png;base64,invalid" });
+image({ type: "image", data: "a", mimeType: "text/plain" });
 "#,
             test_context(&history),
         )
         .await
         .unwrap();
     assert!(execution.success, "{}", execution_output(&execution));
-    assert_eq!(emitted_text(&execution)?, "all rejected");
     let ToolOutputBody::Content(content) = &execution.output else {
         return Err(eyre!("code-mode execution did not emit content"));
     };
-    assert!(
-        !content
+    assert_eq!(
+        content
             .iter()
-            .any(|item| matches!(item, ToolOutputContent::InputImage { .. }))
+            .filter(|item| matches!(item, ToolOutputContent::InputImage { .. }))
+            .count(),
+        3
     );
     std::fs::remove_dir_all(workspace)?;
     Ok(())
