@@ -104,7 +104,7 @@ export default function RouterDashboard() {
     </> : <>
       <p className="router-muted">Historical snapshot · {benchmark.date} · {benchmark.model} / {benchmark.effort} · retained unchanged for comparison.</p>
       <div className="router-benchmark-top">
-        <div><strong className="router-headline-number">9<span> / 18</span></strong><h2>Jev binding calls failed</h2><p className="router-muted">All 18 downstream generations still completed via fallback.</p></div>
+        <div><strong className="router-headline-number">9<span> / 18</span></strong><h2>Jev binding calls failed</h2><p className="router-muted">All 18 generations completed; 17 routes used fallback.</p></div>
         <div><h2>What the router actually did</h2><OutcomePlot label="Historical routing outcomes" segments={[{label:"Accepted",count:1,color:"#5b9b91"},{label:"Low confidence",count:8,color:"#d9a05b"},{label:"Binding failed",count:9,color:"#c96f6b"}]}/></div>
       </div>
       <div className="router-chart-title"><h2>First output, by region & provider</h2><span>45 / 45 streaming calls completed</span></div>
