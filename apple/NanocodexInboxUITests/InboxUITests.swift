@@ -2999,16 +2999,24 @@ final class InboxUITests: XCTestCase {
     }
 
     func testRapidToolArrivalsKeepFinalTailVisibleWithoutJump() {
+        verifyRapidToolArrivals(count: 30, intervalMS: 120)
+    }
+
+    func testStress200ToolArrivalsKeepCompletedTailVisible() {
+        verifyRapidToolArrivals(count: 200, intervalMS: 50)
+    }
+
+    private func verifyRapidToolArrivals(count: Int, intervalMS: Int) {
         let app = launch(["NANOCODEX_DEMO_TOOL_ARRIVALS": "1",
-                          "NANOCODEX_DEMO_TOOL_ARRIVAL_COUNT": "30",
-                          "NANOCODEX_DEMO_TOOL_ARRIVAL_INTERVAL_MS": "120",
+                          "NANOCODEX_DEMO_TOOL_ARRIVAL_COUNT": String(count),
+                          "NANOCODEX_DEMO_TOOL_ARRIVAL_INTERVAL_MS": String(intervalMS),
                           "NANOCODEX_DEMO_PROFILE": UUID().uuidString]); selectInbox(app)
         let conversation = app.descendants(matching: .any)["conversation"].firstMatch
         XCTAssertTrue(conversation.waitForExistence(timeout: 5))
         let jump = app.buttons["latest-messages"]
         let jumpAppeared = XCTNSPredicateExpectation(predicate: NSPredicate(format: "exists == true"), object: jump)
         jumpAppeared.isInverted = true
-        let finalCard = conversation.buttons["tool-disclosure-demo-tool-arrival-30"]
+        let finalCard = conversation.buttons["tool-disclosure-demo-tool-arrival-\(count)"]
         func finalToolCompleted() -> Bool {
             finalCard.label.contains("Completed")
                 || finalCard.descendants(matching: .any).matching(NSPredicate(format: "label == %@", "Completed")).firstMatch.exists
@@ -3018,16 +3026,18 @@ final class InboxUITests: XCTestCase {
                 && finalCard.frame.minY >= conversation.frame.minY
                 && finalCard.frame.maxY <= self.composer(app).frame.minY
         }, object: nil)
-        // At 120 ms individual cards are intentionally transient. Observe the
-        // completed tail and jump control through the burst and settling period.
-        XCTAssertEqual(XCTWaiter.wait(for: [tailVisible, jumpAppeared], timeout: 12), .completed,
+        // Individual cards are intentionally transient. Observe the completed
+        // tail and jump control through the burst and a settling period.
+        let timeout = max(12, Double(count * intervalMS) / 1_000 + 10)
+        XCTAssertEqual(XCTWaiter.wait(for: [tailVisible, jumpAppeared], timeout: timeout), .completed,
                        "Rapid tool arrivals must follow the tail without offering a latest jump")
         XCTAssertTrue(finalCard.isHittable)
         XCTAssertTrue(finalToolCompleted(), "The final tool completes under the same row identity")
         XCTAssertGreaterThanOrEqual(finalCard.frame.minY, conversation.frame.minY)
         XCTAssertLessThanOrEqual(finalCard.frame.maxY, composer(app).frame.minY)
         XCTAssertFalse(jump.exists)
-        capture(app, "rapid-tool-arrivals-follow-tail")
+        print("STRESS_TOOLS count=\(count) intervalMS=\(intervalMS) finalCompleted=\(finalToolCompleted()) finalVisible=\(finalCard.isHittable) jumpExists=\(jump.exists)")
+        capture(app, "rapid-\(count)-tool-arrivals-follow-tail")
     }
 
     func testStreamingGrowthDoesNotMoveReaderInEarlierParagraphs() {
@@ -3757,6 +3767,7 @@ final class InboxUITests: XCTestCase {
         func assertBoundedHosts() {
             XCTAssertEqual(counter.value as? String, String(rowCount), "Keep the complete synthetic history in the data source")
             guard let mounted = Int(counter.label) else { return XCTFail("Expected actual native host count, got \(counter.label)") }
+            print("STRESS_HOSTS rows=\(rowCount) mounted=\(mounted)")
             XCTAssertGreaterThan(mounted, 0)
             // The same generous ceiling applies to both data sizes and counts
             // actual retained cell hosts, including any native reuse pool.
@@ -3775,6 +3786,7 @@ final class InboxUITests: XCTestCase {
             let offset = scrollOffset()
             XCTAssertLessThan(offset, previousOffset - 20,
                               "Each upward-history gesture must advance past self-sizing rows without snapping back")
+            print("STRESS_SCROLL rows=\(rowCount) previous=\(previousOffset) current=\(offset)")
             previousOffset = offset
         }
         let latest = app.buttons["latest-messages"]

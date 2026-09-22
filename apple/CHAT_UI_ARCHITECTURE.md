@@ -72,3 +72,25 @@ functional tests do not establish physical-device frame times. The extreme
 functional full-source test uses an over-limit 200-line result and preview unit
 tests retain extreme-input coverage. No visible-render latency claim follows from
 those accessibility timings.
+
+## Recorded stress run
+
+Run `apple/scripts/record-chat-stress.sh SIMULATOR_UDID DERIVED_DATA OUTPUT_DIRECTORY`
+with Xcode and the voice XCFramework built. Use a fresh output directory. The
+script builds the UI tests, asks XCTest to retain successful-test recordings and
+screenshots, then runs three repetitions of each scenario without failure retries:
+
+- 2,000 variable-height Markdown rows: twelve upward-history gestures, strictly
+  decreasing offsets, at most 64 retained native cell hosts at each checkpoint,
+  and a return to the live tail. The log includes actual host counts and offsets.
+- Expanded tool recycling: remove the tool from the realized accessibility tree,
+  then return and require its expanded output to remain visible.
+- 200 tool calls at a configured 50 ms interval, each running then completing
+  under the same identity: require the final completed tool to be visible and
+  observe no latest-message jump button during the burst and settling window.
+
+The output contains `tests.log`, `stress.xcresult`, and exported attachments. The
+interval is the synthetic producer's configured delay, not a measured throughput
+or network rate. Host counts and accessibility assertions are sampled checkpoints;
+simulator recordings are visual review evidence, not physical-device frame-time
+benchmarks.
