@@ -26,6 +26,7 @@ use nanocodex::{
         SubscriptionHttpResponse, SubscriptionStoreValue,
     },
     oai::responses::ResponseItem,
+    oai::transport::{ResponsesHistory, ResponsesTransport},
     tools::{
         ToolContext, ToolDefinition, ToolInput, ToolOutput,
         contract::ToolOutputWire,
@@ -202,6 +203,12 @@ extern "C" {
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = subscriptionRequest)]
     fn host_subscription_request(subscription_id: &str, request: &str) -> Result<Promise, JsValue>;
 
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = routeSubagent)]
+    fn host_route_subagent(host_definition_id: u32, request: &str) -> Result<Promise, JsValue>;
+
+    #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = bindSubagentRoute)]
+    fn host_bind_subagent_route(host_definition_id: u32, request: &str) -> Result<(), JsValue>;
+
     #[wasm_bindgen(catch, js_namespace = ["globalThis", "nanocodexHost"], js_name = bindSubagentSession)]
     fn host_bind_subagent_session(
         host_definition_id: u32,
@@ -217,6 +224,48 @@ extern "C" {
         root_session_id: &str,
         session_id: &str,
     ) -> Result<(), JsValue>;
+}
+
+struct JavaScriptSpawnRouter { host_definition_id: u32 }
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields, rename_all = "camelCase")]
+struct JavaScriptSpawnRoute { model: String, thinking: Thinking, route_id: String }
+
+#[async_trait::async_trait(?Send)]
+impl nanocodex_subagents::SpawnRouter for JavaScriptSpawnRouter {
+    async fn resolve(&self, parent_session_id: &str, role: &str, task: &str,
+        options: SpawnOptions, host_context: Option<&str>) -> std::io::Result<nanocodex_subagents::SpawnRoute> {
+        let mut request = serde_json::json!({ "parentSessionId": parent_session_id,
+            "role": role, "task": task });
+        if let Some(model) = options.selected_model() { request["model"] = serde_json::to_value(model)?; }
+        if let Some(thinking) = options.selected_thinking() { request["thinking"] = serde_json::to_value(thinking)?; }
+        if let Some(context) = host_context { request["hostContextRef"] = context.into(); }
+        let promise = host_route_subagent(self.host_definition_id, &request.to_string())
+            .map_err(|_| std::io::Error::other("subagent routing host rejected request"))?;
+        let value = JsFuture::from(promise).await
+            .map_err(|_| std::io::Error::other("subagent routing failed or was not authorized"))?;
+        let route: JavaScriptSpawnRoute = serde_json::from_str(&value.as_string()
+            .ok_or_else(|| std::io::Error::other("invalid subagent route response"))?)?;
+        let model = route.model.parse::<Model>().map_err(std::io::Error::other)?;
+        if options.selected_model().is_some_and(|requested| requested != model)
+            || options.selected_thinking().is_some_and(|thinking| thinking != route.thinking) {
+            return Err(std::io::Error::other("subagent route conflicts with explicit override"));
+        }
+        if route.route_id.is_empty() { return Err(std::io::Error::other("empty subagent route reference")); }
+        Ok(nanocodex_subagents::SpawnRoute {
+            options: SpawnOptions::new().model(model).thinking(route.thinking), reference: route.route_id,
+        })
+    }
+
+    fn bind(&self, parent_session_id: &str, child_session_id: &str, reference: &str,
+        host_context: Option<&str>) -> std::io::Result<()> {
+        let mut request = serde_json::json!({ "parentSessionId": parent_session_id,
+            "sessionId": child_session_id, "routeId": reference });
+        if let Some(context) = host_context { request["hostContextRef"] = context.into(); }
+        host_bind_subagent_route(self.host_definition_id, &request.to_string())
+            .map_err(|_| std::io::Error::other("subagent route binding failed"))
+    }
 }
 
 struct JavaScriptSubscriptionHost {
@@ -897,6 +946,8 @@ struct WasmConfig {
     #[serde(default)]
     websocket_warmup: bool,
     #[serde(default)]
+    stateless_http: bool,
+    #[serde(default)]
     websocket_url: Option<String>,
     #[serde(default)]
     api_base_url: Option<String>,
@@ -920,6 +971,8 @@ struct WasmConfig {
     terminal_receipt_retention: Option<usize>,
     #[serde(default)]
     subagents: Option<WasmSubagentsConfig>,
+    #[serde(default)]
+    subagent_routing: bool,
 }
 
 #[derive(Deserialize)]
@@ -1329,6 +1382,13 @@ impl WasmNanocodex {
             .reasoning_mode(reasoning_mode)
             .fast_mode(config.fast_mode)
             .websocket_warmup(config.websocket_warmup);
+        if config.stateless_http {
+            openai = openai
+                .transport(ResponsesTransport::Https)
+                .store(false)
+                .history(ResponsesHistory::FullReplay)
+                .websocket_warmup(false);
+        }
         if let Some(thinking) = config.thinking {
             openai = openai.thinking(thinking);
         }
@@ -1350,6 +1410,9 @@ impl WasmNanocodex {
         let (mut builder, subagents) = if let Some(subagents) = config.subagents {
             let (registry, control, updates) =
                 nanocodex_subagents::channel(subagents.max_concurrency);
+            if config.subagent_routing {
+                registry.set_spawn_router(Arc::new(JavaScriptSpawnRouter { host_definition_id }));
+            }
             let parents = Arc::new(Mutex::new(HashMap::new()));
             let tool_registry = Arc::clone(&registry);
             let tool_parents = Arc::clone(&parents);

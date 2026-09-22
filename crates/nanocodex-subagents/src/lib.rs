@@ -6,6 +6,8 @@ mod message;
 mod model;
 mod platform;
 mod runtime;
+mod routing;
+pub use routing::{SpawnRoute, SpawnRouter};
 mod task_tree;
 mod tools;
 

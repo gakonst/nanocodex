@@ -138,6 +138,10 @@
     "./tools/environment": {
       "types": "./tools/environment.d.mts",
       "import": "./tools/environment.mjs"
+    },
+    "./cloudflare/gateway-responses": {
+      "types": "./cloudflare/gateway-responses.d.mts",
+      "import": "./cloudflare/gateway-responses.mjs"
     }
   },
   "files": [

@@ -315,6 +315,8 @@ export function toWasmConfig(options = {}) {
   copy(config, "thinking", options.thinking);
   copy(config, "reasoning_mode", options.reasoningMode);
   copy(config, "fast_mode", options.fastMode);
+  copy(config, "stateless_http", options.stateless);
+  copy(config, "subagent_routing", options.subagentRouting);
   copy(config, "websocket_warmup", options.websocketWarmup);
   copy(config, "websocket_url", options.websocketUrl);
   copy(config, "api_base_url", options.apiBaseUrl);
@@ -514,6 +516,16 @@ const hostBridge = Object.freeze({
       throw new TypeError("the selected Nanocodex host must define sleep(milliseconds)");
     }
     return host.sleep(milliseconds);
+  },
+  async routeSubagent(hostDefinitionId, requestJson) {
+    const host = requiredDefinitionHost(hostDefinitionId);
+    if (!cloudflareHostMayBindSubagent(host)) throw new Error("subagent host is no longer active");
+    return JSON.stringify(await host.routeSubagent(JSON.parse(requestJson)));
+  },
+  bindSubagentRoute(hostDefinitionId, requestJson) {
+    const host = requiredDefinitionHost(hostDefinitionId);
+    if (!cloudflareHostMayBindSubagent(host)) throw new Error("subagent host is no longer active");
+    host.bindSubagentRoute(JSON.parse(requestJson));
   },
   bindSubagentSession(
     hostDefinitionId,

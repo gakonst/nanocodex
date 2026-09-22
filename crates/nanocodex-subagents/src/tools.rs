@@ -180,13 +180,38 @@ pub async fn start_agents_observed(
     let capacities = registry.reserve_turns(prepared.len())?;
     let reservations = registry.reserve_many(session_id, prepared.len()).await?;
     let host_context = registry.host_context_for_session(session_id).await;
-    let children = parent
-        .spawn_many_observed_with_host_context(
-            prepared.len(),
-            observe_session,
-            host_context.as_ref().map(Arc::clone),
-        )
-        .await?;
+    let children = if let Some(router) = registry.spawn_router() {
+        // Resolve all choices before creating a child. No initial turn runs until
+        // the entire batch has been bound and inserted below.
+        let mut routes = Vec::with_capacity(prepared.len());
+        for (task, _) in &prepared {
+            routes.push(router.resolve(session_id, &task.role, &task.task,
+                SpawnOptions::new(), host_context.as_deref()).await?);
+        }
+        let mut children: Vec<(nanocodex_agent::Nanocodex, nanocodex_agent::AgentEvents)> = Vec::with_capacity(routes.len());
+        for route in routes {
+            let outcome = parent.spawn_with_host_context(route.options, host_context.as_ref().map(Arc::clone)).await;
+            let child = match outcome {
+                Ok(child) => child,
+                Err(error) => {
+                    for (child, _) in &children { let _ = child.shutdown().await; }
+                    return Err(error.into());
+                }
+            };
+            observe_session(child.0.session_id());
+            if let Err(error) = router.bind(session_id, child.0.session_id(), &route.reference, host_context.as_deref()) {
+                let _ = child.0.shutdown().await;
+                for (child, _) in &children { let _ = child.shutdown().await; }
+                return Err(error.into());
+            }
+            children.push(child);
+        }
+        children
+    } else {
+        parent.spawn_many_observed_with_host_context(
+            prepared.len(), observe_session, host_context.as_ref().map(Arc::clone),
+        ).await?
+    };
 
     let mut reports = Vec::with_capacity(prepared.len());
     let mut launches = Vec::with_capacity(prepared.len());
@@ -309,9 +334,21 @@ async fn start_agent_with_host_context(
         Some(host_context) => Some(host_context),
         None => registry.host_context_for_session(session_id).await,
     };
+    let router = registry.spawn_router();
+    let route = if let Some(router) = &router {
+        Some(router.resolve(session_id, &role, &task, options, host_context.as_deref()).await?)
+    } else {
+        None
+    };
     let (child, events) = parent
-        .spawn_with_host_context(options, host_context.as_ref().map(Arc::clone))
+        .spawn_with_host_context(route.as_ref().map_or(options, |route| route.options), host_context.as_ref().map(Arc::clone))
         .await?;
+    if let (Some(router), Some(route)) = (&router, &route) {
+        if let Err(error) = router.bind(session_id, child.session_id(), &route.reference, host_context.as_deref()) {
+            let _ = child.shutdown().await;
+            return Err(error.into());
+        }
+    }
     let session_id = child.session_id().to_string();
     let descriptor = AgentDescriptor {
         id,

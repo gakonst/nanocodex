@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { DatabaseSync } from "node:sqlite";
-import { resolveThreadRoute, routingPolicySchema, ThreadRoutePin, OSS_MODEL, FRONTIER_MODEL } from "../src/thread-model-routing";
+import { resolveThreadRoute, routingPolicySchema, ThreadRoutePin, ROUTING_CANDIDATES, OSS_MODEL, FRONTIER_MODEL } from "../src/thread-model-routing";
 import { initializeManagedAgentSettingsSchema } from "../src/agent-settings-schema";
 import { parseAgentCreateBody, validateAgentSettings } from "../src/agent-settings";
 import { parseConfiguration } from "../src/agent-configuration";
@@ -226,5 +226,124 @@ describe("v2 direct candidate routing", () => {
     expect(a).toBe(b);
     expect(await new ThreadRoutePin(store).resolve(create)).toBe(a);
     expect(ai.run).toHaveBeenCalledOnce();
+  });
+});
+
+
+describe("cross-provider candidate routing", () => {
+  const available = { openrouter: true, vercel: true };
+  const choose = (id: string) => ({ run: vi.fn(async (_model: string, _input: unknown) => ({ answers: {
+    candidate: { choice: id, confidence: .99 }, family: { choice: "terminal", confidence: .99 },
+  } })) });
+  const openrouter = "openrouter:openai/gpt-6-astra:high";
+  const vercel = "vercel:openai/gpt-6-astra:high";
+  it("offers 45 unique candidates, preserving every old identity", async () => {
+    expect(ROUTING_CANDIDATES).toHaveLength(45);
+    expect(new Set(ROUTING_CANDIDATES.map(c => c.id)).size).toBe(45);
+    const p = routingPolicySchema.parse({ candidates: ROUTING_CANDIDATES.map(c => c.id) });
+    const ai = choose(vercel);
+    const route = await resolveThreadRoute(ai, "task", p, available);
+    expect(route.audit?.eligible_candidates).toHaveLength(45);
+    expect(route).toMatchObject({ backend: "vercel", model: FRONTIER_MODEL, provider_model: "openai/gpt-6-astra" });
+    expect(JSON.parse((ai.run.mock.calls[0][1] as {state:string}).state).candidates).toHaveLength(45);
+  });
+  it("sends dated provider token rates separately from measured task costs", async () => {
+    const ai = choose(vercel);
+    const route = await resolveThreadRoute(ai, "compare cost", routingPolicySchema.parse({}), available);
+    const state = JSON.parse((ai.run.mock.calls[0][1] as {state:string}).state);
+    const hint = (id: string) => state.candidates.find((c: {id:string}) => c.id === id).catalog_price_hint;
+    expect(hint("openrouter:openai/gpt-5.6-sol:low")).toMatchObject({as_of:"2026-09-20", unit:"USD per million tokens", input:2, output:10, cached_input:.2, source:"https://openrouter.ai/api/v1/models"});
+    expect(hint("vercel:openai/gpt-5.6-sol:low")).toMatchObject({input:4, output:20, cached_input:.4, source:"https://ai-gateway.vercel.sh/v1/models"});
+    expect(hint("openrouter:z-ai/glm-5.3:low")).toMatchObject({input:.91,output:2.86,cached_input:.169});
+    expect(hint("vercel:zai/glm-5.3:low")).toMatchObject({input:1.4,output:4.4,cached_input:.14});
+    expect(hint("gpt-6-astra:high")).toBeNull();
+    expect(hint(vercel).note).toContain("exclude long-context tiers");
+    expect(hint(vercel)).not.toHaveProperty("expected_duration_ms");
+    expect(hint(vercel)).not.toHaveProperty("expected_cost_usd");
+    expect(state.measurements).toEqual([]);
+    expect(route.estimate).toBeNull();
+    expect(route.selection).toBe("prior");
+  });
+  it.each([
+    [undefined, 15], [{openrouter:true,vercel:false},30], [{openrouter:false,vercel:true},30], [available,45],
+  ])("filters unavailable providers before Jev: %j", async (availability, count) => {
+    const ai = choose("gpt-6-astra:high");
+    const route = await resolveThreadRoute(ai, "task", routingPolicySchema.parse({}), availability);
+    expect(route.audit?.eligible_candidates).toHaveLength(count);
+    expect(Object.keys((ai.run.mock.calls[0][1] as {questions:{candidate:{criteria:object}}}).questions.candidate.criteria)).toHaveLength(count);
+  });
+  it("rejects an unavailable-only allowlist before Jev and never expands fallback", async () => {
+    const ai = choose(openrouter);
+    await expect(resolveThreadRoute(ai, "task", routingPolicySchema.parse({candidates:[openrouter]}))).rejects.toThrow("no route admitted");
+    expect(ai.run).not.toHaveBeenCalled();
+    const route = await resolveThreadRoute(choose("unknown"), "task", routingPolicySchema.parse({candidates:[openrouter,vercel]}), {openrouter:false,vercel:true});
+    expect(route.audit?.candidate_choice).toBe(vercel);
+    expect(route.audit?.eligible_candidates).toEqual([vercel]);
+  });
+  it.each([["openrouter", "z-ai/glm-5.3"], ["vercel", "zai/glm-5.3"]])("pins %s provider endpoint alongside canonical identity across restart", async (backend, provider_model) => {
+    const id = `${backend}:${provider_model}:medium`;
+    let retained: Awaited<ReturnType<typeof resolveThreadRoute>> | undefined;
+    const store = {read:()=>retained, commit:(r: NonNullable<typeof retained>)=>{retained = JSON.parse(JSON.stringify(r));}};
+    await new ThreadRoutePin(store).resolve(()=>resolveThreadRoute(choose(id), "task", routingPolicySchema.parse({candidates:[id]}), available));
+    const restored = await new ThreadRoutePin(store).resolve(()=>{throw new Error("unexpected reroute");});
+    expect(restored).toMatchObject({ backend, provider_model, model: OSS_MODEL, thinking:"medium" });
+  });
+  it("uses provider-specific measurements for identical canonical model and effort", async () => {
+    const base = {family:"terminal", model:FRONTIER_MODEL, thinking:"high", success_rate:.8, expected_cost_usd:.1, expected_duration_ms:1000, sample_size:20, source:"heldout-provider-v1"};
+    const estimates = [{...base,backend:"openrouter"}, {...base,backend:"vercel",expected_cost_usd:.5,success_rate:.95}];
+    const p = routingPolicySchema.parse({candidates:[openrouter,vercel],estimates,min_success_rate:.9});
+    const route = await resolveThreadRoute(choose(vercel), "task", p, available);
+    expect(route.selection).toBe("measured");
+    expect(route.estimate).toMatchObject({backend:"vercel",expected_cost_usd:.5});
+    await expect(resolveThreadRoute(choose(openrouter), "task", p, available)).rejects.toThrow("no route admitted");
+    expect(()=>routingPolicySchema.parse({estimates:[{...base,backend:"workers_ai"}]})).toThrow();
+    expect(()=>routingPolicySchema.parse({estimates:[{...base,backend:"chatgpt",model:OSS_MODEL}]})).toThrow();
+  });
+  it("keeps legacy comparison restricted to its original two providers", async () => {
+    const base = {family:"terminal", thinking:"high", success_rate:.9, expected_cost_usd:.3, expected_duration_ms:6000, sample_size:100, source:"heldout-v1"};
+    const estimates = [{...base,backend:"chatgpt",model:FRONTIER_MODEL}, {...base,backend:"workers_ai",model:OSS_MODEL,thinking:"medium"}, {...base,backend:"vercel",model:FRONTIER_MODEL,expected_cost_usd:0}];
+    const route = await resolveThreadRoute(jev(), "task", policy({estimates,objective:"cost"}), available);
+    expect(["workers_ai","chatgpt"]).toContain(route.backend);
+    expect(route.provider_model).toBe(route.model);
+  });
+});
+
+
+describe("trusted regional provider telemetry", () => {
+  const id = "openrouter:openai/gpt-6-astra:high";
+  const metric = (patch = {}) => ({backend:"openrouter",model:"openai/gpt-6-astra",effort:"high",source:"live",workerColo:"LHR",
+    signalKind:"context_only_not_completion_probability",usable:true,sampleCount:6,successCount:5,censoredCount:1,
+    successRate:5/6,lastObservedAt:Date.now()-1000,fullResponseP50Ms:120,fullResponseEwmaMs:140,...patch});
+  const ai = () => ({run:vi.fn(async (_model:string,_input:unknown)=>({answers:{candidate:{choice:id,confidence:.99},family:{choice:"terminal",confidence:.99}}}))});
+  const runtime = (provider_performance: unknown[]) => ({openrouter:true,vercel:false,workerColo:"LHR",clientIngressColo:"SJC",provider_performance});
+  it("projects trusted aggregates into Jev and the audit while distinguishing execution from ingress", async () => {
+    const router = ai();
+    const route = await resolveThreadRoute(router,"task",routingPolicySchema.parse({}),runtime([metric({apiKey:"secret",prompt:"private",errorBody:"sensitive"}),metric({source:"probe"})]));
+    const snapshot = route.audit?.provider_telemetry;
+    expect(snapshot).toMatchObject({provenance:"trusted_runtime_aggregate",workerColo:"LHR",clientIngressColo:"SJC",windowMs:300000});
+    expect(snapshot?.provider_performance).toHaveLength(2);
+    expect(snapshot?.provider_performance[0]).toMatchObject({model:FRONTIER_MODEL,fullResponseP50Ms:120});
+    expect(JSON.parse((router.run.mock.calls[0][1] as {state:string}).state).provider_telemetry).toEqual(snapshot);
+    for (const privateField of ["apiKey","prompt","errorBody","successRate"]) expect(snapshot?.provider_performance[0]).not.toHaveProperty(privateField);
+    expect(route.estimate).toBeNull();
+    expect(route.selection).toBe("prior");
+  });
+  it("rejects stale, future, sparse, wrong-region, unknown and unavailable groups", async () => {
+    const samples = [metric({lastObservedAt:Date.now()-300001}),metric({lastObservedAt:Date.now()+60000}),metric({successCount:4}),metric({usable:false}),metric({workerColo:"SJC"}),metric({model:"unlisted"}),metric({backend:"vercel"}),metric({effort:null}),metric({fullResponseP50Ms:Infinity}),metric({successCount:20})];
+    const route = await resolveThreadRoute(ai(),"task",routingPolicySchema.parse({}),runtime(samples));
+    expect(route.audit?.provider_telemetry?.provider_performance).toEqual([]);
+    const unknownColo = await resolveThreadRoute(ai(),"task",routingPolicySchema.parse({}),{...runtime([metric()]),workerColo:null});
+    expect(unknownColo.audit?.provider_telemetry?.provider_performance).toEqual([]);
+  });
+  it("bounds and deduplicates aggregates without merging probe/live cohorts", async () => {
+    const samples = ROUTING_CANDIDATES.filter(c=>c.backend==="openrouter").flatMap(c=>[metric({model:c.model,effort:c.thinking}),metric({model:c.model,effort:c.thinking,source:"probe"})]);
+    const route = await resolveThreadRoute(ai(),"task",routingPolicySchema.parse({}),runtime([samples[0],...samples]));
+    expect(route.audit?.provider_telemetry?.provider_performance).toHaveLength(16);
+  });
+  it("cannot satisfy a measured-success threshold or trust policy/request telemetry", async () => {
+    expect(()=>routingPolicySchema.parse({provider_performance:[metric()]})).toThrow();
+    await expect(resolveThreadRoute(ai(),"task",routingPolicySchema.parse({min_success_rate:.5}),runtime([metric()]))).rejects.toThrow("no route admitted");
+    const route = await resolveThreadRoute(ai(),{provider_performance:[metric()],workerColo:"LHR"},routingPolicySchema.parse({}),{openrouter:true,vercel:false});
+    expect(route.audit?.provider_telemetry?.provider_performance).toEqual([]);
   });
 });

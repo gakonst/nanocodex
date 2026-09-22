@@ -75,6 +75,7 @@ export async function create(options = {}) {
     websocketPreconnect,
     apiBaseUrl,
     websocketWarmup,
+    stateless,
     WebSocketImpl,
     createWebSocket,
     createResponse,
@@ -121,6 +122,7 @@ export async function create(options = {}) {
     tools: hostTools,
     toolProviders,
     subagentSessions,
+    subagentRouting: internalRuntime?.subagentRouting,
     toolMode,
     mcp: mcp === false
       ? undefined
@@ -163,7 +165,9 @@ export async function create(options = {}) {
             : "wss://openai.mpp.tempo.xyz/v1/responses"),
           apiBaseUrl,
           websocketWarmup,
+          stateless,
           subagents: subagentConfig,
+          subagentRouting: internalRuntime?.subagentRouting !== undefined,
           hostDefinitionId,
           ...config,
           durabilityHostId: durabilityOwner?.id,

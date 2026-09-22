@@ -75,6 +75,7 @@ pub(super) fn completion_instructions(schema: &str, turn_token: u64) -> String {
 }
 
 pub struct Registry {
+    spawn_router: std::sync::RwLock<Option<Arc<dyn crate::SpawnRouter>>>,
     id: SubagentRuntimeId,
     state: tokio::sync::Mutex<RegistryState>,
     pub(super) updates: mpsc::UnboundedSender<ScopedAgentUpdate>,
@@ -977,6 +978,7 @@ impl Registry {
         let (revision, _) = watch::channel(0);
         Self {
             id: SubagentRuntimeId::next(),
+            spawn_router: std::sync::RwLock::new(None),
             state: tokio::sync::Mutex::new(RegistryState::default()),
             updates,
             revision,
@@ -1000,6 +1002,15 @@ impl Registry {
 
     pub(super) fn reserve_turns(&self, count: usize) -> std::io::Result<Vec<TurnCapacity>> {
         self.capacity.reserve_many(count)
+    }
+
+    /// Installs a host routing policy before accepting child spawns.
+    pub fn set_spawn_router(&self, router: Arc<dyn crate::SpawnRouter>) {
+        *self.spawn_router.write().unwrap_or_else(std::sync::PoisonError::into_inner) = Some(router);
+    }
+
+    pub(super) fn spawn_router(&self) -> Option<Arc<dyn crate::SpawnRouter>> {
+        self.spawn_router.read().unwrap_or_else(std::sync::PoisonError::into_inner).clone()
     }
 
     pub fn set_max_concurrency(&self, limit: usize) {

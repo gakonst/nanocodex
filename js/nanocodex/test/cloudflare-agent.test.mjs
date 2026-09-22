@@ -1307,3 +1307,34 @@ async function eventually(assertion) {
   }
   throw error;
 }
+
+for (const provider of ["openrouter", "vercel"]) {
+  test(`Cloudflare Agent pins ${provider} transport and effort over two tool turns`, {timeout:30_000}, async () => {
+    const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+    let calls=0, tools=0;
+    const gateway = {provider,model:"gpt-5.6-sol",reasoningEffort:"low",apiKey:"synthetic-fixture-key",
+      async fetch(url,init) {
+        assert.equal(url,provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://ai-gateway.vercel.sh/v1/chat/completions");
+        const body=JSON.parse(init.body); calls++;
+        assert.equal(body.model,"openai/gpt-5.6-sol");
+        assert.equal(provider === "openrouter" ? body.reasoning.effort : body.reasoning_effort,"low");
+        if(calls===1 || calls===3){
+          const tool=body.tools.find(t=>t.function.description.startsWith("runtimeInfo\n")); assert.ok(tool);
+          if(calls===3)assert.ok(body.messages.some(m=>m.content?.includes("GATEWAY_TURN_1")));
+          return Response.json({choices:[{finish_reason:"tool_calls",message:{content:null,tool_calls:[{id:`call-${calls}`,type:"function",function:{name:tool.function.name,arguments:"{}"}}]}}]});
+        }
+        assert.ok(body.messages.some(m=>m.role==="tool"&&m.content.includes("gateway-fixture")));
+        return Response.json({choices:[{finish_reason:"stop",message:{content:`GATEWAY_TURN_${calls/2}`}}]});
+      }};
+    const agent=await create(module,durableOwner(new MemoryStorage()),{
+      [Symbol.for("nanocodex.cloudflare.internalConfiguration")]:{model:gateway.model,thinking:"low",reasoning_mode:"standard",fast_mode:false},
+      [Symbol.for("nanocodex.cloudflare.internalRuntime")]:{gateway,toolMode:"direct",subagentsEnabled:false},
+      tools:{runtimeInfo:{description:"Return fixture runtime",parameters:{type:"object",additionalProperties:false},handler(){tools++;return {runtime:"gateway-fixture"};}}},
+    });
+    try {
+      assert.equal((await agent.turn.prompt({input:"Call runtimeInfo."}).result()).finalMessage,"GATEWAY_TURN_1");
+      assert.equal((await agent.turn.prompt({input:"Call runtimeInfo again."}).result()).finalMessage,"GATEWAY_TURN_2");
+      assert.equal(calls,4);assert.equal(tools,2);
+    } finally {await agent.session.shutdown();}
+  });
+}

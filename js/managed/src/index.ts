@@ -1,3 +1,4 @@
+import { gatewayAvailability, gatewayRuntime } from "./gateway-runtime";
 import { resolveThreadRoute, ThreadRoutePin, type ThreadRoute, type RoutingAi } from "./thread-model-routing";
 import { retireSessionProjects, isRetiredProjectCompletion } from "./retired-projects";
 import { downloadPath, downloadBrainFile, downloadHandFile, fileDownloadFailure, FileDownloadError } from "./file-download";
@@ -371,6 +372,9 @@ export interface Env extends
   ChiefOfStaffPrincipalEnv,
   HostPrincipalEnv {
   AI?: RoutingAi;
+  /** Deployment-owned provider secrets; never accepted in thread configuration. */
+  OPENROUTER_API_KEY?: string;
+  AI_GATEWAY_API_KEY?: string;
   /** Opt-in paid inference PoC; absent/false preserves current routing. */
   NANOCODEX_THREAD_ROUTING?: string;
   NANOCODEX_PERFORMANCE_TRACE?: string;
@@ -8031,6 +8035,15 @@ export class DurableAgentSession extends DurableComputerSession {
             model: this.#threadRoute()!.model, thinking: this.#threadRoute()!.thinking,
           },
         } : {}),
+        gateway: gatewayRuntime(this.env, this.#threadRoute(), () => {
+          this.#assertDurabilityAdmissionActive();
+          const route = this.#threadRoute();
+          if (this.env.NANOCODEX_THREAD_ROUTING !== "true"
+            || this.#session()?.authorization_epoch !== session.authorization_epoch
+            || !route || (route.backend !== "openrouter" && route.backend !== "vercel")) {
+            throw new Error("Gateway route ownership is no longer active");
+          }
+        }),
         // Voice and session control can start while the owned Responses relay warms up.
         waitForPreconnect: false,
         subagentsEnabled: configuration.model_routing ? false : configuration.multi_agent?.enabled,
@@ -9278,7 +9291,10 @@ export class DurableAgentSession extends DurableComputerSession {
              VALUES (?, ?, ?, ?, ?, ?, ?)`,
             id, route.backend, route.model, route.thinking, requested.type,
             Math.max(0, Date.now() - result.committed.created_at),
-            JSON.stringify(requested.type === "turn_completed" ? requested.usage ?? null : null),
+            JSON.stringify(requested.type === "turn_completed" && requested.usage
+              ? { ...requested.usage, ...(route.backend === "openrouter" || route.backend === "vercel"
+                ? { cost_basis: "canonical_model_api_equivalent_not_gateway_invoice", gateway_billing_verified: false } : {}) }
+              : null),
           );
         }
         this.#goalRuntime.finish(id, result.committed.state === "completed",
@@ -9926,7 +9942,7 @@ export class DurableAgentSession extends DurableComputerSession {
       ).one();
       const opening = this.#managedTurn(first.id);
       if (!opening) throw new Error("first routing task is unavailable");
-      const route = await resolveThreadRoute(this.env.AI!, JSON.parse(opening.input_json), policy);
+      const route = await resolveThreadRoute(this.env.AI!, JSON.parse(opening.input_json), policy, gatewayAvailability(this.env));
       assertActive();
       await this.#shutdownAgent(true);
       assertActive();

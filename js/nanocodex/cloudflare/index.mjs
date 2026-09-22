@@ -5,3 +5,5 @@ import { bindAgent } from "./Agent.mjs";
 export const Agent = bindAgent(module);
 export { cloudflareEgress } from "./egress.mjs";
 export { createWorkersAiResponses } from "./workers-ai-responses.mjs";
+export { createGatewayResponses } from "./gateway-responses.mjs";
+export { createSubagentRouting } from "../runtime/subagent-routing.mjs";

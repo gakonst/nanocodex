@@ -1,3 +1,4 @@
+import { createGatewayResponses } from "./gateway-responses.mjs";
 import { createWorkersAiResponses } from "./workers-ai-responses.mjs";
 import { responseControlsBody, responseControlsSocket } from "../runtime/response-controls.mjs";
 import * as HostAgent from "../host/Agent.mjs";
@@ -311,20 +312,27 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
   const durability = createCloudflareDurabilityStore(context.storage);
   const { sessionId, stateId } = durableIdentity(context.storage, durabilityId);
   const workersAi = internalRuntime?.workersAi;
+  const gateway = internalRuntime?.gateway;
+  if (gateway !== undefined && (workersAi !== undefined
+    || gateway.model !== internalConfiguration?.model
+    || gateway.reasoningEffort !== internalConfiguration?.thinking)) {
+    throw new TypeError("Gateway profile must match the pinned model and thinking, with one transport only");
+  }
+  const directInference = workersAi !== undefined || gateway !== undefined;
   if (workersAi !== undefined && (internalConfiguration?.model !== "@cf/zai-org/glm-5.3"
     || workersAi.model !== internalConfiguration.model || workersAi.thinking !== internalConfiguration.thinking)) {
     throw new TypeError("Workers AI profile must match the pinned model and thinking");
   }
-  if (internalConfiguration?.model === "@cf/zai-org/glm-5.3" && workersAi === undefined) {
-    throw new TypeError("GLM-5.3 requires a Workers AI transport binding");
+  if (internalConfiguration?.model === "@cf/zai-org/glm-5.3" && !directInference) {
+    throw new TypeError("GLM-5.3 requires a Workers AI or gateway transport binding");
   }
-  const endpoint = workersAi === undefined ? cloudflareEgress({
+  const endpoint = gateway !== undefined ? createGatewayResponses(gateway) : workersAi === undefined ? cloudflareEgress({
     binding: scopeCloudflareEgress(egress, subject),
   }) : createWorkersAiResponses(workersAi.ai);
   const startup = deferred();
   const transport = Transport.hostManaged({
     ...endpoint,
-    websocketPreconnect: workersAi === undefined,
+    websocketPreconnect: !directInference,
     createResponse(url, id, request) {
       return endpoint.createResponse(url, id, {
         ...request,
@@ -332,7 +340,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
       });
     },
     async createWebSocket(url, id, request) {
-      if (workersAi !== undefined) throw new Error("Workers AI threads require HTTP Responses transport");
+      if (directInference) throw new Error("Direct inference threads require HTTP Responses transport");
       try {
         const opened = await endpoint.createWebSocket(url, id, request);
         if (request.authorization === "preconnect") startup.resolve();
@@ -380,7 +388,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
     // Managed voice needs the durable session before the separate Responses
     // relay is ready. Its preconnection remains owned by the host and a later
     // text turn consumes it through the same credential-checked transport.
-    if (workersAi === undefined && internalRuntime?.waitForPreconnect !== false) {
+    if (!directInference && internalRuntime?.waitForPreconnect !== false) {
       await withTimeout(
         startup.promise,
         STARTUP_TIMEOUT_MS,

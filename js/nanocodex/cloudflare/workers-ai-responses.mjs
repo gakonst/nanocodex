@@ -1,4 +1,5 @@
 const MODEL = "@cf/zai-org/glm-5.3";
+const MODELS = [MODEL, "gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"];
 const BASE = "https://workers-ai.invalid/v1";
 const fail = (message) => { throw new Error(`Workers AI Responses: ${message}`); };
 const json = (value) => typeof value === "string" ? value : JSON.stringify(value);
@@ -8,6 +9,8 @@ const key = (namespace, name) => JSON.stringify([namespace ?? null, name]);
 export function createWorkersAiResponses(ai, options = {}) {
   if (typeof ai?.run !== "function") throw new TypeError("Workers AI binding must provide run()");
   const apiBaseUrl = options.apiBaseUrl ?? BASE;
+  const model = options.model ?? MODEL;
+  if (!MODELS.includes(model)) fail("unsupported canonical model");
   return Object.freeze({
     apiBaseUrl,
     async createResponse(endpoint, _sessionId, request) {
@@ -15,10 +18,10 @@ export function createWorkersAiResponses(ai, options = {}) {
       if (request.authorization !== "host_managed") fail("hostManaged authorization is required");
       request.signal?.throwIfAborted();
       const body = JSON.parse(request.body);
-      const { input, registry } = translate(body);
-      const result = await abortable(Promise.resolve().then(() => ai.run(MODEL, input)), request.signal);
+      const { input, registry } = translate(body, model);
+      const result = await abortable(Promise.resolve().then(() => ai.run(model, input)), request.signal);
       request.signal?.throwIfAborted();
-      return toResponse(result, registry);
+      return toResponse(result, registry, model);
     },
   });
 }
@@ -35,8 +38,8 @@ async function abortable(promise, signal) {
   finally { signal.removeEventListener("abort", listener); }
 }
 
-function translate(body) {
-  if (body.model !== undefined && body.model !== MODEL) fail(`unsupported model ${body.model}; expected ${MODEL}`);
+function translate(body, model) {
+  if (body.model !== undefined && body.model !== model) fail("unsupported model override; expected pinned model");
   const effort = (value) => {
     if (value !== undefined && !["low", "medium", "high"].includes(value)) fail(`unsupported reasoning effort ${value}; expected low, medium or high`);
     return value;
@@ -175,7 +178,7 @@ function textContent(content) {
   }).join("\n");
 }
 
-function toResponse(result, registry) {
+function toResponse(result, registry, model) {
   const choice = result?.choices?.[0];
   if (!choice?.message || !["stop", "tool_calls", "length", "content_filter"].includes(choice.finish_reason)) {
     fail("invalid chat completion or unsupported finish reason");
@@ -183,9 +186,10 @@ function toResponse(result, registry) {
   const message = choice.message;
   const output = [];
   const id = `resp_${crypto.randomUUID()}`;
-  if (typeof message.reasoning_content === "string" && message.reasoning_content) {
+  const reasoning = message.reasoning_content ?? message.reasoning;
+  if (typeof reasoning === "string" && reasoning) {
     output.push({ type: "reasoning", id: `rs_${crypto.randomUUID()}`, status: "completed",
-      summary: [], content: [{ type: "reasoning_text", text: message.reasoning_content }] });
+      summary: [], content: [{ type: "reasoning_text", text: reasoning }] });
   }
   if (typeof message.content === "string" && message.content) {
     output.push({ type: "message", id: `msg_${crypto.randomUUID()}`, role: "assistant", status: "completed",
@@ -229,7 +233,7 @@ function toResponse(result, registry) {
     input_tokens_details: { cached_tokens: result.usage.prompt_tokens_details?.cached_tokens ?? 0 },
     output_tokens_details: { reasoning_tokens: result.usage.completion_tokens_details?.reasoning_tokens ?? 0 },
   } : null;
-  const response = { id, object: "response", model: MODEL, status: incomplete ? "incomplete" : "completed", output,
+  const response = { id, object: "response", model, status: incomplete ? "incomplete" : "completed", output,
     usage, end_turn: !incomplete && !callIds.size,
     ...(incomplete ? { incomplete_details: { reason: choice.finish_reason === "length" ? "max_output_tokens" : "content_filter" } } : {}) };
   const events = [];
