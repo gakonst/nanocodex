@@ -1,5 +1,9 @@
 # Structured child results and managed idle recovery
 
+> Historical report: the persisted child recovery design described below is
+> superseded. Subagents are ephemeral; only the root retains durability. See
+> [the current durability contract](DURABILITY.md#agent-identity-and-ephemeral-children).
+
 Follow-up to the failures recorded in `THREAD_ROUTING_CLI_VERIFICATION_2026_09_21.md` for PR #436. This report preserves those earlier failed attempts as historical evidence.
 
 ## Result handling

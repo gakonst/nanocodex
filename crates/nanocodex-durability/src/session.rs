@@ -1489,10 +1489,6 @@ impl DurableSession {
         &self.state_id
     }
 
-    pub(crate) async fn open_agent_state(&self, state_id: String) -> Result<Self> {
-        Self::open_shared(self.store.clone(), state_id, self.terminal_receipt_limit).await
-    }
-
     /// Copies the current reduced state from the owning driver.
     pub async fn state(&self) -> Result<DurableState> {
         let (result, receiver) = oneshot::channel();

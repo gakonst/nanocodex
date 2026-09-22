@@ -119,8 +119,6 @@ export function destroy(owner) {
         stateId,
       );
     }
-    storage.sql.exec("DELETE FROM nanocodex_cloudflare_subagents");
-    storage.sql.exec("DELETE FROM nanocodex_cloudflare_subagent_checkpoints");
     clearCloudflareEventSocket(context);
   });
 }
@@ -407,7 +405,6 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
 
   const sessionReservation = prepareCloudflareAgentSession(sessionId, subject);
   const subagentSessions = cloudflareSubagentSessions(
-    context.storage,
     sessionReservation,
     internalRuntime?.subagentLifecycle,
   );
@@ -479,8 +476,6 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
     observeAgentRelease(exposed, () => {
       if (lifecycle.active === active) lifecycle.active = undefined;
     });
-    // Keep the last committed child boundaries across abrupt owner loss.
-    // Registry updates refresh them while this generation is active.
     commitCloudflareAgentSession(sessionReservation);
     return exposed;
   } catch (error) {
@@ -705,96 +700,17 @@ function initializeAgentStorage(storage) {
       state_id TEXT NOT NULL UNIQUE
     )
   `);
-  storage.sql.exec(`
-    CREATE TABLE IF NOT EXISTS nanocodex_cloudflare_subagents (
-      session_id TEXT PRIMARY KEY,
-      agent_id TEXT NOT NULL UNIQUE,
-      descriptor_json TEXT NOT NULL,
-      host_context_ref TEXT
-    )
-  `);
-  storage.sql.exec(`
-    CREATE TABLE IF NOT EXISTS nanocodex_cloudflare_subagent_checkpoints (
-      chunk_index INTEGER PRIMARY KEY,
-      payload TEXT NOT NULL
-    )
-  `);
-  const subagentColumns = storage.sql.exec(
-    "PRAGMA table_info('nanocodex_cloudflare_subagents')",
-  ).toArray();
-  if (!subagentColumns.some(({ name }) => name === "host_context_ref")) {
-    storage.sql.exec(
-      "ALTER TABLE nanocodex_cloudflare_subagents ADD COLUMN host_context_ref TEXT",
-    );
-  }
+  // These tables belonged to durable children. Root records and identity remain
+  // untouched; obsolete child data must never restore a task tree on startup.
+  storage.sql.exec("DROP TABLE IF EXISTS nanocodex_cloudflare_subagents");
+  storage.sql.exec("DROP TABLE IF EXISTS nanocodex_cloudflare_subagent_checkpoints");
 }
 
-function cloudflareSubagentSessions(storage, reservation, lifecycle) {
-  const restoredHostContextRefs = new Map();
-  const retainedBindings = new Map();
+function cloudflareSubagentSessions(reservation, lifecycle) {
+  const bindings = new Map();
   return Object.freeze({
-    restore() {
-      const restored = storage.sql.exec(
-        "SELECT descriptor_json, host_context_ref FROM nanocodex_cloudflare_subagents",
-      ).toArray().map(({ descriptor_json, host_context_ref }) => {
-        const descriptor = Object.freeze(JSON.parse(descriptor_json));
-        retainedBindings.set(descriptor.sessionId, { descriptor, hostContextRef: host_context_ref ?? undefined });
-        restoredHostContextRefs.set(
-          descriptor.sessionId,
-          host_context_ref === null ? undefined : host_context_ref,
-        );
-        return descriptor;
-      });
-      return Object.freeze(restored);
-    },
-    restoreCheckpoint() {
-      const chunks = storage.sql.exec(
-        "SELECT chunk_index, payload FROM nanocodex_cloudflare_subagent_checkpoints ORDER BY chunk_index",
-      ).toArray();
-      if (chunks.length === 0) return undefined;
-      if (chunks.length > 256 || chunks.some((chunk, index) => chunk.chunk_index !== index
-        || typeof chunk.payload !== "string" || chunk.payload.length > 65_536)) {
-        throw new Error("Invalid durable subagent checkpoint chunks");
-      }
-      const checkpoint = chunks.map(({ payload }) => payload).join("");
-      validateSubagentCheckpointSize(checkpoint);
-      return checkpoint;
-    },
-    consumeCheckpoint() {
-      if (!mayBindCloudflareSubagentSession(reservation)) {
-        throw new Error("Subagent checkpoint reader no longer owns the session");
-      }
-      storage.sql.exec("DELETE FROM nanocodex_cloudflare_subagent_checkpoints");
-    },
-    checkpointLive(encoded) {
-      const checkpoint = JSON.parse(encoded);
-      if (checkpoint.root_session_id !== reservation.sessionId
-        || checkpoint.children.length !== retainedBindings.size) return;
-      const children = new Map(checkpoint.children.map((child) => [child.descriptor.session_id, child]));
-      for (const { descriptor: binding, hostContextRef } of retainedBindings.values()) {
-        const child = children.get(binding.sessionId);
-        if (!child || String(child.descriptor.id) !== binding.agentId
-          || child.descriptor.role !== binding.role
-          || (child.descriptor.parent == null ? null : String(child.descriptor.parent)) !== (binding.parentAgentId ?? null)
-          || (child.host_context ?? null) !== (hostContextRef ?? null)) return;
-      }
-      this.checkpoint(encoded);
-    },
-    checkpoint(checkpoint) {
-      if (!mayReleaseCloudflareSubagentSession(reservation)) {
-        throw new Error("Subagent checkpoint writer no longer owns the session");
-      }
-      validateSubagentCheckpointSize(checkpoint);
-      // Check syntax before replacing the last complete checkpoint. Rust owns
-      // the versioned tree schema and checks identities during reconstruction.
-      JSON.parse(checkpoint);
-      storage.transactionSync(() => writeSubagentCheckpoint(storage, checkpoint));
-    },
-    hostContextRef(sessionId) {
-      return restoredHostContextRefs.get(sessionId);
-    },
     bindingDescriptor(sessionId, descriptor, hostContextRef) {
-      const retained = retainedBindings.get(sessionId);
+      const retained = bindings.get(sessionId);
       if (retained === undefined) return descriptor;
       const original = retained.descriptor;
       const attachesInitialProvenance = retained.hostContextRef === undefined
@@ -805,7 +721,6 @@ function cloudflareSubagentSessions(storage, reservation, lifecycle) {
         throw new Error("Subagent binding identity or host context changed");
       }
       // Delegation replaces the Rust task, not its spawning-turn authority.
-      // Tools retain the original descriptor used to mint that authority.
       return original;
     },
     bind(sessionId, descriptor, hostContextRef) {
@@ -814,112 +729,38 @@ function cloudflareSubagentSessions(storage, reservation, lifecycle) {
         && (typeof hostContextRef !== "string" || hostContextRef.length === 0)) {
         throw new TypeError("subagent host context ref must be a non-empty string when supplied");
       }
-      const type = restoredHostContextRefs.has(sessionId) ? "reconstruct" : "bind";
-      storage.transactionSync(() => {
-        storage.sql.exec(
-          `INSERT INTO nanocodex_cloudflare_subagents
-             (session_id, agent_id, descriptor_json, host_context_ref) VALUES (?, ?, ?, ?)
-           ON CONFLICT (session_id) DO UPDATE SET
-             agent_id = excluded.agent_id,
-             descriptor_json = excluded.descriptor_json,
-             host_context_ref = excluded.host_context_ref`,
-          sessionId,
-          descriptor.agentId,
-          JSON.stringify(descriptor),
-          hostContextRef ?? null,
-        );
-        notifySubagentLifecycle(lifecycle, {
-          type,
-          rootSessionId: reservation.sessionId,
-          sessionId,
-          descriptor,
-          hostContextRef,
-        });
+      notifySubagentLifecycle(lifecycle, {
+        type: "bind", rootSessionId: reservation.sessionId,
+        sessionId, descriptor, hostContextRef,
       });
-      retainedBindings.set(sessionId, { descriptor, hostContextRef });
-      restoredHostContextRefs.delete(sessionId);
+      bindings.set(sessionId, { descriptor, hostContextRef });
     },
     release(sessionId, hostContextRef) {
       if (!mayReleaseCloudflareSubagentSession(reservation)) return;
-      const released = [];
-      storage.transactionSync(() => {
-        const retained = storage.sql.exec(
-          `SELECT 1 AS retained FROM nanocodex_cloudflare_subagents
-           WHERE session_id = ? AND host_context_ref IS ?`,
-          sessionId,
-          hostContextRef ?? null,
-        ).toArray();
-        if (retained.length === 0) return;
-        // Closing a parent closes its entire subtree. Remove every descendant
-        // binding in the same transaction so a restart cannot restore orphans.
-        const removed = new Set([retainedBindings.get(sessionId).descriptor.agentId]);
-        let changed;
-        do {
-          changed = false;
-          for (const { descriptor } of retainedBindings.values()) {
-            if (removed.has(descriptor.parentAgentId) && !removed.has(descriptor.agentId)) {
-              removed.add(descriptor.agentId);
-              changed = true;
-            }
+      const retained = bindings.get(sessionId);
+      if (retained === undefined || retained.hostContextRef !== hostContextRef) return;
+      // Closing a parent releases its complete live subtree.
+      const removed = new Set([retained.descriptor.agentId]);
+      let changed;
+      do {
+        changed = false;
+        for (const { descriptor } of bindings.values()) {
+          if (removed.has(descriptor.parentAgentId) && !removed.has(descriptor.agentId)) {
+            removed.add(descriptor.agentId);
+            changed = true;
           }
-        } while (changed);
-        const encoded = this.restoreCheckpoint();
-        const checkpoint = encoded === undefined
-          ? { version: 1, root_session_id: reservation.sessionId, next_agent_id: 1, children: [] }
-          : JSON.parse(encoded);
-        for (const { descriptor } of retainedBindings.values()) {
-          checkpoint.next_agent_id = Math.max(checkpoint.next_agent_id, Number(descriptor.agentId) + 1);
         }
-        checkpoint.children = checkpoint.children.filter((child) => !removed.has(String(child.descriptor.id)));
-        // Keep surviving committed histories and the allocator high watermark,
-        // even if the owner disappears before the next asynchronous live save.
-        writeSubagentCheckpoint(storage, JSON.stringify(checkpoint));
-        for (const { descriptor, hostContextRef: retainedContext } of retainedBindings.values()) {
-          if (!removed.has(descriptor.agentId)) continue;
-          released.push(descriptor.sessionId);
-          notifySubagentLifecycle(lifecycle, {
-            type: "release",
-            rootSessionId: reservation.sessionId,
-            sessionId: descriptor.sessionId,
-            hostContextRef: retainedContext,
-          });
-          storage.sql.exec(
-            `DELETE FROM nanocodex_cloudflare_subagents
-             WHERE session_id = ? AND host_context_ref IS ?`,
-            descriptor.sessionId,
-            retainedContext ?? null,
-          );
-        }
-      });
-      // Change the cache only after the storage transaction commits.
-      for (const id of released) {
-        retainedBindings.delete(id);
-        restoredHostContextRefs.delete(id);
+      } while (changed);
+      for (const { descriptor, hostContextRef: context } of bindings.values()) {
+        if (!removed.has(descriptor.agentId)) continue;
+        notifySubagentLifecycle(lifecycle, {
+          type: "release", rootSessionId: reservation.sessionId,
+          sessionId: descriptor.sessionId, hostContextRef: context,
+        });
+        bindings.delete(descriptor.sessionId);
       }
     },
   });
-}
-
-// Caller owns the transaction; release also updates bindings atomically.
-function writeSubagentCheckpoint(storage, checkpoint) {
-  validateSubagentCheckpointSize(checkpoint);
-  storage.sql.exec("DELETE FROM nanocodex_cloudflare_subagent_checkpoints");
-  for (let offset = 0, index = 0; offset < checkpoint.length; index += 1) {
-    let end = Math.min(offset + 65_536, checkpoint.length);
-    if (end < checkpoint.length && /[\uD800-\uDBFF]/.test(checkpoint[end - 1])) end -= 1;
-    storage.sql.exec(
-      "INSERT INTO nanocodex_cloudflare_subagent_checkpoints (chunk_index, payload) VALUES (?, ?)",
-      index, checkpoint.slice(offset, end),
-    );
-    offset = end;
-  }
-}
-
-function validateSubagentCheckpointSize(checkpoint) {
-  if (typeof checkpoint !== "string" || checkpoint.length === 0
-    || new TextEncoder().encode(checkpoint).byteLength > 16 * 1024 * 1024) {
-    throw new Error("Subagent checkpoint must be non-empty JSON bounded to 16 MiB");
-  }
 }
 
 function notifySubagentLifecycle(lifecycle, event) {

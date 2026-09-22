@@ -307,15 +307,12 @@ Cloudflare Agents default to direct tool mode because Workers prohibit dynamic
 `eval`/`new Function`. Caller-defined tools therefore work without a code
 evaluator. Select `toolMode: "code"` only when also supplying an evaluator that
 is explicitly compatible with the deployed Worker runtime. Runtime-owned
-Subagents are installed by default, including on a durable root. Child identities,
-topology, and committed runtime boundaries are checkpointed during execution and
-on clean owner shutdown. Startup retains the last safe checkpoint until a newer
-one replaces it. After owner loss, saved children retain their history, result
-schema, and routing; active turns restore as interrupted and are not automatically
-replayed. Messaging an evicted child reloads the same child and any evicted
-ancestors. Incomplete legacy checkpoints preserve reusable children; only bindings
-without saved runtime history remain non-messageable archives. Closed children
-cannot be resurrected, and superseded owners cannot overwrite checkpoints. Use
+Subagents are installed by default, including on a durable root. All children are
+ephemeral: their identities, topology, conversations, results, and routing exist
+only for the lifetime of the root runtime. Root shutdown or restart discards the
+entire child tree; only the root's own durable history resumes. Existing child
+checkpoints from older versions are discarded. Within a live runtime, completed
+children remain available for follow-up messages until closed. Use
 `Subagents.create({ maxConcurrency })` in `tools` to set an explicit finite
 concurrency limit. Active subagent turns are unlimited by default.
 

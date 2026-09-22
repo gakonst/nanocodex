@@ -446,7 +446,7 @@ impl Tool for SpawnAgent {
     fn definition(&self) -> ToolDefinition {
         ToolDefinition::function(
             SPAWN_AGENT_TOOL,
-            "Starts a reusable clean-room subagent without inherited conversation history and immediately returns its ID.",
+            "Starts an ephemeral, reusable clean-room subagent without inherited conversation history and immediately returns its ID. Children and in-memory idle snapshots are dropped when the parent runtime restarts; historical IDs do not identify recovered agents.",
             spawn_agent_parameters(),
         )
         .with_output_schema(spawn_agent_output_schema())
@@ -794,10 +794,10 @@ impl Tool for ChangeAgentLifecycle {
     fn definition(&self) -> ToolDefinition {
         let description = match self.operation {
             LifecycleOperation::Interrupt => {
-                "Interrupts an agent's active turn and every active descendant, waits for their model and tool resources to stop, and keeps the sessions reusable."
+                "Interrupts an agent's active turn and every active descendant, waits for their model and tool resources to stop, and keeps the sessions reusable within the running parent runtime."
             }
             LifecycleOperation::Close => {
-                "Closes an agent and its entire descendant subtree, waiting for active model and tool resources to stop before returning. Closed agents remain inspectable but are not reusable."
+                "Closes an agent and its entire descendant subtree, waiting for active model and tool resources to stop before returning. Closed agents remain inspectable within the running parent runtime but are not reusable."
             }
         };
         ToolDefinition::function(

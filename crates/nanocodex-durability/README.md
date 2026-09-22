@@ -50,6 +50,10 @@ let turn = agent
 assert_eq!(turn.request_id(), Some("request-7"));
 ```
 
+Durability is local to the explicitly configured agent. Spawned subagents and
+all descendants are ephemeral: they receive no durable owner, execution journal,
+or inherited rollout recorder. Their live state ends with the parent runtime.
+
 Without `.durability(...)`, the same builder is an ordinary non-durable agent.
 An OpenAI-only consumer can stop at `OpenAi::instructions(...).build()`, and a
 tools-only consumer can stop at `Tools::builder().build()`. A caller that owns

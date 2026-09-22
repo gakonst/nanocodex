@@ -92,7 +92,7 @@ impl AgentHandle {
         request_spawn_with_host_context(&commands, &self.shutdown, options, host_context).await
     }
 
-    /// Reconstructs a child with its exact identity and history, inheriting host capabilities.
+    /// Rehydrates an idle child from this runtime's in-memory history and host capabilities.
     #[doc(hidden)]
     pub async fn restore_child(
         &self,
@@ -476,7 +476,7 @@ impl Nanocodex {
         self.backend.context().await
     }
 
-    /// Restores a child driver with persisted identity and current host capabilities.
+    /// Rehydrates a child driver from this runtime's in-memory identity and history.
     #[doc(hidden)]
     pub async fn restore_child(
         &self,
@@ -486,7 +486,7 @@ impl Nanocodex {
         self.backend.restore_child(snapshot, host_context).await
     }
 
-    /// Captures a reconstructable child driver boundary without exposing host credentials.
+    /// Captures an in-memory idle child boundary without exposing host credentials.
     #[doc(hidden)]
     pub async fn child_snapshot(&self) -> Result<ChildRuntimeSnapshot> {
         self.backend.child_snapshot().await

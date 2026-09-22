@@ -406,7 +406,7 @@ impl SpawnOptions {
     }
 }
 
-/// Serializable child driver state, restored with the current host's capabilities.
+/// In-memory idle child state, rehydrated within the same parent runtime.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ChildRuntimeSnapshot {
     /// Stable child session identity.
