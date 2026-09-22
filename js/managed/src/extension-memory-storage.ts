@@ -1,3 +1,4 @@
+import { MarkdownMemoryStore } from './markdown-memory';
 import { fileMemoriesBackend, type MemoryFileStore } from 'nanocodex-tools/extensions';
 import { initializeTurnInputs, readTurnInput, storeTurnInput } from './managed-turn-input';
 
@@ -11,12 +12,15 @@ export function scopeMemoryFiles(storage: DurableObjectStorage, owner: string, l
   const chunks = 'extension_memory_file_chunks';
   initializeTurnInputs(storage, chunks);
   const id = (path: string) => JSON.stringify([owner, path]);
+  const markdown = new MarkdownMemoryStore(storage);
   return {
     listFiles: async () => [
+      ...markdown.list(owner),
       ...storage.sql.exec<{ path: string }>('SELECT path FROM extension_memory_files WHERE owner=? ORDER BY path', owner).toArray().map(row => row.path),
       ...(await legacy.list()).map(memory => `legacy/${memory.key.id}-v${memory.key.version}.md`),
     ],
     readFile: async path => {
+      if (path === 'MEMORY.md' || path === 'USER.md' || path.startsWith('memory/')) return markdown.readFile(owner, path);
       const match = /^legacy\/(\d+)-v(\d+)\.md$/.exec(path);
       if (match) {
         const content = legacy.read(Number(match[1]), Number(match[2]));

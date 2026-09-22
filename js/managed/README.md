@@ -148,6 +148,14 @@ Reusable Hosted Tools protocol, broker-state, and durable-memory policy live in
 adapters and retains account scope, Connect authorization, bindings, and
 storage ownership.
 
+## Markdown memory
+
+Managed agents use `memory_get`, `memory_search`, and `memory_write` for editable
+curated Markdown and daily notes stored in Durable Object SQLite. See the
+[design and API](../../docs/workers-markdown-memory.md) for ownership, revision
+checks, startup excerpts, and implementation boundaries. Existing memory APIs
+and prepared personalization remain compatible.
+
 ## Prepared personalization
 
 Managed admission no longer runs prompt-derived history search or memory scan.

@@ -1,3 +1,4 @@
+import { MarkdownMemoryStore, MarkdownMemoryError } from "./markdown-memory";
 import { scopeMemoryFiles, scopeFileMemories } from "./extension-memory-storage";
 import { PreparedPersonalizationStore } from "./personalization";
 import { initializeMemoryContent, memoryIdentityDigest, readMemoryContent, storeMemoryContent } from "./durable-memory-storage";
@@ -212,6 +213,25 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
     }
     if (!this.#authorized(assertedOrganization)) return json({ error: "not_found" }, { status: 404 });
     try {
+      if (request.method === "POST" && url.pathname.startsWith("/markdown-memory/")) {
+        const owner = request.headers.get("x-nanocodex-private-memory-owner");
+        if (!request.headers.get(SUBJECT_ASSERTION)
+          || (assertedTeam.startsWith("personal:") && (!owner || assertedTeam !== `personal:${owner}`)))
+          return json({ error: "forbidden" }, { status: 403 });
+        const operation = url.pathname.slice("/markdown-memory/".length);
+        if (!["get", "search", "write", "bootstrap"].includes(operation))
+          return json({ error: "not_found" }, { status: 404 });
+        if (operation === "write" && request.headers.get(MEMORY_MUTATION_ASSERTION) !== "1")
+          return json({ error: "memory_read_only" }, { status: 403 });
+        const store = new MarkdownMemoryStore(this.ctx.storage);
+        const input = await parseJsonBody<unknown>(request);
+        if (operation === "bootstrap") return json(store.bootstrap(assertedTeam, Date.now()));
+        if (operation === "get") return json(store.get(assertedTeam, input));
+        if (operation === "search") return json(store.search(assertedTeam, input));
+        if (isRecord(input) && typeof input.content === "string" && containsLikelySecret(input.content))
+          return json({ error: "memory_secret_rejected", message: "memory content was rejected as a likely secret" }, { status: 422 });
+        return json(store.write(assertedTeam, input));
+      }
       if (request.method === "POST" && url.pathname.startsWith("/extension-memories/")) {
         const owner = request.headers.get("x-nanocodex-private-memory-owner");
         if ((assertedTeam.startsWith("personal:") && (!owner || assertedTeam !== `personal:${owner}`)) || !request.headers.get(SUBJECT_ASSERTION))
@@ -306,6 +326,9 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
       }
       return json({ error: "not_found" }, { status: 404 });
     } catch (error) {
+      if (error instanceof MarkdownMemoryError) {
+        return json({ error: error.code, message: error.message }, { status: error.status });
+      }
       if (error instanceof HistorySearchError) {
         return json({ error: error.code, message: error.message }, { status: error.status });
       }
