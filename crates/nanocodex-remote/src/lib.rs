@@ -10,6 +10,7 @@ pub mod capture;
 pub mod frames;
 pub mod ice;
 pub mod input;
+mod playout;
 pub mod video;
 
 pub use capture::{Capture, CaptureSource, Task};

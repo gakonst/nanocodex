@@ -35,3 +35,7 @@
 
 .remote-screen-toolbar { flex-wrap: wrap; flex-shrink: 0; }
 .remote-screen-view:fullscreen .remote-screen-toolbar, .remote-screen-expanded .remote-screen-toolbar { background: #17191d; }
+
+.remote-screen-stats { position: absolute; top: 10px; right: 10px; display: grid; grid-template-columns: auto auto; gap: 3px 12px; margin: 0; padding: 10px 12px; border-radius: 6px; background: #000c; color: #fff; font: 11px/1.4 ui-monospace, monospace; font-variant-numeric: tabular-nums; pointer-events: none; }
+.remote-screen-stats dt { opacity: .75; }
+.remote-screen-stats dd { margin: 0; text-align: right; }

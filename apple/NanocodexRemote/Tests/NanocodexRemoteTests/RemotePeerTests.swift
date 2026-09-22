@@ -63,11 +63,13 @@ final class RemotePeerTests: XCTestCase {
         viewer.onChannelsReady = { if !opened { opened = true; channels.fulfill() } }
         let rendered = expectation(description: "Encoded video decoded at viewer")
         let renderer = FrameReceiver(rendered)
+        let startupBegan = ProcessInfo.processInfo.systemUptime
         let firstDecodedFrame = expectation(description: "Diagnostics report exactly one decoded frame")
         firstDecodedFrame.assertForOverFulfill = true
         let probe = RemoteFirstFrameProbe { time, width, height in
             XCTAssertGreaterThan(time, 0)
             XCTAssertEqual(width, 320); XCTAssertEqual(height, 240)
+            print(String(format: "REMOTE_SYNTHETIC_LOOPBACK startup_to_first_decoded_ms=%.1f", (time - startupBegan) * 1000))
             firstDecodedFrame.fulfill()
         }
         viewer.onVideoTrack = { $0.add(renderer); $0.add(probe) }
@@ -100,6 +102,21 @@ final class RemotePeerTests: XCTestCase {
             }
         }
         await fulfillment(of: [control, motion, reply, rendered, firstDecodedFrame], timeout: 10)
+        // Exercise the native stats bridge using actual encoded/decoded frames.
+        var performance = RemotePerformanceAccumulator()
+        _ = performance.sample(await viewer.performanceReport())
+        try await Task.sleep(for: .seconds(1))
+        let sample = performance.sample(await viewer.performanceReport())
+        XCTAssertGreaterThan(try XCTUnwrap(sample.decodedFramesPerSecond), 0)
+        XCTAssertGreaterThan(try XCTUnwrap(sample.receiveMegabitsPerSecond), 0)
+        XCTAssertNotNil(sample.decodeMilliseconds)
+        XCTAssertEqual(sample.width, 320); XCTAssertEqual(sample.height, 240)
+        let measurements: [String: Any] = ["decoded_fps": sample.decodedFramesPerSecond as Any? ?? NSNull(),
+            "video_mbps": sample.receiveMegabitsPerSecond as Any? ?? NSNull(),
+            "network_rtt_ms": sample.networkRoundTripMilliseconds as Any? ?? NSNull(),
+            "jitter_buffer_ms": sample.jitterBufferMilliseconds as Any? ?? NSNull(),
+            "decode_ms": sample.decodeMilliseconds as Any? ?? NSNull()]
+        print("REMOTE_SYNTHETIC_LOOPBACK interval=" + String(decoding: try JSONSerialization.data(withJSONObject: measurements, options: .sortedKeys), as: UTF8.self))
         let hold: [RemoteInput] = [
             .init(kind: .button, sequence: 1, generation: "capture", x: 0.5, y: 0.5, button: 1, down: true),
             .init(kind: .relativeMove, sequence: 2, generation: "capture", deltaX: 24, deltaY: -12),
@@ -195,5 +212,33 @@ extension RemotePeerTests {
         peer.onMicrophoneStopped = { XCTFail("Publisher does not own viewer microphone") }
         peer.audioSessionStoppedMicrophone()
         XCTAssertFalse(peer.microphoneEnabled)
+    }
+}
+
+extension RemotePeerTests {
+    @MainActor func testAnswerIsSentBeforeDrainingEarlyTrickleCandidates() async throws {
+        let publisher = try RemotePeer(publishing: true, ice: [])
+        let viewer = try RemotePeer(publishing: false, ice: [])
+        defer { publisher.close(); viewer.close() }
+        var offer: RemoteSignal?
+        publisher.onSignal = { if $0.type == .offer { offer = $0 } }
+        try await publisher.offer()
+        // Distinct, syntactically valid synthetic candidates can arrive before
+        // SDP over the signaling socket. None requires a reachable host.
+        for index in 0..<32 {
+            try await viewer.receive(.init(type: .candidate,
+                candidate: "candidate:\(index + 1) 1 udp 2122260223 127.0.0.1 \(20000 + index) typ host",
+                sdpMid: "0", sdpMLineIndex: 0))
+        }
+        var answered = false
+        viewer.onSignal = { signal in
+            if signal.type == .answer {
+                answered = true
+                XCTAssertTrue(viewer.diagnosticState.contains("/32/0 SDP="), "The answer must precede pending candidate application")
+            }
+        }
+        try await viewer.receive(try XCTUnwrap(offer))
+        XCTAssertTrue(answered)
+        XCTAssertTrue(viewer.diagnosticState.contains("/32/32 SDP="), "All queued candidates are still applied before receive returns")
     }
 }

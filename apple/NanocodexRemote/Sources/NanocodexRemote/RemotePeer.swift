@@ -88,6 +88,25 @@ public final class RemotePeer: NSObject {
             }
         }
     }
+    /// One report at a time; the viewer owns cadence and lifecycle cancellation.
+    func performanceReport() async -> RemoteRTCReport {
+        await withCheckedContinuation { continuation in
+            connection.statistics { report in
+                let keys = ["kind", "mediaType", "framesDecoded", "framesDropped", "bytesReceived", "packetsReceived", "packetsLost",
+                    "jitterBufferDelay", "jitterBufferEmittedCount", "totalDecodeTime", "frameWidth", "frameHeight", "transportId",
+                    "selectedCandidatePairId", "currentRoundTripTime", "localCandidateId", "remoteCandidateId", "candidateType"]
+                let statistics = report.statistics.values.compactMap { stat -> RemoteRTCStatistic? in
+                    guard ["inbound-rtp", "transport", "candidate-pair", "local-candidate", "remote-candidate"].contains(stat.type) else { return nil }
+                    var values: [String: String] = [:]
+                    for key in keys { values[key] = stat.values[key]?.description }
+                    return RemoteRTCStatistic(id: stat.id, type: stat.type, values: values)
+                }
+                continuation.resume(returning: RemoteRTCReport(timestamp: report.timestamp_us / 1_000_000, statistics: statistics))
+            }
+        }
+    }
+    var bufferedInput: (control: UInt64, motion: UInt64) { (reliable?.bufferedAmount ?? 0, motion?.bufferedAmount ?? 0) }
+
     func selectedLocalCandidate() async -> String? {
         await withCheckedContinuation { continuation in
             connection.statistics { report in
@@ -265,7 +284,6 @@ public final class RemotePeer: NSObject {
         remoteDescriptionSet = true
         negotiationDeadline?.cancel(); negotiationDeadline = nil
         let candidates = pendingCandidates; pendingCandidates.removeAll()
-        for candidate in candidates { try await connection.add(candidate); appliedCandidates += 1 }
         if signal.type == .offer {
             // Reserve a sender in the answer without opening a capture device.
             // The host's offer determines whether return audio is supported.
@@ -284,6 +302,12 @@ public final class RemotePeer: NSObject {
             guard !closed else { throw RemoteError.closed }
             onSignal(.init(type: .answer, sdp: answer.sdp))
             flushLocalCandidates()
+        }
+        // Do not make the answer wait for a burst of early trickle candidates.
+        // Applying them still stays serialized with subsequent signaling.
+        for candidate in candidates {
+            guard !closed else { throw RemoteError.closed }
+            try await connection.add(candidate); appliedCandidates += 1
         }
     }
 

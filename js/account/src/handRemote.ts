@@ -1,3 +1,5 @@
+import { RemoteStatsSampler, type RemoteStats } from "./handRemoteStats.ts";
+
 export type RemoteHand = Readonly<{
   id: string; name: string; kind: "desktop" | "window" | "phone" | "vm";
   width: number; height: number; controllable: boolean;
@@ -8,7 +10,7 @@ export type RemoteHand = Readonly<{
 }>;
 export type BroadcastPreset = "source" | "1080p" | "720p" | "twitch" | "x";
 export type BroadcastStatus = "idle" | "starting" | "live" | "reconnecting" | "stopping" | "failed" | "stopped";
-export type RemoteState = Readonly<{ broadcastStatus?: BroadcastStatus; broadcastAudio?: boolean; broadcastPending?: boolean; broadcastError?: string; status: string; connected: boolean; controlling: boolean; connecting: boolean; audioAvailable?: boolean; audioEnabled?: boolean; microphoneAvailable?: boolean; microphoneEnabled?: boolean; microphonePending?: boolean; microphoneError?: string; controlPending?: boolean; relativePointer?: boolean }>;
+export type RemoteState = Readonly<{ stats?: RemoteStats; mediaReady?: boolean; broadcastStatus?: BroadcastStatus; broadcastAudio?: boolean; broadcastPending?: boolean; broadcastError?: string; status: string; connected: boolean; controlling: boolean; connecting: boolean; audioAvailable?: boolean; audioEnabled?: boolean; microphoneAvailable?: boolean; microphoneEnabled?: boolean; microphonePending?: boolean; microphoneError?: string; controlPending?: boolean; relativePointer?: boolean }>;
 /** The start button waits for a known, inactive native stream state. */
 export function canStartBroadcast(state: RemoteState): boolean {
   return state.connected && !state.broadcastPending && ["idle", "failed", "stopped"].includes(state.broadcastStatus ?? "");
@@ -92,6 +94,17 @@ export class RemoteBrowserSession {
   private reliable?: RTCDataChannel;
   private motion?: RTCDataChannel;
   private sequence = 0;
+  private pendingMotion?: RemoteInput;
+  private motionRetry?: ReturnType<typeof setTimeout>;
+  private statsEnabled = false;
+  private statsRun = 0;
+  private statsTimer?: ReturnType<typeof setTimeout>;
+  private statsRequest?: { peer: RTCPeerConnection; result: Promise<RTCStatsReport> };
+  private startedAt = 0;
+  private firstFrameMs?: number;
+  private videoTrackId?: string;
+  private firstFrameCallback?: number;
+  private firstFrameListener?: () => void;
   private microphoneSupported = false;
   private microphoneTransceiver?: RTCRtpTransceiver;
   private microphoneRequest?: string;
@@ -168,6 +181,7 @@ export class RemoteBrowserSession {
     if (this.closed || this.suspended) return;
     this.detach();
     const epoch = this.epoch;
+    this.startedAt = performance.now();
     this.abort = new AbortController();
     const signal = this.abort.signal;
     this.update({ status: refresh ? "Reconnecting…" : "Connecting…", connected: false, controlling: false, connecting: true });
@@ -194,6 +208,7 @@ export class RemoteBrowserSession {
         if (!this.current(epoch)) return;
         peer = new RTCPeerConnection({ iceServers: ice.iceServers, bundlePolicy: "max-bundle" });
         this.peer = peer;
+        if (this.statsEnabled) this.startStats();
         const connectedPeer = peer;
         peer.onicecandidate = ({ candidate }) => {
           if (this.current(epoch) && candidate) this.signal({ type: "candidate", candidate: candidate.candidate, sdpMid: candidate.sdpMid, sdpMLineIndex: candidate.sdpMLineIndex });
@@ -214,6 +229,7 @@ export class RemoteBrowserSession {
           }
           stream.addTrack(track);
           this.video.srcObject = stream;
+          if (track.kind === "video") { this.videoTrackId = track.id; this.watchFirstFrame(epoch); }
           this.update({ audioAvailable: stream.getAudioTracks().length > 0 });
           track.onended = () => {
             if (!this.current(epoch)) return;
@@ -487,6 +503,59 @@ export class RemoteBrowserSession {
     }
   }
 
+  /** Sampling is opt-in; serialize slow getStats calls and retire stale results. */
+  setStatsEnabled(enabled: boolean): void {
+    if (this.closed || this.statsEnabled === enabled) return;
+    this.statsEnabled = enabled;
+    this.startStats();
+  }
+  private startStats(): void {
+    const run = ++this.statsRun, epoch = this.epoch, peer = this.peer;
+    clearTimeout(this.statsTimer); this.statsTimer = undefined;
+    this.update({ stats: this.statsEnabled ? { firstFrameMs: this.firstFrameMs } : undefined });
+    if (!this.statsEnabled || !peer || !this.current(epoch)) return;
+    const sampler = new RemoteStatsSampler();
+    const valid = () => this.current(epoch) && this.statsEnabled && this.statsRun === run && this.peer === peer;
+    const poll = async () => {
+      let request = this.statsRequest;
+      try {
+        // A quick off/on toggle may reuse the same in-flight browser request.
+        // A retired peer must never block polling its replacement.
+        if (!request || request.peer !== peer) this.statsRequest = request = { peer, result: peer.getStats() };
+        const report = await request.result;
+        if (valid()) this.update({ stats: { ...sampler.sample(report, this.videoTrackId), firstFrameMs: this.firstFrameMs } });
+      } catch {
+        // Diagnostics must not break a working session or leave stale rates visible.
+        if (valid()) this.update({ stats: { firstFrameMs: this.firstFrameMs } });
+      } finally { if (this.statsRequest === request) this.statsRequest = undefined; }
+      if (valid()) this.statsTimer = setTimeout(() => { void poll(); }, 1000);
+    };
+    void poll();
+  }
+  private watchFirstFrame(epoch: number): void {
+    this.cancelFirstFrame();
+    if (this.firstFrameMs !== undefined) return;
+    const displayed = () => {
+      if (!this.current(epoch)) return;
+      this.cancelFirstFrame();
+      this.firstFrameMs = Math.max(0, performance.now() - this.startedAt);
+      this.update({ mediaReady: true,
+        ...(!this.state.connected ? { status: "Watching · connecting controls…" } : {}),
+        ...(this.statsEnabled ? { stats: { ...this.state.stats, firstFrameMs: this.firstFrameMs } } : {}) });
+    };
+    if (typeof this.video.requestVideoFrameCallback === "function") this.firstFrameCallback = this.video.requestVideoFrameCallback(displayed);
+    else {
+      // Older browsers expose decoded readiness, not compositor presentation.
+      this.firstFrameListener = displayed;
+      this.video.addEventListener("loadeddata", displayed, { once: true });
+    }
+  }
+  private cancelFirstFrame(): void {
+    if (this.firstFrameCallback !== undefined) this.video.cancelVideoFrameCallback(this.firstFrameCallback);
+    if (this.firstFrameListener) this.video.removeEventListener("loadeddata", this.firstFrameListener);
+    this.firstFrameCallback = undefined; this.firstFrameListener = undefined;
+  }
+
   takeControl(): void {
     if (this.state.connected && this.hand.controllable && !this.state.controlling && !this.controlRequested
       && (this.hand.transport === "frames-v1" || this.peer?.connectionState === "connected")) {
@@ -498,6 +567,7 @@ export class RemoteBrowserSession {
     this.control = "acquiring"; this.update({ controlPending: true }); this.send({ type: "acquire" });
   }
   releaseControl(): void {
+    this.clearMotion();
     this.stopMicrophone(true);
     this.microphoneSupported = false;
     this.update({ microphoneAvailable: false });
@@ -511,7 +581,33 @@ export class RemoteBrowserSession {
   }
   input(event: RemoteInput): void {
     if (!this.state.controlling || !this.generation || this.closed || this.suspended) return;
-    this.send({ ...event, sequence: ++this.sequence, generation: this.generation }, event.kind === "move");
+    if (event.kind === "move") {
+      // Keep only the latest absolute position while the transport drains. A
+      // final pointer sample must not disappear just because movement stopped.
+      this.pendingMotion = { ...event }; this.flushMotion();
+    } else {
+      // Discrete input is a host sequence barrier. Never replay older movement
+      // with a newer sequence after a click, key, scroll, or releaseAll.
+      this.clearMotion();
+      this.send({ ...event, sequence: ++this.sequence, generation: this.generation });
+    }
+  }
+  private clearMotion(): void {
+    clearTimeout(this.motionRetry); this.motionRetry = undefined; this.pendingMotion = undefined;
+  }
+  private flushMotion(): void {
+    const event = this.pendingMotion;
+    if (!event || !this.generation || !this.state.controlling || this.closed || this.suspended) { this.clearMotion(); return; }
+    const frames = this.hand.transport === "frames-v1", channel = frames ? this.socket : this.motion;
+    if (!channel || channel.readyState !== (frames ? WebSocket.OPEN : "open")) return;
+    if (channel.bufferedAmount > 4096) {
+      // WebSocket has no bufferedamountlow event; frames-v1 needs a bounded
+      // one-sample retry. WebRTC wakes only when its low-water event fires.
+      if (frames) this.motionRetry ??= setTimeout(() => { this.motionRetry = undefined; this.flushMotion(); }, 16);
+      return;
+    }
+    this.clearMotion();
+    this.send({ ...event, sequence: ++this.sequence, generation: this.generation }, true);
   }
   close(status = "Disconnected"): void {
     if (this.closed) return;
@@ -522,6 +618,9 @@ export class RemoteBrowserSession {
   }
   private detach(): void {
     ++this.epoch;
+    this.clearMotion();
+    ++this.statsRun; clearTimeout(this.statsTimer); this.statsTimer = undefined; this.statsRequest = undefined;
+    this.cancelFirstFrame(); this.firstFrameMs = undefined; this.videoTrackId = undefined;
     this.stopMicrophone(true);
     this.microphoneSupported = false; this.microphoneTransceiver = undefined;
     // A retired peer's unresolved sender operation must not block a new peer.
@@ -550,7 +649,7 @@ export class RemoteBrowserSession {
     if (this.peer) { this.peer.onconnectionstatechange = this.peer.ontrack = this.peer.onicecandidate = this.peer.ondatachannel = null; this.peer.close(); }
     this.socket = undefined; this.peer = undefined; this.reliable = undefined; this.motion = undefined;
     this.video.srcObject = null;
-    this.update({ audioAvailable: false, microphoneAvailable: false, controlPending: false, relativePointer: false, broadcastStatus: undefined, broadcastAudio: undefined, broadcastPending: false, broadcastError: undefined });
+    this.update({ stats: undefined, mediaReady: false, audioAvailable: false, microphoneAvailable: false, controlPending: false, relativePointer: false, broadcastStatus: undefined, broadcastAudio: undefined, broadcastPending: false, broadcastError: undefined });
     if (this.canvas) { this.canvas.width = 0; this.canvas.height = 0; }
   }
   private fail(error: unknown): void {
@@ -643,6 +742,10 @@ export class RemoteBrowserSession {
       if (this.canvas.width !== bitmap.width) this.canvas.width = bitmap.width;
       if (this.canvas.height !== bitmap.height) this.canvas.height = bitmap.height;
       context.drawImage(bitmap, 0, 0);
+      if (this.firstFrameMs === undefined) {
+        this.firstFrameMs = Math.max(0, performance.now() - this.startedAt);
+        this.update({ mediaReady: true, ...(this.statsEnabled ? { stats: { firstFrameMs: this.firstFrameMs } } : {}) });
+      }
       clearTimeout(this.frameDeadline); this.frameDeadline = undefined; this.framePending--;
       this.ready(true);
       if (this.frameWindow > 1) this.requestFrame(epoch);
@@ -655,6 +758,10 @@ export class RemoteBrowserSession {
     if (channel.label === "remote-control-v1" && !this.reliable && channel.ordered && channel.maxRetransmits === null && channel.maxPacketLifeTime === null) this.reliable = channel;
     else if (channel.label === "remote-motion-v1" && !this.motion && !channel.ordered && channel.maxRetransmits === 0 && channel.maxPacketLifeTime === null) this.motion = channel;
     else { channel.close(); this.fail(new RemoteError("Invalid remote input channel.", true)); return; }
+    if (channel === this.motion) {
+      channel.bufferedAmountLowThreshold = 1024;
+      channel.onbufferedamountlow = () => { if (this.current(epoch)) this.flushMotion(); };
+    }
     channel.onopen = () => { if (this.current(epoch)) this.ready(); };
     channel.onclose = () => { if (this.current(epoch)) this.fail(new RemoteError("Input connection closed.")); };
     channel.onmessage = ({ data }) => {
@@ -688,6 +795,7 @@ export class RemoteBrowserSession {
     } else if (value.type === "revoked") {
       if (typeof this.control === "object") {
         if (value.generation !== undefined && value.generation !== this.control.generation) return;
+        this.clearMotion();
         this.stopMicrophone(false); this.microphoneSupported = false;
         this.update({ microphoneAvailable: false });
         const released = this.control.kind === "releasing";

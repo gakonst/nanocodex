@@ -1,6 +1,8 @@
 import XCTest
 import Combine
 import ImageIO
+import CoreVideo
+import WebRTC
 @testable import NanocodexRemote
 
 private final class RemoteHTTPFixture: URLProtocol {
@@ -134,9 +136,14 @@ final class RemoteViewerTests: XCTestCase {
         await fulfillment(of: [decoded], timeout: 3)
         XCTAssertTrue(viewer.connected)
         XCTAssertEqual(socket.messages.filter { $0.type == "frame_request" }.map(\.count), [1, 1, 1, 1, 1, 1])
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(viewer.performance.connectionMilliseconds), 0)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(viewer.performance.firstDecodedFrameMilliseconds), 0)
+        XCTAssertEqual(viewer.performance.width, 3); XCTAssertEqual(viewer.performance.height, 2)
+        XCTAssertNil(viewer.performance.networkRoundTripMilliseconds, "Frame transport has no measured ICE round trip")
         let lateFrame = socket.onMessage
         viewer.suspend(); lateFrame(frame)
         XCTAssertNil(viewer.frame)
+        XCTAssertEqual(viewer.performance, RemotePerformance(), "Suspension clears metrics and fences late frames")
         XCTAssertEqual(socket.messages.filter { $0.type == "frame_request" }.count, 6)
     }
 
@@ -877,6 +884,75 @@ final class RemoteViewerTests: XCTestCase {
         let viewer = RemoteViewer(recoveryWindow: recoveryWindow)
         viewer.makeSignaling = { _ in ViewerSocket() }
         return viewer
+    }
+
+    @MainActor func testLivePerformanceMeasuresDecodedFramesAndClearsOnSuspend() async throws {
+        let service = try service { $0.respond(200, ["iceServers": []]) }
+        let viewer = viewer(), socket = ViewerSocket(), publisher = try RemotePeer(publishing: true, ice: [])
+        var publisherQueue: Task<Void, Never>?
+        let ready = expectation(description: "Transport and input channels ready")
+        let firstFrame = expectation(description: "First decoded frame measured without diagnostics opt-in")
+        let measured = expectation(description: "Live interval decoded FPS available")
+        var gotReady = false, gotFrame = false, gotRate = false
+        let performance = viewer.$performance.sink { sample in
+            if sample.connectionMilliseconds != nil, !gotReady { gotReady = true; ready.fulfill() }
+            if sample.firstDecodedFrameMilliseconds != nil, !gotFrame { gotFrame = true; firstFrame.fulfill() }
+            if (sample.decodedFramesPerSecond ?? 0) > 0, !gotRate { gotRate = true; measured.fulfill() }
+        }
+        let renderer = RemoteFirstFrameProbe { _, _, _ in }
+        let tracks = viewer.$track.sink { $0?.add(renderer) }
+        defer {
+            performance.cancel(); tracks.cancel(); viewer.track?.remove(renderer)
+            viewer.close(); publisher.close(); publisherQueue?.cancel(); service.close()
+        }
+        viewer.makeSignaling = { _ in socket }
+        publisher.onSignal = { socket.onMessage(.init(type: "signal", signal: $0)) }
+        socket.onSend = { message in
+            guard let signal = message.signal else { return }
+            let previous = publisherQueue
+            publisherQueue = Task {
+                await previous?.value
+                do { try await publisher.receive(signal) } catch { XCTFail("Publisher signaling: \(error)") }
+            }
+        }
+        await viewer.connect(service: service, hand: try hand("performance"))
+        try await publisher.offer()
+        await fulfillment(of: [ready], timeout: 5)
+        XCTAssertNil(viewer.performance.firstDecodedFrameMilliseconds, "A video track is not evidence of a decoded frame")
+        var pixelBuffer: CVPixelBuffer?
+        XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 320, 240, kCVPixelFormatType_32BGRA,
+            [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &pixelBuffer), kCVReturnSuccess)
+        let buffer = try XCTUnwrap(pixelBuffer)
+        CVPixelBufferLockBaseAddress(buffer, [])
+        memset(CVPixelBufferGetBaseAddress(buffer), 96, CVPixelBufferGetDataSize(buffer))
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+        let capturer = RTCVideoCapturer(delegate: publisher.videoSource)
+        let frames = Task {
+            for _ in 0..<180 {
+                guard !Task.isCancelled else { return }
+                let timestamp = Int64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+                publisher.videoSource.capturer(capturer, didCapture: RTCVideoFrame(buffer: RTCCVPixelBuffer(pixelBuffer: buffer), rotation: ._0, timeStampNs: timestamp))
+                do { try await Task.sleep(for: .milliseconds(33)) } catch { return }
+            }
+        }
+        defer { frames.cancel() }
+        await fulfillment(of: [firstFrame, measured], timeout: 5)
+        XCTAssertGreaterThan(try XCTUnwrap(viewer.performance.receiveMegabitsPerSecond), 0)
+        XCTAssertEqual(viewer.performance.width, 320); XCTAssertEqual(viewer.performance.height, 240)
+        XCTAssertFalse(viewer.controlling, "Measuring performance must not acquire input")
+        let measurements: [String: Any] = ["connection_ready_ms": viewer.performance.connectionMilliseconds as Any? ?? NSNull(),
+            "first_decoded_frame_ms": viewer.performance.firstDecodedFrameMilliseconds as Any? ?? NSNull(),
+            "decoded_fps": viewer.performance.decodedFramesPerSecond as Any? ?? NSNull(),
+            "video_mbps": viewer.performance.receiveMegabitsPerSecond as Any? ?? NSNull(),
+            "network_rtt_ms": viewer.performance.networkRoundTripMilliseconds as Any? ?? NSNull()]
+        print("REMOTE_VIEWER_SYNTHETIC_LOOPBACK " + String(decoding: try JSONSerialization.data(withJSONObject: measurements, options: .sortedKeys), as: UTF8.self))
+        let first = viewer.performance.firstDecodedFrameMilliseconds
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(viewer.performance.firstDecodedFrameMilliseconds, first)
+        viewer.suspend()
+        XCTAssertEqual(viewer.performance, RemotePerformance())
+        try await Task.sleep(for: .milliseconds(1100))
+        XCTAssertEqual(viewer.performance, RemotePerformance(), "Cancelled sampling and old frame callbacks cannot restore metrics")
     }
 
     @MainActor func testInitialICEOverlapsSignalingAndIsReusedUntilRestart() async throws {

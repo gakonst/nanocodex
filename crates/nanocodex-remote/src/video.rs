@@ -436,6 +436,7 @@ impl PeerBuilder {
         let mut engine = MediaEngine::default();
         engine.register_default_codecs()?;
         let registry = register_default_interceptors(Registry::new(), &mut engine)?;
+        let registry = crate::playout::register(&mut engine, registry)?;
         let mut settings = webrtc::api::setting_engine::SettingEngine::default();
         settings.set_include_loopback_candidate(
             std::env::var("NANOCODEX_VIDEO_INCLUDE_LOOPBACK").as_deref() == Ok("1"),

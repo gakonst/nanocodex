@@ -59,6 +59,7 @@ function fixture(t: TestContext, hand: RemoteHand = screen) {
   const requests: { path: string; signal?: AbortSignal | null }[] = [];
   class Channel {
     readyState = "open"; bufferedAmount = 0; maxPacketLifeTime = null;
+    bufferedAmountLowThreshold = 0; onbufferedamountlow?: () => void;
     onopen?: () => void; onclose?: () => void; onmessage?: (event: { data: string }) => void;
     sent: any[] = []; label: string; ordered: boolean; maxRetransmits: number | null;
     constructor(motion = false) { this.label = motion ? "remote-motion-v1" : "remote-control-v1"; this.ordered = !motion; this.maxRetransmits = motion ? 0 : null; }
@@ -72,6 +73,9 @@ function fixture(t: TestContext, hand: RemoteHand = screen) {
     appliedCandidates: unknown[] = []; calls: string[] = [];
     transceivers: { receiver: { track: { kind: string } }; sender: { replaceTrack(track: unknown): Promise<void> }; stopped: boolean; direction: string; currentDirection: string | null }[] = [];
     getTransceivers() { return this.transceivers; }
+    statsCalls = 0;
+    stats = async (): Promise<RTCStatsReport> => new Map() as RTCStatsReport;
+    getStats() { this.statsCalls++; return this.stats(); }
     config: RTCConfiguration;
     onconnectionstatechange?: (() => void) | null; ondatachannel?: ((event: { channel: Channel }) => void) | null;
     ontrack?: ((event: { track: unknown; receiver?: unknown }) => void) | null;
@@ -126,11 +130,17 @@ function fixture(t: TestContext, hand: RemoteHand = screen) {
     if (path.endsWith("/ice")) return iceResponse();
     return Response.json({ iceServers: [] });
   });
-  const video = { muted: true, srcObject: null as unknown, play: async () => {} };
+  const frames = new Map<number, () => void>();
+  let nextFrame = 0;
+  const video = Object.assign(new EventTarget(), {
+    muted: true, srcObject: null as unknown, play: async () => {},
+    requestVideoFrameCallback(callback: () => void) { const id = ++nextFrame; frames.set(id, callback); return id; },
+    cancelVideoFrameCallback(id: number) { frames.delete(id); },
+  });
   const session = new RemoteBrowserSession(hand, video as HTMLVideoElement, () => {}, canvas as unknown as HTMLCanvasElement);
   t.after(() => session.close());
   return {
-    peers, sockets, requests, session, video, canvas, drawn, decoded, captures,
+    peers, sockets, requests, session, video, canvas, drawn, decoded, captures, frames,
     setCapture(value: typeof capture) { capture = value; },
     setDecode(value: typeof decode) { decode = value; },
     setIceResponse(value: typeof iceResponse) { iceResponse = value; },
@@ -1157,4 +1167,181 @@ test("interactive receiver hints preserve playback across supported, legacy and 
     assert.equal(receiver.jitterBufferTarget, 0);
     assert.equal(receiver.playoutDelayHint, 0.4);
   }
+});
+
+test("congested absolute motion retains only the final position and sends when the channel drains", async t => {
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
+  const { reliable, motion } = f.peers[0]!;
+  f.session.takeControl(); reliable.message({ type: "granted", generation: "pointer" });
+  motion.bufferedAmount = 5000;
+  for (let i = 0; i < 1000; i++) f.session.input({ kind: "move", x: i / 1000, y: .5 });
+  await f.tick(1000);
+  assert.equal(motion.sent.length, 0);
+  assert.equal(motion.bufferedAmountLowThreshold, 1024);
+  motion.bufferedAmount = 0; motion.onbufferedamountlow?.(); motion.onbufferedamountlow?.();
+  assert.deepEqual(motion.sent, [{ kind: "move", x: .999, y: .5, sequence: 1, generation: "pointer" }]);
+  assert.equal(f.session.state.controlling, true);
+});
+
+for (const kind of ["button", "key", "scroll", "relativeMove", "releaseAll"] as const) {
+  test(`congested pointer sample cannot replay across a ${kind} boundary`, async t => {
+    const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
+    const { reliable, motion } = f.peers[0]!;
+    f.session.takeControl(); reliable.message({ type: "granted", generation: "pointer", relativePointer: true });
+    motion.bufferedAmount = 5000;
+    f.session.input({ kind: "move", x: .1, y: .2 });
+    const event = kind === "button" ? { kind, down: false, button: 0, x: .8, y: .9 }
+      : kind === "key" ? { kind, down: false, key: 4 }
+        : kind === "scroll" || kind === "relativeMove" ? { kind, deltaX: 2, deltaY: 3 } : { kind };
+    f.session.input(event);
+    motion.bufferedAmount = 0; motion.onbufferedamountlow?.();
+    assert.equal(motion.sent.length, 0);
+    assert.deepEqual(reliable.sent.at(-1), { ...event, sequence: 1, generation: "pointer" });
+    f.session.input({ kind: "move", x: .9, y: .9 });
+    assert.deepEqual(motion.sent.at(-1), { kind: "move", x: .9, y: .9, sequence: 2, generation: "pointer" });
+  });
+}
+
+test("release and reconnect discard congestion callbacks and motion from the retired lease", async t => {
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
+  const { reliable, motion } = f.peers[0]!;
+  f.session.takeControl(); reliable.message({ type: "granted", generation: "first" });
+  motion.bufferedAmount = 5000; f.session.input({ kind: "move", x: .2, y: .2 });
+  f.session.releaseControl(); reliable.message({ type: "revoked", generation: "first" });
+  f.session.takeControl(); reliable.message({ type: "granted", generation: "second" });
+  motion.bufferedAmount = 0; motion.onbufferedamountlow?.();
+  assert.equal(motion.sent.length, 0);
+  motion.bufferedAmount = 5000; f.session.input({ kind: "move", x: .3, y: .3 });
+  const staleDrain = motion.onbufferedamountlow!;
+  f.session.reconnect(); await flush(); f.peers[1]!.open();
+  const next = f.peers[1]!; f.session.takeControl(); next.reliable.message({ type: "granted", generation: "third" });
+  staleDrain(); assert.equal(next.motion.sent.length, 0); assert.equal(motion.sent.length, 0);
+});
+
+test("frames-v1 retries one final absolute position and clears its retry on release", async t => {
+  const f = fixture(t, frameHand);
+  await f.session.connect(); f.sockets[0]!.message({ type: "ready", connection_id: "viewer" }); await flush();
+  f.sockets[0]!.message(frame()); await flush();
+  f.session.takeControl(); f.sockets[0]!.message({ type: "control", data: { type: "granted", generation: "frame-pointer" } }); await flush();
+  const socket = f.sockets[0]!;
+  socket.bufferedAmount = 5000;
+  f.session.input({ kind: "move", x: .1, y: .2 }); f.session.input({ kind: "move", x: .8, y: .9 });
+  socket.bufferedAmount = 0; await f.tick(16);
+  assert.deepEqual(socket.sent.filter(value => value.type === "input").map(value => value.data), [
+    { kind: "move", x: .8, y: .9, generation: "frame-pointer", sequence: 1 },
+  ]);
+  socket.bufferedAmount = 5000; f.session.input({ kind: "move", x: .3, y: .3 });
+  f.session.releaseControl(); socket.bufferedAmount = 0; await f.tick(16);
+  assert.equal(socket.sent.filter(value => value.type === "input").length, 1);
+});
+
+test("stats polling is opt-in, never overlaps, and disabling ignores an in-flight sample", async t => {
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
+  const peer = f.peers[0]!, pending = deferred<RTCStatsReport>();
+  await f.tick(1000); assert.equal(peer.statsCalls, 0);
+  peer.stats = () => pending.promise;
+  f.session.setStatsEnabled(true); assert.equal(peer.statsCalls, 1);
+  await f.tick(3000); assert.equal(peer.statsCalls, 1, "a slow browser must not accumulate getStats work");
+  f.session.setStatsEnabled(false);
+  pending.resolve(new Map([['video', { id: 'video', type: 'inbound-rtp', kind: 'video', timestamp: 1000, framesDecoded: 60 }]]) as RTCStatsReport);
+  await flush(); await f.tick(1000);
+  assert.equal(peer.statsCalls, 1); assert.equal(f.session.state.stats, undefined);
+});
+
+test("stats update from interval reports, recover from rejection and stop after close", async t => {
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
+  const peer = f.peers[0]!;
+  let framesDecoded = 100, timestamp = 1000;
+  peer.stats = async () => new Map([['video', { id: 'video', type: 'inbound-rtp', kind: 'video', timestamp, framesDecoded }]]) as RTCStatsReport;
+  f.session.setStatsEnabled(true); await flush(); assert.equal(f.session.state.stats?.decodeFps, undefined);
+  framesDecoded = 140; timestamp = 3000; await f.tick(1000);
+  assert.equal(f.session.state.stats?.decodeFps, 20);
+  peer.stats = async () => { throw new Error("unavailable"); }; await f.tick(1000);
+  assert.equal(f.session.state.stats?.decodeFps, undefined); assert.equal(f.session.state.connected, true);
+  f.session.close(); const calls = peer.statsCalls; await f.tick(1000);
+  assert.equal(peer.statsCalls, calls); assert.equal(f.session.state.stats, undefined);
+});
+
+test("first frame is measured on presentation, retained until stats open, and reset on reconnect", async t => {
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
+  const first = f.peers[0]!;
+  first.ontrack?.({ track: { kind: "video", id: "picture", stop() {} } });
+  const presented = [...f.frames.values()][0]!;
+  assert.equal(Boolean(f.session.state.stats), false);
+  await f.tick(175); presented(); assert.equal(f.frames.size, 0);
+  f.session.setStatsEnabled(true); await flush();
+  assert.equal(f.session.state.stats?.firstFrameMs, 175);
+  const pending = deferred<RTCStatsReport>(); first.stats = () => pending.promise; await f.tick(1000);
+  f.session.reconnect(); await flush(); const second = f.peers[1]!; second.open();
+  second.ontrack?.({ track: { kind: "video", id: "next-picture", stop() {} } });
+  pending.resolve(new Map() as RTCStatsReport); await flush(); presented();
+  assert.equal(f.session.state.stats?.firstFrameMs, undefined, "retired callbacks cannot mark the new peer ready");
+  await f.tick(75); [...f.frames.values()][0]!();
+  assert.equal(f.session.state.stats?.firstFrameMs, 75);
+});
+
+test("older browsers measure first decoded readiness and clean up their event listener", async t => {
+  const f = fixture(t);
+  Reflect.deleteProperty(f.video, "requestVideoFrameCallback"); Reflect.deleteProperty(f.video, "cancelVideoFrameCallback");
+  await f.session.connect(); f.peers[0]!.open();
+  f.session.setStatsEnabled(true); await flush();
+  f.peers[0]!.ontrack?.({ track: { kind: "video", id: "picture", stop() {} } });
+  await f.tick(120); f.video.dispatchEvent(new Event("loadeddata"));
+  assert.equal(f.session.state.stats?.firstFrameMs, 120);
+  await f.tick(10); f.video.dispatchEvent(new Event("loadeddata"));
+  assert.equal(f.session.state.stats?.firstFrameMs, 120);
+  f.session.close(); f.video.dispatchEvent(new Event("loadeddata")); assert.equal(f.session.state.stats, undefined);
+});
+
+test("a matching revocation discards pending motion but a stale revocation preserves the current lease", async t => {
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
+  const { reliable, motion } = f.peers[0]!;
+  f.session.takeControl(); reliable.message({ type: "granted", generation: "current" });
+  motion.bufferedAmount = 5000; f.session.input({ kind: "move", x: .2, y: .3 });
+  reliable.message({ type: "revoked", generation: "old" });
+  motion.bufferedAmount = 0; motion.onbufferedamountlow?.();
+  assert.equal(motion.sent.length, 1); assert.equal(f.session.state.controlling, true);
+  motion.bufferedAmount = 5000; f.session.input({ kind: "move", x: .7, y: .8 });
+  reliable.message({ type: "revoked", generation: "current" });
+  motion.bufferedAmount = 0; motion.onbufferedamountlow?.();
+  assert.equal(motion.sent.length, 1); assert.equal(f.session.state.controlling, false);
+});
+
+test("reliable backpressure still tears down control instead of silently dropping a release", async t => {
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
+  const { reliable, motion } = f.peers[0]!;
+  f.session.takeControl(); reliable.message({ type: "granted", generation: "slow" });
+  motion.bufferedAmount = 5000; f.session.input({ kind: "move", x: .2, y: .3 });
+  reliable.bufferedAmount = 32769;
+  f.session.input({ kind: "button", button: 0, down: false, x: .4, y: .5 });
+  assert.equal(f.session.state.controlling, false); assert.equal(f.session.state.connected, false);
+  motion.bufferedAmount = 0; motion.onbufferedamountlow?.(); assert.equal(motion.sent.length, 0);
+  assert.equal(reliable.readyState, "closed");
+});
+
+test("rapid stats toggles share one in-flight request and leave one polling loop", async t => {
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
+  const peer = f.peers[0]!, pending = deferred<RTCStatsReport>(); peer.stats = () => pending.promise;
+  f.session.setStatsEnabled(true); f.session.setStatsEnabled(true);
+  f.session.setStatsEnabled(false); f.session.setStatsEnabled(true);
+  f.session.setStatsEnabled(false); f.session.setStatsEnabled(true);
+  assert.equal(peer.statsCalls, 1);
+  pending.resolve(new Map() as RTCStatsReport); await flush();
+  await f.tick(1000); assert.equal(peer.statsCalls, 2);
+  await f.tick(1000); assert.equal(peer.statsCalls, 3);
+  f.session.close(); f.session.setStatsEnabled(true); assert.equal(f.session.state.stats, undefined);
+});
+
+test("video becomes ready before input channels without enabling premature control", async t => {
+  const f = fixture(t); await f.session.connect(); const peer = f.peers[0]!;
+  peer.connectionState = "connected";
+  peer.ontrack?.({ track: { kind: "video", id: "early-picture", stop() {} } });
+  await f.tick(120); [...f.frames.values()][0]!();
+  assert.equal(f.session.state.mediaReady, true);
+  assert.equal(f.session.state.connected, false); assert.equal(f.session.state.connecting, true);
+  assert.equal(f.session.state.status, "Watching · connecting controls…");
+  f.session.takeControl(); assert.equal(peer.reliable.sent.length, 0);
+  peer.open(); assert.equal(f.session.state.connected, true); assert.equal(f.session.state.status, "Watching");
+  f.session.takeControl(); assert.deepEqual(peer.reliable.sent.at(-1), { type: "acquire" });
+  f.session.close(); assert.equal(f.session.state.mediaReady, false);
 });
