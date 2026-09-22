@@ -19,7 +19,6 @@ const initialization = {
   session_id: "018f25e8-7b51-7a32-8c4d-0123456789ab", owner_id: owner,
   organization_id: owner, team_id: owner, authorization_epoch: 1,
   public_origin: "https://nanocodex.example", settings: DEFAULT_AGENT_SETTINGS,
-  // Keep this lifecycle test independent of the personalization warmup timer.
   configuration: { tools: [] },
 };
 

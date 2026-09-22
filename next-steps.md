@@ -56,11 +56,8 @@ Completed refactor scope:
    state machine from `managed` into `nanocodex-tools/hosted`. Keep Cloudflare
    Durable Object/WebSocket persistence, account authority, and Connect grant
    enforcement in `managed`.
-3. Move the pure durable-memory contracts, validation, tokenization, ranking,
-   and preview logic into `nanocodex-tools/memory`. Keep `memory-scope`, durable
-   storage, AI Search, and account scoping in `managed`.
 
 Deferred package-boundary work remains: explicit Connect contracts/UI owners instead
 of cross-app source imports, MCP target and OAuth relay ownership, shared
 multiplayer protocol, credential-envelope crypto, and a separate portable
-durability package. Revisit these after the three extractions above.
+durability package. Revisit these after the extractions above.

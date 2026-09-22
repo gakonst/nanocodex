@@ -158,3 +158,15 @@ it("keeps Connect status in its authorized team and blocks private status reads"
   await expect(status.handler({ scope: "personal" }, f.context)).rejects.toThrow("direct account authority");
   expect(f.fetch).toHaveBeenCalledTimes(1);
 });
+
+it("does not expose retired versioned or extension memory APIs", async () => {
+  const f = fixture();
+  const bindings = { ...env, NANOCODEX_MEMORY: f.options.memories };
+  for (const path of ["/v1/memory", "/v1/memories", "/v1/memories/list", "/v1/memories/read", "/v1/memories/search", "/v1/memories/add_ad_hoc_note"]) {
+    const response = await worker.fetch(new Request(`https://test.example${path}`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: "{}",
+    }), bindings as unknown as Parameters<typeof worker.fetch>[1], { waitUntil: () => {} });
+    expect(response.status, path).toBe(404);
+  }
+  expect(f.fetch).not.toHaveBeenCalled();
+});

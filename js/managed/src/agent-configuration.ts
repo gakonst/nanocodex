@@ -63,13 +63,6 @@ export function restrictedEnvironment(configuration: AgentConfiguration): boolea
   const access = configuration.environment?.network.access;
   return access !== undefined && access !== "enabled";
 }
-/** Startup retrieval obeys the same tool policy as model-invoked retrieval. */
-export function configuredBootstrapPlan(
-  configuration: AgentConfiguration, plan: import("nanocodex/cloudflare").Agent.BootstrapPlan,
-): import("nanocodex/cloudflare").Agent.BootstrapPlan {
-  return { ...plan, calls: restrictedEnvironment(configuration) ? [] : configuration.tools === undefined
-    ? plan.calls : plan.calls.filter(call => configuration.tools!.includes(call.name)) };
-}
 export function networkAllows(policy: NetworkPolicy | undefined, value: string): boolean {
   if (!policy || policy.access === "enabled") return true;
   const url = new URL(value);

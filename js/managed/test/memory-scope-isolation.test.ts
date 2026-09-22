@@ -1,119 +1,57 @@
-import { env } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
-import { MEMORY_INITIALIZE_ASSERTION } from "../src/memory-scope";
+import { env, runInDurableObject } from "cloudflare:test";
+import { expect, it } from "vitest";
+import { MemoryScope } from "../src/memory-scope";
 
-const ORGANIZATION = "organization-a";
-const ORGANIZATION_HEADER = "x-nanocodex-organization-id";
-const TEAM_HEADER = "x-nanocodex-team-id";
-const SUBJECT_HEADER = "x-nanocodex-subject-id";
-const MUTATION_HEADER = "x-nanocodex-memory-mutation";
-
-describe("MemoryScope team isolation", () => {
-  it("initializes on the operation without allowing another organization to reclaim the scope", async () => {
-    const memory = (env as unknown as {
-      NANOCODEX_MEMORY: DurableObjectNamespace;
-    }).NANOCODEX_MEMORY.getByName(crypto.randomUUID());
-    const scan = (organization: string | undefined, team: string | undefined, initialize = true) => memory.fetch(
-      "https://memory.internal/memory", {
-        method: "POST",
-        headers: {
-          "content-type": "application/json",
-          ...(organization === undefined ? {} : { [ORGANIZATION_HEADER]: organization }),
-          ...(team === undefined ? {} : { [TEAM_HEADER]: team }),
-          [SUBJECT_HEADER]: "agent:session-a",
-          ...(initialize ? { [MEMORY_INITIALIZE_ASSERTION]: "1" } : {}),
-        },
-        body: JSON.stringify({ operation: "scan", query: "copper lighthouse" }),
-      },
-    );
-    expect((await scan(ORGANIZATION, "team-a", false)).status).toBe(404);
-    expect((await scan(undefined, "team-a")).status).toBe(404);
-    expect((await scan("unclaimed-organization", undefined)).status).toBe(404);
-    const initialized = await scan(ORGANIZATION, "team-a");
-    expect(initialized.status).toBe(200);
-    expect(await initialized.json()).toMatchObject({ operation: "scan", abstained: true });
-    expect((await scan(ORGANIZATION, "team-a")).status).toBe(200);
-    expect((await scan("other-organization", "team-a")).status).toBe(404);
-    expect((await scan(ORGANIZATION, "team-a", false)).status).toBe(200);
-    const mutation = await memory.fetch("https://memory.internal/memory", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        [ORGANIZATION_HEADER]: ORGANIZATION,
-        [TEAM_HEADER]: "team-a",
-        [SUBJECT_HEADER]: "agent:session-a",
-        [MEMORY_INITIALIZE_ASSERTION]: "1",
-      },
-      body: JSON.stringify({ operation: "put", content: "The deployment marker is copper lighthouse." }),
-    });
-    expect(mutation.status).toBe(403);
-  });
-
-  it("does not expose one team's memory through another team's scan or keyed read", async () => {
-    const memory = (env as unknown as {
-      NANOCODEX_MEMORY: DurableObjectNamespace;
-    }).NANOCODEX_MEMORY.getByName(crypto.randomUUID());
-    const initialized = await memory.fetch("https://memory.internal/initialize", {
-      method: "PUT",
-      headers: { [ORGANIZATION_HEADER]: ORGANIZATION },
-    });
-    expect(initialized.status).toBe(204);
-
-    await expect(operation(memory, "team-a", "agent:session-a", {
-      operation: "scan",
-      query: "copper lighthouse",
-    })).resolves.toMatchObject({ operation: "scan", abstained: true });
-    const stored = await operation(memory, "team-a", "agent:session-a", {
-      operation: "put",
-      content: "The deployment marker is copper lighthouse.",
-    }, true) as { memory: { key: { id: number; version: number } } };
-
-    await expect(operation(memory, "team-b", "agent:session-b", {
-      operation: "scan",
-      query: "copper lighthouse",
-    })).resolves.toEqual({ operation: "scan", abstained: true, candidates: [] });
-    await expect(operation(memory, "team-b", "agent:session-b", {
-      operation: "read",
-      keys: [stored.memory.key],
-    })).resolves.toEqual({ operation: "read", memories: [] });
-
-    await expect(operation(memory, "team-a", "agent:session-a", {
-      operation: "scan",
-      query: "copper lighthouse",
-    })).resolves.toMatchObject({
-      operation: "scan",
-      abstained: false,
-      candidates: [{ key: stored.memory.key }],
-    });
-    await expect(operation(memory, "team-a", "agent:session-a", {
-      operation: "read",
-      keys: [stored.memory.key],
-    })).resolves.toMatchObject({
-      operation: "read",
-      memories: [{ key: stored.memory.key }],
-    });
-  });
+const bindings = env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace<MemoryScope> };
+const headers = {
+  "x-nanocodex-organization-id": "organization-a", "x-nanocodex-team-id": "team-a",
+  "x-nanocodex-subject-id": "user:alice", "x-nanocodex-memory-mutation": "1",
+  "x-nanocodex-memory-initialize": "1", "content-type": "application/json",
+};
+it("returns 404 for all retired memory routes", async () => {
+  const stub = bindings.NANOCODEX_MEMORY.getByName(crypto.randomUUID());
+  for (const [method, path] of [
+    ["GET", "/memories"], ["POST", "/memory"], ["POST", "/personalization"],
+    ...["list", "read", "search", "add_ad_hoc_note", "files", "file"].map(op => ["POST", `/extension-memories/${op}`]),
+  ]) {
+    expect((await stub.fetch(`https://memory.internal${path}`, {
+      method, headers, ...(method === "POST" ? { body: "{}" } : {}),
+    })).status).toBe(404);
+  }
 });
-
-async function operation(
-  memory: DurableObjectStub,
-  team: string,
-  subject: string,
-  body: unknown,
-  mutating = false,
-): Promise<unknown> {
-  const response = await memory.fetch("https://memory.internal/memory", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      [ORGANIZATION_HEADER]: ORGANIZATION,
-      [TEAM_HEADER]: team,
-      [SUBJECT_HEADER]: subject,
-      [MEMORY_INITIALIZE_ASSERTION]: "1",
-      ...(mutating ? { [MUTATION_HEADER]: "1" } : {}),
-    },
-    body: JSON.stringify(body),
+it("initializes canonical memory without allowing another organization to reclaim the scope", async () => {
+  const stub = bindings.NANOCODEX_MEMORY.getByName(crypto.randomUUID());
+  const get = (organization: string) => stub.fetch("https://memory.internal/markdown-memory/get", {
+    method: "POST", headers: { ...headers, "x-nanocodex-organization-id": organization }, body: JSON.stringify({ path: "MEMORY.md" }),
   });
-  expect(response.status).toBe(200);
-  return response.json();
-}
+  expect((await get("organization-a")).status).toBe(200);
+  expect((await get("organization-b")).status).toBe(404);
+  expect((await get("organization-a")).status).toBe(200);
+});
+it("drops retired storage idempotently on initialization while preserving canonical memory and history", async () => {
+  const stub = bindings.NANOCODEX_MEMORY.getByName(crypto.randomUUID());
+  const call = (path: string, body: unknown) => stub.fetch(`https://memory.internal${path}`, {
+    method: "POST", headers, body: JSON.stringify(body),
+  });
+  expect((await call("/markdown-memory/write", { operation: "put", path: "MEMORY.md", expected_revision: 0, content: "canonical jade" })).status).toBe(200);
+  const thread = "01900000-0000-7000-8000-000000000001";
+  expect((await call("/project", { thread_id: thread, turn_id: "turn-a", cursor: "1", title: "Retained conversation", input: "history jade", final_message: "history answer", created_at: 1 })).status).toBe(204);
+  await runInDurableObject(stub, async (_object, ctx) => {
+    const tables = ["durable_memories", "durable_memories_legacy", "durable_memory_content_chunks", "memory_scan_receipts", "extension_memory_files", "extension_memory_file_chunks", "prepared_personalization", "personalization_subscribers"];
+    for (const table of tables) ctx.storage.sql.exec(`CREATE TABLE ${table} (content TEXT); INSERT INTO ${table} VALUES ('retired canary')`);
+    ctx.storage.sql.exec(`CREATE TRIGGER personalization_memory_delete AFTER DELETE ON durable_memories BEGIN INSERT INTO prepared_personalization VALUES ('dirty'); END;
+      CREATE TRIGGER durable_memories_ad AFTER DELETE ON durable_memories BEGIN DELETE FROM durable_memory_content_chunks; END;`);
+    for (let restart = 0; restart < 2; restart++) {
+      new MemoryScope(ctx, {});
+      const names = ctx.storage.sql.exec<{ name: string }>("SELECT name FROM sqlite_master").toArray().map(row => row.name);
+      for (const table of tables) expect(names).not.toContain(table);
+      expect(names).not.toContain("personalization_memory_delete");
+      expect(names).not.toContain("durable_memories_ad");
+      expect(ctx.storage.sql.exec("SELECT * FROM memory_threads").toArray()).toHaveLength(1);
+      expect(ctx.storage.sql.exec("SELECT * FROM markdown_memory_documents").toArray()).toHaveLength(1);
+    }
+  });
+  expect(await (await call("/markdown-memory/get", { path: "MEMORY.md" })).json()).toMatchObject({ content: "canonical jade", revision: 1 });
+  expect(await (await call("/read", { session_id: thread })).json()).toMatchObject({ turns: [{ assistant: "history answer" }] });
+  expect(await (await call("/markdown-memory/search", { query: "canonical jade" })).text()).toContain("canonical jade");
+});

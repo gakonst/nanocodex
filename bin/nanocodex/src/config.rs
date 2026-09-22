@@ -27,7 +27,7 @@ use nanocodex_durability::{DurableSession as PortableDurableSession, SqliteStore
 
 use crate::browser::{BrowserArgs, ConfiguredBrowser};
 use crate::login::load_managed_mcp_credential;
-use crate::managed_memory::{ConfiguredManagedMemory, MEMORY_INSTRUCTIONS};
+use crate::managed_history::ConfiguredManagedHistory;
 use crate::mcp::{ConfiguredMcp, McpArgs};
 use crate::mpp::{MppAdapter, MppArgs};
 use crate::subagents::{self, ChildAgents, DEFAULT_MAX_SUBAGENTS, SubagentToolSet};
@@ -197,14 +197,14 @@ pub(crate) struct AgentArgs {
     )]
     rollouts: bool,
 
-    /// Enable hosted Nanocodex session search and durable organization memory.
+    /// Enable hosted Nanocodex session search.
     #[arg(
         long,
-        env = "NANOCODEX_MEMORY",
+        env = "NANOCODEX_HISTORY",
         default_value_t = false,
         action = ArgAction::Set
     )]
-    memory: bool,
+    history: bool,
 
     /// Responses API WebSocket endpoint.
     #[arg(long, env = "OPENAI_RESPONSES_WEBSOCKET_URL")]
@@ -353,15 +353,9 @@ impl AgentArgs {
         }
         let codex_home = default_codex_home()?;
         let responses_transport = self.responses_transport();
-        let mut session = prepare_session_build(self.cwd, self.rollouts, &codex_home, durable)?;
-        if self.memory && session.session_id.is_none() {
-            session.session_id = Some(SessionId::new());
-        }
-        let managed_memory = if self.memory {
-            let root_session_id = session.session_id.ok_or_else(|| {
-                eyre!("memory-enabled sessions require an explicit session identity")
-            })?;
-            Some(ConfiguredManagedMemory::connect(&codex_home, root_session_id).await?)
+        let session = prepare_session_build(self.cwd, self.rollouts, &codex_home, durable)?;
+        let managed_history = if self.history {
+            Some(ConfiguredManagedHistory::connect(&codex_home).await?)
         } else {
             None
         };
@@ -456,8 +450,8 @@ impl AgentArgs {
                 tools = tools.add(tool);
             }
         }
-        if let Some(managed_memory) = &managed_memory {
-            tools = managed_memory.install(tools);
+        if let Some(managed_history) = &managed_history {
+            tools = managed_history.install(tools);
         }
         let tools = tools.build()?;
         let generic_subagents = self.subagents;
@@ -495,11 +489,8 @@ impl AgentArgs {
         } else {
             builder.tools(tools)
         };
-        let additional_instructions = session_instructions(
-            self.instructions.as_deref(),
-            generic_subagents,
-            managed_memory.is_some(),
-        );
+        let additional_instructions =
+            session_instructions(self.instructions.as_deref(), generic_subagents);
         let builder = if let Some(instructions) = self.instructions {
             builder.instructions(instructions)
         } else {
@@ -587,18 +578,11 @@ const SUBAGENT_INSTRUCTIONS: &str = concat!(
     "verification."
 );
 
-fn session_instructions(
-    custom: Option<&str>,
-    subagents_enabled: bool,
-    memory_enabled: bool,
-) -> Option<String> {
+fn session_instructions(custom: Option<&str>, subagents_enabled: bool) -> Option<String> {
     let custom = custom.unwrap_or_default();
     let mut instructions = Vec::new();
     if subagents_enabled && !custom.contains(SUBAGENT_INSTRUCTIONS) {
         instructions.push(SUBAGENT_INSTRUCTIONS);
-    }
-    if memory_enabled && !custom.contains(MEMORY_INSTRUCTIONS) {
-        instructions.push(MEMORY_INSTRUCTIONS);
     }
     (!instructions.is_empty()).then(|| instructions.join("\n\n"))
 }
@@ -885,7 +869,7 @@ mod tests {
         select_auth_with_default, selected_api_base_url, selected_subagent_tools,
         session_instructions,
     };
-    use crate::{managed_memory::MEMORY_INSTRUCTIONS, subagents::SubagentToolSet};
+    use crate::subagents::SubagentToolSet;
 
     #[test]
     fn default_websocket_url_follows_the_selected_auth_mode() {
@@ -981,26 +965,14 @@ mod tests {
 
     #[test]
     fn subagent_instructions_follow_the_enable_switch() {
-        assert_eq!(session_instructions(None, false, false), None);
+        assert_eq!(session_instructions(None, false), None);
         assert_eq!(
-            session_instructions(Some(SUBAGENT_INSTRUCTIONS), true, false),
+            session_instructions(Some(SUBAGENT_INSTRUCTIONS), true),
             None
         );
-        let enabled = session_instructions(None, true, false).unwrap();
+        let enabled = session_instructions(None, true).unwrap();
         assert!(enabled.ends_with(SUBAGENT_INSTRUCTIONS));
         assert_eq!(enabled.matches(SUBAGENT_INSTRUCTIONS).count(), 1);
-    }
-
-    #[test]
-    fn memory_instructions_follow_the_enable_switch() {
-        assert_eq!(session_instructions(None, false, false), None);
-        assert_eq!(
-            session_instructions(Some(MEMORY_INSTRUCTIONS), false, true),
-            None
-        );
-        let enabled = session_instructions(None, false, true).unwrap();
-        assert!(enabled.ends_with(MEMORY_INSTRUCTIONS));
-        assert_eq!(enabled.matches(MEMORY_INSTRUCTIONS).count(), 1);
     }
 
     #[test]

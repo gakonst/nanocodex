@@ -65,7 +65,7 @@ wallet, not a browser wallet.
 
    - run a hosted Nanocodex agent;
    - read hosted conversation history;
-   - use hosted durable memory;
+   - use canonical Markdown memory;
    - for `connect`, grant exactly the connector services selected in the command;
    - optionally use MPP under an explicit access-key spending policy.
 
@@ -186,8 +186,10 @@ wallet, not a browser wallet.
   that claims an available local Codex/ChatGPT credential into the broker when
   that account does not already have ChatGPT connected. The credential remains
   broker-owned and is never returned to the browser or CLI grant.
-- Durable memory is always hosted and account/team scoped. There is no local
-  durable-memory store to merge with it.
+- Canonical Markdown memory is hosted and scoped to the authenticated user or team.
+- The native CLI uses `--history` / `NANOCODEX_HISTORY` for history recall.
+  The old `--memory` flag and versioned remote-memory tools are removed; canonical
+  Markdown tools remain available in managed agents.
 - Hosted history is account/team scoped. A consumer may separately search local
   session history, but that is a retrieval concern after login, not part of the
   account or credential ceremony.

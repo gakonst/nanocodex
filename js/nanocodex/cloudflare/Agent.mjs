@@ -16,7 +16,7 @@ import {
   releaseAgentSession,
   routePrompt,
 } from "../internal.mjs";
-import { pruneDurableReceipts as pruneWasmDurableReceipts, managedBootstrapPlan } from "../pkg-web/nanocodex.js";
+import { pruneDurableReceipts as pruneWasmDurableReceipts } from "../pkg-web/nanocodex.js";
 import * as Transport from "../browser/Transport.mjs";
 import { initializeBrowserEngine } from "../browser/engine.mjs";
 import { createCloudflareDurabilityStore } from "../runtime/cloudflare-durability-store.mjs";
@@ -66,10 +66,6 @@ export function bindAgent(module, hostAgent = HostAgent) {
   return Object.freeze({
     steerReceipt,
     steerInputKey,
-    bootstrapPlan: async (input) => {
-      await initializeBrowserEngine({ module });
-      return JSON.parse(managedBootstrapPlan(input));
-    },
     pruneDurableReceipts: (owner, options) => pruneDurableReceipts(module, owner, options),
     create: (owner, options) => create(module, owner, options, hostAgent),
     createEphemeral: (owner, options) => createEphemeral(module, owner, options),

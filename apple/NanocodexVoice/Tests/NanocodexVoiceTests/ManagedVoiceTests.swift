@@ -444,12 +444,11 @@ final class ManagedVoiceTests: XCTestCase {
         XCTAssertTrue(voice.takeTranscriptTail()?.contains("<source>transcript_tail_flush</source>") == true)
     }
 
-    func testPreparedPersonalizationIsAvailableWithoutConversationHistory() throws {
+    func testLegacyPreparedPersonalizationIsIgnored() throws {
         let context: JSON = .object(["prepared_personalization": .string("Saved team fact: prefers concise answers.")])
         let frames = ManagedVoiceProtocol.startupContextFrames(context)
         let text = frames.map { $0["content"].array[0]["text"].string }.joined()
-        XCTAssertTrue(text.contains("Saved team fact: prefers concise answers."))
-        XCTAssertTrue(text.contains("background data"))
+        XCTAssertTrue(text.isEmpty)
         XCTAssertTrue(ManagedVoiceProtocol.startupContextFrames(.object([:])).isEmpty)
     }
 

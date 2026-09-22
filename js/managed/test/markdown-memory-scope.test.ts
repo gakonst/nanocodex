@@ -53,22 +53,6 @@ it('removes replaced and deleted facts from both search and fresh bootstrap', as
   expect(await (await call(where, 'bootstrap', {})).text()).not.toContain('current-silver');
 });
 
-it('projects canonical documents through the existing file API without changing ad-hoc note semantics', async () => {
-  const where = target(crypto.randomUUID(), 'team', 'alice', 'personal');
-  await call(where, 'write', { operation: 'put', path: 'MEMORY.md', expected_revision: 0, content: 'canonical-jade' });
-  const legacy = (operation: string, body: unknown) => where.stub.fetch(`https://memory.internal/extension-memories/${operation}`, {
-    method: 'POST', headers: where.headers, body: JSON.stringify(body),
-  });
-  expect(await (await legacy('files', {})).json()).toContain('MEMORY.md');
-  expect(await (await legacy('file', { path: 'MEMORY.md' })).json()).toBe('canonical-jade');
-  await call(where, 'write', { operation: 'put', path: 'DREAMS.md', expected_revision: 0, content: 'journal-canary' });
-  expect(await (await legacy('files', {})).json()).toContain('DREAMS.md');
-  expect(await (await legacy('read', { path: 'DREAMS.md' })).json()).toMatchObject({ content: 'journal-canary' });
-  expect(await (await legacy('search', { queries: ['journal-canary', 'canonical-jade'] })).json())
-    .toMatchObject({ matches: [{ path: 'MEMORY.md', content: 'canonical-jade' }] });
-  await call(where, 'write', { operation: 'delete', path: 'MEMORY.md', expected_revision: 1 });
-  expect(await (await legacy('files', {})).json()).not.toContain('MEMORY.md');
-});
 it('applies the existing secret screen before persisting or indexing Markdown', async () => {
   const where = target(crypto.randomUUID(), 'team', 'alice', 'personal');
   const rejected = await call(where, 'write', { operation: 'put', path: 'MEMORY.md', expected_revision: 0,

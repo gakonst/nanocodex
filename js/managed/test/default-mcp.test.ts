@@ -164,9 +164,7 @@ describe("durable managed default MCP catalog", () => {
       ...memorySessionTools({
         findSessions: async () => ({ query: "", results: [], citations: [] }),
         readSession: async () => ({ turns: [], citations: [] }),
-        memory: async () => ({ operation: "scan", abstained: true, candidates: [] }),
         requireCapability() {},
-        requireRootMemoryMutation() {},
         recordCitations() {},
       }),
       createCronTool(async () => { throw new Error("not called during discovery"); }),
@@ -191,7 +189,6 @@ describe("durable managed default MCP catalog", () => {
         "find_session",
         "browseX",
         "find_sessions",
-        "memory",
         "mcp__cloudflare__search",
         "mcp__openaiDeveloperDocs__search",
         "mcp__tempo__search",

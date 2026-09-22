@@ -315,58 +315,6 @@ pub struct ReadSessionResponse {
 
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 
-/// Versioned account-memory identity.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
-pub struct MemoryKey {
-    /// Positive JavaScript-safe memory identifier.
-    pub id: u64,
-    /// Positive JavaScript-safe memory version.
-    pub version: u64,
-}
-
-impl MemoryKey {
-    pub(crate) fn validate(self) -> Result<(), ManagedError> {
-        if self.id == 0
-            || self.version == 0
-            || self.id > MAX_SAFE_INTEGER
-            || self.version > MAX_SAFE_INTEGER
-        {
-            return Err(ManagedError::Configuration(
-                "managed memory id and version must be positive safe integers".to_owned(),
-            ));
-        }
-        Ok(())
-    }
-}
-
-/// One versioned account-memory record.
-#[derive(Clone, Debug, Deserialize, Serialize)]
-pub struct MemoryRecord {
-    /// Versioned memory identity.
-    pub key: MemoryKey,
-    /// Complete retained memory content.
-    pub content: String,
-    /// Creation time in Unix milliseconds.
-    pub created_at_ms: i64,
-    /// Last-update time in Unix milliseconds.
-    pub updated_at_ms: i64,
-    /// Last memory-scan time in Unix milliseconds.
-    pub last_scanned_at_ms: Option<i64>,
-    /// Number of scans recorded by the service.
-    pub scan_count: u64,
-    /// Last use time in Unix milliseconds.
-    pub last_used_at_ms: Option<i64>,
-    /// Number of recorded uses.
-    pub use_count: u64,
-    /// Optional probation deadline in Unix milliseconds.
-    pub probation_until_ms: Option<i64>,
-}
-
-#[derive(Deserialize)]
-pub(crate) struct MemoryListResponse {
-    pub(crate) memories: Vec<MemoryRecord>,
-}
-
 /// Server-advertised capabilities for one managed agent.
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct AgentCapabilities {
@@ -1243,9 +1191,7 @@ fn decode_raw<T: DeserializeOwned>(raw: &RawValue) -> Result<T, String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        FindSessionsRequest, ManagedEvent, ManagedEventData, MemoryKey, ReadSessionRequest,
-    };
+    use super::{FindSessionsRequest, ManagedEvent, ManagedEventData, ReadSessionRequest};
 
     #[test]
     fn cron_input_has_no_client_byte_ceiling() {
@@ -1316,20 +1262,6 @@ mod tests {
             ReadSessionRequest {
                 session_id: uuid::Uuid::from_bytes(non_rfc_bytes).to_string(),
                 turn_ids: None,
-            }
-            .validate()
-            .is_err()
-        );
-    }
-
-    #[test]
-    fn memory_keys_must_be_positive_safe_integers() {
-        assert!(MemoryKey { id: 1, version: 1 }.validate().is_ok());
-        assert!(MemoryKey { id: 0, version: 1 }.validate().is_err());
-        assert!(
-            MemoryKey {
-                id: 9_007_199_254_740_992,
-                version: 1,
             }
             .validate()
             .is_err()

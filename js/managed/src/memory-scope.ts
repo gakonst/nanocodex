@@ -3,29 +3,12 @@ import { MarkdownMemorySemantic } from "./markdown-memory-semantic";
 import { MarkdownMemoryConsolidation } from "./markdown-memory-consolidation";
 import { MarkdownMemoryFlush } from "./markdown-memory-flush";
 import { createMarkdownMemoryCompletion, type MarkdownMemoryAi } from "./markdown-memory-ai";
-import { scopeMemoryFiles, scopeFileMemories } from "./extension-memory-storage";
-import { PreparedPersonalizationStore } from "./personalization";
-import { initializeMemoryContent, memoryIdentityDigest, readMemoryContent, storeMemoryContent } from "./durable-memory-storage";
 import { DurableObject } from "cloudflare:workers";
 import { performanceScope, performanceStage, performanceState, performanceSyncScope } from "./performance";
 import {
   initializeHistoryStorage, storeHistorySegments, deleteHistorySegments, readHistoryText,
   type HistorySegment,
 } from "./memory-history-storage";
-
-import {
-  DurableMemoryError,
-  MEMORY_PROBATION_DURATION_MS,
-  parseMemoryOperation,
-  rankMemories,
-  type MemoryDeleteResult,
-  type MemoryKey,
-  type MemoryOperation,
-  type MemoryPutResult,
-  type MemoryReadResult,
-  type MemoryRecord,
-  type MemoryScanResult,
-} from "./durable-memory";
 
 import {
   HistorySearchError,
@@ -52,7 +35,6 @@ const TEAM_ASSERTION = "x-nanocodex-team-id";
 const SUBJECT_ASSERTION = "x-nanocodex-subject-id";
 const MEMORY_MUTATION_ASSERTION = "x-nanocodex-memory-mutation";
 export const MEMORY_INITIALIZE_ASSERTION = "x-nanocodex-memory-initialize";
-const MEMORY_SCAN_RECEIPT_MS = 30 * 60 * 1_000;
 const SESSION_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[78][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TURN_ID = /^[A-Za-z0-9._:-]{1,128}$/;
 const MAX_AI_RETRY_DELAY_MS = 60_000;
@@ -64,7 +46,6 @@ export interface MemoryScopeEnv {
   AI?: MarkdownMemoryAi;
   NANOCODEX_MEMORY_AUTOMATION?: string;
   HISTORY_AI_SEARCH?: AiSearchInstance;
-  NANOCODEX_SESSIONS?: DurableObjectNamespace;
 }
 
 type MemoryTurnRow = {
@@ -74,21 +55,6 @@ type MemoryTurnRow = {
   turn_id: string;
   source_cursor: string;
   created_at: number;
-};
-
-type DurableMemoryRow = {
-  id: number;
-  version: number;
-  owner_team_id: string;
-  content_json: string;
-  identity_digest: string;
-  created_at_ms: number;
-  updated_at_ms: number;
-  last_scanned_at_ms: number | null;
-  scan_count: number;
-  last_used_at_ms: number | null;
-  use_count: number;
-  probation_until_ms: number | null;
 };
 
 type RankedMemoryTurnRow = MemoryTurnRow & { content: string; rank: number; semantic_score?: number };
@@ -183,7 +149,6 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
   #markdownAutomationEnabled(): boolean {
     return this.env.NANOCODEX_MEMORY_AUTOMATION !== "false" && this.env.AI !== undefined;
   }
-  readonly #personalization: PreparedPersonalizationStore;
   #vectorSearches = new Map<string, Promise<RankedMemoryTurnRow[]>>();
   #vectorCache = new Map<string, { expiresAt: number; rows: RankedMemoryTurnRow[] }>();
 
@@ -207,14 +172,9 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
         thread_id TEXT PRIMARY KEY,
         deleted_at INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS memory_scan_receipts (
-        subject_id TEXT PRIMARY KEY,
-        expires_at_ms INTEGER NOT NULL
-      );
     `);
     initializeHistoryStorage(this.ctx.storage, this.env.HISTORY_AI_SEARCH !== undefined);
-    initializeMemoryContent(this.ctx.storage);
-    this.#personalization = new PreparedPersonalizationStore(this.ctx.storage);
+    retireLegacyMemoryStorage(this.ctx.storage);
     this.ctx.blockConcurrencyWhile(async () => {
       this.#scheduleAiOutbox();
       await this.#scheduleNextAlarm();
@@ -289,38 +249,6 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
         await this.#scheduleNextAlarm();
         return json(result);
       }
-      if (request.method === "POST" && url.pathname.startsWith("/extension-memories/")) {
-        const owner = request.headers.get("x-nanocodex-private-memory-owner");
-        if ((assertedTeam.startsWith("personal:") && (!owner || assertedTeam !== `personal:${owner}`)) || !request.headers.get(SUBJECT_ASSERTION))
-          return json({ error: "forbidden" }, { status: 403 });
-        const operation = url.pathname.slice("/extension-memories/".length);
-        if (!["list", "read", "search", "add_ad_hoc_note", "files", "file"].includes(operation)) return json({ error: "not_found" }, { status: 404 });
-        if (operation === "add_ad_hoc_note" && request.headers.get(MEMORY_MUTATION_ASSERTION) !== "1")
-          return json({ error: "memory_read_only" }, { status: 403 });
-        try {
-          const legacy = {
-            list: async () => (await this.#listMemories(assertedTeam).json<{ memories: MemoryRecord[] }>()).memories,
-            read: (id: number, version: number) => this.#readMemories([{ id, version }], assertedTeam).memories[0]?.content,
-          };
-          if (operation === "files") return json(await scopeMemoryFiles(this.ctx.storage, assertedTeam, legacy).listFiles());
-          if (operation === "file") {
-            const input = await parseJsonBody<{ path: string }>(request);
-            return json(await scopeMemoryFiles(this.ctx.storage, assertedTeam, legacy).readFile(input.path));
-          }
-          const backend = scopeFileMemories(this.ctx.storage, assertedTeam, legacy);
-          return json(await backend[operation]!(await parseJsonBody<unknown>(request)));
-        } catch (error) {
-          return json({ error: "invalid_request", message: error instanceof Error ? error.message : "private memory operation failed" }, { status: 400 });
-        }
-      }
-      if (request.method === "POST" && url.pathname === "/personalization") {
-        const userId = request.headers.get("x-nanocodex-personalization-user");
-        const storageId = request.headers.get("x-nanocodex-personalization-session");
-        if (!userId || userId.length > 256 || !storageId || !/^[0-9a-f]{64}$/.test(storageId)
-          || !this.env.NANOCODEX_SESSIONS) return json({ error: "invalid_request" }, { status: 400 });
-        return json({ snapshot: this.#personalization.snapshot({ organization_id: assertedOrganization!,
-          team_id: assertedTeam, user_id: userId }, storageId) ?? null });
-      }
       if (request.method === "POST" && url.pathname === "/project") {
         const projection = await parseJsonBody<HistoryProjection>(request);
         this.#project(projection, assertedTeam);
@@ -364,23 +292,6 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
         })));
         return json({ turns, citations } satisfies HistoryReadSessionResponse);
       }
-      if (request.method === "GET" && url.pathname === "/memories") {
-        return this.#listMemories(assertedTeam);
-      }
-      if (request.method === "POST" && url.pathname === "/memory") {
-        const operation = parseMemoryOperation(await parseJsonBody<unknown>(request));
-        const mutating = operation.operation === "put" || operation.operation === "delete";
-        if (mutating && request.headers.get(MEMORY_MUTATION_ASSERTION) !== "1") {
-          return json({ error: "memory_read_only", message: "memory mutation is not authorized" }, { status: 403 });
-        }
-        const subjectId = request.headers.get(SUBJECT_ASSERTION);
-        if (subjectId === null) return json({ error: "not_found" }, { status: 404 });
-        const result = this.#memory(operation, assertedTeam, subjectId);
-        // Includes expired memories removed by a scan/read. Do not acknowledge a
-        // mutation until outstanding prepared copies have been fenced.
-        await this.#invalidatePersonalization();
-        return json(result);
-      }
       return json({ error: "not_found" }, { status: 404 });
     } catch (error) {
       if (error instanceof MarkdownMemoryError) {
@@ -389,21 +300,12 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
       if (error instanceof HistorySearchError) {
         return json({ error: error.code, message: error.message }, { status: error.status });
       }
-      if (error instanceof DurableMemoryError) {
-        return json({ error: error.code, message: error.message }, {
-          status: error.code === "memory_conflict" || error.code === "memory_duplicate" ? 409
-            : error.code === "memory_not_found" ? 404
-              : error.code === "memory_secret_rejected" ? 422
-                : 400,
-        });
-      }
       console.error({ type: "memory_scope.request_failed", error_kind: errorKind(error) });
       return json({ error: "memory_scope_failed", message: errorMessage(error) }, { status: 500 });
     }
   }
 
   async alarm(): Promise<void> {
-    await this.#invalidatePersonalization();
     if (this.#aiTask) await this.#aiTask.catch(() => {});
     else await this.#drainAiOutbox();
     try {
@@ -413,25 +315,6 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
         await services.semantic.drain();
       }
     } finally { await this.#scheduleNextAlarm(); }
-  }
-
-  async #invalidatePersonalization(): Promise<void> {
-    if (!this.env.NANOCODEX_SESSIONS) return;
-    const namespace = this.env.NANOCODEX_SESSIONS;
-    try {
-      await this.#personalization.invalidate(async (storageId, scope) => {
-        const response = await namespace.get(namespace.idFromString(storageId)).fetch("https://session.internal/personalization/invalidate", {
-          method: "POST", signal: AbortSignal.timeout(10_000),
-          headers: { "content-type": "application/json", [ORGANIZATION_ASSERTION]: this.#organizationId()! },
-          body: JSON.stringify(scope),
-        });
-        await response.body?.cancel();
-        if (!response.ok) throw new Error("personalization invalidation failed");
-      });
-    } catch (error) {
-      await this.ctx.storage.setAlarm(Date.now() + 1_000);
-      throw error;
-    }
   }
 
   #initialize(organizationId: string): Response {
@@ -768,231 +651,6 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
     ).toArray();
   }
 
-  #memory(operation: MemoryOperation, teamId: string, subjectId: string) {
-    switch (operation.operation) {
-      case "scan": {
-        const result = this.#scanMemories(operation.query, operation.limit, teamId);
-        this.ctx.storage.sql.exec(
-          `INSERT INTO memory_scan_receipts (subject_id, expires_at_ms) VALUES (?, ?)
-           ON CONFLICT(subject_id) DO UPDATE SET expires_at_ms = excluded.expires_at_ms`,
-          subjectId,
-          Date.now() + MEMORY_SCAN_RECEIPT_MS,
-        );
-        return result;
-      }
-      case "read": return this.#readMemories(operation.keys, teamId);
-      case "put": {
-        const receipt = this.ctx.storage.sql.exec<{ expires_at_ms: number }>(
-          "SELECT expires_at_ms FROM memory_scan_receipts WHERE subject_id = ?",
-          subjectId,
-        ).toArray()[0];
-        this.ctx.storage.sql.exec("DELETE FROM memory_scan_receipts WHERE subject_id = ?", subjectId);
-        if (!receipt || receipt.expires_at_ms < Date.now()) {
-          throw new DurableMemoryError("memory_scan_required", "scan memory before storing a conclusion");
-        }
-        return this.#putMemory(operation.content, operation.replace, teamId);
-      }
-      case "delete": return this.#deleteMemory(operation.key, teamId);
-    }
-  }
-
-  #scanMemories(query: string, limit: number, teamId: string): MemoryScanResult {
-    const now = Date.now();
-    return this.ctx.storage.transactionSync(() => {
-      this.#pruneMemories(now);
-      const storage = this.ctx.storage;
-      const scan = rankMemories(query, function* () {
-        for (const row of storage.sql.exec<DurableMemoryRow>(
-          "SELECT * FROM durable_memories WHERE owner_team_id = ? ORDER BY id", teamId,
-        )) yield memoryRecord(row, storage);
-      }, limit);
-      for (const candidate of scan.candidates) {
-        this.ctx.storage.sql.exec(
-          `UPDATE durable_memories
-           SET last_scanned_at_ms = ?,
-               scan_count = CASE WHEN scan_count < 9223372036854775807 THEN scan_count + 1 ELSE scan_count END
-           WHERE id = ? AND version = ? AND owner_team_id = ?`,
-          now,
-          candidate.key.id,
-          candidate.key.version,
-          teamId,
-        );
-      }
-      return { operation: "scan", ...scan };
-    });
-  }
-
-  #readMemories(keys: readonly MemoryKey[], teamId: string): MemoryReadResult {
-    const now = Date.now();
-    return this.ctx.storage.transactionSync(() => {
-      this.#pruneMemories(now);
-      const memories: MemoryRecord[] = [];
-      for (const key of keys) {
-        const row = this.ctx.storage.sql.exec<DurableMemoryRow>(
-          `SELECT * FROM durable_memories
-           WHERE id = ? AND version = ? AND owner_team_id = ?`,
-          key.id,
-          key.version,
-          teamId,
-        ).toArray()[0];
-        if (!row) continue;
-        this.ctx.storage.sql.exec(
-          `UPDATE durable_memories
-           SET last_used_at_ms = ?, probation_until_ms = NULL,
-               use_count = CASE WHEN use_count < 9223372036854775807 THEN use_count + 1 ELSE use_count END
-           WHERE id = ? AND version = ? AND owner_team_id = ?`,
-          now,
-          key.id,
-          key.version,
-          teamId,
-        );
-        memories.push(memoryRecord({
-          ...row,
-          last_used_at_ms: now,
-          use_count: row.use_count + 1,
-          probation_until_ms: null,
-        }, this.ctx.storage));
-      }
-      return { operation: "read", memories };
-    });
-  }
-
-  #listMemories(teamId: string): Response {
-    this.#pruneMemories(Date.now());
-    const storage = this.ctx.storage;
-    const maxId = storage.sql.exec<{ id: number }>(
-      "SELECT COALESCE(MAX(id), 0) AS id FROM durable_memories WHERE owner_team_id = ?", teamId,
-    ).one().id;
-    const chunks = (function* () {
-      yield '{"memories":[';
-      let created = -1;
-      let id = 0;
-      let first = true;
-      while (true) {
-        const rows = storage.sql.exec<DurableMemoryRow>(
-          `SELECT * FROM durable_memories WHERE owner_team_id = ? AND id <= ?
-           AND (created_at_ms, id) > (?, ?) ORDER BY created_at_ms, id LIMIT 64`,
-          teamId, maxId, created, id,
-        ).toArray();
-        if (rows.length === 0) break;
-        for (const row of rows) {
-          yield `${first ? "" : ","}${JSON.stringify(memoryRecord(row, storage))}`;
-          first = false;
-        }
-        created = rows.at(-1)!.created_at_ms;
-        id = rows.at(-1)!.id;
-      }
-      yield "]}";
-    })();
-    const encoder = new TextEncoder();
-    return new Response(new ReadableStream<Uint8Array>({
-      pull(controller) {
-        const next = chunks.next();
-        if (next.done) controller.close();
-        else controller.enqueue(encoder.encode(next.value));
-      },
-      cancel() { chunks.return(); },
-    }), { headers: { "content-type": "application/json", "cache-control": "no-store" } });
-  }
-
-  #putMemory(content: string, replace: MemoryKey | undefined, teamId: string): MemoryPutResult {
-    if (containsLikelySecret(content)) {
-      throw new DurableMemoryError("memory_secret_rejected", "memory content was rejected as a likely secret");
-    }
-    const identity = memoryIdentityDigest(content);
-    const now = Date.now();
-    const probationUntil = now + MEMORY_PROBATION_DURATION_MS;
-    return this.ctx.storage.transactionSync(() => {
-      this.#pruneMemories(now);
-      const duplicate = this.ctx.storage.sql.exec<{ id: number }>(
-        "SELECT id FROM durable_memories WHERE identity_digest = ? AND (? IS NULL OR id != ?)",
-        identity,
-        replace?.id ?? null,
-        replace?.id ?? null,
-      ).toArray()[0];
-      if (duplicate) {
-        throw new DurableMemoryError("memory_duplicate", "an equivalent memory already exists");
-      }
-      if (replace) {
-        const current = this.ctx.storage.sql.exec<DurableMemoryRow>(
-          "SELECT * FROM durable_memories WHERE id = ? AND owner_team_id = ?",
-          replace.id,
-          teamId,
-        ).toArray()[0];
-        if (!current) throw new DurableMemoryError("memory_not_found", "memory was not found");
-        if (current.version !== replace.version) {
-          throw new DurableMemoryError("memory_conflict", "memory changed since it was read");
-        }
-        this.ctx.storage.sql.exec(
-          `UPDATE durable_memories
-           SET version = version + 1, identity_digest = ?, updated_at_ms = ?,
-               last_scanned_at_ms = NULL, scan_count = 0,
-               last_used_at_ms = NULL, use_count = 0, probation_until_ms = ?
-           WHERE id = ? AND version = ? AND owner_team_id = ?`,
-          identity,
-          now,
-          probationUntil,
-          replace.id,
-          replace.version,
-          teamId,
-        );
-        storeMemoryContent(this.ctx.storage, replace.id, content);
-        const updated = this.ctx.storage.sql.exec<DurableMemoryRow>(
-          "SELECT * FROM durable_memories WHERE id = ?",
-          replace.id,
-        ).toArray()[0]!;
-        return { operation: "put", memory: memoryRecord(updated, this.ctx.storage, content), replaced: true };
-      }
-
-      this.ctx.storage.sql.exec(
-        `INSERT INTO durable_memories (
-           version, owner_team_id, content_json, identity_digest,
-           created_at_ms, updated_at_ms, probation_until_ms
-         ) VALUES (1, ?, ?, ?, ?, ?, ?)`,
-        teamId,
-        "",
-        identity,
-        now,
-        now,
-        probationUntil,
-      );
-      const inserted = this.ctx.storage.sql.exec<DurableMemoryRow>(
-        "SELECT * FROM durable_memories WHERE identity_digest = ?",
-        identity,
-      ).toArray()[0]!;
-      storeMemoryContent(this.ctx.storage, inserted.id, content);
-      return { operation: "put", memory: memoryRecord(inserted, this.ctx.storage, content), replaced: false };
-    });
-  }
-
-  #deleteMemory(key: MemoryKey, teamId: string): MemoryDeleteResult {
-    return this.ctx.storage.transactionSync(() => {
-      const current = this.ctx.storage.sql.exec<Pick<DurableMemoryRow, "version">>(
-        "SELECT version FROM durable_memories WHERE id = ? AND owner_team_id = ?",
-        key.id,
-        teamId,
-      ).toArray()[0];
-      if (!current) throw new DurableMemoryError("memory_not_found", "memory was not found");
-      if (current.version !== key.version) {
-        throw new DurableMemoryError("memory_conflict", "memory changed since it was read");
-      }
-      this.ctx.storage.sql.exec(
-        "DELETE FROM durable_memories WHERE id = ? AND version = ? AND owner_team_id = ?",
-        key.id,
-        key.version,
-        teamId,
-      );
-      return { operation: "delete", key };
-    });
-  }
-
-  #pruneMemories(now: number): void {
-    this.ctx.storage.sql.exec(
-      "DELETE FROM durable_memories WHERE probation_until_ms <= ? AND use_count = 0",
-      now,
-    );
-  }
-
   #scheduleAiOutbox(): void {
     if (this.env.HISTORY_AI_SEARCH === undefined) return;
     this.ctx.waitUntil(this.ctx.storage.setAlarm(Date.now() + 1).catch((error) => {
@@ -1174,15 +832,14 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
     const row = this.ctx.storage.sql.exec<{ retry_at: number }>(
       "SELECT retry_at FROM memory_ai_outbox ORDER BY retry_at LIMIT 1",
     ).toArray()[0];
-    const invalidationRetry = this.#personalization.invalidationPending() ? Date.now() + 1_000 : undefined;
     const services = this.#organizationId() ? this.#markdownServices() : undefined;
     const semanticRetry = services?.semantic.nextRetryAt();
     const consolidationAt = this.#markdownAutomationEnabled() ? services?.consolidation.nextAlarm() ?? undefined : undefined;
-    if (!row && invalidationRetry === undefined && semanticRetry === undefined && consolidationAt === undefined) {
+    if (!row && semanticRetry === undefined && consolidationAt === undefined) {
       await this.ctx.storage.deleteAlarm();
       return;
     }
-    await this.ctx.storage.setAlarm(Math.max(Date.now() + 1, Math.min(row?.retry_at ?? Infinity, invalidationRetry ?? Infinity, semanticRetry ?? Infinity, consolidationAt ?? Infinity)));
+    await this.ctx.storage.setAlarm(Math.max(Date.now() + 1, Math.min(row?.retry_at ?? Infinity, semanticRetry ?? Infinity, consolidationAt ?? Infinity)));
   }
 }
 
@@ -1234,20 +891,6 @@ function snippet(content: string, query: string): string {
   const start = Number.isFinite(match) ? Math.max(0, match - 120) : 0;
   const end = Math.min(compact.length, start + 358);
   return `${start > 0 ? "…" : ""}${compact.slice(start, end).trim()}${end < compact.length ? "…" : ""}`;
-}
-
-function memoryRecord(row: DurableMemoryRow, storage: DurableObjectStorage, content = readMemoryContent(storage, row)): MemoryRecord {
-  return {
-    key: { id: row.id, version: row.version },
-    content,
-    created_at_ms: row.created_at_ms,
-    updated_at_ms: row.updated_at_ms,
-    last_scanned_at_ms: row.last_scanned_at_ms,
-    scan_count: row.scan_count,
-    last_used_at_ms: row.last_used_at_ms,
-    use_count: row.use_count,
-    probation_until_ms: row.probation_until_ms,
-  };
 }
 
 const SECRET_PREFIXES = [
@@ -1332,4 +975,24 @@ function errorKind(error: unknown): string {
 
 function isAiSearchNotFound(error: unknown): boolean {
   return error instanceof Error && /not.?found/iu.test(`${error.name} ${error.message}`);
+}
+
+/** Local, restart-safe retirement. Canonical Markdown and history tables are untouched. */
+function retireLegacyMemoryStorage(storage: DurableObjectStorage): void {
+  storage.transactionSync(() => {
+    storage.sql.exec(`
+      DROP TRIGGER IF EXISTS personalization_memory_insert;
+      DROP TRIGGER IF EXISTS personalization_memory_replace;
+      DROP TRIGGER IF EXISTS personalization_memory_delete;
+      DROP TRIGGER IF EXISTS durable_memories_ad;
+      DROP TABLE IF EXISTS personalization_subscribers;
+      DROP TABLE IF EXISTS prepared_personalization;
+      DROP TABLE IF EXISTS memory_scan_receipts;
+      DROP TABLE IF EXISTS extension_memory_files;
+      DROP TABLE IF EXISTS extension_memory_file_chunks;
+      DROP TABLE IF EXISTS durable_memories;
+      DROP TABLE IF EXISTS durable_memories_legacy;
+      DROP TABLE IF EXISTS durable_memory_content_chunks;
+    `);
+  });
 }

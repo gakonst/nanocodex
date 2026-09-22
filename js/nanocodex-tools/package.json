@@ -34,10 +34,6 @@
       "types": "./tools/just-bash-browser.d.mts",
       "import": "./tools/just-bash-browser.mjs"
     },
-    "./memory": {
-      "types": "./dist/memory.d.ts",
-      "import": "./dist/memory.js"
-    },
     "./session": {
       "types": "./dist/session.d.ts",
       "import": "./dist/session.js"
@@ -80,10 +76,6 @@
     "./x": {
       "types": "./tools/x.d.mts",
       "import": "./tools/x.mjs"
-    },
-    "./extensions": {
-      "types": "./tools/extensions.d.mts",
-      "import": "./tools/extensions.mjs"
     }
   },
   "files": [

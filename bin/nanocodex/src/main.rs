@@ -20,7 +20,7 @@ mod eval;
 mod hand_service;
 mod hand_setup;
 mod login;
-mod managed_memory;
+mod managed_history;
 mod managed_server;
 mod mcp;
 #[cfg_attr(not(feature = "tempo"), path = "mpp_disabled.rs")]

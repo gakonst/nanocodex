@@ -40,8 +40,7 @@ For example, read `{ "path": "MEMORY.md" }`, then write
 `{ "operation": "put", "path": "MEMORY.md", "expected_revision": 0,
 "content": "# Decisions\n\nUse UTC for scheduled exports.\n" }` if the read
 reported a missing, never-created file. Responses carry the resulting revision.
-The configuration alias `memory` enables these tools alongside the existing
-`memories__*` compatibility tools. An empty tool configuration stays empty.
+The configuration alias `memory` enables these tools. An empty tool configuration stays empty.
 
 ## Ownership and context
 
@@ -65,10 +64,11 @@ never instructions or permission. Current user corrections take precedence.
 Fresh reads prevent an old local snapshot from being reused after a correction
 or deletion. Already delivered conversation content cannot be erased.
 
-Existing versioned records, prepared personalization, and append-only ad-hoc
-notes remain intact and available through their existing APIs. Canonical Markdown
-files are also visible through the existing memories list/read/search adapter. There is no
-silent migration or reclassification of personal facts as team knowledge.
+Versioned memory CRUD, prepared personalization, and append-only ad-hoc notes
+are retired. MemoryScope removes their legacy-only tables idempotently on
+activation, without changing canonical Markdown documents or conversation
+history. Canonical files use the `memory_*` tools and `/v1/markdown-memory/*`
+API exclusively. No legacy records are copied into canonical memory.
 
 ## Semantic retrieval
 

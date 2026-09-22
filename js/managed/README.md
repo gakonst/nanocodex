@@ -116,7 +116,7 @@ Active clients call `POST /v1/agents/:id/prepare` (no body), or the managed SDK'
 requires `agents:write`, `tools:use`, and the ChatGPT connector for delegated
 grants. It acknowledges with HTTP 202 `{ "state": "preparing" }`; this means
 accepted, not provider-ready. One session-owned task starts runtime/socket
-preconnection, personalization, and first-turn account metadata. Prompt and
+preconnection and first-turn account metadata. Prompt and
 voice media admission do not await the activation HTTP request. Passive event
 and history subscriptions do not prepare models. Preparation installs an idle
 alarm and expires after the configured runtime idle interval (30 seconds by
@@ -143,7 +143,7 @@ The resolver reads retained ownership without constructing the agent runtime.
 Deleted, exported, or pending-import sessions deny resolution; egress never
 falls back to a directory entry after a direct-subject denial.
 
-Reusable Hosted Tools protocol, broker-state, and durable-memory policy live in
+Reusable Hosted Tools protocol, broker-state, and history tool contracts live in
 `nanocodex-tools`. This Worker supplies their Durable Object SQL/WebSocket
 adapters and retains account scope, Connect authorization, bindings, and
 storage ownership.
@@ -157,54 +157,21 @@ AI Search and Workers AI bindings. `memory_status` reports availability and
 durable job receipts. Set `NANOCODEX_MEMORY_AUTOMATION=false` to disable automatic
 saves and consolidation. See the
 [design and API](../../docs/workers-markdown-memory.md) for ownership, revision
-checks, startup excerpts, and implementation boundaries. Existing memory APIs
-and prepared personalization remain compatible.
+checks, startup excerpts, and implementation boundaries.
 
-## Prepared personalization
+The versioned `memory` CRUD API, `memories__*` file tools, ad-hoc notes, and
+prepared personalization are retired. They cannot read or inject legacy records.
+On activation, each memory Durable Object idempotently removes only its legacy
+memory tables; session objects remove prepared-personalization caches. Canonical
+Markdown documents and conversation history remain intact. This is lazy storage
+cleanup after deployment, not an immediate account-wide production purge.
+Historical conversation messages may still contain previously quoted facts;
+`find_session` and `read_session` continue to recall conversation history.
 
-Managed admission no longer runs prompt-derived history search or memory scan.
-The MemoryScope prepares deterministic snapshots of saved personal and team memories; Sessions
-warm a disposable copy on create, open, or activity without awaiting it. Each turn
-pins the eligible local copy or a cache miss. A miss proceeds without retrieval.
-Explicit `find_session`, `read_session`, and memory tools remain available.
+Direct account sessions access private Markdown memory by default. Explicit team
+writes require user sharing intent; Connect grants remain scoped to their team.
 
-Snapshots carry organization/team/user scope, source versions, and a five-minute
-lease. New memories coalesce until refresh; replacements and deletions invalidate
-issued copies before the mutation succeeds. Failed invalidations retain durable
-retry debt. Expiry is checked again before model injection. Previously delivered
-conversation history cannot be erased; later prepared blocks replace or withdraw
-prior prepared context. Existing team facts remain shared; personal facts are
-stored separately for the authenticated user within their organization.
-No conversation summarizer or inferred personal profile is added here.
-
-Each source selection is indexed, limited to 32 facts and 8 KB of fact content,
-and does not write scan/use counters. A team snapshot serves multiple agents;
-active subscriber leases are bounded to 256 per memory store. Additional agents
-proceed with a cache miss. Refresh is activity-driven, so idle users incur no
-periodic job. Identical content is not appended again on later turns, and pinned
-context is pruned when the associated turn receipts are archived.
-
-Voice startup receives optional prepared context in the existing context response.
-Updated Rust/WASM and Apple voice clients accept it as bounded background data;
-older clients ignore the optional field. Media readiness never awaits preparation.
-Account/environment discovery remains a separate first-turn dependency.
-
-### Personal memories and request attribution
-
-`memory` accepts `scope: "personal" | "team"` (default `team`). Use personal for
-private user preferences and facts, and team for shared knowledge. A scan receipt
-and every memory key belong to their scope; keep it unchanged across scan, read,
-put, and delete. Both scopes use the existing root-only write policy, capability
-checks, secret filtering, version checks, and forget/correction invalidation.
-Personal memory is isolated by authenticated user and organization and follows
-that user across teams in that organization. Connected-app grants cannot access
-personal memories or receive them in prepared context. Team memories are never
-relabelled or copied into personal storage.
-
-`GET /v1/memory?scope=personal`, POST operations with `scope: "personal"`, and
-`DELETE /v1/memory/:id?version=:version&scope=personal` use the authenticated user;
-a request cannot supply another user ID. The JavaScript managed SDK accepts
-`{ scope: "personal" }` on `listMemories`, `memory`, and `deleteMemory`.
+## Request attribution
 
 Clients may send bounded `x-nanocodex-client-context` JSON (`client`, `hand`,
 logical `cwd`, `timezone`, optional `location`). Location contains numeric `latitude`,

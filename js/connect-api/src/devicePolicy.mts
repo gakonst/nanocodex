@@ -354,20 +354,6 @@ export function sanitizeCliWalletResult(value: unknown): SanitizedCliWalletResul
   };
 }
 
-export function managedMemoryCapability(
-  path: string,
-  operation?: unknown,
-): "history:read" | "memory:read" | "memory:write" | undefined {
-  if (path === "/v1/history/sessions/search"
-    || /^\/v1\/history\/sessions\/[^/]+\/read$/.test(path)) return "history:read";
-  if (/^\/v1\/memory\/[^/]+$/.test(path) && operation === "delete") return "memory:write";
-  if (path !== "/v1/memory") return undefined;
-  if (operation === "list") return "memory:read";
-  if (operation === "scan" || operation === "read") return "memory:read";
-  if (operation === "put" || operation === "delete") return "memory:write";
-  return undefined;
-}
-
 export function requestedConnectorsSatisfied(
   connected: readonly string[],
   requested: readonly string[],

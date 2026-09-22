@@ -11,17 +11,17 @@ mod config {
 
     pub(crate) fn default_auth_file() -> eyre::Result<PathBuf> {
         Ok(std::env::temp_dir()
-            .join("nanocodex-managed-memory-tests")
+            .join("nanocodex-managed-history-tests")
             .join("auth.json"))
     }
 
     pub(crate) fn default_codex_home() -> eyre::Result<PathBuf> {
-        Ok(std::env::temp_dir().join("nanocodex-managed-memory-tests"))
+        Ok(std::env::temp_dir().join("nanocodex-managed-history-tests"))
     }
 }
 
 #[path = "../src/login.rs"]
 mod login;
 
-#[path = "../src/managed_memory.rs"]
-mod managed_memory;
+#[path = "../src/managed_history.rs"]
+mod managed_history;

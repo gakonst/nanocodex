@@ -80,20 +80,9 @@ Worker, Durable Object, or application proxy that owns rotating credentials.
 Authentication modes are constructors rather than a union of mutually
 exclusive fields on `Agent.create`.
 
-### Personal memories and caller context
+### Caller context
 
-Managed agents can keep user preferences separate from team knowledge:
-
-```js
-import { Agent } from "nanocodex/managed";
-
-await Agent.memory({ operation: "scan", query: "my preferences" }, { scope: "personal" });
-await Agent.memory({ operation: "put", content: "I prefer concise replies." }, { scope: "personal" });
-```
-
-The default scope remains `team`. Personal memories belong to the authenticated
-user within their organization, across teams; use the same scope when reading,
-replacing, or deleting a memory. Managed clients also accept descriptive
+Managed clients also accept descriptive
 `requestOrigin: { client: "desktop", hand: "user:HAND_ID", cwd: "/HAND_ID" }`.
 Caller context is included once at startup and never grants execution authority.
 

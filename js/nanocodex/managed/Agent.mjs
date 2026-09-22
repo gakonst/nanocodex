@@ -253,43 +253,6 @@ export async function readSession(request, options = {}) {
   return managedReadSessionResponse(body);
 }
 
-function memoryClient(options) {
-  const { scope = "team", ...clientOptions } = options;
-  if (scope !== "team" && scope !== "personal") throw new TypeError("memory scope must be team or personal");
-  return { client: managedClient(clientOptions), scope };
-}
-
-/** List the authenticated account's hosted durable memory. */
-export async function listMemories(options = {}) {
-  const { client, scope } = memoryClient(options);
-  const body = await client.json(`/v1/memory${scope === "personal" ? "?scope=personal" : ""}`);
-  if (!body || typeof body !== "object" || Array.isArray(body) || !Array.isArray(body.memories)) {
-    throw new ManagedError("invalid_response", "managed memory list is malformed");
-  }
-  return Object.freeze(body.memories.map(managedMemoryRecord));
-}
-
-/** Compare-and-swap delete one account-owned hosted memory. */
-export async function deleteMemory(key, options = {}) {
-  validateMemoryKey(key);
-  const { client, scope } = memoryClient(options);
-  await client.empty(
-    `/v1/memory/${key.id}?version=${key.version}${scope === "personal" ? "&scope=personal" : ""}`,
-    { method: "DELETE" },
-  );
-}
-
-/** Run one atomic durable-memory operation in the authenticated account scope. */
-export async function memory(operation, options = {}) {
-  validateMemoryOperation(operation);
-  const { client, scope } = memoryClient(options);
-  const body = await client.json("/v1/memory", {
-    method: "POST",
-    body: JSON.stringify(scope === "personal" ? { ...operation, scope } : operation),
-  });
-  return managedMemoryResponse(body, operation.operation);
-}
-
 /** Read metadata for the authenticated account's organization. */
 export async function getOrganization(options = {}) {
   return managedOrganization(await managedClient(options).json("/v1/organization"));
@@ -979,94 +942,6 @@ function managedCitations(value) {
   }));
 }
 
-function managedMemoryResponse(value, expectedOperation) {
-  if (!value || typeof value !== "object" || Array.isArray(value)
-    || value.operation !== expectedOperation) {
-    throw new ManagedError("invalid_response", "managed memory response is malformed");
-  }
-  if (value.operation === "scan") {
-    if (typeof value.abstained !== "boolean" || !Array.isArray(value.candidates)
-      || value.abstained !== (value.candidates.length === 0)) {
-      throw new ManagedError("invalid_response", "managed memory scan response is malformed");
-    }
-    return Object.freeze({
-      operation: "scan",
-      abstained: value.abstained,
-      candidates: Object.freeze(value.candidates.map(managedMemoryCandidate)),
-    });
-  }
-  if (value.operation === "read") {
-    if (!Array.isArray(value.memories)) {
-      throw new ManagedError("invalid_response", "managed memory read response is malformed");
-    }
-    return Object.freeze({
-      operation: "read",
-      memories: Object.freeze(value.memories.map(managedMemoryRecord)),
-    });
-  }
-  if (value.operation === "put") {
-    if (typeof value.replaced !== "boolean") {
-      throw new ManagedError("invalid_response", "managed memory put response is malformed");
-    }
-    return Object.freeze({
-      operation: "put",
-      memory: managedMemoryRecord(value.memory),
-      replaced: value.replaced,
-    });
-  }
-  if (value.operation === "delete") {
-    return Object.freeze({ operation: "delete", key: managedMemoryKey(value.key) });
-  }
-  throw new ManagedError("invalid_response", "managed memory response is malformed");
-}
-
-function managedMemoryCandidate(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)
-    || typeof value.preview !== "string"
-    || UTF8.encode(value.preview).byteLength > 64
-    || typeof value.score !== "number" || !Number.isFinite(value.score) || value.score <= 0) {
-    throw new ManagedError("invalid_response", "managed memory candidate is malformed");
-  }
-  return Object.freeze({
-    key: managedMemoryKey(value.key),
-    preview: value.preview,
-    score: value.score,
-  });
-}
-
-function managedMemoryRecord(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)
-    || typeof value.content !== "string" || !value.content.trim()
-    || !nonnegativeSafeInteger(value.created_at_ms)
-    || !nonnegativeSafeInteger(value.updated_at_ms)
-    || !nullableNonnegativeSafeInteger(value.last_scanned_at_ms)
-    || !nonnegativeSafeInteger(value.scan_count)
-    || !nullableNonnegativeSafeInteger(value.last_used_at_ms)
-    || !nonnegativeSafeInteger(value.use_count)
-    || !nullableNonnegativeSafeInteger(value.probation_until_ms)) {
-    throw new ManagedError("invalid_response", "managed memory record is malformed");
-  }
-  return Object.freeze({
-    key: managedMemoryKey(value.key),
-    content: value.content,
-    created_at_ms: value.created_at_ms,
-    updated_at_ms: value.updated_at_ms,
-    last_scanned_at_ms: value.last_scanned_at_ms,
-    scan_count: value.scan_count,
-    last_used_at_ms: value.last_used_at_ms,
-    use_count: value.use_count,
-    probation_until_ms: value.probation_until_ms,
-  });
-}
-
-function managedMemoryKey(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)
-    || !positiveSafeInteger(value.id) || !positiveSafeInteger(value.version)) {
-    throw new ManagedError("invalid_response", "managed memory key is malformed");
-  }
-  return Object.freeze({ id: value.id, version: value.version });
-}
-
 function managedOrganization(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)
     || typeof value.id !== "string" || !UUID.test(value.id)
@@ -1742,58 +1617,6 @@ function validateReadSessionRequest(request) {
     || request.turn_ids.length > 20
     || request.turn_ids.some((id) => typeof id !== "string" || !TURN_ID.test(id)))) {
     throw new TypeError("managed read session turn_ids must contain at most 20 valid turn ids");
-  }
-}
-
-function validateMemoryOperation(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError("managed memory operation must be an object");
-  }
-  if (typeof value.operation !== "string") {
-    throw new TypeError("managed memory operation is required");
-  }
-  if (value.operation === "scan") {
-    assertOnlyFields(value, ["operation", "query", "limit"], "managed memory scan");
-    if (typeof value.query !== "string" || !value.query.trim()) {
-      throw new TypeError("managed memory scan query must be a nonempty string");
-    }
-    if (value.limit !== undefined
-      && (!Number.isSafeInteger(value.limit) || value.limit < 1)) {
-      throw new TypeError("managed memory scan limit must be a positive safe integer");
-    }
-    return;
-  }
-  if (value.operation === "read") {
-    assertOnlyFields(value, ["operation", "keys"], "managed memory read");
-    if (!Array.isArray(value.keys) || value.keys.length === 0) {
-      throw new TypeError("managed memory read requires at least one key");
-    }
-    value.keys.forEach(validateMemoryKey);
-    return;
-  }
-  if (value.operation === "put") {
-    assertOnlyFields(value, ["operation", "content", "replace"], "managed memory put");
-    if (typeof value.content !== "string" || !value.content.trim()) {
-      throw new TypeError("managed memory content must be a nonempty string");
-    }
-    if (value.replace !== undefined) validateMemoryKey(value.replace);
-    return;
-  }
-  if (value.operation === "delete") {
-    assertOnlyFields(value, ["operation", "key"], "managed memory delete");
-    validateMemoryKey(value.key);
-    return;
-  }
-  throw new TypeError("managed memory operation must be scan, read, put, or delete");
-}
-
-function validateMemoryKey(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    throw new TypeError("managed memory key must be an object");
-  }
-  assertOnlyFields(value, ["id", "version"], "managed memory key");
-  if (!positiveSafeInteger(value.id) || !positiveSafeInteger(value.version)) {
-    throw new TypeError("managed memory key id and version must be positive safe integers");
   }
 }
 

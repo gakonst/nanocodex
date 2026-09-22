@@ -31,7 +31,6 @@ mod code_mode_spec;
 #[cfg(feature = "native")]
 pub mod embedded;
 #[cfg(all(not(target_family = "wasm"), feature = "native"))]
-pub mod extensions;
 #[cfg(feature = "native")]
 pub mod image;
 #[cfg(all(not(target_family = "wasm"), feature = "native"))]

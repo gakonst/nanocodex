@@ -23,7 +23,6 @@ import {
   parseCliRegisterBody,
   parseCliWalletRequest,
   sanitizeCliWalletResult,
-  managedMemoryCapability,
 } from "./devicePolicy.mts";
 import {
   allowsHeadlessConnectAuth,
@@ -675,7 +674,7 @@ export default {
         return cors(await createConnection(request, env, store, context), request);
       }
 
-      const managedMemoryResponse = await handleManagedMemoryRoute(request, env, url);
+      const managedMemoryResponse = await handleManagedHistoryRoute(request, env, url);
       if (managedMemoryResponse) return cors(managedMemoryResponse, request);
 
       const browserCookieResponse = await handleBrowserCookieJarRoute(request, env, url);
@@ -1164,30 +1163,24 @@ async function browserCookieJsonResponse(
   }
 }
 
-async function handleManagedMemoryRoute(
+async function handleManagedHistoryRoute(
   request: Request,
   env: Env,
   url: URL,
 ): Promise<Response | undefined> {
   const isSearchPath = url.pathname === "/v1/history/sessions/search";
   const readMatch = url.pathname.match(/^\/v1\/history\/sessions\/([^/]+)\/read$/);
-  const isMemoryPath = url.pathname === "/v1/memory";
-  const memoryDeleteMatch = url.pathname.match(/^\/v1\/memory\/([^/]+)$/);
-  if (!isSearchPath && !readMatch && !isMemoryPath && !memoryDeleteMatch) return undefined;
-  const validMethod = (isSearchPath || readMatch) ? request.method === "POST"
-    : isMemoryPath ? request.method === "GET" || request.method === "POST"
-      : request.method === "DELETE";
-  if (!validMethod) {
-    throw new ApiFailure(405, "method_not_allowed", "Unsupported hosted history or memory method.");
+  if (!isSearchPath && !readMatch) return undefined;
+  if (request.method !== "POST") {
+    throw new ApiFailure(405, "method_not_allowed", "Unsupported hosted history method.");
   }
-  const isMemory = isMemoryPath;
-  if (url.search && !memoryDeleteMatch) {
-    throw new ApiFailure(400, "invalid_managed_request", "Hosted history and memory requests do not accept query parameters.");
+  if (url.search) {
+    throw new ApiFailure(400, "invalid_managed_request", "Hosted history requests do not accept query parameters.");
   }
 
   const app = requireCallerApp(request);
   if (app.appId !== CLI_APP_ID || app.origin !== CLI_APP_ORIGIN) {
-    throw new ApiFailure(403, "app_identity_mismatch", "Hosted history and memory are available only to the Nanocodex CLI.");
+    throw new ApiFailure(403, "app_identity_mismatch", "Hosted history is available only to the Nanocodex CLI.");
   }
   const { grant } = await authenticatedGrant(request, env);
   if (grant.appId !== CLI_APP_ID || grant.appOrigin !== CLI_APP_ORIGIN) {
@@ -1198,33 +1191,12 @@ async function handleManagedMemoryRoute(
   }
   remainingGrantTtl(grant);
   const body = request.method === "POST"
-    ? await boundedJson(request, MAX_MANAGED_MEMORY_REQUEST_BYTES, "hosted history or memory")
+    ? await boundedJson(request, MAX_MANAGED_MEMORY_REQUEST_BYTES, "hosted history")
     : undefined;
-  const operation = isMemory && request.method === "GET" ? "list"
-    : memoryDeleteMatch ? "delete"
-      : body?.operation;
-  const requiredCapability = managedMemoryCapability(url.pathname, operation);
-  if (!requiredCapability) {
-    throw new ApiFailure(400, "invalid_memory_operation", "The hosted history or memory operation is invalid.");
+  if (!grant.capabilities.includes("history:read")) {
+    throw new ApiFailure(403, "history_read_not_granted", "This Connect grant does not include history:read access.");
   }
-  if (!grant.capabilities.includes(requiredCapability)) {
-    const code = requiredCapability === "history:read"
-      ? "history_read_not_granted"
-      : requiredCapability === "memory:write"
-        ? "memory_write_not_granted"
-        : "memory_read_not_granted";
-    throw new ApiFailure(403, code, `This Connect grant does not include ${requiredCapability} access.`);
-  }
-  if (isMemory && request.method === "POST") {
-    const memoryOperation = body?.operation;
-    if (memoryOperation !== "scan" && memoryOperation !== "read"
-      && memoryOperation !== "put" && memoryOperation !== "delete") {
-      throw new ApiFailure(400, "invalid_memory_operation", "The hosted memory operation is invalid.");
-    }
-  }
-
   const target = new URL(url.pathname, "https://nanocodex.internal");
-  if (memoryDeleteMatch) target.search = url.search;
   const headers = new Headers(managedGrantHeaders(managedGrantAssertion(grant)));
   if (body !== undefined) headers.set("content-type", "application/json");
   const upstream = await env.ACCOUNTS.fetch(new Request(target, {

@@ -113,8 +113,8 @@ name = "tui_split"
 path = "tests/tui_split.rs"
 
 [[test]]
-name = "managed_memory"
-path = "tests/managed_memory.rs"
+name = "managed_history"
+path = "tests/managed_history.rs"
 
 [[test]]
 name = "login"

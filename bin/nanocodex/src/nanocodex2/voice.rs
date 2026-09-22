@@ -1121,7 +1121,7 @@ mod tests {
         .unwrap();
         let instructions = settings["instructions"].as_str().unwrap();
         assert!(instructions.contains("/omarchy-desktop"));
-        assert!(instructions.contains("Prefers Rust."));
+        assert!(!instructions.contains("Prefers Rust."));
         assert!(instructions.contains("Help me test voice."));
         assert!(!instructions.contains("Private host state."));
         assert_eq!(instructions.matches("Speak briefly.").count(), 1);

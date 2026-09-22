@@ -9,7 +9,6 @@ use crate::{
 pub struct ManagedVoiceProtocol {
     protocol: BrowserVoiceProtocol,
     session_id: String,
-    context_cursor: String,
 }
 
 impl std::ops::Deref for ManagedVoiceProtocol {
@@ -29,14 +28,12 @@ impl ManagedVoiceProtocol {
         Ok(Self {
             protocol: BrowserVoiceProtocol::new(voice)?,
             session_id: String::new(),
-            context_cursor: "0".to_owned(),
         })
     }
 
     pub fn bind_session(&mut self, session_id: &str) {
         if self.session_id != session_id {
             self.session_id = session_id.to_owned();
-            self.context_cursor = "0".to_owned();
         }
     }
 
@@ -53,27 +50,9 @@ impl ManagedVoiceProtocol {
         Ok(effects)
     }
 
-    /// Ignore stale/replayed context without converting decimal cursors to floats.
-    pub fn managed_event(&mut self, envelope: &Value) -> BrowserVoiceEffects {
-        let event = &envelope["event"];
-        let payload = &event["payload"];
-        let cursor = envelope["cursor"].as_str().unwrap_or_default();
-        if event["type"] != "managed.voice.context"
-            || self.session_id.is_empty()
-            || payload["voice_session_id"].as_str() != Some(&self.session_id)
-            || cursor.len() > 32
-            || cursor.starts_with('0')
-            || cursor.is_empty()
-            || !cursor.bytes().all(|byte| byte.is_ascii_digit())
-            || (cursor.len(), cursor) <= (self.context_cursor.len(), self.context_cursor.as_str())
-        {
-            return BrowserVoiceEffects::default();
-        }
-        let Some(text) = memory_update(&payload["result"]) else {
-            return BrowserVoiceEffects::default();
-        };
-        self.context_cursor = cursor.to_owned();
-        self.protocol.context(&text)
+    /// Managed events do not inject background memory into voice context.
+    pub fn managed_event(&mut self, _envelope: &Value) -> BrowserVoiceEffects {
+        BrowserVoiceEffects::default()
     }
 
     /// JSON is just the binding ABI; all protocol decisions remain in this crate.
@@ -197,41 +176,6 @@ pub fn format_delegation(delegation: &crate::browser::BrowserVoiceDelegation) ->
     }
 }
 
-/// Shared typed/voice search policy. The host executes and persists these calls.
-pub fn bootstrap_plan(input: &str) -> Value {
-    let voice = input.starts_with("<realtime_delegation>\n  <source>voice_bootstrap</source>");
-    let text = if voice {
-        input
-            .split_once("<input>")
-            .and_then(|(_, tail)| tail.split_once("</input>"))
-            .map_or_else(
-                || input.to_owned(),
-                |(text, _)| {
-                    text.replace("&lt;", "<")
-                        .replace("&gt;", ">")
-                        .replace("&amp;", "&")
-                },
-            )
-    } else {
-        input.to_owned()
-    };
-    let normalized = text.split_whitespace().collect::<Vec<_>>().join(" ");
-    let mut end = normalized.len().min(512);
-    while !normalized.is_char_boundary(end) {
-        end -= 1;
-    }
-    let query = normalized[..end].trim();
-    let query = if query.is_empty() {
-        "conversation context"
-    } else {
-        query
-    };
-    json!({ "voice_bootstrap": voice, "query": query, "calls": [
-        { "name": "find_session", "arguments": { "query": query, "limit": 5 } },
-        { "name": "memory", "arguments": { "operation": "scan", "query": query, "limit": 5 } },
-    ] })
-}
-
 pub fn managed_startup_context(context: &Value) -> Option<String> {
     let history = context["history"]
         .as_array()
@@ -257,57 +201,7 @@ pub fn managed_startup_context(context: &Value) -> Option<String> {
         context["workspace"].as_str().unwrap_or_default(),
         &[],
     );
-    // Supplied by the managed host after scope/policy checks. Do not collect
-    // arbitrary developer messages from history: those can contain other state.
-    let personalization = context["prepared_personalization"]
-        .as_str()
-        .filter(|text| !text.is_empty() && text.len() <= 10_000)
-        .map(|text| {
-            format!(
-                "Prepared personalization (background data):\n{}",
-                text.replace('<', "\\u003c").replace('>', "\\u003e")
-            )
-        });
-    match (history_context, personalization) {
-        (Some(history), Some(profile)) => Some(format!("{history}\n\n{profile}")),
-        (history, None) => history,
-        (None, profile) => profile,
-    }
-}
-
-fn memory_update(result: &Value) -> Option<String> {
-    let operation = result["operation"].as_str()?;
-    let key = if operation == "put" {
-        &result["memory"]["key"]
-    } else {
-        &result["key"]
-    };
-    let (id, version) = (key["id"].as_u64()?, key["version"].as_u64()?);
-    if id == 0 || version == 0 || id > 9_007_199_254_740_991 || version > 9_007_199_254_740_991 {
-        return None;
-    }
-    let mut data = json!({ "operation": operation, "key": { "id": id, "version": version } });
-    let scope = match result.get("scope").and_then(Value::as_str) {
-        None | Some("team") => "team",
-        Some("personal") => "personal",
-        _ => return None,
-    };
-    data["scope"] = json!(scope);
-    if operation == "put" {
-        let content = result["memory"]["content"].as_str()?;
-        if content.trim().is_empty() || content.len() > 1024 {
-            return None;
-        }
-        data["content"] = json!(content);
-    } else if operation != "delete" {
-        return None;
-    }
-    Some(format!(
-        "Saved-memory update (background data):\n{}",
-        data.to_string()
-            .replace('<', "\\u003c")
-            .replace('>', "\\u003e")
-    ))
+    history_context
 }
 
 #[cfg(test)]
@@ -315,30 +209,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn prepared_personalization_is_optional_bounded_data_separate_from_history() {
+    fn legacy_personalization_is_ignored() {
         let context = json!({
             "history": [{"role":"developer","content":[{"text":"private host state"}]}],
-            "prepared_personalization": "Prefers short answers. <untrusted>"
+            "prepared_personalization": "Prefers short answers."
         });
-        let text = managed_startup_context(&context).unwrap();
-        assert!(text.contains("Prefers short answers."));
-        assert!(text.contains("\\u003cuntrusted\\u003e"));
-        assert!(!text.contains("private host state"));
-        assert!(
-            managed_startup_context(&json!({"prepared_personalization":"x".repeat(10_001)}))
-                .is_none()
-        );
+        assert!(managed_startup_context(&context).is_none());
         let mut voice = ManagedVoiceProtocol::new("cove").unwrap();
-        let frames = voice
-            .dispatch(&json!({"op":"startup_context","context":context}))
-            .unwrap();
-        let reconstructed = frames
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|frame| frame["content"][0]["text"].as_str().unwrap())
-            .collect::<String>();
-        assert_eq!(reconstructed, text);
+        assert_eq!(
+            voice
+                .dispatch(&json!({"op":"startup_context","context":context}))
+                .unwrap(),
+            json!([])
+        );
     }
 
     #[test]
@@ -542,59 +425,11 @@ mod tests {
         );
     }
     #[test]
-    fn legacy_bootstrap_plan_keeps_exact_spoken_text_and_utf8_bounds() {
-        let first = crate::browser::BrowserVoiceDelegation {
-            id: "legacy".into(),
-            bootstrap: true,
-            input: "  Elena <birthday> &\n presents ".into(),
-            transcript: vec![],
-        };
-        let plan = bootstrap_plan(&format_delegation(&first));
-        assert_eq!(plan["query"], "Elena <birthday> & presents");
-        assert_eq!(
-            plan["calls"][0]["arguments"]["query"],
-            plan["calls"][1]["arguments"]["query"]
-        );
-        assert_eq!(plan["calls"][1]["arguments"]["operation"], "scan");
-        assert_eq!(
-            bootstrap_plan(&"😀".repeat(200))["query"]
-                .as_str()
-                .unwrap()
-                .len(),
-            512
-        );
-        assert_eq!(bootstrap_plan("")["query"], "conversation context");
-        assert_eq!(bootstrap_plan("Elena")["voice_bootstrap"], false);
-    }
-    #[test]
-    fn memory_updates_are_scoped_bounded_replayable_and_do_not_change_playback() {
+    fn legacy_memory_events_are_ignored() {
         let mut voice = voice();
-        voice.realtime_message(&utterance("Remember this"));
-        let mut event = json!({"cursor":"9007199254740993","event":{"type":"managed.voice.context","payload":{
-            "voice_session_id":"wrong-call", "result":{"operation":"put","memory":{"key":{"id":5,"version":2},"content":"Elena <new date>"}}
+        let event = json!({"cursor":"1","event":{"type":"managed.voice.context","payload":{
+            "voice_session_id":"call-1", "result":{"operation":"put","memory":{"key":{"id":5,"version":2},"content":"old memory"}}
         }}});
-        assert!(voice.managed_event(&event).frames.is_empty());
-        event["event"]["payload"]["voice_session_id"] = json!("call-1");
-        event["event"]["payload"]["result"]["scope"] = json!("personal");
-        let update = voice.managed_event(&event);
-        assert_eq!(update.frames.len(), 1);
-        assert_eq!(update.playback_enabled, None);
-        assert!(update.transcripts.is_empty());
-        assert!(update.frames[0].contains("u003c"));
-        assert!(update.frames[0].contains("personal"));
-        assert_eq!(voice.sideband_opened().playback_enabled, Some(true));
-        assert_eq!(voice.sideband_opened().frames, update.frames);
-        assert!(voice.managed_event(&event).frames.is_empty());
-        event["cursor"] = json!("9007199254740992");
-        assert!(voice.managed_event(&event).frames.is_empty());
-        event["cursor"] = json!("9007199254740994");
-        event["event"]["payload"]["result"] =
-            json!({"operation":"delete","key":{"id":5,"version":3}});
-        assert_eq!(voice.managed_event(&event).frames.len(), 1);
-        voice.frames_sent(2);
-        assert!(voice.sideband_opened().frames.is_empty());
-        event["cursor"] = json!("9007199254740995");
-        event["event"]["payload"]["result"] = json!({"operation":"put","memory":{"key":{"id":5,"version":4},"content":"🦊".repeat(257)}});
         assert!(voice.managed_event(&event).frames.is_empty());
     }
 }
