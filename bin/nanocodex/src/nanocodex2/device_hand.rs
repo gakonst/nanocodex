@@ -133,11 +133,20 @@ async fn ensure_service() -> Result<(), ManagedError> {
     } else {
         Platform::Linux
     };
+    #[cfg(target_os = "macos")]
+    let gui = Some((
+        nix::unistd::geteuid().as_raw(),
+        home()?.join("Library/LaunchAgents/com.nanocodex.hand.plist"),
+    ));
+    #[cfg(not(target_os = "macos"))]
+    let gui: Option<(u32, PathBuf)> = None;
+    let gui_context = gui.as_ref().map(|(uid, path)| (*uid, path.as_path()));
     service_start::ensure_with(
         platform,
         Path::new("/Library/LaunchDaemons/com.nanocodex.hand.plist").is_file(),
+        gui.as_ref().map(|(_, path)| path.is_file()),
         |action| async move {
-            let (program, args) = action.command();
+            let (program, args) = action.command(gui_context);
             // Service managers need no account credentials or interactive input.
             let output = tokio::time::timeout(
                 Duration::from_secs(10),
