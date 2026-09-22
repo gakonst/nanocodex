@@ -68,6 +68,42 @@ test("attachment publishes one exact catalog and exchanges ready, call, result, 
   await tools.close();
 });
 
+test("attachment forwards provider-qualified and auto-route models to tool handlers", async () => {
+  const models = ["@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro", "auto", "openrouter/auto", "openai/gpt-6-astra", "@openai/gpt-6-astra", "auto(openai/gpt-6-astra,anthropic/claude)"];
+  const received = [];
+  const tools = await createTools({ tools: {
+    echo: { description: "Echo.", handler: (_, context) => { received.push(context.model); return "ok"; } },
+  } });
+  const socket = new FakeSocket();
+  const connector = createAttachment(tools, reverseTarget(async () => socket), { reconnect: false });
+  const connecting = connector.connect();
+  await waitFor(() => socket.frames().length === 1);
+  socket.receive({ type: "ready" });
+  const client = await connecting;
+  for (const [index, model] of models.entries()) {
+    const call_id = `call:${index}`;
+    socket.receive({ ...callFrame({}), call_id, model });
+    await waitFor(() => socket.frames().some((frame) => frame.type === "result" && frame.call_id === call_id));
+    assert.equal(lastFrame(socket, "result").outcome.status, "completed");
+    socket.receive({ type: "ack", call_id });
+  }
+  assert.deepEqual(received, models);
+  await drain(client, socket);
+  await tools.close();
+});
+
+test("attachment rejects invalid model metadata before dispatch", async () => {
+  for (const model of [undefined, null, 1, "", "x y", "x\n", "x\t", "x\0", "x\x7f", "é", "x".repeat(129)]) {
+    let dispatched = false;
+    const fixture = await readyAttachment({ handler: () => { dispatched = true; return "ok"; } });
+    fixture.socket.receive({ ...callFrame({}), model });
+    await waitFor(() => fixture.socket.closed?.code === 1008);
+    assert.match(fixture.socket.closed.reason, /model must/);
+    assert.equal(dispatched, false);
+    await fixture.tools.close();
+  }
+});
+
 test("catalog preserves provider, remote name, summary, and timeout metadata", async () => {
   const tools = await createTools({ tools: {
     local: {

@@ -272,7 +272,7 @@ function parseCall(frame: Record<string, unknown>): Extract<HostedToolsManagedFr
     session_id: identifier(frame.session_id, "session_id"),
     ...(frame.turn_id === undefined ? {} : { turn_id: boundedText(frame.turn_id, 1, 256, "turn_id") }),
     call_id: identifier(frame.call_id, "call_id"),
-    model: identifier(frame.model, "model"),
+    model: modelIdentifier(frame.model),
     name: toolName(frame.name),
     input,
     output_token_budget: boundedInteger(
@@ -527,6 +527,17 @@ function processTrace(value: unknown): HostedToolProcessTrace {
     output_bytes: boundedInteger(trace.output_bytes, 0, Number.MAX_SAFE_INTEGER, "output_bytes"),
     wall_time_seconds: trace.wall_time_seconds,
   };
+}
+
+// Model names are opaque routing metadata, not tool or call identifiers.
+function modelIdentifier(value: unknown): string {
+  if (typeof value !== "string" || value.length < 1 || value.length > 128 || /[^\x21-\x7e]/.test(value)) {
+    throw new HostedToolsProtocolError(
+      "invalid_identifier",
+      "model must be 1-128 printable non-whitespace ASCII bytes",
+    );
+  }
+  return value;
 }
 
 function identifier(value: unknown, name: string): string {

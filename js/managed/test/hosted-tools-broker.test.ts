@@ -815,7 +815,18 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(() => fixture.broker.completeHttpResult(IDS[1]!, outcome)).toThrow();
   });
 
-  it("durably dispatches an exact call and ACKs both the result and duplicate receipt", async () => {
+  it.each([
+    "gpt-5.2",
+    "auto",
+    "openrouter/auto",
+    "@cf/zai-org/glm-5.3",
+    "kimi-k3",
+    "mimo-v2.6-pro",
+    "z-ai/glm-5.3",
+    "moonshotai/kimi-k2.5",
+    "xiaomi/mimo-v2-pro",
+    "@cf/moonshotai/kimi-k2.5",
+  ])("durably dispatches model %s and ACKs both the result and duplicate receipt", async (model) => {
     const onCallTiming = vi.fn(() => { throw new Error("diagnostic sink failed"); });
     const fixture = createFixture(undefined, { onCallTiming });
     const host = fixture.socket();
@@ -824,14 +835,14 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     const pending = tool.handler({ id: "42" }, {
       sessionId: "session:1",
       callId: "source:1",
-      model: "gpt-5.2",
+      model,
     });
     const call = host.sent.find((frame) => frame.type === "call")!;
     expect(call).toEqual({
       type: "call",
       session_id: "session:1",
       call_id: IDS[1],
-      model: "gpt-5.2",
+      model,
       name: "fixture__lookup",
       input: { id: "42" },
       output_token_budget: 10_000,
