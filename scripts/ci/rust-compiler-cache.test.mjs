@@ -30,3 +30,20 @@ test('compiler cache keeps reads enabled and exports the selected write policy',
   assert.ok(action.includes('echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"'));
   assert.ok(action.indexOf('mozilla-actions/sccache-action@') < action.indexOf('name: Enable compiler caching'));
 });
+
+
+test('quality lanes share the workspace archive with one successful master writer', () => {
+  const workflow = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
+  const quality = workflow.split('  quality:\n')[1].split('  vm-guest:\n')[0];
+  const cache = quality.split('      - uses: Swatinem/rust-cache@')[1].split('      - ')[0];
+  assert.match(cache, /shared-key: quality-workspace-clippy\n/);
+  assert.match(cache, /cache-on-failure: false/);
+  const policy = cache.match(/save-if: \$\{\{ (.+) \}\}/)?.[1];
+  assert.ok(policy, 'quality cache writer policy must be explicit');
+  const saves = new Function('github', 'matrix', `return (${policy});`);
+  for (const ref of ['refs/heads/master', 'refs/heads/feature', 'refs/pull/1/merge', '']) {
+    for (const check of ['workspace-clippy', 'cli-clippy', 'contracts', 'docs']) {
+      assert.equal(saves({ ref }, { check }), ref === 'refs/heads/master' && check === 'workspace-clippy', `${ref} ${check}`);
+    }
+  }
+});

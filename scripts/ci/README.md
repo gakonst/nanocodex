@@ -51,8 +51,12 @@ The quality matrix runs workspace Clippy, CLI/benchmark Clippy, independent
 public crate checks, and documentation concurrently. The independent crate
 checks intentionally remain separate Cargo invocations: merging their package
 flags would unify features and weaken that check. CLI and benchmark targets
-belong to the same package and share one Clippy invocation. Each quality lane
-has its own Cargo cache, and `ci success` requires the complete matrix to pass.
+belong to the same package and share one Clippy invocation. All quality lanes
+read the workspace Clippy dependency cache; only a successful workspace Clippy
+run on master can write it. This removes three overlapping archives without
+serializing the jobs. Cargo still checks fingerprints and builds missing feature
+or compilation variants in each lane. `ci success` requires the complete matrix
+to pass. Compare per-lane compilation time when changing this sharing policy.
 
 Native Hand, Windows installer, VM guest, and Python wheel builds use pinned
 sccache with GitHub's cache backend, in addition to the dependency cache. This
@@ -127,3 +131,8 @@ validation/publication, and all selected image builds to succeed. An image build
 may be skipped only when a successful selection explicitly requires none.
 The small orchestration tests run in the main CI selection job even while
 behavioral test suites remain paused.
+
+Preview image validation uses BuildKit's `cacheonly` output. It still evaluates
+the complete Dockerfile, including its checks, but does not export and load an
+unused image into Docker Engine. Production publication retains `--load` for
+its runtime verification, registry push, and immutable digest receipt.

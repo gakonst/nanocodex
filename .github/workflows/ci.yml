@@ -47,6 +47,7 @@ jobs:
       - name: Validate CI selection and cache policies
         run: >-
           node --test scripts/ci/rust-compiler-cache.test.mjs scripts/ci/docker-cache.test.mjs
+          scripts/ci/docker-rust-recipe.test.mjs
           scripts/cloudflare/wrangler-docker.test.mjs scripts/cloudflare/managed-images.test.mjs
           scripts/cloudflare/managed-images-preview.test.mjs scripts/cloudflare/preview-images.test.mjs
           scripts/cloudflare/preview-workflow.test.mjs
@@ -317,10 +318,10 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-          # Each lane has different feature/profile artifacts; avoid first-writer wins.
-          shared-key: quality-${{ matrix.check }}
-          cache-on-failure: true
+          # Reuse the broad workspace cache without racing to publish lane subsets.
+          save-if: ${{ github.ref == 'refs/heads/master' && matrix.check == 'workspace-clippy' }}
+          shared-key: quality-workspace-clippy
+          cache-on-failure: false
       - run: cargo fmt --all -- --check
         if: matrix.check == 'workspace-clippy'
       - name: Check Linux Hand installation boundaries
