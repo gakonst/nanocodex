@@ -17,10 +17,9 @@ use nanocodex_oai_api::{Model, ReasoningMode, Thinking};
 use crate::{
     AgentList, AgentReceipt, AgentSettings, AgentSettingsPatch, AgentSettingsResponse, AgentState,
     AutoRoutingStatus, EventCursor, EventHistoryPage, FindSessionsRequest, FindSessionsResponse,
-    ManagedApiKey, ManagedError, ManagedEventStream, MemoryKey, MemoryListResponse, MemoryRecord,
-    PromptInput, ReadSessionBody, ReadSessionRequest, ReadSessionResponse, RoutingStatus,
-    SteerReceipt, SteerReceiptState, SteerWithdrawal, TurnAction, TurnSteer, TurnSubmission,
-    TurnView,
+    ManagedApiKey, ManagedError, ManagedEventStream, PromptInput, ReadSessionBody,
+    ReadSessionRequest, ReadSessionResponse, RoutingStatus, SteerReceipt, SteerReceiptState,
+    SteerWithdrawal, TurnAction, TurnSteer, TurnSubmission, TurnView,
 };
 
 const MAX_HISTORY_PAGE: u16 = 256;
@@ -606,43 +605,6 @@ impl ManagedClient {
             None,
         )
         .await
-    }
-
-    /// Lists versioned account memories.
-    ///
-    /// # Errors
-    ///
-    /// Returns a transport, HTTP, size, response-schema, or memory-key
-    /// validation failure.
-    pub async fn memory(&self) -> Result<Vec<MemoryRecord>, ManagedError> {
-        let response: MemoryListResponse = self.json(Method::GET, "/v1/memory", None, None).await?;
-        for memory in &response.memories {
-            memory.key.validate()?;
-        }
-        Ok(response.memories)
-    }
-
-    /// Deletes one exact version of an account memory.
-    ///
-    /// # Errors
-    ///
-    /// Returns a memory-key validation, transport, or HTTP failure.
-    pub async fn delete_memory(&self, key: MemoryKey) -> Result<(), ManagedError> {
-        key.validate()?;
-        let mut url = self.url(&format!("/v1/memory/{}", key.id))?;
-        url.query_pairs_mut()
-            .append_pair("version", &key.version.to_string());
-        let response = self
-            .http
-            .delete(url)
-            .timeout(REQUEST_TIMEOUT)
-            .send()
-            .await
-            .map_err(ManagedError::Transport)?;
-        if !response.status().is_success() {
-            return Err(response_error(response).await);
-        }
-        Ok(())
     }
 
     /// Reads a bounded page of durable managed events.

@@ -7,7 +7,6 @@ import {
   approvedCliAccessKeyMatches,
   parseCliRegisterBody,
   sanitizeCliWalletResult,
-  managedMemoryCapability,
   requestedConnectorsSatisfied,
 } from "../src/devicePolicy.mts";
 import { formatCliBrowserCookieSyncResource } from "../src/appToolPolicy.mts";
@@ -301,25 +300,6 @@ test("CLI result sanitizer accepts a hosted approval only without key material",
       },
     }],
   }), /invalid hosted CLI approval/);
-});
-
-test("hosted history and memory paths map to narrow grant capabilities", () => {
-  assert.strictEqual(
-    managedMemoryCapability("/v1/history/sessions/search"),
-    "history:read",
-  );
-  assert.strictEqual(
-    managedMemoryCapability("/v1/history/sessions/session-1/read"),
-    "history:read",
-  );
-  assert.strictEqual(managedMemoryCapability("/v1/memory", "scan"), "memory:read");
-  assert.strictEqual(managedMemoryCapability("/v1/memory", "read"), "memory:read");
-  assert.strictEqual(managedMemoryCapability("/v1/memory", "list"), "memory:read");
-  assert.strictEqual(managedMemoryCapability("/v1/memory", "put"), "memory:write");
-  assert.strictEqual(managedMemoryCapability("/v1/memory", "delete"), "memory:write");
-  assert.strictEqual(managedMemoryCapability("/v1/memory/7", "delete"), "memory:write");
-  assert.strictEqual(managedMemoryCapability("/v1/memory", "admin"), undefined);
-  assert.strictEqual(managedMemoryCapability("/v1/agents/other", "read"), undefined);
 });
 
 test("connector grants require an exact live requested set", () => {

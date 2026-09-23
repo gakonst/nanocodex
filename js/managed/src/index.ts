@@ -16,7 +16,7 @@ import { retireSessionProjects, isRetiredProjectCompletion } from "./retired-pro
 import { downloadPath, downloadBrainFile, downloadHandFile, fileDownloadFailure, FileDownloadError } from "./file-download";
 import { callerContext, type CallerContext } from "./request-origin";
 import { HandPaths } from "./hand-paths";
-import { memoryTarget, memoryVisibility, personalMemoryTeam, scopedMemoryOperation, type MemoryVisibility } from "./memory-target";
+import { memoryTarget, personalMemoryTeam, type MemoryVisibility } from "./memory-target";
 import { projectEnvironment } from "nanocodex/tools/environment";
 import { transportObservation } from "./transport-observation";
 import { handRequestFailure, handBrokerRequest } from "nanocodex/cloudflare/managed-access";
@@ -305,7 +305,6 @@ import {
   mergeHistoryCitations,
   parseHistoryFindSessionsInput,
   parseHistoryReadSessionInput,
-  type FindSessionsToolResult,
   type HistoryCitation,
   type HistoryFindSessionsInput,
   type HistoryFindSessionsResponse,
@@ -313,14 +312,6 @@ import {
   type HistoryReadSessionInput,
   type HistoryReadSessionResponse,
 } from "./history-search";
-import {
-  DurableMemoryError,
-  parseMemoryKey,
-  parseMemoryOperation,
-  parseMemoryResult,
-  type MemoryOperation,
-  type MemoryResult,
-} from "./durable-memory";
 import { memorySessionTools } from "./memory-session-tools";
 import { managedExtensionTools } from "./extension-tools";
 import { markdownMemoryTools, markdownMemoryEnabled, configuredMemoryToolNames, markdownMemoryRequest, MARKDOWN_MEMORY_INSTRUCTIONS } from "./markdown-memory-tools";
@@ -380,7 +371,6 @@ const CONNECT_APP_TOOL_CATALOG_DIGEST_ASSERTION = "x-nanocodex-connect-app-tool-
 const MEMORY_ORGANIZATION_ASSERTION = "x-nanocodex-organization-id";
 const MEMORY_TEAM_ASSERTION = "x-nanocodex-team-id";
 const MEMORY_SUBJECT_ASSERTION = "x-nanocodex-subject-id";
-const MEMORY_MUTATION_ASSERTION = "x-nanocodex-memory-mutation";
 export interface Env extends
   InferenceApiEnv,
   ProviderProbeEnvironment,
@@ -6082,8 +6072,7 @@ export class DurableAgentSession extends DurableComputerSession {
       }
       if (voiceBootstrap) {
         this.#pinPersonalization(id, authorization, false);
-        await this.#startupContext.prepare(id, async () => { throw new Error("automatic recall is disabled"); },
-          async () => undefined, assertActive);
+        await this.#startupContext.prepare(id, async () => undefined, assertActive);
         input = promptInputText(this.#startupContext.enrich(id, input));
         assertActive();
       }
@@ -6871,7 +6860,6 @@ export class DurableAgentSession extends DurableComputerSession {
       const bootstrap = dispatchInputJson !== undefined || row.state === "cancelling"
         ? Promise.resolve() : this.#startupContext.prepare(
           row.id,
-          async () => { throw new Error("automatic recall is disabled"); },
           async () => {
             const session = this.#session()!;
             const authorization = parseTurnAuthorization(row.authorization_json);
@@ -6894,8 +6882,6 @@ export class DurableAgentSession extends DurableComputerSession {
             };
           },
           assertActive,
-          canonicalJson([epoch, parseTurnAuthorization(row.authorization_json)]),
-          (name, result) => this.#adoptStartupResult(row.id, name, result),
         );
       // Drain construction even if bootstrap fails, so its admission-queue
       // publication cannot race the failure cleanup below.
@@ -7323,8 +7309,6 @@ export class DurableAgentSession extends DurableComputerSession {
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_terminal_chunks");
       this.ctx.storage.sql.exec("DELETE FROM managed_history_projection_chunks");
       this.ctx.storage.sql.exec("DELETE FROM managed_cron_input_chunks");
-      this.ctx.storage.sql.exec("DELETE FROM managed_startup_tools");
-      this.ctx.storage.sql.exec("DELETE FROM managed_prompt_startup_tools");
       this.ctx.storage.sql.exec("DELETE FROM managed_startup_context");
       this.ctx.storage.sql.exec("DELETE FROM managed_startup_environment");
       this.ctx.storage.sql.exec("DELETE FROM managed_startup_origin");
@@ -8506,57 +8490,30 @@ export class DurableAgentSession extends DurableComputerSession {
     };
   }
 
-  #adoptStartupResult(turnId: string, name: string, result: unknown): void {
-    if (name !== "find_session") return;
-    const citations = groupHistoryCitations((result as FindSessionsToolResult).sessions.map((session) => ({
-      thread_id: session.session_id, title: session.title, turn_id: session.turn_id, cursor: session.cursor,
-    })));
-    if (citations.length > 0) this.#recordHistoryCitations(turnId, citations);
-  }
-
-  #memoryTools(startupTurn?: Pick<ManagedTurnRow, "id" | "authorization_json">, publishCitations = true): readonly NamedTool[] {
+  #memoryTools(): readonly NamedTool[] {
     const history = memorySessionTools({
       findSessions: (input) => this.#findSessions(input),
       readSession: (input) => this.#readHistorySession(input),
-      memory: (operation, scope, context) => {
-        const authorization = startupTurn === undefined ? this.#authorizationForToolContext(context)
-          : parseTurnAuthorization(startupTurn.authorization_json);
-        if (scope === "personal" && (!authorization || authorization.connectGrant))
-          throw new ManagedRequestError(403, "forbidden", "personal memory requires direct account authority");
-        return this.#memoryOperation(operation, scope);
-      },
       requireCapability: (capability, context) => {
         context.signal.throwIfAborted();
-        const authorization = startupTurn === undefined
-          ? this.#authorizationForToolContext(context)
-          : parseTurnAuthorization(startupTurn.authorization_json);
-        if (!authorization?.capabilities.includes(capability)) {
+        if (!this.#authorizationForToolContext(context)?.capabilities.includes(capability))
           throw new ManagedRequestError(403, "forbidden", `tool call lacks ${capability} capability`);
-        }
-      },
-      requireRootMemoryMutation: (context) => {
-        if (context.subagent !== undefined) {
-          throw new ManagedRequestError(403, "memory_root_only", "memory put and delete are available only to the root agent");
-        }
       },
       recordCitations: (citations) => {
-        if (!publishCitations) return;
-        const turnId = startupTurn?.id ?? this.#eventTurnId;
-        if (turnId !== undefined && citations.length > 0) this.#recordHistoryCitations(turnId, citations);
+        if (this.#eventTurnId !== undefined && citations.length > 0)
+          this.#recordHistoryCitations(this.#eventTurnId, citations);
       },
-    }).filter(tool => tool.name !== "memory");
+    });
     const session = this.#session();
     if (!session) return history;
-    const authority = (context: ToolContext) => startupTurn === undefined
-      ? this.#authorizationForToolContext(context) : parseTurnAuthorization(startupTurn.authorization_json);
     return [...history, ...[managedExtensionTools, markdownMemoryTools].flatMap(create => create({
       organizationId: session.organization_id, teamId: session.team_id, ownerId: session.owner_id,
       sessionId: session.session_id, memories: this.env.NANOCODEX_MEMORY,
       clientIngressColo: this.#routingOrigin().clientIngressColo,
-      personal: context => !authority(context)?.connectGrant,
+      personal: context => !this.#authorizationForToolContext(context)?.connectGrant,
       authorize: (name, context) => {
         context.signal.throwIfAborted();
-        const authorization = authority(context);
+        const authorization = this.#authorizationForToolContext(context);
         const mutating = name === "memories__add_ad_hoc_note" || name === "memories__write";
         if (!authorization?.capabilities.includes(mutating ? "memory:write" : "memory:read"))
           throw new ManagedRequestError(403, "forbidden", "memory capability is required");
@@ -8599,7 +8556,7 @@ export class DurableAgentSession extends DurableComputerSession {
       const [team, personal] = await Promise.all([load("team").catch(() => undefined), load("personal").catch(() => undefined)]);
       if (!team || !personal) return team;
       return { ...team, expires_at: Math.min(team.expires_at, personal.expires_at),
-        user_facts: personal.team_facts, user_generation: personal.generation, user_version: personal.version,
+        user_generation: personal.generation, user_version: personal.version,
         user_markdown: personal.team_markdown };
     }, task => this.ctx.waitUntil(task.then(() => {
       const current = this.#session();
@@ -8617,7 +8574,7 @@ export class DurableAgentSession extends DurableComputerSession {
     if (!session || session.runtime_profile !== "managed" || !this.#personalizationAllowed(authorization)) return;
     const profile = this.#personalization.peek(this.#personalizationScope(session));
     if (!profile || !authorization.connectGrant) return profile;
-    const { user_facts: _facts, user_generation: _generation, user_version: _version, user_markdown: _markdown, ...team } = profile;
+    const { user_generation: _generation, user_version: _version, user_markdown: _markdown, ...team } = profile;
     return team;
   }
 
@@ -8628,7 +8585,7 @@ export class DurableAgentSession extends DurableComputerSession {
     const inserted = this.#startupContext.reservePrepared(turnId, profile,
       environment && accountToolsEnabled(this.#configuration()));
     if (inserted) console.info({ type: "managed.personalization.pinned", turn_id: turnId,
-      agent_id: session.session_id, cache_hit: profile !== undefined, fact_count: profile?.team_facts.length ?? 0 });
+      agent_id: session.session_id, cache_hit: profile !== undefined, document_count: (profile?.team_markdown?.documents.length ?? 0) + (profile?.user_markdown?.documents.length ?? 0) });
   }
 
   async #findSessions(input: HistoryFindSessionsInput): Promise<HistoryFindSessionsResponse> {
@@ -8678,53 +8635,6 @@ export class DurableAgentSession extends DurableComputerSession {
     });
     if (!response.ok) throw await historySearchResponseError(response);
     return response.json<HistoryReadSessionResponse>();
-  }
-
-  async #memoryOperation(operation: MemoryOperation, scope: MemoryVisibility = "team"): Promise<MemoryResult> {
-    const session = this.#session();
-    if (!session) throw new HistorySearchError(404, "not_found", "session is not initialized");
-    const voiceSession = this.#managedRealtimeSession();
-    const target = memoryTarget(session.organization_id, session.team_id, session.owner_id, scope);
-    const memory = this.env.NANOCODEX_MEMORY.getByName(target.name, durablePlacementOptions(this.#routingOrigin().clientIngressColo));
-    const mutating = operation.operation === "put" || operation.operation === "delete";
-    const response = await memory.fetch("https://memory.internal/memory", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        [MEMORY_ORGANIZATION_ASSERTION]: session.organization_id,
-        [MEMORY_INITIALIZE_ASSERTION]: "1",
-        [MEMORY_TEAM_ASSERTION]: target.team,
-        [MEMORY_SUBJECT_ASSERTION]: `agent:${session.session_id}`,
-        ...(mutating ? { [MEMORY_MUTATION_ASSERTION]: "1" } : {}),
-      },
-      body: JSON.stringify(operation),
-    });
-    if (!response.ok) {
-      const value = await response.json<{ error?: unknown; message?: unknown }>()
-        .catch(() => undefined);
-      throw new DurableMemoryError(
-        typeof value?.error === "string" ? value.error : "memory_failed",
-        typeof value?.message === "string"
-          ? value.message
-          : `memory operation failed with HTTP ${response.status}`,
-      );
-    }
-    const result = parseMemoryResult(await response.json<unknown>(), operation.operation);
-    try {
-      const currentVoice = this.#managedRealtimeSession();
-      if (mutating && voiceSession && currentVoice?.voice_session_id === voiceSession.voice_session_id
-        && currentVoice.authorization_json === voiceSession.authorization_json
-        && this.#session()?.authorization_epoch === session.authorization_epoch
-        && parseTurnAuthorization(currentVoice.authorization_json).capabilities.includes("memory:read")
-        && (scope === "team" || !parseTurnAuthorization(currentVoice.authorization_json).connectGrant)) {
-        this.#publishVoiceMemory(voiceSession.voice_session_id, { result: { ...result, scope } });
-      }
-    } catch {
-      // The memory write already committed; a voice notification cannot turn
-      // it into a failed tool result and cause the model to retry the write.
-      this.#observe("managed.voice.context_unavailable", { outcome: "failure" });
-    }
-    return result;
   }
 
   /** Optional memory context must never fence or fail the live event stream. */
@@ -10742,7 +10652,6 @@ export class DurableAgentSession extends DurableComputerSession {
     agent: CloudflareAgent.Agent,
     voiceSessionId: string,
   ): Promise<AgentSessionContext> {
-    this.#startupContext.clearPrefetch();
     const context = await agent.session.realtime.end();
     assertRealtimeContext(context);
     this.ctx.storage.sql.exec(
@@ -11697,37 +11606,15 @@ async function routeHistoryRequest(
 ): Promise<Response | undefined> {
   const find = url.pathname === "/v1/history/sessions/search";
   const read = url.pathname.match(/^\/v1\/history\/sessions\/([^/]+)\/read$/);
-  const memory = url.pathname === "/v1/memory";
-  const memoryDelete = url.pathname.match(/^\/v1\/memory\/([^/]+)$/);
   const markdown = url.pathname.match(/^\/v1\/markdown-memory\/(get|search|write|status)$/);
   const canonical = url.pathname.match(/^\/v1\/memories\/(list|read|search|add_ad_hoc_note|write|status)$/);
-  if (!find && !read && !memory && !memoryDelete && !canonical && !markdown) return undefined;
-  const validMethod = (find || read || canonical || markdown) ? request.method === "POST"
-    : memory ? request.method === "GET" || request.method === "POST"
-      : request.method === "DELETE";
-  if (!validMethod) {
-    return json({ error: "method_not_allowed" }, { status: 405 });
-  }
+  if (!find && !read && !canonical && !markdown) return undefined;
+  if (request.method !== "POST") return json({ error: "method_not_allowed" }, { status: 405 });
   const principal = await authenticate(request, env, url);
   if (!principal) return json({ error: "unauthorized" }, { status: 401 });
-  if (memory && request.method === "POST" && url.search) {
-    return json({ error: "invalid_request" }, { status: 400 });
-  }
-  if (memory && request.method === "GET" && ([...url.searchParams.keys()].some(key => key !== "scope") || url.searchParams.getAll("scope").length > 1)) {
-    return json({ error: "invalid_request" }, { status: 400 });
-  }
-  if ((find || read) && !principal.capabilities.includes("history:read")) {
+  if ((find || read) && !principal.capabilities.includes("history:read"))
     return json({ error: "forbidden" }, { status: 403 });
-  }
-  if (memory && request.method === "GET" && !principal.capabilities.includes("memory:read")) {
-    return json({ error: "forbidden" }, { status: 403 });
-  }
-  if (memoryDelete && !principal.capabilities.includes("memory:write")) {
-    return json({ error: "memory_read_only" }, { status: 403 });
-  }
-  const originFailure = request.method === "GET"
-    ? undefined
-    : requireSameOriginMutation(request, url, principal);
+  const originFailure = requireSameOriginMutation(request, url, principal);
   if (originFailure) return originFailure;
 
   try {
@@ -11751,63 +11638,29 @@ async function routeHistoryRequest(
         .find(tool => tool.name === `memories__${canonical![1]}`)!;
       return json(await tool.handler(input, context));
     }
-    let internalPath: "/search" | "/read" | "/memories" | "/memory";
-    let input: HistoryFindSessionsInput | HistoryReadSessionInput | MemoryOperation | undefined;
-    let mutatingMemory = false;
-    let visibility = memoryVisibility((memory || memoryDelete) ? url.searchParams.get("scope") ?? undefined : undefined);
-    if (find) {
-      input = parseHistoryFindSessionsInput(await parseHistoryRequestBody(request));
-      internalPath = "/search";
-    } else if (read) {
+    let input: HistoryFindSessionsInput | HistoryReadSessionInput;
+    if (find) input = parseHistoryFindSessionsInput(await parseHistoryRequestBody(request));
+    else {
       const value = await parseHistoryRequestBody(request);
       if (!value || typeof value !== "object" || Array.isArray(value)
-        || Object.keys(value).some((key) => key !== "turn_ids")) {
+        || Object.keys(value).some(key => key !== "turn_ids"))
         throw new HistorySearchError(400, "invalid_request", "supported field is turn_ids");
-      }
-      input = parseHistoryReadSessionInput({
-        ...value,
-        session_id: read[1],
-      });
-      internalPath = "/read";
-    } else if (memory && request.method === "GET") {
-      internalPath = "/memories";
-    } else {
-      const parsed = memoryDelete
-        ? { operation: { operation: "delete" as const, key: parseMemoryDeleteKey(url, memoryDelete[1]!) }, scope: visibility }
-        : scopedMemoryOperation(await parseHistoryRequestBody(request));
-      const operation = parsed.operation;
-      if (!memoryDelete) visibility = parsed.scope;
-      input = operation;
-      mutatingMemory = operation.operation === "put" || operation.operation === "delete";
-      if (!mutatingMemory && !principal.capabilities.includes("memory:read")) {
-        return json({ error: "forbidden" }, { status: 403 });
-      }
-      if (mutatingMemory && !principal.capabilities.includes("memory:write")) {
-        return json({ error: "memory_read_only" }, { status: 403 });
-      }
-      internalPath = "/memory";
+      input = parseHistoryReadSessionInput({ ...value, session_id: read![1] });
     }
-
-    if (visibility === "personal" && principal.connectGrant) return json({ error: "forbidden" }, { status: 403 });
-    const target = memoryTarget(principal.organizationId, principal.teamId, principal.userId, visibility);
-    const memoryScope = env.NANOCODEX_MEMORY.getByName(target.name, durablePlacementOptions(env.trustedClientIngressColo));
-    const response = await memoryScope.fetch(`https://memory.internal${internalPath}`, {
-      method: internalPath === "/memories" ? "GET" : "POST",
+    const memoryScope = env.NANOCODEX_MEMORY.getByName(principal.organizationId,
+      durablePlacementOptions(env.trustedClientIngressColo));
+    const response = await memoryScope.fetch(`https://memory.internal${find ? "/search" : "/read"}`, {
+      method: "POST",
       headers: {
-        ...(input === undefined ? {} : { "content-type": "application/json" }),
+        "content-type": "application/json",
         [MEMORY_ORGANIZATION_ASSERTION]: principal.organizationId,
         [MEMORY_INITIALIZE_ASSERTION]: "1",
-        [MEMORY_TEAM_ASSERTION]: target.team,
+        [MEMORY_TEAM_ASSERTION]: principal.teamId,
         [MEMORY_SUBJECT_ASSERTION]: `${principal.subjectId}:${principal.authorizationEpoch}`,
-        ...(mutatingMemory ? { [MEMORY_MUTATION_ASSERTION]: "1" } : {}),
       },
-      ...(input === undefined ? {} : { body: JSON.stringify(input) }),
+      body: JSON.stringify(input),
     });
-    if (!response.ok || memory) return response;
-    if (memoryDelete) {
-      await response.body?.cancel();
-      return new Response(null, { status: 204 });
-    }
+    if (!response.ok) return response;
     if (find) {
       const found = await response.json<HistoryFindSessionsResponse>();
       return json({
@@ -11842,24 +11695,9 @@ async function routeHistoryRequest(
   }
 }
 
-function parseMemoryDeleteKey(url: URL, encodedId: string) {
-  const version = url.searchParams.get("version");
-  if (!/^[1-9][0-9]*$/.test(encodedId)
-    || version === null
-    || !/^[1-9][0-9]*$/.test(version)
-    || [...url.searchParams.keys()].some(key => key !== "version" && key !== "scope")
-    || url.searchParams.getAll("version").length !== 1 || url.searchParams.getAll("scope").length > 1) {
-    throw new DurableMemoryError("invalid_key", "memory delete requires one positive id and version");
-  }
-  return parseMemoryKey({ id: Number(encodedId), version: Number(version) });
-}
-
 function historySearchErrorResponse(error: unknown): Response {
   if (error instanceof HistorySearchError) {
     return json({ error: error.code, message: error.message }, { status: error.status });
-  }
-  if (error instanceof DurableMemoryError) {
-    return json({ error: error.code, message: error.message }, { status: 400 });
   }
   if (error instanceof ManagedRequestError) return managedErrorResponse(error);
   return json({ error: "history_search_failed", message: errorMessage(error) }, { status: 500 });

@@ -5,7 +5,9 @@ namespace `memories` with `list`, `read`, `search`, and `add_ad_hoc_note`.
 Native and JavaScript carry identical input and output schemas for those four
 tools in their independent Cargo/npm packages; an equality test checks both
 consumed copies. No other tool catalog is included.
-The native CLI calls the managed `/v1/memories/{method}` API. The managed agent
+The native CLI calls `/v1/memories/{method}` through the managed API or its
+Connect grant origin; the Connect proxy checks current read/write capabilities
+and forwards the unchanged Codex arguments. The managed agent
 uses the same file adapter. The old `memory` model tool is no longer registered;
 old configuration entries select these compatibility tools plus the managed
 [Markdown memory tools](workers-markdown-memory.md), all under `memories__*`.
@@ -14,21 +16,24 @@ arguments and result shapes. Markdown adds only `write` and `status`; writes nee
 an operation, path, and content, with storage bookkeeping handled by the host.
 An empty tool list remains empty. The four pinned Codex schemas remain unchanged.
 
-No existing memories are migrated or deleted. Versioned records appear as
-`legacy/<id>-v<version>.md`, and reads use the existing ownership and lifecycle
-checks. Direct account sessions have a private root and a read-only `team/`
-view of shared memories. Connect sessions can access only their authorized team
-root. Model arguments cannot select another user or organization. Every call
-checks current capabilities, and subagents cannot append notes.
+The Codex file API covers canonical Markdown and append-only ad-hoc notes.
+Direct account sessions have a private root and a read-only `team/` view of
+shared memory. Connect sessions can access only their authorized team root.
+Model arguments cannot select another user or organization. Every call checks
+current capabilities, and subagents cannot append notes.
 
-New notes use atomic, append-only creation in the selected partition. Notes are
-stored verbatim under `extensions/ad_hoc/notes/`. Duplicate filenames fail.
-Existing record replacement/deletion APIs and their personalization invalidation
-remain available as management operations. The upstream model API does not
-provide update or delete operations, and new notes do not automatically enter
-the existing versioned-record personalization snapshot.
+New ad-hoc notes use atomic create-if-absent storage under
+`extensions/ad_hoc/notes/`, preserving their verbatim text and duplicate-filename
+behavior. Canonical Markdown is editable through `memories__write` without
+changing the four baseline Codex schemas.
 
-Validation includes existing-record reads, shared-team visibility, private-note
+The versioned legacy memory store, its CRUD endpoints/SDK methods, and
+`legacy/<id>-v<version>.md` projection are retired. Activation drops legacy-only
+fact tables and clears fact-bearing prepared snapshots. Canonical Markdown,
+append-only notes, conversation history, and background Markdown personalization
+are preserved. Previously delivered conversation text cannot be erased.
+
+Validation includes canonical Markdown reads, shared-team visibility, private-note
 persistence, duplicate rejection, denied writes, cross-user isolation, input
 validation, search/paging, and native/JS schema equality. The managed HTTP tests
 load a prebuilt WASM module only to satisfy the worker module dependency; they exercise the new JavaScript adapter and actual SQLite
@@ -65,7 +70,7 @@ pnpm build:voice-core
 swift test --package-path apple/NanocodexVoice
 ```
 
-Voice regressions check both memory sources before and after the control channel
+Voice regressions check personal and shared Markdown before and after the control channel
 opens, stop/replacement boundaries, background-only delivery, and large escaped
 snapshots. Stalled background fetch/body reads must not delay admission, and
 optional notification failures must not fail the live event stream. Recovery must

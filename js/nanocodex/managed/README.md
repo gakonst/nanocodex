@@ -93,39 +93,6 @@ const session = await Agent.readSession(
 Both methods derive the account scope from the cookie or API key; no scope or user
 identifier is accepted from the caller.
 
-Hosted durable memory is account-owned and independent from session history. The
-memory panel can list records and compare-and-swap delete one current key:
-
-```js
-const memories = await Agent.listMemories({
-  baseUrl: process.env.NANOCODEX_MANAGED_URL,
-  apiKey: process.env.NANOCODEX_API_KEY,
-});
-await Agent.deleteMemory(memories[0].key, {
-  baseUrl: process.env.NANOCODEX_MANAGED_URL,
-  apiKey: process.env.NANOCODEX_API_KEY,
-});
-```
-
-Managed agents access this same hosted store through their `memory` tool. It is
-never mirrored into a browser, TUI, or other local persistence layer.
-
-Account memory uses the same derived organization scope and supports scan, read,
-put, and delete operations. Scan before writing so the service can reject
-duplicates, and retain returned `{ id, version }` keys for compare-and-swap
-updates:
-
-```js
-const scanned = await Agent.memory(
-  { operation: "scan", query: "production deploy schedule" },
-  { baseUrl: process.env.NANOCODEX_MANAGED_URL, apiKey: process.env.NANOCODEX_API_KEY },
-);
-const stored = await Agent.memory(
-  { operation: "put", content: "Production deploys happen on Tuesdays." },
-  { baseUrl: process.env.NANOCODEX_MANAGED_URL, apiKey: process.env.NANOCODEX_API_KEY },
-);
-```
-
 Browser account owners can read and rename their organization:
 
 ```js

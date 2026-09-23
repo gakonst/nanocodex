@@ -495,6 +495,44 @@ final class ManagedVoiceTests: XCTestCase {
         XCTAssertTrue(voice.sidebandOpened().frames.isEmpty, "Acknowledged context must not be queued again")
     }
 
+    func testRetiredMemoryResultsCannotRestoreFactsOrSuppressMarkdownContext() throws {
+        let key: JSON = .object(["id": .number(5), "version": .number(2)])
+        let results: [JSON] = [
+            .object(["operation": .string("put"), "memory": .object([
+                "key": key, "content": .string("retired fact canary")
+            ])]),
+            .object(["operation": .string("delete"), "key": key])
+        ]
+        for result in results {
+            let voice = try ManagedVoiceProtocol()
+            let session = ManagedVoiceProtocol.sessionID()
+            voice.bindSession(session)
+            let before = voice.sidebandOpened()
+            let legacy: JSON = .object(["type": .string("managed.voice.context"), "payload": .object([
+                "voice_session_id": .string(session), "result": result
+            ])])
+            for _ in 0..<2 {
+                XCTAssertEqual(voice.managedEvent(legacy, cursor: "9007199254740999"), ManagedVoiceEffects())
+                XCTAssertEqual(voice.sidebandOpened(), before)
+            }
+            let admission = try voice.personalization(.object(["markdown_memory": .string("USER.md admission")]))
+            XCTAssertFalse(admission.frames.isEmpty, "Legacy results cannot suppress admission")
+            voice.framesSent(admission.frames.count)
+            let current: JSON = .object(["type": .string("managed.voice.context"), "payload": .object([
+                "voice_session_id": .string(session), "result": result,
+                "context": .object(["markdown_memory": .string("USER.md current preference")])
+            ])])
+            let update = voice.managedEvent(current, cursor: "1")
+            XCTAssertFalse(update.frames.isEmpty, "Legacy results cannot advance the Markdown cursor")
+            XCTAssertNil(update.playbackEnabled)
+            let text = update.frames.flatMap { $0["content"].array }.map { $0["text"].string }.joined()
+            XCTAssertTrue(text.contains("USER.md current preference"))
+            XCTAssertFalse(text.contains("retired fact canary"))
+            XCTAssertFalse(text.contains("Saved-memory update"))
+            XCTAssertEqual(voice.sidebandOpened().frames, update.frames)
+        }
+    }
+
     func testPersonalizationQueuesBothMemorySourcesWithoutHistoryOrSpeech() throws {
         let voice = try ManagedVoiceProtocol()
         let context: JSON = .object([
