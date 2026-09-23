@@ -297,7 +297,7 @@ export class RemoteBrowserSession {
   private epoch = 0;
   private retries = 0;
   private recoveryDeadline?: number;
-  // Keep a failed direct path out of subsequent retries, including resume.
+  // Keep a failed direct path out of retries/resume for this publication.
   // Each fresh credential response can still fall back to all when TURN is absent.
   private preferRelay = false;
   private suspended = false;
@@ -311,6 +311,7 @@ export class RemoteBrowserSession {
     if (this.closed) return;
     this.suspended = false; this.retries = 0; this.recoveryDeadline = undefined;
     this.connectionStartedAt = undefined; this.attempt = 0;
+    this.selectionFirstFrameMs = undefined;
     if (this.selectedAt !== undefined) this.selectedAt = performance.now();
     void this.start(true);
   }
@@ -372,6 +373,10 @@ export class RemoteBrowserSession {
         if (!this.current(epoch)) return;
         const hand = hands.find(hand => hand.machine_id === this.hand.machine_id && hand.id === this.hand.id);
         if (!hand) throw new RemoteError("This screen is unavailable.");
+        // A new publisher has a fresh transport path; an outage of the old
+        // publication must not pin it to TURN. Same-generation retries retain
+        // their fallback, and no healthy peer is interrupted to probe direct ICE.
+        if (hand.generation !== this.hand.generation) this.preferRelay = false;
         this.hand = hand;
         this.markStartup("catalogReadyMs");
         if (!this.current(epoch)) return;
@@ -988,7 +993,8 @@ export class RemoteBrowserSession {
     ++this.epoch;
     this.clearMotion();
     ++this.statsRun; clearTimeout(this.statsTimer); this.statsTimer = undefined; this.statsRequest = undefined;
-    this.cancelVideoWatch(); this.firstFrameMs = undefined; this.selectionFirstFrameMs = undefined; this.videoTrackId = undefined;
+    // Selection timing belongs to the user wait, not each automatic attempt.
+    this.cancelVideoWatch(); this.firstFrameMs = undefined; this.videoTrackId = undefined;
     this.startup = {}; this.attemptIcePolicy = undefined;
     clearTimeout(this.mediaTimer); this.mediaTimer = undefined; this.mediaStartedAt = undefined;
     this.lastVideoFrameAt = this.mediaHealthySince = undefined; this.videoFrames = 0; this.decodedFrames.clear();
