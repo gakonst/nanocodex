@@ -16,6 +16,13 @@ function selected(request: MarkdownMemoryCompletionRequest, target = 'USER.md', 
     path: source.path, revision: source.revision, from_line: source.from_line, to_line: source.from_line,
   }] };
 }
+function selectedLine(request: MarkdownMemoryCompletionRequest, line: number) {
+  const candidate = selected(request);
+  const source = (request.input as Input).sources[0]!;
+  candidate.quote = source.content.split('\n')[line - source.from_line]!;
+  candidate.sources[0]!.from_line = candidate.sources[0]!.to_line = line;
+  return candidate;
+}
 function deferred<T>() {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>(done => { resolve = done; });
@@ -227,7 +234,7 @@ describe('durable daily markdown consolidation', () => {
     });
   });
 
-  it('removing a managed fact cancels its pending source while retaining other work', async () => {
+  it('removing a managed fact preserves appended lines in its source and other pending files', async () => {
     await fixture(async ({ create, change, advance, store }) => {
       const service = create();
       change(service, PATH, 'Deliberately removed fact.');
@@ -238,11 +245,72 @@ describe('durable daily markdown consolidation', () => {
       const other = 'memory/2026-09-23.md';
       change(service, other, 'Unrelated retained fact.');
       change(service, 'USER.md', null);
-      expect(create().status('alice').pending.map(event => event.path)).toEqual([other]);
+      expect(create().status('alice').pending.map(event => event.path)).toEqual([PATH, other]);
       advance(START + 2 * DAY);
-      expect(await create().runDue()).toMatchObject({ status: 'committed' });
+      const complete = vi.fn<MarkdownMemoryCompletion>(async request => ({
+        candidates: [selectedLine(request, 2), selected(request, 'USER.md', 1)],
+      }));
+      expect(await create(complete).runDue()).toMatchObject({ status: 'committed', additions: 2 });
+      expect(JSON.stringify(complete.mock.calls[0]![0].input)).not.toContain('Deliberately removed fact.');
+      expect(store.readFile('alice', 'USER.md')).toContain('Additional source detail.');
       expect(store.readFile('alice', 'USER.md')).toContain('Unrelated retained fact.');
       expect(store.readFile('alice', 'USER.md')).not.toContain('Deliberately removed fact.');
+    });
+  });
+
+  it('removing a managed fact preserves an already pending continuation from its source', async () => {
+    await fixture(async ({ create, change, advance, store }) => {
+      change(create(), PATH, ['Removed fact.', ...Array.from({ length: 63 }, (_, i) => `Earlier detail ${i}.`), 'Retained continuation.'].join('\n'));
+      advance(START + DAY);
+      expect(await create().runDue()).toMatchObject({ status: 'committed' });
+      expect(create().status('alice').pending).toEqual([{ path: PATH, revision: 1, next_line: 65 }]);
+      change(create(), 'USER.md', null);
+      expect(create().status('alice').pending).toEqual([{ path: PATH, revision: 1, next_line: 65 }]);
+      advance(START + 2 * DAY);
+      expect(await create().runDue()).toMatchObject({ status: 'committed', additions: 1 });
+      expect(store.readFile('alice', 'USER.md')).toContain('Retained continuation.');
+      expect(store.readFile('alice', 'USER.md')).not.toContain('Removed fact.');
+    });
+  });
+
+  it('removing a fact preserves newly edited lines before and after its evidence', async () => {
+    await fixture(async ({ create, change, advance, store }) => {
+      change(create(), PATH, 'Old prefix.\nRemoved fact.\nOld tail.');
+      advance(START + DAY);
+      await create(async request => ({ candidates: [selectedLine(request, 2)] })).runDue();
+      change(create(), PATH, 'New prefix.\nRemoved fact.\nNew tail.');
+      change(create(), 'USER.md', null);
+      advance(START + 2 * DAY);
+      // A quote crossing the blanked line is not exact canonical evidence.
+      const invalid = create(async request => {
+        const candidate = selected(request);
+        candidate.quote = (request.input as Input).sources[0]!.content;
+        candidate.sources[0]!.to_line = 3;
+        return { candidates: [candidate] };
+      });
+      expect(await invalid.runDue()).toMatchObject({ status: 'failed', reason: 'retry_scheduled' });
+      expect(store.get('alice', { path: 'USER.md' }).deleted).toBe(true);
+      advance(START + 3 * DAY);
+      const complete = vi.fn<MarkdownMemoryCompletion>(async request => ({
+        candidates: [selectedLine(request, 1), selectedLine(request, 3)],
+      }));
+      expect(await create(complete).runDue()).toMatchObject({ status: 'committed', additions: 2 });
+      expect(JSON.stringify(complete.mock.calls[0]![0].input)).not.toContain('Removed fact.');
+      expect(store.readFile('alice', 'USER.md')).toContain('New prefix.');
+      expect(store.readFile('alice', 'USER.md')).toContain('New tail.');
+      expect(store.readFile('alice', 'USER.md')).not.toContain('Removed fact.');
+    });
+  });
+
+  it('retains existing continuation cursors when upgrading the event table', async () => {
+    await fixture(async ({ create, storage }) => {
+      storage.sql.exec(`DROP TABLE IF EXISTS markdown_consolidation_events;
+        CREATE TABLE markdown_consolidation_events (
+          owner TEXT NOT NULL,path TEXT NOT NULL,revision INTEGER NOT NULL,next_line INTEGER NOT NULL,
+          PRIMARY KEY(owner,path));`);
+      storage.sql.exec('INSERT INTO markdown_consolidation_events VALUES(?,?,?,?)', 'alice', PATH, 7, 65);
+      expect(create().status('alice').pending).toEqual([{ path: PATH, revision: 7, next_line: 65 }]);
+      expect(storage.sql.exec('SELECT excluded_spans FROM markdown_consolidation_events').one()).toEqual({ excluded_spans: '[]' });
     });
   });
 

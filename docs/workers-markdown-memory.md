@@ -119,8 +119,8 @@ Revision checks reject stale proposals after concurrent edits or deletion. Appen
 and edits outside cited lines preserve entries whose evidence is unchanged;
 corrections and deletions retract affected generated entries. Manual curation
 fences in-flight proposals while preserving unrelated pending sources and the
-daily model budget. Removing an attributed entry also removes pending work for
-that evidence. Provenance supports audit, and source edits clear retained
+daily model budget. Removing an attributed entry excludes its cited lines from pending work while
+preserving the other lines in the same daily file. Provenance supports audit, and source edits clear retained
 preimages. Explicit recall markers and consolidation reports are excluded from
 automatic promotion, and identical evidence is deduplicated.
 
