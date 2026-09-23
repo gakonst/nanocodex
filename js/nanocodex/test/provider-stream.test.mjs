@@ -630,3 +630,29 @@ test("normalizer diagnostics reject unknown or forged exception details", async 
     assert.equal(upstream.cancelled, 1);
   }
 });
+
+for (const provider of ["openrouter", "vercel"]) test(`${provider}: raw custom input diagnostics stay distinct, redacted and fail closed`, async () => {
+  const scenarios = [
+    ["custom", " \ntext('synthetic-secret')", "normalize_custom_raw_input"],
+    ["custom", '{"input":"synthetic-secret', "normalize_tool_json"],
+    ["custom", '["synthetic-secret"', "normalize_tool_json"],
+    ["custom", '"synthetic-secret', "normalize_tool_json"],
+    ["custom", " ", "normalize_tool_json"],
+    ["custom", '{"input":"synthetic-secret"}{"input":"synthetic-secret"}', "normalize_tool_json"],
+    ["custom", '"synthetic-secret"', "normalize_tool_arguments"],
+    ["custom", '{"input":42}', "normalize_custom_input"],
+    ["function", "text('synthetic-secret')", "normalize_tool_json"],
+    ["tool_search", "text('synthetic-secret')", "normalize_tool_json"],
+  ];
+  for (const [type, argumentsText, code] of scenarios) {
+    const upstream = feed(), fixture = setup(provider, upstream);
+    const tool = type === "tool_search" ? { type, execution: "client" } : { type, name: "run" };
+    const pending = all(await fixture.invoke({ tools: [tool] }));
+    upstream.send(chunk({ tool_calls: [{ index: 0, id: "synthetic-secret", type: "function",
+      function: { name: "tool_0", arguments: argumentsText } }] }));
+    upstream.send(chunk({}, "tool_calls")); upstream.send("[DONE]");
+    await assert.rejects(pending, { message: `Responses: invalid provider stream\nProtocol invariant: ${code}` });
+    assert.deepEqual(fixture.observed, [200, "protocol_error"]);
+    assert.equal(upstream.cancelled, 1);
+  }
+});
