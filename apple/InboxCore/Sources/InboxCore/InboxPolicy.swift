@@ -31,6 +31,21 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
     public var appliedHistoryCursor: Cursor { previewCursor }
     public var presentationStatus = ""
     public var presentationActivity = ""
+    public var presentationLastUserPrompt = ""
+    public var presentationLastUserMessageAt: Double = 0
+    /// Uses the same freshness policy as the visible status, including roster-only agents.
+    public var isRunningInSidebar: Bool { ["Running", "Stopping"].contains(sidebarStatus) }
+    private var localUserPrompt = ""
+    private var localUserPromptAt: Double = 0
+    public mutating func noteSubmittedPrompt(_ prompt: String, at timestamp: Double) {
+        localUserPrompt = prompt; localUserPromptAt = timestamp
+        lastUserMessageAt = max(lastUserMessageAt, timestamp)
+    }
+    public var sidebarLastUserPrompt: String {
+        if !localUserPrompt.isEmpty, localUserPromptAt > presentationLastUserMessageAt { return localUserPrompt }
+        if !presentationLastUserPrompt.isEmpty { return presentationLastUserPrompt }
+        return previewRows.last(where: { $0.role == "You" })?.text ?? ""
+    }
     public var presentationUpdatedAt: Double = 0
     public var presentationTurnID = ""
     public var sidebarStatus: String {
@@ -39,13 +54,15 @@ public struct AgentCard: Identifiable, Equatable, Sendable {
     }
     public var sidebarActivity: String {
         guard ["Running", "Stopping"].contains(sidebarStatus) else { return "" }
-        if !presentationActivity.isEmpty, activeTurns.contains(presentationTurnID) || !checked { return presentationActivity }
+        if !presentationActivity.isEmpty, activeTurns.contains(presentationTurnID) || !checked || presentationUpdatedAt > (observedAt?.timeIntervalSince1970 ?? 0) * 1000 { return presentationActivity }
         return activityDetail.isEmpty ? activitySummary : activityDetail
     }
     public mutating func applyPresentation(_ value: JSON) {
         let labels = ["running": "Running", "stopping": "Stopping", "completed": "Ready", "cancelled": "Stopped", "failed": "Failed", "idle": "Idle"]
         guard let label = labels[value["status"].string], value["updatedAt"].number >= presentationUpdatedAt else { return }
         presentationStatus = label; presentationUpdatedAt = value["updatedAt"].number
+        presentationLastUserPrompt = value["lastUserPrompt"].string
+        presentationLastUserMessageAt = value["lastUserMessageAt"].number
         presentationTurnID = value["activityTurnId"].string
         presentationActivity = value["activeTurnIds"].array.map(\.string).contains(value["activityTurnId"].string) ? value["activity"].string : ""
     }

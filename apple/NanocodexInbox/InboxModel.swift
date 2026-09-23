@@ -1353,6 +1353,8 @@ final class InboxModel: ObservableObject {
                 if summary.presentationUpdatedAt >= card.presentationUpdatedAt {
                     card.presentationStatus = summary.presentationStatus
                     card.presentationActivity = summary.presentationActivity
+                    card.presentationLastUserPrompt = summary.presentationLastUserPrompt
+                    card.presentationLastUserMessageAt = summary.presentationLastUserMessageAt
                     card.presentationTurnID = summary.presentationTurnID
                     card.presentationUpdatedAt = summary.presentationUpdatedAt
                 }
@@ -2274,7 +2276,7 @@ final class InboxModel: ObservableObject {
                 sourceCursor: max(cursor, card.latestCursor), sourceRowID: hasNewer ? nil : rows.last?.id))
         }
         attachmentDrafts[card.id] = nil; attachmentErrors[card.id] = nil
-        if let index = cards.firstIndex(where: { $0.id == card.id }) { cards[index].lastUserMessageAt = Date().timeIntervalSince1970 * 1000 }
+        if let index = cards.firstIndex(where: { $0.id == card.id }) { cards[index].noteSubmittedPrompt(request, at: Date().timeIntervalSince1970 * 1000) }
         pending.append(message); drafts[card.id] = ""; selectedContext[card.id] = nil; excludedContext[card.id] = nil; busy.insert(card.id); notice = nil; persist()
         let epoch = generation
         if target != nil { startSteering(message.id) }

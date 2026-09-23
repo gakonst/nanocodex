@@ -969,3 +969,5 @@ html[data-theme="light"] .chat-workspace {
 .agent-navigation-status[data-status="running"], .agent-navigation-status[data-status="stopping"] { color: var(--chat-positive) !important; }
 .agent-navigation-status[data-status="failed"] { color: #c54c45 !important; }
 .agent-navigation-thread .agent-navigation-activity { color: var(--chat-muted); font-size: 12px; line-height: 1.4; }
+
+.agent-navigation-thread .agent-navigation-prompt { color: var(--chat-muted); font-size: 12px; line-height: 1.4; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

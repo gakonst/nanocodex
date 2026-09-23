@@ -504,7 +504,8 @@ function validPresentation(value) {
     && Array.isArray(value.activeTurnIds) && value.activeTurnIds.every(id => typeof id === "string")
     && nonnegativeNumber(value.updatedAt)
     && (value.activity === undefined || typeof value.activity === "string")
-    && (value.activityTurnId === undefined || typeof value.activityTurnId === "string");
+    && (value.activityTurnId === undefined || typeof value.activityTurnId === "string")
+    && (value.lastUserPrompt === undefined || typeof value.lastUserPrompt === "string");
 }
 
 function nonnegativeNumber(value) {

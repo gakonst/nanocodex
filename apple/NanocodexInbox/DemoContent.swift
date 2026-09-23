@@ -105,6 +105,7 @@ enum DemoContent {
                 card.presentationActivity = card.id == "inbox" ? "I'm checking inbox state" : "I'm comparing forecast results"
                 card.presentationTurnID = "demo-turn-" + card.id
             }
+            card.presentationLastUserPrompt = card.id == "inbox" ? "Check the inbox navigation and running agents" : "Compare the forecast results"
             return card
         }
     }

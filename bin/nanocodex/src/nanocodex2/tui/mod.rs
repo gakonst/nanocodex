@@ -24,6 +24,7 @@ mod shell;
 mod spinner;
 mod terminal;
 mod theme;
+mod tmux;
 mod transcript;
 mod vault;
 mod voice_clone;
@@ -2002,6 +2003,9 @@ async fn run_inner(
     }
     let mut clone_tick = tokio::time::interval(std::time::Duration::from_millis(200));
     clone_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut tmux = tmux::Publisher::new();
+    let mut tmux_tick = tokio::time::interval(Duration::from_secs(2));
+    tmux_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut stopping = false;
     #[cfg(unix)]
     let mut control_server = if nanocodex_tui_control::Server::enabled() {
@@ -2180,6 +2184,21 @@ async fn run_inner(
                 (Some(&mut voice.status), Some(&mut voice.transcripts))
             });
         tokio::select! {
+            _ = tmux_tick.tick(), if tmux.is_some() => {
+                if let Some(publisher) = &mut tmux {
+                    let status = if runtime.recovery.is_some() { "reconnecting" }
+                        else if runtime.agent.is_none() { "connecting" }
+                        else if !runtime.managed_events_open { "disconnected" }
+                        else if !runtime.controls.is_empty() || !runtime.admitting.is_empty()
+                            || !runtime.managed_active_turns.ids.is_empty() { "running" }
+                        else { "idle" };
+                    let prompt = runtime.recent_prompts.iter()
+                        .find(|prompt| prompt.session_id == runtime.agent_id);
+                    publisher.publish(&runtime.agent_id, status,
+                        prompt.map_or("", |prompt| prompt.text.as_str()),
+                        prompt.map_or(0, |prompt| prompt.recorded_at_unix_ms)).await;
+                }
+            }
             result = reload_setup.join_next(), if !reload_setup.is_empty() => {
                 match result {
                     Some(Ok(Ok(registration))) => reload = Some(registration),
@@ -6078,6 +6097,7 @@ mod tests {
                 "agent-1".to_owned(),
                 AgentSummary {
                     title: "A durable task".to_owned(),
+                    presentation: None,
                     created_at: 1_750_000_000.0,
                     updated_at: 1_750_000_100.0,
                     turn_count: 2,

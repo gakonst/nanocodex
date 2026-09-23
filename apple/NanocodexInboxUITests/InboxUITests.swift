@@ -27,6 +27,33 @@ final class InboxUITests: XCTestCase {
         }
     }
 
+    func testRunningAgentsToolbarFiltersAndShowsLastPrompt() {
+        let originalAppearance = XCUIDevice.shared.appearance
+        addTeardownBlock { XCUIDevice.shared.appearance = originalAppearance }
+        for appearance in ["light", "dark"] {
+            XCUIDevice.shared.appearance = appearance == "dark" ? .dark : .light
+            let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString,
+                              "NANOCODEX_DEMO_SIDEBAR": "1",
+                              "NANOCODEX_DEMO_APPEARANCE": appearance])
+            let toolbar = app.buttons["running-agents"]
+            XCTAssertTrue(toolbar.waitForExistence(timeout: 5))
+            XCTAssertEqual(toolbar.value as? String, "2")
+            capture(app, "agent-overview-toolbar-" + appearance)
+            toolbar.tap()
+            let inbox = app.buttons["conversation-row:inbox"]
+            XCTAssertTrue(inbox.waitForExistence(timeout: 5))
+            XCTAssertTrue((inbox.value as? String ?? "").contains("I'm checking inbox state"))
+            XCTAssertTrue((inbox.value as? String ?? "").contains("You:"))
+            XCTAssertTrue(app.buttons["conversation-row:data"].exists)
+            XCTAssertFalse(app.buttons["conversation-row:hands"].exists)
+            capture(app, "agent-overview-running-" + appearance)
+            app.segmentedControls.buttons["All"].tap()
+            XCTAssertTrue(app.buttons["conversation-row:hands"].waitForExistence(timeout: 5))
+            capture(app, "agent-overview-all-" + appearance)
+            app.terminate()
+        }
+    }
+
     func testFlatConversationDrawerPreservesSeparateDrafts() {
         let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
         switchConversation(app, id: "inbox")

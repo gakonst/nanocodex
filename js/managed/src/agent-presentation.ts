@@ -8,8 +8,10 @@ export type AgentPresentation = {
   activityTurnId?: string;
   updatedAt: number;
   lastUserMessageAt?: number;
+  lastUserPrompt?: string;
 };
 export const PRESENTATION_MODEL = "gpt-6-luna";
+export const LAST_USER_PROMPT_LIMIT = 500;
 const INTERVAL = 20_000;
 
 export function cleanPresentationText(value: string, limit: number): string | undefined {
@@ -36,7 +38,7 @@ export async function generatePresentationText(fetcher: Pick<Fetcher, "fetch">, 
   const text = body.output?.filter(item => item.type === "message").flatMap(item => item.content ?? [])
     .filter(item => item.type === "output_text").map(item => item.text ?? "").join("") ?? "";
   const clean = cleanPresentationText(text, kind === "title" ? 56 : 45);
-  return kind === "title" && clean && clean.split(" ").length > 7 ? undefined : clean;
+  return kind === "title" && clean && clean.split(" ").length > 5 ? undefined : clean;
 }
 
 /** Persist revisions before async work; out-of-order deliveries cannot resurrect old activity. */
@@ -55,11 +57,14 @@ export class AgentPresentationWriter {
     const row = storage.sql.exec<{ value: string }>("SELECT value FROM agent_presentation WHERE singleton=1").toArray()[0];
     this.#value = row ? JSON.parse(row.value) : { revision: 0, status: "idle", activeTurnIds: [], updatedAt: 0, lastUserMessageAt: 0 };
   }
-  recordUserMessage(id: string, at: number): void {
+  recordUserMessage(id: string, at: number, prompt: string): void {
     this.storage.sql.exec("CREATE TABLE IF NOT EXISTS sidebar_user_messages (id TEXT PRIMARY KEY, sent_at INTEGER NOT NULL)");
     this.storage.transactionSync(() => {
       const inserted = this.storage.sql.exec("INSERT OR IGNORE INTO sidebar_user_messages(id,sent_at) VALUES (?,?)", id, at);
-      if (inserted.rowsWritten > 0) this.#save({ ...this.#value, lastUserMessageAt: Math.max(this.#value.lastUserMessageAt ?? 0, at) });
+      if (inserted.rowsWritten > 0 && at >= (this.#value.lastUserMessageAt ?? 0)) {
+        this.#save({ ...this.#value, lastUserMessageAt: at,
+          lastUserPrompt: prompt.replace(/\s+/g, " ").trim().slice(0, LAST_USER_PROMPT_LIMIT) });
+      }
     });
   }
   observe(status: AgentPresentation["status"], activeTurnIds: string[], prompt: string, turnId?: string, commentary?: string): void {

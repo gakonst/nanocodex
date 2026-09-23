@@ -2188,7 +2188,7 @@ test("atomic create-and-prompt forwards caller location at first admission", asy
 });
 
 test("agent listings retain bounded sidebar metadata and tolerate legacy summaries", async () => {
-  const presentation = { revision: 2, status: "running", activeTurnIds: ["turn"], activityTurnId: "turn", activity: "I'm checking sidebar state", updatedAt: 30 };
+  const presentation = { revision: 2, status: "running", activeTurnIds: ["turn"], activityTurnId: "turn", activity: "I'm checking sidebar state", lastUserPrompt: "Show my running agents", updatedAt: 30 };
   const fetch = async () => Response.json({ data: [agentId], summaries: {
     [agentId]: { title: "Fix sidebar", created_at: 10, updated_at: 20, turn_count: 1, last_user_message_at: 15, presentation },
   } });
@@ -2196,4 +2196,15 @@ test("agent listings retain bounded sidebar metadata and tolerate legacy summari
   assert.equal(agents[0].summary.lastUserMessageAt, 15);
   assert.deepEqual(agents[0].summary.presentation, presentation);
   assert.equal(Object.isFrozen(agents[0].summary.presentation.activeTurnIds), true);
+});
+
+
+test("agent listings ignore malformed prompt previews without rejecting the agent", async () => {
+  const fetch = async () => Response.json({ data: [agentId], summaries: {
+    [agentId]: { title: "Fix sidebar", created_at: 10, updated_at: 20, turn_count: 1,
+      presentation: { revision: 2, status: "running", activeTurnIds: ["turn"], updatedAt: 30, lastUserPrompt: { text: "invalid" } } },
+  } });
+  const agents = await Agent.list({ baseUrl: "https://example.test", apiKey, fetch });
+  assert.equal(agents[0].summary.title, "Fix sidebar");
+  assert.equal(agents[0].summary.presentation, undefined);
 });

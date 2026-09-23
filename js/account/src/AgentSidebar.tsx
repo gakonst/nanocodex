@@ -205,6 +205,11 @@ export function AgentSidebar({
                       {conversation.presentation?.activity && conversation.presentation.activeTurnIds.includes(conversation.presentation.activityTurnId ?? "") ? (
                         <span className="agent-navigation-activity">{conversation.presentation.activity}</span>
                       ) : null}
+                      {conversation.presentation?.lastUserPrompt ? (
+                        <span className="agent-navigation-prompt" title={conversation.presentation.lastUserPrompt}>
+                          You: {conversation.presentation.lastUserPrompt}
+                        </span>
+                      ) : null}
                     </span>
                   </button>
                 ))
