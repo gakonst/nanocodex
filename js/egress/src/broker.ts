@@ -1,3 +1,4 @@
+import type { CloudflareAccountVaultResult } from "nanocodex/cloudflare/egress";
 import { createSshKeyPair, sshPublicKey } from "nanocodex/tools/ssh";
 import { DurableObject } from "cloudflare:workers";
 import { Provider, ProviderRequest, secp256k1, Storage } from "accounts";
@@ -308,7 +309,7 @@ function subjectTombstoneOwner(value: string | undefined): string | undefined {
     : undefined;
 }
 
-type CredentialOperation = "credential_rpc" | "credential_http" | "http" | "alarm";
+type CredentialOperation = "credential_rpc" | "credential_http" | "metadata_rpc" | "http" | "alarm";
 type CredentialOperationObservation = Readonly<{
   operation: CredentialOperation;
   resolveId?: string;
@@ -417,6 +418,19 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       activation_ms: this.#activationMs,
       activation_age_ms: Date.now() - this.#activatedAt,
     };
+  }
+
+  /** Private metadata RPC. Entry secrets remain in their separate vault records. */
+  readVaultMetadata(): Promise<CloudflareAccountVaultResult> {
+    return this.#exclusive(async () => {
+      await this.#ready;
+      try {
+        return { status: 200, vault: this.#publicVault() };
+      } catch (error) {
+        const problem = await this.#recoverFailedOperation(error);
+        return { status: problem.status, vault: null };
+      }
+    }, { operation: "metadata_rpc" });
   }
 
   alarm(): Promise<void> {

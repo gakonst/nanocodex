@@ -721,8 +721,9 @@ async function authenticateLive(request: Request, env: AccountAuthEnv, url: URL)
   // RPC returns the small record in one reply. A fetch Response transports its
   // headers and JSON stream separately across Durable Object locations.
   let record: StoredApiKey | undefined;
-  if (typeof stub.resolveAuthorizedKey === "function") {
-    record = await stub.resolveAuthorizedKey();
+  const rpc = stub.resolveAuthorizedKey;
+  if (typeof rpc === "function") {
+    record = await Reflect.apply(rpc, stub, []);
   } else {
     const response = await stub.fetch("https://api-key.internal/resolve?authorize=1");
     if (!response.ok) {
@@ -1392,12 +1393,19 @@ async function proxyAccountWalletRequest(
 }
 
 async function readAccount(env: AccountAuthEnv, userId: string): Promise<UserRecord | undefined> {
-  const response = await env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)).fetch("https://user.internal/account");
-  if (!response.ok) {
-    await response.body?.cancel();
-    return undefined;
+  const stub = env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo));
+  let record: UserRecord | undefined;
+  const rpc = stub.readAccount;
+  if (typeof rpc === "function") {
+    record = await Reflect.apply(rpc, stub, []);
+  } else {
+    const response = await stub.fetch("https://user.internal/account");
+    if (!response.ok) {
+      await response.body?.cancel();
+      return undefined;
+    }
+    record = await response.json<UserRecord>();
   }
-  const record = await response.json<UserRecord>();
   return isUserRecord(record) && record.id === userId ? record : undefined;
 }
 
@@ -1409,14 +1417,21 @@ async function resolveOrganizationGrant(
   env: AccountAuthEnv,
   account: Pick<UserRecord, "id" | "organizationId">,
 ): Promise<OrganizationGrant | undefined> {
-  const response = await env.NANOCODEX_ORGANIZATIONS.getByName(account.organizationId, durablePlacementOptions(env.trustedClientIngressColo)).fetch(
-    `https://organization.internal/resolve?userId=${encodeURIComponent(account.id)}`,
-  );
-  if (!response.ok) {
-    await response.body?.cancel();
-    return undefined;
+  const stub = env.NANOCODEX_ORGANIZATIONS.getByName(account.organizationId, durablePlacementOptions(env.trustedClientIngressColo));
+  let grant: OrganizationGrant | undefined;
+  const rpc = stub.resolveOrganizationGrant;
+  if (typeof rpc === "function") {
+    grant = await Reflect.apply(rpc, stub, [account.id]);
+  } else {
+    const response = await stub.fetch(
+      `https://organization.internal/resolve?userId=${encodeURIComponent(account.id)}`,
+    );
+    if (!response.ok) {
+      await response.body?.cancel();
+      return undefined;
+    }
+    grant = await response.json<OrganizationGrant>();
   }
-  const grant = await response.json<OrganizationGrant>();
   if (!isOrganizationGrant(grant)
     || grant.organizationId !== account.organizationId) {
     return undefined;
@@ -1704,6 +1719,11 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
     }
   }
 
+  // Live storage read in a single RPC reply, without a streamed HTTP body.
+  async readAccount(): Promise<UserRecord | undefined> {
+    return this.ctx.storage.get<UserRecord>("account");
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (/^\/(agent-definitions|environment-templates)(?:\/|$)/.test(url.pathname)) {
@@ -1762,7 +1782,7 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
         return json(record);
       }
       if (request.method === "GET") {
-        const record = await this.ctx.storage.get<UserRecord>("account");
+        const record = await this.readAccount();
         return record ? json(record) : json({ error: "not_found" }, { status: 404 });
       }
     }
@@ -1927,6 +1947,34 @@ function agentSummary(row: AgentRegistryRow): AgentSummary {
 }
 
 export class Organization extends DurableObject<AccountAuthEnv> {
+  async resolveOrganizationGrant(userId: string): Promise<OrganizationGrant | undefined> {
+    if (!isUserId(userId)) return undefined;
+    // Read all authority from storage on every RPC, just as the HTTP route does.
+    const [metadata, membership] = await Promise.all([
+      this.ctx.storage.get<OrganizationMetadata>("metadata"),
+      this.ctx.storage.get<OrganizationMembership>(userMembershipStorageKey(userId)),
+    ]);
+    if (!isOrganizationMetadata(metadata)
+      || !isOrganizationMembership(membership)
+      || membership.userId !== userId
+      || membership.organizationId !== metadata.id) {
+      return undefined;
+    }
+    const team = await this.ctx.storage.get<TeamRecord>(teamStorageKey(membership.teamId));
+    if (!isTeamRecord(team)
+      || team.id !== membership.teamId
+      || team.organizationId !== metadata.id) {
+      return undefined;
+    }
+    return {
+      organizationId: metadata.id,
+      teamId: membership.teamId,
+      role: membership.role,
+      authorizationEpoch: metadata.authorizationEpoch,
+      capabilities: membership.role === "owner" ? OWNER_CAPABILITIES : membership.capabilities,
+    };
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/initialize" && request.method === "PUT") {
@@ -1996,29 +2044,8 @@ export class Organization extends DurableObject<AccountAuthEnv> {
         userId = body.userId;
       }
       if (!isUserId(userId)) return json({ error: "invalid_subject" }, { status: 400 });
-      const [metadata, membership] = await Promise.all([
-        this.ctx.storage.get<OrganizationMetadata>("metadata"),
-        this.ctx.storage.get<OrganizationMembership>(userMembershipStorageKey(userId)),
-      ]);
-      if (!isOrganizationMetadata(metadata)
-        || !isOrganizationMembership(membership)
-        || membership.userId !== userId
-        || membership.organizationId !== metadata.id) {
-        return json({ error: "not_found" }, { status: 404 });
-      }
-      const team = await this.ctx.storage.get<TeamRecord>(teamStorageKey(membership.teamId));
-      if (!isTeamRecord(team)
-        || team.id !== membership.teamId
-        || team.organizationId !== metadata.id) {
-        return json({ error: "not_found" }, { status: 404 });
-      }
-      return json({
-        organizationId: metadata.id,
-        teamId: membership.teamId,
-        role: membership.role,
-        authorizationEpoch: metadata.authorizationEpoch,
-        capabilities: membership.role === "owner" ? OWNER_CAPABILITIES : membership.capabilities,
-      } satisfies OrganizationGrant);
+      const grant = await this.resolveOrganizationGrant(userId);
+      return grant ? json(grant) : json({ error: "not_found" }, { status: 404 });
     }
     if (url.pathname === "/metadata") {
       const metadata = await this.ctx.storage.get<OrganizationMetadata>("metadata");

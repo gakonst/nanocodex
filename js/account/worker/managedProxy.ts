@@ -112,8 +112,9 @@ async function directLiveAgent(request: Request, env: ManagedProxyEnv): Promise<
   const colo = ingressColo(request.cf?.colo);
   const key = env.NANOCODEX_LIVE_API_KEYS.getByName(digest, durablePlacementOptions(colo));
   // Older/unconfigured bindings keep the full managed route, before any create.
-  if (typeof key.resolveAuthorizedKey !== "function") return;
-  const principal = apiKeyPrincipal(await key.resolveAuthorizedKey(), digest);
+  const resolve = key.resolveAuthorizedKey;
+  if (typeof resolve !== "function") return;
+  const principal = apiKeyPrincipal(await Reflect.apply(resolve, key, []), digest);
   const admitted = performance.now();
   const authFinishedAt = Date.now();
   const failure = liveAgentFailure(request, principal);

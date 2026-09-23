@@ -9,6 +9,16 @@ export type CloudflareEgressBinding = Readonly<{
   fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 }>;
 
+/** Plain private discovery results. Consumers must validate and project current authority. */
+export type CloudflareAccountCatalogResult = Readonly<{ status: number; catalog: unknown }>;
+export type CloudflareAccountVaultResult = Readonly<{ status: number; vault: unknown }>;
+
+/** Metadata only; this surface never returns provider credentials or Vault secrets. */
+export type CloudflareAccountMetadataBinding = CloudflareEgressBinding & Readonly<{
+  readAccountCatalog?: (userId: string) => Promise<CloudflareAccountCatalogResult>;
+  readAccountVault?: (userId: string) => Promise<CloudflareAccountVaultResult>;
+}>;
+
 export type CloudflareEgressOptions = Readonly<{
   /** The managed Worker's private EGRESS Service Binding. */
   binding: CloudflareEgressBinding;

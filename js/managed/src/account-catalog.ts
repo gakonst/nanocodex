@@ -1,3 +1,4 @@
+import type { CloudflareAccountMetadataBinding } from "nanocodex/cloudflare/egress";
 import { accountVaultMetadata, type VaultEntry } from "./account-info";
 import { fetchResponseWithDeadline, withHardDeadline } from "./deadline";
 import { performanceCache, performanceStage } from "./performance";
@@ -81,6 +82,17 @@ export class AccountCatalogCache {
 
 /** One live read shared by runtime discovery and first-turn environment context. */
 export function accountCatalog(broker: Fetcher, userId: string): Promise<unknown> {
+  const metadata: CloudflareAccountMetadataBinding = broker;
+  // Fetch-only adapters remain compatible; RPC errors never trigger an HTTP retry.
+  // Service bindings resolve methods dynamically, so deploy egress before managed.
+  const readAccountCatalog = metadata.readAccountCatalog;
+  if (typeof readAccountCatalog === "function") {
+    return performanceStage("account.catalog", () => withHardDeadline("account catalog", 10_000, async () => {
+      const result = await Reflect.apply(readAccountCatalog, metadata, [userId]);
+      if (result.status !== 200) throw new Error(`account catalog failed with HTTP ${result.status}`);
+      return validateCatalog(result.catalog);
+    }));
+  }
   return performanceStage("account.catalog", () => fetchResponseWithDeadline(
     broker,
     `https://broker.internal/users/${encodeURIComponent(userId)}/catalog`,
@@ -89,14 +101,17 @@ export function accountCatalog(broker: Fetcher, userId: string): Promise<unknown
     "account catalog",
     async (response) => {
       if (!response.ok) throw new Error(`account catalog failed with HTTP ${response.status}`);
-      const value: unknown = await response.json();
-      if (!value || typeof value !== "object" || Array.isArray(value)
-        || !("connectors" in value) || !value.connectors || typeof value.connectors !== "object"
-        || Array.isArray(value.connectors)
-        || !("mcp_connections" in value) || !Array.isArray(value.mcp_connections)) {
-        throw new Error("account catalog returned an invalid response");
-      }
-      return value;
+      return validateCatalog(await response.json());
     },
   ));
+}
+
+function validateCatalog(value: unknown): unknown {
+  if (!value || typeof value !== "object" || Array.isArray(value)
+    || !("connectors" in value) || !value.connectors || typeof value.connectors !== "object"
+    || Array.isArray(value.connectors)
+    || !("mcp_connections" in value) || !Array.isArray(value.mcp_connections)) {
+    throw new Error("account catalog returned an invalid response");
+  }
+  return value;
 }

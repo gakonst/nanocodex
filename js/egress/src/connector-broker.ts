@@ -1,3 +1,4 @@
+import type { CloudflareAccountCatalogResult } from "nanocodex/cloudflare/egress";
 import { LINK_PATH, LINK_SCOPES, linkAuthRequest, decodeLinkDevice, decodeLinkToken, decodeLinkIdentity, linkRequestAllowed, linkBodyAllowed, redactLinkCredentials } from "./connectors/link";
 import { DurableObject } from "cloudflare:workers";
 import { credentialFilteringBody } from "./credential-stream";
@@ -277,6 +278,25 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
     });
   }
 
+  /** Private metadata RPC; keep the same live queue and Link refresh as HTTP. */
+  readCatalog(): Promise<CloudflareAccountCatalogResult> {
+    return this.#exclusive(async () => {
+      await this.#ready;
+      try {
+        return { status: 200, catalog: await this.#catalogMetadata() };
+      } catch (error) {
+        const problem = connectorFailure(error);
+        await this.#restoreDurableState();
+        return { status: problem.status, catalog: null };
+      }
+    });
+  }
+
+  async #catalogMetadata() {
+    await this.#pollLink();
+    return { connectors: this.#publicStatus(), ...this.#mcpConnections.publicMetadata() };
+  }
+
   alarm(): Promise<void> {
     return this.#exclusive(async () => {
       await this.#ready;
@@ -333,8 +353,7 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
         return json({ connectors: this.#publicStatus() }, 200);
       }
       if (request.method === "GET" && url.pathname === "/v1/catalog") {
-        await this.#pollLink();
-        return json({ connectors: this.#publicStatus(), ...this.#mcpConnections.publicMetadata() }, 200);
+        return json(await this.#catalogMetadata(), 200);
       }
       const match = url.pathname.match(
         /^\/v1\/(github|google|gmail|gdrive|slack|x|spotify|soundcloud|link)(?:\/(start|callback)|\/connections\/([A-Za-z0-9_-]{43}))?$/,

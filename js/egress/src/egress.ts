@@ -1,3 +1,4 @@
+import type { CloudflareAccountCatalogResult, CloudflareAccountVaultResult } from "nanocodex/cloudflare/egress";
 import { durablePlacementOptions, ingressColo, TRUSTED_INGRESS_HEADER, type IngressPlacement } from "nanocodex/cloudflare/durable-placement";
 import { LINK_PATH } from "./connectors/link";
 import { chatGptFailoverSocket, chatGptLimitReset } from "./chatgpt-failover";
@@ -421,11 +422,26 @@ const OPERATIONS: readonly ModelOperation[] = [
   },
 ];
 
-export default {
-  fetch(request: Request, env: EgressEnv, ctx: ExecutionContext): Promise<Response> {
-    return handleEgress(request, env, ctx);
-  },
-} satisfies ExportedHandler<EgressEnv>;
+export default class Egress extends WorkerEntrypoint<EgressEnv> {
+  fetch(request: Request): Promise<Response> {
+    return handleEgress(request, this.env, this.ctx);
+  }
+
+  /** Service-binding control reads carry the same caller-selected owner as HTTP. */
+  readAccountCatalog(userId: unknown): Promise<CloudflareAccountCatalogResult> {
+    if (typeof userId !== "string" || !USER_ID.test(userId)) {
+      return Promise.resolve({ status: 400, catalog: null });
+    }
+    return connectorBroker(this.env, userId).readCatalog();
+  }
+
+  readAccountVault(userId: unknown): Promise<CloudflareAccountVaultResult> {
+    if (typeof userId !== "string" || !USER_ID.test(userId)) {
+      return Promise.resolve({ status: 400, vault: null });
+    }
+    return userBroker(this.env, userId).readVaultMetadata();
+  }
+}
 
 export function handleEgress(
   request: Request,

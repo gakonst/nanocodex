@@ -4546,7 +4546,10 @@ export class DurableAgentSession extends DurableComputerSession {
       subject: this.ctx.id.toString(),
       ...(this.env.MANAGED_AGENT_DIRECT_CREDENTIALS === "true" ? { strategy: "session_v1" as const } : {}),
     };
-    await this.ctx.storage.put(CREDENTIAL_BINDING_KEY, credentialBinding);
+    // Keep ownership and initialization in the same synchronous write batch.
+    // The SQLite output gate still confirms both before the upgrade, registry
+    // publication, or provider traffic can leave this object.
+    this.ctx.storage.kv.put(CREDENTIAL_BINDING_KEY, credentialBinding);
     this.#credentialBinding = credentialBinding;
     const initialized = this.#initializeSession({
       session_id: sessionId,

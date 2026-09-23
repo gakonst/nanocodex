@@ -1,3 +1,4 @@
+import type { CloudflareAccountMetadataBinding } from "nanocodex/cloudflare/egress";
 import { isVmFactoryName } from "./vm-factory-name";
 import { connectorToolMetadata } from "./connector-tools";
 import { performanceStage } from "./performance";
@@ -16,9 +17,7 @@ import {
 const MAX_VAULT_ENTRIES = 100;
 const VAULT_ID = /^[A-Za-z0-9_-]{22,64}$/;
 
-type BrokerBinding = Readonly<{
-  fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
-}>;
+type BrokerBinding = CloudflareAccountMetadataBinding;
 
 export type VaultEntry =
   | Readonly<{
@@ -279,6 +278,18 @@ export async function accountVaultMetadata(
   signal?: AbortSignal,
 ): Promise<readonly VaultEntry[]> {
   signal?.throwIfAborted();
+  const project = (value: unknown) => {
+    const vault = validatedVaultEntries(value);
+    if (vault === undefined) throw new Error("account vault returned invalid metadata");
+    signal?.throwIfAborted();
+    return Object.freeze(vault.map(entry => Object.freeze(entry)));
+  };
+  const readAccountVault = binding.readAccountVault;
+  if (typeof readAccountVault === "function") {
+    const result = await Reflect.apply(readAccountVault, binding, [userId]);
+    if (result.status !== 200) throw new Error(`account vault failed with HTTP ${result.status}`);
+    return project(result.vault);
+  }
   const url = `https://broker.internal/users/${encodeURIComponent(userId)}/credentials/vault`;
   const response = signal === undefined
     ? await binding.fetch(url)
@@ -286,10 +297,7 @@ export async function accountVaultMetadata(
   try {
     if (!response.ok) throw new Error(`account vault failed with HTTP ${response.status}`);
     const value: unknown = await response.json();
-    const vault = isRecord(value) ? validatedVaultEntries(value.vault) : undefined;
-    if (vault === undefined) throw new Error("account vault returned invalid metadata");
-    signal?.throwIfAborted();
-    return Object.freeze(vault.map(entry => Object.freeze(entry)));
+    return project(isRecord(value) ? value.vault : undefined);
   } finally {
     if (response.body !== null && !response.bodyUsed) await response.body.cancel();
   }

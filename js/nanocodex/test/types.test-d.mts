@@ -694,3 +694,16 @@ const startupEnvironment: AgentEnvironment = projectEnvironment({
   connectorAccounts: {}, identity: {}, stablecoins: [], authorizations: [], vault: [],
 }, { runtime: "test", default_cwd: "/brain" });
 contextData("environment", startupEnvironment);
+
+// Metadata service bindings remain fetch-compatible and expose only validated unknown data.
+const metadataBinding: import("nanocodex/cloudflare/egress").CloudflareAccountMetadataBinding = {
+  ...cloudflareBinding,
+  async readAccountCatalog(userId) {
+    void userId;
+    return { status: 200, catalog: { connectors: {}, mcp_connections: [] } };
+  },
+  async readAccountVault() { return { status: 200, vault: [] }; },
+};
+const fetchOnlyMetadata: import("nanocodex/cloudflare/egress").CloudflareAccountMetadataBinding = cloudflareBinding;
+void metadataBinding;
+void fetchOnlyMetadata;
