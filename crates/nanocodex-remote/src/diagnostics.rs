@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 #[derive(Default)]
 pub(crate) struct Budget(AtomicUsize);
 impl Budget {
-    fn take(&self) -> bool {
+    pub(crate) fn take(&self) -> bool {
         self.0
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 (n < 32).then_some(n + 1)

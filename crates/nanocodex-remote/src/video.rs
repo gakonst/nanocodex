@@ -12,7 +12,10 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tokio::{io::AsyncReadExt, sync::mpsc};
+use tokio::{
+    io::AsyncReadExt,
+    sync::{broadcast, mpsc},
+};
 use webrtc::{
     api::{
         APIBuilder, interceptor_registry::register_default_interceptors, media_engine::MediaEngine,
@@ -20,14 +23,16 @@ use webrtc::{
     data_channel::{RTCDataChannel, data_channel_init::RTCDataChannelInit},
     ice_transport::{ice_candidate::RTCIceCandidateInit, ice_server::RTCIceServer},
     interceptor::registry::Registry,
-    media::Sample,
     peer_connection::{
         RTCPeerConnection, configuration::RTCConfiguration,
         peer_connection_state::RTCPeerConnectionState,
         sdp::session_description::RTCSessionDescription,
     },
     rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
-    track::track_local::track_local_static_sample::TrackLocalStaticSample,
+    track::track_local::{
+        track_local_static_rtp::TrackLocalStaticRTP,
+        track_local_static_sample::TrackLocalStaticSample,
+    },
 };
 
 use crate::Result;
@@ -196,6 +201,7 @@ struct Peer {
     _connection: Connection,
     control: Arc<RTCDataChannel>,
     _rtcp: Vec<Task>,
+    _media: Task,
     signals: mpsc::Sender<Value>,
     _signaling: Task,
     answered: Arc<AtomicBool>,
@@ -216,8 +222,14 @@ struct Motion {
     latest: std::sync::Mutex<HashMap<String, Event>>,
     changed: tokio::sync::Notify,
 }
+#[derive(Clone)]
+struct EncodedFrame {
+    data: bytes::Bytes,
+    captured_at: Instant,
+}
+
 pub struct Video {
-    track: Arc<TrackLocalStaticSample>,
+    frames: broadcast::Sender<EncodedFrame>,
     audio: Option<crate::audio::Audio>,
     microphone_factory: Option<SinkFactory>,
     peers: HashMap<String, Peer>,
@@ -238,52 +250,42 @@ impl Video {
         microphone_factory: Option<SinkFactory>,
     ) -> Result<Self> {
         let capture = tokio::time::timeout(Duration::from_secs(8), source()).await??;
-        let track = Arc::new(TrackLocalStaticSample::new(
-            RTCRtpCodecCapability {
-                mime_type: "video/H264".into(),
-                clock_rate: 90_000,
-                sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e034".into(),
-                ..Default::default()
-            },
-            "desktop".into(),
-            "nanocodex".into(),
-        ));
+        // Complete encoded frames are shared without copying payloads. Each
+        // viewer owns its own packetizer and sender, so network backpressure
+        // cannot hold capture or another viewer's RTP stream.
+        let (frames, _) = broadcast::channel::<EncodedFrame>(2);
         let (events, incoming) = mpsc::channel(128);
         let failed = Arc::new(AtomicBool::new(false));
         let (ready, waiting) = tokio::sync::oneshot::channel();
-        let writer = track.clone();
+        let captured = frames.clone();
         let failure = failed.clone();
         let task = Task(tokio::spawn(async move {
             let _owner = capture.owner;
             let mut ready = Some(ready);
             let mut packets = packet_stream(capture.data);
-            let mut previous = Instant::now();
+            let mut phase = "capture_read";
+            let mut packet_bytes = 0usize;
             let result: Result<()> = async {
                 loop {
+                    phase = "capture_read";
                     let data = tokio::time::timeout(Duration::from_secs(5), packets.try_next())
                         .await??
                         .ok_or("encoder stopped")?;
+                    packet_bytes = data.len();
+                    phase = "packet_validation";
                     crate::frames::validate_packet(&data)?;
-                    let now = Instant::now();
-                    let duration = now.duration_since(previous).max(Duration::from_micros(1));
-                    previous = now;
-                    tokio::time::timeout(
-                        Duration::from_millis(250),
-                        writer.write_sample(&Sample {
-                            data,
-                            duration,
-                            ..Default::default()
-                        }),
-                    )
-                    .await??;
+                    let _ = captured.send(EncodedFrame {
+                        data,
+                        captured_at: Instant::now(),
+                    });
                     if let Some(ready) = ready.take() {
                         let _ = ready.send(());
                     }
                 }
             }
             .await;
-            if result.is_err() {
+            if let Err(error) = result {
+                tracing::warn!(target: "nanocodex2", stage = "screen.video.failed", phase, packet_bytes, timed_out = error.downcast_ref::<tokio::time::error::Elapsed>().is_some(), webrtc_error = ?error.downcast_ref::<webrtc::Error>().map(std::mem::discriminant));
                 failure.store(true, Ordering::Release);
             }
         }));
@@ -300,7 +302,7 @@ impl Video {
             None
         };
         Ok(Self {
-            track,
+            frames,
             audio,
             microphone_factory,
             peers: HashMap::new(),
@@ -422,7 +424,7 @@ impl Video {
             return Err("viewer capacity or duplicate".into());
         }
         let builder = PeerBuilder {
-            track: self.track.clone(),
+            frames: self.frames.clone(),
             audio: self.audio.as_ref().map(|a| a.track.clone()),
             microphone_factory: self.microphone_factory.clone(),
             motion: self.motion.clone(),
@@ -444,7 +446,7 @@ impl Video {
     }
 }
 struct PeerBuilder {
-    track: Arc<TrackLocalStaticSample>,
+    frames: broadcast::Sender<EncodedFrame>,
     audio: Option<Arc<TrackLocalStaticSample>>,
     microphone_factory: Option<SinkFactory>,
     motion: Arc<Motion>,
@@ -452,11 +454,46 @@ struct PeerBuilder {
 }
 impl PeerBuilder {
     async fn build(self, id: &str, servers: Vec<RTCIceServer>) -> Result<(Peer, Value)> {
+        let track = Arc::new(TrackLocalStaticRTP::new(
+            RTCRtpCodecCapability {
+                mime_type: "video/H264".into(),
+                clock_rate: 90_000,
+                sdp_fmtp_line:
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e034".into(),
+                ..Default::default()
+            },
+            "desktop".into(),
+            "nanocodex".into(),
+        ));
         let (peer_events, peer_incoming) = mpsc::channel(128);
         let active = Arc::new(AtomicBool::new(true));
         let mut engine = MediaEngine::default();
         engine.register_default_codecs()?;
-        let registry = register_default_interceptors(Registry::new(), &mut engine)?;
+        let mut registry = Registry::new();
+        let media_events = peer_events.clone();
+        let media_failure = self.failed.clone();
+        let media_viewer = id.to_owned();
+        let media_retired = AtomicBool::new(false);
+        let media_fault: Arc<dyn Fn(&'static str) + Send + Sync> = Arc::new(move |outcome| {
+            if media_retired.swap(true, Ordering::AcqRel) {
+                return;
+            }
+            tracing::warn!(target: "nanocodex2", stage = "screen.video.peer_failed", outcome);
+            if media_events
+                .try_send(Event {
+                    value: json!({"type":"viewer_left","viewer_id":media_viewer}),
+                    outgoing: false,
+                    created: Instant::now(),
+                    active: None,
+                })
+                .is_err_and(|error| matches!(error, mpsc::error::TrySendError::Full(_)))
+            {
+                media_failure.store(true, Ordering::Release);
+            }
+        });
+        // Register before NACK so retransmissions share the same bounded writer.
+        registry.add(Box::new(crate::media_guard::Guard(media_fault.clone())));
+        let registry = register_default_interceptors(registry, &mut engine)?;
         let registry = crate::playout::register(&mut engine, registry)?;
         let mut settings = webrtc::api::setting_engine::SettingEngine::default();
         settings.set_include_loopback_candidate(
@@ -513,7 +550,19 @@ impl PeerBuilder {
         let owned = Connection(connection.clone());
         let microphone = Arc::new(Microphone::install(&connection, self.microphone_factory));
         let diagnostics = Arc::new(crate::diagnostics::Budget::default());
-        let sender = connection.add_track(self.track.clone()).await?;
+        let path_diagnostics = diagnostics.clone();
+        connection
+            .dtls_transport()
+            .ice_transport()
+            .on_selected_candidate_pair_change(Box::new(move |pair| {
+                if path_diagnostics.take() {
+                    tracing::info!(target: "nanocodex2", stage = "screen.network.path",
+                    local_type = %pair.local.typ, local_protocol = %pair.local.protocol,
+                    remote_type = %pair.remote.typ, remote_protocol = %pair.remote.protocol);
+                }
+                Box::pin(async {})
+            }));
+        let sender = connection.add_track(track.clone()).await?;
         let rtcp = Task(tokio::spawn(async move {
             while sender.read_rtcp().await.is_ok() {}
         }));
@@ -578,8 +627,9 @@ impl PeerBuilder {
                         created: Instant::now(),
                         active: None,
                     })
-                    .is_err()
+                    .is_err_and(|error| matches!(error, mpsc::error::TrySendError::Full(_)))
                 {
+                    tracing::warn!(target: "nanocodex2", stage = "screen.video.failed", phase = "peer_event_queue");
                     failure.store(true, Ordering::Release);
                 }
                 Box::pin(async {})
@@ -613,9 +663,10 @@ impl PeerBuilder {
                         created: Instant::now(),
                         active: None,
                     })
-                    .is_err()
+                    .is_err_and(|error| matches!(error, mpsc::error::TrySendError::Full(_)))
                     && !motion
                 {
+                    tracing::warn!(target: "nanocodex2", stage = "screen.video.failed", phase = "peer_event_queue");
                     failed.store(true, Ordering::Release);
                 }
                 Box::pin(async {})
@@ -634,8 +685,9 @@ impl PeerBuilder {
                         created: Instant::now(),
                         active: None,
                     })
-                    .is_err()
+                    .is_err_and(|error| matches!(error, mpsc::error::TrySendError::Full(_)))
                 {
+                    tracing::warn!(target: "nanocodex2", stage = "screen.video.failed", phase = "peer_event_queue");
                     failed.store(true, Ordering::Release);
                 }
             }
@@ -646,7 +698,13 @@ impl PeerBuilder {
         let viewer = id.to_owned();
         let revoke_microphone = Arc::downgrade(&microphone);
         let peer_diagnostics = diagnostics.clone();
+        let connected = Arc::new(AtomicBool::new(false));
+        let connection_ready = connected.clone();
         connection.on_peer_connection_state_change(Box::new(move |state| {
+            connection_ready.store(
+                state == RTCPeerConnectionState::Connected,
+                Ordering::Release,
+            );
             peer_diagnostics.event(
                 "peer_connection",
                 match state {
@@ -681,7 +739,7 @@ impl PeerBuilder {
                     created: Instant::now(),
                     active: None,
                 })
-                .is_err()
+                .is_err_and(|error| matches!(error, mpsc::error::TrySendError::Full(_)))
             {
                 failed.store(true, Ordering::Release);
             }
@@ -698,7 +756,7 @@ impl PeerBuilder {
                     created: Instant::now(),
                     active: None,
                 })
-                .is_err()
+                .is_err_and(|error| matches!(error, mpsc::error::TrySendError::Full(_)))
             {
                 failed.store(true, Ordering::Release);
             }
@@ -743,19 +801,37 @@ impl PeerBuilder {
                             created: Instant::now(),
                             active: None,
                         })
-                        .is_err()
+                        .is_err_and(|error| matches!(error, mpsc::error::TrySendError::Full(_)))
                     {
+                        tracing::warn!(target: "nanocodex2", stage = "screen.video.failed", phase = "peer_event_queue");
                         failed.store(true, Ordering::Release);
                     }
                     break;
                 }
             }
         }));
+        let mut packets = crate::video_packets::VideoPackets::new();
+        let media = Task(tokio::spawn(forward_frames(
+            self.frames.subscribe(),
+            connected,
+            media_fault,
+            move |frame| {
+                let packets = packets.packetize(&frame.data, frame.captured_at);
+                let track = track.clone();
+                async move {
+                    for packet in packets? {
+                        track.write_rtp_with_extensions(&packet, &[]).await?;
+                    }
+                    Ok(())
+                }
+            },
+        )));
         let peer = Peer {
             microphone,
             _connection: owned,
             control,
             _rtcp: rtcp,
+            _media: media,
             signals,
             _signaling: signaling,
             answered,
@@ -771,6 +847,63 @@ impl PeerBuilder {
         ))
     }
 }
+// A resumed/new decoder must receive parameter sets with its first IDR.
+// Every native encoder repeats headers; an IDR alone is not sufficient.
+fn recovery_keyframe(frame: &[u8]) -> bool {
+    let mut found = 0u8;
+    for nal in frame.windows(4).filter(|nal| nal[..3] == [0, 0, 1]) {
+        match nal[3] & 31 {
+            7 => found |= 1,
+            8 => found |= 2,
+            5 => return found == 3,
+            _ => {}
+        }
+    }
+    false
+}
+
+async fn forward_frames<F, Fut>(
+    mut frames: broadcast::Receiver<EncodedFrame>,
+    connected: Arc<AtomicBool>,
+    fault: Arc<dyn Fn(&'static str) + Send + Sync>,
+    mut write: F,
+) where
+    F: FnMut(EncodedFrame) -> Fut,
+    Fut: std::future::Future<Output = webrtc::error::Result<()>>,
+{
+    let mut need_keyframe = true;
+    loop {
+        let frame = match frames.recv().await {
+            Ok(frame) => frame,
+            Err(broadcast::error::RecvError::Lagged(_)) => {
+                need_keyframe = true;
+                continue;
+            }
+            Err(broadcast::error::RecvError::Closed) => break,
+        };
+        if !connected.load(Ordering::Acquire) {
+            need_keyframe = true;
+            continue;
+        }
+        if need_keyframe && !recovery_keyframe(&frame.data) {
+            continue;
+        }
+        need_keyframe = false;
+        let result = tokio::time::timeout(Duration::from_secs(1), write(frame)).await;
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(_)) => {
+                fault("frame_write_error");
+                break;
+            }
+            Err(_) => {
+                fault("frame_write_timeout");
+                break;
+            }
+        }
+    }
+}
+
 async fn apply_signal(
     connection: &RTCPeerConnection,
     answered: &AtomicBool,
@@ -849,6 +982,176 @@ mod tests {
         assert_eq!(actual.as_ptr(), expected.as_ptr());
         assert_eq!(actual, expected);
         assert!(packets.try_next().await.unwrap().is_none());
+    }
+
+    fn captured(id: u8, keyframe: bool) -> EncodedFrame {
+        let mut data = Vec::new();
+        if keyframe {
+            data.extend_from_slice(&[0, 0, 1, 0x67, 42, 0, 0, 0, 1, 0x68, 42]);
+        }
+        data.extend_from_slice(&[0, 0, 0, 1, if keyframe { 0x65 } else { 0x41 }, id]);
+        EncodedFrame {
+            data: data.into(),
+            captured_at: Instant::now(),
+        }
+    }
+    #[test]
+    fn recovery_requires_idr_and_both_parameter_sets_with_mixed_start_codes() {
+        assert!(recovery_keyframe(&captured(1, true).data));
+        assert!(!recovery_keyframe(&captured(2, false).data));
+        assert!(!recovery_keyframe(&[0, 0, 1, 0x65, 42]));
+        assert!(!recovery_keyframe(&[0, 0, 1, 0x67, 42, 0, 0, 1, 0x65, 42]));
+        assert!(!recovery_keyframe(&[0, 0, 1, 0x68, 42, 0, 0, 1, 0x65, 42]));
+    }
+    #[tokio::test(start_paused = true)]
+    async fn a_slow_viewer_cannot_hold_capture_or_another_viewer_and_recovers_at_keyframes() {
+        let (frames, _) = broadcast::channel(2);
+        let (fast_tx, mut fast_rx) = mpsc::channel(16);
+        let (slow_tx, mut slow_rx) = mpsc::channel(16);
+        let gate = Arc::new(tokio::sync::Notify::new());
+        let entered = Arc::new(tokio::sync::Notify::new());
+        let slow_gate = gate.clone();
+        let slow_entered = entered.clone();
+        let connected = Arc::new(AtomicBool::new(true));
+        let slow = Task(tokio::spawn(forward_frames(
+            frames.subscribe(),
+            connected.clone(),
+            Arc::new(|_| panic!("slow fixture retired")),
+            move |sample| {
+                let gate = slow_gate.clone();
+                let entered = slow_entered.clone();
+                let sent = slow_tx.clone();
+                async move {
+                    let id = *sample.data.last().unwrap();
+                    if id == 1 {
+                        entered.notify_one();
+                        gate.notified().await;
+                    }
+                    sent.send(id).await.unwrap();
+                    Ok(())
+                }
+            },
+        )));
+        let fast = Task(tokio::spawn(forward_frames(
+            frames.subscribe(),
+            connected,
+            Arc::new(|_| panic!("healthy fixture retired")),
+            move |sample| {
+                let sent = fast_tx.clone();
+                async move {
+                    sent.send(*sample.data.last().unwrap()).await.unwrap();
+                    Ok(())
+                }
+            },
+        )));
+        assert!(frames.send(captured(1, true)).is_ok());
+        assert_eq!(fast_rx.recv().await, Some(1));
+        entered.notified().await;
+        for id in 2..=6 {
+            assert!(frames.send(captured(id, false)).is_ok());
+            assert_eq!(fast_rx.recv().await, Some(id));
+        }
+        gate.notify_one();
+        assert_eq!(slow_rx.recv().await, Some(1));
+        assert!(frames.send(captured(7, false)).is_ok());
+        assert_eq!(fast_rx.recv().await, Some(7));
+        assert!(frames.send(captured(8, true)).is_ok());
+        assert_eq!(fast_rx.recv().await, Some(8));
+        assert_eq!(
+            slow_rx.recv().await,
+            Some(8),
+            "lagged viewer resumed from an undecodable delta frame"
+        );
+        drop((slow, fast));
+    }
+    #[tokio::test(start_paused = true)]
+    async fn stalled_frame_retires_only_its_peer_and_initial_deltas_are_skipped() {
+        let (frames, _) = broadcast::channel(2);
+        let failures = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let failed = failures.clone();
+        let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let written = calls.clone();
+        let task = Task(tokio::spawn(forward_frames(
+            frames.subscribe(),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(move |_| {
+                failed.fetch_add(1, Ordering::Relaxed);
+            }),
+            move |_| {
+                written.fetch_add(1, Ordering::Relaxed);
+                std::future::pending::<webrtc::error::Result<()>>()
+            },
+        )));
+        assert!(frames.send(captured(1, false)).is_ok());
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        assert!(frames.send(captured(2, true)).is_ok());
+        tokio::task::yield_now().await;
+        assert_eq!(calls.load(Ordering::Relaxed), 1);
+        tokio::time::advance(Duration::from_secs(1)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(failures.load(Ordering::Relaxed), 1);
+        assert_eq!(frames.receiver_count(), 0);
+        drop(task);
+    }
+
+    #[tokio::test]
+    async fn dropping_peer_media_cancels_its_pending_writer() {
+        let (frames, _) = broadcast::channel(2);
+        let (entered, started) = tokio::sync::oneshot::channel();
+        let (cancelled, observed) = tokio::sync::oneshot::channel::<()>();
+        let mut owned = Some((entered, cancelled));
+        let task = Task(tokio::spawn(forward_frames(
+            frames.subscribe(),
+            Arc::new(AtomicBool::new(true)),
+            Arc::new(|_| panic!("dropped peer must not report a failure")),
+            move |_| {
+                let (entered, cancelled) = owned.take().unwrap();
+                async move {
+                    let _cancelled_on_drop = cancelled;
+                    let _ = entered.send(());
+                    std::future::pending::<webrtc::error::Result<()>>().await
+                }
+            },
+        )));
+        assert!(frames.send(captured(1, true)).is_ok());
+        started.await.unwrap();
+        drop(task);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), observed)
+                .await
+                .unwrap()
+                .is_err()
+        );
+        assert_eq!(frames.receiver_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn closing_a_removed_peer_does_not_fail_the_shared_video() {
+        crate::tls::ensure_crypto_provider();
+        let failed = Arc::new(AtomicBool::new(false));
+        let (frames, _) = broadcast::channel(2);
+        let builder = PeerBuilder {
+            frames,
+            audio: None,
+            microphone_factory: None,
+            motion: Arc::new(Motion::default()),
+            failed: failed.clone(),
+        };
+        let (mut peer, _) = builder.build("fixture-viewer", Vec::new()).await.unwrap();
+        // Removal drops this viewer's receiver before the asynchronously owned
+        // peer finishes closing. Closed queues are expected during teardown;
+        // they are not reliable-input overflow in another live viewer.
+        peer.active.store(false, Ordering::Release);
+        peer.incoming.take();
+        tokio::time::timeout(Duration::from_secs(2), peer._connection.close())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(
+            !failed.load(Ordering::Acquire),
+            "peer teardown poisoned shared video"
+        );
     }
 
     #[cfg(unix)]

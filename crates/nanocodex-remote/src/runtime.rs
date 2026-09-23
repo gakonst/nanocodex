@@ -264,7 +264,7 @@ enum SessionError {
     BrokerClosed(u16, &'static str),
 }
 impl SessionError {
-    fn category(&self) -> &'static str {
+    const fn category(&self) -> &'static str {
         match self {
             Self::Closed => "session_closed",
             Self::Replaced => "host_replaced",
@@ -276,13 +276,13 @@ impl SessionError {
             Self::BrokerClosed(_, reason) => reason,
         }
     }
-    fn http_status(&self) -> Option<u16> {
+    const fn http_status(&self) -> Option<u16> {
         match self {
             Self::Renewal(outcome) => outcome.status,
             _ => None,
         }
     }
-    fn close_code(&self) -> Option<u16> {
+    const fn close_code(&self) -> Option<u16> {
         match self {
             Self::BrokerClosed(code, _) => Some(*code),
             _ => None,
@@ -491,6 +491,23 @@ async fn release(
     }
     Ok(())
 }
+async fn viewer_left(
+    viewer: &str,
+    lease: &mut Lease,
+    backend: &Backend,
+    socket: &mut Socket,
+) -> Result<(), SessionError> {
+    // Retire the dead transport before native lease cleanup. Revocation must
+    // not await a control acknowledgement on the failed peer and tear down
+    // unrelated viewers.
+    if let Some(video) = &mut socket.video {
+        video.remove(viewer);
+    }
+    if lease.owner() == viewer {
+        release(lease, backend, socket).await?;
+    }
+    Ok(())
+}
 // The session owns these separately borrowed transport and lifecycle resources.
 #[allow(clippy::too_many_arguments)]
 async fn session(
@@ -635,10 +652,10 @@ async fn session(
             (viewer, deadline, response) = preparations.next() => {
                 let video = socket.video.as_mut().ok_or(SessionError::Closed)?;
                 let offer: CoreResult<()> = (|| {
-                    let response = response.map_err(|error| {
-                        diagnostics.event("ice_fetch", "deadline_exceeded", None); error
-                    })?.map_err(|error| {
-                        diagnostics.event("ice_fetch", "request_or_decode_failed", error.status().map(|status| status.as_u16())); error
+                    let response = response.inspect_err(|_| {
+                        diagnostics.event("ice_fetch", "deadline_exceeded", None);
+                    })?.inspect_err(|error| {
+                        diagnostics.event("ice_fetch", "request_or_decode_failed", error.status().map(|status| status.as_u16()));
                     })?;
                     video.add(&viewer, ice_servers(&response)?, deadline)
                 })();
@@ -762,8 +779,7 @@ async fn session(
                         preparations.remove(viewer);
                         viewers.remove(viewer);
                         pending_frames.remove(viewer);
-                        if lease.owner()==viewer{release(&mut lease,backend,&mut socket).await?;}
-                        if let Some(video)=&mut socket.video{video.remove(viewer);}
+                        viewer_left(viewer,&mut lease,backend,&mut socket).await?;
                     },
                     "signal" if preparations.contains(viewer)=>{
                         diagnostics.event("signal", "before_offer", None);
@@ -1202,6 +1218,144 @@ mod tests {
         assert_eq!(offer["signal"]["type"], "offer");
         assert_eq!(offer["viewer_id"], "v");
         publisher.shutdown().await.unwrap();
+    }
+
+    async fn departing_owner_fixture() -> (Socket, TestWire, Lease) {
+        let source: VideoSource = Arc::new(|| {
+            Box::pin(async {
+                Ok(crate::capture::Capture::packets(
+                    futures_util::stream::unfold(
+                        tokio::time::interval(Duration::from_millis(20)),
+                        |mut tick| async move {
+                            tick.tick().await;
+                            Some((Ok(bytes::Bytes::from_static(&[0, 0, 0, 1, 0x65, 1])), tick))
+                        },
+                    ),
+                    None,
+                ))
+            })
+        });
+        let mut video = Video::start(&source, None).await.unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        for viewer in ["owner", "survivor"] {
+            video.add(viewer, Vec::new(), deadline).unwrap();
+        }
+        // Polling next installs the real peers; add alone only schedules setup.
+        // Leave both offers unanswered so control sends fail deterministically.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut offered = HashSet::new();
+            while offered.len() < 2 {
+                let event = video.next().await.expect("peer preparation ended");
+                assert!(event.outgoing, "peer preparation failed: {}", event.value);
+                if event.value["signal"]["type"] == "offer" {
+                    let viewer = event.value["viewer_id"].as_str().unwrap();
+                    assert!(matches!(viewer, "owner" | "survivor"));
+                    assert!(offered.insert(viewer.to_owned()));
+                }
+            }
+        })
+        .await
+        .expect("peer offers did not complete");
+        for viewer in ["owner", "survivor"] {
+            assert!(
+                video
+                    .control(viewer, &json!({"type":"revoked"}))
+                    .await
+                    .is_err(),
+                "fixture peer must be installed with a failing control channel"
+            );
+        }
+        assert!(!video.failed());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (client, server) = tokio::join!(
+            tokio::net::TcpStream::connect(listener.local_addr().unwrap()),
+            listener.accept(),
+        );
+        let wire = Wire::from_raw_socket(
+            tokio_tungstenite::MaybeTlsStream::Plain(client.unwrap()),
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let broker = TestWire::from_raw_socket(
+            server.unwrap().0,
+            tokio_tungstenite::tungstenite::protocol::Role::Server,
+            None,
+        )
+        .await;
+        let mut lease = Lease::default();
+        lease.acquire("owner");
+        let mut microphone = MicrophoneControl::default();
+        microphone.refreshed(Instant::now());
+        let ack = microphone
+            .request(
+                &lease,
+                "owner",
+                &json!({"generation":lease.generation(),"requestID":"mic","enabled":true}),
+                |enabled, _| enabled,
+            )
+            .unwrap();
+        assert_eq!(ack["data"]["enabled"], true);
+        assert!(microphone.active.is_some());
+        (
+            Socket {
+                wire,
+                video: Some(video),
+                microphone,
+            },
+            broker,
+            lease,
+        )
+    }
+
+    #[tokio::test]
+    async fn departed_owner_is_removed_before_release_acknowledgments() {
+        // Native failure must still close the session after the peer is gone.
+        for status in ["ok", "unavailable"] {
+            let (mut socket, _broker, mut lease) = departing_owner_fixture().await;
+            let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorded = calls.clone();
+            let backend: Backend = Arc::new(move |input| {
+                recorded.lock().unwrap().push(input);
+                Box::pin(async move { Ok(json!({"status":status})) })
+            });
+
+            let result = viewer_left("owner", &mut lease, &backend, &mut socket).await;
+            if status == "ok" {
+                assert!(
+                    result.is_ok(),
+                    "dead peer acknowledgments closed the session"
+                );
+            } else {
+                assert!(matches!(result, Err(SessionError::Closed)));
+            }
+            assert!(lease.owner().is_empty());
+            assert!(lease.generation().is_empty());
+            assert!(socket.microphone.active.is_none());
+            assert!(socket.microphone.deadline.is_none());
+            assert_eq!(*calls.lock().unwrap(), [json!({"action":"release"})]);
+            let video = socket.video.as_mut().unwrap();
+            assert!(!video.failed(), "one departure poisoned the media pipeline");
+            assert!(
+                video
+                    .control("owner", &json!({"type":"revoked"}))
+                    .await
+                    .is_ok()
+            );
+            assert!(
+                video
+                    .control("survivor", &json!({"type":"revoked"}))
+                    .await
+                    .is_err(),
+                "the other unnegotiated peer must remain installed"
+            );
+            // Repeated departure notifications must not release native input twice.
+            viewer_left("owner", &mut lease, &backend, &mut socket)
+                .await
+                .unwrap();
+            assert_eq!(*calls.lock().unwrap(), [json!({"action":"release"})]);
+        }
     }
 
     #[tokio::test]

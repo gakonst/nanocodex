@@ -34,9 +34,9 @@ impl ScreenPublisher {
         } else {
             broadcast
         };
-        let require_video = cfg!(target_os = "macos") && video.is_some();
+        let macos_video = cfg!(target_os = "macos") && video.is_some();
         let video = if std::env::var("NANOCODEX_SCREEN_TRANSPORT").as_deref() == Ok("frames-v1") {
-            if require_video {
+            if macos_video {
                 return Err(error(
                     "macOS remote viewing requires WebRTC; remove NANOCODEX_SCREEN_TRANSPORT=frames-v1",
                 ));
@@ -45,6 +45,10 @@ impl ScreenPublisher {
         } else {
             video
         };
+        // A recovering Linux capture must return to WebRTC instead of keeping
+        // an accidental screenshot-only session after a transient helper failure.
+        // The explicit frames-v1 override above remains available on Linux.
+        let require_video = video.is_some() && cfg!(any(target_os = "macos", target_os = "linux"));
         let backend: runtime::Backend = Arc::new(move |value| {
             let result = backend(value);
             Box::pin(async move { result.await.map_err(|error| Box::new(error) as _) })
