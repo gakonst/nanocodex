@@ -1,17 +1,20 @@
 # CI job selection
 
-The main CI workflow always runs formatting/Clippy/docs, dependency policy,
-WASM, browser binding builds/typechecks, JavaScript app builds, and Actions CodeQL.
-Automatic CI tests are temporarily paused with literal false conditions. Test
-definitions remain available for deliberate re-enabling; the workspace Rust test
-job is explicitly skipped. Builds, lint, typechecks, and artifact integrity checks
-remain active.
-The selector controls only the expensive native Hand/Docker matrix, native voice,
-and Python wheel jobs. Selection is independent of the temporary test pause.
+The main workflow selects native Hand/Docker, voice, Python, Rust quality,
+WASM artifacts, JS bindings, JS apps, package preview, policy and Actions analysis
+independently. Managed TS changes retain JS binding checks without Rust quality,
+native matrices or account UI builds. Shared SDK JS changes validate consumers and
+packages without native/voice/Python builds. Apple Swift changes use the separate
+Apple workflow, whose Mac and iOS jobs are also selected independently.
+
+WASM artifact need is separate from changed Rust inputs: a JS consumer can restore
+verified WASM without Rust setup or Clippy in the bindings job. Automatic CI tests
+are temporarily paused with literal false conditions; builds, lint, typechecks and
+artifact integrity remain active when their inputs are selected.
 
 `select-jobs.mjs` compares the complete PR diff against its merge base, or the
 complete before/after range for a push. Deletions and both sides of renames count.
-Unknown paths, shared Rust/build inputs, an unavailable diff, scheduled runs, and
+Unknown paths, shared build manifests/locks, an unavailable diff, scheduled runs, and
 manual dispatches select all groups. Keep the allowlist conservative when adding
 new cross-language dependencies. The known CUA bridge scripts and their tests
 select the native matrix (the scripts are embedded in the Hand helper), but not
@@ -24,7 +27,8 @@ the temporary test pause also applies to scheduled and manual CI runs.
 Scheduled, manual, PR, and push concurrency groups are separate so a push cannot
 cancel the daily full-matrix run. The final `ci success` check requires every
 selected job to succeed and every unselected job to be explicitly skipped;
-the paused Rust test job must be skipped. Missing outputs or unexpected skips
+the paused Rust test job must be skipped. Required package-preview publication is
+selected only in its supported upstream repository. Missing outputs or unexpected skips
 fail the gate.
 
 Run `node --test scripts/ci/*.test.mjs` and `actionlint -shellcheck= -ignore 'constant expression.*false' .github/workflows/ci.yml`

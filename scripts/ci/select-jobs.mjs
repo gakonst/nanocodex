@@ -3,15 +3,22 @@ import { appendFileSync, readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 
-const full = () => ({ native: true, voice: true, python: true });
-const none = () => ({ native: false, voice: false, python: false });
-// These app/UI sources are not inputs to the gated native or Python jobs.
-// Shared JS runtime packages deliberately remain unknown (and run everything).
-const webPackages = new Set([
-  "account", "chief-of-staff", "connect-dialog",
-  "connect-playground", "egress", "email", "managed",
-  "nanocodex-connect-ui", "nanocodex-react", "nanocodex-terminal", "x-api",
+// WASM means an artifact is needed, including cache reuse for JS-only checks.
+// Rust separately controls workspace quality and WASM-target Clippy.
+const families = ["native", "voice", "python", "rust", "wasm", "bindings", "apps", "preview", "policy", "codeql"];
+const full = () => Object.fromEntries(families.map(name => [name, true]));
+const none = () => Object.fromEntries(families.map(name => [name, false]));
+const appPackages = new Set([
+  "account", "chief-of-staff", "connect-dialog", "connect-playground", "email",
 ]);
+const bindingPackages = new Set(["managed", "egress", "x-api", "connect-api", "nanocodex-computer"]);
+const sharedPackages = new Set([
+  "nanocodex", "nanocodex-tools", "nanocodex-react", "nanocodex-vite",
+  "nanocodex-terminal", "nanocodex-connect-ui", "nanocodex-connect-protocol",
+]);
+const bindingExamples = new Set(["node", "react-vite", "browser-cdn", "privy", "better-auth"]);
+const jsSource = /\.(?:[cm]?[jt]sx?|jsonc?|css|html|svg|png|jpe?g|gif|webp|ico|woff2?)$/;
+const binaryAsset = /\.(?:png|jpe?g|gif|webp|ico|mp4|wav|woff2?)$/;
 
 // These bridge scripts are embedded by provision.rs in the native Hand helper.
 // Keep its platform matrix, but they do not feed voice or Python artifacts.
@@ -29,30 +36,53 @@ const cuaNativePaths = new Set([
 export function selectJobs(paths) {
   const jobs = none();
   for (const path of paths) {
-    if (cuaNativePaths.has(path)) {
-      jobs.native = true;
-      continue;
-    }
     const parts = path.split("/");
     const name = parts.at(-1);
-    // Check build/configuration inputs before documentation or app allowlists.
-    if (/^(crates|bin|scripts|\.github|\.cargo|third_party)\//.test(path)
+    // Resolve unsafe/unknown configuration before any directory allowlist.
+    if (parts.some(part => part === ".." || part === "." || part === "")
       || /^(Cargo\.(toml|lock)|rust-toolchain(?:\.toml)?)$/.test(name)
-      || /^(package(?:-lock)?\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb?|\.npmrc|\.pnpmfile\.cjs|turbo\.json)$/.test(name)
-      || parts.some(part => part === ".." || part === "." || part === "")) return full();
-    if (path.startsWith("js/desktop-runtime/") || path.startsWith("windows/")) {
+      || /^(package(?:-lock)?\.json|npm-shrinkwrap\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|yarn\.lock|bun\.lockb?|\.npmrc|\.pnpmfile\.cjs|turbo\.json)$/.test(name)) return full();
+    if (!binaryAsset.test(path)) jobs.policy = true; // Retain spelling checks for source and prose.
+    if (cuaNativePaths.has(path)) {
       jobs.native = true;
+    } else if (/^(crates|bin|scripts|\.github|\.cargo|third_party)\//.test(path)) {
+      return full();
     } else if (path.startsWith("py/") || path.startsWith("examples/python/")) {
       jobs.python = true;
-    } else if (path === "js/nanocodex-computer/README.md"
-      || path.startsWith("docs/")
-      || /^(README\.md|CHANGELOG\.md|AGENTS\.md|next-steps\.md|LICENSE-APACHE|LICENSE-MIT)$/.test(path)
-      || (parts[0] === "js" && webPackages.has(parts[1]) && parts.length > 2)) {
-      // Always-on Rust, WASM, bindings, apps, quality and policy jobs still run.
+      if (path.endsWith(".rs")) jobs.rust = true;
+    } else if (path.endsWith(".rs")) {
+      return full();
+    } else if (path.startsWith("docs/")
+      || /^(README\.md|CHANGELOG\.md|AGENTS\.md|next-steps\.md|LICENSE-APACHE|LICENSE-MIT)$/.test(path)) {
+      // Documentation does not require compiled artifacts.
+    } else if (/^(apple|macos)\//.test(path)) {
+      // Native Apple source/build inputs are checked by the separate Apple workflows.
+    } else if (path.startsWith("js/desktop-runtime/") || path.startsWith("windows/")) {
+      jobs.native = true;
+    } else if (parts[0] === "js" && parts.length > 2
+      && (appPackages.has(parts[1]) || bindingPackages.has(parts[1]) || sharedPackages.has(parts[1]))) {
+      if (/\.md$/.test(path)) continue;
+      // The SDK embeds a generated copy in Rust; keep its canonical source conservative.
+      if (path === "js/nanocodex-tools/runtime/code-tools.mjs") return full();
+      if (path.startsWith("js/nanocodex-vite/scripts/")) {
+        jobs.rust = true; // WASM build/cache orchestration is Rust build input.
+      } else if (!jsSource.test(path)) {
+        return full();
+      }
+      if (appPackages.has(parts[1]) || sharedPackages.has(parts[1])) jobs.apps = true;
+      if (bindingPackages.has(parts[1]) || sharedPackages.has(parts[1])) jobs.bindings = true;
+      if (["nanocodex", "nanocodex-vite", "nanocodex-tools"].includes(parts[1])) jobs.preview = true;
+    } else if (parts[0] === "examples" && parts.length > 2 && jsSource.test(path)
+      && (bindingExamples.has(parts[1]) || parts[1] === "astra-mpp-trial")) {
+      if (parts[1] === "astra-mpp-trial") jobs.apps = true;
+      else jobs.bindings = true;
     } else {
       return full();
     }
   }
+  // Every selected consumer downloads the same-run WASM artifact. Never allow
+  // an intentionally skipped producer to silently skip a required consumer.
+  jobs.wasm = jobs.bindings || jobs.apps || jobs.preview;
   return jobs;
 }
 
@@ -99,6 +129,9 @@ export function main(env = process.env) {
   } catch {
     result = { jobs: full(), reason: "full CI: event payload unavailable/invalid" };
   }
+  // The reusable publisher only runs in the upstream repository. Reflect that
+  // restriction in the required-job gate instead of accepting unexpected skips.
+  if (env.GITHUB_REPOSITORY && env.GITHUB_REPOSITORY !== "gakonst/nanocodex") result.jobs.preview = false;
   const outputs = Object.entries(result.jobs).map(([key, value]) => `${key}=${value}`).join("\n") + "\n";
   if (env.GITHUB_OUTPUT) appendFileSync(env.GITHUB_OUTPUT, outputs);
   const summary = `CI job selection (${result.reason})\n${outputs}`;

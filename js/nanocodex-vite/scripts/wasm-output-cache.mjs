@@ -14,10 +14,10 @@ const rawPath = ".ci-wasm-cache/source.wasm";
 const sha = (bytes) => createHash("sha256").update(bytes).digest("hex");
 const excluded = new Set([".git", "target", "node_modules", "pkg-web", "pkg-node"]);
 
-async function walk(directory) {
+async function walk(directory, skipStandaloneTests = false) {
   const result = [];
   for (const entry of await readdir(directory, { withFileTypes: true })) {
-    if (excluded.has(entry.name)) continue;
+    if (excluded.has(entry.name) || (skipStandaloneTests && ["tests", "benches"].includes(entry.name))) continue;
     const path = resolve(directory, entry.name);
     if (entry.isDirectory()) result.push(...await walk(path));
     else if (entry.isFile() || entry.isSymbolicLink()) result.push(path);
@@ -25,30 +25,101 @@ async function walk(directory) {
   return result;
 }
 
-// Include the local dependency closure conservatively across features/targets.
+// Retain optional dependencies and unknown cfgs, excluding only target tables
+// proven inapplicable to wasm32. Host build/proc-macro dependencies stay broad.
 // Registry/git dependencies are pinned by Cargo.lock. No Cargo metadata call.
 function dependencyDirectories(repository) {
   // Parse the entire closure in one Python process. tomllib handles all valid
   // Cargo TOML key/table/string layouts instead of approximating that grammar.
   return JSON.parse(execFileSync("python3", ["-c", String.raw`
-import json, pathlib, sys, tomllib
+import json, pathlib, re, sys, tomllib
 root = pathlib.Path(sys.argv[1]).resolve()
 def manifest(directory):
     with (directory / "Cargo.toml").open("rb") as file:
         return tomllib.load(file)
 workspace = manifest(root).get("workspace", {}).get("dependencies", {})
+
+def wasm_cfg(platform):
+    # Three-valued evaluation: unsupported predicates/syntax remain included.
+    # Cargo target predicates do not depend on optional dependency activation.
+    expression = re.fullmatch(r"cfg\s*\((.*)\)", platform.strip(), re.S)
+    if expression is None:
+        return None if re.match(r"cfg\b", platform.strip()) else platform == "wasm32-unknown-unknown"
+    text = expression[1].strip()
+    tokens = []
+    while text:
+        match = re.match(r'\s*([A-Za-z_][A-Za-z_0-9]*|"(?:[^"\\]|\\.)*"|[(),=])', text)
+        if not match:
+            return None
+        tokens.append(match[1])
+        text = text[match.end():].strip()
+    position = 0
+    def take():
+        nonlocal position
+        token = tokens[position]
+        position += 1
+        return token
+    def peek():
+        return tokens[position] if position < len(tokens) else None
+    def parse():
+        name = take()
+        if not re.fullmatch(r'[A-Za-z_][A-Za-z_0-9]*', name):
+            raise ValueError("unknown cfg syntax")
+        if peek() == "=":
+            take()
+            value = json.loads(take())
+            known = {"target_arch": "wasm32", "target_os": "unknown", "target_family": "wasm",
+                     "target_env": "", "target_vendor": "unknown", "target_pointer_width": "32",
+                     "target_endian": "little"}
+            return known[name] == value if name in known else None
+        if peek() == "(":
+            take()
+            values = []
+            while peek() != ")":
+                values.append(parse())
+                if peek() != ",":
+                    break
+                take()
+            if take() != ")":
+                raise ValueError("unterminated cfg")
+            if name == "all":
+                return False if False in values else (None if None in values else True)
+            if name == "any":
+                return True if True in values else (None if None in values else False)
+            if name == "not" and len(values) == 1:
+                return None if values[0] is None else not values[0]
+            return None
+        return False if name in ("unix", "windows") else None
+    try:
+        value = parse()
+        return value if position == len(tokens) else None
+    except (IndexError, ValueError, TypeError):
+        return None
+
 visited = set()
-def visit(directory):
+inputs = {}
+def visit(directory, target=True):
     directory = directory.resolve()
     if not directory.is_relative_to(root):
         raise ValueError("local Rust dependencies must remain inside repository")
-    if directory in visited:
-        return
-    visited.add(directory)
     data = manifest(directory)
-    tables = [data, *data.get("target", {}).values()]
-    for table in tables:
+    # A proc macro and its dependency tree compile for the build host.
+    target = target and not data.get("lib", {}).get("proc-macro", False)
+    if (directory, target) in visited:
+        return
+    visited.add((directory, target))
+    build_script = (directory / "build.rs").exists() or bool(data.get("package", {}).get("build", False))
+    entry_points = [data.get("lib", {}), *data.get("bin", [])]
+    # Explicit production entry points can live in normally test-only folders.
+    keep_tests = build_script or any(pathlib.PurePosixPath(entry.get("path", "")).parts[:1] in [("tests",), ("benches",)] for entry in entry_points)
+    inputs[str(directory)] = {"directory": str(directory), "buildScript": build_script, "skipStandaloneTests": not keep_tests}
+    tables = [(None, data), *data.get("target", {}).items()]
+    for platform, table in tables:
         for kind in ("dependencies", "build-dependencies"):
+            # Target-specific build dependencies are selected for the host.
+            dependency_target = target and kind != "build-dependencies"
+            if dependency_target and platform is not None and wasm_cfg(platform) is False:
+                continue
             for name, dependency in table.get(kind, {}).items():
                 if not isinstance(dependency, dict):
                     continue
@@ -57,9 +128,9 @@ def visit(directory):
                     dependency = workspace[name]
                     base = root
                 if isinstance(dependency, dict) and "path" in dependency:
-                    visit(base / dependency["path"])
+                    visit(base / dependency["path"], dependency_target)
 visit(root / "js/nanocodex")
-print(json.dumps(sorted(str(path) for path in visited)))
+print(json.dumps([inputs[path] for path in sorted(inputs)]))
 `, repository], { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }));
 }
 
@@ -73,20 +144,24 @@ export async function fingerprint(repository = root, mode = "release", environme
   }
 }
 
-async function fingerprintInputs(repository = root, mode = "release", environment = process.env) {
+// Release identity must be deterministic: callers receive resolution errors.
+// Only fingerprint(), the output-cache API, converts errors into non-reuse.
+export async function fingerprintInputs(repository = root, mode = "release", environment = process.env) {
   repository = await realpath(repository);
   assert.ok(["release", "development"].includes(mode));
   const files = new Set();
-  for (const directory of dependencyDirectories(repository)) {
+  const omittedTestDirectories = new Set();
+  for (const { directory, buildScript, skipStandaloneTests } of dependencyDirectories(repository)) {
     files.add(resolve(directory, "Cargo.toml"));
-    if (directory === resolve(repository, "js/nanocodex")) {
+    if (skipStandaloneTests) for (const name of ["tests", "benches"]) omittedTestDirectories.add(resolve(directory, name));
+    if (directory === resolve(repository, "js/nanocodex") && !buildScript) {
       for (const path of await walk(resolve(directory, "src"))) files.add(path);
       for (const name of ["build.rs", "README.md"]) {
         try { await readFile(resolve(directory, name)); files.add(resolve(directory, name)); }
         catch (error) { if (error.code !== "ENOENT") throw error; }
       }
     } else {
-      for (const path of await walk(directory)) files.add(path);
+      for (const path of await walk(directory, skipStandaloneTests)) files.add(path);
     }
   }
   for (const name of ["Cargo.toml", "Cargo.lock", "js/nanocodex-vite/scripts/build-js-package.sh",
@@ -109,6 +184,14 @@ async function fingerprintInputs(repository = root, mode = "release", environmen
       assert.ok(!relative(repository, included).startsWith(".."), "Rust include must remain inside repository");
       await readFile(included);
       files.add(included);
+      // A production Rust module in tests/ can itself use ordinary mod children.
+      // Retain that subtree rather than approximating Rust module resolution.
+      if (included.endsWith(".rs")) for (const directory of omittedTestDirectories) {
+        if (!relative(directory, included).startsWith("..")) {
+          for (const path of await walk(directory)) files.add(path);
+          omittedTestDirectories.delete(directory);
+        }
+      }
     }
   }
   const pkg = JSON.parse(await readFile(resolve(repository, "js/nanocodex/package.json"), "utf8"));

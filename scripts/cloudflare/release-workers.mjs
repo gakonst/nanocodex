@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 import assert from 'node:assert/strict';
-import { appendFileSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
 import { createDeploymentLedger } from './deployment-ledger.mjs';
+import { releaseTag } from './live-worker-state.mjs';
 import { currentRelease } from './current-production-release.mjs';
 import { phases } from './deploy-workers.mjs';
 import { readPlan, releaseFingerprints } from './release-plan.mjs';
@@ -38,40 +39,65 @@ export async function accountHealth() {
 }
 export async function releaseWorkers(plan,{ledger=createDeploymentLedger(),isCurrent=currentRelease,run=guardedCommand,health=accountHealth,env=process.env,cwd=process.cwd()}={}){
   const results=[];
+  const result=(pending,state)=>results.push({name:pending.name,state,seconds:(Date.now()-pending.started)/1000});
   async function deploy(name){
     if(!plan.selected.includes(name))return;
     if(!await isCurrent()){results.push({name,state:'superseded',seconds:0});return;}
-    const started=Date.now();
-    const record=await ledger.start(name,plan.fingerprints[name]);
+    const pending={name,started:Date.now()};
+    let temporary;
     try{
+      pending.record=await ledger.start(name,plan.fingerprints[name]);
       console.log(`Deploying ${name}`);
       const spec=commands[name];
       const childEnv={...env};
       for(const key of ['ASTRA_MANAGED_API_KEY','ASTRA_MPP_SECRET','TEMPO_API_KEY'])delete childEnv[key];
-      let active=await run([...spec.command,'--message',env.DEPLOY_MESSAGE??''],{cwd,directory:spec.directory,env:childEnv});
-      if(active&&name==='astra'){
+      const command=[...spec.command,'--message',env.DEPLOY_MESSAGE??'','--tag',releaseTag(plan.fingerprints[name])];
+      if(name==='astra'){
         const secrets=Object.fromEntries([
           ['NANOCODEX_ASTRA_MANAGED_API_KEY',env.ASTRA_MANAGED_API_KEY],
           ['NANOCODEX_ASTRA_MPP_SECRET',env.ASTRA_MPP_SECRET],['TEMPO_MPP_API_KEY',env.TEMPO_API_KEY],
         ].filter(([,value])=>value));
-        if(Object.keys(secrets).length)active=await run(['npx','wrangler','secret','bulk','--env='],{cwd,directory:spec.directory,env:childEnv,input:JSON.stringify(secrets)});
-        else console.log('::notice::Astra secrets unchanged; no configured repository values');
+        if(Object.keys(secrets).length){
+          temporary=mkdtempSync(join(tmpdir(),'nanocodex-release-secrets-'));
+          const path=join(temporary,'secrets.json');
+          writeFileSync(path,JSON.stringify(secrets),{mode:0o600,flag:'wx'});
+          // Wrangler 4.127.1 applies this file additively in the tagged deployment.
+          command.push('--secrets-file',path);
+        }else console.log('::notice::Astra secrets unchanged; no configured repository values');
       }
-      if(active&&name==='account')await health();
-      await ledger.finish(record,active?'success':'inactive');
-      results.push({name,state:active?'success':'superseded',seconds:(Date.now()-started)/1000});
+      const active=await run(command,{cwd,directory:spec.directory,env:childEnv});
+      if(active)return pending;
+      await ledger.finish(pending.record,'inactive');
+      result(pending,'superseded');
     }catch(error){
-      try{await ledger.finish(record,'failure');}catch{}
-      results.push({name,state:'failure',seconds:(Date.now()-started)/1000});
+      if(pending.record)try{await ledger.finish(pending.record,'failure');}catch{}
+      result(pending,'failure');
       throw error;
+    }finally{
+      if(temporary)rmSync(temporary,{recursive:true,force:true});
     }
   }
   try{
     for(const phase of releasePhases){
       const completed=await Promise.allSettled(phase.map(deploy));
-      if(completed.some(result=>result.status==='rejected'))throw new Error('Release phase failed; dependent Workers were not deployed');
+      const pending=completed.filter(row=>row.status==='fulfilled'&&row.value).map(row=>row.value);
+      let failed=completed.some(row=>row.status==='rejected');
+      let healthy=true;
+      // One required health check per phase, before ANY successful receipt in it.
+      // An empty or wholly superseded phase does no health work.
+      if(pending.length)try{await health();}catch{healthy=false;failed=true;}
+      const finished=await Promise.allSettled(pending.map(async row=>{
+        try{
+          await ledger.finish(row.record,healthy?'success':'failure');
+          result(row,healthy?'success':'failure');
+        }catch(error){
+          try{await ledger.finish(row.record,'failure');}catch{}
+          result(row,'failure');
+          throw error;
+        }
+      }));
+      if(failed||finished.some(row=>row.status==='rejected'))throw new Error('Release phase failed; dependent Workers were not deployed');
     }
-    if(plan.selected.length&&!plan.selected.includes('account'))await health();
     return results;
   }finally{
     if(env.GITHUB_STEP_SUMMARY)appendFileSync(env.GITHUB_STEP_SUMMARY,

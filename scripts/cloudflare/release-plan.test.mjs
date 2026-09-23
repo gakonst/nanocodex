@@ -37,7 +37,7 @@ test('empty and API-only selections avoid WASM and unrelated installation/build 
   assert.deepEqual(commands(installSelected, []), []); assert.deepEqual(commands(buildSelected, []), []);
   assert.deepEqual(releaseNeeds({ selected: ['x'] }), { any: true, wasm: false, workspace: true, astra: false, managed: false, account: false });
   assert.deepEqual(commands(installSelected, ['x']), [['pnpm', ['install', '--frozen-lockfile', '--filter', 'nanocodex-monorepo', '--filter', '@nanocodex/x-api...'], { stdio: 'inherit' }]]);
-  assert.deepEqual(commands(buildSelected, ['x']), [['pnpm', ['exec', 'turbo', 'run', 'build', '--filter', 'nanocodex-tools'], { stdio: 'inherit' }]]);
+  assert.deepEqual(commands(buildSelected, ['x']), [['pnpm', ['exec', 'turbo', 'run', 'build', '--only', '--filter', 'nanocodex-tools'], { stdio: 'inherit' }]]);
   assert.deepEqual(commands(buildSelected, ['email']), []);
 });
 
@@ -45,13 +45,23 @@ test('WASM consumers deduplicate targets and prepare selected managed and Astra 
   const selected = ['egress', 'managed', 'astra'];
   assert.equal(releaseNeeds({ selected }).wasm, true);
   assert.deepEqual(commands(buildSelected, selected), [
-    ['pnpm', ['exec', 'turbo', 'run', 'build', '--filter', 'nanocodex', '--filter', 'nanocodex-connect-protocol'], { stdio: 'inherit' }],
+    ['pnpm', ['exec', 'turbo', 'run', 'build', '--only', '--filter', 'nanocodex-tools', '--filter', 'nanocodex-connect-protocol', '--filter', 'nanocodex'], { stdio: 'inherit' }],
     [process.execPath, ['js/managed/scripts/prepare-code-evaluator.mjs'], { stdio: 'inherit' }],
     ['npm', ['run', 'build:client', '--prefix', 'examples/astra-mpp-trial'], { stdio: 'inherit' }],
   ]);
   assert.deepEqual(commands(installSelected, ['astra']), [
-    ['pnpm', ['install', '--frozen-lockfile', '--filter', 'nanocodex-monorepo', '--filter', 'nanocodex...', '--filter', 'nanocodex-vite...'], { stdio: 'inherit' }],
+    ['pnpm', ['install', '--frozen-lockfile', '--filter', 'nanocodex-monorepo', '--filter', 'nanocodex...'], { stdio: 'inherit' }],
     ['npm', ['ci', '--prefix', 'examples/astra-mpp-trial'], { stdio: 'inherit' }],
   ]);
   assert.throws(() => buildSelected({ selected: ['managed'] }, () => { throw Error('build failed'); }), /build failed/);
+});
+
+test('JS-only services and dialog never schedule Cargo or the nanocodex WASM build', () => {
+  const selected = ['egress', 'dialog', 'connect-api', 'astra', 'chief-of-staff'];
+  assert.equal(releaseNeeds({ selected }).wasm, false);
+  const builds = commands(buildSelected, selected);
+  assert.ok(builds.every(([, args]) => !args.includes('nanocodex')));
+  assert.ok(builds.filter(([command]) => command === 'pnpm').every(([, args]) => args.includes('--only')));
+  const filters = builds.filter(([command]) => command === 'pnpm').map(([, args]) => args.filter((_, i) => args[i-1] === '--filter'));
+  assert.deepEqual(filters, [['nanocodex-tools', 'nanocodex-connect-protocol'], ['nanocodex-connect-ui'], ['@nanocodex/connect-api', '@nanocodex/connect-dialog']]);
 });

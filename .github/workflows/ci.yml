@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   changes:
-    name: Select affected native checks
+    name: Select affected CI checks
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -32,6 +32,13 @@ jobs:
       native: ${{ steps.select.outputs.native }}
       voice: ${{ steps.select.outputs.voice }}
       python: ${{ steps.select.outputs.python }}
+      rust: ${{ steps.select.outputs.rust }}
+      wasm: ${{ steps.select.outputs.wasm }}
+      bindings: ${{ steps.select.outputs.bindings }}
+      apps: ${{ steps.select.outputs.apps }}
+      preview: ${{ steps.select.outputs.preview }}
+      policy: ${{ steps.select.outputs.policy }}
+      codeql: ${{ steps.select.outputs.codeql }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -272,6 +279,8 @@ jobs:
           -NumericVersion 0.0.0.0
 
   quality:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     name: rustfmt, clippy, and docs
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -406,6 +415,8 @@ jobs:
           '
 
   policy:
+    needs: changes
+    if: needs.changes.outputs.policy == 'true'
     name: dependencies and spelling
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -416,15 +427,22 @@ jobs:
         with:
           persist-credentials: false
       - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
+        if: needs.changes.outputs.rust == 'true'
         with:
           tool: cargo-deny
       - run: ./scripts/check-experimental-boundary.sh
+        if: needs.changes.outputs.rust == 'true'
       - run: cargo deny check
+        if: needs.changes.outputs.rust == 'true'
       - run: ./scripts/check-crate-boundaries.sh
+        if: needs.changes.outputs.rust == 'true'
       - run: ./scripts/check-rustls-provider.sh
+        if: needs.changes.outputs.rust == 'true'
       - uses: crate-ci/typos@96d9af6217dc2855210655af7e1ff19d23d4e593 # v1
 
   wasm-build:
+    needs: changes
+    if: needs.changes.outputs.wasm == 'true'
     name: Build WASM bindings
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -473,7 +491,8 @@ jobs:
           if-no-files-found: error
 
   js-preview:
-    needs: wasm-build
+    needs: [changes, wasm-build]
+    if: needs.changes.outputs.preview == 'true'
     permissions:
       contents: read
     uses: ./.github/workflows/js-preview.yml
@@ -482,7 +501,8 @@ jobs:
 
   bindings:
     name: Node and browser bindings
-    needs: wasm-build
+    needs: [changes, wasm-build]
+    if: needs.changes.outputs.bindings == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -492,11 +512,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        if: needs.changes.outputs.rust == 'true'
         with:
           toolchain: "1.97"
           targets: wasm32-unknown-unknown
           components: clippy
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        if: needs.changes.outputs.rust == 'true'
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
           cache-on-failure: true
@@ -510,7 +532,8 @@ jobs:
         with:
           name: nanocodex-wasm
           path: js/nanocodex
-      - name: Check WASM consumers
+      - name: Check Rust WASM consumers
+        if: needs.changes.outputs.rust == 'true'
         run: |
           cargo clippy --locked --target wasm32-unknown-unknown \
             --package nanocodex-oai-api \
@@ -519,6 +542,8 @@ jobs:
             --package nanocodex \
             --package nanocodex-wasm \
             -- -D warnings -A clippy::missing_const_for_fn
+      - name: Install JS consumer dependencies
+        run: |
           pnpm install --frozen-lockfile
           pnpm exec turbo run build --only --filter nanocodex-tools
           npm ci --prefix examples/privy
@@ -647,7 +672,8 @@ jobs:
 
   apps:
     name: JavaScript apps
-    needs: wasm-build
+    needs: [changes, wasm-build]
+    if: needs.changes.outputs.apps == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -692,6 +718,8 @@ jobs:
         run: npm test --prefix examples/astra-mpp-trial
 
   codeql:
+    needs: changes
+    if: needs.changes.outputs.codeql == 'true'
     name: CodeQL actions
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -716,7 +744,7 @@ jobs:
     # Report failed prerequisites, but do not keep a cancelled workflow holding
     # its concurrency slot while this final job waits for a runner.
     if: always() && !cancelled()
-    needs: [changes, test, shared-hands, voice-native, windows-hand, quality, vm-guest, policy, wasm-build, bindings, python, apps, codeql]
+    needs: [changes, test, shared-hands, voice-native, windows-hand, quality, vm-guest, policy, wasm-build, bindings, python, apps, js-preview, codeql]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -726,6 +754,13 @@ jobs:
           NATIVE_REQUIRED: ${{ needs.changes.outputs.native }}
           VOICE_REQUIRED: ${{ needs.changes.outputs.voice }}
           PYTHON_REQUIRED: ${{ needs.changes.outputs.python }}
+          RUST_REQUIRED: ${{ needs.changes.outputs.rust }}
+          WASM_REQUIRED: ${{ needs.changes.outputs.wasm }}
+          BINDINGS_REQUIRED: ${{ needs.changes.outputs.bindings }}
+          APPS_REQUIRED: ${{ needs.changes.outputs.apps }}
+          PREVIEW_REQUIRED: ${{ needs.changes.outputs.preview }}
+          POLICY_REQUIRED: ${{ needs.changes.outputs.policy }}
+          CODEQL_REQUIRED: ${{ needs.changes.outputs.codeql }}
           TEST: ${{ needs.test.result }}
           SHARED_HANDS: ${{ needs.shared-hands.result }}
           VOICE_NATIVE: ${{ needs.voice-native.result }}
@@ -737,6 +772,7 @@ jobs:
           BINDINGS: ${{ needs.bindings.result }}
           PYTHON: ${{ needs.python.result }}
           APPS: ${{ needs.apps.result }}
+          PREVIEW: ${{ needs.js-preview.result }}
           CODEQL: ${{ needs.codeql.result }}
         run: |
           # Missing/invalid selection must fail, never silently waive coverage.
@@ -752,11 +788,12 @@ jobs:
           require_selected "$NATIVE_REQUIRED" "$SHARED_HANDS"
           require_selected "$VOICE_REQUIRED" "$VOICE_NATIVE"
           require_selected "$NATIVE_REQUIRED" "$WINDOWS_HAND"
-          test "$QUALITY" = success
+          require_selected "$RUST_REQUIRED" "$QUALITY"
           require_selected "$NATIVE_REQUIRED" "$VM_GUEST"
-          test "$POLICY" = success
-          test "$WASM_BUILD" = success
-          test "$BINDINGS" = success
+          require_selected "$POLICY_REQUIRED" "$POLICY"
+          require_selected "$WASM_REQUIRED" "$WASM_BUILD"
+          require_selected "$BINDINGS_REQUIRED" "$BINDINGS"
           require_selected "$PYTHON_REQUIRED" "$PYTHON"
-          test "$APPS" = success
-          test "$CODEQL" = success
+          require_selected "$APPS_REQUIRED" "$APPS"
+          require_selected "$PREVIEW_REQUIRED" "$PREVIEW"
+          require_selected "$CODEQL_REQUIRED" "$CODEQL"

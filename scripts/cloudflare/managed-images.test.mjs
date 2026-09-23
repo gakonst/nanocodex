@@ -138,6 +138,8 @@ require('node:fs').appendFileSync(process.env.CAPTURE, JSON.stringify(['pnpm', .
           MANAGED_IMAGE_CACHE_EPOCH: '1', CI_TESTS_ENABLED: 'true', ...overrides },
       });
       const commands = readFileSync(capture, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+      const build = commands.find(command => command.includes('buildx'));
+      assert.ok(build.includes('--pull') && build.includes('NANOCODEX_IMAGE_CACHE_EPOCH=1'));
       if (overrides.FAIL_DOCKER && overrides.CI_TESTS_ENABLED !== 'false') {
         assert.notEqual(result.status, 0);
         assert.ok(!commands.some(command => command[0] === 'pnpm'), 'must not publish an unverified image');
@@ -150,5 +152,142 @@ require('node:fs').appendFileSync(process.env.CAPTURE, JSON.stringify(['pnpm', .
         assert.ok(!commands.some(command => command.includes('login')), 'Wrangler owns credential handling');
       }
     }
+    mkdirSync(join(dir, 'crates/new/src'), { recursive: true });
+    writeFileSync(join(dir, 'crates/new/src/lib.rs'), 'uncommitted build input');
+    writeFileSync(capture, '');
+    const dirty = spawnSync(process.execPath, ['scripts/cloudflare/managed-images.mjs', 'publish', 'phone'], {
+      cwd: dir, encoding: 'utf8', env: { ...process.env, PATH: join(dir, 'commands') + ':' + process.env.PATH,
+        CAPTURE: capture, GITHUB_WORKSPACE: dir, BUILDX_BUILDER: 'test-builder', CLOUDFLARE_ACCOUNT_ID: account },
+    });
+    assert.notEqual(dirty.status, 0);
+    assert.match(dirty.stderr, /Commit relevant image inputs/);
+    assert.equal(readFileSync(capture, 'utf8'), '');
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('Linux image closure excludes proven target mismatches and retains unknown optional and host dependencies', () => {
+  const fixture = rustInputFixture();
+  const { dir, put, commit, covers } = fixture;
+  try {
+    const cases = [
+      ['windows', 'cfg(windows)', false],
+      ['wasm', 'cfg(target_family = "wasm")', false],
+      ['macos', 'cfg(not(target_os = "linux"))', false],
+      ['other-triple', 'aarch64-unknown-linux-gnu', false],
+      ['linux', 'cfg(all(target_arch = "x86_64", target_env = "gnu"))', true],
+      ['linux-triple', 'x86_64-unknown-linux-gnu', true],
+      ['unix', 'cfg (unix)', true],
+      ['unknown', 'cfg(unknown_flag)', true],
+      ['any-unknown', 'cfg(any(windows, unknown_flag))', true],
+      ['all-unknown', 'cfg(all(windows, unknown_flag))', false],
+      ['unknown-feature', 'cfg(feature = "optional-feature")', true],
+      ['future-cfg', 'cfg(future_predicate(target_os = "linux"))', true],
+    ];
+    let manifest = '[package]\nname = "nanocodex-phone"\n[dependencies]\nalways = { path = "../always", optional = true }\nmacro = { path = "../macro" }\n';
+    for (const [name, platform] of cases) {
+      put(`crates/${name}/Cargo.toml`, `[package]\nname = "${name}"\n`);
+      put(`crates/${name}/src/lib.rs`, `source for ${name}`);
+      manifest += `[target.'${platform}'.dependencies]\n${name} = { path = "../${name}", optional = true }\n`;
+    }
+    manifest += '[target.\'cfg(unix)\'.build-dependencies]\nbuild-linux = { path = "../build-linux" }\n[target.\'cfg(windows)\'.build-dependencies]\nbuild-windows = { path = "../build-windows" }\n';
+    put('crates/nanocodex-phone/Cargo.toml', manifest);
+    for (const name of ['always', 'build-linux', 'build-windows', 'host-linux', 'host-windows']) {
+      put(`crates/${name}/Cargo.toml`, `[package]\nname = "${name}"\n`);
+      put(`crates/${name}/src/lib.rs`, `source for ${name}`);
+    }
+    put('crates/macro/Cargo.toml', '[package]\nname = "macro"\n[lib]\nproc-macro = true\n[target.\'cfg(unix)\'.dependencies]\nhost-linux = { path = "../host-linux" }\n[target.\'cfg(windows)\'.dependencies]\nhost-windows = { path = "../host-windows" }\n');
+    put('crates/macro/src/lib.rs', 'proc macro source');
+    commit();
+    const inputs = imageInputs('phone', dir);
+    for (const [name, , included] of cases) assert.equal(covers(inputs, `crates/${name}/src/lib.rs`), included, name);
+    for (const name of ['always', 'build-linux', 'host-linux']) assert.ok(covers(inputs, `crates/${name}/src/lib.rs`), name);
+    for (const name of ['build-windows', 'host-windows']) assert.ok(!covers(inputs, `crates/${name}/src/lib.rs`), name);
+    const original = fingerprint('phone', account, '1', dir);
+    put('crates/windows/src/lib.rs', 'native-only change'); commit();
+    assert.equal(fingerprint('phone', account, '1', dir), original);
+    put('crates/linux/src/lib.rs', 'production Linux change'); commit();
+    assert.notEqual(fingerprint('phone', account, '1', dir), original);
+  } finally { fixture.close(); }
+});
+
+test('image closure omits standalone tests but preserves build scripts production targets and includes', () => {
+  const fixture = rustInputFixture();
+  const { dir, put, commit, covers } = fixture;
+  try {
+    let manifest = '[package]\nname = "nanocodex-phone"\n[dependencies]\n';
+    for (const name of ['plain', 'build', 'custom', 'explicit', 'included']) {
+      manifest += `${name} = { path = "../${name}" }\n`;
+      put(`crates/${name}/Cargo.toml`, `[package]\nname = "${name}"\n${name === 'custom' ? 'build = "generate.rs"\n' : ''}${name === 'explicit' ? '[lib]\npath = "tests/library.rs"\n' : ''}`);
+      put(`crates/${name}/src/lib.rs`, `source for ${name}`);
+      put(`crates/${name}/tests/standalone.rs`, 'integration test');
+      put(`crates/${name}/benches/standalone.rs`, 'benchmark');
+    }
+    put('crates/nanocodex-phone/Cargo.toml', manifest);
+    put('crates/build/build.rs', 'fn main() {}');
+    put('crates/custom/generate.rs', 'fn main() {}');
+    put('crates/explicit/tests/library.rs', 'mod child;');
+    put('crates/explicit/tests/child.rs', 'production child');
+    put('crates/included/src/lib.rs', 'const PROMPT: &str = include_str!("../tests/prompt.txt");\nconst DATA: &[u8] = include_bytes!(r#"../benches/data.bin"#);\n#[path = "../tests/runtime.rs"] mod runtime;');
+    put('crates/included/tests/prompt.txt', 'embedded prompt');
+    put('crates/included/benches/data.bin', 'embedded data');
+    put('crates/included/tests/runtime.rs', 'mod sibling;');
+    put('crates/included/tests/sibling.rs', 'production sibling');
+    commit();
+    const inputs = imageInputs('phone', dir);
+    for (const name of ['plain', 'included']) {
+      for (const kind of ['tests', 'benches']) assert.ok(!covers(inputs, `crates/${name}/${kind}/standalone.rs`), `${name}/${kind}`);
+    }
+    for (const name of ['build', 'custom']) {
+      for (const kind of ['tests', 'benches']) assert.ok(covers(inputs, `crates/${name}/${kind}/standalone.rs`), `${name}/${kind}`);
+    }
+    for (const path of ['crates/explicit/tests/library.rs', 'crates/explicit/tests/child.rs', 'crates/included/tests/prompt.txt', 'crates/included/benches/data.bin', 'crates/included/tests/runtime.rs', 'crates/included/tests/sibling.rs']) assert.ok(covers(inputs, path), path);
+    const original = fingerprint('phone', account, '1', dir);
+    put('crates/plain/tests/standalone.rs', 'changed standalone test'); commit();
+    assert.equal(fingerprint('phone', account, '1', dir), original);
+    put('crates/included/tests/prompt.txt', 'changed production prompt'); commit();
+    assert.notEqual(fingerprint('phone', account, '1', dir), original);
+  } finally { fixture.close(); }
+});
+
+test('excluded voice workspace manifests enter image keys only through the selected Cargo closure', () => {
+  const fixture = rustInputFixture();
+  const { dir, put, commit, covers } = fixture;
+  try {
+    const voiceRoot = 'third_party/codex-voice';
+    put('Cargo.toml', '[workspace]\nexclude = ["third_party/codex-voice"]\n');
+    put(`${voiceRoot}/Cargo.toml`, '[workspace]\n[workspace.dependencies]\nvoice-core = { path = "core" }\n');
+    put(`${voiceRoot}/voice/Cargo.toml`, '[package]\nname = "voice"\n[dependencies]\nvoice-core.workspace = true\n');
+    put(`${voiceRoot}/voice/src/lib.rs`, 'voice source');
+    put(`${voiceRoot}/core/Cargo.toml`, '[package]\nname = "voice-core"\n');
+    put(`${voiceRoot}/core/src/lib.rs`, 'voice core source');
+    put(`${voiceRoot}/unused/Cargo.toml`, 'excluded invalid TOML must not be parsed');
+    commit();
+    const original = fingerprint('phone', account, '1', dir);
+    assert.ok(!imageInputs('phone', dir).some(path => path.startsWith(voiceRoot + '/')));
+    put(`${voiceRoot}/Cargo.toml`, '[workspace]\n[workspace.dependencies]\nvoice-core = { path = "core" }\n# excluded change\n'); commit();
+    assert.equal(fingerprint('phone', account, '1', dir), original);
+    put('crates/nanocodex-phone/Cargo.toml', '[package]\nname = "nanocodex-phone"\n[dependencies]\nvoice = { path = "../../third_party/codex-voice/voice" }\n'); commit();
+    const inputs = imageInputs('phone', dir);
+    for (const path of [`${voiceRoot}/Cargo.toml`, `${voiceRoot}/voice/Cargo.toml`, `${voiceRoot}/core/Cargo.toml`, `${voiceRoot}/core/src/lib.rs`]) assert.ok(covers(inputs, path), path);
+    assert.ok(!covers(inputs, `${voiceRoot}/unused/Cargo.toml`));
+    const activated = fingerprint('phone', account, '1', dir);
+    put(`${voiceRoot}/core/src/lib.rs`, 'changed selected voice core'); commit();
+    assert.notEqual(fingerprint('phone', account, '1', dir), activated);
+  } finally { fixture.close(); }
+});
+
+function rustInputFixture() {
+  const dir = mkdtempSync(join(tmpdir(), 'managed-linux-inputs-'));
+  const git = (...args) => execFileSync('git', args, { cwd: dir, stdio: 'pipe' });
+  const put = (path, content) => { mkdirSync(dirname(join(dir, path)), { recursive: true }); writeFileSync(join(dir, path), content); };
+  git('init', '-q');
+  put('Cargo.toml', '[workspace]\n');
+  put('crates/nanocodex-phone/Cargo.toml', '[package]\nname = "nanocodex-phone"\n');
+  put('crates/nanocodex-phone/src/lib.rs', 'phone source');
+  return {
+    dir, put,
+    commit: () => { git('add', '.'); git('-c', 'user.name=CI', '-c', 'user.email=ci@example.invalid', 'commit', '-qm', 'fixture'); },
+    covers: (inputs, path) => inputs.some(input => input === path || path.startsWith(input + '/')),
+    close: () => rmSync(dir, { recursive: true, force: true }),
+  };
+}

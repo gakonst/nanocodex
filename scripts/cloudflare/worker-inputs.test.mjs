@@ -53,6 +53,11 @@ test('Worker inputs isolate services and follow dependencies, assets, config and
   await change('js/managed/dist/index.js', 'generated', []);
   await change('js/managed/src/index.test.ts', 'test', []);
   await change('unrelated.txt', 'unrelated', []);
+  await change('js/nanocodex/scripts/live-code-mode-stress.mjs', 'import "../../managed/scripts/codex-auth-file.mjs";', []);
+  await change('js/managed/scripts/codex-auth-file.mjs', 'export const value = "development-only";', []);
+  await change('js/managed/scripts/prepare-hand-image.mjs', 'const source = new URL("../../../hands/remote/", import.meta.url);', []);
+  await change('hands/remote/host_test.go', 'package fixture', []);
+
   await rm(join(root, 'js/account/public/icon.svg'));
   const deleted = await fingerprintWorkers(root);
   assert.notEqual(deleted.account, previous.account);

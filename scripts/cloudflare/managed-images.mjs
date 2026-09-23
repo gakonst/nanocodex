@@ -95,11 +95,16 @@ export function main([command, image]) {
   }
   assert.equal(command, 'publish');
   const spec = images[image];
+  // The receipt hashes HEAD; publication must consume those same bytes.
+  const dirty = execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--', ...imageInputs(image),
+    'bin', 'crates', 'examples', 'js/nanocodex', 'py/bindings', 'third_party'], { encoding: 'utf8' });
+  assert.equal(dirty.trim(), '', 'Commit relevant image inputs before publication');
   const tag = `nanocodex-ci-${image}:input-${input}`;
   const repository = `registry.cloudflare.com/${account}/nanocodex-ci-${image}`;
   if (image === 'sandbox') run(process.execPath, ['js/managed/scripts/prepare-hand-image.mjs']);
   run(process.execPath, ['scripts/cloudflare/wrangler-docker.mjs', 'build', '--load', '-t', tag,
-    '--platform', 'linux/amd64', '--provenance=false',
+    '--platform', 'linux/amd64', '--provenance=false', '--pull',
+    '--build-arg', `NANOCODEX_IMAGE_CACHE_EPOCH=${epoch}`,
     ...(image === 'sandbox' ? ['--build-arg', `CI_TESTS_ENABLED=${process.env.CI_TESTS_ENABLED || 'true'}`] : []), '-f', spec.dockerfile, spec.context]);
   if (process.env.CI_TESTS_ENABLED !== 'false') {
     if (image === 'sandbox') {

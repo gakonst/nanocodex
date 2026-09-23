@@ -2,9 +2,9 @@ name: Apple apps
 on:
   push:
     branches: [master]
-    paths: ['Cargo.toml', 'Cargo.lock', 'bin/nanocodex/src/nanocodex2/**', 'bin/nanocodex/nanocodex2/**', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/nanocodex-voice-protocol/**', 'crates/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml', 'scripts/ci/apple-package-tests.sh']
+    paths: ['Cargo.toml', 'Cargo.lock', 'bin/nanocodex/src/nanocodex2/**', 'bin/nanocodex/nanocodex2/**', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/nanocodex-voice-protocol/**', 'crates/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml', 'scripts/ci/apple-package-tests.sh', 'scripts/ci/select-apple-jobs.mjs', 'scripts/ci/select-jobs.mjs']
   pull_request:
-    paths: ['Cargo.toml', 'Cargo.lock', 'bin/nanocodex/src/nanocodex2/**', 'bin/nanocodex/nanocodex2/**', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/nanocodex-voice-protocol/**', 'crates/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml', 'scripts/ci/apple-package-tests.sh']
+    paths: ['Cargo.toml', 'Cargo.lock', 'bin/nanocodex/src/nanocodex2/**', 'bin/nanocodex/nanocodex2/**', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/nanocodex-voice-protocol/**', 'crates/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml', 'scripts/ci/apple-package-tests.sh', 'scripts/ci/select-apple-jobs.mjs', 'scripts/ci/select-jobs.mjs']
 permissions:
   contents: read
 # Explicit bash enables GitHub Actions' -e -o pipefail invocation, including
@@ -16,7 +16,23 @@ concurrency:
   group: apple-inbox-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 jobs:
+  changes:
+    name: Select affected Apple targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      macos: ${{ steps.select.outputs.macos }}
+      ios: ${{ steps.select.outputs.ios }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: select
+        run: node scripts/ci/select-apple-jobs.mjs
   macos:
+    needs: changes
+    if: needs.changes.outputs.macos == 'true'
     name: Native Mac workspace
     runs-on: macos-26
     timeout-minutes: 30
@@ -105,6 +121,8 @@ jobs:
             macos/build/evidence
           if-no-files-found: ignore
   native:
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
     name: iPhone and iPad Inbox
     runs-on: macos-26
     # The UI suite is intentionally sequential because its system-app journeys
@@ -196,6 +214,8 @@ jobs:
             apple/build/inbox.xcresult
           if-no-files-found: ignore
   app-intents-sdk27:
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
     # The SDK guard must be compiled, not left unchecked by stable Xcode builds.
     runs-on: xcode-27
     timeout-minutes: 20

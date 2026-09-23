@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { EventEmitter } from 'node:events';
-import { existsSync, writeFileSync } from 'node:fs';
+import { existsSync, writeFileSync, readFileSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { releaseWorkers, releasePhases, guardedCommand, accountHealth } from './release-workers.mjs';
 function fixture(selected, overrides = {}) {
@@ -26,7 +26,11 @@ test('all selected Workers preserve dependency barriers, literal arguments and a
     const next = releasePhases[i].map(name => f.events.findIndex(row => row[0] === 'start' && row[1] === name));
     assert.ok(Math.max(...previous) < Math.min(...next));
   }
-  for (const { command } of f.calls) assert.equal(command[command.indexOf('--message') + 1], f.options.env.DEPLOY_MESSAGE);
+  for (const { command } of f.calls) {
+    assert.equal(command[command.indexOf('--message') + 1], f.options.env.DEPLOY_MESSAGE);
+    assert.equal(command[command.indexOf('--tag') + 1], `nc-ci-${'a'.repeat(64)}`);
+  }
+  assert.equal(f.events.filter(row => row[0] === 'health').length, releasePhases.length);
   assert.equal(f.calls.filter(({ command }) => command.includes('--env=')).length, 3);
   assert.equal(f.calls.at(-1).options.directory, 'js/account');
   assert.deepEqual(f.events.slice(-2), [['health'], ['success', 'account']]);
@@ -50,32 +54,51 @@ test('supersession before deployment avoids ledger writes and guarded skips cann
   assert.deepEqual(skipped.events, [['start', 'account'], ['inactive', 'account']]);
 });
 
-test('Astra secrets travel only through guarded stdin and omit unset values', async () => {
+test('Astra secrets use a private temporary file in the single tagged guarded deploy', async () => {
   const env = { DEPLOY_MESSAGE: 'release', ASTRA_MANAGED_API_KEY: 'synthetic "key"', ASTRA_MPP_SECRET: 'synthetic-secret', TEMPO_API_KEY: '' };
-  const f = fixture(['astra'], { env }); await f.release();
-  assert.equal(f.calls.length, 2);
-  const secret = f.calls[1];
-  assert.deepEqual(secret.command, ['npx', 'wrangler', 'secret', 'bulk', '--env=']);
-  assert.deepEqual(JSON.parse(secret.options.input), { NANOCODEX_ASTRA_MANAGED_API_KEY: env.ASTRA_MANAGED_API_KEY, NANOCODEX_ASTRA_MPP_SECRET: env.ASTRA_MPP_SECRET });
-  for (const { command, options } of f.calls) {
-    for (const key of ['ASTRA_MANAGED_API_KEY', 'ASTRA_MPP_SECRET', 'TEMPO_API_KEY']) assert.ok(!Object.hasOwn(options.env, key));
-    assert.ok(!command.includes(env.ASTRA_MANAGED_API_KEY));
+  for (const active of [true, false]) {
+    const f = fixture(['astra'], { env }); let path;
+    f.options.run = async (command, options) => {
+      f.calls.push({ command, options });
+      assert.ok(command.includes('deploy')); assert.ok(!command.includes('bulk'));
+      assert.equal(command[command.indexOf('--tag') + 1], `nc-ci-${'a'.repeat(64)}`);
+      path = command[command.indexOf('--secrets-file') + 1];
+      assert.equal(statSync(path).mode & 0o777, 0o600);
+      assert.equal(statSync(dirname(path)).mode & 0o777, 0o700);
+      assert.deepEqual(JSON.parse(readFileSync(path, 'utf8')), { NANOCODEX_ASTRA_MANAGED_API_KEY: env.ASTRA_MANAGED_API_KEY, NANOCODEX_ASTRA_MPP_SECRET: env.ASTRA_MPP_SECRET });
+      for (const key of ['ASTRA_MANAGED_API_KEY', 'ASTRA_MPP_SECRET', 'TEMPO_API_KEY']) assert.ok(!Object.hasOwn(options.env, key));
+      for (const value of [env.ASTRA_MANAGED_API_KEY, env.ASTRA_MPP_SECRET]) assert.ok(!command.some(arg => arg.includes(value)));
+      return active;
+    };
+    assert.equal((await f.release())[0].state, active ? 'success' : 'superseded');
+    assert.equal(f.calls.length, 1); assert.equal(existsSync(dirname(path)), false);
+    assert.equal(f.events.filter(row => row[0] === 'health').length, active ? 1 : 0);
   }
   assert.equal(env.ASTRA_MPP_SECRET, 'synthetic-secret');
-  const skipped = fixture(['astra'], { env, run: async () => false });
-  assert.equal((await skipped.release())[0].state, 'superseded');
-  assert.deepEqual(skipped.events.slice(0, 2), [['start', 'astra'], ['inactive', 'astra']]);
-  const staleSecret = fixture(['astra'], { env }); let count = 0;
-  staleSecret.options.run = async () => ++count === 1;
-  assert.equal((await staleSecret.release())[0].state, 'superseded'); assert.equal(count, 2);
+  const omitted = fixture(['astra']); await omitted.release();
+  assert.equal(omitted.calls.length, 1); assert.ok(!omitted.calls[0].command.includes('--secrets-file'));
 });
 
-test('health failures fail account receipt and empty selections perform no health/deployment work', async () => {
-  const f = fixture(['account'], { health: async () => { throw Error('unhealthy'); } });
-  await assert.rejects(f.release(), /Release phase failed/);
-  assert.deepEqual(f.events, [['start', 'account'], ['failure', 'account']]);
+test('health failures cannot certify account, managed, or any API-only phase', async () => {
+  for (const selected of [['account'], ['managed'], ['x'], ['egress', 'x'], ['email', 'astra']]) {
+    const f = fixture(selected, { health: async () => { f.events.push(['health']); throw Error('unhealthy'); } });
+    await assert.rejects(f.release(), /Release phase failed/);
+    assert.equal(f.events.filter(row => row[0] === 'health').length, 1);
+    assert.equal(f.events.filter(row => row[0] === 'success').length, 0);
+    assert.deepEqual(f.events.filter(row => row[0] === 'failure').map(row => row[1]).sort(), [...selected].sort());
+  }
   const empty = fixture([]); assert.deepEqual(await empty.release(), []); assert.deepEqual(empty.events, []);
-  const x = fixture(['x']); await x.release(); assert.deepEqual(x.events.at(-1), ['health']);
+  const x = fixture(['x']); await x.release(); assert.deepEqual(x.events.slice(-2), [['health'], ['success', 'x']]);
+});
+
+test('live receipt failure stops dependent Workers after health and records failure', async () => {
+  const f = fixture(['managed', 'account']);
+  f.options.ledger.finish = async (name, state) => {
+    if (state === 'success') throw Error('live version mismatch');
+    f.events.push([state, name]);
+  };
+  await assert.rejects(f.release(), /Release phase failed/);
+  assert.deepEqual(f.events, [['start', 'managed'], ['health'], ['failure', 'managed']]);
 });
 
 test('guarded command wraps argv, forwards stdin, interprets status and cleans temporary output', async () => {
@@ -101,9 +124,14 @@ test('guarded command wraps argv, forwards stdin, interprets status and cleans t
 
 test('secret publication failure records Astra failure and blocks account', async () => {
   const f = fixture(['astra', 'account'], { env: { TEMPO_API_KEY: 'synthetic-tempo' } });
-  f.options.run = async command => { if (command.includes('secret')) throw Error('secret publication failed'); return true; };
+  let path;
+  f.options.run = async command => {
+    path = command[command.indexOf('--secrets-file') + 1];
+    assert.ok(existsSync(path)); throw Error('secret publication failed');
+  };
   await assert.rejects(f.release(), /Release phase failed/);
   assert.deepEqual(f.events, [['start', 'astra'], ['failure', 'astra']]);
+  assert.equal(existsSync(dirname(path)), false);
 });
 
 test('guard launch errors reject and remove temporary output directory', async () => {

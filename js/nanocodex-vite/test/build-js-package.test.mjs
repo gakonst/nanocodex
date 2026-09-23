@@ -96,6 +96,32 @@ test("an incomplete Node package cache regenerates bindings", async () => {
   }
 });
 
+test("generator and build policy changes cannot reuse stale bindings", async () => {
+  const fixture = await createBuildFixture();
+  const environment = { CACHE_VALID: "1", NANOCODEX_WASM_BUILD_DELAY: "0", NANOCODEX_WASM_LOCK_HELD: fixture.repository };
+  try {
+    await runBuild(fixture, environment);
+    for (const relative of [
+      "js/nanocodex-vite/scripts/build-js-package.sh",
+      "js/nanocodex-vite/scripts/wasm-output-cache.mjs",
+      "js/nanocodex/scripts/deduplicate-wasm.mjs",
+      "js/nanocodex/scripts/write-wasm-attestation.mjs",
+      "js/nanocodex/scripts/check-managed-wasm.mjs",
+    ]) {
+      const path = join(fixture.repository, relative);
+      await writeFile(path, `${await readFile(path, "utf8")}\n${relative.endsWith(".sh") ? "#" : "//"} changed generation policy\n`);
+      await rm(fixture.bindgenEvents);
+      await runBuild(fixture, environment);
+      assert.deepEqual((await readFile(fixture.bindgenEvents, "utf8")).trim().split("\n"), ["nodejs", "web", "bundler"], relative);
+    }
+    const writer = join(fixture.packageRoot, "scripts/write-package-types.mjs");
+    await writeFile(writer, `${await readFile(writer, "utf8")}\nawait writeFile(new URL("../pkg-node/package.json", import.meta.url), '{"type":"commonjs","revision":2}');\n`);
+    await runBuild(fixture, environment);
+    assert.equal(JSON.parse(await readFile(join(fixture.packageRoot, "pkg-node/package.json"), "utf8")).revision, 2,
+      "the changed generator must actually run when raw WASM stays identical");
+  } finally { await fixture.close(); }
+});
+
 async function createBuildFixture() {
   const temporary = await mkdtemp(join(tmpdir(), "nanocodex-wasm-build-"));
   const repository = join(temporary, "repository");
@@ -110,11 +136,19 @@ async function createBuildFixture() {
   await Promise.all([
     mkdir(scripts, { recursive: true }),
     mkdir(join(packageRoot, "pkg-node"), { recursive: true }),
+    mkdir(join(packageRoot, "scripts"), { recursive: true }),
     mkdir(join(packageRoot, "pkg-web"), { recursive: true }),
     mkdir(fakeBin, { recursive: true }),
   ]);
   await copyFile(sourceBuildScript, buildScript);
   await copyFile(new URL("../scripts/wasm-memory-views.mjs", import.meta.url), join(scripts, "wasm-memory-views.mjs"));
+  for (const path of ["wasm-output-cache.mjs"]) {
+    await writeFile(join(scripts, path), "// fixture cache policy\n");
+  }
+  for (const path of ["deduplicate-wasm.mjs", "write-wasm-attestation.mjs", "check-managed-wasm.mjs"]) {
+    await writeFile(join(packageRoot, "scripts", path), "// fixture generator policy\n");
+  }
+  await copyFile(new URL("../../nanocodex/scripts/write-package-types.mjs", import.meta.url), join(packageRoot, "scripts/write-package-types.mjs"));
   await chmod(buildScript, 0o755);
   await Promise.all([
     writeExecutable(join(fakeBin, "cargo"), `#!/bin/sh
@@ -161,8 +195,7 @@ case "$1" in
     exec '${process.execPath.replaceAll("'", "'\\''")}' "$@"
     ;;
   *write-package-types.mjs)
-    printf '{"type":"commonjs"}\\n' > js/nanocodex/pkg-node/package.json
-    printf '{"type":"module"}\\n' > js/nanocodex/pkg-web/package.json
+    exec '${process.execPath.replaceAll("'", "'\\''")}' "$@"
     ;;
   *write-wasm-attestation.mjs)
     if [ "$2" = "--check-cache" ] && [ "$CACHE_VALID" != "1" ]; then

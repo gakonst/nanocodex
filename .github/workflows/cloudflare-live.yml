@@ -44,7 +44,7 @@ jobs:
             echo 'deployed=true' >> "$GITHUB_OUTPUT"
           else
             deployed=$(gh api "repos/$GH_REPO/actions/runs/$SOURCE_RUN/jobs?per_page=100" \
-              --jq '[.jobs[] | select(.name == "deploy Cloudflare production" and .conclusion == "success" and any(.steps[]; .name == "Verify deployed account Worker health" and .conclusion == "success"))] | length > 0')
+              --jq '[.jobs[] | select(.name == "build and deploy changed Cloudflare Workers" and .conclusion == "success" and any(.steps[]; .name == "Deploy selected Workers and record successful releases" and .conclusion == "success"))] | length > 0')
             echo "deployed=$deployed" >> "$GITHUB_OUTPUT"
           fi
 

@@ -4,6 +4,34 @@ permissions: {}
 
 on:
   pull_request:
+    paths:
+      - "js/**"
+      - "!js/desktop-runtime/**"
+      - "crates/**"
+      - "hands/**"
+      - "bin/**"
+      - "py/bindings/**"
+      - "third_party/**"
+      - ".dockerignore"
+      - ".node-version"
+      - ".nvmrc"
+      - "tsconfig*.json"
+      - "assets/**"
+      - "examples/**"
+      - "scripts/**"
+      - "docs/**"
+      - "patches/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain*"
+      - ".cargo/**"
+      - ".npmrc"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "turbo.json"
+      - ".github/workflows/cloudflare.yml"
+      - ".github/actions/**"
   push:
     branches: [master]
     # Native client releases must not evict unrelated live Durable Objects.
@@ -13,6 +41,14 @@ on:
       - "!js/desktop-runtime/**"
       - "crates/**"
       - "hands/**"
+      - "bin/**"
+      - "py/bindings/**"
+      - "third_party/**"
+      - ".dockerignore"
+      - ".node-version"
+      - ".nvmrc"
+      - "tsconfig*.json"
+      - "assets/**"
       - "examples/**"
       - "scripts/**"
       - "docs/**"
@@ -136,28 +172,12 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Select managed container rollout
         id: managed-container
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          rollout=immediate
-          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
-            git fetch --no-tags --depth=1 origin "$BASE_SHA"
-            if git diff --quiet "$BASE_SHA" "$GITHUB_SHA" -- \
-              js/managed/Dockerfile js/managed/wrangler.jsonc js/managed/.dockerignore \
-              js/managed/scripts/prepare-hand-image.mjs js/managed/scripts/bundle-hand-desktop.sh \
-              hands/remote crates/nanocodex-vm/image/toolkit \
-              js/managed/scripts/check-dev-stack.sh \
-              .dockerignore js/phone-cloud Cargo.toml Cargo.lock bin crates examples \
-              js/nanocodex py/bindings third_party \
-              js/managed/scripts/phone-bridge.mjs js/managed/scripts/phone-delegation.mjs \
-              js/managed/scripts/phone-media-diagnostics.mjs \
-              js/managed/src/twilio-voice.ts; then
-              rollout=none
-            fi
-          fi
-          echo "rollout=$rollout" >> "$GITHUB_OUTPUT"
+        run: node scripts/cloudflare/preview-images.mjs
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -186,6 +206,9 @@ jobs:
       - name: Validate egress Worker
         working-directory: js/egress
         run: npx wrangler deploy --dry-run --config wrangler.broker.jsonc
+      - name: Validate email Worker
+        working-directory: js/email
+        run: npx wrangler deploy --dry-run --env=""
       - name: Validate X Worker
         run: pnpm --filter @nanocodex/x-api run build
       # Wrangler invokes plain `docker build`; the CLI override adds GHA cache
@@ -223,7 +246,7 @@ jobs:
         run: npx wrangler versions upload --config wrangler.jsonc --preview-alias "pr-${{ github.event.pull_request.number || github.run_id }}" --message "$DEPLOY_MESSAGE"
 
   image-plan:
-    name: resolve managed image receipts
+    name: select changed Workers and required images
     if: >-
       vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
@@ -233,33 +256,51 @@ jobs:
     environment: cloudflare-production
     permissions:
       contents: read
+      deployments: read
     outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
-      build: ${{ steps.plan.outputs.build }}
+      matrix: ${{ steps.plan.outputs.matrix || '{"image":[]}' }}
+      build: ${{ steps.plan.outputs.build || 'false' }}
+      managed: ${{ steps.release.outputs.managed }}
     env:
+      GH_TOKEN: ${{ github.token }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      DEPLOY_TARGET: ${{ inputs.target }}
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+      - name: Skip superseded push
+        id: current-release
+        run: node scripts/cloudflare/current-production-release.mjs
+      - name: Select changed Workers before scheduling images
+        id: release
+        if: steps.current-release.outputs.active == 'true'
+        run: node scripts/cloudflare/release-plan.mjs plan
       - name: Fingerprint phone image
+        if: steps.release.outputs.managed == 'true'
         id: phone
         run: node scripts/cloudflare/managed-images.mjs fingerprint phone
       - name: Fingerprint sandbox image
+        if: steps.release.outputs.managed == 'true'
         id: sandbox
         run: node scripts/cloudflare/managed-images.mjs fingerprint sandbox
       - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.release.outputs.managed == 'true'
         with:
           path: .ci-images/phone.json
           key: managed-image-v1-${{ steps.phone.outputs.input }}
       - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.release.outputs.managed == 'true'
         with:
           path: .ci-images/sandbox.json
           key: managed-image-v1-${{ steps.sandbox.outputs.input }}
       - name: Select missing images and verify reusable receipts
+        if: steps.release.outputs.managed == 'true'
         id: plan
         run: node scripts/cloudflare/plan-images.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.release.outputs.managed == 'true'
         with:
           name: managed-image-reused
           path: .ci-images/*.json
@@ -276,10 +317,12 @@ jobs:
     environment: cloudflare-production
     permissions:
       contents: read
+      deployments: write
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.image-plan.outputs.matrix) }}
     env:
+      GH_TOKEN: ${{ github.token }}
       CI_TESTS_ENABLED: "false"
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -323,6 +366,10 @@ jobs:
         env:
           IMAGE: ${{ matrix.image }}
         run: node scripts/cloudflare/managed-images.mjs verify "$IMAGE"
+      - name: Retain published image receipt independently of the build cache
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: node scripts/cloudflare/image-receipts.mjs "$IMAGE"
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         if: steps.receipt.outputs.cache-hit != 'true'
         continue-on-error: true
@@ -348,7 +395,7 @@ jobs:
       (github.event_name == 'workflow_dispatch' && inputs.target == 'production'))
     name: build and deploy changed Cloudflare Workers
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     environment: cloudflare-production
     concurrency:
       group: cloudflare-production
@@ -357,6 +404,7 @@ jobs:
       contents: read
       deployments: write
     env:
+      CI_TESTS_ENABLED: "false"
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       DEPLOY_MESSAGE: GitHub Actions production ${{ github.sha }}
@@ -370,18 +418,39 @@ jobs:
         id: current-release
         run: node scripts/cloudflare/current-production-release.mjs
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        if: steps.current-release.outputs.active == 'true'
+        if: steps.current-release.outputs.active == 'true' && needs.image-plan.outputs.managed == 'true'
         with:
           pattern: managed-image-*
           merge-multiple: true
           path: .ci-images
-      - name: Select immutable managed images
-        if: steps.current-release.outputs.active == 'true'
-        run: node scripts/cloudflare/managed-images.mjs config
       - name: Select Workers changed since their successful deployments
         id: plan
         if: steps.current-release.outputs.active == 'true'
         run: node scripts/cloudflare/release-plan.mjs plan
+      - name: Reconcile image receipts after the locked release plan
+        id: image-state
+        if: steps.plan.outputs.managed == 'true'
+        run: node scripts/cloudflare/plan-images.mjs
+      - name: Compute missing receipt cache keys
+        id: missing-images
+        if: steps.image-state.outputs.build == 'true'
+        run: |
+          echo "phone=$(node scripts/cloudflare/image-key.mjs phone)" >> "$GITHUB_OUTPUT"
+          echo "sandbox=$(node scripts/cloudflare/image-key.mjs sandbox)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.image-state.outputs.phone == 'true'
+        with:
+          path: .ci-images/phone.json
+          key: managed-image-v1-${{ steps.missing-images.outputs.phone }}
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.image-state.outputs.sandbox == 'true'
+        with:
+          path: .ci-images/sandbox.json
+          key: managed-image-v1-${{ steps.missing-images.outputs.sandbox }}
+      - name: Check for missing images after recovery
+        id: recovered-images
+        if: steps.image-state.outputs.build == 'true'
+        run: node scripts/cloudflare/plan-images.mjs
       - name: Reuse unchanged WASM outputs
         id: wasm
         if: steps.plan.outputs.wasm == 'true'
@@ -397,6 +466,18 @@ jobs:
       - name: Install only selected application dependencies
         if: steps.plan.outputs.any == 'true'
         run: node scripts/cloudflare/release-plan.mjs install
+      - name: Prepare a builder only for an image missing after locked replan
+        if: steps.recovered-images.outputs.build == 'true'
+        id: recovery-builder
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Expose recovery build cache runtime
+        if: steps.recovered-images.outputs.build == 'true'
+        uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
+      - name: Recover missing images and retain all selected receipts
+        if: steps.plan.outputs.managed == 'true'
+        env:
+          BUILDX_BUILDER: ${{ steps.recovery-builder.outputs.name }}
+        run: node scripts/cloudflare/recover-images.mjs
       - name: Build only selected applications and their dependencies
         if: steps.plan.outputs.any == 'true'
         run: node scripts/cloudflare/release-plan.mjs build

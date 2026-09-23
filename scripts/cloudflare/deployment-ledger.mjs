@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { accountValid, currentWorkerDeployment, providerIdValid, releaseTag, workerScripts } from './live-worker-state.mjs';
 
 const fingerprintValid = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value) && value.length === 64;
 const idValid = value => Number.isSafeInteger(value) && value > 0;
@@ -42,7 +43,8 @@ export function deploymentEnvironment(worker) {
 // API contract: https://docs.github.com/en/rest/deployments/deployments
 // https://docs.github.com/en/rest/deployments/statuses
 export function createDeploymentLedger({ repository = process.env.GITHUB_REPOSITORY,
-  ref = process.env.GITHUB_SHA, request = ghRequest } = {}) {
+  ref = process.env.GITHUB_SHA, request = ghRequest, account = process.env.CLOUDFLARE_ACCOUNT_ID,
+  live = currentWorkerDeployment } = {}) {
   if (typeof repository !== 'string' || /\s/.test(repository)
     || !/^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+$/.test(repository)) {
     throw new Error('Deployment ledger requires a repository');
@@ -52,10 +54,24 @@ export function createDeploymentLedger({ repository = process.env.GITHUB_REPOSIT
   const call = async args => {
     try { return await request(args); } catch { throw failure(); }
   };
-  const status = async (record, state) => {
+  const context = worker => {
+    if (!accountValid(account) || !Object.hasOwn(workerScripts, worker)) throw failure();
+    return { account, script: workerScripts[worker] };
+  };
+  const liveReceipt = async (worker, fingerprint) => {
+    const expected = context(worker);
+    let current;
+    try { current = await live(worker, { account }); } catch { throw failure(); }
+    if (current?.account !== expected.account || current.script !== expected.script
+      || !providerIdValid(current.deploymentId) || !providerIdValid(current.versionId)
+      || current.tag !== releaseTag(fingerprint)) throw failure();
+    return `cf:v1:${current.deploymentId}:${current.versionId}`;
+  };
+  const status = async (record, state, description) => {
     const result = await call({ method: 'POST', path: `${base}/${record.id}/statuses`,
-      body: { state, environment: record.environment, auto_inactive: false } });
-    if (!idValid(result?.id) || result.state !== state || result.environment !== record.environment) throw failure();
+      body: { state, environment: record.environment, auto_inactive: false, ...(description ? { description } : {}) } });
+    if (!idValid(result?.id) || result.state !== state || result.environment !== record.environment
+      || (description && result.description !== description)) throw failure();
   };
   return {
     async lastSuccessfulFingerprint(worker) {
@@ -69,10 +85,15 @@ export function createDeploymentLedger({ repository = process.env.GITHUB_REPOSIT
         if (!idValid(latest?.id) || latest.environment !== environment || latest.production_environment !== true) return null;
         let payload = latest.payload;
         if (typeof payload === 'string') payload = JSON.parse(payload);
-        if (payload?.schema !== 1 || !fingerprintValid(payload.fingerprint)) return null;
+        const expected = context(worker);
+        if (payload?.schema !== 2 || !fingerprintValid(payload.fingerprint)
+          || payload.account !== expected.account || payload.script !== expected.script) return null;
         const statuses = await call({ method: 'GET', path: `${base}/${latest.id}/statuses?per_page=1` });
         if (!Array.isArray(statuses) || statuses.length !== 1 || !idValid(statuses[0]?.id)
           || statuses[0].state !== 'success' || statuses[0].environment !== environment) return null;
+        const description = statuses[0].description;
+        if (typeof description !== 'string' || !/^cf:v1:[a-f0-9-]{36}:[a-f0-9-]{36}$/.test(description)) return null;
+        if (description !== await liveReceipt(worker, payload.fingerprint)) return null;
         return payload.fingerprint;
       } catch { return null; }
     },
@@ -82,12 +103,13 @@ export function createDeploymentLedger({ repository = process.env.GITHUB_REPOSIT
       if (typeof ref !== 'string' || ref.length !== 40 || !/^[a-f0-9]{40}$/.test(ref)) {
         throw new Error('Deployment ledger requires a full commit SHA');
       }
+      const expected = context(worker);
       const result = await call({ method: 'POST', path: base, body: {
-        ref, environment, payload: { schema: 1, fingerprint }, auto_merge: false,
+        ref, environment, payload: { schema: 2, fingerprint, ...expected }, auto_merge: false,
         required_contexts: [], production_environment: true, transient_environment: false,
       } });
       if (!idValid(result?.id) || result.environment !== environment || result.sha !== ref) throw failure();
-      const record = Object.freeze({ id: result.id, environment });
+      const record = Object.freeze({ id: result.id, environment, worker, fingerprint });
       // Caller must await this before ANY external mutation. If interrupted or
       // status creation fails, the newest deployment remains unsafe to skip.
       await status(record, 'in_progress');
@@ -101,8 +123,11 @@ export function createDeploymentLedger({ repository = process.env.GITHUB_REPOSIT
       if (!record || !active.has(record) || !['success', 'failure', 'inactive'].includes(state)) {
         throw new Error('Invalid deployment ledger completion');
       }
-      active.delete(record);
-      await status(record, state);
+      // Verify the sole live version's tag before success. Capture the deployment
+      // identity too: a later rollback to the same tagged version must not reuse it.
+      const description = state === 'success' ? await liveReceipt(record.worker, record.fingerprint) : undefined;
+      active.delete(record); // A status write with an uncertain outcome is never retried.
+      await status(record, state, description);
     },
   };
 }

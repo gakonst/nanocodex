@@ -7,14 +7,17 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { workerSpecs, fingerprintWorkers } from './worker-inputs.mjs';
 import { createDeploymentLedger } from './deployment-ledger.mjs';
-import { fingerprint, validateReceipt } from './managed-images.mjs';
+import { fingerprint } from './managed-images.mjs';
 
 export const planPath = '.ci-release-plan.json';
 export async function releaseFingerprints({cwd=process.cwd(),account=process.env.CLOUDFLARE_ACCOUNT_ID,epoch=process.env.MANAGED_IMAGE_CACHE_EPOCH || '1'}={}) {
   const result = await fingerprintWorkers(cwd);
-  const refs = ['phone','sandbox'].map(image=>validateReceipt(JSON.parse(readFileSync(resolve(cwd,`.ci-images/${image}.json`),'utf8')),
-    image,account,fingerprint(image,account,epoch,cwd)));
-  result.managed = createHash('sha256').update(JSON.stringify([result.managed,...refs])).digest('hex');
+  // Image identity is the audited source key, available before any builder runs.
+  // Validate immutable digest receipts only if managed is actually selected.
+  const images = ['phone','sandbox'].map(image => fingerprint(image, account, epoch, cwd));
+  result.managed = createHash('sha256').update(JSON.stringify([result.managed,...images])).digest('hex');
+  for (const name of Object.keys(result)) result[name] = createHash('sha256')
+    .update(JSON.stringify([account, result[name]])).digest('hex');
   return result;
 }
 export async function selectRelease(fingerprints, {ledger=createDeploymentLedger(), force=false, revision=process.env.GITHUB_SHA}={}) {
@@ -33,16 +36,26 @@ export function readPlan(cwd=process.cwd(), revision=process.env.GITHUB_SHA) {
 }
 export function releaseNeeds(plan) {
   return {any:plan.selected.length>0,wasm:plan.selected.some(name=>workerSpecs[name].needsWasm),
-    workspace:plan.selected.some(name=>name!=='astra'||workerSpecs[name].needsWasm),astra:plan.selected.includes('astra'),managed:plan.selected.includes('managed'),account:plan.selected.includes('account')};
+    workspace:plan.selected.length>0,astra:plan.selected.includes('astra'),managed:plan.selected.includes('managed'),account:plan.selected.includes('account')};
 }
 export function installSelected(plan, run=execFileSync) {
-  const packages=[...new Set([...plan.selected.filter(name=>name!=='astra').map(name=>workerSpecs[name].package),...(releaseNeeds(plan).wasm?['nanocodex','nanocodex-vite']:[])])];
+  const packages=[...new Set([...plan.selected.filter(name=>name!=='astra').map(name=>workerSpecs[name].package),...(plan.selected.includes('astra')?['nanocodex']:[]),...(releaseNeeds(plan).wasm?['nanocodex','nanocodex-vite']:[])])];
   if(packages.length)run('pnpm',['install','--frozen-lockfile','--filter','nanocodex-monorepo',...packages.flatMap(name=>['--filter',`${name}...`])],{stdio:'inherit'});
   if(plan.selected.includes('astra'))run('npm',['ci','--prefix','examples/astra-mpp-trial'],{stdio:'inherit'});
 }
 export function buildSelected(plan, run=execFileSync) {
   const targets=[...new Set(plan.selected.flatMap(name=>workerSpecs[name].buildTargets ?? []))];
-  if(targets.length)run('pnpm',['exec','turbo','run','build',...targets.flatMap(name=>['--filter',name])],{stdio:'inherit'});
+  // Explicit tiers keep JS-only SDK users away from nanocodex's WASM build,
+  // while retaining compiled dependency ordering from a clean checkout.
+  const tiers = [
+    ['nanocodex-tools', 'nanocodex-connect-protocol', 'nanocodex'],
+    ['nanocodex-connect-ui', 'nanocodex-terminal'],
+    ['@nanocodex/connect-api', '@nanocodex/connect-dialog', '@nanocodex/connect-playground', 'nanocodex-web'],
+  ];
+  for (const tier of tiers) {
+    const selected = tier.filter(name => targets.includes(name));
+    if (selected.length) run('pnpm', ['exec','turbo','run','build','--only',...selected.flatMap(name=>['--filter',name])], {stdio:'inherit'});
+  }
   if(plan.selected.includes('managed'))run(process.execPath,['js/managed/scripts/prepare-code-evaluator.mjs'],{stdio:'inherit'});
   if(plan.selected.includes('astra'))run('npm',['run','build:client','--prefix','examples/astra-mpp-trial'],{stdio:'inherit'});
 }

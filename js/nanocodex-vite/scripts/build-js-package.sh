@@ -96,7 +96,15 @@ fingerprint="$({
   wasm-bindgen --version
   printf 'build-mode=%s\n' "$build_mode"
   printf 'worker-bundler-v1-simd\n'
-  cksum < js/nanocodex-vite/scripts/wasm-memory-views.mjs
+  # A source-cache miss must not bless bindings made by older generation policy.
+  for generator in "$script_path" "$cache_helper" \
+    js/nanocodex-vite/scripts/wasm-memory-views.mjs \
+    js/nanocodex/scripts/deduplicate-wasm.mjs \
+    js/nanocodex/scripts/write-package-types.mjs \
+    js/nanocodex/scripts/write-wasm-attestation.mjs \
+    js/nanocodex/scripts/check-managed-wasm.mjs; do
+    cksum < "$generator"
+  done
   if [[ "$build_mode" == release ]]; then
     "$binaryen" --version
   fi

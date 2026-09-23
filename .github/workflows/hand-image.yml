@@ -10,7 +10,9 @@ on:
       - 'bin/**'
       - 'crates/**'
       - 'examples/**'
-      - 'js/nanocodex/**'
+      - 'js/nanocodex/Cargo.toml'
+      - 'js/nanocodex/build.rs'
+      - 'js/nanocodex/src/**'
       - 'py/bindings/**'
       - 'third_party/**'
       - '.github/workflows/hand-image.yml'
@@ -26,7 +28,7 @@ permissions:
 
 concurrency:
   group: hand-image-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}-hand
