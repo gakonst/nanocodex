@@ -46,7 +46,6 @@ async fn nomination_before_deadline(candidate_type: RTCIceCandidateType) {
         .unwrap();
     let (opened, mut opening) = mpsc::channel(1);
     channel.on_open(Box::new(move || {
-        let opened = opened.clone();
         Box::pin(async move {
             let _ = opened.send(()).await;
         })
