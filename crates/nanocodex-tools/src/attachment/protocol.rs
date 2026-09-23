@@ -82,7 +82,7 @@ impl RemoteFrame {
                 session_id,
                 turn_id,
                 call_id,
-                model,
+                model: _,
                 name,
                 input,
                 output_token_budget,
@@ -94,7 +94,6 @@ impl RemoteFrame {
                         .as_ref()
                         .is_some_and(|turn| turn.is_empty() || turn.len() > 256)
                     || !valid_identifier(call_id)
-                    || !valid_identifier(model)
                     || !valid_tool_name(name)
                     || !(input.is_object() || input.is_string())
                     || !positive(*output_token_budget)
@@ -163,6 +162,41 @@ mod tests {
             Ok(RemoteFrame::Ready {})
         ));
         assert!(RemoteFrame::parse(r#"{"type":"ready","protocol_version":1}"#).is_err());
+    }
+
+    #[test]
+    fn model_metadata_is_an_opaque_string() {
+        let base = serde_json::json!({"type":"call","session_id":"session:1","call_id":"call:1","model":"gpt-6-astra","name":"lookup","input":{},"output_token_budget":1000,"output_byte_budget":131072,"deadline_at":1});
+        for model in [
+            "auto",
+            "@cf/zai-org/glm-5.3",
+            "moonshotai/kimi-k3",
+            "xiaomi/mimo-v2.6-pro",
+            "",
+            "arbitrary model 名称",
+            "x\n\t\0",
+            &"x".repeat(1024),
+        ] {
+            let mut frame = base.clone();
+            frame["model"] = model.into();
+            assert!(
+                matches!(RemoteFrame::parse(&frame.to_string()), Ok(RemoteFrame::Call { model: parsed, .. }) if parsed == model)
+            );
+        }
+        for value in [
+            serde_json::json!(null),
+            serde_json::json!(42),
+            serde_json::json!({}),
+        ] {
+            let mut frame = base.clone();
+            frame["model"] = value;
+            assert!(RemoteFrame::parse(&frame.to_string()).is_err());
+        }
+        for field in ["session_id", "call_id", "name"] {
+            let mut frame = base.clone();
+            frame[field] = "provider/name".into();
+            assert!(RemoteFrame::parse(&frame.to_string()).is_err());
+        }
     }
 
     #[test]
