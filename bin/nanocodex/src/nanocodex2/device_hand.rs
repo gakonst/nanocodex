@@ -1,5 +1,5 @@
 //! One account Hand per computer, shared by the terminal and desktop clients.
-//! Each client holds a local IPC lease through a child process. A single
+//! The CLI holds an in-process IPC lease; other clients may use the helper. A single
 //! publisher is owned by the OS service and survives all client disconnects.
 use clap::Args;
 use nanocodex_managed::{ManagedClient, ManagedError};
@@ -16,7 +16,7 @@ use std::{
 };
 use tokio::{
     io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader},
-    process::{Child, Command},
+    process::Command,
 };
 use tokio_util::sync::CancellationToken;
 
@@ -45,13 +45,65 @@ pub(crate) struct DeviceHand {
     parent_pipe: bool,
 }
 
+/// Owns the observer while the interface and agent connect independently.
+/// Dropping an unfinished start cancels it and releases only its local IPC lease.
+pub(crate) struct BackgroundHandTask {
+    cancel: CancellationToken,
+    task: tokio::task::JoinHandle<Option<String>>,
+}
+impl BackgroundHandTask {
+    pub(crate) fn start(client: ManagedClient) -> Self {
+        Self::start_with(async move { BackgroundHand::start(&client).await })
+    }
+
+    fn start_with(
+        start: impl std::future::Future<Output = Result<BackgroundHand, ManagedError>> + Send + 'static,
+    ) -> Self {
+        let cancel = CancellationToken::new();
+        let stopping = cancel.clone();
+        let task = tokio::spawn(async move {
+            let result = {
+                let _timing = super::startup_timing::Stage::new("hand_observer");
+                tokio::select! {
+                    biased;
+                    () = stopping.cancelled() => return None,
+                    result = start => result,
+                }
+            };
+            match result {
+                Ok(mut device) => {
+                    stopping.cancelled().await;
+                    device.stop().await;
+                    None
+                }
+                Err(error) => Some(error.to_string()),
+            }
+        });
+        Self { cancel, task }
+    }
+
+    pub(crate) async fn stop(mut self) {
+        self.cancel.cancel();
+        if let Ok(Some(error)) = (&mut self.task).await {
+            // Report after terminal restoration, not over an active TUI frame.
+            eprintln!("Warning: local computer Hand unavailable: {error}");
+        }
+    }
+}
+impl Drop for BackgroundHandTask {
+    fn drop(&mut self) {
+        self.cancel.cancel();
+        self.task.abort();
+    }
+}
+
 pub(crate) struct BackgroundHand {
-    child: Option<Child>,
+    lease: Option<transport::Client>,
 }
 impl BackgroundHand {
     pub(crate) async fn start(client: &ManagedClient) -> Result<Self, ManagedError> {
         if std::env::var_os("NANOCODEX_DISABLE_HAND").is_some_and(|v| v == "1") {
-            return Ok(Self { child: None });
+            return Ok(Self { lease: None });
         }
         let target = client.account_attachment_target()?;
         let mut origin = target.endpoint().clone();
@@ -65,52 +117,37 @@ impl BackgroundHand {
         origin.set_path("");
         #[cfg(any(target_os = "macos", target_os = "linux"))]
         ensure_service().await?;
-        let mut command = Command::new(std::env::current_exe().map_err(error)?);
-        #[cfg(windows)]
-        command.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
-        let mut child = command
-            .args(["__device-hand", "--parent-pipe"])
-            .env("NANOCODEX_API_KEY", target.bearer())
-            .env("NANOCODEX_MANAGED_URL", origin.as_str())
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(log_file(&home()?.join(".nanocodex/logs"), "hand.log")?)
-            .kill_on_drop(true)
-            .spawn()
-            .map_err(error)?;
-        let mut lines = BufReader::new(child.stdout.take().unwrap()).lines();
-        let ready = tokio::time::timeout(Duration::from_secs(30), async {
-            let line = lines.next_line().await.map_err(error)?.ok_or_else(|| {
-                error("The computer Hand observer exited before connecting. Check ~/.nanocodex/logs/hand.log and the service owner's saved login; the CLI and service must use the same account. Set NANOCODEX_DISABLE_HAND=1 to continue without a local Hand.")
-            })?;
-            observer_ready(&line)
-        }).await;
-        match ready {
-            Ok(Ok(())) => {}
-            result => {
-                let _ = child.kill().await;
-                return Err(match result {
-                    Ok(Err(e)) => error(e.to_string().replace(target.bearer(), "[redacted]")),
-                    _ => error(
-                        "Timed out connecting to the computer Hand OS service. Check its logs and saved login; the CLI and service must use the same account. Set NANOCODEX_DISABLE_HAND=1 to continue without a local Hand.",
-                    ),
-                });
-            }
-        }
-        // Keep the observer's status pipe drained for its entire lifetime.
-        tokio::spawn(async move { while matches!(lines.next_line().await, Ok(Some(_))) {} });
-        Ok(Self { child: Some(child) })
+        let directory = directory(origin.as_str(), target.bearer()).await?;
+        Self::observe(&directory)
+            .await
+            .map_err(|e| error(e.to_string().replace(target.bearer(), "[redacted]")))
     }
-    pub(crate) async fn stop(&mut self) {
-        if let Some(mut child) = self.child.take() {
-            drop(child.stdin.take());
-            if tokio::time::timeout(Duration::from_secs(25), child.wait())
-                .await
-                .is_err()
-            {
-                let _ = child.kill().await;
+
+    async fn observe(directory: &Path) -> Result<Self, ManagedError> {
+        // The CLI can own the same private IPC lease as the standalone helper.
+        // No second CLI process, credential read, HTTP pool or status pipe is
+        // needed merely to keep the OS-owned publisher visible to this client.
+        let socket = socket_path(directory)?;
+        tokio::time::timeout(Duration::from_secs(30), async {
+            let lease = loop {
+                match transport::connect(&socket).await {
+                    Ok(stream) => break stream,
+                    Err(_) => tokio::time::sleep(Duration::from_millis(100)).await,
+                }
+            };
+            loop {
+                if let Ok(status) = fs::read_to_string(directory.join("status.json")) {
+                    observer_ready(&status)?;
+                    return Ok(Self { lease: Some(lease) });
+                }
+                tokio::time::sleep(Duration::from_millis(100)).await;
             }
-        }
+        }).await.map_err(|_| error("Timed out connecting to the computer Hand OS service. Check its logs and saved login; the CLI and service must use the same account."))?
+    }
+
+    pub(crate) async fn stop(&mut self) {
+        let _timing = super::startup_timing::Stage::new("hand_observer_stop");
+        drop(self.lease.take());
     }
 }
 
@@ -902,6 +939,66 @@ async fn supervise_factory(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[tokio::test]
+    async fn pending_observer_does_not_block_client_or_close() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+        struct Dropped(Arc<AtomicBool>);
+        impl Drop for Dropped {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let dropped = Arc::new(AtomicBool::new(false));
+        let owned = Dropped(dropped.clone());
+        let observer = BackgroundHandTask::start_with(async move {
+            let _owned = owned;
+            std::future::pending::<Result<BackgroundHand, ManagedError>>().await
+        });
+        tokio::task::yield_now().await;
+        // The interface can run while observer readiness is still pending.
+        assert!(!dropped.load(Ordering::SeqCst));
+        tokio::time::timeout(Duration::from_secs(1), observer.stop())
+            .await
+            .unwrap();
+        assert!(dropped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn local_observer_releases_only_its_lease_on_close() {
+        let root = tempfile::tempdir().unwrap();
+        let directory = root.path().join(digest(&root.path().to_string_lossy()));
+        fs::create_dir(&directory).unwrap();
+        fs::write(
+            directory.join("status.json"),
+            r#"{"status":"connected","machine":{"id":"fixture"}}"#,
+        )
+        .unwrap();
+        let socket = socket_path(&directory).unwrap();
+        let mut listener = transport::Listener::bind(&socket).unwrap();
+        let observer_path = directory.clone();
+        let task =
+            tokio::spawn(async move { BackgroundHand::observe(&observer_path).await.unwrap() });
+        let mut accepted = listener.accept().await.unwrap();
+        let mut observer = task.await.unwrap();
+        observer.stop().await;
+        let mut byte = [0];
+        assert_eq!(
+            tokio::time::timeout(Duration::from_secs(1), accepted.read(&mut byte))
+                .await
+                .unwrap()
+                .unwrap(),
+            0
+        );
+        // Closing a client did not close the publisher listener.
+        let second_path = socket.clone();
+        let second = tokio::spawn(async move { transport::connect(&second_path).await.unwrap() });
+        let _accepted = listener.accept().await.unwrap();
+        let _second = second.await.unwrap();
+    }
+
     #[test]
     fn observer_failure_reaches_cli_startup() {
         assert!(observer_ready(r#"{"status":"connecting","machine":{"id":"test"}}"#).is_ok());

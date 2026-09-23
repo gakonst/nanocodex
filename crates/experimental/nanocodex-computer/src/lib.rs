@@ -8,6 +8,8 @@
 //! an executable, inherit credentials, or change trusted runtime configuration.
 
 pub mod provision;
+#[cfg(unix)]
+mod startup_cache;
 
 use async_trait::async_trait;
 use base64::{Engine as _, engine::general_purpose::STANDARD};
@@ -30,6 +32,24 @@ use tokio::{
 };
 
 const PROVIDER_STARTUP_TIMEOUT: Duration = Duration::from_secs(120);
+const PROVIDER_ENVIRONMENT: &[&str] = &[
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "TMPDIR",
+    "TEMP",
+    "SystemRoot",
+    "LOCALAPPDATA",
+    "DISPLAY",
+    "XAUTHORITY",
+    "WAYLAND_DISPLAY",
+    "HYPRLAND_INSTANCE_SIGNATURE",
+    "XDG_RUNTIME_DIR",
+    "DBUS_SESSION_BUS_ADDRESS",
+    "LANG",
+    "SKY_ENABLE_AUDIO",
+];
 
 /// Trusted launch configuration, supplied by the embedding application.
 #[derive(Clone, Debug)]
@@ -38,6 +58,8 @@ pub struct ComputerConfig {
     pub args: Vec<OsString>,
     pub environment: BTreeMap<OsString, OsString>,
     provider_catalog: Option<Vec<ProviderTool>>,
+    #[cfg(unix)]
+    catalog_cache: Option<startup_cache::CatalogCache>,
 }
 
 impl ComputerConfig {
@@ -47,6 +69,8 @@ impl ComputerConfig {
             args: Vec::new(),
             environment: BTreeMap::new(),
             provider_catalog: None,
+            #[cfg(unix)]
+            catalog_cache: None,
         }
     }
 
@@ -123,11 +147,26 @@ pub struct ComputerTools {
     catalog: Arc<Vec<ProviderTool>>,
 }
 impl ComputerTools {
-    /// Discover every MCP tool before publishing its exact description and schema.
+    /// Register the exact discovered catalog, reusing a recent managed-version
+    /// catalog when available. Each execution process still discovers and checks
+    /// its live catalog before invoking any tool.
     /// A trusted 120-second deadline bounds initialization and complete catalog
     /// discovery together, independently of provider tool arguments.
     pub async fn connect(mut config: ComputerConfig) -> Result<Self, ToolError> {
+        #[cfg(unix)]
+        if let Some(catalog) = config
+            .catalog_cache
+            .as_ref()
+            .and_then(|cache| cache.load(&config))
+        {
+            config.provider_catalog = Some(catalog);
+            return Ok(Self::local(config));
+        }
         let process = Process::start(&config).await?;
+        #[cfg(unix)]
+        if let Some(cache) = &config.catalog_cache {
+            cache.save(&config, &process.catalog);
+        }
         config.provider_catalog = Some(process.catalog.clone());
         Ok(Self::local(config))
     }
@@ -398,24 +437,7 @@ impl Process {
         command.args(&config.args).env_clear();
         // Desktop connection and OS home variables only. Account/API tokens do
         // not cross into a model-controlled JavaScript process.
-        for name in [
-            "PATH",
-            "HOME",
-            "USER",
-            "LOGNAME",
-            "TMPDIR",
-            "TEMP",
-            "SystemRoot",
-            "LOCALAPPDATA",
-            "DISPLAY",
-            "XAUTHORITY",
-            "WAYLAND_DISPLAY",
-            "HYPRLAND_INSTANCE_SIGNATURE",
-            "XDG_RUNTIME_DIR",
-            "DBUS_SESSION_BUS_ADDRESS",
-            "LANG",
-            "SKY_ENABLE_AUDIO",
-        ] {
+        for name in PROVIDER_ENVIRONMENT {
             if let Some(value) = std::env::var_os(name) {
                 command.env(name, value);
             }
@@ -451,6 +473,10 @@ impl Process {
             .as_ref()
             .is_some_and(|expected| expected != &catalog)
         {
+            #[cfg(unix)]
+            if let Some(cache) = &config.catalog_cache {
+                cache.invalidate(config);
+            }
             return Err(
                 "CUA provider catalog changed; reconnect the attachment before invoking it".into(),
             );
@@ -492,19 +518,11 @@ impl Process {
                 }
             }
         }
-        let mut names = std::collections::BTreeSet::new();
         let catalog: Vec<ProviderTool> = tools
             .into_iter()
             .map(serde_json::from_value)
             .collect::<Result<_, _>>()?;
-        for tool in &catalog {
-            if tool.name.is_empty() || !names.insert(tool.name.clone()) {
-                return Err("CUA provider tool names must be non-empty and unique".into());
-            }
-            if !tool.input_schema.is_object() {
-                return Err("CUA provider tool inputSchema must be a JSON schema object".into());
-            }
-        }
+        validate_catalog(&catalog)?;
         Ok(catalog)
     }
     async fn send(&mut self, value: Value) -> Result<(), ToolError> {
@@ -548,6 +566,19 @@ impl Process {
                 .ok_or_else(|| "CUA response is missing its result".into());
         }
     }
+}
+
+fn validate_catalog(catalog: &[ProviderTool]) -> Result<(), ToolError> {
+    let mut names = std::collections::BTreeSet::new();
+    for tool in catalog {
+        if tool.name.is_empty() || !names.insert(&tool.name) {
+            return Err("CUA provider tool names must be non-empty and unique".into());
+        }
+        if !tool.input_schema.is_object() {
+            return Err("CUA provider tool inputSchema must be a JSON schema object".into());
+        }
+    }
+    Ok(())
 }
 
 /// Translate MCP content into the same multimodal function output used by

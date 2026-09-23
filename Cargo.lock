@@ -5868,6 +5868,7 @@ version = "0.6.4"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
+ "libc",
  "nanocodex-oai-api",
  "serde",
  "serde_json",

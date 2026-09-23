@@ -193,10 +193,19 @@ fn try_main() -> Result<()> {
     if let Some(Command::VmRunConfig(command)) = &cli.command {
         return command.run();
     }
-    tokio::runtime::Builder::new_multi_thread()
+    run_with_runtime(run(cli))
+}
+
+fn run_with_runtime(future: impl std::future::Future<Output = Result<()>>) -> Result<()> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .build()?
-        .block_on(run(cli))
+        .build()?;
+    let result = runtime.block_on(future);
+    // Application cleanup has completed. Optional MCP discovery can still own a
+    // blocking DNS lookup, which Tokio cannot cancel. Do not let that lookup
+    // hold the terminal process open until the system resolver times out.
+    runtime.shutdown_timeout(std::time::Duration::from_millis(100));
+    result
 }
 
 fn process_exit_code(error: &eyre::Report) -> u8 {
@@ -287,6 +296,43 @@ async fn run(cli: Cli) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_shutdown_does_not_wait_for_background_blocking_work() {
+        use std::{
+            sync::mpsc,
+            time::{Duration, Instant},
+        };
+
+        for fails in [false, true] {
+            let (release, blocked) = mpsc::channel();
+            let (finished, completion) = mpsc::channel();
+            let started = Instant::now();
+            let result = run_with_runtime(async move {
+                let (ready, received) = tokio::sync::oneshot::channel();
+                drop(tokio::task::spawn_blocking(move || {
+                    let _ = ready.send(());
+                    let _ = blocked.recv_timeout(Duration::from_secs(5));
+                    let _ = finished.send(());
+                }));
+                received.await.unwrap();
+                if fails {
+                    Err(eyre!("synthetic runtime failure"))
+                } else {
+                    Ok(())
+                }
+            });
+            let elapsed = started.elapsed();
+            // Release our synthetic blocking task even if the timing assertion fails.
+            let _ = release.send(());
+            completion.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "shutdown took {elapsed:?}"
+            );
+            assert_eq!(result.is_err(), fails);
+        }
+    }
 
     #[test]
     fn cookie_commands_auto_detect_supported_browsers_for_an_exact_origin() {

@@ -12,6 +12,20 @@ only the managed upstream launcher. There is no sibling, PATH, or source-built
 custom runtime fallback. Installation and operating-system permission grants
 remain host operations.
 
+Managed macOS startup reuses a successful deep signature verification for at most
+one hour while a complete recursive filesystem fingerprint stays unchanged. The
+fingerprint includes inode/device, file type, permissions, ownership, size, mtime,
+ctime and internal symlink targets for every bundle entry. New or changed resources,
+external symlinks, expiry and missing/invalid cache files trigger the original full
+signature, signing identity, supported-build and runtime checks. Cache records are
+private and bounded, and cache write failures do not prevent verified startup.
+Generated host assets are still compared byte for byte on every discovery.
+
+Dropping macOS provisioning cancels its owned command process group and reaps
+the direct child. Disk-image detach still runs after cancellation, with a ten-second
+deadline; failed detach retains staging. Embedders must let the blocking installer
+finish during runtime teardown so first-install cleanup can complete.
+
 ```rust,ignore
 use nanocodex_computer::{ComputerConfig, ComputerTools};
 
@@ -27,7 +41,12 @@ of OS/session environment variables is inherited. Account credentials are not
 inherited automatically.
 
 Connection sends MCP initialization and discovers every `tools/list` page before
-registration. `catalog()` retains the complete upstream definitions, including
+registration, except when reusing a recent managed macOS catalog. That private,
+bounded cache preserves the exact observed catalog and is keyed to the complete
+verified bundle fingerprint, the content-addressed host, and launch configuration.
+Each conversation still starts its provider, discovers the live catalog and rejects
+any mismatch before sending `tools/call`. Explicit provider configurations always
+discover their catalog directly. `catalog()` retains the complete upstream definitions, including
 metadata and hidden lifecycle hooks. `tools()` exposes model-visible tools;
 `tool(name)` also allows trusted host code to invoke hidden hooks. Tool names use
 the `mcp__cua_repl__` namespace. Descriptions, input schemas, output schemas, and

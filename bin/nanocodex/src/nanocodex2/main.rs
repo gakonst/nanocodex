@@ -46,6 +46,7 @@ mod screen_wayland_input;
 mod service;
 #[allow(dead_code)]
 mod skill;
+mod startup_timing;
 #[allow(dead_code, unused_imports)]
 mod tui;
 #[cfg(any(
@@ -549,6 +550,7 @@ fn main() -> ExitCode {
 }
 
 fn try_main() -> Result<(), ManagedError> {
+    let _startup = startup_timing::Stage::new("process");
     let _ = dotenvy::dotenv();
     #[cfg(target_os = "linux")]
     if std::env::var(screen_wayland_encoder::HELPER_ENV).as_deref() == Ok("1") {
@@ -678,21 +680,17 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         Some(Command::Attach(Attach { agent: Some(agent) })) => agent.managed_origin.as_deref(),
         _ => None,
     };
-    let client = client_from_environment(managed_origin)?;
-    let mut device = if matches!(
+    let client = {
+        let _timing = startup_timing::Stage::new("managed_client");
+        client_from_environment(managed_origin)?
+    };
+    // The OS-owned Hand publishes independently. Its local observer must not
+    // hold the terminal or inference behind service startup or IPC readiness.
+    let device = matches!(
         &command,
         None | Some(Command::Attach(_) | Command::Run(_) | Command::Voice(_))
-    ) {
-        match device_hand::BackgroundHand::start(&client).await {
-            Ok(device) => Some(device),
-            Err(error) => {
-                eprintln!("Warning: local computer Hand unavailable: {error}");
-                None
-            }
-        }
-    } else {
-        None
-    };
+    )
+    .then(|| device_hand::BackgroundHandTask::start(client.clone()));
     let result = match command {
         Some(
             Command::Tui(_)
@@ -764,7 +762,7 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         Some(Command::VmCloneImage { .. }) => unreachable!("handled before managed client setup"),
         None => new_tui(&client).await,
     };
-    if let Some(device) = device.as_mut() {
+    if let Some(device) = device {
         device.stop().await;
     }
     result
@@ -1089,6 +1087,7 @@ async fn open_workspace_agent_with_settings(
     settings: AgentSettings,
     event_observer: Option<tokio::sync::mpsc::UnboundedSender<ManagedEvent>>,
 ) -> Result<(Nanocodex, AgentEvents, String, std::path::PathBuf), ManagedError> {
+    let _opening = startup_timing::Stage::new("workspace_open");
     let config =
         HostConfig::load().map_err(|error| ManagedError::Configuration(error.to_string()))?;
     let workspace = config.workspace().to_path_buf();
@@ -1104,13 +1103,19 @@ async fn open_workspace_agent_with_settings(
     let mut tools = Tools::builder()
         .without_defaults()
         .add(WorkspaceTools::new(&workspace));
-    if let Some(config) = nanocodex_computer::ComputerConfig::discover_or_install()
-        .await
-        .map_err(ManagedError::Configuration)?
-    {
-        let computer = nanocodex_computer::ComputerTools::connect(config)
+    let computer_config = {
+        let _timing = startup_timing::Stage::new("computer_discovery");
+        nanocodex_computer::ComputerConfig::discover_or_install()
             .await
-            .map_err(|error| ManagedError::Configuration(error.to_string()))?;
+            .map_err(ManagedError::Configuration)?
+    };
+    if let Some(config) = computer_config {
+        let computer = {
+            let _timing = startup_timing::Stage::new("computer_catalog");
+            nanocodex_computer::ComputerTools::connect(config)
+                .await
+                .map_err(|error| ManagedError::Configuration(error.to_string()))?
+        };
         for tool in computer.tools() {
             tools = tools.add(tool);
         }
@@ -1137,7 +1142,10 @@ async fn open_workspace_agent_with_settings(
         Some(observer) => builder.event_observer(observer),
         None => builder,
     };
-    let (agent, events) = builder.build().await.map_err(agent_error)?;
+    let (agent, events) = {
+        let _timing = startup_timing::Stage::new("managed_backend");
+        builder.build().await.map_err(agent_error)?
+    };
     let agent_id = agent.agent_id().to_owned();
     Ok((agent, events, agent_id, workspace))
 }
