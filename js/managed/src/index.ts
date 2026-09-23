@@ -297,7 +297,7 @@ import {
   type HostPrincipalEnv,
 } from "./host-principals";
 import { routeManagedRealtimeTransport } from "./managed-realtime-transport";
-import { managedAccessResponse, MANAGED_ACCESS_TTL_MS } from "./managed-access";
+import { managedAccessResponse, recordManagedSessionTiming, MANAGED_ACCESS_TTL_MS } from "./managed-access";
 import {
   HistorySearchError,
   MAX_HISTORY_SEARCH_LIMIT,
@@ -1444,12 +1444,20 @@ async function managedFetch(
   clientIngressColo = normalizeProviderColo(request.cf?.colo),
 ): Promise<Response> {
   const began = performance.now();
+  const startedAt = Date.now();
   beginHandTiming(request);
   const response = await managedAccessResponse(request, await managedFetchRoute(request, env, ctx, trustedAgentPrincipal, clientIngressColo), env);
   const path = new URL(request.url).pathname;
-  if (path.startsWith("/v1/agents")) console.info({ type: "managed.request",
-    request_id: response.headers.get("x-nanocodex-request-id"), method: request.method,
-    path, status: response.status, duration_ms: performance.now() - began });
+  if (path.startsWith("/v1/agents")) {
+    try {
+      // These are this handler's I/O-gated clocks, not platform eventTimestamp
+      // or CPU time. Keep both boundaries to expose pre-handler/clock gaps.
+      console.info({ type: "managed.request",
+        request_id: response.headers.get("x-nanocodex-request-id"), method: request.method,
+        path, status: response.status, duration_ms: performance.now() - began,
+        started_at_ms: startedAt, finished_at_ms: Date.now() });
+    } catch { /* Passive timing must not fail a successful response. */ }
+  }
   return finishHandTiming(request, response);
 }
 
@@ -2319,10 +2327,15 @@ async function managedFetchRoute(
         const cursor = url.searchParams.get("cursor");
         if (cursor !== null) socketQuery.set("cursor", cursor);
       }
-      return stub.fetch(
-        `https://session.internal/${resource === "ws" ? "socket" : resource}?${socketQuery}`,
-        new Request(request, { headers: sessionHeaders }),
-      );
+      const sessionStarted = performance.now();
+      try {
+        return await stub.fetch(
+          `https://session.internal/${resource === "ws" ? "socket" : resource}?${socketQuery}`,
+          new Request(request, { headers: sessionHeaders }),
+        );
+      } finally {
+        recordManagedSessionTiming(request, performance.now() - sessionStarted);
+      }
     }
     if (resource === "events" || resource === "events/history" || resource === "capacity") {
       if (request.method !== "GET") return json({ error: "method_not_allowed" }, { status: 405 });
