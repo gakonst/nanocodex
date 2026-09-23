@@ -1881,7 +1881,7 @@ async fn run_inner(
         }
     };
     let mut reload_requested = false;
-    let mut terminal = TerminalSession::enter().map_err(terminal_error)?;
+    let mut terminal = TerminalSession::enter().await.map_err(terminal_error)?;
     let mut input = EventStream::new();
     let mut scheduler = RenderScheduler::new(STREAM_FRAME_INTERVAL, Instant::now());
     let mut runtime = DriverRuntime {

@@ -53,8 +53,10 @@ describe("Session-owned credential authority", () => {
         const scoped = scopedManagedModelEgress(binding, storageId, subject, undefined, pin);
         await scoped.fetch("https://nanocodex.internal/v1/responses", { headers: {
           "x-nanocodex-subject": storageId, "x-nanocodex-chatgpt-account-id": "spoofed",
+          "x-nanocodex-placement-colo": "NRT",
         } });
         expect(received[0]!.headers.get("x-nanocodex-chatgpt-account-id")).toBe(pin ?? null);
+        expect(received[0]!.headers.has("x-nanocodex-placement-colo")).toBe(false);
         expect(received[0]!.headers.get("x-nanocodex-subject")).toBe(subject);
       }
     }
@@ -179,6 +181,7 @@ describe("Session-owned credential authority", () => {
         const subject = managedCredentialSubject(stub.id.toString());
         const resolve = await stub.fetch(`https://session.internal/credential-owner?subject=${subject}`);
         expect(resolve.status).toBe(direct && lifecycle === "active" ? 200 : 404);
+        await resolve.body?.cancel();
         const voice = await stub.fetch("https://session.internal/credential-subject", { headers: {
           "x-nanocodex-owner-id": ownerId,
           "x-nanocodex-session-organization-id": "22222222-2222-4222-8222-222222222222",
@@ -198,6 +201,7 @@ describe("Session-owned credential authority", () => {
         } : undefined;
         expect(await stub.resolveCredentialSubject(assertions)).toEqual(expected);
         if (voice.ok) expect(await voice.json()).toEqual(expected);
+        else await voice.body?.cancel();
         for (const field of ["x-nanocodex-owner-id", "x-nanocodex-session-organization-id", "x-nanocodex-session-team-id", "x-nanocodex-authorization-epoch"]) {
           expect(await stub.resolveCredentialSubject({ ...assertions, [field]: "invalid" })).toBeUndefined();
         }
@@ -261,6 +265,9 @@ describe("Session-owned credential authority", () => {
           MANAGED_AGENT_DIRECT_CREDENTIALS: String(direct),
           NANOCODEX: { fetch: async () => { binds += 1; return new Response(null, { status: 204 }); } },
           NANOCODEX_USERS: { getByName: () => ({ fetch: async () => new Response(null, { status: 204 }) }) },
+          // Initialization warms personalization in the background. Keep this
+          // ownership fixture from starting unrelated durable memory work.
+          NANOCODEX_MEMORY: { getByName: () => ({ fetch: async () => Response.json({ snapshot: null }) }) },
         };
         Object.defineProperty(session, "env", { value: runtimeEnv });
         const id = state.id.toString();

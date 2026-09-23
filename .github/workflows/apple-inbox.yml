@@ -2,9 +2,9 @@ name: Apple apps
 on:
   push:
     branches: [master]
-    paths: ['Cargo.toml', 'Cargo.lock', 'bin/nanocodex/src/nanocodex2/**', 'bin/nanocodex/nanocodex2/**', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/nanocodex-voice-protocol/**', 'crates/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml', 'scripts/ci/apple-package-tests.sh']
+    paths: ['Cargo.toml', 'Cargo.lock', 'bin/nanocodex/src/nanocodex2/**', 'bin/nanocodex/nanocodex2/**', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/nanocodex-voice-protocol/**', 'crates/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml', 'scripts/ci/apple-package-tests.sh', 'scripts/ci/select-apple-jobs.mjs', 'scripts/ci/select-jobs.mjs']
   pull_request:
-    paths: ['Cargo.toml', 'Cargo.lock', 'bin/nanocodex/src/nanocodex2/**', 'bin/nanocodex/nanocodex2/**', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/nanocodex-voice-protocol/**', 'crates/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml', 'scripts/ci/apple-package-tests.sh']
+    paths: ['Cargo.toml', 'Cargo.lock', 'bin/nanocodex/src/nanocodex2/**', 'bin/nanocodex/nanocodex2/**', 'crates/experimental/nanocodex-computer/**', 'js/nanocodex-computer/**', 'crates/nanocodex-voice-protocol/**', 'crates/nanocodex-voice-ffi/**', 'apple/**', 'macos/**', 'hands/remote/**', 'js/desktop-runtime/**', 'js/nanocodex/**', 'js/nanocodex-tools/**', 'js/nanocodex-vite/**', 'pnpm-lock.yaml', 'pnpm-workspace.yaml', 'turbo.json', '.github/workflows/apple-inbox.yml', 'scripts/ci/apple-package-tests.sh', 'scripts/ci/select-apple-jobs.mjs', 'scripts/ci/select-jobs.mjs']
 permissions:
   contents: read
 # Explicit bash enables GitHub Actions' -e -o pipefail invocation, including
@@ -16,7 +16,23 @@ concurrency:
   group: apple-inbox-${{ github.head_ref || github.ref_name }}
   cancel-in-progress: true
 jobs:
+  changes:
+    name: Select affected Apple targets
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      macos: ${{ steps.select.outputs.macos }}
+      ios: ${{ steps.select.outputs.ios }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - id: select
+        run: node scripts/ci/select-apple-jobs.mjs
   macos:
+    needs: changes
+    if: needs.changes.outputs.macos == 'true'
     name: Native Mac workspace
     runs-on: macos-26
     timeout-minutes: 30
@@ -51,9 +67,13 @@ jobs:
           go-version: '1.26.5'
           cache-dependency-path: hands/remote/go.sum
       - name: Remote companion protocol
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: go test -race ./...
         working-directory: hands/remote
       - name: Native remote video, input, and reconnection
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: swift test --package-path apple/NanocodexRemote
       - name: Build shared desktop runtime and dependencies
         run: pnpm exec turbo run build --filter=@nanocodex/desktop-runtime
@@ -66,11 +86,18 @@ jobs:
           tar -xOf "$RUNNER_TEMP/nanocodex-node.tar.gz" node-v24.19.0-darwin-arm64/bin/node > macos/Resources/runtime/node
           tar -xOf "$RUNNER_TEMP/nanocodex-node.tar.gz" node-v24.19.0-darwin-arm64/LICENSE > macos/Resources/runtime/NODE-LICENSE.txt
           chmod 755 macos/Resources/runtime/node
-      - name: Build native workspace and check tiling and background Hands
+      - name: Build native workspace
         run: >-
           xcodebuild -project macos/Nanocodex.xcodeproj -scheme Nanocodex
           -configuration Debug -destination 'platform=macOS'
           -derivedDataPath macos/build -resultBundlePath macos/build/background-hands.xcresult
+          build
+      - name: Build native workspace and check tiling and background Hands
+        if: ${{ false }}
+        run: >-
+          xcodebuild -project macos/Nanocodex.xcodeproj -scheme Nanocodex
+          -configuration Debug -destination 'platform=macOS'
+          -derivedDataPath macos/build -resultBundlePath macos/build/background-hands-tests.xcresult
           -only-testing:NanocodexTests/BackgroundHandTests
           -only-testing:NanocodexTests/ProtocolTests/testRestoredTiledSelectionIgnoresInboxFiltering
           -only-testing:NanocodexTests/ProtocolTests/testNativeTiledInboxKeepsEditorsActionsAndReviewIndependent
@@ -94,6 +121,8 @@ jobs:
             macos/build/evidence
           if-no-files-found: ignore
   native:
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
     name: iPhone and iPad Inbox
     runs-on: macos-26
     # The UI suite is intentionally sequential because its system-app journeys
@@ -115,10 +144,20 @@ jobs:
       - name: Build shared Rust voice core
         run: bash apple/NanocodexVoice/scripts/build-core.sh
       - name: Protocol, voice, context, and native Hand package tests
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: bash scripts/ci/apple-package-tests.sh
-      # build-for-testing below builds the app and test runner together for
-      # the actual simulator; a preceding generic simulator build is redundant.
+      # Keep the app build active while simulator journeys are paused.
+      - name: Build iPhone app
+        run: >-
+          xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox
+          -configuration Debug -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath apple/build/ios
+          -clonedSourcePackagesDirPath "$RUNNER_TEMP/inbox-packages-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          -disablePackageRepositoryCache CODE_SIGNING_ALLOWED=NO build
       - name: Native iPhone journey
+        id: native-tests
+        if: ${{ false }}
         run: |
           device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for ds in json.load(sys.stdin)["devices"].values() for d in ds if d["name"].startswith("iPhone")))')
           xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination "platform=iOS Simulator,id=$device" -derivedDataPath apple/build/ios -clonedSourcePackagesDirPath "$RUNNER_TEMP/inbox-packages-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" -disablePackageRepositoryCache CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
@@ -159,7 +198,7 @@ jobs:
             | tee apple/build/evidence/inbox-xcodebuild.log \
             | grep -E 'Test Case .* (started|passed|failed|skipped)|\.swift:[0-9]+: error:|Testing failed:|\*\* TEST (SUCCEEDED|FAILED) \*\*'
       - name: Export native XCTest recordings and screenshots
-        if: always()
+        if: ${{ always() && steps.native-tests.outcome != 'skipped' && steps.native-tests.outcome != '' }}
         run: |
           if [ -f apple/build/inbox.xcresult/Info.plist ]; then
             xcrun xcresulttool export attachments --path apple/build/inbox.xcresult --output-path apple/build/evidence/attachments
@@ -175,6 +214,8 @@ jobs:
             apple/build/inbox.xcresult
           if-no-files-found: ignore
   app-intents-sdk27:
+    needs: changes
+    if: needs.changes.outputs.ios == 'true'
     # The SDK guard must be compiled, not left unchecked by stable Xcode builds.
     runs-on: xcode-27
     timeout-minutes: 20

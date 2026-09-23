@@ -1,3 +1,4 @@
+import { TRUSTED_INGRESS_HEADER, placementRegion as sessionModelRelayRegion } from "nanocodex/cloudflare/durable-placement";
 const MANAGED_SESSION_SUBJECT_PREFIX = "managed-session-v1_";
 
 export function managedCredentialSubject(storageId: string): string {
@@ -73,27 +74,7 @@ export function sessionCredentialOwner(input: Readonly<{
   return binding.owner_id;
 }
 
-type ModelRelayRegion = "wnam" | "enam" | "sam" | "weur" | "eeur" | "apac" | "oc";
-
-// Deliberately bounded Cloudflare colo/city allowlist (cloudflarestatus.com).
-// Uses the Session's trusted INITIAL ingress, not its current execution location
-// or the user's current location. Unknown colos retain legacy relay placement.
-const MODEL_RELAY_COLOS: Readonly<Record<string, ModelRelayRegion>> = {
-  SFO: "wnam", SJC: "wnam", LAX: "wnam", SEA: "wnam", PDX: "wnam",
-  PHX: "wnam", DEN: "wnam", LAS: "wnam", SLC: "wnam",
-  IAD: "enam", EWR: "enam", BOS: "enam", ATL: "enam", ORD: "enam", MIA: "enam",
-  LHR: "weur", CDG: "weur", FRA: "weur", AMS: "weur", MXP: "weur",
-  MAD: "weur", DUB: "weur", ZRH: "weur",
-  WAW: "eeur", OTP: "eeur", ATH: "eeur",
-  SIN: "apac", NRT: "apac", HKG: "apac",
-  SYD: "oc", MEL: "oc", AKL: "oc",
-  GRU: "sam", SCL: "sam", EZE: "sam",
-};
-
-export function sessionModelRelayRegion(clientIngressColo: unknown): ModelRelayRegion | undefined {
-  return typeof clientIngressColo === "string" && /^[A-Z]{3}$/.test(clientIngressColo)
-    ? MODEL_RELAY_COLOS[clientIngressColo] : undefined;
-}
+export { placementRegion as sessionModelRelayRegion } from "nanocodex/cloudflare/durable-placement";
 
 /** Preserve the SDK's context identity and scope only its private model egress. */
 export function scopedManagedModelEgress(
@@ -117,6 +98,7 @@ export function scopedManagedModelEgress(
       request.headers.set("x-nanocodex-subject", subject);
       // Runtime headers never establish placement, including generic fallback.
       request.headers.delete("x-nanocodex-model-region");
+      request.headers.delete(TRUSTED_INGRESS_HEADER);
       // The retained session configuration owns selection, never a runtime header.
       request.headers.delete("x-nanocodex-chatgpt-account-id");
       if (chatGptAccountId !== undefined) request.headers.set("x-nanocodex-chatgpt-account-id", chatGptAccountId);

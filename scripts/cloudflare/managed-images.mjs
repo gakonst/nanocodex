@@ -11,8 +11,8 @@ import { fileURLToPath } from 'node:url';
 export const images = {
   phone: {
     dockerfile: 'js/phone-cloud/Dockerfile', context: '.', source: '../phone-cloud/Dockerfile',
-    inputs: ['.dockerignore', 'js/phone-cloud', 'Cargo.toml', 'Cargo.lock', 'bin', 'crates',
-      'examples', 'js/nanocodex', 'py/bindings', 'third_party',
+    package: 'nanocodex-phone',
+    inputs: ['.dockerignore', 'js/phone-cloud/Dockerfile', 'js/phone-cloud/Dockerfile.dockerignore',
       'js/managed/scripts/phone-bridge.mjs', 'js/managed/scripts/phone-delegation.mjs',
       'js/managed/scripts/phone-media-diagnostics.mjs',
       'js/managed/src/twilio-voice.ts'],
@@ -21,15 +21,22 @@ export const images = {
     dockerfile: 'js/managed/Dockerfile', context: 'js/managed', source: './Dockerfile',
     inputs: ['js/managed/Dockerfile', 'js/managed/Dockerfile.dockerignore', 'js/managed/.dockerignore',
       'js/managed/scripts/prepare-hand-image.mjs', 'js/managed/scripts/bundle-hand-desktop.sh',
-      'js/managed/scripts/check-dev-stack.sh', 'hands/remote', 'Cargo.toml', 'Cargo.lock',
-      'bin', 'crates', 'examples', 'js/nanocodex', 'py/bindings', 'third_party'],
+      'js/managed/scripts/check-dev-stack.sh', 'hands/remote/image/labwc',
+      'crates/nanocodex-vm/image/toolkit'],
+    package: 'nanocodex2-bin',
   },
 };
-const commonInputs = ['scripts/cloudflare/managed-images.mjs', 'scripts/cloudflare/wrangler-docker.mjs'];
+const commonInputs = ['scripts/cloudflare/managed-images.mjs', 'scripts/cloudflare/wrangler-docker.mjs',
+  'scripts/cloudflare/managed-image-inputs.py'];
+export function imageInputs(image, cwd = process.cwd()) {
+  assert.ok(images[image], 'unknown managed image');
+  const rust = JSON.parse(execFileSync('python3', [fileURLToPath(new URL('./managed-image-inputs.py', import.meta.url)), images[image].package], { cwd, encoding: 'utf8', maxBuffer: 16 * 1024 * 1024 }));
+  return [...images[image].inputs, ...rust, ...commonInputs];
+}
 export function fingerprint(image, account, epoch = '1', cwd = process.cwd()) {
   assert.ok(images[image], 'unknown managed image');
   assert.match(account, /^[a-f0-9]{32}$/, 'Cloudflare account ID');
-  const tree = execFileSync('git', ['ls-tree', '-rz', 'HEAD', '--', ...images[image].inputs, ...commonInputs], { cwd });
+  const tree = execFileSync('git', ['ls-tree', '-rz', 'HEAD', '--', ...imageInputs(image, cwd)], { cwd });
   assert.ok(tree.length, 'image inputs must be committed');
   return createHash('sha256').update(JSON.stringify({ version: 1, image, account, epoch, platform: 'linux/amd64' }))
     .update(tree).digest('hex');
@@ -88,17 +95,25 @@ export function main([command, image]) {
   }
   assert.equal(command, 'publish');
   const spec = images[image];
+  // The receipt hashes HEAD; publication must consume those same bytes.
+  const dirty = execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--', ...imageInputs(image),
+    'bin', 'crates', 'examples', 'js/nanocodex', 'py/bindings', 'third_party'], { encoding: 'utf8' });
+  assert.equal(dirty.trim(), '', 'Commit relevant image inputs before publication');
   const tag = `nanocodex-ci-${image}:input-${input}`;
   const repository = `registry.cloudflare.com/${account}/nanocodex-ci-${image}`;
   if (image === 'sandbox') run(process.execPath, ['js/managed/scripts/prepare-hand-image.mjs']);
   run(process.execPath, ['scripts/cloudflare/wrangler-docker.mjs', 'build', '--load', '-t', tag,
-    '--platform', 'linux/amd64', '--provenance=false', '-f', spec.dockerfile, spec.context]);
-  if (image === 'sandbox') {
-    for (const check of ['nanocodex-check-dev-stack', 'nanocodex-check-hand-toolkit']) {
-      run('docker', ['run', '--rm', '--network', 'none', '--entrypoint', 'sh', tag, '-lc', check]);
+    '--platform', 'linux/amd64', '--provenance=false', '--pull',
+    '--build-arg', `NANOCODEX_IMAGE_CACHE_EPOCH=${epoch}`,
+    ...(image === 'sandbox' ? ['--build-arg', `CI_TESTS_ENABLED=${process.env.CI_TESTS_ENABLED || 'true'}`] : []), '-f', spec.dockerfile, spec.context]);
+  if (process.env.CI_TESTS_ENABLED !== 'false') {
+    if (image === 'sandbox') {
+      for (const check of ['nanocodex-check-dev-stack', 'nanocodex-check-hand-toolkit']) {
+        run('docker', ['run', '--rm', '--network', 'none', '--entrypoint', 'sh', tag, '-lc', check]);
+      }
+    } else {
+      run('docker', ['run', '--rm', '--network', 'none', '--entrypoint', 'node', tag, '--check', 'scripts/phone-bridge.mjs']);
     }
-  } else {
-    run('docker', ['run', '--rm', '--network', 'none', '--entrypoint', 'node', tag, '--check', 'scripts/phone-bridge.mjs']);
   }
   // Wrangler handles registry login internally; no credentials are read here.
   run('pnpm', ['--filter', 'nanocodex-managed-service', 'exec', 'wrangler', 'containers', 'push', tag]);

@@ -81,3 +81,13 @@ export class ChatGptEgress extends Container {
     return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
   }
 }
+
+// Separate classes create independent container applications with regional
+// constraints. They share the relay image/behavior; no credential state moves.
+export class ChatGptEgressWnam extends ChatGptEgress {}
+export class ChatGptEgressEnam extends ChatGptEgress {}
+export class ChatGptEgressWeur extends ChatGptEgress {}
+export class ChatGptEgressEeur extends ChatGptEgress {}
+export class ChatGptEgressApac extends ChatGptEgress {}
+export class ChatGptEgressSam extends ChatGptEgress {}
+export class ChatGptEgressOc extends ChatGptEgress {}

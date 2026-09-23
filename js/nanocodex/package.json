@@ -55,6 +55,10 @@
       "types": "./cloudflare/workers-ai-responses.d.mts",
       "import": "./cloudflare/workers-ai-responses.mjs"
     },
+    "./cloudflare/durable-placement": {
+      "types": "./cloudflare/durable-placement.d.mts",
+      "import": "./cloudflare/durable-placement.mjs"
+    },
     "./cloudflare/managed-access": {
       "types": "./cloudflare/managed-access.d.mts",
       "import": "./cloudflare/managed-access.mjs"

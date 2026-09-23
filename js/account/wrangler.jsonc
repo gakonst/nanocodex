@@ -97,7 +97,14 @@
       {
         "name": "CHATGPT_EGRESS",
         "class_name": "ChatGptEgress"
-      }
+      },
+      { "name": "CHATGPT_EGRESS_WNAM", "class_name": "ChatGptEgressWnam" },
+      { "name": "CHATGPT_EGRESS_ENAM", "class_name": "ChatGptEgressEnam" },
+      { "name": "CHATGPT_EGRESS_WEUR", "class_name": "ChatGptEgressWeur" },
+      { "name": "CHATGPT_EGRESS_EEUR", "class_name": "ChatGptEgressEeur" },
+      { "name": "CHATGPT_EGRESS_APAC", "class_name": "ChatGptEgressApac" },
+      { "name": "CHATGPT_EGRESS_SAM", "class_name": "ChatGptEgressSam" },
+      { "name": "CHATGPT_EGRESS_OC", "class_name": "ChatGptEgressOc" }
     ]
   },
   "migrations": [
@@ -112,7 +119,8 @@
         "ChatGptEgress"
       ]
     },
-    { "tag": "v2-elevenlabs", "new_sqlite_classes": ["ElevenLabsAccount"] }
+    { "tag": "v2-elevenlabs", "new_sqlite_classes": ["ElevenLabsAccount"] },
+    {"tag":"v3-regional-egress","new_sqlite_classes":["ChatGptEgressWnam","ChatGptEgressEnam","ChatGptEgressWeur","ChatGptEgressEeur","ChatGptEgressApac","ChatGptEgressSam","ChatGptEgressOc"]}
   ],
   "containers": [
     {
@@ -120,7 +128,16 @@
       "image": "./container/Dockerfile",
       "max_instances": 1000,
       "instance_type": "lite"
-    }
+    },
+    // Text and voice relays: 350 total new slots; legacy capacity stays unchanged.
+    // OC requires another region because Cloudflare marks it limited capacity.
+    {"class_name":"ChatGptEgressWnam","image":"./container/Dockerfile","max_instances":50,"instance_type":"lite","constraints":{"regions":["WNAM"]}},
+    {"class_name":"ChatGptEgressEnam","image":"./container/Dockerfile","max_instances":50,"instance_type":"lite","constraints":{"regions":["ENAM"]}},
+    {"class_name":"ChatGptEgressWeur","image":"./container/Dockerfile","max_instances":50,"instance_type":"lite","constraints":{"regions":["WEUR"]}},
+    {"class_name":"ChatGptEgressEeur","image":"./container/Dockerfile","max_instances":50,"instance_type":"lite","constraints":{"regions":["EEUR"]}},
+    {"class_name":"ChatGptEgressApac","image":"./container/Dockerfile","max_instances":50,"instance_type":"lite","constraints":{"regions":["APAC"]}},
+    {"class_name":"ChatGptEgressSam","image":"./container/Dockerfile","max_instances":50,"instance_type":"lite","constraints":{"regions":["SAM"]}},
+    {"class_name":"ChatGptEgressOc","image":"./container/Dockerfile","max_instances":50,"instance_type":"lite","constraints":{"regions":["OC","APAC"]}}
   ],
   "ratelimits": [
     {

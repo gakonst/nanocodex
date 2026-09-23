@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
+import { releasePhases } from './release-workers.mjs';
 
 const guard = fileURLToPath(new URL('./current-production-release.mjs', import.meta.url));
 const workspace = fileURLToPath(new URL('../../', import.meta.url));
@@ -13,7 +14,7 @@ const production = workflow.split('\n  production:\n')[1];
 const oldSha = 'a'.repeat(40), newSha = 'b'.repeat(40);
 
 function fixture(t) {
-  const dir = mkdtempSync(join(tmpdir(), 'production-guard-'));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'production-guard-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const bin = join(dir, 'bin');
   mkdirSync(bin);
@@ -51,7 +52,7 @@ function fixture(t) {
   return { dir, env, head, setHead, run, rows, queries, deployments,
     output: () => readFileSync(output, 'utf8'),
     shell: (source, overrides = {}) => spawnSync('bash', ['-e', '-o', 'pipefail', '-c', source], {
-      cwd: dir, env: { ...env, ...overrides }, encoding: 'utf8', input: '',
+      cwd: workspace, env: { ...env, ...overrides }, encoding: 'utf8', input: '',
     }),
   };
 }
@@ -148,56 +149,22 @@ test('command failure propagates and missing command cannot report success', t =
   assert.equal(f.rows(f.deployments).length, 1);
 });
 
-test('workflow guards all ten deploys and secret mutation, preserving serial account-last order', () => {
+test('workflow gates selective same-runner deployment and retains serialized production guard', () => {
   const all = steps();
-  const mutations = all.filter(step => step.name?.startsWith('Deploy ') || step.name === 'Configure Astra trial secrets');
-  assert.equal(mutations.length, 11);
-  for (const step of mutations) {
-    assert.equal((step.run.match(/current-production-release\.mjs" -- /g) ?? []).length, 1, step.name);
-    assert.match(step.source, /if: steps\.current-release\.outputs\.active == 'true'/, step.name);
-  }
-  assert.equal((production.match(/current-production-release\.mjs/g) ?? []).length, 12); // early check plus eleven mutations
-  assert.equal(mutations.at(-1).name, 'Deploy account application');
-  assert.match(mutations.at(-1).source, /id: account-release/);
-  assert.match(all.find(step => step.name === 'Verify deployed account Worker health').source,
-    /if: steps\.account-release\.outputs\.active == 'true'/);
+  const deploy = all.filter(step => step.name?.startsWith('Deploy '));
+  assert.equal(deploy.length, 1);
+  assert.equal(deploy[0].run, 'node scripts/cloudflare/release-workers.mjs');
+  assert.match(deploy[0].source, /if: steps\.plan\.outputs\.any == 'true'/);
+  const plan = all.find(step => step.run === 'node scripts/cloudflare/release-plan.mjs plan');
+  assert.match(plan.source, /if: steps\.current-release\.outputs\.active == 'true'/);
+  assert.ok(all.findIndex(step => step.run === 'node scripts/cloudflare/current-production-release.mjs') < all.indexOf(plan));
+  assert.deepEqual(releasePhases, [['egress', 'x'], ['managed'],
+    ['email', 'dialog', 'connect-api', 'astra', 'chief-of-staff', 'playground'], ['account']]);
   assert.match(production, /group: cloudflare-production\n      cancel-in-progress: false/);
   assert.match(production, /GH_TOKEN: \$\{\{ github\.token \}\}/);
   assert.match(production, /DEPLOY_TARGET: \$\{\{ inputs\.target \}\}/);
   assert.doesNotMatch(production, /actions\/workflows\/cloudflare\.yml\/runs/);
-  assert.ok(all.findIndex(step => step.name === 'Build agent email service') < all.indexOf(mutations[0]));
-  assert.doesNotMatch(mutations.find(step => step.name === 'Deploy agent email service').run, /deploy:email|run build/);
 });
-
-test('actual workflow deployment commands preserve quoted message and empty env arguments', t => {
-  const f = fixture(t);
-  for (const step of steps().filter(step => step.name?.startsWith('Deploy '))) {
-    const result = f.shell(step.run);
-    assert.equal(result.status, 0, `${step.name}: ${result.stderr}`);
-    const args = f.rows(f.deployments).at(-1).args;
-    if (step.run.includes('--message')) assert.equal(args[args.indexOf('--message') + 1], f.env.DEPLOY_MESSAGE);
-    if (step.name === 'Deploy Astra trial application') assert.ok(args.includes('--env='));
-  }
-  assert.equal(f.rows(f.deployments).length, 10);
-  assert.equal(f.rows(f.queries).length, 10);
-});
-
-test('actual secret pipeline forwards JSON when current and cleanly skips when stale', t => {
-  const f = fixture(t);
-  const secrets = steps().find(step => step.name === 'Configure Astra trial secrets').run;
-  const env = { ASTRA_MANAGED_API_KEY: 'synthetic "key"', ASTRA_MPP_SECRET: 'synthetic-secret', TEMPO_API_KEY: '' };
-  let result = f.shell(secrets, env);
-  assert.equal(result.status, 0, result.stderr);
-  const [receipt] = f.rows(f.deployments);
-  assert.deepEqual(receipt.args, ['wrangler', 'secret', 'bulk', '--env=']);
-  assert.deepEqual(JSON.parse(receipt.input), { NANOCODEX_ASTRA_MANAGED_API_KEY: env.ASTRA_MANAGED_API_KEY,
-    NANOCODEX_ASTRA_MPP_SECRET: env.ASTRA_MPP_SECRET });
-  f.setHead(newSha);
-  result = f.shell(secrets, env);
-  assert.equal(result.status, 0, result.stderr);
-  assert.equal(f.rows(f.deployments).length, 1);
-});
-
 
 test('stale piped mutation drains large input so pipefail remains a successful skip', t => {
   const f = fixture(t);

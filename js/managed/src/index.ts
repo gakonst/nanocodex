@@ -1,3 +1,4 @@
+import { durablePlacementOptions, withIngressPlacement } from "nanocodex/cloudflare/durable-placement";
 import { routerDashboard } from "./router-dashboard";
 import { routeObservation } from "./router-telemetry";
 import { routeInferenceApi, type InferenceApiEnv } from "./inference-api";
@@ -322,7 +323,7 @@ import {
 } from "./durable-memory";
 import { memorySessionTools } from "./memory-session-tools";
 import { managedExtensionTools } from "./extension-tools";
-import { markdownMemoryTools, injectMarkdownMemoryBootstrap, markdownMemoryEnabled, MARKDOWN_MEMORY_TOOL_NAMES, MARKDOWN_MEMORY_INSTRUCTIONS } from "./markdown-memory-tools";
+import { MarkdownMemoryBootstrapCache, markdownMemoryTools, injectMarkdownMemoryBootstrap, markdownMemoryEnabled, MARKDOWN_MEMORY_TOOL_NAMES, MARKDOWN_MEMORY_INSTRUCTIONS } from "./markdown-memory-tools";
 import { ManagedStartupContext } from "./startup-context";
 import { performanceScope, performanceSyncScope, performanceStage, performanceRead, performanceState } from "./performance";
 import { managedPromptCacheKey } from "./prompt-cache-key";
@@ -1459,6 +1460,7 @@ async function managedFetchRoute(
   trustedAgentPrincipal?: Principal,
   clientIngressColo: string | null = null,
 ): Promise<Response> {
+    env = withIngressPlacement(env, clientIngressColo);
     const url = new URL(request.url);
     const inference = await routeInferenceApi(request, env, url, trustedAgentPrincipal, ctx);
     if (inference) return inference;
@@ -1665,7 +1667,7 @@ async function managedFetchRoute(
         const failure = requireSameOriginMutation(request, url, principal);
         if (failure) return failure;
       }
-      return env.NANOCODEX_USERS.getByName(principal.userId).fetch(`https://account.internal${url.pathname.slice(3)}${url.search}`, {
+      return env.NANOCODEX_USERS.getByName(principal.userId, durablePlacementOptions(env.trustedClientIngressColo)).fetch(`https://account.internal${url.pathname.slice(3)}${url.search}`, {
         method: request.method, body: request.body, headers: { "content-type": "application/json" },
       });
     }
@@ -1718,7 +1720,7 @@ async function managedFetchRoute(
       const headers = forwardManagedIngress(new Headers(request.headers), clientIngressColo);
       forwardPrincipalAssertions(headers, principal);
       headers.set(SESSION_CREATE_ID_ASSERTION, agentId);
-      const stub = env.NANOCODEX_SESSIONS.getByName(agentId);
+      const stub = env.NANOCODEX_SESSIONS.getByName(agentId, durablePlacementOptions(clientIngressColo));
       const internalQuery = agentSettingsQuery(settings);
       internalQuery.set("public_origin", url.origin);
       const response = await stub.fetch(
@@ -1928,7 +1930,7 @@ async function managedFetchRoute(
         creationConfiguration = body.configuration ?? {};
         if (body.definition_id || body.environment_template_id || Object.keys(creationConfiguration).length) {
           if (principal.connectGrant) return json({ error: "forbidden" }, { status: 403 });
-          const catalog = env.NANOCODEX_USERS.getByName(principal.userId);
+          const catalog = env.NANOCODEX_USERS.getByName(principal.userId, durablePlacementOptions(env.trustedClientIngressColo));
           const readTemplate = async (kind: string, id: string) => {
             const response = await catalog.fetch(`https://account.internal/${kind}/${id}`);
             if (!response.ok) throw new TypeError("template not found");
@@ -1998,7 +2000,7 @@ async function managedFetchRoute(
         ? uuidV7()
         : await idempotentAgentId(principal.userId, requestKey);
       const subject = env.NANOCODEX_SESSIONS.idFromName(agentId).toString();
-      const stub = env.NANOCODEX_SESSIONS.getByName(agentId);
+      const stub = env.NANOCODEX_SESSIONS.getByName(agentId, durablePlacementOptions(clientIngressColo));
       const ownershipTimeoutMs = managedOwnershipTimeoutMs(env);
       if (durabilityArchive === undefined) {
         let created: Response;
@@ -2237,7 +2239,7 @@ async function managedFetchRoute(
       resource: resource === "" ? "state" : resource.split("/")[0],
       ...(routedTurnId === undefined ? {} : { turn_id: routedTurnId }),
     });
-    const stub = env.NANOCODEX_SESSIONS.getByName(agentId);
+    const stub = env.NANOCODEX_SESSIONS.getByName(agentId, durablePlacementOptions(clientIngressColo));
     if (resource === "_connect-existence") {
       if (request.method !== "GET"
         || url.origin !== CONNECT_SERVICE_ORIGIN
@@ -3141,6 +3143,7 @@ export class DurableAgentSession extends DurableComputerSession {
   readonly #goalRuntime: GoalRuntime;
   #cronPresencePublished?: boolean;
   readonly #startupContext: ManagedStartupContext;
+  readonly #markdownBootstrap = new MarkdownMemoryBootstrapCache();
   readonly #personalization = new PreparedPersonalizationCache();
   #settingsMutationTail: Promise<void> = Promise.resolve();
   #threadRoutePin = new ThreadRoutePin({
@@ -3465,7 +3468,7 @@ export class DurableAgentSession extends DurableComputerSession {
         if (idempotencyKey) headers.set("idempotency-key", idempotencyKey);
         return managedFetch(new Request(new URL(path, session.public_origin), {
           method, headers, ...(body === undefined ? {} : {body:JSON.stringify(body)}),
-        }), this.env, this.ctx, principal);
+        }), this.env, this.ctx, principal, this.#routingOrigin().clientIngressColo);
       },
       activity: activity => {
         this.ctx.storage.sql.exec("CREATE TABLE IF NOT EXISTS email_activity_receipts (id TEXT PRIMARY KEY)");
@@ -5516,14 +5519,14 @@ export class DurableAgentSession extends DurableComputerSession {
         const created = await managedFetch(new Request(new URL("/v1/agents", session.public_origin), {
           method: "POST", headers: { "content-type": "application/json", "idempotency-key": `cron:${session.session_id}:${delivery.id}` },
           body: JSON.stringify({ settings: payload.settings }),
-        }), this.env, this.ctx, principal);
+        }), this.env, this.ctx, principal, this.#routingOrigin().clientIngressColo);
         await created.body?.cancel();
         if (!created.ok) throw new Error(`cron session creation failed: ${created.status}`);
         if (this.#deleting || this.#deleted) return;
         const accepted = await managedFetch(new Request(new URL(`/v1/agents/${delivery.agent_id}/turns`, session.public_origin), {
           method: "POST", headers: { "content-type": "application/json", "idempotency-key": delivery.id },
           body: JSON.stringify({ id: delivery.id, input: payload.input }),
-        }), this.env, this.ctx, principal);
+        }), this.env, this.ctx, principal, this.#routingOrigin().clientIngressColo);
         await accepted.body?.cancel();
         if (!accepted.ok) throw new Error(`cron session admission failed: ${accepted.status}`);
         this.#cronTriggers.finishDelivery(delivery, true);
@@ -6889,8 +6892,8 @@ export class DurableAgentSession extends DurableComputerSession {
       };
       assertAgentActive();
       if (dispatchInputJson === undefined && this.#managedTurn(row.id)?.state !== "cancelling") {
-        await this.#startupContext.inject(row.id, agent.session, assertAgentActive);
-        await this.#injectMarkdownMemory(row, agent.session, assertAgentActive);
+        await performanceStage("startup.inject", () => this.#startupContext.inject(row.id, agent.session, assertAgentActive));
+        await performanceStage("markdown.inject", () => this.#injectMarkdownMemory(row, agent.session, assertAgentActive));
       }
       dispatchInputJson ??= JSON.stringify(input);
       const dispatchable = this.#managedTurn(row.id);
@@ -7207,7 +7210,7 @@ export class DurableAgentSession extends DurableComputerSession {
     if (this.#historyProjectionTask) await this.#historyProjectionTask.catch(() => {});
     if (session?.runtime_profile === "managed") {
       await performanceStage("delete.attachments", () => this.#attachmentStore().cleanup());
-      const memory = this.env.NANOCODEX_MEMORY.getByName(session.organization_id);
+      const memory = this.env.NANOCODEX_MEMORY.getByName(session.organization_id, durablePlacementOptions(this.#routingOrigin().clientIngressColo));
       const tombstoned = await performanceStage("delete.memory", () => memory.fetch(
         `https://memory.internal/threads/${session.session_id}`,
         {
@@ -8530,9 +8533,10 @@ export class DurableAgentSession extends DurableComputerSession {
     if (!session) return history;
     const authority = (context: ToolContext) => startupTurn === undefined
       ? this.#authorizationForToolContext(context) : parseTurnAuthorization(startupTurn.authorization_json);
-    return [...history, ...[managedExtensionTools, markdownMemoryTools].flatMap(create => create({
+    return [...history, ...[managedExtensionTools, (options: Parameters<typeof markdownMemoryTools>[0]) => markdownMemoryTools(options, this.#markdownBootstrap)].flatMap(create => create({
       organizationId: session.organization_id, teamId: session.team_id, ownerId: session.owner_id,
       sessionId: session.session_id, memories: this.env.NANOCODEX_MEMORY,
+      clientIngressColo: this.#routingOrigin().clientIngressColo,
       personal: context => !authority(context)?.connectGrant,
       authorize: (name, context) => {
         context.signal.throwIfAborted();
@@ -8552,15 +8556,19 @@ export class DurableAgentSession extends DurableComputerSession {
     if (session.runtime_profile !== "managed" || !authorization.capabilities.includes("memory:read")
       || !markdownMemoryEnabled(this.#configuration().tools)
       || this.#configuration().environment?.network.access === "disabled") return;
-    // Fresh reads can add up to five seconds to admission; unavailable reads do not block the turn.
+    // Cache only bounded startup excerpts. Authority is checked on every access; explicit tools stay fresh.
+    // Unavailable reads have a five-second budget and publish a stale-snapshot notice.
     const context = { sessionId: session.session_id, callId: "markdown-bootstrap", parentCallId: "", model: "unknown", signal: AbortSignal.timeout(5_000) };
     const options = {
       organizationId: session.organization_id, teamId: session.team_id, ownerId: session.owner_id,
       sessionId: session.session_id, memories: this.env.NANOCODEX_MEMORY,
+      clientIngressColo: this.#routingOrigin().clientIngressColo,
       personal: () => !authorization.connectGrant,
       authorize: () => { assertActive(); },
     };
-    await injectMarkdownMemoryBootstrap(options, context, agentSession, assertActive);
+    await injectMarkdownMemoryBootstrap(options, context, agentSession, assertActive, {
+      cache: this.#markdownBootstrap, authority: canonicalJson([session.authorization_epoch, authorization]),
+    });
   }
 
   #personalizationScope(session: SessionRow): PersonalizationScope {
@@ -8582,7 +8590,7 @@ export class DurableAgentSession extends DurableComputerSession {
     this.#personalization.warm(scope, async () => {
       const load = async (visibility: MemoryVisibility) => {
         const target = memoryTarget(session.organization_id, session.team_id, session.owner_id, visibility);
-        const memory = this.env.NANOCODEX_MEMORY.getByName(target.name);
+        const memory = this.env.NANOCODEX_MEMORY.getByName(target.name, durablePlacementOptions(this.#routingOrigin().clientIngressColo));
         const response = await memory.fetch("https://memory.internal/personalization", {
           method: "POST", signal: AbortSignal.timeout(5_000),
           headers: { [MEMORY_ORGANIZATION_ASSERTION]: session.organization_id,
@@ -8622,7 +8630,7 @@ export class DurableAgentSession extends DurableComputerSession {
   async #findSessions(input: HistoryFindSessionsInput): Promise<HistoryFindSessionsResponse> {
     const session = this.#session();
     if (!session) throw new HistorySearchError(404, "not_found", "session is not initialized");
-    const memory = this.env.NANOCODEX_MEMORY.getByName(session.organization_id);
+    const memory = this.env.NANOCODEX_MEMORY.getByName(session.organization_id, durablePlacementOptions(this.#routingOrigin().clientIngressColo));
     const response = await memory.fetch("https://memory.internal/search", {
       method: "POST",
       headers: {
@@ -8652,7 +8660,7 @@ export class DurableAgentSession extends DurableComputerSession {
   async #readHistorySession(input: HistoryReadSessionInput): Promise<HistoryReadSessionResponse> {
     const session = this.#session();
     if (!session) throw new HistorySearchError(404, "not_found", "session is not initialized");
-    const memory = this.env.NANOCODEX_MEMORY.getByName(session.organization_id);
+    const memory = this.env.NANOCODEX_MEMORY.getByName(session.organization_id, durablePlacementOptions(this.#routingOrigin().clientIngressColo));
     const response = await memory.fetch("https://memory.internal/read", {
       method: "POST",
       headers: {
@@ -8673,7 +8681,7 @@ export class DurableAgentSession extends DurableComputerSession {
     if (!session) throw new HistorySearchError(404, "not_found", "session is not initialized");
     const voiceSession = this.#managedRealtimeSession();
     const target = memoryTarget(session.organization_id, session.team_id, session.owner_id, scope);
-    const memory = this.env.NANOCODEX_MEMORY.getByName(target.name);
+    const memory = this.env.NANOCODEX_MEMORY.getByName(target.name, durablePlacementOptions(this.#routingOrigin().clientIngressColo));
     const mutating = operation.operation === "put" || operation.operation === "delete";
     const response = await memory.fetch("https://memory.internal/memory", {
       method: "POST",
@@ -9807,7 +9815,7 @@ export class DurableAgentSession extends DurableComputerSession {
       Date.now(),
     ).toArray();
     if (rows.length === 0) return;
-    const memory = this.env.NANOCODEX_MEMORY.getByName(session.organization_id);
+    const memory = this.env.NANOCODEX_MEMORY.getByName(session.organization_id, durablePlacementOptions(this.#routingOrigin().clientIngressColo));
     for (const row of rows) {
       if (this.#deleting) return;
       try {
@@ -11710,6 +11718,7 @@ async function routeHistoryRequest(
       const tool = (markdown ? markdownMemoryTools : managedExtensionTools)({
         organizationId: principal.organizationId, teamId: principal.teamId, ownerId: principal.userId,
         sessionId: principal.subjectId, memories: env.NANOCODEX_MEMORY,
+        clientIngressColo: env.trustedClientIngressColo,
         personal: () => !principal.connectGrant,
         authorize: (name) => {
           if (!principal.capabilities.includes((name === "memories__add_ad_hoc_note" || name === "memory_write") ? "memory:write" : "memory:read"))
@@ -11759,7 +11768,7 @@ async function routeHistoryRequest(
 
     if (visibility === "personal" && principal.connectGrant) return json({ error: "forbidden" }, { status: 403 });
     const target = memoryTarget(principal.organizationId, principal.teamId, principal.userId, visibility);
-    const memoryScope = env.NANOCODEX_MEMORY.getByName(target.name);
+    const memoryScope = env.NANOCODEX_MEMORY.getByName(target.name, durablePlacementOptions(env.trustedClientIngressColo));
     const response = await memoryScope.fetch(`https://memory.internal${internalPath}`, {
       method: internalPath === "/memories" ? "GET" : "POST",
       headers: {

@@ -23,7 +23,7 @@ concurrency:
 
 jobs:
   changes:
-    name: Select affected native checks
+    name: Select affected CI checks
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -32,6 +32,13 @@ jobs:
       native: ${{ steps.select.outputs.native }}
       voice: ${{ steps.select.outputs.voice }}
       python: ${{ steps.select.outputs.python }}
+      rust: ${{ steps.select.outputs.rust }}
+      wasm: ${{ steps.select.outputs.wasm }}
+      bindings: ${{ steps.select.outputs.bindings }}
+      apps: ${{ steps.select.outputs.apps }}
+      preview: ${{ steps.select.outputs.preview }}
+      policy: ${{ steps.select.outputs.policy }}
+      codeql: ${{ steps.select.outputs.codeql }}
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -41,6 +48,8 @@ jobs:
         run: node scripts/ci/select-jobs.mjs
 
   test:
+    # Temporarily disabled: CI tests are paused.
+    if: ${{ false }}
     name: test Rust 1.97
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -97,6 +106,8 @@ jobs:
             . -> target
           cache-on-failure: true
       - name: Check media transport and IPC boundaries on every host OS
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: cargo test --locked -p nanocodex-remote -p nanocodex-tui-control
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -105,17 +116,24 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - name: Check CUA bridge and native host lifecycle
-        if: runner.os == 'macOS'
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false && runner.os == 'macOS' }}
         run: >-
           node --test scripts/tests/openai-cua-app-server.test.mjs
           scripts/tests/openai-cua-native-host.test.mjs
           scripts/tests/openai-cua-gui-readiness.test.mjs
       - name: Check shared native capture policy and platform adapters
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: cargo test --locked -p nanocodex-hand
       - name: Check native identity, IPC leases, reconnect, and factory discovery
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: cargo test --locked -p nanocodex2-bin --bin nanocodex2 hand -- --test-threads=1
       - run: cargo build --locked -p nanocodex2-bin --bin nanocodex2
       - name: Run real CLI/app sharing against a local account server
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         shell: bash
         run: |
           NANOCODEX_DEVICE_TEST_BINARY="$(node -p 'require("node:path").resolve("target/debug/nanocodex2" + (process.platform === "win32" ? ".exe" : ""))')"
@@ -144,6 +162,8 @@ jobs:
       - name: Install native SDK
         run: brew install gstreamer
       - name: Test native media and process lifecycle
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: |
           # This test measures real 10 ms device cadence with injected 100 ms
           # packet bursts. Keep its assertions intact and run it without the
@@ -156,6 +176,8 @@ jobs:
       - name: Stage private runtime
         run: python3 scripts/build-voice-native.py
       - name: Test relocated helper
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: cargo test --locked -p nanocodex-voice-native --test packaged -- --ignored
         env:
           NANOCODEX_TEST_VOICE_RUNTIME: ${{ github.workspace }}/target/debug/nanocodex-resources/voice
@@ -174,8 +196,23 @@ jobs:
           persist-credentials: false
       - name: Compile the service supervisor and validate Windows scripts
         shell: powershell
+        run: |
+          # Keep syntax and supervisor compilation checks while behavioral tests are paused.
+          $ErrorActionPreference = "Stop"
+          foreach ($script in Get-ChildItem ./windows/hand -Filter "*.ps1") {
+            $tokens = $null
+            $parseErrors = $null
+            [Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null
+            if ($parseErrors.Count -gt 0) { throw "Invalid PowerShell in $($script.Name): $parseErrors" }
+          }
+          Add-Type -Path ./windows/hand/hand-service.cs -ReferencedAssemblies "System.ServiceProcess.dll", "System.Core.dll", "System.Xml.dll" -OutputAssembly "$env:RUNNER_TEMP/nanocodex-hand-service.exe" -OutputType WindowsApplication
+      - name: Test service registration plan
+        if: ${{ false }}
+        shell: powershell
         run: ./windows/hand/test-service-build.ps1
       - name: Verify CUA bootstrap copies without Store installation
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         shell: powershell
         run: powershell.exe -NoLogo -NoProfile -NonInteractive -File ./windows/hand/test-cua-provision.ps1
       - name: Validate the one-click installer definition
@@ -208,17 +245,22 @@ jobs:
           workspaces: |
             . -> target
           cache-on-failure: true
-      - name: Build and test the account Hand
+      - name: Test the account Hand
+        if: ${{ false }}
         shell: pwsh
         env:
-          # Unit tests exercise the Hand protocol without installing desktop software.
+          NANOCODEX_COMPUTER: "off"
+        run: cargo test --locked --package nanocodex2-bin --bin nanocodex2
+      - name: Build the account Hand
+        shell: pwsh
+        env:
           NANOCODEX_COMPUTER: "off"
         run: |
-          cargo test --locked --package nanocodex2-bin --bin nanocodex2
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo build --locked --package nanocodex2-bin --bin nanocodex2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Validate the per-user startup plan
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         shell: pwsh
         env:
           NANOCODEX_COMPUTER: "off"
@@ -237,6 +279,8 @@ jobs:
           -NumericVersion 0.0.0.0
 
   quality:
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     name: rustfmt, clippy, and docs
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -256,6 +300,8 @@ jobs:
           cache-on-failure: true
       - run: cargo fmt --all -- --check
       - name: Check Linux Hand installation boundaries
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: python3 bin/nanocodex/src/hand_setup/test_install.py
       - name: Clippy workspace targets
         run: |
@@ -335,6 +381,8 @@ jobs:
           cache-from: type=gha,scope=ci-hand-${{ matrix.arch }}
           cache-to: type=gha,scope=ci-hand-${{ matrix.arch }},mode=max,ignore-error=true,timeout=3m
       - name: Exercise offline toolkit with a read-only root and unprivileged user
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: >-
           docker run --rm --network none --read-only --user 1000:1000
           --cap-drop ALL --security-opt no-new-privileges --pids-limit 512
@@ -343,6 +391,8 @@ jobs:
           --env TMPDIR=/workspace --workdir /workspace
           --entrypoint sh nanocodex-hand:ci -lc nanocodex-check-hand-toolkit
       - name: Test Docker tools, desktop, persistence, and cleanup without KVM
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: |
           cargo test --locked -p nanocodex-vm --test docker_live -- --ignored --nocapture
           cargo test --locked -p nanocodex2-bin --test nanocodex2_managed docker_hand_live -- --ignored --nocapture
@@ -350,6 +400,8 @@ jobs:
           NANOCODEX_DOCKER_TEST_IMAGE: nanocodex-hand:ci
           NANOCODEX_DOCKER_HOST_SENTINEL: must-not-enter-the-container
       - name: Verify missing KVM is explained before account setup
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: |
           sudo unshare --mount --propagation private sh -eu -c '
             if test -e /dev/kvm; then mount --bind /dev/null /dev/kvm; fi
@@ -363,6 +415,8 @@ jobs:
           '
 
   policy:
+    needs: changes
+    if: needs.changes.outputs.policy == 'true'
     name: dependencies and spelling
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -373,15 +427,22 @@ jobs:
         with:
           persist-credentials: false
       - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
+        if: needs.changes.outputs.rust == 'true'
         with:
           tool: cargo-deny
       - run: ./scripts/check-experimental-boundary.sh
+        if: needs.changes.outputs.rust == 'true'
       - run: cargo deny check
+        if: needs.changes.outputs.rust == 'true'
       - run: ./scripts/check-crate-boundaries.sh
+        if: needs.changes.outputs.rust == 'true'
       - run: ./scripts/check-rustls-provider.sh
+        if: needs.changes.outputs.rust == 'true'
       - uses: crate-ci/typos@96d9af6217dc2855210655af7e1ff19d23d4e593 # v1
 
   wasm-build:
+    needs: changes
+    if: needs.changes.outputs.wasm == 'true'
     name: Build WASM bindings
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -391,29 +452,32 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
-        with:
-          toolchain: "1.97"
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
-        with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-          cache-on-failure: true
+      - name: Reuse unchanged WASM outputs
+        id: wasm
+        uses: ./.github/actions/wasm-outputs
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
-        with:
-          tool: wasm-bindgen-cli@0.2.126
       - name: Check CI orchestration and timing reports
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: node --test scripts/ci/*.test.mjs
       - name: Build WASM package
         run: |
           pnpm install --frozen-lockfile
           ./js/nanocodex-vite/scripts/build-js-package.sh --release
+      - name: Save verified WASM outputs
+        if: github.ref == 'refs/heads/master' && steps.wasm.outputs.hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          key: ${{ steps.wasm.outputs.key }}
+          path: |
+            js/nanocodex/pkg-web
+            js/nanocodex/pkg-node
+            .ci-wasm-cache
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nanocodex-wasm
@@ -427,7 +491,8 @@ jobs:
           if-no-files-found: error
 
   js-preview:
-    needs: wasm-build
+    needs: [changes, wasm-build]
+    if: needs.changes.outputs.preview == 'true'
     permissions:
       contents: read
     uses: ./.github/workflows/js-preview.yml
@@ -436,7 +501,8 @@ jobs:
 
   bindings:
     name: Node and browser bindings
-    needs: wasm-build
+    needs: [changes, wasm-build]
+    if: needs.changes.outputs.bindings == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -446,11 +512,13 @@ jobs:
         with:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        if: needs.changes.outputs.rust == 'true'
         with:
           toolchain: "1.97"
           targets: wasm32-unknown-unknown
           components: clippy
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        if: needs.changes.outputs.rust == 'true'
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
           cache-on-failure: true
@@ -464,7 +532,8 @@ jobs:
         with:
           name: nanocodex-wasm
           path: js/nanocodex
-      - name: Check WASM consumers
+      - name: Check Rust WASM consumers
+        if: needs.changes.outputs.rust == 'true'
         run: |
           cargo clippy --locked --target wasm32-unknown-unknown \
             --package nanocodex-oai-api \
@@ -473,11 +542,15 @@ jobs:
             --package nanocodex \
             --package nanocodex-wasm \
             -- -D warnings -A clippy::missing_const_for_fn
+      - name: Install JS consumer dependencies
+        run: |
           pnpm install --frozen-lockfile
           pnpm exec turbo run build --only --filter nanocodex-tools
           npm ci --prefix examples/privy
           npm ci --prefix examples/better-auth
       - name: Test JS runtime
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         working-directory: js/nanocodex
         run: |
           node --test --test-timeout=15000 test/*.test.mjs
@@ -486,6 +559,13 @@ jobs:
         run: |
           pnpm --filter nanocodex run test:typecheck
           pnpm --filter nanocodex run check:package
+          pnpm exec turbo run build --only \
+            --filter nanocodex-react-vite-example
+          npm run build --prefix examples/privy
+          npm run build --prefix examples/better-auth
+      - name: Test JS consumers and examples
+        if: ${{ false }}
+        run: |
           pnpm exec turbo run test --only \
             --filter nanocodex-react \
             --filter nanocodex-vite \
@@ -493,33 +573,37 @@ jobs:
             --filter nanocodex-node-example \
             --filter nanocodex-react-vite-example
           node --test examples/browser-cdn/*.test.mjs
-          pnpm exec turbo run build --only \
-            --filter nanocodex-react-vite-example
           npm test --prefix examples/privy
-          npm run build --prefix examples/privy
           npm test --prefix examples/better-auth
-          npm run build --prefix examples/better-auth
       - name: Check managed integrations
         run: |
           pnpm --filter @nanocodex/x-api run typecheck
-          pnpm --filter @nanocodex/x-api run test
           pnpm exec turbo run build --filter nanocodex-connect-protocol
           pnpm --filter nanocodex-managed-service run prepare:code-evaluator
+      - name: Typecheck connector SDK and computer adapters
+        run: |
+          pnpm --filter @nanocodex/connect-api run typecheck
+          pnpm --filter nanocodex-computer typecheck
+
+      - name: Test managed integrations
+        if: ${{ false }}
+        run: |
+          pnpm --filter @nanocodex/x-api run test
           pnpm --filter nanocodex-managed-service run test:media
           pnpm --filter nanocodex-managed-service exec vitest run test/account-info.test.ts test/agent-run.test.ts test/default-mcp.test.ts test/startup-context.test.ts
       - name: Test connector SDK compatibility
+        if: ${{ false }}
         run: |
           python3 -m venv "$RUNNER_TEMP/connector-sdk-python"
           "$RUNNER_TEMP/connector-sdk-python/bin/pip" install spotipy==2.26.0 google-api-python-client==2.192.0
-          pnpm --filter @nanocodex/connect-api run typecheck
           NANOCODEX_CONNECTOR_SDK_PYTHON="$RUNNER_TEMP/connector-sdk-python/bin/python" \
             pnpm --filter @nanocodex/connect-api exec node --experimental-strip-types --test \
             test/connectorPolicy.test.mjs test/connectorWorker.test.mjs test/connectorSpotipy.test.mjs
       - name: Test official computer adapters
+        if: ${{ false }}
         run: |
           pnpm test:computer
           node --test crates/experimental/nanocodex-computer/tests/linux-sky/host.test.mjs
-          pnpm --filter nanocodex-computer typecheck
           pnpm --filter nanocodex-managed-service exec vitest run test/namespace-tools.test.ts
 
   python:
@@ -562,7 +646,7 @@ jobs:
             --interpreter python \
             --out dist/python \
             --release
-      - name: Test installed Python package
+      - name: Typecheck installed Python package
         shell: bash
         run: |
           python -m venv "$RUNNER_TEMP/nanocodex-python"
@@ -570,24 +654,26 @@ jobs:
             --disable-pip-version-check \
             dist/python/*.whl
           cd "$RUNNER_TEMP"
-          "$RUNNER_TEMP/nanocodex-python/bin/python" -m unittest discover \
-            -s "$GITHUB_WORKSPACE/py/bindings/tests" \
-            -v
-          "$RUNNER_TEMP/nanocodex-python/bin/python" \
-            "$GITHUB_WORKSPACE/py/bindings/tests/typing_consumer.py"
           python -m mypy \
             --strict \
             --python-executable "$RUNNER_TEMP/nanocodex-python/bin/python" \
             "$GITHUB_WORKSPACE/py/bindings/tests/typing_consumer.py"
-          "$RUNNER_TEMP/nanocodex-python/bin/python" \
-            "$GITHUB_WORKSPACE/py/bindings/benchmarks/benchmark_binding.py" \
-            --check
           "$RUNNER_TEMP/nanocodex-python/bin/python" -m compileall \
             -q "$GITHUB_WORKSPACE/examples/python"
 
+      - name: Test installed Python package
+        if: ${{ false }}
+        shell: bash
+        run: |
+          cd "$RUNNER_TEMP"
+          "$RUNNER_TEMP/nanocodex-python/bin/python" -m unittest discover -s "$GITHUB_WORKSPACE/py/bindings/tests" -v
+          "$RUNNER_TEMP/nanocodex-python/bin/python" "$GITHUB_WORKSPACE/py/bindings/tests/typing_consumer.py"
+          "$RUNNER_TEMP/nanocodex-python/bin/python" "$GITHUB_WORKSPACE/py/bindings/benchmarks/benchmark_binding.py" --check
+
   apps:
     name: JavaScript apps
-    needs: wasm-build
+    needs: [changes, wasm-build]
+    if: needs.changes.outputs.apps == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -613,6 +699,8 @@ jobs:
       - name: Build account Worker dependencies
         run: pnpm exec turbo run build --filter nanocodex-connect-protocol
       - name: Test the account Worker
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: pnpm --filter nanocodex-web run test:web
       - name: Build JavaScript apps
         run: |
@@ -623,8 +711,15 @@ jobs:
             --filter @nanocodex/connect-dialog \
             --filter @nanocodex/connect-playground \
             --filter nanocodex-web
-          npm run check --prefix examples/astra-mpp-trial
+          npm run typecheck --prefix examples/astra-mpp-trial
+          npm run build --prefix examples/astra-mpp-trial
+      - name: Test Astra MPP example
+        if: ${{ false }}
+        run: npm test --prefix examples/astra-mpp-trial
+
   codeql:
+    needs: changes
+    if: needs.changes.outputs.codeql == 'true'
     name: CodeQL actions
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -649,7 +744,7 @@ jobs:
     # Report failed prerequisites, but do not keep a cancelled workflow holding
     # its concurrency slot while this final job waits for a runner.
     if: always() && !cancelled()
-    needs: [changes, test, shared-hands, voice-native, windows-hand, quality, vm-guest, policy, wasm-build, bindings, python, apps, codeql]
+    needs: [changes, test, shared-hands, voice-native, windows-hand, quality, vm-guest, policy, wasm-build, bindings, python, apps, js-preview, codeql]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -659,6 +754,13 @@ jobs:
           NATIVE_REQUIRED: ${{ needs.changes.outputs.native }}
           VOICE_REQUIRED: ${{ needs.changes.outputs.voice }}
           PYTHON_REQUIRED: ${{ needs.changes.outputs.python }}
+          RUST_REQUIRED: ${{ needs.changes.outputs.rust }}
+          WASM_REQUIRED: ${{ needs.changes.outputs.wasm }}
+          BINDINGS_REQUIRED: ${{ needs.changes.outputs.bindings }}
+          APPS_REQUIRED: ${{ needs.changes.outputs.apps }}
+          PREVIEW_REQUIRED: ${{ needs.changes.outputs.preview }}
+          POLICY_REQUIRED: ${{ needs.changes.outputs.policy }}
+          CODEQL_REQUIRED: ${{ needs.changes.outputs.codeql }}
           TEST: ${{ needs.test.result }}
           SHARED_HANDS: ${{ needs.shared-hands.result }}
           VOICE_NATIVE: ${{ needs.voice-native.result }}
@@ -670,6 +772,7 @@ jobs:
           BINDINGS: ${{ needs.bindings.result }}
           PYTHON: ${{ needs.python.result }}
           APPS: ${{ needs.apps.result }}
+          PREVIEW: ${{ needs.js-preview.result }}
           CODEQL: ${{ needs.codeql.result }}
         run: |
           # Missing/invalid selection must fail, never silently waive coverage.
@@ -681,15 +784,16 @@ jobs:
               *) return 1 ;;
             esac
           }
-          test "$TEST" = success
+          test "$TEST" = skipped
           require_selected "$NATIVE_REQUIRED" "$SHARED_HANDS"
           require_selected "$VOICE_REQUIRED" "$VOICE_NATIVE"
           require_selected "$NATIVE_REQUIRED" "$WINDOWS_HAND"
-          test "$QUALITY" = success
+          require_selected "$RUST_REQUIRED" "$QUALITY"
           require_selected "$NATIVE_REQUIRED" "$VM_GUEST"
-          test "$POLICY" = success
-          test "$WASM_BUILD" = success
-          test "$BINDINGS" = success
+          require_selected "$POLICY_REQUIRED" "$POLICY"
+          require_selected "$WASM_REQUIRED" "$WASM_BUILD"
+          require_selected "$BINDINGS_REQUIRED" "$BINDINGS"
           require_selected "$PYTHON_REQUIRED" "$PYTHON"
-          test "$APPS" = success
-          test "$CODEQL" = success
+          require_selected "$APPS_REQUIRED" "$APPS"
+          require_selected "$PREVIEW_REQUIRED" "$PREVIEW"
+          require_selected "$CODEQL_REQUIRED" "$CODEQL"

@@ -31,7 +31,8 @@
     }
   ],
   "vars": {
-    "ENVIRONMENT": "production"
+    "ENVIRONMENT": "production",
+    "CHATGPT_VOICE_RELAY_RPC": "true"
   },
   "durable_objects": {
     "bindings": [
@@ -59,7 +60,14 @@
         "name": "CHATGPT_EGRESS",
         "class_name": "ChatGptEgress",
         "script_name": "nanocodex"
-      }
+      },
+      {"name":"CHATGPT_EGRESS_WNAM","class_name":"ChatGptEgressWnam","script_name":"nanocodex"},
+      {"name":"CHATGPT_EGRESS_ENAM","class_name":"ChatGptEgressEnam","script_name":"nanocodex"},
+      {"name":"CHATGPT_EGRESS_WEUR","class_name":"ChatGptEgressWeur","script_name":"nanocodex"},
+      {"name":"CHATGPT_EGRESS_EEUR","class_name":"ChatGptEgressEeur","script_name":"nanocodex"},
+      {"name":"CHATGPT_EGRESS_APAC","class_name":"ChatGptEgressApac","script_name":"nanocodex"},
+      {"name":"CHATGPT_EGRESS_SAM","class_name":"ChatGptEgressSam","script_name":"nanocodex"},
+      {"name":"CHATGPT_EGRESS_OC","class_name":"ChatGptEgressOc","script_name":"nanocodex"}
     ]
   },
   "migrations": [
