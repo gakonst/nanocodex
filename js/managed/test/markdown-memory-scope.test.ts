@@ -3,6 +3,7 @@ import { expect, it, vi } from 'vitest';
 import type { MemoryScope, MemoryScopeEnv } from '../src/memory-scope';
 import type { MarkdownMemoryFlushReceipt } from '../src/markdown-memory-flush';
 import { memoryTarget } from '../src/memory-target';
+import { managedExtensionTools } from '../src/extension-tools';
 
 const binding = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace<MemoryScope> }).NANOCODEX_MEMORY;
 function target(org: string, team: string, user: string, scope: 'team' | 'personal') {
@@ -69,6 +70,33 @@ it('projects canonical documents through the existing file API without changing 
   await call(where, 'write', { operation: 'delete', path: 'MEMORY.md', expected_revision: 1 });
   expect(await (await legacy('files', {})).json()).not.toContain('MEMORY.md');
 });
+it('excludes the persisted audit journal from file search before pagination while retaining explicit access', async () => {
+  const where = target(crypto.randomUUID(), 'team', 'alice', 'personal');
+  for (const path of ['DREAMS.md', 'MEMORY.md', 'USER.md']) {
+    expect((await call(where, 'write', { operation: 'put', path, expected_revision: 0,
+      content: `copper recall fixture in ${path}` })).status).toBe(200);
+  }
+  await runInDurableObject(where.stub, async (_memory, state) => {
+    expect(state.storage.sql.exec("SELECT path FROM markdown_memory_documents WHERE path='DREAMS.md' AND deleted=0").toArray())
+      .toEqual([{ path: 'DREAMS.md' }]);
+  });
+  const extension = (operation: string, body: unknown) => where.stub.fetch(`https://memory.internal/extension-memories/${operation}`, {
+    method: 'POST', headers: where.headers, body: JSON.stringify(body),
+  });
+  expect(await (await extension('list', {})).json()).toMatchObject({ entries: [
+    { path: 'DREAMS.md', entry_type: 'file' }, { path: 'MEMORY.md', entry_type: 'file' }, { path: 'USER.md', entry_type: 'file' },
+  ] });
+  expect(await (await extension('read', { path: 'DREAMS.md' })).json())
+    .toMatchObject({ content: 'copper recall fixture in DREAMS.md' });
+  const first = await (await extension('search', { queries: ['copper'], max_results: 1 })).json<{ next_cursor: string }>();
+  expect(first).toMatchObject({ matches: [{ path: 'MEMORY.md' }], next_cursor: '1', truncated: true });
+  expect(await (await extension('search', { queries: ['copper'], max_results: 1, cursor: first.next_cursor })).json())
+    .toMatchObject({ matches: [{ path: 'USER.md' }], next_cursor: null, truncated: false });
+  const audit = await extension('search', { path: 'DREAMS.md', queries: ['copper'] });
+  expect(audit.status).toBe(400);
+  expect(await audit.json()).toMatchObject({ error: 'invalid_request', message: 'path was not found' });
+});
+
 it('applies the existing secret screen before persisting or indexing Markdown', async () => {
   const where = target(crypto.randomUUID(), 'team', 'alice', 'personal');
   const rejected = await call(where, 'write', { operation: 'put', path: 'MEMORY.md', expected_revision: 0,
@@ -257,5 +285,30 @@ it('persists an AI-backed flush through the internal RPC and exposes its queue, 
       runtime.env = original;
       await state.storage.deleteAlarm();
     }
+  });
+});
+
+it.each([true, false])('excludes both audit journals through managedExtensionTools with personal=%s', async personal => {
+  const organizationId = crypto.randomUUID(), teamId = 'team', ownerId = 'alice';
+  for (const scope of ['personal', 'team'] as const) {
+    const where = target(organizationId, teamId, ownerId, scope);
+    for (const path of ['DREAMS.md', 'MEMORY.md']) {
+      expect((await call(where, 'write', { operation: 'put', path, expected_revision: 0,
+        content: `copper ${scope} ${path}` })).status).toBe(200);
+    }
+  }
+  const tools = managedExtensionTools({ organizationId, teamId, ownerId, sessionId: crypto.randomUUID(),
+    memories: binding, personal: () => personal, authorize: () => {} });
+  const context = { sessionId: 'test', callId: 'test', parentCallId: '', model: 'test', signal: new AbortController().signal };
+  const invoke = (method: string, input: unknown) => tools.find(tool => tool.name === `memories__${method}`)!.handler(input, context);
+  const journals = personal ? ['DREAMS.md', 'team/DREAMS.md'] : ['DREAMS.md'];
+  for (const path of journals) {
+    expect(await invoke('list', { path })).toMatchObject({ entries: [{ path, entry_type: 'file' }] });
+    expect(await invoke('read', { path })).toMatchObject({ content: `copper ${path.startsWith('team/') || !personal ? 'team' : 'personal'} DREAMS.md` });
+    await expect(invoke('search', { path, queries: ['copper'] })).rejects.toThrow('path was not found');
+  }
+  expect(await invoke('search', { queries: ['copper'] })).toMatchObject({
+    matches: personal ? [{ path: 'MEMORY.md' }, { path: 'team/MEMORY.md' }] : [{ path: 'MEMORY.md' }],
+    next_cursor: null, truncated: false,
   });
 });

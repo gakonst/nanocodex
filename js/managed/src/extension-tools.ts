@@ -39,7 +39,9 @@ export function managedExtensionTools(options: ManagedExtensionOptions): NamedTo
       const backend = fileMemoriesBackend({
         listFiles: async () => {
           const own = await call(root, 'files', {}) as string[];
-          return personal ? [...own, ...(await call('team', 'files', {}) as string[]).map(path => `team/${path}`)] : own;
+          const files = personal ? [...own, ...(await call('team', 'files', {}) as string[]).map(path => `team/${path}`)] : own;
+          // Audit journals remain explicitly listable/readable, but are never recall evidence.
+          return method === 'search' ? files.filter(path => path !== 'DREAMS.md' && path !== 'team/DREAMS.md') : files;
         },
         readFile: async path => personal && path.startsWith('team/')
           ? await call('team', 'file', { path: path.slice(5) }) as string

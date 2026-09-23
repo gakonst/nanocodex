@@ -77,3 +77,57 @@ test('middle truncation matches pinned approximate token budget',()=>{
   assert.equal(truncateMemoryText('abcdefghijklmnop',2),'abcd…2 tokens truncated…mnop');
   assert.equal(truncateMemoryText('αβγδεζηθ',2),'αβ…2 tokens truncated…ηθ');
 });
+
+// Grounded in pinned Codex local/search.rs: str::trim, is_alphanumeric,
+// str::lines, String ordering, and backend.rs SearchMatchMode serde projection.
+test('search normalization retains Unicode Alphabetic marks and numeric characters', async () => {
+  const { tools } = backend({ 'a.md': '\u0345\n\u05b0\nⅣ-²\n' });
+  for (const query of ['\u0345', '\u05b0', 'Ⅳ²']) {
+    const result = await tools.search({ queries: [query], normalized: true });
+    assert.equal(result.matches.length, 1);
+    assert.deepEqual(result.matches[0].matched_queries, [query]);
+  }
+});
+
+test('query and note whitespace follows Rust Unicode White_Space', async () => {
+  const { tools, files } = backend({ 'a.md': '\ufeffalpha\nalpha\n' });
+  const trimmed = await tools.search({ queries: ['\u0085alpha\u0085'] });
+  assert.deepEqual(trimmed.queries, ['alpha']);
+  assert.equal(trimmed.matches.length, 2);
+  const bom = await tools.search({ queries: ['\ufeffalpha'] });
+  assert.deepEqual(bom.queries, ['\ufeffalpha']);
+  assert.equal(bom.matches.length, 1);
+  await assert.rejects(tools.search({ queries: ['\u0085'] }), /queries/);
+  const filename = '2026-09-19T10-30-00-unicode.md';
+  await assert.rejects(tools.add_ad_hoc_note({ filename, note: '\u0085' }), /empty/);
+  await tools.add_ad_hoc_note({ filename, note: '\ufeff' });
+  assert.equal(files.get('extensions/ad_hoc/notes/' + filename), '\ufeff');
+});
+
+test('list and search paginate filenames in Rust UTF-8 order', async () => {
+  const { tools } = backend({ '𐀀.md': 'hit', '\ue000.md': 'hit', 'a.md': 'hit' });
+  const expected = ['a.md', '\ue000.md', '𐀀.md'];
+  assert.deepEqual((await tools.list({})).entries.map(entry => entry.path), expected);
+  assert.deepEqual((await tools.search({ queries: ['hit'] })).matches.map(match => match.path), expected);
+  for (let i = 0; i < expected.length; i++) {
+    const args = { cursor: String(i), max_results: 1 };
+    assert.equal((await tools.list(args)).entries[0].path, expected[i]);
+    assert.equal((await tools.search({ ...args, queries: ['hit'] })).matches[0].path, expected[i]);
+  }
+});
+
+test('search removes CRLF terminators but preserves a final bare carriage return', async () => {
+  const { tools } = backend({ 'a.md': 'hit\r\nhit\r', 'b.md': 'hit\r\n' });
+  const result = await tools.search({ queries: ['hit'] });
+  assert.deepEqual(result.matches.map(match => match.content), ['hit', 'hit\r', 'hit']);
+  assert.equal((await tools.search({ path: 'a.md', queries: ['hit'], context_lines: 1 })).matches[0].content, 'hit\nhit\r');
+});
+
+test('search serializes only fields belonging to the chosen match mode', async () => {
+  const { tools } = backend({ 'a.md': 'hit' });
+  for (const mode of [{ type: 'any' }, { type: 'all_on_same_line' }, { type: 'all_within_lines', line_count: 2 }]) {
+    const result = await tools.search({ queries: ['hit'], match_mode: { ...mode, extra: 'ignored', ...(mode.type === 'any' ? { line_count: 9 } : {}) } });
+    assert.deepEqual(result.match_mode, mode);
+    assert.equal(result.matches.length, 1);
+  }
+});
