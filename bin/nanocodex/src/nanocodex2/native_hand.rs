@@ -232,26 +232,13 @@ async fn serve(client: &ManagedClient, command: NativeHand) -> Result<(), Manage
         state.advertise_vm_provider(&provider)?;
     }
     let target = client.account_attachment_target()?;
-    let screen = match super::screen_native::NativeScreen::start(
-        &target,
-        &state.machine,
-        &directory,
+    // Display readiness must not delay shell/filesystem publication. Keep the
+    // NativeState lock until both the attachment and screen have shut down.
+    super::screen_supervisor::while_attached(
+        || super::screen_native::NativeScreen::start(&target, &state.machine, &directory),
+        run(target.clone(), &state, super::service::shutdown_signal()),
     )
     .await
-    {
-        Ok(screen) => Some(screen),
-        Err(error) => {
-            tracing::warn!(target: "nanocodex2", stage = "native.screen.unavailable", %error,
-                "Native screen unavailable; shell and filesystem remain connected");
-            None
-        }
-    };
-    let result = run(target, state, super::service::shutdown_signal()).await;
-    let stopped = match screen {
-        Some(screen) => screen.shutdown().await,
-        None => Ok(()),
-    };
-    result.and(stopped)
 }
 
 pub(super) fn reject_browser_options(
@@ -268,10 +255,10 @@ pub(super) fn reject_browser_options(
 
 async fn run(
     target: AttachmentTarget,
-    state: NativeState,
+    state: &NativeState,
     shutdown: impl Future<Output = Result<(), ManagedError>>,
 ) -> Result<(), ManagedError> {
-    run_observed(target, &state, shutdown, |_| {}).await
+    run_observed(target, state, shutdown, |_| {}).await
 }
 
 pub(super) async fn run_observed(
@@ -702,10 +689,13 @@ mod tests {
         )
         .unwrap();
         let (shutdown_tx, shutdown_rx) = oneshot::channel();
-        let hand = tokio::spawn(run(target, state, async {
-            shutdown_rx.await.unwrap();
-            Ok(())
-        }));
+        let hand = tokio::spawn(async move {
+            run(target, &state, async {
+                shutdown_rx.await.unwrap();
+                Ok(())
+            })
+            .await
+        });
         tokio::time::timeout(Duration::from_secs(20), async {
             let first = catalogs.recv().await.unwrap();
             let second = catalogs.recv().await.unwrap();

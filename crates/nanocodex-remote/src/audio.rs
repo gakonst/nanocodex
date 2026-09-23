@@ -52,7 +52,7 @@ impl Audio {
                 loop {
                     tokio::time::timeout(Duration::from_secs(5), reader.read_exact(&mut bytes))
                         .await??;
-                    for (sample, pair) in pcm.iter_mut().zip(bytes.chunks_exact(2)) {
+                    for (sample, pair) in pcm.iter_mut().zip(bytes.as_chunks::<2>().0.iter()) {
                         *sample = f32::from(i16::from_le_bytes([pair[0], pair[1]])) / 32768.0;
                     }
                     let count = encoder

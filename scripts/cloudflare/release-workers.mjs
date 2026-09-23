@@ -13,7 +13,7 @@ import { readPlan, releaseFingerprints } from './release-plan.mjs';
 
 const commands=Object.fromEntries([...phases.infrastructure,...phases.consumers,
   ['managed','js/managed',['npx','wrangler','deploy','--config','wrangler.ci.jsonc','--containers-rollout','immediate']],
-  ['account','js/account',['npx','wrangler','deploy','--config','dist/nanocodex/wrangler.json']],
+  ['account','js/account',['npx','wrangler','deploy','--config','dist/nanocodex/wrangler.ci.json']],
 ].map(([name,directory,command])=>[name,{directory,command}]));
 export const releasePhases=[['egress','x'],['managed'],['email','dialog','connect-api','astra','chief-of-staff','playground'],['account']];
 
@@ -32,12 +32,14 @@ export async function guardedCommand(command, {cwd=process.cwd(),directory='.',e
     return readFileSync(output,'utf8').trim().split('\n').at(-1)==='active=true';
   }finally{rmSync(temporary,{recursive:true,force:true});}
 }
-export async function accountHealth() {
+export async function accountHealth(expectedRevision) {
   const response=await fetch('https://nanocodex.gakonst.workers.dev/api/health',{signal:AbortSignal.timeout(20_000)});
   assert.equal(response.status,200);const health=await response.json();
   assert.equal(health.service,'nanocodex');assert.equal(health.runtime,'cloudflare-workers');assert.equal(health.status,'ok');
+  if(expectedRevision)assert.equal(health.deployment_sha,expectedRevision,'Account health must identify the released revision');
 }
 export async function releaseWorkers(plan,{ledger=createDeploymentLedger(),isCurrent=currentRelease,run=guardedCommand,health=accountHealth,env=process.env,cwd=process.cwd()}={}){
+  if(plan.selected.includes('account'))assert.match(plan.revision,/^[a-f0-9]{40}$/);
   const results=[];
   const result=(pending,state)=>results.push({name:pending.name,state,seconds:(Date.now()-pending.started)/1000});
   async function deploy(name){
@@ -52,6 +54,7 @@ export async function releaseWorkers(plan,{ledger=createDeploymentLedger(),isCur
       const childEnv={...env};
       for(const key of ['ASTRA_MANAGED_API_KEY','ASTRA_MPP_SECRET','TEMPO_API_KEY'])delete childEnv[key];
       const command=[...spec.command,'--message',env.DEPLOY_MESSAGE??'','--tag',releaseTag(plan.fingerprints[name])];
+      if(name==='account')command.push('--var',`DEPLOYMENT_SHA:${plan.revision}`);
       if(name==='astra'){
         const secrets=Object.fromEntries([
           ['NANOCODEX_ASTRA_MANAGED_API_KEY',env.ASTRA_MANAGED_API_KEY],
@@ -85,7 +88,7 @@ export async function releaseWorkers(plan,{ledger=createDeploymentLedger(),isCur
       let healthy=true;
       // One required health check per phase, before ANY successful receipt in it.
       // An empty or wholly superseded phase does no health work.
-      if(pending.length)try{await health();}catch{healthy=false;failed=true;}
+      if(pending.length)try{await health(pending.some(row=>row.name==='account')?plan.revision:undefined);}catch{healthy=false;failed=true;}
       const finished=await Promise.allSettled(pending.map(async row=>{
         try{
           await ledger.finish(row.record,healthy?'success':'failure');

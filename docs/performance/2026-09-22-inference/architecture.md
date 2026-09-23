@@ -1,5 +1,7 @@
 # Inference critical path and placement
 
+Latest production measurements and deployment provenance are in [summary-after-colocation.md](summary-after-colocation.md). The earlier measurements below are retained as historical evidence; the final policy uses 15-minute discovery/context caches and five-minute runtime retention.
+
 This investigation prioritizes fixed-model inference with routing disabled. It separates managed agent turns, which use the retained agent runtime and subscription Responses WebSocket, from the separate inference-key Responses API. Completion improvements to the latter are not evidence of faster managed Astra TTFT.
 
 ```mermaid
@@ -47,6 +49,26 @@ Responses connections now carry generated correlation IDs across egress, relay c
 
 The account proxy joins HTTP admission, cancellation and WS/SSE establishment to the managed response request ID without consuming response bodies or logging credentials, query strings or prompt contents. Observation errors cannot replace the response. Focused validation: 27 egress tests, 9 relay tests and 19 account proxy tests passed; account and egress typechecks passed before the later placement change. Placement validation is recorded separately.
 
-The idle fix retains existing discovery metadata for its original 120-second TTL and authority key instead of discarding it at the 30-second runtime teardown. This removes a repeated metadata read where the original snapshot is still valid. It does not cache provider credentials, extend authorization, or remove the provider reconnect. The separate inference-key path combines the first pin/admission storage write and removes passive telemetry from response completion; see `critical-path.md` and `streaming.md` for runtime evidence and limits.
+The initial idle fix retained existing discovery metadata for its original 120-second TTL and authority key instead of discarding it at the 30-second runtime teardown. This removes a repeated metadata read where the original snapshot is still valid. It does not cache provider credentials, extend authorization, or remove the provider reconnect. The separate inference-key path combines the first pin/admission storage write and removes passive telemetry from response completion; see `critical-path.md` and `streaming.md` for runtime evidence and limits.
 
 A post-deployment comparison must record the actual versions of every participating service, separate the first regional-container start from reuse, preserve retries/failures as outcomes, compare server phases as well as client elapsed time, and keep model, reasoning, routing, prompt, setup and idle intervals fixed.
+
+## Voice control and media paths
+
+Voice uses the same trusted original-ingress placement rules. Live ownership is checked at managed ingress before a private verified-owner call reaches egress; the private sideband path now reuses that check instead of resolving Session ownership again. Ordinary public egress continues to enforce its own ownership checks. Credential selection and recovery remain live. Regional text and voice controllers have separate identities in the same seven region-constrained applications.
+
+```mermaid
+flowchart LR
+    C[Native or browser voice client] --> V[Managed voice ingress]
+    V --> S[Session ownership and voice admission]
+    V --> E[Private realtime egress]
+    E --> B[Credential broker on call or reconnect]
+    E --> R[Regional voice controller and container]
+    R --> P[Provider call creation]
+    C <-->|Negotiated WebRTC media and control| P
+    E -->|Call-ID sideband attachment| P
+```
+
+The client already overlaps voice admission and media negotiation. The enabled relay RPC returns the complete SDP answer in one result, avoiding a separate cross-object body read; ambiguous creation failures are not replayed through HTTP. Sideband attachment goes directly from egress to the provider and adds no container hop. The private path preserves the original upgraded response and checks ownership again on reconnect.
+
+Worker/DO/container placement governs setup and delegated agent work. It does not establish the geography of the negotiated media peer or ICE route. Receive-only WebRTC connection readiness, first spoken output and voice-delegated text TTFT are separate measurements. The completed live cohort used the data channel rather than the HTTP sideband; sideband changes have protocol/runtime tests but no live sideband timing comparison.

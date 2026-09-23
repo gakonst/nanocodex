@@ -1,6 +1,7 @@
 //! Rust Hand screen publication. Credentials and signaling remain on the host.
 use crate::Result as CoreResult;
 use crate::audio_duplex::SinkFactory;
+use crate::diagnostics::{Budget, HttpOutcome, close_reason};
 use crate::input::{Lease, timely_event};
 use crate::preparation::{Preparations, VIEWER_CAPACITY};
 use crate::target::PublisherTarget;
@@ -164,6 +165,7 @@ impl Publisher {
                     broadcast.stop().await;
                 }
                 let target = targets.borrow_and_update().clone();
+                let session_started = Instant::now();
                 let result = tokio::select! {
                     _ = &mut stopped => break,
                     changed = targets.changed() => {
@@ -174,6 +176,17 @@ impl Publisher {
                     },
                     result = session(&target, &machine, &backend, video.as_ref(), audio.as_ref(), microphone_factory.clone(), dimensions, &capabilities, input_keepalive, require_video, &mut ready, &providers, &mut broadcast, &mut authorized_at) => result,
                 };
+                if let Err(error) = &result {
+                    tracing::warn!(target: "nanocodex2", stage = "screen.session.exit", reason = error.category(), http_status = error.http_status(), close_code = error.close_code(), elapsed_ms = session_started.elapsed().as_millis() as u64);
+                }
+                // Return the terminal handle even if replacement raced initial
+                // publication. A supervising owner must not treat this as a
+                // retryable startup failure and reclaim the newer host's screen.
+                if matches!(result, Err(SessionError::Replaced))
+                    && let Some(ready) = ready.take()
+                {
+                    let _ = ready.send(());
+                }
                 let _ = tokio::time::timeout(
                     Duration::from_secs(3),
                     backend(json!({"action":"release"})),
@@ -244,6 +257,37 @@ enum SessionError {
     Closed,
     Replaced,
     Unauthorized,
+    MediaFailed,
+    Renewal(HttpOutcome),
+    SocketEnded,
+    SocketReadFailed,
+    BrokerClosed(u16, &'static str),
+}
+impl SessionError {
+    const fn category(&self) -> &'static str {
+        match self {
+            Self::Closed => "session_closed",
+            Self::Replaced => "host_replaced",
+            Self::Unauthorized => "authorization_expired",
+            Self::MediaFailed => "media_pipeline_failed",
+            Self::Renewal(outcome) => outcome.category,
+            Self::SocketEnded => "socket_or_peer_stream_ended",
+            Self::SocketReadFailed => "socket_read_failed",
+            Self::BrokerClosed(_, reason) => reason,
+        }
+    }
+    const fn http_status(&self) -> Option<u16> {
+        match self {
+            Self::Renewal(outcome) => outcome.status,
+            _ => None,
+        }
+    }
+    const fn close_code(&self) -> Option<u16> {
+        match self {
+            Self::BrokerClosed(code, _) => Some(*code),
+            _ => None,
+        }
+    }
 }
 type Wire =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -447,6 +491,23 @@ async fn release(
     }
     Ok(())
 }
+async fn viewer_left(
+    viewer: &str,
+    lease: &mut Lease,
+    backend: &Backend,
+    socket: &mut Socket,
+) -> Result<(), SessionError> {
+    // Retire the dead transport before native lease cleanup. Revocation must
+    // not await a control acknowledgement on the failed peer and tear down
+    // unrelated viewers.
+    if let Some(video) = &mut socket.video {
+        video.remove(viewer);
+    }
+    if lease.owner() == viewer {
+        release(lease, backend, socket).await?;
+    }
+    Ok(())
+}
 // The session owns these separately borrowed transport and lifecycle resources.
 #[allow(clippy::too_many_arguments)]
 async fn session(
@@ -537,11 +598,13 @@ async fn session(
     renew_url.set_path(&format!("{}/renew", base.path()));
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     let mut last_renewal = Instant::now();
-    let mut renewal: Option<BoxFuture<'static, bool>> = None;
+    let mut renewal: Option<BoxFuture<'static, HttpOutcome>> = None;
+    let diagnostics = Budget::default();
+    let mut renewal_reported = false;
     let mut connection = String::new();
     let mut generation = String::new();
     let mut viewers = HashSet::<String>::new();
-    let mut preparations = Preparations::new();
+    let mut preparations: Preparations<Result<Value, reqwest::Error>> = Preparations::new();
     let mut pending_frames = HashMap::<String, u64>::new();
     let mut frame_tick = tokio::time::interval(Duration::from_nanos(33_333_333));
     frame_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -557,7 +620,7 @@ async fn session(
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                if socket.video.as_ref().is_some_and(Video::failed) { return Err(SessionError::Closed); }
+                if socket.video.as_ref().is_some_and(Video::failed) { return Err(SessionError::MediaFailed); }
                 for viewer in socket.video.as_ref().map(Video::expired).unwrap_or_default() {
                     if lease.owner() == viewer { release(&mut lease, backend, &mut socket).await?; }
                     viewers.remove(&viewer);
@@ -574,22 +637,32 @@ async fn session(
                 if last_authorized.elapsed()>Duration::from_secs(25) { return Err(SessionError::Unauthorized); }
                 if !connection.is_empty() && last_renewal.elapsed()>=Duration::from_secs(10) && renewal.is_none() {
                     last_renewal=Instant::now(); let http=http.clone(); let url=renew_url.clone(); let token=target.bearer().to_string(); let id=connection.clone();
-                    renewal=Some(Box::pin(async move { http.post(url).bearer_auth(token).json(&json!({"connection_id":id})).send().await.is_ok_and(|r|r.status().is_success()) }));
+                    renewal=Some(Box::pin(async move { HttpOutcome::response(&http.post(url).bearer_auth(token).json(&json!({"connection_id":id})).send().await) }));
                 }
             },
-            ok = async { match &mut renewal { Some(future)=>future.await,None=>std::future::pending().await } } => {
-                renewal=None; if !ok { return Err(SessionError::Unauthorized); } *last_authorized=Instant::now();
+            outcome = async { match &mut renewal { Some(future)=>future.await,None=>std::future::pending().await } } => {
+                renewal=None;
+                // One success per session; failures are terminal. No response body/error text.
+                if !renewal_reported || !outcome.success {
+                    tracing::info!(target: "nanocodex2", stage = "screen.renewal", outcome = outcome.category, http_status = outcome.status, elapsed_ms = last_renewal.elapsed().as_millis() as u64);
+                    renewal_reported = true;
+                }
+                if !outcome.success { return Err(SessionError::Renewal(outcome)); } *last_authorized=Instant::now();
             },
             (viewer, deadline, response) = preparations.next() => {
                 let video = socket.video.as_mut().ok_or(SessionError::Closed)?;
                 let offer: CoreResult<()> = (|| {
-                    let response = response??;
+                    let response = response.inspect_err(|_| {
+                        diagnostics.event("ice_fetch", "deadline_exceeded", None);
+                    })?.inspect_err(|error| {
+                        diagnostics.event("ice_fetch", "request_or_decode_failed", error.status().map(|status| status.as_u16()));
+                    })?;
                     video.add(&viewer, ice_servers(&response)?, deadline)
                 })();
                 match offer {
-                    Ok(()) => { viewers.insert(viewer.clone()); },
-                    failure => {
-                        eprintln!("Hand video negotiation failed: {failure:?}");
+                    Ok(()) => { diagnostics.event("peer_prepare", "scheduled", None); viewers.insert(viewer.clone()); },
+                    Err(_) => {
+                        diagnostics.event("peer_prepare", "failed", None);
                         send(&mut socket, json!({"type":"close_viewer","viewer_id":viewer})).await?;
                     }
                 }
@@ -597,7 +670,8 @@ async fn session(
             result = async { match &mut broadcast_job { Some(job) => job.await, None => std::future::pending().await } } => {
                 broadcast_job = None;
                 let result = result?;
-                if viewers.contains(result["viewer_id"].as_str().unwrap_or("")) {
+                if viewers.contains(result["viewer_id"].as_str().unwrap_or(""))
+                    || preparations.contains(result["viewer_id"].as_str().unwrap_or("")) {
                     send(&mut socket, result).await?;
                 }
             },
@@ -625,7 +699,7 @@ async fn session(
                 pending_frames.retain(|_, credits| *credits > 0);
             },
             message = socket.next() => {
-                let message=message.ok_or(SessionError::Closed)?.map_err(|_|SessionError::Closed)?;
+                let message=message.ok_or(SessionError::SocketEnded)?.map_err(|_|SessionError::SocketReadFailed)?;
                 let value=match message {
                     Incoming::Peer(value)=>value,
                     Incoming::Broker(Message::Text(text))=>{
@@ -633,7 +707,11 @@ async fn session(
                         value
                     },
                     Incoming::Broker(Message::Ping(bytes))=>{socket.send(Message::Pong(bytes)).await.map_err(|_|SessionError::Closed)?;continue;},
-                    Incoming::Broker(Message::Close(close))=>return Err(if close.is_some_and(|c|c.reason=="Host replaced") {SessionError::Replaced}else{SessionError::Closed}),
+                    Incoming::Broker(Message::Close(close))=>return Err(match close {
+                        Some(close) if close.reason == "Host replaced" => SessionError::Replaced,
+                        Some(close) => SessionError::BrokerClosed(close.code.into(), close_reason(&close.reason)),
+                        None => SessionError::BrokerClosed(1005, "no_close_frame"),
+                    }),
                     Incoming::Broker(Message::Pong(_))=>continue,
                     _=>return Err(SessionError::Closed),
                 };
@@ -650,7 +728,10 @@ async fn session(
                         send(&mut socket,json!({"type":"catalog","machine_id":machine.id(),"machine_name":machine.name(),"surfaces":[surface]})).await?;
                     },
                     "published"=>{tracing::info!(target: "nanocodex2", stage = "screen.published", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);generation=value["generation"].as_str().ok_or(SessionError::Closed)?.into();if let Some(ready)=ready.take(){let _=ready.send(());}},
-                    "broadcast" if viewers.contains(viewer) && value["surface_id"] == "desktop" => {
+                    // Status is read-only and is sent when the viewer socket opens,
+                    // before asynchronous ICE preparation has admitted its peer.
+                    "broadcast" if (viewers.contains(viewer) || (preparations.contains(viewer) && value["action"] == "status"))
+                        && value["surface_id"] == "desktop" => {
                         if broadcast_job.is_some() {
                             send(&mut socket, broadcast_failure(&value, "busy")).await?;
                         } else {
@@ -669,6 +750,7 @@ async fn session(
                     "renewed"=>*last_authorized=Instant::now(),
                     "pong"=>{},
                     "viewer"=>{
+                        diagnostics.event("viewer", "received", None);
                         if viewer.is_empty() || value["surface_id"]!="desktop" {return Err(SessionError::Closed);}
                         // A duplicate ID is ambiguous even at capacity: cancel
                         // that viewer without disturbing unrelated peers.
@@ -697,10 +779,10 @@ async fn session(
                         preparations.remove(viewer);
                         viewers.remove(viewer);
                         pending_frames.remove(viewer);
-                        if lease.owner()==viewer{release(&mut lease,backend,&mut socket).await?;}
-                        if let Some(video)=&mut socket.video{video.remove(viewer);}
+                        viewer_left(viewer,&mut lease,backend,&mut socket).await?;
                     },
                     "signal" if preparations.contains(viewer)=>{
+                        diagnostics.event("signal", "before_offer", None);
                         // No pre-offer signaling queue: cancel and fail closed.
                         preparations.remove(viewer);
                         send(&mut socket,json!({"type":"close_viewer","viewer_id":viewer})).await?;
@@ -708,6 +790,7 @@ async fn session(
                     "signal" if viewers.contains(viewer)=>{
                         if let Some(video)=&mut socket.video
                             && video.signal(viewer,&value["signal"]).is_err() {
+                            diagnostics.event("signal", "rejected", None);
                             if lease.owner()==viewer{release(&mut lease,backend,&mut socket).await?;}
                             send(&mut socket,json!({"type":"close_viewer","viewer_id":viewer})).await?;viewers.remove(viewer);
                         }
@@ -803,7 +886,9 @@ async fn session(
                             }).await.unwrap_or_else(|_|json!({"status":"cancelled"}))
                         })));
                     },
-                    "frame_request"|"input"|"control"=>{},
+                    // A stale viewer, or a start/stop before preparation completes,
+                    // has no authority. It must not tear down unrelated viewers.
+                    "frame_request"|"input"|"control"|"broadcast"=>{},
                     _=>return Err(SessionError::Closed),
                 }
             },
@@ -1027,6 +1112,253 @@ mod tests {
         (publisher, peer.await.unwrap())
     }
     #[tokio::test]
+    async fn early_broadcast_status_does_not_cancel_webrtc_preparation() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        struct Status(Arc<std::sync::Mutex<Vec<String>>>);
+        impl Broadcast for Status {
+            fn supported(&self) -> bool {
+                true
+            }
+            fn request<'a>(&'a mut self, request: &'a Value) -> BoxFuture<'a, Value> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(request["action"].as_str().unwrap().into());
+                Box::pin(async move {
+                    json!({"type":"broadcast_result", "viewer_id":request["viewer_id"], "request_id":request["request_id"], "status":"idle"})
+                })
+            }
+            fn stop(&mut self) -> BoxFuture<'_, ()> {
+                Box::pin(async {})
+            }
+        }
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let video: VideoSource = Arc::new(|| {
+            Box::pin(async {
+                Ok(crate::capture::Capture::packets(
+                    futures_util::stream::once(async {
+                        Ok(bytes::Bytes::from_static(&[0, 0, 0, 1, 0x65, 1]))
+                    })
+                    .chain(futures_util::stream::pending()),
+                    None,
+                ))
+            })
+        });
+        let backend: Backend =
+            Arc::new(|_| Box::pin(async { Ok(json!({"status":"ok","width":1,"height":1})) }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = PublisherTarget::from_attachment(
+            &format!(
+                "ws://{}/v1/account/tool-host",
+                listener.local_addr().unwrap()
+            ),
+            "test-token",
+        )
+        .unwrap();
+        let (ice_started, waiting_ice) = oneshot::channel();
+        let (allow_ice, ice_allowed) = oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut wire = tokio_tungstenite::accept_async(stream).await.unwrap();
+            wire_send(&mut wire, json!({"type":"ready","connection_id":"test"})).await;
+            let catalog = wire_read(&mut wire).await;
+            assert_eq!(catalog["type"], "catalog");
+            assert!(
+                catalog["surfaces"][0].get("transport").is_none(),
+                "fixture must exercise WebRTC"
+            );
+            wire_send(&mut wire, json!({"type":"published","generation":"g"})).await;
+            wire_send(
+                &mut wire,
+                json!({"type":"viewer","viewer_id":"v","surface_id":"desktop"}),
+            )
+            .await;
+            let http = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = [0; 4096];
+                assert!(stream.read(&mut bytes).await.unwrap() > 0);
+                ice_started.send(()).unwrap();
+                ice_allowed.await.unwrap();
+                let body = r#"{"iceServers":[]}"#;
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+            });
+            (wire, http)
+        });
+        let publisher = Publisher::start(
+            &target,
+            &Machine::new("test", "Test").unwrap(),
+            backend,
+            Options {
+                video: Some(video),
+                require_video: true,
+                broadcast: Box::new(Status(calls.clone())),
+                ..Options::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (mut wire, http) = peer.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), waiting_ice)
+            .await
+            .unwrap()
+            .unwrap();
+        // The browser asks for status as soon as its socket opens, before ICE is ready.
+        wire_send(&mut wire,json!({"type":"broadcast","viewer_id":"v","surface_id":"desktop","request_id":"early","action":"status"})).await;
+        assert_eq!(wire_read(&mut wire).await["request_id"], "early");
+        // Preparing viewers gain no start/stop authority; stale IDs cannot disrupt others.
+        for (viewer, action) in [("v", "start"), ("v", "stop"), ("gone", "status")] {
+            wire_send(&mut wire,json!({"type":"broadcast","viewer_id":viewer,"surface_id":"desktop","request_id":"ignored","action":action})).await;
+        }
+        wire_send(&mut wire,json!({"type":"broadcast","viewer_id":"v","surface_id":"desktop","request_id":"still-live","action":"status"})).await;
+        assert_eq!(wire_read(&mut wire).await["request_id"], "still-live");
+        assert_eq!(*calls.lock().unwrap(), ["status", "status"]);
+        allow_ice.send(()).unwrap();
+        http.await.unwrap();
+        let offer = wire_read(&mut wire).await;
+        assert_eq!(offer["signal"]["type"], "offer");
+        assert_eq!(offer["viewer_id"], "v");
+        publisher.shutdown().await.unwrap();
+    }
+
+    async fn departing_owner_fixture() -> (Socket, TestWire, Lease) {
+        let source: VideoSource = Arc::new(|| {
+            Box::pin(async {
+                Ok(crate::capture::Capture::packets(
+                    futures_util::stream::unfold(
+                        tokio::time::interval(Duration::from_millis(20)),
+                        |mut tick| async move {
+                            tick.tick().await;
+                            Some((Ok(bytes::Bytes::from_static(&[0, 0, 0, 1, 0x65, 1])), tick))
+                        },
+                    ),
+                    None,
+                ))
+            })
+        });
+        let mut video = Video::start(&source, None).await.unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        for viewer in ["owner", "survivor"] {
+            video.add(viewer, Vec::new(), deadline).unwrap();
+        }
+        // Polling next installs the real peers; add alone only schedules setup.
+        // Leave both offers unanswered so control sends fail deterministically.
+        tokio::time::timeout(Duration::from_secs(5), async {
+            let mut offered = HashSet::new();
+            while offered.len() < 2 {
+                let event = video.next().await.expect("peer preparation ended");
+                assert!(event.outgoing, "peer preparation failed: {}", event.value);
+                if event.value["signal"]["type"] == "offer" {
+                    let viewer = event.value["viewer_id"].as_str().unwrap();
+                    assert!(matches!(viewer, "owner" | "survivor"));
+                    assert!(offered.insert(viewer.to_owned()));
+                }
+            }
+        })
+        .await
+        .expect("peer offers did not complete");
+        for viewer in ["owner", "survivor"] {
+            assert!(
+                video
+                    .control(viewer, &json!({"type":"revoked"}))
+                    .await
+                    .is_err(),
+                "fixture peer must be installed with a failing control channel"
+            );
+        }
+        assert!(!video.failed());
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let (client, server) = tokio::join!(
+            tokio::net::TcpStream::connect(listener.local_addr().unwrap()),
+            listener.accept(),
+        );
+        let wire = Wire::from_raw_socket(
+            tokio_tungstenite::MaybeTlsStream::Plain(client.unwrap()),
+            tokio_tungstenite::tungstenite::protocol::Role::Client,
+            None,
+        )
+        .await;
+        let broker = TestWire::from_raw_socket(
+            server.unwrap().0,
+            tokio_tungstenite::tungstenite::protocol::Role::Server,
+            None,
+        )
+        .await;
+        let mut lease = Lease::default();
+        lease.acquire("owner");
+        let mut microphone = MicrophoneControl::default();
+        microphone.refreshed(Instant::now());
+        let ack = microphone
+            .request(
+                &lease,
+                "owner",
+                &json!({"generation":lease.generation(),"requestID":"mic","enabled":true}),
+                |enabled, _| enabled,
+            )
+            .unwrap();
+        assert_eq!(ack["data"]["enabled"], true);
+        assert!(microphone.active.is_some());
+        (
+            Socket {
+                wire,
+                video: Some(video),
+                microphone,
+            },
+            broker,
+            lease,
+        )
+    }
+
+    #[tokio::test]
+    async fn departed_owner_is_removed_before_release_acknowledgments() {
+        // Native failure must still close the session after the peer is gone.
+        for status in ["ok", "unavailable"] {
+            let (mut socket, _broker, mut lease) = departing_owner_fixture().await;
+            let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+            let recorded = calls.clone();
+            let backend: Backend = Arc::new(move |input| {
+                recorded.lock().unwrap().push(input);
+                Box::pin(async move { Ok(json!({"status":status})) })
+            });
+
+            let result = viewer_left("owner", &mut lease, &backend, &mut socket).await;
+            if status == "ok" {
+                assert!(
+                    result.is_ok(),
+                    "dead peer acknowledgments closed the session"
+                );
+            } else {
+                assert!(matches!(result, Err(SessionError::Closed)));
+            }
+            assert!(lease.owner().is_empty());
+            assert!(lease.generation().is_empty());
+            assert!(socket.microphone.active.is_none());
+            assert!(socket.microphone.deadline.is_none());
+            assert_eq!(*calls.lock().unwrap(), [json!({"action":"release"})]);
+            let video = socket.video.as_mut().unwrap();
+            assert!(!video.failed(), "one departure poisoned the media pipeline");
+            assert!(
+                video
+                    .control("owner", &json!({"type":"revoked"}))
+                    .await
+                    .is_ok()
+            );
+            assert!(
+                video
+                    .control("survivor", &json!({"type":"revoked"}))
+                    .await
+                    .is_err(),
+                "the other unnegotiated peer must remain installed"
+            );
+            // Repeated departure notifications must not release native input twice.
+            viewer_left("owner", &mut lease, &backend, &mut socket)
+                .await
+                .unwrap();
+            assert_eq!(*calls.lock().unwrap(), [json!({"action":"release"})]);
+        }
+    }
+
+    #[tokio::test]
     async fn failed_native_release_cannot_grant_control() {
         for failure in ["status", "error", "timeout"] {
             let backend: Backend = Arc::new(move |input| {
@@ -1197,6 +1529,13 @@ mod tests {
     }
     #[tokio::test]
     async fn replaced_host_finishes_and_releases_without_reclaiming() {
+        check_replaced_host(false).await;
+    }
+    #[tokio::test]
+    async fn replacement_before_initial_publication_returns_a_terminal_handle() {
+        check_replaced_host(true).await;
+    }
+    async fn check_replaced_host(before_publication: bool) {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1231,14 +1570,16 @@ mod tests {
             .await
             .unwrap();
             let _catalog = wire.next().await.unwrap().unwrap();
-            wire.send(Message::Text(
-                json!({"type":"published","generation":"g"})
-                    .to_string()
-                    .into(),
-            ))
-            .await
-            .unwrap();
-            replaced.await.unwrap();
+            if !before_publication {
+                wire.send(Message::Text(
+                    json!({"type":"published","generation":"g"})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+                replaced.await.unwrap();
+            }
             wire.close(Some(CloseFrame {
                 code: CloseCode::Normal,
                 reason: "Host replaced".into(),
@@ -1259,8 +1600,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!publisher.is_finished());
-        replace.send(()).unwrap();
+        if !before_publication {
+            assert!(!publisher.is_finished());
+            replace.send(()).unwrap();
+        }
         tokio::time::timeout(Duration::from_secs(2), async {
             while !publisher.is_finished() {
                 tokio::task::yield_now().await;

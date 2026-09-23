@@ -448,6 +448,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      actions: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -469,15 +470,13 @@ jobs:
         run: |
           pnpm install --frozen-lockfile
           ./js/nanocodex-vite/scripts/build-js-package.sh --release
-      - name: Save verified WASM outputs
-        if: github.ref == 'refs/heads/master' && steps.wasm.outputs.hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Retain verified WASM outputs
+        if: github.ref == 'refs/heads/master'
+        uses: ./.github/actions/save-wasm-outputs
         with:
           key: ${{ steps.wasm.outputs.key }}
-          path: |
-            js/nanocodex/pkg-web
-            js/nanocodex/pkg-node
-            .ci-wasm-cache
+          cache-hit: ${{ steps.wasm.outputs.cache-hit }}
+          rejected-artifact-id: ${{ steps.wasm.outputs.rejected-artifact-id }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: nanocodex-wasm

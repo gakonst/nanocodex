@@ -48,8 +48,14 @@ test('Worker inputs isolate services and follow dependencies, assets, config and
   await change('assets/template.html', 'changed', ['email']);
   await change('js/account/public/icon.svg', '<svg/>', ['account']);
   await change('js/account/wrangler.jsonc', '{}', ['account']);
+  await change('scripts/cloudflare/released-account-image.mjs', '// release policy', ['account']);
+  await change('scripts/cloudflare/account-relay-image.mjs', '// publication policy', []);
+  await change('js/account/container/relay.mjs', '// container runtime', []);
+  await change('js/managed/Dockerfile', 'FROM alpine', []);
+  await change('crates/nanocodex-remote/src/runtime.rs', '// native runtime', []);
   await change('js/nanocodex/src/lib.rs', 'pub fn changed() {}', Object.keys(workerSpecs).filter(name => workerSpecs[name].needsWasm));
   await change('pnpm-lock.yaml', 'lockfileVersion: 9', Object.keys(workerSpecs));
+  await change('.github/actions/deploy-workers/action.yml', 'name: release behavior', Object.keys(workerSpecs));
   await change('js/managed/dist/index.js', 'generated', []);
   await change('js/managed/src/index.test.ts', 'test', []);
   await change('unrelated.txt', 'unrelated', []);
