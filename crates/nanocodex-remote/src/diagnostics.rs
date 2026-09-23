@@ -1,16 +1,33 @@
 //! Payload-free, bounded diagnostics. Never format transport errors: they may
 //! retain request URLs, SDP, credentials, or broker-controlled close reasons.
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::{
+    net::IpAddr,
+    sync::atomic::{AtomicUsize, Ordering},
+    time::Instant,
+};
 
-#[derive(Default)]
-pub(crate) struct Budget(AtomicUsize);
+pub(crate) struct Budget {
+    count: AtomicUsize,
+    started: Instant,
+}
+impl Default for Budget {
+    fn default() -> Self {
+        Self {
+            count: AtomicUsize::new(0),
+            started: Instant::now(),
+        }
+    }
+}
 impl Budget {
     pub(crate) fn take(&self) -> bool {
-        self.0
+        self.count
             .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |n| {
                 (n < 32).then_some(n + 1)
             })
             .is_ok()
+    }
+    pub(crate) fn elapsed_ms(&self) -> u64 {
+        self.started.elapsed().as_millis() as u64
     }
     pub(crate) fn event(
         &self,
@@ -19,7 +36,35 @@ impl Budget {
         http_status: Option<u16>,
     ) {
         if self.take() {
-            tracing::info!(target: "nanocodex2", stage = "screen.negotiation", phase, outcome, http_status);
+            tracing::info!(target: "nanocodex2", stage = "screen.negotiation", phase, outcome, http_status, elapsed_ms = self.elapsed_ms());
+        }
+    }
+}
+
+/// Return only a fixed label, including when input is malformed or contains
+/// sensitive text. ICE host candidates can remain unresolved mDNS names.
+pub(crate) fn address_family(address: &str) -> &'static str {
+    match address.parse::<IpAddr>() {
+        Ok(IpAddr::V4(_)) => "ipv4",
+        Ok(IpAddr::V6(_)) => "ipv6",
+        Err(_) => {
+            let name = address.strip_suffix('.').unwrap_or(address);
+            if !name.is_empty()
+                && name.len() <= 253
+                && name.split('.').all(|label| {
+                    !label.is_empty()
+                        && label.len() <= 63
+                        && label.as_bytes()[0].is_ascii_alphanumeric()
+                        && label.as_bytes()[label.len() - 1].is_ascii_alphanumeric()
+                        && label
+                            .bytes()
+                            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                })
+            {
+                "hostname"
+            } else {
+                "unknown"
+            }
         }
     }
 }
@@ -70,6 +115,23 @@ pub(crate) fn close_reason(reason: &str) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn candidate_families_are_allowlisted_without_echoing_addresses() {
+        for (address, expected) in [
+            ("192.0.2.1", "ipv4"),
+            ("2001:db8::1", "ipv6"),
+            ("fixture-123.local", "hostname"),
+            ("fixture.example.invalid.", "hostname"),
+            ("", "unknown"),
+            ("bad..local", "unknown"),
+            ("-bad.local", "unknown"),
+            ("https://example.invalid/?token=secret", "unknown"),
+            ("a=ice-pwd:secret\n", "unknown"),
+        ] {
+            assert_eq!(address_family(address), expected);
+        }
+        assert_eq!(address_family(&"a".repeat(254)), "unknown");
+    }
     #[test]
     fn untrusted_close_reasons_never_become_diagnostic_text() {
         assert_eq!(close_reason("Host replaced"), "host_replaced");

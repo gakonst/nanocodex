@@ -454,6 +454,7 @@ struct PeerBuilder {
 }
 impl PeerBuilder {
     async fn build(self, id: &str, servers: Vec<RTCIceServer>) -> Result<(Peer, Value)> {
+        let diagnostics = Arc::new(crate::diagnostics::Budget::default());
         let track = Arc::new(TrackLocalStaticRTP::new(
             RTCRtpCodecCapability {
                 mime_type: "video/H264".into(),
@@ -550,7 +551,6 @@ impl PeerBuilder {
         );
         let owned = Connection(connection.clone());
         let microphone = Arc::new(Microphone::install(&connection, self.microphone_factory));
-        let diagnostics = Arc::new(crate::diagnostics::Budget::default());
         let path_diagnostics = diagnostics.clone();
         connection
             .dtls_transport()
@@ -559,7 +559,10 @@ impl PeerBuilder {
                 if path_diagnostics.take() {
                     tracing::info!(target: "nanocodex2", stage = "screen.network.path",
                     local_type = %pair.local.typ, local_protocol = %pair.local.protocol,
-                    remote_type = %pair.remote.typ, remote_protocol = %pair.remote.protocol);
+                    remote_type = %pair.remote.typ, remote_protocol = %pair.remote.protocol,
+                    local_family = crate::diagnostics::address_family(&pair.local.address),
+                    remote_family = crate::diagnostics::address_family(&pair.remote.address),
+                    elapsed_ms = path_diagnostics.elapsed_ms());
                 }
                 Box::pin(async {})
             }));
