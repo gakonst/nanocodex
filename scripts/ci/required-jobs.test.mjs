@@ -86,3 +86,25 @@ test('affected-family outputs gate producers, consumers and every final prerequi
     assert.ok(step.includes("if: needs.changes.outputs.rust == 'true'"), step);
   }
 });
+
+test('Rust quality lanes retain all target and isolated feature checks', () => {
+  const quality = workflow.split('  quality:\n')[1].split('  vm-guest:\n')[0];
+  assert.match(quality, /fail-fast: false/);
+  assert.match(quality, /check: \[workspace-clippy, cli-clippy, contracts, docs\]/);
+  const steps = quality.split('      - ');
+  const lane = name => steps.filter(step => step.includes(`if: matrix.check == '${name}'`)).join('\n');
+  assert.match(lane('workspace-clippy'), /cargo fmt --all -- --check/);
+  assert.match(lane('workspace-clippy'), /cargo clippy --locked --workspace --all-targets --all-features --exclude nanocodex-bin/);
+  assert.match(lane('cli-clippy'), /--all-features --bin nanocodex --bench tui_render/);
+  for (const name of ['nanocodex-oai-api', 'nanocodex-observability', 'nanocodex-tools', 'nanocodex-agent', 'nanocodex-examples']) {
+    // Separate invocations preserve each public crate's independent feature resolution.
+    assert.ok(lane('contracts').includes(`cargo check --locked --package ${name}`));
+  }
+  assert.match(lane('docs'), /cargo doc --workspace --all-features --no-deps --locked/);
+  assert.match(lane('docs'), /RUSTDOCFLAGS: -D warnings/);
+  assert.match(quality, /shared-key: quality-\$\{\{ matrix.check \}\}/);
+  assert.ok(passes({ ...environment(true), QUALITY: 'success' }));
+  for (const result of ['failure', 'cancelled', 'skipped']) {
+    assert.equal(passes({ ...environment(true), QUALITY: result }), false);
+  }
+});

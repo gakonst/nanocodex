@@ -44,3 +44,26 @@ node scripts/ci/timings.mjs OWNER/REPO LIMIT OUTPUT_PREFIX [RUN_ID...]
 Pre-execution elapsed includes dependencies and workflow gates as well as runner
 queueing. Compare equivalent workflows; production deploy and the full native
 CI suite have different scopes.
+
+## Rust compilation critical path
+
+The quality matrix runs workspace Clippy, CLI/benchmark Clippy, independent
+public crate checks, and documentation concurrently. The independent crate
+checks intentionally remain separate Cargo invocations: merging their package
+flags would unify features and weaken that check. CLI and benchmark targets
+belong to the same package and share one Clippy invocation. Each quality lane
+has its own Cargo cache, and `ci success` requires the complete matrix to pass.
+
+Native Hand, Windows installer, VM guest, and Python wheel builds use pinned
+sccache with GitHub's cache backend, in addition to the dependency cache. This
+allows unchanged library compilation to be reused across fresh checkouts;
+linking and unsupported compiler invocations still run normally. Native Cargo
+caches include the job identity and compiler environment, so concurrent jobs
+cannot publish different target subsets under one immutable key.
+
+Baseline: CI run 35824188289 on 2026-09-23 spent 9m57s in quality: 6m08s in
+Clippy, 2m07s in isolated crate checks, and 1m03s in docs. Parallel lanes remove
+that serial dependency, but new cache namespaces need warming. Compare cold and
+warm runs before claiming a measured improvement; parallel jobs can increase
+aggregate runner minutes even as elapsed time falls. Existing paused tests are
+unchanged by this optimization.

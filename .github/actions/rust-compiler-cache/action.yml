@@ -1,0 +1,15 @@
+name: Rust compiler cache
+description: Reuse content-addressed Rust compilation across fresh checkouts.
+runs:
+  using: composite
+  steps:
+    - uses: mozilla-actions/sccache-action@fc920bf0ec8de6ee65d409111f7ec508035751ba
+      with:
+        version: v0.16.0
+    - name: Enable compiler caching
+      shell: bash
+      run: |
+        echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
+        echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+        # Incremental compilation bypasses sccache; CI caches compiler outputs.
+        echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
