@@ -73,10 +73,11 @@ export function deploymentConfig(source, refs) {
   return output;
 }
 const run = (command, args, options = {}) => execFileSync(command, args, { stdio: 'inherit', ...options });
-function buildImage(image, tag, epoch, buildOptions) {
+function buildImage(image, tag, epoch, { load = true, ...buildOptions } = {}) {
   const spec = images[image];
   if (image === 'sandbox') run(process.execPath, ['js/managed/scripts/prepare-hand-image.mjs']);
-  run(process.execPath, ['scripts/cloudflare/wrangler-docker.mjs', 'build', '--load', '-t', tag,
+  run(process.execPath, ['scripts/cloudflare/wrangler-docker.mjs', 'build',
+    ...(load ? ['--load'] : ['--output', 'type=cacheonly']), '-t', tag,
     '--platform', 'linux/amd64', '--provenance=false', '--pull',
     '--build-arg', `NANOCODEX_IMAGE_CACHE_EPOCH=${epoch}`,
     ...(image === 'sandbox' ? ['--build-arg', `CI_TESTS_ENABLED=${process.env.CI_TESTS_ENABLED || 'true'}`] : []), '-f', spec.dockerfile, spec.context], buildOptions);
@@ -96,6 +97,9 @@ export function main([command, image]) {
     // Validate the same prepared image without an account, publication or receipts.
     // A preview stays read-only even when invoked in a trusted master environment.
     buildImage(image, `nanocodex-ci-${image}:preview`, epoch, {
+      // Preview validation consumes no image. Build every layer without the
+      // multi-gigabyte export/load that only publication and runtime checks need.
+      load: false,
       env: { ...process.env, WRANGLER_DOCKER_CACHE_WRITE: 'false' },
     });
     return;

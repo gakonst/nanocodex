@@ -84,7 +84,7 @@ export function record(kind, args) {
 function expectedBuild(image, testsEnabled = 'true') {
   return {
     kind: 'build',
-    args: ['build', '--load', '-t', `nanocodex-ci-${image}:preview`,
+    args: ['build', '--output', 'type=cacheonly', '-t', `nanocodex-ci-${image}:preview`,
       '--platform', 'linux/amd64', '--provenance=false', '--pull',
       '--build-arg', 'NANOCODEX_IMAGE_CACHE_EPOCH=preview-test-epoch',
       ...(image === 'sandbox' ? ['--build-arg', `CI_TESTS_ENABLED=${testsEnabled}`] : []),

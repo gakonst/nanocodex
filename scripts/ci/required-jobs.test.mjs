@@ -104,7 +104,7 @@ test('Rust quality lanes retain all target and isolated feature checks', () => {
   }
   assert.match(lane('docs'), /cargo doc --workspace --all-features --no-deps --locked/);
   assert.match(lane('docs'), /RUSTDOCFLAGS: -D warnings/);
-  assert.match(quality, /shared-key: quality-\$\{\{ matrix.check \}\}/);
+  assert.ok(quality.includes("matrix.check == 'contracts' && 'quality-contracts' || 'quality-workspace-clippy'"));
   assert.ok(passes({ ...environment(true), QUALITY: 'success' }));
   for (const result of ['failure', 'cancelled', 'skipped']) {
     assert.equal(passes({ ...environment(true), QUALITY: result }), false);

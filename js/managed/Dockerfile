@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # Build against the same libc family as the Sandbox runtime. The publisher is
 # the shared Rust Hand implementation; Go remains only a developer toolchain.
-FROM --platform=$TARGETPLATFORM ubuntu:22.04 AS hand
+FROM --platform=$TARGETPLATFORM ubuntu:22.04 AS hand-chef
 # Explicit upstream refresh without disabling normal source-layer reuse.
 ARG NANOCODEX_IMAGE_CACHE_EPOCH=1
 RUN test -n "$NANOCODEX_IMAGE_CACHE_EPOCH"
@@ -12,10 +12,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 ENV CARGO_HOME=/usr/local/cargo RUSTUP_HOME=/usr/local/rustup PATH=/usr/local/cargo/bin:${PATH}
 RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
     | sh -s -- -y --profile minimal --default-toolchain 1.97.0
+# Install once in the toolchain layer, independently of application sources.
+RUN cargo install cargo-chef --version 0.1.78 --locked --jobs 2
 WORKDIR /source
+
+FROM hand-chef AS hand-planner
 COPY .generated/remote-rust/ ./
-RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/usr/local/cargo/git --mount=type=cache,target=/source/target \
-    CARGO_BUILD_JOBS=2 cargo build --release --locked -p nanocodex2-bin --bin nanocodex2 \
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM hand-chef AS hand
+COPY --from=hand-planner /source/recipe.json recipe.json
+# Cook only the recipe in this otherwise empty directory. Keep target AND Cargo
+# sources in image layers so a fresh builder can reuse the exported dependencies.
+RUN CARGO_BUILD_JOBS=2 cargo chef cook --release --locked -p nanocodex2-bin --bin nanocodex2 --recipe-path recipe.json
+COPY .generated/remote-rust/ ./
+RUN CARGO_BUILD_JOBS=2 cargo build --release --locked -p nanocodex2-bin --bin nanocodex2 \
     && mkdir -p /out && cp target/release/nanocodex2 /out/nanocodex-remote
 
 # The SDK's Ubuntu 22.04 base has no labwc package. Bundle the VM's Debian
@@ -138,6 +149,7 @@ RUN apt-get update \
 # Ubuntu 22.04's chromium-browser package requires Snap, which is unavailable
 # in the Sandbox container. Install Google's native AMD64 Debian package.
 RUN curl --fail --location --proto '=https' --tlsv1.2 \
+        --retry 3 --retry-all-errors --retry-delay 2 \
         https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb \
         -o /tmp/google-chrome.deb \
     && apt-get update \
