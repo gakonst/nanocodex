@@ -83,3 +83,26 @@ Preview publishing uses the supplied artifact whenever its workflow input is
 present, including a manually dispatched parent CI. A standalone preview still
 builds its own artifact. Preview concurrency separates parent workflows and
 manual/full runs, so an unrelated push cannot cancel a required preview.
+
+## Cache storage and writers
+
+PR compiler caches are read-only. Only master push, manual, and scheduled runs
+write sccache entries; cache misses still compile normally. This avoids concurrent
+PR-local uploads competing with reusable master entries for the cache API quota.
+
+Docker intermediate layers use the public `ghcr.io/<repository>-hand` package,
+with separate `buildcache-*` tags per consumer and architecture. They no longer
+consume the Actions cache capacity needed by Cargo and other dependency caches.
+PRs import anonymously; only trusted master runs log in and export. A missing
+cache or a failed cache login/export leaves normal builds available. These tags
+are cache metadata, independent of runnable image tags and deployment receipts.
+
+Master CI seeds its Hand caches on push, schedule, or manual dispatch. Toolkit
+caches seed on master dispatch; Cloudflare seeds when a trusted deployment needs
+an image build. Successful cache availability checks emit a Docker registry cache
+notice. Compare a later run after seeding before attributing a speedup to reuse.
+Old Actions cache entries can expire normally; no cache deletion is required.
+
+The selection job always runs the small compiler and Docker cache policy tests,
+including the Wrangler Docker argument/exit-status boundary tests. The existing
+behavioral test pause is otherwise unchanged.
