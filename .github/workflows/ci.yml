@@ -318,9 +318,9 @@ jobs:
           components: clippy, rustfmt
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
-          # Reuse the broad workspace cache without racing to publish lane subsets.
-          save-if: ${{ github.ref == 'refs/heads/master' && matrix.check == 'workspace-clippy' }}
-          shared-key: quality-workspace-clippy
+          # Default-feature checks retain their own variants; Clippy/docs share one writer.
+          save-if: ${{ github.ref == 'refs/heads/master' && (matrix.check == 'workspace-clippy' || matrix.check == 'contracts') }}
+          shared-key: ${{ matrix.check == 'contracts' && 'quality-contracts' || 'quality-workspace-clippy' }}
           cache-on-failure: false
       - run: cargo fmt --all -- --check
         if: matrix.check == 'workspace-clippy'
