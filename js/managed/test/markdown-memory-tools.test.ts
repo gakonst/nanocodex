@@ -209,3 +209,13 @@ it("runs simple namespaced writes and replays against real Durable Object storag
   await call("write", note, "put-1");
   expect(await call("get", { path: note.path }, "read-3")).toMatchObject({ deleted: true, content: "" });
 });
+
+it("adds a first-use placement hint without changing the authorized memory partition", async () => {
+  const f = fixture();
+  f.options.clientIngressColo = "SJC";
+  await markdownMemoryRequest(f.options, "get", { path: "MEMORY.md" }, f.context);
+  expect(f.getByName).toHaveBeenLastCalledWith(JSON.stringify(["personal-memory", "org", "alice"]), { locationHint: "wnam" });
+  f.connect();
+  await markdownMemoryRequest(f.options, "get", { path: "MEMORY.md" }, f.context);
+  expect(f.getByName).toHaveBeenLastCalledWith("org", { locationHint: "wnam" });
+});
