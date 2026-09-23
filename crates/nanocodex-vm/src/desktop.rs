@@ -1384,7 +1384,7 @@ mod tests {
                 .reply()
                 .unwrap()
                 .state,
-            State::ON
+            u8::from(State::ON)
         );
         // Production video setup must repair the retained server as well as
         // new desktop startup; no encoder or remote input is needed here.
@@ -1405,7 +1405,7 @@ mod tests {
                 .reply()
                 .unwrap()
                 .state,
-            State::DISABLED
+            u8::from(State::DISABLED)
         );
         assert_eq!(pixels(), visible, "capture pixels changed");
         thread::sleep(Duration::from_millis(2500));
@@ -1417,7 +1417,7 @@ mod tests {
                 .reply()
                 .unwrap()
                 .state,
-            State::DISABLED
+            u8::from(State::DISABLED)
         );
         assert_eq!(pixels(), visible, "virtual display changed while idle");
     }
