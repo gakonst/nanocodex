@@ -261,6 +261,8 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix || '{"image":[]}' }}
       build: ${{ steps.plan.outputs.build || 'false' }}
       managed: ${{ steps.release.outputs.managed }}
+      phone-input: ${{ steps.phone.outputs.input }}
+      sandbox-input: ${{ steps.sandbox.outputs.input }}
     env:
       GH_TOKEN: ${{ github.token }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -314,6 +316,11 @@ jobs:
     if: needs.image-plan.outputs.build == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    # Coalesce superseded pushes by immutable input, then recheck receipts once
+    # the previous publisher releases the slot. Explicit dispatches stay separate.
+    concurrency:
+      group: cloudflare-image-${{ matrix.image }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || (matrix.image == 'phone' && needs.image-plan.outputs.phone-input || needs.image-plan.outputs.sandbox-input) }}
+      cancel-in-progress: false
     environment: cloudflare-production
     permissions:
       contents: read
@@ -346,18 +353,30 @@ jobs:
         with:
           path: .ci-images/${{ matrix.image }}.json
           key: managed-image-v1-${{ steps.image-input.outputs.input }}
+      - name: Recheck receipts after waiting for an image publisher
+        id: available
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: |
+          node scripts/cloudflare/plan-images.mjs
+          if [ -f ".ci-images/$IMAGE.json" ]; then
+            node scripts/cloudflare/managed-images.mjs verify "$IMAGE"
+            echo 'hit=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'hit=false' >> "$GITHUB_OUTPUT"
+          fi
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
-        if: steps.receipt.outputs.cache-hit != 'true'
+        if: steps.available.outputs.hit != 'true'
       - name: Install image publication tooling
-        if: steps.receipt.outputs.cache-hit != 'true'
+        if: steps.available.outputs.hit != 'true'
         run: pnpm install --frozen-lockfile
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-        if: steps.receipt.outputs.cache-hit != 'true'
+        if: steps.available.outputs.hit != 'true'
         id: builder
       - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
-        if: steps.receipt.outputs.cache-hit != 'true'
+        if: steps.available.outputs.hit != 'true'
       - name: Build, verify, and publish changed image
-        if: steps.receipt.outputs.cache-hit != 'true'
+        if: steps.available.outputs.hit != 'true'
         env:
           IMAGE: ${{ matrix.image }}
           BUILDX_BUILDER: ${{ steps.builder.outputs.name }}

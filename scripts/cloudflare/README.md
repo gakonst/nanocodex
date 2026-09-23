@@ -29,8 +29,12 @@ account. Selected managed releases require matching immutable registry receipts.
 Actions cache is the fast lookup; successful publications also retain receipts in
 GitHub Deployments (`nanocodex-image-phone` / `nanocodex-image-sandbox`). Up to 100
 recent receipts per image are searched when a cache entry is missing. Only genuinely
-missing receipts schedule builders. Production rechecks durable history and exact Actions cache keys if live state
-changed after preflight, and can publish a genuinely missing image under the lock.
+missing receipts schedule builders. Push publishers with the same image input key
+share a concurrency slot and recheck cache plus durable history after waiting, so
+a second push cannot rebuild an image the first push just published. Superseded
+pending pushes coalesce; explicit manual dispatches remain independent. Production
+rechecks durable history and exact Actions cache keys if live state changed after
+preflight, and can publish a genuinely missing image under the lock.
 Every managed release retains both verified receipts, including ordinary cache hits,
 before certifying its deployment. This closes the preflight-to-deploy race.
 
