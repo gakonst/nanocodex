@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { authenticate, type AccountAuthEnv, type Principal } from "../src/account-auth";
-import { MANAGED_ACCESS_HEADER, managedAccessResponse, observeManagedAccess, readManagedAccess } from "../src/managed-access";
+import { MANAGED_ACCESS_HEADER, managedAccessResponse, observeManagedAccess, readManagedAccess, recordManagedSessionTiming } from "../src/managed-access";
 
 const env = { NANOCODEX_ACCESS_SECRET: "a-test-key-with-at-least-32-bytes-of-entropy" };
 const principal: Principal = {
@@ -88,6 +88,47 @@ describe("short-lived managed request authority", () => {
     expect(result.webSocket).toBe(pair[0]);
     expect(result.headers.get("server-timing")).toContain('desc="access"');
     expect(result.headers.has(MANAGED_ACCESS_HEADER)).toBe(false);
+  });
+  it.each(["live", ...["ws", "tool-host", "device-host"].map((resource) =>
+    `44444444-4444-4444-8444-444444444444/${resource}`)])(
+    "observes agent upgrade %s without issuing or accepting cached authority", async (resource) => {
+      const token = await issued();
+      const source = request(`/v1/agents/${resource}?cursor=private-cursor`, token, { upgrade: "websocket" });
+      expect(await readManagedAccess(source, env)).toBeUndefined();
+      const logs = vi.spyOn(console, "info").mockImplementation(() => {});
+      try {
+        await observeManagedAccess(source, env, principal, "live", 190);
+        recordManagedSessionTiming(source, 55);
+        const pair = new WebSocketPair();
+        const result = await managedAccessResponse(source, new Response(null, { status: 101, webSocket: pair[0] }), env);
+        expect(result.status).toBe(101);
+        expect(result.webSocket).toBe(pair[0]);
+        expect(result.headers.get("server-timing")).toBe('managed_auth;dur=190.0;desc="live", managed_session;dur=55.0');
+        const requestId = result.headers.get("x-nanocodex-request-id");
+        expect(requestId).toMatch(/^[0-9a-f-]{36}$/);
+        expect(result.headers.has(MANAGED_ACCESS_HEADER)).toBe(false);
+        expect(result.headers.has("x-nanocodex-access-rejected")).toBe(false);
+        expect(logs).toHaveBeenCalledWith(expect.objectContaining({ type: "managed.auth", request_id: requestId,
+          mode: "live", auth_ms: 190, session_ms: 55, status: 101,
+          auth_started_at_ms: expect.any(Number), auth_finished_at_ms: expect.any(Number) }));
+        const logged = JSON.stringify(logs.mock.calls);
+        for (const sensitive of ["private-cursor", "fixture-account-key", token, principal.userId, principal.organizationId]) {
+          expect(logged).not.toContain(sensitive);
+        }
+        expect(logs.mock.calls[0]![0]).not.toHaveProperty("principal");
+        expect(logs.mock.calls[0]![0]).not.toHaveProperty("userId");
+      } finally { logs.mockRestore(); }
+    },
+  );
+  it("keeps denied agent upgrades in live authentication even with a valid cached principal", async () => {
+    const source = request("/v1/agents/11111111-1111-4111-8111-111111111111/ws", await issued(), { upgrade: "websocket" });
+    // The live bearer is intentionally invalid; a valid snapshot must not make it valid.
+    expect(await authenticate(source, env as AccountAuthEnv)).toBeUndefined();
+    const response = await managedAccessResponse(source, new Response(null, { status: 401 }), env);
+    expect(response.status).toBe(401);
+    expect(response.headers.get("server-timing")).toContain('desc="live"');
+    expect(response.headers.has("x-nanocodex-access-rejected")).toBe(false);
+    expect(response.headers.has(MANAGED_ACCESS_HEADER)).toBe(false);
   });
   it("binds browser reuse to its current cookie while preserving CSRF identity", async () => {
     const browser = { ...principal, kind: "account_session" as const };

@@ -34,8 +34,8 @@ mod screen_ice;
 #[cfg(target_os = "macos")]
 mod screen_macos;
 mod screen_native;
-mod screen_supervisor;
 mod screen_publisher;
+mod screen_supervisor;
 mod screen_video;
 #[cfg(target_os = "linux")]
 mod screen_wayland;
