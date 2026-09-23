@@ -400,6 +400,11 @@ describe("VM host pool", () => {
     expect(denied.status).toBe(404);
 
     const replacement = await connectHost(stub, HOST_A, "donor-a", 2);
+    const fencedBeforeReconcile = await stub.fetch("https://pool.internal/validate-attachment", {
+      method: "POST",
+      body: JSON.stringify({ allocation_id: allocation.allocation_id, bearer }),
+    });
+    expect(fencedBeforeReconcile.status).toBe(404);
     const replayedProvision = nextFrame(replacement.socket);
     replacement.socket.send(JSON.stringify({
       type: "reconcile",

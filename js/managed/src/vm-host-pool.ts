@@ -610,21 +610,6 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
     if ((existing?.epoch ?? 0) >= Number.MAX_SAFE_INTEGER) {
       throw new VmHostProtocolError("lease_exhausted", "the VM host lease epoch is exhausted");
     }
-    if (existing?.lease_id) {
-      await this.#revokeHostAttachments(
-        command.host_id,
-        existing.lease_id,
-        existing.epoch,
-        "VM host control lease was replaced",
-      );
-      const current = this.#host(command.host_id);
-      if (current?.lease_id !== existing.lease_id || current?.epoch !== existing.epoch) {
-        throw new VmHostProtocolError(
-          "host_replacement_raced",
-          "another connection replaced this VM host while its old routes were fenced",
-        );
-      }
-    }
     const leaseId = crypto.randomUUID();
     const epoch = (existing?.epoch ?? 0) + 1;
     const expiresAt = Date.now() + VM_HOST_LEASE_MS;
@@ -675,6 +660,25 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
       max_vms: command.max_vms,
       vm: command.vm,
     });
+    // The old epoch and bearer are fenced by the host row above, and its socket
+    // has been closed. Revoke the old session routes by their exact epoch without
+    // holding up this lease: an agent DO may be busy for longer than the host's
+    // lease handshake deadline. A late revocation cannot affect the new route.
+    if (existing?.lease_id) {
+      const startedAt = performance.now();
+      console.info({ type: "vm.pool.host_routes_revoke_scheduled", host_id: command.host_id,
+        epoch: existing.epoch });
+      this.ctx.waitUntil(this.#revokeHostAttachments(
+        command.host_id,
+        existing.lease_id,
+        existing.epoch,
+        "VM host control lease was replaced",
+      ).catch((error) => {
+        console.warn({ type: "vm.pool.host_routes_revoke_failed", host_id: command.host_id,
+          epoch: existing.epoch, duration_ms: performance.now() - startedAt,
+          error_kind: error instanceof Error ? error.name : "unknown" });
+      }));
+    }
     this.ctx.waitUntil(this.#scheduleLeaseAlarm());
   }
 
