@@ -215,7 +215,7 @@ impl<B: Backend> Backend for MeasuredBackend<B> {
 }
 
 impl TerminalSession {
-    pub(crate) fn enter() -> io::Result<Self> {
+    pub(crate) async fn enter() -> io::Result<Self> {
         if !stdin().is_terminal() || !stdout().is_terminal() {
             return Err(io::Error::other(
                 "interactive mode requires terminal stdin and stdout; use `nanocodex2 run <PROMPT>` for JSONL output",
@@ -229,7 +229,7 @@ impl TerminalSession {
         activate_commands(&mut output)?;
         TERMINAL_ACTIVE.store(true, Ordering::Release);
         let terminal = Terminal::new(StableCursorBackend::hidden(CrosstermBackend::new(output)))?;
-        crate::tui::components::initialize_image_renderer();
+        crate::tui::components::initialize_image_renderer().await;
         restore.armed = false;
 
         Ok(Self {

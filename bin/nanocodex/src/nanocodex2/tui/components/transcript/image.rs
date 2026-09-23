@@ -12,7 +12,7 @@ use std::{
     collections::{HashSet, VecDeque},
     env, fs, mem,
     path::{Path, PathBuf},
-    process::Command,
+    process::Stdio,
     sync::{
         Arc, OnceLock,
         atomic::{AtomicU64, AtomicUsize, Ordering},
@@ -20,6 +20,7 @@ use std::{
     },
     time::{Duration, Instant, SystemTime},
 };
+use tokio::process::Command;
 use url::Url;
 
 pub(super) const MAX_IMAGE_HEIGHT: u16 = 24;
@@ -172,9 +173,9 @@ pub(crate) fn video_picker() -> Picker {
     PICKER.get_or_init(Picker::halfblocks).clone()
 }
 
-pub(crate) fn initialize() {
+pub(crate) async fn initialize() {
     let inside_tmux = env::var_os("TMUX").is_some();
-    let tmux_client = inside_tmux.then(tmux_client).flatten();
+    let tmux_client = tmux_client().await;
     // The capability probe leaves a stdin reader behind on timeout. Keyboard
     // input must have one owner, even when a terminal never answers queries.
     let mut picker = tmux_client
@@ -255,16 +256,31 @@ fn picker_supports_tmux_passthrough(term: Option<&str>, term_program: Option<&st
     term.is_some_and(|term| term.starts_with("tmux")) || term_program == Some("tmux")
 }
 
-fn tmux_client() -> Option<TmuxClient> {
+async fn tmux_client() -> Option<TmuxClient> {
     env::var_os("TMUX")?;
-    let output = Command::new("tmux")
-        .args([
-            "display-message",
-            "-p",
-            "#{client_termtype}\t#{client_cell_width}\t#{client_cell_height}",
-        ])
-        .output()
-        .ok()?;
+    let mut command = Command::new("tmux");
+    command.args([
+        "display-message",
+        "-p",
+        "#{client_termtype}\t#{client_cell_width}\t#{client_cell_height}",
+    ]);
+    query_tmux_client(command).await
+}
+
+async fn query_tmux_client(mut command: Command) -> Option<TmuxClient> {
+    // Image hints must not leave startup waiting on a stalled tmux server, or
+    // let the helper read keystrokes owned by the terminal event stream.
+    let output = tokio::time::timeout(
+        Duration::from_secs(1),
+        command
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .kill_on_drop(true)
+            .output(),
+    )
+    .await
+    .ok()?
+    .ok()?;
     if !output.status.success() {
         return None;
     }
@@ -703,6 +719,33 @@ mod tests {
             Some(ProtocolType::Iterm2)
         );
         assert_eq!(protocol_hint(Some("xterm-256color"), None, true), None);
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tmux_hint_accepts_success_without_reading_terminal_input() {
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.args([
+            "-c",
+            "if read -r ignored; then exit 1; fi; printf 'ghostty 1.3.1\\t22\\t49\\n'",
+        ]);
+        let client = super::query_tmux_client(command).await.unwrap();
+        assert_eq!(client.termtype, "ghostty 1.3.1");
+        let size = client.font_size.unwrap();
+        assert_eq!((size.width, size.height), (22, 49));
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn tmux_hint_rejects_failed_commands() {
+        let mut command = tokio::process::Command::new("/bin/sh");
+        command.args(["-c", "printf 'kitty\\t10\\t20\\n'; exit 1"]);
+        assert!(super::query_tmux_client(command).await.is_none());
+        assert!(
+            super::query_tmux_client(tokio::process::Command::new("/nonexistent/tmux"))
+                .await
+                .is_none()
+        );
     }
 
     #[test]
