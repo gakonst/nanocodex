@@ -67,3 +67,19 @@ that serial dependency, but new cache namespaces need warming. Compare cold and
 warm runs before claiming a measured improvement; parallel jobs can increase
 aggregate runner minutes even as elapsed time falls. Existing paused tests are
 unchanged by this optimization.
+
+The Windows Hand lifecycle and installer now share one Windows 2025 runner and
+one CLI build. Linux and macOS retain their shared-Hand matrix lanes. The real
+installer build validates its definition, so CI no longer builds a placeholder
+installer before building the real one. Paused behavioral test definitions are
+retained, including the Windows media, capture, and JS lifecycle coverage.
+
+WASM Clippy runs directly after selection, in parallel with the optimized WASM
+artifact producer. JavaScript bindings download the artifact and immediately
+start their consumer checks. The final gate separately requires WASM Clippy
+when both Rust and binding checks are selected.
+
+Preview publishing uses the supplied artifact whenever its workflow input is
+present, including a manually dispatched parent CI. A standalone preview still
+builds its own artifact. Preview concurrency separates parent workflows and
+manual/full runs, so an unrelated push cannot cancel a required preview.
