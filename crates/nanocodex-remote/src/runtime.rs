@@ -179,6 +179,14 @@ impl Publisher {
                 if let Err(error) = &result {
                     tracing::warn!(target: "nanocodex2", stage = "screen.session.exit", reason = error.category(), http_status = error.http_status(), close_code = error.close_code(), elapsed_ms = session_started.elapsed().as_millis() as u64);
                 }
+                // Return the terminal handle even if replacement raced initial
+                // publication. A supervising owner must not treat this as a
+                // retryable startup failure and reclaim the newer host's screen.
+                if matches!(result, Err(SessionError::Replaced))
+                    && let Some(ready) = ready.take()
+                {
+                    let _ = ready.send(());
+                }
                 let _ = tokio::time::timeout(
                     Duration::from_secs(3),
                     backend(json!({"action":"release"})),
@@ -1367,6 +1375,13 @@ mod tests {
     }
     #[tokio::test]
     async fn replaced_host_finishes_and_releases_without_reclaiming() {
+        check_replaced_host(false).await;
+    }
+    #[tokio::test]
+    async fn replacement_before_initial_publication_returns_a_terminal_handle() {
+        check_replaced_host(true).await;
+    }
+    async fn check_replaced_host(before_publication: bool) {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio_tungstenite::tungstenite::protocol::{CloseFrame, frame::coding::CloseCode};
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1401,14 +1416,16 @@ mod tests {
             .await
             .unwrap();
             let _catalog = wire.next().await.unwrap().unwrap();
-            wire.send(Message::Text(
-                json!({"type":"published","generation":"g"})
-                    .to_string()
-                    .into(),
-            ))
-            .await
-            .unwrap();
-            replaced.await.unwrap();
+            if !before_publication {
+                wire.send(Message::Text(
+                    json!({"type":"published","generation":"g"})
+                        .to_string()
+                        .into(),
+                ))
+                .await
+                .unwrap();
+                replaced.await.unwrap();
+            }
             wire.close(Some(CloseFrame {
                 code: CloseCode::Normal,
                 reason: "Host replaced".into(),
@@ -1429,8 +1446,10 @@ mod tests {
         )
         .await
         .unwrap();
-        assert!(!publisher.is_finished());
-        replace.send(()).unwrap();
+        if !before_publication {
+            assert!(!publisher.is_finished());
+            replace.send(()).unwrap();
+        }
         tokio::time::timeout(Duration::from_secs(2), async {
             while !publisher.is_finished() {
                 tokio::task::yield_now().await;

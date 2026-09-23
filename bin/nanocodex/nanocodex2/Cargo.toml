@@ -86,7 +86,7 @@ axum = { workspace = true, features = ["ws"] }
 criterion.workspace = true
 futures-util.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["fs", "io-std", "io-util", "net", "process"] }
+tokio = { workspace = true, features = ["fs", "io-std", "io-util", "net", "process", "test-util"] }
 
 [[bench]]
 name = "nanocodex2_tui"

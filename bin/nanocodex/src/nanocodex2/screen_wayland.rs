@@ -14,7 +14,7 @@ use std::{
     process::Stdio,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -39,6 +39,7 @@ struct State {
     gamepad: Controller,
     frames: broadcast::Sender<EncodedPacket>,
     alive: AtomicBool,
+    generation: AtomicU64,
 }
 pub(crate) struct Platform {
     state: Arc<State>,
@@ -47,6 +48,9 @@ pub(crate) struct Platform {
 }
 impl Platform {
     pub(crate) async fn start() -> Result<Self> {
+        Self::start_command(Self::command()?).await
+    }
+    fn command() -> Result<tokio::process::Command> {
         let bitrate = std::env::var("NANOCODEX_SCREEN_BITRATE_KBPS")
             .unwrap_or("6000".into())
             .parse::<u32>()
@@ -76,9 +80,45 @@ impl Platform {
             .stderr(Stdio::inherit())
             .kill_on_drop(true)
             .process_group(0);
-        Self::start_command(command).await
+        Ok(command)
     }
-    async fn start_command(mut command: tokio::process::Command) -> Result<Self> {
+    async fn start_command(command: tokio::process::Command) -> Result<Self> {
+        let (sender, _) = broadcast::channel(8);
+        let (stop, _) = watch::channel(false);
+        let mut platform = Self {
+            state: Arc::new(State {
+                input: Mutex::new(InputPipe {
+                    pipe: None,
+                    sequence: 0,
+                }),
+                gamepad: Controller::configured(),
+                frames: sender,
+                alive: AtomicBool::new(false),
+                generation: AtomicU64::new(0),
+            }),
+            stop,
+            worker: None,
+        };
+        platform.start_worker(command).await?;
+        Ok(platform)
+    }
+    pub(crate) fn is_finished(&self) -> bool {
+        !self.state.alive.load(Ordering::Acquire)
+            || self
+                .worker
+                .as_ref()
+                .is_none_or(tokio::task::JoinHandle::is_finished)
+    }
+    pub(crate) async fn restart(&mut self) -> Result<()> {
+        self.restart_command(Self::command()?).await
+    }
+    async fn restart_command(&mut self, command: tokio::process::Command) -> Result<()> {
+        // Retain backend/video state and the publisher. Reap the old process group
+        // before starting another helper, even after failed or cancelled startup.
+        self.stop_worker().await;
+        self.start_worker(command).await
+    }
+    async fn start_worker(&mut self, mut command: tokio::process::Command) -> Result<()> {
         let mut child = command.spawn().map_err(error)?;
         let group =
             ProcessGroup(child.id().ok_or_else(|| error("Waymote PID unavailable"))? as i32);
@@ -90,20 +130,15 @@ impl Platform {
             .stdout
             .take()
             .ok_or_else(|| error("Waymote video unavailable"))?;
-        let (sender, _) = broadcast::channel(8);
-        let state = Arc::new(State {
-            input: Mutex::new(InputPipe {
-                pipe: Some(input),
-                sequence: 0,
-            }),
-            gamepad: Controller::configured(),
-            frames: sender,
-            alive: AtomicBool::new(false),
-        });
+        *self.state.input.lock().await = InputPipe {
+            pipe: Some(input),
+            sequence: 0,
+        };
         let (stop, mut stopped) = watch::channel(false);
         let (ready, mut readiness) = watch::channel(false);
-        let running = state.clone();
-        let worker = tokio::spawn(async move {
+        let running = self.state.clone();
+        self.stop = stop;
+        self.worker = Some(tokio::spawn(async move {
             let mut group = group;
             tokio::select! {
                 _=stopped.changed()=>{},
@@ -120,21 +155,16 @@ impl Platform {
             // Kill the process group before waiting: helpers may otherwise keep pipes open.
             group.kill();
             let _ = child.wait().await;
-        });
-        let platform = Self {
-            state,
-            stop,
-            worker: Some(worker),
-        };
-        if tokio::time::timeout(Duration::from_secs(15), readiness.wait_for(|v| *v))
-            .await
-            .is_err()
-            || !platform.state.alive.load(Ordering::Acquire)
+        }));
+        if !matches!(
+            tokio::time::timeout(Duration::from_secs(15), readiness.wait_for(|v| *v)).await,
+            Ok(Ok(_))
+        ) || self.is_finished()
         {
-            platform.shutdown().await;
+            self.stop_worker().await;
             return Err(error("Wayland capture did not produce a frame"));
         }
-        Ok(platform)
+        Ok(())
     }
     pub(crate) fn backend(&self) -> ScreenBackend {
         let state = self.state.clone();
@@ -168,12 +198,15 @@ impl Platform {
                 if !state.alive.load(Ordering::Acquire) {
                     return Err("Wayland capture stopped".into());
                 }
+                let generation = state.generation.load(Ordering::Acquire);
                 let frames = state.frames.subscribe();
                 let packets = stream::try_unfold(
                     (state, frames, true),
-                    |(state, mut frames, mut need_keyframe)| async move {
+                    move |(state, mut frames, mut need_keyframe)| async move {
                         loop {
-                            if !state.alive.load(Ordering::Acquire) {
+                            if !state.alive.load(Ordering::Acquire)
+                                || state.generation.load(Ordering::Acquire) != generation
+                            {
                                 return Ok(None);
                             }
                             let received =
@@ -191,6 +224,11 @@ impl Platform {
                                 }
                                 Err(_) => return Ok(None),
                             };
+                            if !state.alive.load(Ordering::Acquire)
+                                || state.generation.load(Ordering::Acquire) != generation
+                            {
+                                return Ok(None);
+                            }
                             if need_keyframe && !frames::keyframe(&frame) {
                                 continue;
                             }
@@ -203,16 +241,25 @@ impl Platform {
         })
     }
     pub(crate) async fn shutdown(mut self) {
-        let _ = self.state.release().await;
+        self.stop_worker().await;
+    }
+    async fn stop_worker(&mut self) {
         self.stop.send_replace(true);
-        if let Some(mut worker) = self.worker.take()
-            && tokio::time::timeout(Duration::from_secs(3), &mut worker)
+        // Keep the handle in self while waiting so cancelling a recovery cannot
+        // detach cleanup and allow a second capture process to overlap it.
+        if let Some(worker) = self.worker.as_mut()
+            && tokio::time::timeout(Duration::from_secs(3), &mut *worker)
                 .await
                 .is_err()
         {
             worker.abort();
             let _ = worker.await;
         }
+        self.worker.take();
+        self.state.alive.store(false, Ordering::Release);
+        self.state.generation.fetch_add(1, Ordering::AcqRel);
+        let _ = self.state.release().await;
+        self.state.input.lock().await.pipe.take();
     }
 }
 impl Drop for Platform {
@@ -345,6 +392,7 @@ mod tests {
             gamepad: Controller::configured(),
             frames: sender,
             alive: AtomicBool::new(true),
+            generation: AtomicU64::new(0),
         });
         let (stop, _) = watch::channel(false);
         let platform = Platform {
@@ -391,12 +439,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn real_pipe_lifecycle_forwards_capture_serializes_input_and_releases() {
+    async fn real_pipe_recovers_helper_death_with_existing_backend_and_video_source() {
         // No compositor/device dependency: exercise the real process pipes and
         // CaptureSource/backend API using a synthetic Waymote process.
         let directory = tempfile::tempdir().unwrap();
         let script = directory.path().join("waymote.py");
         let log = directory.path().join("input.bin");
+        let exit = directory.path().join("exit");
         std::fs::write(
             &script,
             r#"import os,sys,threading,time
@@ -408,26 +457,31 @@ def inputs():
   log.write(value)
 threading.Thread(target=inputs,daemon=True).start()
 os.write(1,b'NCH264C1')
-while True:
+while not os.path.exists(sys.argv[2]):
  os.write(1,b'\x80\x00\x00\x05\x00\x00\x00\x01\x65')
  time.sleep(0.02)
 "#,
         )
         .unwrap();
-        let mut command = tokio::process::Command::new("python3");
-        command
-            .arg(script)
-            .arg(&log)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true)
-            .process_group(0);
-        let platform = Platform::start_command(command).await.unwrap();
+        let command = || {
+            let mut command = tokio::process::Command::new("python3");
+            command
+                .arg(&script)
+                .arg(&log)
+                .arg(&exit)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .kill_on_drop(true)
+                .process_group(0);
+            command
+        };
+        let mut platform = Platform::start_command(command()).await.unwrap();
+        let video = platform.video();
         let backend = platform.backend();
         let capabilities = backend(json!({"action":"capabilities"})).await.unwrap();
         assert_eq!(capabilities["relativePointer"], true);
-        let capture = platform.video()().await.unwrap();
+        let capture = video().await.unwrap();
         let nanocodex_remote::capture::CaptureData::Packets(mut packets) = capture.data else {
             panic!("Wayland capture must preserve packets directly");
         };
@@ -455,13 +509,49 @@ while True:
         })
         .await
         .unwrap();
-        let inputs = std::fs::read(log).unwrap();
+        let inputs = std::fs::read(&log).unwrap();
         assert_eq!(&inputs[..16], &record(4, 1, 30, 0, 1));
         assert_eq!(
             &inputs[16..32],
             &record(8, 0, 12f32.to_bits(), (-4f32).to_bits(), 2)
         );
         assert_eq!(&inputs[32..48], &record(5, 0, 0, 0, 0));
+        // The helper exits after already becoming ready. Keep the old backend,
+        // source and subscription, exactly as the retained Publisher does.
+        std::fs::write(&exit, b"exit").unwrap();
+        tokio::time::timeout(Duration::from_secs(2), async {
+            while !platform.is_finished() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            backend(json!({"action":"capabilities"})).await.unwrap()["relativePointer"],
+            false
+        );
+        std::fs::remove_file(&exit).unwrap();
+        platform.restart_command(command()).await.unwrap();
+        assert!(!platform.is_finished());
+        assert_eq!(
+            backend(json!({"action":"capabilities"})).await.unwrap()["relativePointer"],
+            true
+        );
+        assert!(
+            packets.try_next().await.unwrap().is_none(),
+            "old generation must end even if a new helper is already ready"
+        );
+        let nanocodex_remote::capture::CaptureData::Packets(mut recovered) =
+            video().await.unwrap().data
+        else {
+            panic!("expected recovered packet source");
+        };
+        let packet = tokio::time::timeout(Duration::from_secs(1), recovered.try_next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(packet.as_ref(), b"\0\0\0\x01\x65");
         platform.shutdown().await;
         assert_eq!(
             backend(json!({"action":"capabilities"})).await.unwrap()["relativePointer"],
@@ -472,6 +562,50 @@ while True:
                 .await
                 .unwrap()["status"],
             "unavailable"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancelled_recovery_retains_the_worker_for_shutdown_and_reaping() {
+        let directory = tempfile::tempdir().unwrap();
+        let pid_file = directory.path().join("stalled.pid");
+        let command = |script: &str| {
+            let mut command = tokio::process::Command::new("python3");
+            command
+                .args(["-c", script])
+                .arg(&pid_file)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .kill_on_drop(true)
+                .process_group(0);
+            command
+        };
+        let mut platform = Platform::start_command(command(
+            r"import os,time; os.write(1,b'NCH264C1\x80\x00\x00\x05\x00\x00\x00\x01\x65'); time.sleep(60)"
+        )).await.unwrap();
+        {
+            let recovery = platform.restart_command(command(
+                "import os,sys,time; open(sys.argv[1],'w').write(str(os.getpid())); time.sleep(60)",
+            ));
+            tokio::pin!(recovery);
+            tokio::select! {
+                result = &mut recovery => panic!("frameless recovery must still be pending: {result:?}"),
+                result = tokio::time::timeout(Duration::from_secs(3), async {
+                    while !std::fs::read_to_string(&pid_file).is_ok_and(|pid| pid.parse::<i32>().is_ok()) {
+                        tokio::time::sleep(Duration::from_millis(10)).await;
+                    }
+                }) => result.unwrap(),
+            }
+            // Dropping recovery must leave the new worker owned by platform.
+        }
+        let pid: i32 = std::fs::read_to_string(pid_file).unwrap().parse().unwrap();
+        tokio::time::timeout(Duration::from_secs(4), platform.shutdown())
+            .await
+            .unwrap();
+        assert_eq!(
+            nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None),
+            Err(nix::errno::Errno::ESRCH)
         );
     }
 }

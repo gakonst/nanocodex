@@ -12,7 +12,6 @@ pub(crate) type ScreenBackend =
     Arc<dyn Fn(Value) -> BoxFuture<'static, Result<Value, ManagedError>> + Send + Sync>;
 pub(crate) struct ScreenPublisher(runtime::Publisher);
 impl ScreenPublisher {
-    #[cfg(target_os = "linux")]
     pub(crate) fn is_finished(&self) -> bool {
         self.0.is_finished()
     }
