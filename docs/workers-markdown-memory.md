@@ -91,34 +91,12 @@ queues new indexing work. Late upload completion reopens deletion work, but
 physical removal from the remote index is not claimed until cleanup succeeds.
 `DREAMS.md` is readable explicitly but excluded from search and bootstrap.
 
-## Awaited pre-compaction preservation
+## Compaction is independent of memory
 
-The Node, in-process Web and Cloudflare SDK hosts support the optional
-`beforeCompaction` callback. Browser Worker creation rejects function callbacks;
-it cannot transfer their execution authority across its Worker boundary.
-The callback runs before context is trimmed or
-compacted, including explicit and automatic compaction. It receives a bounded
-suffix of user/assistant text and a stable boundary identity, then returns a
-durable receipt. Execution replay reuses acknowledged receipts. The host must
-also make its own writes idempotent to cover a lost response after commit.
-The evidence budget is 64 whole messages and 32 KiB of UTF-8 text. Cancellation
-and a 30-second host deadline stop the barrier; errors leave the
-compaction unperformed. Subagents do not inherit this root callback.
-
-Managed direct-account sessions connect this barrier to an internal personal
-memory extraction RPC. It selects complete, exact firsthand user statements;
-assistant output, recalled material, secrets and unsupported prose are excluded.
-The daily note and boundary receipt commit together. Overlapping boundaries are
-deduplicated, and replaying a receipt after deletion cannot recreate its note.
-The receipt reports whether the supplied context was truncated. Empty extraction
-is a valid durable result; it does not imply every message was saved.
-
-The hook requires both memory capabilities, configured memory tools and network
-access. Disabled automation, Connect, shared-room and subagent contexts receive
-a durable skip receipt rather than promoting private transcripts to team memory.
-The internal flush RPC is not exposed as a model tool or public HTTP endpoint.
-Inference failure or a missing required AI binding fails enabled preservation;
-there is no silent compaction after an unacknowledged save.
+Managed sessions do not invoke memory extraction before compaction and do not
+require a memory receipt to continue. Memory inference failures cannot block
+compaction or fail a conversation. Agents save useful context explicitly with
+`memory_write` during their work.
 
 ## Background consolidation
 
@@ -152,7 +130,7 @@ required.
 ## References and limits
 
 This is a Workers adaptation of the requested Markdown, hybrid retrieval,
-consolidation and compaction-preservation behavior. It is not a claim of exact
+and consolidation behavior. It is not a claim of exact
 OpenClaw scheduler or model parity. See OpenClaw's
 [memory search](https://docs.openclaw.ai/concepts/memory-search) and
 [dreaming](https://docs.openclaw.ai/concepts/dreaming) designs. Automatic extraction
