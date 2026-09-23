@@ -2,7 +2,7 @@ import { consumeRpcData } from "nanocodex/cloudflare/rpc";
 import { API_KEY, apiKeyDigest, apiKeyPrincipal, isOrganizationCapabilities, isApiKeyBase, isStoredApiKey, forwardPrincipalAssertions } from "nanocodex/cloudflare/managed-auth";
 export { isOrganizationCapabilities, forwardPrincipalAssertions };
 import { durablePlacementOptions, placementHeaders, TRUSTED_INGRESS_HEADER, type IngressPlacement } from "nanocodex/cloudflare/durable-placement";
-import type { AgentPresentation } from "./agent-presentation";
+import { LAST_USER_PROMPT_LIMIT, type AgentPresentation } from "./agent-presentation";
 import { retireAccountProjects } from "./retired-projects";
 import { recordHandTiming } from "./hand-timing";
 import { configurationCatalog } from "./agent-configuration";
@@ -1879,16 +1879,18 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
         || !Array.isArray(value.activeTurnIds) || !value.activeTurnIds.every(id => typeof id === "string")
         || !Number.isFinite(value.updatedAt)
         || (value.lastUserMessageAt !== undefined && (!Number.isFinite(value.lastUserMessageAt) || value.lastUserMessageAt < 0))
+        || (value.lastUserPrompt !== undefined && (typeof value.lastUserPrompt !== "string" || value.lastUserPrompt.length > LAST_USER_PROMPT_LIMIT))
         || (value.title !== undefined && (typeof value.title !== "string" || value.title.length > 56))
         || (value.activity !== undefined && (typeof value.activity !== "string" || value.activity.length > 90))) {
         return json({ error: "invalid_presentation" }, { status: 400 });
       }
       this.ctx.storage.sql.exec(`UPDATE agent_registry SET presentation = json_set(?, '$.lastUserMessageAt',
-        COALESCE(?, json_extract(presentation, '$.lastUserMessageAt'), CASE WHEN turn_count > 0 THEN updated_at ELSE 0 END)),
+        COALESCE(?, json_extract(presentation, '$.lastUserMessageAt'), CASE WHEN turn_count > 0 THEN updated_at ELSE 0 END),
+        '$.lastUserPrompt', COALESCE(?, json_extract(presentation, '$.lastUserPrompt'), '')),
         title = COALESCE(?, title)
         WHERE id = ? AND deleted_at IS NULL
           AND COALESCE(json_extract(presentation, '$.revision'), 0) < ?`,
-        JSON.stringify(value), value.lastUserMessageAt ?? null, value.title ?? null, presentationMatch[1]!, value.revision);
+        JSON.stringify(value), value.lastUserMessageAt ?? null, value.lastUserPrompt ?? null, value.title ?? null, presentationMatch[1]!, value.revision);
       return new Response(null, { status: 204 });
     }
     const activityMatch = url.pathname.match(/^\/agents\/([0-9a-f-]{36})\/activity$/);

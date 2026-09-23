@@ -177,6 +177,8 @@ export type AgentPresentation = Readonly<{
   title?: string;
   activity?: string;
   activityTurnId?: string;
+  /** Bounded preview of the latest accepted user prompt. */
+  lastUserPrompt?: string;
   lastUserMessageAt?: number;
   updatedAt: number;
 }>;

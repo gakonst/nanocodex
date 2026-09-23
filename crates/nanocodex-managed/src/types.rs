@@ -158,6 +158,9 @@ pub struct AgentList {
 /// Compact account-owned agent summary.
 #[derive(Debug, Deserialize, Serialize)]
 pub struct AgentSummary {
+    /// Advisory presentation metadata, preserved by the list JSON command.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presentation: Option<serde_json::Value>,
     /// Current session title.
     pub title: String,
     /// Creation timestamp supplied by the service.
@@ -1342,5 +1345,23 @@ mod tests {
     fn turn_completed_requires_protocol_citations() {
         let json = r#"{"cursor":"9","created_at":2,"turn_id":"turn-3","type":"turn_completed","id":"turn-3","final_message":"done","usage":null}"#;
         assert!(serde_json::from_str::<ManagedEvent>(json).is_err());
+    }
+}
+
+#[cfg(test)]
+mod presentation_contract_tests {
+    #[test]
+    fn list_json_preserves_presentation_and_accepts_legacy_summaries() {
+        let mut value = serde_json::json!({"data":["synthetic"],"summaries":{"synthetic":{
+            "title":"Fallback", "created_at":1, "updated_at":2, "turn_count":1,
+            "presentation":{"revision":3,"title":"Check tests","status":"running",
+                "activity":"I am checking tests","lastUserPrompt":"Verify the change"}
+        }}});
+        let list: super::AgentList = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(serde_json::to_value(list).unwrap()["summaries"]["synthetic"]["presentation"],
+                   value["summaries"]["synthetic"]["presentation"]);
+        value["summaries"]["synthetic"].as_object_mut().unwrap().remove("presentation");
+        let list: super::AgentList = serde_json::from_value(value).unwrap();
+        assert!(list.summaries["synthetic"].presentation.is_none());
     }
 }

@@ -6103,7 +6103,7 @@ export class DurableAgentSession extends DurableComputerSession {
             "steered realtime input has no active managed turn attribution",
           );
         }
-        this.#sidebarPresentation().recordUserMessage(`voice:${request.voiceSessionId}:${request.operationId}`, Date.now());
+        this.#sidebarPresentation().recordUserMessage(`voice:${request.voiceSessionId}:${request.operationId}`, Date.now(), promptInputText(request.input!));
         return {
           operation_id: request.operationId,
           route: "steered",
@@ -6230,14 +6230,14 @@ export class DurableAgentSession extends DurableComputerSession {
         const turn = await this.#steerableManagedTurn(id, authorization);
         await turn.steer({ input: goalContinuation(this.#goals.get())!, messageId });
       }
-      this.#sidebarPresentation().recordUserMessage(`steer:${messageId ?? crypto.randomUUID()}`, Date.now());
+      this.#sidebarPresentation().recordUserMessage(`steer:${messageId ?? crypto.randomUUID()}`, Date.now(), promptInputText(input));
       await this.#scheduleNextAlarm();
       return;
     }
     try {
       const turn = await this.#steerableManagedTurn(id, authorization);
       await turn.steer({ input, messageId });
-      this.#sidebarPresentation().recordUserMessage(`steer:${messageId ?? crypto.randomUUID()}`, Date.now());
+      this.#sidebarPresentation().recordUserMessage(`steer:${messageId ?? crypto.randomUUID()}`, Date.now(), promptInputText(input));
     } catch (error) {
       // A concurrent request may have committed after our first lookup; also
       // reconcile a lost storage ACK before classifying its transport error.
@@ -6455,7 +6455,7 @@ export class DurableAgentSession extends DurableComputerSession {
       );
     });
     this.#publish(event!);
-    this.#sidebarPresentation().recordUserMessage(`turn:${id}`, now);
+    this.#sidebarPresentation().recordUserMessage(`turn:${id}`, now, promptInputText(input));
     this.#observe("managed.turn.accepted", {
       turn_id: id,
       transport: "realtime",
@@ -6643,7 +6643,7 @@ export class DurableAgentSession extends DurableComputerSession {
       );
     });
     this.#publish(event!);
-    if (userInitiated) this.#sidebarPresentation().recordUserMessage(`turn:${id}`, now);
+    if (userInitiated) this.#sidebarPresentation().recordUserMessage(`turn:${id}`, now, promptInputText(input));
     if (cancellingEvent) this.#publish(cancellingEvent);
     this.#observe("managed.turn.accepted", {
       turn_id: id,

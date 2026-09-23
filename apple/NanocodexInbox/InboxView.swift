@@ -59,6 +59,7 @@ private enum Ink {
 struct InboxView: View {
     @ObservedObject var model: InboxModel
     @State private var showConversations = false
+    @State private var showRunningAgents = false
     @State private var drawerTranslation: CGFloat = 0
     @State private var drawerDragIsHorizontal: Bool?
     @GestureState private var drawerGestureActive = false
@@ -199,7 +200,7 @@ struct InboxView: View {
             let reveal = showConversations ? width + drawerTranslation : drawerTranslation
             ZStack(alignment: .leading) {
                 if showConversations || drawerTranslation > 0 {
-                    ConversationDrawer(model: model, select: { id in
+                    ConversationDrawer(model: model, runningOnly: $showRunningAgents, select: { id in
                         selectConversation(id)
                         setConversationsVisible(false)
                     }, close: { setConversationsVisible(false) }, create: createAgent,
@@ -376,6 +377,15 @@ struct InboxView: View {
             .accessibilityAddTraits(.isSelected)
             .accessibilityIdentifier("conversation-title:" + (card?.id ?? "empty"))
             HStack(spacing: 0) {
+                Button {
+                    showRunningAgents = true
+                    setConversationsVisible(true)
+                } label: {
+                    Image(systemName: "circle.grid.2x2").frame(width: 44, height: 44)
+                }
+                .accessibilityLabel("Running agents")
+                .accessibilityValue("\(model.cards.filter(\.isRunningInSidebar).count)")
+                .accessibilityIdentifier("running-agents")
                 Button(action: createAgent) {
                     Image(systemName: "square.and.pencil").frame(width: 44, height: 44)
                 }.accessibilityLabel("New conversation").accessibilityIdentifier("new-conversation")
@@ -525,17 +535,20 @@ private struct SidebarCard: Identifiable, Equatable {
     let lastUserMessageAt: Double
     let sidebarStatus: String
     let sidebarActivity: String
+    let lastUserPrompt: String
     let error: String?
 
     init(_ card: AgentCard) {
         id = card.id; title = card.title; lastUserMessageAt = card.lastUserMessageAt
         sidebarStatus = card.sidebarStatus
         sidebarActivity = card.sidebarActivity; error = card.error
+        lastUserPrompt = card.sidebarLastUserPrompt
     }
 }
 
 private struct ConversationDrawer: View {
     let model: InboxModel
+    @Binding var runningOnly: Bool
     let select: (String) -> Void
     let close: () -> Void
     let create: () -> Void
@@ -547,12 +560,16 @@ private struct ConversationDrawer: View {
         // Preview is search input, not rendered state. Streaming preview changes
         // only cross the equality boundary if they change search membership.
         let cards = model.cards.filter { card in
-            search.isEmpty
+            (!runningOnly || card.isRunningInSidebar) && (search.isEmpty
+                || card.sidebarLastUserPrompt.localizedCaseInsensitiveContains(search)
+                || card.sidebarActivity.localizedCaseInsensitiveContains(search)
                 || card.title.localizedCaseInsensitiveContains(search)
                 || card.id.localizedCaseInsensitiveContains(search)
-                || card.preview.localizedCaseInsensitiveContains(search)
+                || card.preview.localizedCaseInsensitiveContains(search))
         }.map(SidebarCard.init)
         ConversationDrawerContent(cards: cards, focusedID: model.focused?.id,
+                                  runningOnly: runningOnly, runningCount: model.cards.filter(\.isRunningInSidebar).count,
+                                  filterChanged: { runningOnly = $0; query = "" },
                                   query: query, queryChanged: { query = $0 },
                                   select: select, close: close, create: create, settings: settings)
             .equatable()
@@ -564,6 +581,9 @@ private struct ConversationDrawerContent: View, Equatable {
     // state so model publications cannot rebuild an unchanged native scroll view.
     let cards: [SidebarCard]
     let focusedID: String?
+    let runningOnly: Bool
+    let runningCount: Int
+    let filterChanged: (Bool) -> Void
     let query: String
     let queryChanged: (String) -> Void
     let select: (String) -> Void
@@ -576,6 +596,7 @@ private struct ConversationDrawerContent: View, Equatable {
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.cards == rhs.cards && lhs.focusedID == rhs.focusedID && lhs.query == rhs.query
+            && lhs.runningOnly == rhs.runningOnly && lhs.runningCount == rhs.runningCount
     }
 
     private var visibleCards: [SidebarCard] {
@@ -590,7 +611,7 @@ private struct ConversationDrawerContent: View, Equatable {
         let knownStatus = card.sidebarStatus
         let running = ["Running", "Stopping"].contains(knownStatus)
         let subtitle = card.error != nil ? "Couldn’t refresh" : card.sidebarActivity
-        let status = [knownStatus, subtitle, card.error ?? ""].filter { !$0.isEmpty }.joined(separator: ". ")
+        let status = [knownStatus, subtitle, card.lastUserPrompt.isEmpty ? "" : "You: " + card.lastUserPrompt, card.error ?? ""].filter { !$0.isEmpty }.joined(separator: ". ")
         return VStack(alignment: .leading, spacing: 6) {
             Text(card.title)
                 .font(.system(size: titleSize, weight: focusedID == card.id ? .medium : .regular))
@@ -603,6 +624,10 @@ private struct ConversationDrawerContent: View, Equatable {
             if !subtitle.isEmpty {
                 Text(subtitle).font(.system(size: detailSize)).foregroundStyle(Ink.muted)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+            }
+            if !card.lastUserPrompt.isEmpty {
+                Text("You: " + card.lastUserPrompt)
+                    .font(.system(size: statusSize)).foregroundStyle(Ink.muted).lineLimit(2)
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 11)
@@ -638,6 +663,12 @@ private struct ConversationDrawerContent: View, Equatable {
                 .accessibilityLabel("Return to conversation").accessibilityIdentifier("conversation-drawer-close")
             }
             .font(.system(size: 17, weight: .regular))
+            Picker("Agents", selection: Binding(get: { runningOnly }, set: filterChanged)) {
+                Text("All").tag(false)
+                Text("Running (\(runningCount))").tag(true)
+            }
+            .pickerStyle(.segmented)
+            .accessibilityIdentifier("conversation-filter")
             HStack(spacing: 8) {
                 Image(systemName: "magnifyingglass").foregroundStyle(Ink.muted)
                 TextField("Search agents", text: Binding(get: { query }, set: queryChanged))
@@ -657,8 +688,8 @@ private struct ConversationDrawerContent: View, Equatable {
                         conversationRow(card)
                     }
                     if visibleCards.isEmpty {
-                        ContentUnavailableView("No matching conversations", systemImage: "bubble.left.and.bubble.right",
-                                               description: Text("Try another search."))
+                        ContentUnavailableView(runningOnly && query.isEmpty ? "No running agents" : "No matching conversations", systemImage: "bubble.left.and.bubble.right",
+                                               description: Text(runningOnly ? "Choose All to open another conversation." : "Try another search."))
                     }
                 }
             }
