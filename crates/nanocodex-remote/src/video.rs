@@ -1157,24 +1157,13 @@ mod tests {
     #[cfg(unix)]
     #[tokio::test]
     async fn encoder_diagnostics_cannot_corrupt_frame_boundaries() {
-        use std::os::unix::fs::PermissionsExt;
-        let directory = tempfile::tempdir().unwrap();
-        let encoder = directory.path().join("encoder");
-        std::fs::write(
-            &encoder,
-            r#"#!/usr/bin/env python3
-import os, socket, sys
-path = sys.argv[-1].split(']unix://', 1)[1].split('|', 1)[0]
-os.write(2, b'objc: diagnostic outside FFmpeg logging\n')
-with socket.socket(socket.AF_UNIX) as stream:
-    stream.connect(path)
-    stream.sendall(b'0, 0, 0, 1, 5, 0x0000\n')
-    os.write(1, bytes([0, 0, 1, 0x65, 42]))
-"#,
-        )
-        .unwrap();
-        std::fs::set_permissions(&encoder, std::fs::Permissions::from_mode(0o700)).unwrap();
-        let mut command = std::process::Command::new(&encoder);
+        // Use a committed executable: concurrent process tests can inherit a
+        // just-written script's writable fd across fork and cause ETXTBSY.
+        let encoder = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/fixtures/diagnostic-encoder"
+        );
+        let mut command = std::process::Command::new(encoder);
         command.args(["-f", "h264", "pipe:1"]);
         let capture = Capture::ffmpeg(command).unwrap();
         let mut packets = packet_stream(capture.data);
