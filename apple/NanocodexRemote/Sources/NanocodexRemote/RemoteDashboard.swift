@@ -246,6 +246,7 @@ public struct RemoteDashboard: View {
                     Text(viewer.status).font(.caption).foregroundStyle(.secondary)
                         .accessibilityValue(viewer.diagnosticPresentation)
                         .accessibilityIdentifier("remote-status")
+                    RemotePerformanceView(viewer: viewer)
                     if !viewer.connected && !viewer.connecting {
                         Button("Reconnect") { Task { await viewer.reconnect() } }
                     }

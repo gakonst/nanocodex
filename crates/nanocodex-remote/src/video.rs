@@ -1,9 +1,11 @@
 //! Continuous 60 Hz H.264 capture, independent of agent screenshots and input.
 //! Encoders expose packet boundaries; legacy Annex B remains supported. Only signaling crosses the
 //! account broker; media and leased input use authenticated WebRTC peers.
+use crate::capture::{CaptureData, PacketStream};
+use futures_util::{StreamExt, TryStreamExt, stream};
 use serde_json::{Value, json};
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -142,6 +144,32 @@ impl AccessUnits {
     }
 }
 
+/// Legacy process/VM sources keep their wire parser. Native packet sources pass
+/// ownership straight through without serialization or payload copies. Consumers
+/// at process boundaries can concatenate the resulting Annex B packets.
+pub fn packet_stream(data: CaptureData) -> PacketStream {
+    match data {
+        CaptureData::Packets(packets) => packets,
+        CaptureData::Bytes(reader) => stream::try_unfold(
+            (reader, AccessUnits::default(), VecDeque::<Vec<u8>>::new()),
+            |(mut reader, mut parser, mut pending)| async move {
+                loop {
+                    if let Some(packet) = pending.pop_front() {
+                        return Ok(Some((packet.into(), (reader, parser, pending))));
+                    }
+                    let mut buffer = [0; 64 * 1024];
+                    let count = reader.read(&mut buffer).await?;
+                    if count == 0 {
+                        return Ok(None);
+                    }
+                    pending.extend(parser.push(&buffer[..count])?);
+                }
+            },
+        )
+        .boxed(),
+    }
+}
+
 pub struct Event {
     pub value: Value,
     pub outgoing: bool,
@@ -209,7 +237,7 @@ impl Video {
         audio_source: Option<&VideoSource>,
         microphone_factory: Option<SinkFactory>,
     ) -> Result<Self> {
-        let mut capture = tokio::time::timeout(Duration::from_secs(8), source()).await??;
+        let capture = tokio::time::timeout(Duration::from_secs(8), source()).await??;
         let track = Arc::new(TrackLocalStaticSample::new(
             RTCRtpCodecCapability {
                 mime_type: "video/H264".into(),
@@ -229,35 +257,28 @@ impl Video {
         let task = Task(tokio::spawn(async move {
             let _owner = capture.owner;
             let mut ready = Some(ready);
-            let mut parser = AccessUnits::default();
-            let mut buffer = [0; 64 * 1024];
+            let mut packets = packet_stream(capture.data);
             let mut previous = Instant::now();
             let result: Result<()> = async {
                 loop {
-                    let count = tokio::time::timeout(
-                        Duration::from_secs(5),
-                        capture.reader.read(&mut buffer),
+                    let data = tokio::time::timeout(Duration::from_secs(5), packets.try_next())
+                        .await??
+                        .ok_or("encoder stopped")?;
+                    crate::frames::validate_packet(&data)?;
+                    let now = Instant::now();
+                    let duration = now.duration_since(previous).max(Duration::from_micros(1));
+                    previous = now;
+                    tokio::time::timeout(
+                        Duration::from_millis(250),
+                        writer.write_sample(&Sample {
+                            data,
+                            duration,
+                            ..Default::default()
+                        }),
                     )
                     .await??;
-                    if count == 0 {
-                        return Err("encoder stopped".into());
-                    }
-                    for data in parser.push(&buffer[..count])? {
-                        let now = Instant::now();
-                        let duration = now.duration_since(previous).max(Duration::from_micros(1));
-                        previous = now;
-                        tokio::time::timeout(
-                            Duration::from_millis(250),
-                            writer.write_sample(&Sample {
-                                data: data.into(),
-                                duration,
-                                ..Default::default()
-                            }),
-                        )
-                        .await??;
-                        if let Some(ready) = ready.take() {
-                            let _ = ready.send(());
-                        }
+                    if let Some(ready) = ready.take() {
+                        let _ = ready.send(());
                     }
                 }
             }
@@ -436,6 +457,7 @@ impl PeerBuilder {
         let mut engine = MediaEngine::default();
         engine.register_default_codecs()?;
         let registry = register_default_interceptors(Registry::new(), &mut engine)?;
+        let registry = crate::playout::register(&mut engine, registry)?;
         let mut settings = webrtc::api::setting_engine::SettingEngine::default();
         settings.set_include_loopback_candidate(
             std::env::var("NANOCODEX_VIDEO_INCLUDE_LOOPBACK").as_deref() == Ok("1"),
@@ -770,6 +792,37 @@ pub use crate::ice::ice_servers;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn packet_stream_normalizes_wire_formats_and_preserves_native_storage() {
+        use crate::capture::EncodedPacket;
+        let frame = EncodedPacket::from_static(b"\0\0\x01\x09\x10\0\0\x01\x65frame");
+        let mut framed = b"NCH264F1".to_vec();
+        framed.extend_from_slice(&(frame.len() as u32).to_be_bytes());
+        framed.extend_from_slice(&frame);
+        let mut chunked = b"NCH264C1".to_vec();
+        chunked.extend_from_slice(&3u32.to_be_bytes());
+        chunked.extend_from_slice(&frame[..3]);
+        chunked.extend_from_slice(&((1u32 << 31) | (frame.len() as u32 - 3)).to_be_bytes());
+        chunked.extend_from_slice(&frame[3..]);
+        let mut annex_b = frame.to_vec();
+        annex_b.extend_from_slice(b"\0\0\x01\x09\x10");
+        for wire in [framed, chunked, annex_b] {
+            let mut packets =
+                packet_stream(CaptureData::Bytes(Box::new(std::io::Cursor::new(wire))));
+            assert_eq!(packets.try_next().await.unwrap().unwrap(), frame);
+            assert!(packets.try_next().await.unwrap().is_none());
+        }
+        let expected = frame.clone();
+        let mut packets = packet_stream(CaptureData::Packets(
+            stream::once(async move { Ok(frame) }).boxed(),
+        ));
+        let actual = packets.try_next().await.unwrap().unwrap();
+        assert_eq!(actual.as_ptr(), expected.as_ptr());
+        assert_eq!(actual, expected);
+        assert!(packets.try_next().await.unwrap().is_none());
+    }
+
     #[cfg(unix)]
     #[tokio::test]
     async fn encoder_diagnostics_cannot_corrupt_frame_boundaries() {
@@ -792,19 +845,14 @@ with socket.socket(socket.AF_UNIX) as stream:
         std::fs::set_permissions(&encoder, std::fs::Permissions::from_mode(0o700)).unwrap();
         let mut command = std::process::Command::new(&encoder);
         command.args(["-f", "h264", "pipe:1"]);
-        let mut capture = Capture::ffmpeg(command).unwrap();
-        let mut bytes = Vec::new();
-        tokio::time::timeout(
-            Duration::from_secs(3),
-            capture.reader.read_to_end(&mut bytes),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert_eq!(
-            AccessUnits::default().push(&bytes).unwrap(),
-            vec![vec![0, 0, 1, 0x65, 42]]
-        );
+        let capture = Capture::ffmpeg(command).unwrap();
+        let mut packets = packet_stream(capture.data);
+        let packet = tokio::time::timeout(Duration::from_secs(3), packets.try_next())
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(packet.as_ref(), &[0, 0, 1, 0x65, 42]);
     }
 
     #[cfg(unix)]
@@ -812,16 +860,17 @@ with socket.socket(socket.AF_UNIX) as stream:
     async fn encoder_exit_before_metadata_does_not_leave_reader_waiting() {
         let mut command = std::process::Command::new("/usr/bin/false");
         command.args(["-f", "h264", "pipe:1"]);
-        let mut capture = Capture::ffmpeg(command).unwrap();
-        let mut bytes = Vec::new();
-        tokio::time::timeout(
-            Duration::from_secs(3),
-            capture.reader.read_to_end(&mut bytes),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert!(bytes.is_empty());
+        let capture = Capture::ffmpeg(command).unwrap();
+        let mut packets = packet_stream(capture.data);
+        let result = tokio::time::timeout(Duration::from_secs(3), packets.try_next())
+            .await
+            .unwrap();
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("exited before metadata")
+        );
     }
 
     #[test]

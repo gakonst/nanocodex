@@ -105,6 +105,7 @@ public struct RemoteThreadScreen: View {
                 HStack {
                     Text(viewer.hand == nil ? (loaded ? "Offline" : "Finding desktop…") : viewer.status)
                     Spacer()
+                    if viewer.hand != nil { RemotePerformanceView(viewer: viewer) }
                     Text("View only")
                 }.font(.caption2).foregroundStyle(.secondary).padding(.horizontal, 12).padding(.vertical, 5)
             }

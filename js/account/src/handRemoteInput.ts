@@ -15,8 +15,8 @@ export class RemoteMouseButtons {
   }
 }
 
-/** Bound mouse event traffic to one batch per 4ms, preserving relative distance
- * and reliable ordering before button/key/scroll transitions. */
+/** Send the leading motion immediately, then coalesce bursts in 4ms windows.
+ * Preserve relative distance and ordering before button/key/scroll transitions. */
 export class RemoteMotionBuffer {
   private pending?: RemoteInput;
   private timer?: ReturnType<typeof setTimeout>;
@@ -29,10 +29,25 @@ export class RemoteMotionBuffer {
     if (event.kind === "relativeMove" && this.pending) {
       this.pending = { kind: "relativeMove", deltaX: (this.pending.deltaX ?? 0) + (event.deltaX ?? 0), deltaY: (this.pending.deltaY ?? 0) + (event.deltaY ?? 0) };
     } else this.pending = { ...event };
-    this.timer ??= setTimeout(() => this.flush(), 4);
+    if (this.timer === undefined) {
+      // Arm before sending: a synchronous disconnect can clear this window.
+      this.startWindow(); this.sendPending();
+    }
+  }
+  private startWindow(): void {
+    this.timer = setTimeout(() => {
+      this.timer = undefined;
+      if (!this.pending) return;
+      // A trailing batch begins another window, preventing a fresh leading
+      // sample immediately after it from doubling the sustained packet rate.
+      this.startWindow(); this.sendPending();
+    }, 4);
   }
   flush(): void {
-    const event = this.pending; this.clear();
+    clearTimeout(this.timer); this.timer = undefined; this.sendPending();
+  }
+  private sendPending(): void {
+    const event = this.pending; this.pending = undefined;
     if (!event) return;
     if (event.kind !== "relativeMove") { this.send(event); return; }
     let x = event.deltaX ?? 0, y = event.deltaY ?? 0;

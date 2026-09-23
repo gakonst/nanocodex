@@ -3,8 +3,8 @@ import CoreGraphics
 import Combine
 import WebRTC
 
-// Installed only for opt-in diagnostics. Capture one decoded frame on WebRTC's
-// renderer thread; never dispatch or publish work for every video frame.
+// Capture one decoded frame on WebRTC's renderer thread; never dispatch or
+// publish work for every video frame. Removed from the track after the callback.
 final class RemoteFirstFrameProbe: NSObject, RTCVideoRenderer, @unchecked Sendable {
     private let lock = NSLock()
     private var receive: (@Sendable (TimeInterval, Int, Int) -> Void)?
@@ -124,6 +124,9 @@ public final class RemoteViewer: ObservableObject {
     @Published public private(set) var controlling = false
     @Published public var captureMouse = false
     public var relativePointer: Bool { supportsRelativePointer }
+    @Published public private(set) var performance = RemotePerformance()
+    private var performanceTask: Task<Void, Never>?
+    private var attemptStarted: TimeInterval = 0
     @Published public private(set) var connected = false
     @Published public private(set) var hand: RemoteHand?
     @Published public private(set) var connecting = false
@@ -153,8 +156,11 @@ public final class RemoteViewer: ObservableObject {
     private var frameDeadline: Task<Void, Never>?
     // Pending counts occupied credits, including received/decoding frames.
     private var framePending = 0
+    // Received credits stay occupied until decode/publication completes, even
+    // when an older waiting JPEG is replaced. This bounds network admission as
+    // well as decoding: one active image and one newest independent JPEG.
     private var frameReceived = 0
-    private var frameQueue: [RemoteMessage] = []
+    private var queuedFrame: RemoteMessage?
     private var frameDecodeTask: Task<Void, Never>?
     var frameDecoder = RemoteFrameDecoder()
     private var frameRequestedAt: TimeInterval = 0
@@ -256,6 +262,7 @@ public final class RemoteViewer: ObservableObject {
     private func start(refresh: Bool) async {
         guard let service, let selected = hand, !suspended else { return }
         detach(); let attempt = epoch; connecting = true
+        attemptStarted = ProcessInfo.processInfo.systemUptime
         recordConnectionEvent(refresh ? "reconnect" : "connect")
         status = refresh ? "Reconnecting…" : "Connecting…"
         let clock = ContinuousClock()
@@ -314,22 +321,21 @@ public final class RemoteViewer: ObservableObject {
             peer.onVideoTrack = { [weak self] track in
                 guard let self, epoch == attempt else { return }
                 if let frameProbe { self.track?.remove(frameProbe) }
-                diagnosticFirstFrame = nil
                 self.track = track
-                if diagnosticsEnabled {
-                    let probe = RemoteFirstFrameProbe { [weak self, weak track] time, width, height in
-                        Task { @MainActor [weak self, weak track] in
-                            guard let self, let track, epoch == attempt, self.track === track else { return }
-                            diagnosticFirstFrame = ["elapsed_ms": Int((time - diagnosticStarted) * 1000), "width": width, "height": height]
-                        }
+                let probe = RemoteFirstFrameProbe { [weak self, weak track] time, width, height in
+                    Task { @MainActor [weak self, weak track] in
+                        guard let self, let track, epoch == attempt, self.track === track else { return }
+                        recordFirstFrame(time: time, width: width, height: height)
+                        if let frameProbe { track.remove(frameProbe) }
+                        frameProbe = nil
                     }
-                    frameProbe = probe; track.add(probe)
                 }
+                frameProbe = probe; track.add(probe)
             }
             peer.onState = { [weak self] state in
                 guard let self, epoch == attempt else { return }
                 recordConnectionEvent("peer state \(state.rawValue)")
-                if state == .connected { transportReady = true; updateReady() }
+                if state == .connected { transportReady = true; startPerformance(attempt: attempt); updateReady() }
                 if [.failed, .closed, .disconnected].contains(state) { fail(RemoteError.unavailable) }
             }
             peer.onChannelsReady = { [weak self] in
@@ -567,13 +573,14 @@ public final class RemoteViewer: ObservableObject {
         signalQueue?.cancel(); signalQueue = nil
         connectionDeadline?.cancel(); connectionDeadline = nil
         frameTask?.cancel(); frameTask = nil; frameDeadline?.cancel(); frameDeadline = nil; framePending = 0; frame = nil
-        frameReceived = 0; frameQueue.removeAll()
+        frameReceived = 0; queuedFrame = nil
         // Retain the cancelled task until its synchronous decoder returns.
         // New epochs may enqueue, but cannot create another decode task yet.
         frameDecodeTask?.cancel()
         let peer = self.peer, signaling = self.signaling
         if let frameProbe { track?.remove(frameProbe) }
         frameProbe = nil; diagnosticFirstFrame = nil
+        performanceTask?.cancel(); performanceTask = nil; performance = RemotePerformance()
         self.peer = nil; self.signaling = nil; track = nil; connected = false; connecting = false
         transportReady = false; channelsReady = false
         peer?.onState = { _ in }; signaling?.onClose = { _ in }
@@ -606,10 +613,42 @@ public final class RemoteViewer: ObservableObject {
             await start(refresh: true)
         }
     }
+    private func recordFirstFrame(time: TimeInterval, width: Int, height: Int) {
+        guard performance.firstDecodedFrameMilliseconds == nil else { return }
+        performance.firstDecodedFrameMilliseconds = max(0, (time - attemptStarted) * 1000)
+        performance.width = width; performance.height = height
+        if diagnosticsEnabled {
+            diagnosticFirstFrame = ["elapsed_ms": Int((time - diagnosticStarted) * 1000), "width": width, "height": height]
+        }
+        recordConnectionEvent("first frame decoded")
+    }
+
+    private func startPerformance(attempt: UUID) {
+        guard performanceTask == nil, let peer else { return }
+        performanceTask = Task { [weak self, weak peer] in
+            var accumulator = RemotePerformanceAccumulator()
+            while !Task.isCancelled {
+                guard let peer else { return }
+                let report = await peer.performanceReport()
+                guard !Task.isCancelled, let self, self.epoch == attempt, self.peer === peer else { return }
+                var sample = accumulator.sample(report)
+                sample.connectionMilliseconds = self.performance.connectionMilliseconds
+                sample.firstDecodedFrameMilliseconds = self.performance.firstDecodedFrameMilliseconds
+                sample.width = sample.width ?? self.performance.width
+                sample.height = sample.height ?? self.performance.height
+                let buffered = peer.bufferedInput
+                sample.controlBufferedBytes = buffered.control; sample.motionBufferedBytes = buffered.motion
+                self.performance = sample
+                do { try await Task.sleep(for: .seconds(1)) } catch { return }
+            }
+        }
+    }
+
     private func updateReady() {
         if !connected && transportReady && channelsReady {
             connectionDeadline?.cancel(); retries = 0; recoveryDeadline = nil
             connecting = false; connected = true; status = "Watching"
+            performance.connectionMilliseconds = max(0, (ProcessInfo.processInfo.systemUptime - attemptStarted) * 1000)
         }
     }
     private func sendControl(_ message: RemoteControlMessage) {
@@ -637,7 +676,7 @@ public final class RemoteViewer: ObservableObject {
                 case "broadcast_result": receiveBroadcast(message)
                 case "frame":
                     guard framePending > frameReceived else { throw RemoteError.invalidMessage }
-                    frameReceived += 1; frameQueue.append(message)
+                    frameReceived += 1; queuedFrame = message
                     startFrameDecode()
                 case "control":
                     guard case .control(let control) = message.data else { throw RemoteError.invalidMessage }
@@ -654,7 +693,7 @@ public final class RemoteViewer: ObservableObject {
     }
 
     private func startFrameDecode() {
-        guard frameDecodeTask == nil, !frameQueue.isEmpty else { return }
+        guard frameDecodeTask == nil, queuedFrame != nil else { return }
         let attempt = epoch
         frameDecodeTask = Task { [weak self] in
             guard let self else { return }
@@ -663,19 +702,24 @@ public final class RemoteViewer: ObservableObject {
                 // A new epoch may have queued frames while ImageIO finished.
                 startFrameDecode()
             }
-            while epoch == attempt, !Task.isCancelled, !frameQueue.isEmpty {
-                let message = frameQueue.removeFirst()
+            while epoch == attempt, !Task.isCancelled, let message = queuedFrame {
+                // JPEGs are independent. Retire the whole received batch after
+                // its newest image is published; never apply this to H.264.
+                let credits = frameReceived
+                queuedFrame = nil
                 do {
                     let image = try await frameDecoder.decode(message)
                     guard epoch == attempt, !Task.isCancelled else { return }
-                    frameReceived -= 1; framePending -= 1
+                    // A newer admitted JPEG supersedes this result. Hold its
+                    // credits too, so slow decoding cannot request endlessly
+                    // without presenting; the window must eventually drain.
+                    guard queuedFrame == nil else { continue }
+                    frameReceived -= credits; framePending -= credits
                     frame = image
                     // Frame subscribers may synchronously suspend the viewer.
                     guard epoch == attempt, !Task.isCancelled else { return }
-                    if diagnosticsEnabled, diagnosticFirstFrame == nil {
-                        diagnosticFirstFrame = ["elapsed_ms": Int((ProcessInfo.processInfo.systemUptime - diagnosticStarted) * 1000),
-                            "width": image.width, "height": image.height]
-                        recordConnectionEvent("first frame decoded")
+                    if performance.firstDecodedFrameMilliseconds == nil {
+                        recordFirstFrame(time: ProcessInfo.processInfo.systemUptime, width: image.width, height: image.height)
                     }
                     frameDeadline?.cancel(); frameDeadline = nil
                     transportReady = true; channelsReady = true; updateReady()

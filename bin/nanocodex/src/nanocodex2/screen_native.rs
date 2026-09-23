@@ -517,10 +517,7 @@ fn native_raw_frames(max_width: usize, max_height: usize) -> super::screen_broad
                 let _ = worker.await;
             }));
             Ok((
-                super::screen_video::Capture {
-                    reader: Box::new(reader),
-                    owner,
-                },
+                super::screen_video::Capture::bytes(reader, owner),
                 width,
                 height,
             ))

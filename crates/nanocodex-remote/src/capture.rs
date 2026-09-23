@@ -1,18 +1,30 @@
-//! Platform boundary: owned asynchronous byte streams, without pixel copies in the core.
+//! Owned platform capture: complete encoded packets, or raw/legacy byte streams.
 //!
-//! Video sources emit NCH264F1 length-prefixed Annex B packets (preferred), or legacy
-//! Annex B with access-unit delimiters. Speaker sources emit 48 kHz stereo signed
-//! 16-bit little-endian PCM. The owner must stop capture when dropped. A source is
-//! a restartable factory; opening one never grants permission to capture another.
+//! Native video keeps packet boundaries in memory. Only process/VM transports use
+//! NCH264 framing or legacy Annex B with access-unit delimiters. Speaker sources
+//! emit 48 kHz stereo signed 16-bit little-endian PCM. Dropping a capture stops its
+//! owned producer; shared platform producers retain their own lifecycle.
 use crate::Result;
-use futures_util::future::BoxFuture;
+use futures_util::{
+    Stream, StreamExt, TryStreamExt,
+    future::BoxFuture,
+    stream::{self, BoxStream},
+};
 use std::sync::Arc;
 use tokio::{io::AsyncRead, task::JoinHandle};
 
+pub use bytes::Bytes as EncodedPacket;
+pub type ByteStream = Box<dyn AsyncRead + Unpin + Send>;
+pub type PacketStream = BoxStream<'static, Result<EncodedPacket>>;
 pub type CaptureSource = Arc<dyn Fn() -> BoxFuture<'static, Result<Capture>> + Send + Sync>;
+
+pub enum CaptureData {
+    Bytes(ByteStream),
+    Packets(PacketStream),
+}
 pub struct Capture {
-    pub reader: Box<dyn AsyncRead + Unpin + Send>,
-    pub owner: Task,
+    pub data: CaptureData,
+    pub owner: Option<Task>,
 }
 pub struct Task(pub JoinHandle<()>);
 impl Drop for Task {
@@ -21,6 +33,28 @@ impl Drop for Task {
     }
 }
 impl Capture {
+    pub fn bytes(reader: impl AsyncRead + Unpin + Send + 'static, owner: Task) -> Self {
+        Self {
+            data: CaptureData::Bytes(Box::new(reader)),
+            owner: Some(owner),
+        }
+    }
+    pub fn packets(
+        packets: impl Stream<Item = Result<EncodedPacket>> + Send + 'static,
+        owner: Option<Task>,
+    ) -> Self {
+        Self {
+            data: CaptureData::Packets(packets.boxed()),
+            owner,
+        }
+    }
+    /// Raw pixels and PCM consumers must never reinterpret encoded packet sources.
+    pub fn into_bytes(self) -> Result<(ByteStream, Option<Task>)> {
+        match self.data {
+            CaptureData::Bytes(reader) => Ok((reader, self.owner)),
+            CaptureData::Packets(_) => Err("capture requires a byte stream".into()),
+        }
+    }
     /// Native FFmpeg capture reports packet lengths before writing H.264 bytes.
     /// Rebuild only the known capture command, preserving its environment/cwd.
     pub fn ffmpeg(command: std::process::Command) -> Result<Self> {
@@ -84,38 +118,150 @@ impl Capture {
         #[cfg(not(unix))]
         let metadata = child.stderr.take().ok_or("encoder metadata unavailable")?;
         let video = child.stdout.take().ok_or("encoder stdout unavailable")?;
-        let (writer, reader) = tokio::io::duplex(64 * 1024);
-        Ok(Self {
-            reader: Box::new(reader),
-            owner: Task(tokio::spawn(async move {
-                #[cfg(unix)]
-                let _directory = directory;
-                #[cfg(unix)]
-                let metadata = tokio::select! {
-                    biased;
-                    result = listener.accept() => match result {
-                        Ok((stream, _)) => stream,
-                        Err(error) => { tracing::warn!(%error, "encoder metadata connection failed"); return; }
-                    },
-                    _ = child.wait() => return,
-                };
-                if let Err(error) =
-                    crate::frames::forward_encoded_frames(metadata, video, writer).await
-                {
-                    tracing::warn!(%error, "encoded frame forwarding stopped");
-                    let _ = child.kill().await;
-                }
-                let _ = child.wait().await;
-            })),
+        let (finished, exited) = tokio::sync::oneshot::channel();
+        let owner = Task(tokio::spawn(async move {
+            let _ = finished.send(child.wait().await);
+        }));
+        // Pull metadata and its matching payload only when the publisher asks for
+        // a packet. No framing pipe, forwarding task, or encoded packet queue.
+        let packets = stream::once(async move {
+            #[cfg(unix)]
+            let _directory = directory;
+            #[cfg(unix)]
+            let metadata = tokio::select! {
+                biased;
+                result = listener.accept() => result?.0,
+                _ = exited => return Err::<_, Box<dyn std::error::Error + Send + Sync>>(
+                    "encoder exited before metadata".into()
+                ),
+            };
+            #[cfg(not(unix))]
+            let _ = exited;
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(crate::frames::EncodedFrames::new(
+                metadata, video,
+            ))
         })
+        .map_ok(|frames| {
+            stream::try_unfold(frames, |mut frames| async move {
+                Ok(frames.next().await?.map(|packet| (packet, frames)))
+            })
+        })
+        .try_flatten();
+        Ok(Self::packets(packets, Some(owner)))
     }
     pub fn child(mut child: tokio::process::Child) -> Result<Self> {
         let reader = child.stdout.take().ok_or("encoder stdout unavailable")?;
-        Ok(Self {
-            reader: Box::new(reader),
-            owner: Task(tokio::spawn(async move {
+        Ok(Self::bytes(
+            reader,
+            Task(tokio::spawn(async move {
                 let _ = child.wait().await;
             })),
-        })
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn ffmpeg_native_transport_delivers_single_packet() {
+        let configured = std::env::var_os("NANOCODEX_TEST_FFMPEG");
+        let executable = configured.clone().unwrap_or_else(|| "ffmpeg".into());
+        let mut command = std::process::Command::new(executable);
+        command.args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-f",
+            "lavfi",
+            "-i",
+            "testsrc2=size=64x64:rate=60",
+            "-frames:v",
+            "1",
+            "-an",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "ultrafast",
+            "-tune",
+            "zerolatency",
+            "-pix_fmt",
+            "yuv420p",
+            "-x264-params",
+            "aud=1:repeat-headers=1",
+            "-f",
+            "h264",
+            "pipe:1",
+        ]);
+        let capture = match Capture::ffmpeg(command) {
+            Err(error)
+                if configured.is_none()
+                    && error
+                        .downcast_ref::<std::io::Error>()
+                        .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                eprintln!("skipping native capture test: FFmpeg is not installed");
+                return;
+            }
+            result => result.expect("start native FFmpeg capture (configured paths must exist)"),
+        };
+        let CaptureData::Packets(mut packets) = capture.data else {
+            panic!("native capture must return complete encoded packets");
+        };
+        let packet = tokio::time::timeout(Duration::from_secs(5), packets.try_next())
+            .await
+            .expect("first packet required a following frame")
+            .unwrap()
+            .unwrap();
+        crate::frames::validate_packet(&packet).unwrap();
+        assert!(packet.len() > 10);
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), packets.try_next())
+                .await
+                .unwrap()
+                .unwrap()
+                .is_none()
+        );
+        drop(capture.owner);
+    }
+
+    #[tokio::test]
+    async fn dropping_pending_packet_capture_stops_owned_producer() {
+        struct Stopped(Option<tokio::sync::oneshot::Sender<()>>);
+        impl Drop for Stopped {
+            fn drop(&mut self) {
+                let _ = self.0.take().unwrap().send(());
+            }
+        }
+        let (started, running) = tokio::sync::oneshot::channel();
+        let (stopped, finished) = tokio::sync::oneshot::channel();
+        let owner = Task(tokio::spawn(async move {
+            let _stopped = Stopped(Some(stopped));
+            let _ = started.send(());
+            std::future::pending::<()>().await;
+        }));
+        running.await.unwrap();
+        let mut capture = Capture::packets(stream::pending(), Some(owner));
+        let CaptureData::Packets(packets) = &mut capture.data else {
+            unreachable!()
+        };
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), packets.try_next())
+                .await
+                .is_err()
+        );
+        drop(capture);
+        tokio::time::timeout(Duration::from_secs(1), finished)
+            .await
+            .unwrap()
+            .unwrap();
+    }
+
+    #[test]
+    fn raw_consumers_reject_packet_sources() {
+        let capture = Capture::packets(stream::empty(), None);
+        assert!(capture.into_bytes().is_err());
     }
 }

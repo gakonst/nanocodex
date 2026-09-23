@@ -1,6 +1,8 @@
 import XCTest
 import Combine
 import ImageIO
+import CoreVideo
+import WebRTC
 @testable import NanocodexRemote
 
 private final class RemoteHTTPFixture: URLProtocol {
@@ -126,18 +128,22 @@ final class RemoteViewerTests: XCTestCase {
         XCTAssertTrue(CGImageDestinationFinalize(destination))
         var frame = RemoteMessage(type: "frame")
         frame.jpeg = (bytes as Data).base64EncodedString(); frame.width = 3; frame.height = 2
-        let decoded = expectation(description: "Six credits returned after worker decode")
-        decoded.expectedFulfillmentCount = 6
+        let decoded = expectation(description: "Six credits returned after the newest frame decodes")
         socket.onSend = { if $0.type == "frame_request" { decoded.fulfill() } }
         for _ in 0..<6 { socket.onMessage(frame) }
         XCTAssertTrue(socket.messages.isEmpty, "Reception alone does not replenish credits")
         await fulfillment(of: [decoded], timeout: 3)
         XCTAssertTrue(viewer.connected)
-        XCTAssertEqual(socket.messages.filter { $0.type == "frame_request" }.map(\.count), [1, 1, 1, 1, 1, 1])
+        XCTAssertEqual(socket.messages.filter { $0.type == "frame_request" }.map(\.count), [6])
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(viewer.performance.connectionMilliseconds), 0)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(viewer.performance.firstDecodedFrameMilliseconds), 0)
+        XCTAssertEqual(viewer.performance.width, 3); XCTAssertEqual(viewer.performance.height, 2)
+        XCTAssertNil(viewer.performance.networkRoundTripMilliseconds, "Frame transport has no measured ICE round trip")
         let lateFrame = socket.onMessage
         viewer.suspend(); lateFrame(frame)
         XCTAssertNil(viewer.frame)
-        XCTAssertEqual(socket.messages.filter { $0.type == "frame_request" }.count, 6)
+        XCTAssertEqual(viewer.performance, RemotePerformance(), "Suspension clears metrics and fences late frames")
+        XCTAssertEqual(socket.messages.filter { $0.type == "frame_request" }.count, 1)
     }
 
     @MainActor func testFrameFallbackCannotEnableMicrophoneAndStaleAudioRepliesDoNotReacquireControl() async throws {
@@ -363,10 +369,45 @@ final class RemoteViewerTests: XCTestCase {
         return message
     }
 
-    @MainActor func testFrameWorkerPublishesFIFOAndReturnsCreditAfterPublication() async throws {
+    @MainActor func testFrameWorkerDecodesOnlyActiveAndNewestWaitingJPEG() async throws {
         let service = try service { _ in XCTFail("No ICE for frames") }
         defer { service.close() }
-        var catalog = surface("fifo")
+        var catalog = surface("latest")
+        catalog["transport"] = "frames-v1"; catalog["frame_window"] = 6
+        let hand = try JSONDecoder().decode(RemoteHand.self, from: JSONSerialization.data(withJSONObject: catalog))
+        let socket = ViewerSocket(), viewer = RemoteViewer()
+        socket.onConnect = { socket.onMessage(.init(type: "ready")) }
+        viewer.makeSignaling = { _ in socket }
+        let gate = FrameDecodeGate(entered: expectation(description: "First JPEG decoding"))
+        viewer.frameDecoder = RemoteFrameDecoder { try gate.decode($0) }
+        defer { gate.release.signal(); viewer.close() }
+        await viewer.connect(service: service, hand: hand)
+        var widths: [Int] = []
+        let observer = viewer.$frame.sink { if let image = $0 { widths.append(image.width) } }
+        defer { observer.cancel() }
+        let completed = expectation(description: "Only the newest waiting frame is published")
+        socket.onSend = { message in
+            guard message.type == "frame_request" else { return }
+            XCTAssertEqual(widths.count, socket.messages.count, "Publish before returning each batch of credits")
+            completed.fulfill()
+        }
+        socket.onMessage(try jpegFrame(width: 1))
+        await fulfillment(of: [gate.entered], timeout: 2)
+        for width in 2...6 { socket.onMessage(try jpegFrame(width: width)) }
+        XCTAssertTrue(socket.messages.isEmpty, "Replacing stale JPEGs must not replenish credits during a blocked decode")
+        XCTAssertEqual(gate.counts.calls, 1)
+        gate.release.signal()
+        await fulfillment(of: [completed], timeout: 3)
+        XCTAssertEqual(widths, [6], "Intermediate independent JPEGs must not consume ImageIO or presentation work")
+        XCTAssertEqual(socket.messages.map(\.count), [6])
+        XCTAssertEqual(gate.counts.calls, 2)
+        XCTAssertEqual(gate.counts.maximum, 1)
+    }
+
+    @MainActor func testFramePublicationCanSuspendWithoutReturningCoalescedCredits() async throws {
+        let service = try service { _ in XCTFail("No ICE for frames") }
+        defer { service.close() }
+        var catalog = surface("publication-suspend")
         catalog["transport"] = "frames-v1"; catalog["frame_window"] = 6
         let hand = try JSONDecoder().decode(RemoteHand.self, from: JSONSerialization.data(withJSONObject: catalog))
         let socket = ViewerSocket(), viewer = RemoteViewer()
@@ -374,20 +415,19 @@ final class RemoteViewerTests: XCTestCase {
         viewer.makeSignaling = { _ in socket }
         defer { viewer.close() }
         await viewer.connect(service: service, hand: hand)
-        var widths: [Int] = []
-        let observer = viewer.$frame.sink { if let image = $0 { widths.append(image.width) } }
-        defer { observer.cancel() }
-        let completed = expectation(description: "FIFO batch returns six credits")
-        completed.expectedFulfillmentCount = 6
-        socket.onSend = { message in
-            guard message.type == "frame_request" else { return }
-            XCTAssertEqual(widths.count, socket.messages.count, "Publish each frame before returning its credit")
-            completed.fulfill()
+        let suspended = expectation(description: "Subscriber suspends during publication")
+        let observer = viewer.$frame.sink { image in
+            guard image != nil else { return }
+            viewer.suspend(); suspended.fulfill()
         }
+        defer { observer.cancel() }
         for width in 1...6 { socket.onMessage(try jpegFrame(width: width)) }
-        await fulfillment(of: [completed], timeout: 3)
-        XCTAssertEqual(widths, [1, 2, 3, 4, 5, 6])
-        XCTAssertEqual(socket.messages.map(\.count), [1, 1, 1, 1, 1, 1])
+        await fulfillment(of: [suspended], timeout: 3)
+        XCTAssertEqual(viewer.status, "Paused")
+        XCTAssertFalse(viewer.connected)
+        XCTAssertTrue(socket.closed)
+        XCTAssertTrue(socket.messages.isEmpty, "A stopped subscriber must not authorize more frames")
+        XCTAssertEqual(viewer.performance, RemotePerformance())
     }
 
     @MainActor func testLegacyFrameRequestsKeepThirtyFPSPacing() async throws {
@@ -442,12 +482,11 @@ final class RemoteViewerTests: XCTestCase {
         // only subsequent emissions after the connection has settled.
         let images = viewer.$frame.dropFirst().sink { if $0 != nil { publications += 1 } }
         defer { changes.cancel(); images.cancel() }
-        let decoded = expectation(description: "Six steady frames decode and return credit")
-        decoded.expectedFulfillmentCount = 6
+        let decoded = expectation(description: "Newest steady frame returns all six credits")
         socket.onSend = { if $0.type == "frame_request" { decoded.fulfill() } }
         for _ in 0..<6 { socket.onMessage(frame) }
         await fulfillment(of: [decoded], timeout: 3)
-        XCTAssertEqual(publications, 6)
+        XCTAssertEqual(publications, 1)
         XCTAssertEqual(invalidations, 0, "Steady JPEG publication must not rebuild SwiftUI observers")
         viewer.suspend()
         XCTAssertGreaterThan(invalidations, 0, "Connection state must still invalidate SwiftUI")
@@ -506,7 +545,6 @@ final class RemoteViewerTests: XCTestCase {
             let observer = viewer.$frame.sink { if $0 != nil { published += 1 } }
             defer { observer.cancel() }
             let completed = expectation(description: "Fresh epoch returns exactly six credits")
-            completed.expectedFulfillmentCount = 6
             fresh.onSend = { if $0.type == "frame_request" { completed.fulfill() } }
             for _ in 0..<6 { fresh.onMessage(frame) }
             stale(frame)
@@ -518,11 +556,12 @@ final class RemoteViewerTests: XCTestCase {
             XCTAssertTrue(viewer.connected)
             XCTAssertFalse(fresh.closed)
             XCTAssertNotNil(viewer.frame)
-            XCTAssertEqual(gate.counts.calls, 7)
+            XCTAssertEqual(gate.counts.calls, 2)
             XCTAssertEqual(gate.counts.maximum, 1)
             XCTAssertFalse(gate.counts.usedMain)
             XCTAssertTrue(old.messages.isEmpty)
-            XCTAssertEqual(published, 6, "The stale successful decode must not publish")
+            XCTAssertEqual(published, 1, "Only the newest frame from the fresh epoch may publish")
+            XCTAssertEqual(fresh.messages.map(\.count), [6])
         }
     }
 
@@ -877,6 +916,75 @@ final class RemoteViewerTests: XCTestCase {
         let viewer = RemoteViewer(recoveryWindow: recoveryWindow)
         viewer.makeSignaling = { _ in ViewerSocket() }
         return viewer
+    }
+
+    @MainActor func testLivePerformanceMeasuresDecodedFramesAndClearsOnSuspend() async throws {
+        let service = try service { $0.respond(200, ["iceServers": []]) }
+        let viewer = viewer(), socket = ViewerSocket(), publisher = try RemotePeer(publishing: true, ice: [])
+        var publisherQueue: Task<Void, Never>?
+        let ready = expectation(description: "Transport and input channels ready")
+        let firstFrame = expectation(description: "First decoded frame measured without diagnostics opt-in")
+        let measured = expectation(description: "Live interval decoded FPS available")
+        var gotReady = false, gotFrame = false, gotRate = false
+        let performance = viewer.$performance.sink { sample in
+            if sample.connectionMilliseconds != nil, !gotReady { gotReady = true; ready.fulfill() }
+            if sample.firstDecodedFrameMilliseconds != nil, !gotFrame { gotFrame = true; firstFrame.fulfill() }
+            if (sample.decodedFramesPerSecond ?? 0) > 0, !gotRate { gotRate = true; measured.fulfill() }
+        }
+        let renderer = RemoteFirstFrameProbe { _, _, _ in }
+        let tracks = viewer.$track.sink { $0?.add(renderer) }
+        defer {
+            performance.cancel(); tracks.cancel(); viewer.track?.remove(renderer)
+            viewer.close(); publisher.close(); publisherQueue?.cancel(); service.close()
+        }
+        viewer.makeSignaling = { _ in socket }
+        publisher.onSignal = { socket.onMessage(.init(type: "signal", signal: $0)) }
+        socket.onSend = { message in
+            guard let signal = message.signal else { return }
+            let previous = publisherQueue
+            publisherQueue = Task {
+                await previous?.value
+                do { try await publisher.receive(signal) } catch { XCTFail("Publisher signaling: \(error)") }
+            }
+        }
+        await viewer.connect(service: service, hand: try hand("performance"))
+        try await publisher.offer()
+        await fulfillment(of: [ready], timeout: 5)
+        XCTAssertNil(viewer.performance.firstDecodedFrameMilliseconds, "A video track is not evidence of a decoded frame")
+        var pixelBuffer: CVPixelBuffer?
+        XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 320, 240, kCVPixelFormatType_32BGRA,
+            [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &pixelBuffer), kCVReturnSuccess)
+        let buffer = try XCTUnwrap(pixelBuffer)
+        CVPixelBufferLockBaseAddress(buffer, [])
+        memset(CVPixelBufferGetBaseAddress(buffer), 96, CVPixelBufferGetDataSize(buffer))
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+        let capturer = RTCVideoCapturer(delegate: publisher.videoSource)
+        let frames = Task {
+            for _ in 0..<180 {
+                guard !Task.isCancelled else { return }
+                let timestamp = Int64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+                publisher.videoSource.capturer(capturer, didCapture: RTCVideoFrame(buffer: RTCCVPixelBuffer(pixelBuffer: buffer), rotation: ._0, timeStampNs: timestamp))
+                do { try await Task.sleep(for: .milliseconds(33)) } catch { return }
+            }
+        }
+        defer { frames.cancel() }
+        await fulfillment(of: [firstFrame, measured], timeout: 5)
+        XCTAssertGreaterThan(try XCTUnwrap(viewer.performance.receiveMegabitsPerSecond), 0)
+        XCTAssertEqual(viewer.performance.width, 320); XCTAssertEqual(viewer.performance.height, 240)
+        XCTAssertFalse(viewer.controlling, "Measuring performance must not acquire input")
+        let measurements: [String: Any] = ["connection_ready_ms": viewer.performance.connectionMilliseconds as Any? ?? NSNull(),
+            "first_decoded_frame_ms": viewer.performance.firstDecodedFrameMilliseconds as Any? ?? NSNull(),
+            "decoded_fps": viewer.performance.decodedFramesPerSecond as Any? ?? NSNull(),
+            "video_mbps": viewer.performance.receiveMegabitsPerSecond as Any? ?? NSNull(),
+            "network_rtt_ms": viewer.performance.networkRoundTripMilliseconds as Any? ?? NSNull()]
+        print("REMOTE_VIEWER_SYNTHETIC_LOOPBACK " + String(decoding: try JSONSerialization.data(withJSONObject: measurements, options: .sortedKeys), as: UTF8.self))
+        let first = viewer.performance.firstDecodedFrameMilliseconds
+        try await Task.sleep(for: .milliseconds(100))
+        XCTAssertEqual(viewer.performance.firstDecodedFrameMilliseconds, first)
+        viewer.suspend()
+        XCTAssertEqual(viewer.performance, RemotePerformance())
+        try await Task.sleep(for: .milliseconds(1100))
+        XCTAssertEqual(viewer.performance, RemotePerformance(), "Cancelled sampling and old frame callbacks cannot restore metrics")
     }
 
     @MainActor func testInitialICEOverlapsSignalingAndIsReusedUntilRestart() async throws {

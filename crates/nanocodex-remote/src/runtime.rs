@@ -292,6 +292,26 @@ impl MicrophoneControl {
         Some(ack)
     }
 }
+// WebRTC events have already been decoded and validated by the data-channel
+// boundary. Keep them structured instead of serializing them into a pretend
+// WebSocket message and parsing them again on the latency-sensitive input path.
+enum Incoming {
+    Broker(Message),
+    Peer(Value),
+}
+fn broker_event(text: &str, webrtc: bool) -> Result<Option<Value>, SessionError> {
+    let value: Value = serde_json::from_str(text).map_err(|_| SessionError::Closed)?;
+    // A signaling socket never acquires input authority for a WebRTC viewer.
+    if webrtc
+        && matches!(
+            value["type"].as_str(),
+            Some("input" | "control" | "frame_request")
+        )
+    {
+        return Ok(None);
+    }
+    Ok(Some(value))
+}
 impl Socket {
     async fn send(
         &mut self,
@@ -299,15 +319,11 @@ impl Socket {
     ) -> Result<(), tokio_tungstenite::tungstenite::Error> {
         self.wire.send(message).await
     }
-    async fn next(&mut self) -> Option<Result<Message, tokio_tungstenite::tungstenite::Error>> {
+    async fn next(&mut self) -> Option<Result<Incoming, tokio_tungstenite::tungstenite::Error>> {
         loop {
             tokio::select! {
                 message = self.wire.next() => {
-                    // WebRTC input must arrive over its DTLS data channels.
-                    if self.video.is_some() && let Some(Ok(Message::Text(text))) = &message
-                        && let Ok(value) = serde_json::from_str::<Value>(text)
-                        && matches!(value["type"].as_str(), Some("input" | "control" | "frame_request")) { continue; }
-                    return message;
+                    return message.map(|result| result.map(Incoming::Broker));
                 }
                 event = async { match &mut self.video { Some(video) => video.next().await, None => std::future::pending().await } } => {
                     let event = event?;
@@ -317,7 +333,7 @@ impl Socket {
                         // A delayed key-up cannot be silently dropped. Revoke
                         // its whole lease instead of replaying stale input.
                         let Some(value) = timely_event(event.value, event.created.elapsed()) else { continue; };
-                        return Some(Ok(Message::Text(value.to_string().into())));
+                        return Some(Ok(Incoming::Peer(value)));
                     }
                 }
             }
@@ -610,14 +626,17 @@ async fn session(
             },
             message = socket.next() => {
                 let message=message.ok_or(SessionError::Closed)?.map_err(|_|SessionError::Closed)?;
-                let text=match message {
-                    Message::Text(text)=>text,
-                    Message::Ping(bytes)=>{socket.send(Message::Pong(bytes)).await.map_err(|_|SessionError::Closed)?;continue;},
-                    Message::Close(close)=>return Err(if close.is_some_and(|c|c.reason=="Host replaced") {SessionError::Replaced}else{SessionError::Closed}),
-                    Message::Pong(_)=>continue,
+                let value=match message {
+                    Incoming::Peer(value)=>value,
+                    Incoming::Broker(Message::Text(text))=>{
+                        let Some(value)=broker_event(&text, socket.video.is_some())? else {continue;};
+                        value
+                    },
+                    Incoming::Broker(Message::Ping(bytes))=>{socket.send(Message::Pong(bytes)).await.map_err(|_|SessionError::Closed)?;continue;},
+                    Incoming::Broker(Message::Close(close))=>return Err(if close.is_some_and(|c|c.reason=="Host replaced") {SessionError::Replaced}else{SessionError::Closed}),
+                    Incoming::Broker(Message::Pong(_))=>continue,
                     _=>return Err(SessionError::Closed),
                 };
-                let value:Value=serde_json::from_str(&text).map_err(|_|SessionError::Closed)?;
                 let viewer=value["viewer_id"].as_str().unwrap_or("");
                 match value["type"].as_str().unwrap_or("") {
                     "ready"=>{
@@ -941,6 +960,24 @@ fn steps(action: &Value) -> Result<Vec<(Duration, Value)>, ()> {
 }
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn broker_transport_cannot_inject_webrtc_input() {
+        for kind in ["input", "control", "frame_request"] {
+            let event = serde_json::json!({"type":kind,"viewer_id":"fixture"});
+            let text = event.to_string();
+            assert!(super::broker_event(&text, true).unwrap().is_none());
+            assert_eq!(super::broker_event(&text, false).unwrap(), Some(event));
+        }
+        let signaling = serde_json::json!({"type":"signal","viewer_id":"fixture"});
+        assert_eq!(
+            super::broker_event(&signaling.to_string(), true).unwrap(),
+            Some(signaling)
+        );
+        for webrtc in [false, true] {
+            assert!(super::broker_event("invalid JSON", webrtc).is_err());
+        }
+    }
+
     use super::*;
     type TestWire = tokio_tungstenite::WebSocketStream<tokio::net::TcpStream>;
     async fn wire_send(wire: &mut TestWire, value: Value) {

@@ -38,12 +38,14 @@ public final class MacRemoteViewport: NSView, NSWindowDelegate {
     private let speakersButton = NSButton(title: "Mute Sound", target: nil, action: nil)
     private let exitButton = NSButton(title: "Exit Full Screen  ⌃⌘F", target: nil, action: nil)
     private let hint = NSTextField(labelWithString: "⌘⇧Esc releases control")
+    private let performanceView: NSHostingView<RemotePerformanceView>
     private weak var viewer: RemoteViewer?
     private var fullscreenObserver: NSObjectProtocol?
     public override var isFlipped: Bool { true }
 
     init(viewer: RemoteViewer) {
         self.viewer = viewer
+        performanceView = NSHostingView(rootView: RemotePerformanceView(viewer: viewer))
         canvas = MacRemoteCanvas(viewer: viewer)
         super.init(frame: .zero)
         wantsLayer = true; layer?.backgroundColor = NSColor.black.cgColor
@@ -72,7 +74,7 @@ public final class MacRemoteViewport: NSView, NSWindowDelegate {
         speakersButton.setAccessibilityIdentifier("remote-fullscreen-speakers")
         hint.font = .systemFont(ofSize: 12); hint.textColor = .secondaryLabelColor
         let spacer = NSView(); spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-        for view in [controlButton, captureButton, hint, spacer, speakersButton, microphoneButton, exitButton] { toolbar.addArrangedSubview(view) }
+        for view in [controlButton, captureButton, hint, spacer, performanceView, speakersButton, microphoneButton, exitButton] { toolbar.addArrangedSubview(view) }
         content.addSubview(toolbar); toolbar.isHidden = true
         canvas.toggleFullScreen = { [weak self] in self?.toggleRemoteFullScreen() }
         fullscreenObserver = NotificationCenter.default.addObserver(forName: .remoteToggleFullScreen, object: viewer, queue: .main) { [weak self] _ in
@@ -82,6 +84,7 @@ public final class MacRemoteViewport: NSView, NSWindowDelegate {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) has not been implemented") }
     func update(_ viewer: RemoteViewer) {
+        if self.viewer !== viewer { performanceView.rootView = RemotePerformanceView(viewer: viewer) }
         self.viewer = viewer
         canvas.update(viewer)
         controlButton.title = viewer.controlling ? "Release Control" : "Take Control"
@@ -258,7 +261,9 @@ public final class MacRemoteCanvas: NSView, NSTextInputClient {
         }
         if let hand = viewer.hand { surface = CGSize(width: hand.width, height: hand.height) }
         if track !== viewer.track { track?.remove(video); track = viewer.track; track?.add(video) }
-        video.isHidden = !viewer.connected || track == nil
+        // Video may arrive before the reliable input channels open. Present it
+        // immediately; input remains gated by the viewer's control lease.
+        video.isHidden = track == nil
         displayFrame(viewer.frame)
         if pointerCaptured && !viewer.captureMouse { releaseHeldInput() }
         if !viewer.controlling || !viewer.connected {
@@ -540,7 +545,9 @@ public final class TouchRemoteCanvas: UIView, UIScrollViewDelegate {
         }
         if let hand = viewer.hand { surface = CGSize(width: hand.width, height: hand.height) }
         if track !== viewer.track { track?.remove(video); track = viewer.track; track?.add(video) }
-        video.isHidden = !viewer.connected || track == nil
+        // Video may arrive before the reliable input channels open. Present it
+        // immediately; input remains gated by the viewer's control lease.
+        video.isHidden = track == nil
         displayFrame(viewer.frame)
         if !viewer.controlling { dragOrigin = nil; resignFirstResponder() }
         updateGestures(); setNeedsLayout()

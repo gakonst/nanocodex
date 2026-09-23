@@ -90,6 +90,7 @@ export function Screen({ hand, onBack }: { hand: RemoteHand; onBack(): void }) {
   const streamEndpoint = useRef<HTMLInputElement>(null);
   const [streamPreset, setStreamPreset] = useState<BroadcastPreset>("source");
   const [streamOpen, setStreamOpen] = useState(false);
+  const [statsOpen, setStatsOpen] = useState(false);
   const activeHand = session.current?.hand ?? hand;
   useEffect(() => {
     let mounted = true;
@@ -124,6 +125,8 @@ export function Screen({ hand, onBack }: { hand: RemoteHand; onBack(): void }) {
       document.removeEventListener("visibilitychange", visibility); connection.close(); session.current = undefined;
     };
   }, [hand]);
+
+  useEffect(() => { session.current?.setStatsEnabled(statsOpen); }, [statsOpen, hand]);
 
   useEffect(() => {
     const lockChanged = () => {
@@ -382,6 +385,7 @@ export function Screen({ hand, onBack }: { hand: RemoteHand; onBack(): void }) {
         {state.microphonePending ? "Cancel microphone" : state.microphoneEnabled ? "Mute microphone" : "Enable microphone"}</button>}
       {activeHand.broadcast && <button type="button" aria-expanded={streamOpen} onClick={() => setStreamOpen(!streamOpen)}>Stream RTMP</button>}
       {state.controlling && !pointerLocked && <button type="button" onClick={lockMouse}>Lock mouse</button>}
+      <button type="button" aria-pressed={statsOpen} onClick={() => setStatsOpen(!statsOpen)}>Stats</button>
       <button type="button" title="Control–Command–F" onClick={toggleFullscreen}>{fullscreen || expanded ? "Exit fullscreen" : "Fullscreen"}</button>
       <button type="button" disabled={!state.connected || !activeHand.controllable} onClick={takeControl}>
         {state.controlling ? "Release control" : state.controlPending ? "Cancel control" : "Take control"}</button></div>
@@ -406,6 +410,7 @@ export function Screen({ hand, onBack }: { hand: RemoteHand; onBack(): void }) {
     </form>}
     {state.microphoneError && <p className="remote-screen-notice" role="alert">{state.microphoneError}</p>}
     {captureNotice && <p className="remote-screen-notice" role="status">{captureNotice}</p>}
+    {/* srcObject clears on teardown. Display video as soon as it decodes, even while input channels connect. */}
     <div ref={picture} className="remote-screen-canvas" tabIndex={0} role="application" aria-label="Remote screen" data-testid="remote-screen"
       onFocus={event => { if (event.target === event.currentTarget && state.controlling) keyboardInput.current?.focus({ preventScroll: true }); }}
       onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp}
@@ -413,9 +418,19 @@ export function Screen({ hand, onBack }: { hand: RemoteHand; onBack(): void }) {
       onPointerCancel={releaseInput} onLostPointerCapture={event => { if (pointers.current.has(event.pointerId) || (event.pointerType !== "touch" && mouse.current.held && event.buttons === 0)) releaseInput(); }}
       onKeyDown={event => keyboard(event, true)} onKeyUp={event => keyboard(event, false)}
       onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) releaseInput(); }}
-      onContextMenu={event => event.preventDefault()} onAuxClick={event => event.preventDefault()}><video ref={video} autoPlay playsInline muted={!state.audioEnabled} data-testid="remote-video" style={{ visibility: state.connected && activeHand.transport !== "frames-v1" ? "visible" : "hidden" }} />
+      onContextMenu={event => event.preventDefault()} onAuxClick={event => event.preventDefault()}><video ref={video} autoPlay playsInline muted={!state.audioEnabled} data-testid="remote-video" style={{ visibility: activeHand.transport !== "frames-v1" ? "visible" : "hidden" }} />
       <canvas ref={frameCanvas} className="remote-screen-frame" data-testid="remote-frame" aria-label="Remote desktop picture"
-        style={{ visibility: state.connected && activeHand.transport === "frames-v1" ? "visible" : "hidden" }} />
+        style={{ visibility: state.mediaReady && activeHand.transport === "frames-v1" ? "visible" : "hidden" }} />
+      {statsOpen && <dl className="remote-screen-stats" aria-label="Connection statistics">
+        <dt>Decoded FPS</dt><dd>{state.stats?.decodeFps?.toFixed(1) ?? "—"}</dd>
+        <dt>Video</dt><dd>{state.stats?.width && state.stats?.height ? `${state.stats.width} × ${state.stats.height}` : "—"}{state.stats?.codec ? ` · ${state.stats.codec}` : ""}</dd>
+        <dt>Bitrate</dt><dd>{state.stats?.bitrateKbps === undefined ? "—" : `${(state.stats.bitrateKbps / 1000).toFixed(2)} Mbps`}</dd>
+        <dt title="Round trip on the selected network path">Network RTT</dt><dd>{state.stats?.roundTripMs === undefined ? "—" : `${state.stats.roundTripMs.toFixed(0)} ms`}</dd>
+        <dt title="Average time to decode one frame in this interval">Decode</dt><dd>{state.stats?.decodeMs === undefined ? "—" : `${state.stats.decodeMs.toFixed(1)} ms`}</dd>
+        <dt title="Average jitter buffer residence time in this interval">Jitter buffer</dt><dd>{state.stats?.jitterBufferMs === undefined ? "—" : `${state.stats.jitterBufferMs.toFixed(1)} ms`}</dd>
+        <dt>Dropped / interval</dt><dd>{state.stats?.droppedFrames ?? "—"}</dd>
+        <dt title="Time from connection attempt to first presented frame; older browsers report decoded readiness">First frame</dt><dd>{state.stats?.firstFrameMs === undefined ? "—" : `${state.stats.firstFrameMs.toFixed(0)} ms`}</dd>
+      </dl>}
       {pointerLocked && !state.relativePointer && <svg ref={virtualCursor} className="remote-virtual-cursor" width="16" height="22" viewBox="0 0 16 22" aria-hidden="true"><path d="M1 1v17l4-4 3 7 3-1-3-7h6Z" fill="white" stroke="black" /></svg>}
       {pointerLocked && <span className="remote-capture-hint">Esc releases mouse and keyboard</span>}
       <textarea ref={keyboardInput} className="remote-keyboard-input" aria-label="Remote keyboard" tabIndex={-1}

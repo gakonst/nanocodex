@@ -357,10 +357,7 @@ impl VmHand {
                         _ = async { while let Some(bytes) = chunks.recv().await { if writer.write_all(&bytes).await.is_err() { break; } } } => {},
                     }
                 }));
-                Ok(super::screen_video::Capture {
-                    reader: Box::new(reader),
-                    owner,
-                })
+                Ok(super::screen_video::Capture::bytes(reader, owner))
             })
         });
         let runner = self.workspace.control();

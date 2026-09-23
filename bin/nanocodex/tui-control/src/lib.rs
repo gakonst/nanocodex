@@ -747,13 +747,32 @@ impl Cli {
             CliCommand::Connect { instance_id, .. } => connect(&instance_id).await,
         }
         #[cfg(not(unix))]
-        Err(io::Error::other("TUI control currently requires Unix"))
+        Err(io::Error::new(
+            io::ErrorKind::Unsupported,
+            "TUI control currently requires Unix",
+        ))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(not(unix))]
+    #[tokio::test]
+    async fn cli_reports_unsupported_platform() {
+        for command in [
+            CliCommand::List { json: true },
+            CliCommand::Connect {
+                instance_id: "instance".into(),
+                stdio: true,
+            },
+        ] {
+            let error = Cli { command }.run().await.unwrap_err();
+            assert_eq!(error.kind(), io::ErrorKind::Unsupported);
+            assert_eq!(error.to_string(), "TUI control currently requires Unix");
+        }
+    }
     fn bridge() -> (Bridge, mpsc::Receiver<Command>) {
         let (tx, rx) = mpsc::channel(32);
         (

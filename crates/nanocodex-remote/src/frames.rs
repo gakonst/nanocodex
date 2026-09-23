@@ -2,11 +2,8 @@
 //! FFmpeg's tee muxer must flush framecrc metadata before its matching H.264
 //! output. Pipe read boundaries are never interpreted as frame boundaries.
 use std::io;
-use tokio::io::{
-    AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, BufReader,
-};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, BufReader};
 
-pub const FRAMED_H264_MAGIC: &[u8; 8] = b"NCH264F1";
 pub const MAX_H264_FRAME: usize = 8 * 1024 * 1024;
 const MAX_METADATA_LINE: usize = 16 * 1024;
 
@@ -73,34 +70,42 @@ fn frame_size(line: &[u8]) -> io::Result<Option<usize>> {
     Ok(Some(size))
 }
 
-/// Forward exact encoded packets in the framing shared with the Go Hand:
-/// `NCH264F1`, followed by repeated big-endian u32 lengths and H.264 packet bytes.
-/// A packet is fully read and validated for length before any of its framing is
-/// published. Callers own encoder shutdown and deadlines on their pipe readers.
-pub async fn forward_encoded_frames<M, V, W>(
-    metadata: M,
-    mut video: V,
-    mut output: W,
-) -> io::Result<()>
-where
-    M: AsyncRead + Unpin,
-    V: AsyncRead + Unpin,
-    W: AsyncWrite + Unpin,
-{
-    let mut metadata = BufReader::with_capacity(1024, metadata);
-    let mut line = Vec::with_capacity(1024);
-    let mut frame = Vec::new();
-    output.write_all(FRAMED_H264_MAGIC).await?;
-    output.flush().await?;
-    while metadata_line(&mut metadata, &mut line).await? {
-        let Some(size) = frame_size(&line)? else {
-            continue;
-        };
-        frame.resize(size, 0);
-        video.read_exact(&mut frame).await?;
-        output.write_all(&(size as u32).to_be_bytes()).await?;
-        output.write_all(&frame).await?;
-        output.flush().await?;
+/// One packet from the encoder, read on demand without a following-frame lookahead.
+/// Metadata is flushed before its matching H.264 payload. Callers own deadlines
+/// and must discard the reader if an in-progress read is cancelled.
+pub struct EncodedFrames<M, V> {
+    metadata: BufReader<M>,
+    video: V,
+    line: Vec<u8>,
+}
+impl<M: AsyncRead + Unpin, V: AsyncRead + Unpin> EncodedFrames<M, V> {
+    pub fn new(metadata: M, video: V) -> Self {
+        Self {
+            metadata: BufReader::with_capacity(1024, metadata),
+            video,
+            line: Vec::with_capacity(1024),
+        }
+    }
+    pub async fn next(&mut self) -> io::Result<Option<crate::capture::EncodedPacket>> {
+        while metadata_line(&mut self.metadata, &mut self.line).await? {
+            let Some(size) = frame_size(&self.line)? else {
+                continue;
+            };
+            let mut frame = vec![0; size];
+            self.video.read_exact(&mut frame).await?;
+            validate_packet(&frame)?;
+            return Ok(Some(frame.into()));
+        }
+        Ok(None)
+    }
+}
+
+pub(crate) fn validate_packet(frame: &[u8]) -> io::Result<()> {
+    if frame.is_empty() || frame.len() > MAX_H264_FRAME {
+        return Err(invalid("invalid H.264 frame size"));
+    }
+    if !frame.starts_with(&[0, 0, 1]) && !frame.starts_with(&[0, 0, 0, 1]) {
+        return Err(invalid("invalid framed Annex B packet"));
     }
     Ok(())
 }
@@ -109,6 +114,7 @@ where
 mod tests {
     use super::*;
     use std::{process::Stdio, time::Duration};
+    use tokio::io::AsyncWriteExt;
 
     #[tokio::test]
     async fn fragmented_pipes_preserve_exact_encoder_packets() {
@@ -116,35 +122,36 @@ mod tests {
         let (mut video_writer, video) = tokio::io::duplex(1);
         let metadata_task = tokio::spawn(async move {
             metadata_writer
-                .write_all(b"#tb 0: 1/60\n0, 0, 0, 1, 5, 0xabc\n0, 1, 1, 1, 3, 0x123, extra\r\n")
+                .write_all(b"#tb 0: 1/60\n0, 0, 0, 1, 5, 0xabc\n0, 1, 1, 1, 4, 0x123, extra\r\n")
                 .await
                 .unwrap();
         });
         let video_task = tokio::spawn(async move {
-            video_writer.write_all(b"firsttwo").await.unwrap();
+            video_writer
+                .write_all(&[0, 0, 1, 0x65, 42, 0, 0, 1, 0x41])
+                .await
+                .unwrap();
         });
-        let mut output = Vec::new();
-        tokio::time::timeout(
-            Duration::from_secs(3),
-            forward_encoded_frames(metadata, video, &mut output),
-        )
+        let mut frames = EncodedFrames::new(metadata, video);
+        let packets = tokio::time::timeout(Duration::from_secs(3), async {
+            let first = frames.next().await.unwrap().unwrap();
+            let second = frames.next().await.unwrap().unwrap();
+            assert!(frames.next().await.unwrap().is_none());
+            (first, second)
+        })
         .await
-        .unwrap()
         .unwrap();
         metadata_task.await.unwrap();
         video_task.await.unwrap();
-        let mut expected = FRAMED_H264_MAGIC.to_vec();
-        expected.extend_from_slice(&5u32.to_be_bytes());
-        expected.extend_from_slice(b"first");
-        expected.extend_from_slice(&3u32.to_be_bytes());
-        expected.extend_from_slice(b"two");
-        assert_eq!(output, expected);
+        assert_eq!(packets.0.as_ref(), &[0, 0, 1, 0x65, 42]);
+        assert_eq!(packets.1.as_ref(), &[0, 0, 1, 0x41]);
     }
 
     #[tokio::test]
     async fn malformed_metadata_and_truncated_packets_never_publish_a_frame() {
         let mut cases = vec![
             b"garbage\n".to_vec(),
+            b"0,0,0,1,4,0x0\n".to_vec(), // Complete but not Annex B.
             b"\n".to_vec(),
             b"0,0,0,1,4\n".to_vec(),
             b"1,0,0,1,4,0x0\n".to_vec(),
@@ -165,11 +172,10 @@ mod tests {
             .concat(),
         );
         for metadata in cases {
-            let mut output = Vec::new();
-            let result =
-                forward_encoded_frames(metadata.as_slice(), b"tiny".as_slice(), &mut output).await;
+            let result = EncodedFrames::new(metadata.as_slice(), b"tiny".as_slice())
+                .next()
+                .await;
             assert!(result.is_err(), "accepted metadata {metadata:?}");
-            assert_eq!(output, FRAMED_H264_MAGIC, "published an incomplete packet");
         }
     }
 
@@ -179,13 +185,12 @@ mod tests {
         // trigger rejection, so a malicious peer cannot grow this buffer forever.
         let mut header = vec![b'x'; MAX_METADATA_LINE + 1];
         header[0] = b'#';
-        let mut output = Vec::new();
-        let error = forward_encoded_frames(header.as_slice(), tokio::io::empty(), &mut output)
+        let error = EncodedFrames::new(header.as_slice(), tokio::io::empty())
+            .next()
             .await
             .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(error.to_string().contains("16 KiB"));
-        assert_eq!(output, FRAMED_H264_MAGIC);
     }
 
     #[test]
@@ -255,21 +260,13 @@ mod tests {
         let mut input = child.stdin.take().unwrap();
         let video = child.stdout.take().unwrap();
         let metadata = child.stderr.take().unwrap();
-        let (sink, mut output) = tokio::io::duplex(1024 * 1024);
-        let forwarding = tokio::spawn(forward_encoded_frames(metadata, video, sink));
+        let mut frames = EncodedFrames::new(metadata, video);
         input.write_all(&[0; 64 * 64 * 4]).await.unwrap();
-        let frame = tokio::time::timeout(Duration::from_secs(5), async {
-            let mut magic = [0; 8];
-            output.read_exact(&mut magic).await.unwrap();
-            assert_eq!(&magic, FRAMED_H264_MAGIC);
-            let size = output.read_u32().await.unwrap() as usize;
-            assert!((10..=MAX_H264_FRAME).contains(&size));
-            let mut frame = vec![0; size];
-            output.read_exact(&mut frame).await.unwrap();
-            frame
-        })
-        .await
-        .expect("encoder waited for a second input frame");
+        let frame = tokio::time::timeout(Duration::from_secs(5), frames.next())
+            .await
+            .expect("encoder waited for a second input frame")
+            .unwrap()
+            .unwrap();
         assert!(frame.starts_with(&[0, 0, 0, 1]) || frame.starts_with(&[0, 0, 1]));
         assert!(
             child.try_wait().unwrap().is_none(),
@@ -283,10 +280,12 @@ mod tests {
                 .unwrap()
                 .success()
         );
-        tokio::time::timeout(Duration::from_secs(5), forwarding)
-            .await
-            .unwrap()
-            .unwrap()
-            .unwrap();
+        assert!(
+            tokio::time::timeout(Duration::from_secs(5), frames.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .is_none()
+        );
     }
 }
