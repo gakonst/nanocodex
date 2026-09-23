@@ -8,8 +8,12 @@ runs:
         version: v0.16.0
     - name: Enable compiler caching
       shell: bash
+      env:
+        # PR-local entries cannot warm master and compete for its upload quota.
+        CACHE_MODE: ${{ github.ref == 'refs/heads/master' && contains(fromJSON('["push","workflow_dispatch","schedule"]'), github.event_name) && 'READ_WRITE' || 'READ_ONLY' }}
       run: |
         echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"
         echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"
+        echo "SCCACHE_GHA_RW_MODE=$CACHE_MODE" >> "$GITHUB_ENV"
         # Incremental compilation bypasses sccache; CI caches compiler outputs.
         echo "CARGO_INCREMENTAL=0" >> "$GITHUB_ENV"
