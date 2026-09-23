@@ -105,13 +105,38 @@ test("attachment rejects non-string model metadata before dispatch", async () =>
   }
 });
 
-test("opaque model metadata still obeys the attachment frame capacity", async () => {
-  let dispatched = false;
-  const fixture = await readyAttachment({ handler: () => { dispatched = true; return "ok"; } });
-  fixture.socket.receive({ ...callFrame({}), model: "x".repeat(2 * 1024 * 1024) });
-  await waitFor(() => fixture.socket.closed?.code === 1008);
-  assert.match(fixture.socket.closed.reason, /frame capacity exceeded/);
-  assert.equal(dispatched, false);
+test("attachment transports large admitted inputs and image results without a local frame cutoff", async () => {
+  const data = "A".repeat(3 * 1024 * 1024);
+  let calls = 0;
+  const fixture = await readyAttachment({ handler: ({ value }) => {
+    calls += 1;
+    assert.equal(value.length, data.length);
+    assert.equal(value, data);
+    return { type: "image", data: value };
+  } });
+  fixture.socket.receive({ ...callFrame({ value: data }), output_byte_budget: 8 * 1024 * 1024 });
+  await waitFor(() => fixture.socket.frames().some(({ type }) => type === "result"));
+  const result = lastFrame(fixture.socket, "result");
+  assert.equal(result.outcome.status, "completed");
+  assert.equal(result.outcome.output.structured_result.data.length, data.length);
+  assert.equal(result.outcome.output.structured_result.data, data);
+  assert.equal(calls, 1);
+  fixture.socket.receive({ type: "ack", call_id: "call:1" });
+  await drain(fixture.client, fixture.socket);
+  await fixture.tools.close();
+});
+
+test("attachment does not confuse transport buffering with a failed tool call", async () => {
+  const socket = new FakeSocket();
+  socket.bufferedAmount = 3 * 1024 * 1024;
+  let calls = 0;
+  const fixture = await readyAttachment({ handler: () => { calls += 1; return "queued by transport"; } }, socket);
+  socket.receive(callFrame({}));
+  await waitFor(() => socket.frames().some(({ type }) => type === "result"));
+  assert.equal(lastFrame(socket, "result").outcome.status, "completed");
+  assert.equal(calls, 1);
+  socket.receive({ type: "ack", call_id: "call:1" });
+  await drain(fixture.client, socket);
   await fixture.tools.close();
 });
 
