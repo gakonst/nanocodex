@@ -154,7 +154,12 @@ async fn catalog_call_result_and_drain_use_exact_frames() {
         let mut socket = accept(&listener).await;
         let catalog = recv_json(&mut socket).await;
         assert_eq!(catalog["type"], "catalog");
-        assert_eq!(catalog.as_object().unwrap().len(), 5);
+        assert_eq!(catalog.as_object().unwrap().len(), 6);
+        assert!(
+            catalog["runtime_id"]
+                .as_str()
+                .is_some_and(|id| !id.is_empty())
+        );
         assert_eq!(catalog["capabilities"], json!(["turn_metadata"]));
         assert_eq!(catalog["tools"][0]["definition"]["name"], "echo");
         assert_eq!(catalog["attachment_id"], "machine-1");
@@ -387,12 +392,21 @@ async fn accept(listener: &TcpListener) -> WebSocketStream<TcpStream> {
 }
 
 async fn ready(listener: &TcpListener) -> WebSocketStream<TcpStream> {
+    ready_with_catalog(listener).await.0
+}
+
+async fn ready_with_catalog(listener: &TcpListener) -> (WebSocketStream<TcpStream>, Value) {
     let mut socket = accept(listener).await;
     let catalog = recv_json(&mut socket).await;
     assert_eq!(catalog["type"], "catalog");
+    assert!(
+        catalog["runtime_id"]
+            .as_str()
+            .is_some_and(|id| !id.is_empty())
+    );
     assert_eq!(catalog["capabilities"], json!(["turn_metadata"]));
     send_json(&mut socket, json!({"type":"ready"})).await;
-    socket
+    (socket, catalog)
 }
 
 fn call(call_id: &str, name: &str) -> Value {
@@ -539,9 +553,10 @@ impl Tool for GatedTool {
 }
 
 #[tokio::test]
-async fn reconnect_preserves_running_calls_capacity_and_socket_local_results() {
+async fn reconnect_queues_serial_work_without_rejecting_parallel_work_or_replaying_results() {
     tokio::time::timeout(Duration::from_secs(5), async {
-        for (parallel, count) in [(false, 1), (true, 32)] {
+        let mut prior_runtime = Value::Null;
+        for (parallel, count) in [(false, 1), (true, 65)] {
             let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
             let endpoint = format!("ws://{}/tools", listener.local_addr().unwrap());
             let (started, mut starts) = tokio::sync::mpsc::unbounded_channel();
@@ -560,22 +575,32 @@ async fn reconnect_preserves_running_calls_capacity_and_socket_local_results() {
                 .attach(AttachmentTarget::new(endpoint, "bearer").unwrap())
                 .start()
                 .unwrap();
-            let mut first = ready(&listener).await;
+            let (mut first, catalog) = ready_with_catalog(&listener).await;
+            assert_ne!(catalog["runtime_id"], prior_runtime);
+            prior_runtime = catalog["runtime_id"].clone();
             for id in 0..count {
                 send_json(&mut first, call(&format!("old-{id}"), "gated")).await;
                 assert_eq!(starts.recv().await.unwrap(), format!("old-{id}"));
             }
             first.close(None).await.unwrap();
-            let mut second = ready(&listener).await;
+            let (mut second, catalog) = ready_with_catalog(&listener).await;
+            assert_eq!(catalog["runtime_id"], prior_runtime);
             send_json(&mut second, call("busy", "echo")).await;
+            if !parallel {
+                assert!(
+                    tokio::time::timeout(Duration::from_millis(25), recv_json(&mut second))
+                        .await
+                        .is_err()
+                );
+                release.add_permits(count);
+            }
             let busy = recv_json(&mut second).await;
             assert_eq!(busy["call_id"], "busy");
-            assert_eq!(busy["outcome"]["status"], "unavailable");
+            assert_eq!(busy["outcome"]["status"], "completed");
             send_json(&mut second, json!({"type":"ack","call_id":"busy"})).await;
-
-            // Let the replacement loop wait with the old calls still active.
-            tokio::time::sleep(Duration::from_millis(25)).await;
-            release.add_permits(count);
+            if parallel {
+                release.add_permits(count);
+            }
             let mut finished = 0;
             while finished < count {
                 if let AttachmentEvent::CallCompleted { call_id, outcome } =
@@ -608,4 +633,118 @@ async fn reconnect_preserves_running_calls_capacity_and_socket_local_results() {
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn queued_calls_expire_or_cancel_without_executing_and_release_the_gate() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}/tools", listener.local_addr().unwrap());
+        let (started, mut starts) = tokio::sync::mpsc::unbounded_channel();
+        let release = std::sync::Arc::new(tokio::sync::Semaphore::new(0));
+        let tools = Tools::builder()
+            .without_defaults()
+            .tool(GatedTool {
+                started,
+                release: release.clone(),
+                parallel: false,
+            })
+            .build()
+            .unwrap();
+        let (attachment, _) = tools
+            .attach(AttachmentTarget::new(endpoint, "bearer").unwrap())
+            .start()
+            .unwrap();
+        let mut socket = ready(&listener).await;
+        send_json(&mut socket, call("running", "gated")).await;
+        assert_eq!(starts.recv().await.unwrap(), "running");
+        let mut expired = call("expired", "gated");
+        expired["deadline_at"] = json!(now_ms() + 30);
+        send_json(&mut socket, expired).await;
+        let result = recv_json(&mut socket).await;
+        assert_eq!(result["call_id"], "expired");
+        assert_eq!(result["outcome"]["status"], "unavailable");
+        send_json(&mut socket, json!({"type":"ack", "call_id":"expired"})).await;
+        send_json(&mut socket, call("cancelled", "gated")).await;
+        send_json(&mut socket, json!({"type":"cancel", "call_id":"cancelled"})).await;
+        assert_eq!(recv_json(&mut socket).await["call_id"], "cancelled");
+        send_json(&mut socket, json!({"type":"ack", "call_id":"cancelled"})).await;
+        release.add_permits(1);
+        assert_eq!(recv_json(&mut socket).await["call_id"], "running");
+        send_json(&mut socket, json!({"type":"ack", "call_id":"running"})).await;
+        send_json(&mut socket, call("later", "gated")).await;
+        assert_eq!(starts.recv().await.unwrap(), "later");
+        release.add_permits(1);
+        assert_eq!(recv_json(&mut socket).await["call_id"], "later");
+        send_json(&mut socket, json!({"type":"ack", "call_id":"later"})).await;
+        assert!(starts.try_recv().is_err());
+        let detach = tokio::spawn(async move { attachment.detach().await });
+        assert_eq!(recv_json(&mut socket).await, json!({"type":"drain"}));
+        send_json(&mut socket, json!({"type":"draining"})).await;
+        detach.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[cfg(feature = "workspace-runtime")]
+#[tokio::test]
+async fn process_poll_survives_transport_reconnect_without_restarting_the_command() {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("ws://{}/tools", listener.local_addr().unwrap());
+        let tools = Tools::builder()
+            .without_defaults()
+            .add(crate::WorkspaceTools::new(std::env::temp_dir()))
+            .build()
+            .unwrap();
+        let (attachment, _) = tools
+            .attach(AttachmentTarget::new(endpoint, "bearer").unwrap())
+            .start()
+            .unwrap();
+        let (mut first, catalog) = ready_with_catalog(&listener).await;
+        let mut command = call("command", "exec_command");
+        command["input"] = json!({"cmd":"sleep 0.5; printf recovered", "yield_time_ms":250});
+        send_json(&mut first, command).await;
+        let initial = next_result(&mut first).await;
+        let process = initial["outcome"]["output"]["structured_result"]["session_id"]
+            .as_i64()
+            .unwrap();
+        send_json(&mut first, json!({"type":"ack", "call_id":"command"})).await;
+        first.close(None).await.unwrap();
+        let (mut second, reconnected) = ready_with_catalog(&listener).await;
+        assert_eq!(catalog["runtime_id"], reconnected["runtime_id"]);
+        let mut poll = call("poll", "write_stdin");
+        poll["input"] = json!({"session_id":process, "yield_time_ms":5000});
+        send_json(&mut second, poll).await;
+        let completed = next_result(&mut second).await;
+        assert_eq!(
+            completed["outcome"]["output"]["structured_result"]["exit_code"],
+            0
+        );
+        assert_eq!(
+            completed["outcome"]["output"]["structured_result"]["output"],
+            "recovered"
+        );
+        send_json(&mut second, json!({"type":"ack", "call_id":"poll"})).await;
+        let detach = tokio::spawn(async move { attachment.detach().await });
+        assert_eq!(recv_json(&mut second).await, json!({"type":"drain"}));
+        send_json(&mut second, json!({"type":"draining"})).await;
+        detach.await.unwrap().unwrap();
+    })
+    .await
+    .unwrap();
+}
+
+#[cfg(feature = "workspace-runtime")]
+async fn next_result(socket: &mut WebSocketStream<TcpStream>) -> Value {
+    loop {
+        let frame = recv_json(socket).await;
+        if frame["type"] == "ping" {
+            send_json(socket, json!({"type":"pong", "nonce":frame["nonce"]})).await;
+        } else {
+            assert_eq!(frame["type"], "result");
+            return frame;
+        }
+    }
 }

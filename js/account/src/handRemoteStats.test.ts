@@ -137,3 +137,40 @@ test("selected address-family diagnostics reveal only validated family enums", (
     if (address) assert.equal(JSON.stringify(stats).includes(address), false);
   }
 });
+
+
+test("jitter diagnostics independently measure actual, target and network minimum interval averages", () => {
+  const sampler = new RemoteStatsSampler();
+  sampler.sample(report({ jitterBufferTargetDelay: 150, jitterBufferMinimumDelay: 40 }));
+  const stats = sampler.sample(report({ timestamp: 2000, jitterBufferEmittedCount: 1050,
+    jitterBufferDelay: 103, jitterBufferTargetDelay: 152, jitterBufferMinimumDelay: 40.5 }));
+  assert.equal(stats.jitterBufferMs, 60);
+  assert.equal(stats.jitterBufferTargetMs, 40);
+  assert.equal(stats.jitterBufferMinimumMs, 10);
+});
+
+for (const value of [undefined, NaN, Infinity, -1, "1"]) test(`missing or invalid jitter targets/minima stay absent: ${String(value)}`, () => {
+  const sampler = new RemoteStatsSampler();
+  sampler.sample(report({ jitterBufferTargetDelay: 100, jitterBufferMinimumDelay: 100 }));
+  const stats = sampler.sample(report({ timestamp: 2000, jitterBufferEmittedCount: 1050,
+    jitterBufferDelay: 103, jitterBufferTargetDelay: value, jitterBufferMinimumDelay: value }));
+  assert.equal(stats.jitterBufferMs, 60);
+  assert.equal("jitterBufferTargetMs" in stats, false);
+  assert.equal("jitterBufferMinimumMs" in stats, false);
+});
+
+test("jitter targets/minima reject resets, missing baselines and empty intervals while preserving real zero", () => {
+  for (const initial of [undefined, 100]) {
+    const sampler = new RemoteStatsSampler();
+    sampler.sample(report({ jitterBufferTargetDelay: initial, jitterBufferMinimumDelay: initial }));
+    const stats = sampler.sample(report({ timestamp: 2000, jitterBufferEmittedCount: 1050,
+      jitterBufferTargetDelay: 1, jitterBufferMinimumDelay: 0 }));
+    assert.equal(stats.jitterBufferTargetMs, undefined); assert.equal(stats.jitterBufferMinimumMs, undefined);
+  }
+  const sampler = new RemoteStatsSampler();
+  sampler.sample(report({ jitterBufferTargetDelay: 0, jitterBufferMinimumDelay: 0 }));
+  const empty = sampler.sample(report({ timestamp: 2000, jitterBufferTargetDelay: 0, jitterBufferMinimumDelay: 0 }));
+  assert.equal(empty.jitterBufferTargetMs, undefined); assert.equal(empty.jitterBufferMinimumMs, undefined);
+  const zero = sampler.sample(report({ timestamp: 3000, jitterBufferEmittedCount: 1050, jitterBufferTargetDelay: 0, jitterBufferMinimumDelay: 0 }));
+  assert.equal(zero.jitterBufferTargetMs, 0); assert.equal(zero.jitterBufferMinimumMs, 0);
+});

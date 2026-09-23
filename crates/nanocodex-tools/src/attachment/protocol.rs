@@ -13,6 +13,7 @@ pub(crate) const HEARTBEAT_INTERVAL: std::time::Duration = std::time::Duration::
 pub(crate) enum ExecutorFrame<'a> {
     Catalog {
         capabilities: [&'static str; 1],
+        runtime_id: &'a str,
         tools: &'a Value,
         #[serde(skip_serializing_if = "Option::is_none")]
         machines: Option<&'a [AttachmentMachine]>,

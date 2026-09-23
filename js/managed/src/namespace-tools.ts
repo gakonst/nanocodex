@@ -17,6 +17,7 @@ import {
 } from "nanocodex-tools";
 
 const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
+const PROCESS_SESSION_TOOL = Symbol.for("nanocodex.processSessionTool");
 const DEFAULT_CWD = "/brain";
 
 export type RoutedTool = Readonly<{
@@ -219,7 +220,12 @@ export function createNamespaceExecutionRuntime(
         }, context);
         const structured = executionResult(result);
         if (structured?.session_id === undefined) return result;
-        if (hand.writeStdin === undefined) {
+        // Account routing can refresh an unstarted exec before dispatch. Bind
+        // its returned session to the actual executor, not the old cell route.
+        const processTool = result && typeof result === "object"
+          ? (result as Record<symbol, unknown>)[PROCESS_SESSION_TOOL] as RoutedTool | undefined : undefined;
+        const writeStdin = processTool ?? hand.writeStdin;
+        if (writeStdin === undefined) {
           throw new Error(`namespace mount ${route.mount.root} cannot retain process sessions`);
         }
         const providerSessionId = positiveSessionId(structured.session_id);
@@ -227,7 +233,7 @@ export function createNamespaceExecutionRuntime(
         sessions.set(publicSessionId, Object.freeze({
           ownerSessionId: context.sessionId,
           providerSessionId,
-          writeStdin: hand.writeStdin,
+          writeStdin,
         }));
         return replaceExecutionResult(result, { ...structured, session_id: publicSessionId });
       },
