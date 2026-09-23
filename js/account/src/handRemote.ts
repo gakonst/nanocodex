@@ -1,4 +1,4 @@
-import { RemoteStatsSampler, type RemoteStats } from "./handRemoteStats.ts";
+import { RemoteStatsSampler, type RemoteStats, type RemoteStartupTiming } from "./handRemoteStats.ts";
 
 export type RemoteHand = Readonly<{
   id: string; name: string; kind: "desktop" | "window" | "phone" | "vm";
@@ -111,6 +111,10 @@ export class RemoteBrowserSession {
   private statsTimer?: ReturnType<typeof setTimeout>;
   private statsRequest?: { peer: RTCPeerConnection; result: Promise<RTCStatsReport>; startedAt: number };
   private startedAt = 0;
+  private connectionStartedAt?: number;
+  private attempt = 0;
+  private startup: RemoteStartupTiming = {};
+  private attemptIcePolicy?: RTCIceTransportPolicy;
   private firstFrameMs?: number;
   private videoTrackId?: string;
   private videoFrameCallback?: number;
@@ -180,6 +184,7 @@ export class RemoteBrowserSession {
   reconnect(): void {
     if (this.closed) return;
     this.suspended = false; this.retries = 0; this.recoveryDeadline = undefined;
+    this.connectionStartedAt = undefined; this.attempt = 0;
     void this.start(true);
   }
   suspend(delay = 0): void {
@@ -206,6 +211,8 @@ export class RemoteBrowserSession {
     this.detach();
     const epoch = this.epoch;
     this.startedAt = performance.now();
+    this.connectionStartedAt ??= this.startedAt;
+    this.attempt++;
     this.abort = new AbortController();
     const signal = this.abort.signal;
     this.update({ status: refresh ? "Reconnecting…" : "Connecting…", connected: false, controlling: false, connecting: true });
@@ -214,12 +221,28 @@ export class RemoteBrowserSession {
       if (this.current(epoch)) this.fail(new RemoteError("Could not establish a screen connection."));
     }, Math.max(0, Math.min(25_000, remaining)));
     try {
+      // A retry needs a current publication and fresh credentials. These HTTP
+      // requests are independent; do not put TURN behind catalog discovery.
+      // Capture failure as data until discovery determines the transport (a
+      // publication can switch to frames-v1), including after cancellation.
+      const lookupIce = () => request("/ice", "POST", undefined, signal).then(ice => {
+        if (this.current(epoch)) this.markStartup("iceReadyMs");
+        return { ice };
+      }, error => {
+        // Revoked authorization is terminal even if concurrent discovery is
+        // slow or its publication no longer needs TURN.
+        if (error instanceof RemoteError && error.terminal && this.current(epoch)) this.fail(error);
+        return { error };
+      });
+      const iceReady = this.hand.transport === "frames-v1" ? undefined : lookupIce();
       if (refresh) {
         const hands = await listRemoteHands(signal);
         if (!this.current(epoch)) return;
         const hand = hands.find(hand => hand.machine_id === this.hand.machine_id && hand.id === this.hand.id);
         if (!hand) throw new RemoteError("This screen is unavailable.");
         this.hand = hand;
+        this.markStartup("catalogReadyMs");
+        if (!this.current(epoch)) return;
       }
       const frames = this.hand.transport === "frames-v1";
       let peer: RTCPeerConnection | undefined;
@@ -228,9 +251,15 @@ export class RemoteBrowserSession {
       }
       // Fetch TURN credentials while the authenticated viewer socket connects.
       // Offers stay queued until this attempt's credentials and peer are ready.
-      const peerReady = frames ? Promise.resolve() : request("/ice", "POST", undefined, signal).then(ice => {
+      const peerReady = frames ? Promise.resolve() : (iceReady ?? lookupIce()).then(result => {
         if (!this.current(epoch)) return;
-        peer = new RTCPeerConnection({ iceServers: ice.iceServers, iceTransportPolicy: this.icePolicy(ice.iceServers), bundlePolicy: "max-bundle" });
+        if ("error" in result) throw result.error;
+        const ice = result.ice;
+        this.attemptIcePolicy = this.icePolicy(ice.iceServers);
+        // Gather one session's candidates while the publisher prepares its
+        // offer. The pool belongs to this attempt and its fresh TURN response;
+        // closing the peer discards it, including after a direct-path failure.
+        peer = new RTCPeerConnection({ iceServers: ice.iceServers, iceTransportPolicy: this.attemptIcePolicy, bundlePolicy: "max-bundle", iceCandidatePoolSize: 1 });
         this.peer = peer;
         if (this.statsEnabled) this.startStats();
         const connectedPeer = peer;
@@ -278,7 +307,7 @@ export class RemoteBrowserSession {
             clearTimeout(this.disconnectTimer); this.disconnectTimer = undefined;
             if (["failed", "closed"].includes(connectedPeer.connectionState)) this.fail(new RemoteError("Screen disconnected."));
             else {
-              if (connectedPeer.connectionState === "connected") this.startMediaWatchdog(epoch);
+              if (connectedPeer.connectionState === "connected") { this.markStartup("peerConnectedMs"); this.startMediaWatchdog(epoch); }
               this.ready();
             }
           }
@@ -293,6 +322,7 @@ export class RemoteBrowserSession {
         this.framePending = this.frameWindow;
       }
       const socket = new WebSocket(url); this.socket = socket;
+      socket.onopen = () => { if (this.current(epoch)) this.markStartup("socketOpenMs"); };
       socket.onclose = () => { if (this.current(epoch)) this.fail(new RemoteError("Screen disconnected.")); };
       socket.onerror = () => { if (this.current(epoch)) this.fail(new RemoteError("Could not connect to this screen.")); };
       const candidates: RTCIceCandidateInit[] = [];
@@ -305,6 +335,8 @@ export class RemoteBrowserSession {
           if (typeof data !== "string" || encoder.encode(data).length > (frames ? 710_000 : 70_000)) throw new RemoteError("Invalid remote signal.", true);
           message = JSON.parse(data);
           if (!message || typeof message !== "object") throw new RemoteError("Invalid remote signal.", true);
+          if (!frames && message.type === "signal" && message.signal?.type === "offer") this.markStartup("offerReceivedMs");
+          if (!this.current(epoch)) return;
           // Authorization is independent of asynchronous ICE negotiation or
           // frame decoding. A received renewal must not expire in that queue.
           if (message.type === "renewed") { this.authorized(epoch); return; }
@@ -365,7 +397,8 @@ export class RemoteBrowserSession {
             if (peer.remoteDescription) {
               const ice = await request("/ice", "POST", undefined, signal);
               if (!this.current(epoch)) return;
-              peer.setConfiguration({ ...peer.getConfiguration(), iceServers: ice.iceServers, iceTransportPolicy: this.icePolicy(ice.iceServers) });
+              this.attemptIcePolicy = this.icePolicy(ice.iceServers);
+              peer.setConfiguration({ ...peer.getConfiguration(), iceServers: ice.iceServers, iceTransportPolicy: this.attemptIcePolicy });
             }
             await peer.setRemoteDescription({ type: "offer", sdp: offer.sdp });
             if (!this.current(epoch)) return;
@@ -383,6 +416,7 @@ export class RemoteBrowserSession {
               if (!this.microphoneCanSend()) this.stopMicrophone(true);
               this.update({ microphoneAvailable: this.microphoneAvailable() });
               this.signal({ type: "answer", sdp: peer.localDescription!.sdp });
+              if (this.current(epoch)) this.markStartup("answerSentMs");
             }
             // The remote description is installed, so early ICE candidates can
             // follow the answer. A slow addIceCandidate must not delay the
@@ -550,6 +584,18 @@ export class RemoteBrowserSession {
     return this.preferRelay && hasTurnCredentials(servers) ? "relay" : "all";
   }
 
+  private markStartup(key: keyof RemoteStartupTiming): void {
+    if (this.startup[key] !== undefined) return;
+    this.startup = { ...this.startup, [key]: Math.max(0, performance.now() - this.startedAt) };
+    if (this.statsEnabled) this.update({ stats: { ...this.state.stats, ...this.timingStats() } });
+  }
+  private timingStats(): RemoteStats {
+    return { firstFrameMs: this.firstFrameMs, startup: this.startup, attempt: this.attempt,
+      icePolicy: this.attemptIcePolicy,
+      totalFirstFrameMs: this.firstFrameMs === undefined || this.connectionStartedAt === undefined ? undefined
+        : this.startedAt - this.connectionStartedAt + this.firstFrameMs };
+  }
+
   /** Detailed diagnostics are opt-in; media health does not depend on this UI. */
   setStatsEnabled(enabled: boolean): void {
     if (this.closed || this.statsEnabled === enabled) return;
@@ -559,17 +605,17 @@ export class RemoteBrowserSession {
   private startStats(): void {
     const run = ++this.statsRun, epoch = this.epoch, peer = this.peer;
     clearTimeout(this.statsTimer); this.statsTimer = undefined;
-    this.update({ stats: this.statsEnabled ? { firstFrameMs: this.firstFrameMs } : undefined });
+    this.update({ stats: this.statsEnabled ? this.timingStats() : undefined });
     if (!this.statsEnabled || !peer || !this.current(epoch)) return;
     const sampler = new RemoteStatsSampler();
     const valid = () => this.current(epoch) && this.statsEnabled && this.statsRun === run && this.peer === peer;
     const poll = async () => {
       try {
         const report = await this.peerStats(peer);
-        if (valid()) this.update({ stats: { ...sampler.sample(report, this.videoTrackId), firstFrameMs: this.firstFrameMs } });
+        if (valid()) this.update({ stats: { ...sampler.sample(report, this.videoTrackId), ...this.timingStats() } });
       } catch {
         // Diagnostics must not break a working session or leave stale rates visible.
-        if (valid()) this.update({ stats: { firstFrameMs: this.firstFrameMs } });
+        if (valid()) this.update({ stats: this.timingStats() });
       }
       if (valid()) this.statsTimer = setTimeout(() => { void poll(); }, 1000);
     };
@@ -614,7 +660,7 @@ export class RemoteBrowserSession {
     this.firstFrameMs = Math.max(0, now - this.startedAt);
     this.update({ mediaReady: true,
       ...(!this.state.connected ? { status: "Watching · connecting controls…" } : {}),
-      ...(this.statsEnabled ? { stats: { ...this.state.stats, firstFrameMs: this.firstFrameMs } } : {}) });
+      ...(this.statsEnabled ? { stats: { ...this.state.stats, ...this.timingStats() } } : {}) });
   }
   private watchVideo(epoch: number): void {
     this.cancelVideoWatch();
@@ -789,6 +835,7 @@ export class RemoteBrowserSession {
     this.clearMotion();
     ++this.statsRun; clearTimeout(this.statsTimer); this.statsTimer = undefined; this.statsRequest = undefined;
     this.cancelVideoWatch(); this.firstFrameMs = undefined; this.videoTrackId = undefined;
+    this.startup = {}; this.attemptIcePolicy = undefined;
     clearTimeout(this.mediaTimer); this.mediaTimer = undefined; this.mediaStartedAt = undefined;
     this.lastVideoFrameAt = this.mediaHealthySince = undefined; this.videoFrames = 0; this.decodedFrames.clear();
     this.stopMicrophone(true);
@@ -815,7 +862,7 @@ export class RemoteBrowserSession {
     this.renewRetryTimer = this.disconnectTimer = undefined; this.renewing = false;
     this.watchdog = this.connectingTimer = this.retryTimer = this.renewTimer = this.controlTimer = undefined;
     this.frameTimer = this.frameDeadline = undefined;
-    if (this.socket) { this.socket.onclose = this.socket.onerror = this.socket.onmessage = null; this.socket.close(); }
+    if (this.socket) { this.socket.onopen = this.socket.onclose = this.socket.onerror = this.socket.onmessage = null; this.socket.close(); }
     if (this.peer) { this.peer.onconnectionstatechange = this.peer.ontrack = this.peer.onicecandidate = this.peer.ondatachannel = null; this.peer.close(); }
     this.socket = undefined; this.peer = undefined; this.reliable = undefined; this.motion = undefined;
     this.video.srcObject = null;
@@ -924,7 +971,7 @@ export class RemoteBrowserSession {
       this.framePending -= this.frameQueued; this.frameQueued = 0;
       if (this.firstFrameMs === undefined) {
         this.firstFrameMs = Math.max(0, performance.now() - this.startedAt);
-        this.update({ mediaReady: true, ...(this.statsEnabled ? { stats: { firstFrameMs: this.firstFrameMs } } : {}) });
+        this.update({ mediaReady: true, ...(this.statsEnabled ? { stats: this.timingStats() } : {}) });
       }
       if (!this.current(epoch)) return;
       this.ready(true);
@@ -998,10 +1045,13 @@ export class RemoteBrowserSession {
     else throw new RemoteError("Invalid remote control response.", true);
   }
   private ready(frame = false): void {
+    const epoch = this.epoch;
     if (!this.closed && !this.suspended && !this.state.connected && (frame || (this.peer?.connectionState === "connected" && this.reliable?.readyState === "open" && this.motion?.readyState === "open"))) {
       clearTimeout(this.connectingTimer);
       if (frame) { this.retries = 0; this.recoveryDeadline = undefined; }
       else this.startMediaWatchdog(this.epoch);
+      this.markStartup("controlsReadyMs");
+      if (!this.current(epoch)) return;
       this.update({ connected: true, connecting: false, status: "Watching" });
     }
   }

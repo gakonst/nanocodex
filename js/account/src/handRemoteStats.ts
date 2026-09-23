@@ -1,3 +1,17 @@
+/** Monotonic offsets from this connection attempt, retained while Stats is
+ * closed. These are startup milestones, not network RTT or display latency. */
+export type RemoteStartupTiming = Readonly<{
+  catalogReadyMs?: number;
+  iceReadyMs?: number;
+  socketOpenMs?: number;
+  offerReceivedMs?: number;
+  answerSentMs?: number;
+  peerConnectedMs?: number;
+  controlsReadyMs?: number;
+}>;
+type CandidateType = "host" | "srflx" | "prflx" | "relay";
+type CandidateProtocol = "udp" | "tcp";
+
 /** Receiver measurements. Delays are local decode/jitter averages or transport
  * RTT, never an estimate of capture-to-display latency. Missing data stays absent. */
 export type RemoteStats = Readonly<{
@@ -11,10 +25,21 @@ export type RemoteStats = Readonly<{
   height?: number;
   codec?: string;
   firstFrameMs?: number;
+  totalFirstFrameMs?: number;
+  attempt?: number;
+  icePolicy?: "all" | "relay";
+  startup?: RemoteStartupTiming;
+  localCandidateType?: CandidateType;
+  remoteCandidateType?: CandidateType;
+  candidateProtocol?: CandidateProtocol;
+  relayProtocol?: CandidateProtocol | "tls";
 }>;
 
 type Stat = { id: string; type: string; timestamp: number; [key: string]: unknown };
 const number = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
+function choice<T extends string>(value: unknown, choices: readonly T[]): T | undefined {
+  return typeof value === "string" && choices.includes(value as T) ? value as T : undefined;
+}
 function delta(current: unknown, previous: unknown): number | undefined {
   const a = number(current), b = number(previous);
   return a !== undefined && b !== undefined && a >= b ? a - b : undefined;
@@ -37,12 +62,21 @@ export class RemoteStatsSampler {
     if (typeof codec?.mimeType === "string") stats.codec = codec.mimeType.replace(/^video\//, "");
     const transport = typeof video.transportId === "string" ? report.get(video.transportId) : undefined;
     let pair = typeof transport?.selectedCandidatePairId === "string" ? report.get(transport.selectedCandidatePairId) : undefined;
-    if (!pair) {
-      const candidates = [...report.values()].filter(value => value.type === "candidate-pair" && value.state === "succeeded" && value.nominated === true);
+    if (!pair && typeof transport?.selectedCandidatePairId !== "string") {
+      const candidates = [...report.values()].filter(value => value.type === "candidate-pair" && value.state === "succeeded" && value.nominated === true
+        && (typeof video.transportId !== "string" || typeof value.transportId !== "string" || value.transportId === video.transportId));
       if (candidates.length === 1) pair = candidates[0];
     }
     const rtt = number(pair?.currentRoundTripTime);
     if (rtt !== undefined) stats.roundTripMs = rtt * 1000;
+    // Copy only bounded enums from the selected media path. Candidate reports
+    // also contain addresses, URLs and identifiers that must never reach UI.
+    const local = typeof pair?.localCandidateId === "string" ? report.get(pair.localCandidateId) : undefined;
+    const remote = typeof pair?.remoteCandidateId === "string" ? report.get(pair.remoteCandidateId) : undefined;
+    stats.localCandidateType = choice(local?.candidateType, ["host", "srflx", "prflx", "relay"]);
+    stats.remoteCandidateType = choice(remote?.candidateType, ["host", "srflx", "prflx", "relay"]);
+    stats.candidateProtocol = choice(local?.protocol, ["udp", "tcp"]);
+    if (stats.localCandidateType === "relay") stats.relayProtocol = choice(local?.relayProtocol, ["udp", "tcp", "tls"]);
     const previous = this.previous;
     this.previous = { ...video };
     if (!previous || previous.id !== video.id) return stats;

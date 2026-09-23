@@ -55,6 +55,7 @@ function fixture(t: TestContext, hand: RemoteHand = screen) {
   t.mock.method(performance, "now", () => Date.now());
   const peers: Peer[] = [], sockets: Socket[] = [];
   let catalog: readonly RemoteHand[] = [hand], status = 200, catalogReads = 0;
+  let catalogResponse = async (): Promise<Response> => Response.json({ surfaces: catalog });
   let iceResponse = async (): Promise<Response> => Response.json({ iceServers: [] });
   const requests: { path: string; signal?: AbortSignal | null }[] = [];
   class Channel {
@@ -93,6 +94,7 @@ function fixture(t: TestContext, hand: RemoteHand = screen) {
   }
   class Socket {
     static OPEN = 1; readyState = 1; bufferedAmount = 0; url: URL;
+    onopen?: (() => void) | null;
     onclose?: (() => void) | null; onerror?: (() => void) | null; onmessage?: ((event: { data: string }) => void) | null;
     constructor(url: URL) { this.url = url; sockets.push(this); }
     close() { this.readyState = 3; this.onclose?.(); }
@@ -126,7 +128,7 @@ function fixture(t: TestContext, hand: RemoteHand = screen) {
   t.mock.method(globalThis, "fetch", async (path: string, options?: RequestInit) => {
     requests.push({ path, signal: options?.signal });
     if (status !== 200) return Response.json({}, { status });
-    if (path.endsWith("/screens")) { catalogReads++; return Response.json({ surfaces: catalog }); }
+    if (path.endsWith("/screens")) { catalogReads++; return catalogResponse(); }
     if (path.endsWith("/ice")) return iceResponse();
     return Response.json({ iceServers: [] });
   });
@@ -151,6 +153,7 @@ function fixture(t: TestContext, hand: RemoteHand = screen) {
     setChanged(value: typeof changed) { changed = value; },
     setCapture(value: typeof capture) { capture = value; },
     setDecode(value: typeof decode) { decode = value; },
+    setCatalogResponse(value: typeof catalogResponse) { catalogResponse = value; },
     setIceResponse(value: typeof iceResponse) { iceResponse = value; },
     get catalogReads() { return catalogReads; },
     setCatalog(value: readonly RemoteHand[]) { catalog = value; },
@@ -173,10 +176,74 @@ test("WebRTC opens its viewer socket during ICE lookup and answers the initial o
   ice.resolve(Response.json({ iceServers: [{ urls: "stun:first.example" }] }));
   await connecting; await flush();
   assert.deepEqual(f.peers[0]!.config.iceServers, [{ urls: "stun:first.example" }]);
+  assert.equal(f.peers[0]!.config.iceCandidatePoolSize, 1);
   assert.deepEqual(f.peers[0]!.calls, ["offer", "answer", "candidate"]);
   assert.deepEqual(f.peers[0]!.appliedCandidates, [candidate]);
   assert.equal(f.requests.filter(r => r.path.endsWith("/ice")).length, 1);
   assert.deepEqual(f.sockets[0]!.sent, [{ type: "signal", signal: { type: "answer", sdp: "answer" } }]);
+});
+
+test("reconnect overlaps fresh TURN lookup with discovery and waits for the current publication before opening", async t => {
+  const f = fixture(t); await f.session.connect();
+  const catalog = deferred<Response>(), ice = deferred<Response>();
+  f.setCatalogResponse(() => catalog.promise); f.setIceResponse(() => ice.promise);
+  f.session.reconnect();
+  assert.equal(f.requests.filter(r => r.path.endsWith("/ice")).length, 2, "fresh TURN starts before discovery completes");
+  assert.equal(f.catalogReads, 1);
+  assert.equal(f.sockets.length, 1, "the old publication must never open a new socket");
+  ice.resolve(Response.json({ iceServers: [{ urls: "turn:pool.example", username: "fresh", credential: "fresh" }] }));
+  await flush(); assert.equal(f.peers.length, 1);
+  catalog.resolve(Response.json({ surfaces: [{ ...screen, generation: "new" }] })); await flush();
+  assert.equal(f.sockets[1]!.url.searchParams.get("generation"), "new");
+  assert.equal(f.peers[1]!.config.iceCandidatePoolSize, 1, "gather this attempt's candidates before waiting for the offer");
+  assert.equal(f.peers[1]!.remoteDescription, undefined);
+  assert.equal(f.peers[1]!.config.iceTransportPolicy, "all");
+  assert.equal(f.peers[1]!.config.iceServers![0]!.username, "fresh");
+});
+
+test("TURN authorization loss aborts concurrent discovery immediately", async t => {
+  const f = fixture(t); await f.session.connect();
+  const catalog = deferred<Response>(); f.setCatalogResponse(() => catalog.promise);
+  f.setIceResponse(async () => Response.json({}, { status: 403 }));
+  f.session.reconnect(); await flush();
+  assert.equal(f.session.state.status, "This remote session is no longer authorized.");
+  assert.equal(f.requests.filter(r => r.path.endsWith("/screens")).at(-1)!.signal!.aborted, true);
+  catalog.resolve(Response.json({ surfaces: [{ ...screen, transport: "frames-v1" }] })); await flush();
+  await f.tick(100_000);
+  assert.equal(f.sockets.length, 1); assert.equal(f.peers.length, 1);
+  assert.equal(f.session.state.connecting, false);
+});
+
+test("a reconnect can switch to frames-v1 even if speculative TURN is unavailable", async t => {
+  const f = fixture(t); await f.session.connect();
+  f.setCatalog([{ ...screen, transport: "frames-v1", generation: "frames" }]);
+  f.setIceResponse(async () => Response.json({}, { status: 503 }));
+  f.session.reconnect(); await flush();
+  assert.equal(f.peers.length, 1);
+  assert.equal(f.sockets.length, 2);
+  assert.equal(f.session.hand.transport, "frames-v1");
+  assert.equal(f.sockets[1]!.readyState, 1);
+  assert.equal(f.session.state.connecting, true);
+});
+
+test("a frames-v1 publication switching to WebRTC starts a fresh candidate pool after discovery", async t => {
+  const f = fixture(t, { ...screen, transport: "frames-v1" }); await f.session.connect();
+  f.setCatalog([screen]); f.session.reconnect(); await flush();
+  assert.equal(f.requests.filter(r => r.path.endsWith("/ice")).length, 1);
+  assert.equal(f.peers[0]!.config.iceCandidatePoolSize, 1);
+  assert.equal(f.sockets.length, 2);
+});
+
+test("retiring during overlapping discovery and TURN lookup cannot create a pooled peer or socket", async t => {
+  const f = fixture(t); await f.session.connect();
+  const catalog = deferred<Response>(), ice = deferred<Response>();
+  f.setCatalogResponse(() => catalog.promise); f.setIceResponse(() => ice.promise);
+  f.session.reconnect(); await flush(); f.session.suspend();
+  for (const request of f.requests.slice(-2)) assert.equal(request.signal!.aborted, true);
+  catalog.resolve(Response.json({ surfaces: [screen] }));
+  ice.resolve(Response.json({ iceServers: [] })); await flush();
+  assert.equal(f.peers.length, 1); assert.equal(f.sockets.length, 1);
+  assert.equal(f.session.state.status, "Paused");
 });
 
 for (const retire of [false, true]) {
@@ -1405,6 +1472,66 @@ test("stats update from interval reports, recover from rejection and stop after 
   assert.equal(f.session.state.stats?.decodeFps, undefined); assert.equal(f.session.state.connected, true);
   f.session.close(); const calls = peer.statsCalls; await f.tick(1000);
   assert.equal(peer.statsCalls, calls); assert.equal(f.session.state.stats, undefined);
+});
+
+test("startup diagnostics retain concurrent milestones with Stats closed and never sample signaling RTT", async t => {
+  const f = fixture(t), ice = deferred<Response>(); f.setIceResponse(() => ice.promise);
+  const connecting = f.session.connect(), socket = f.sockets[0]!;
+  await f.tick(10); socket.onopen?.();
+  await f.tick(10); socket.message({ type: "signal", signal: { type: "offer", sdp: "private-offer" } });
+  await f.tick(60); ice.resolve(Response.json({ iceServers: [] })); await connecting; await flush();
+  const peer = f.peers[0]!;
+  await f.tick(20); peer.open();
+  peer.ontrack?.({ track: { id: "picture", kind: "video", stop() {} } });
+  await f.tick(60); f.frames.values().next().value!();
+  assert.equal(peer.statsCalls, 0, "recording startup does not start diagnostics polling");
+  assert.equal(Boolean(f.session.state.stats), false);
+  f.session.setStatsEnabled(true); await flush();
+  assert.deepEqual(f.session.state.stats?.startup, { socketOpenMs: 10, offerReceivedMs: 20,
+    iceReadyMs: 80, answerSentMs: 80, controlsReadyMs: 100, peerConnectedMs: 100 });
+  assert.equal(f.session.state.stats?.attempt, 1);
+  assert.equal(f.session.state.stats?.icePolicy, "all");
+  assert.equal(f.session.state.stats?.firstFrameMs, 160);
+  assert.equal(f.session.state.stats?.totalFirstFrameMs, 160);
+  assert.equal(f.session.state.stats?.roundTripMs, undefined, "socket establishment time is never media RTT");
+  assert.equal(JSON.stringify(f.session.state).includes("private-offer"), false);
+  await f.tick(50); socket.onopen?.(); peer.onconnectionstatechange?.();
+  assert.equal(f.session.state.stats?.startup?.socketOpenMs, 10, "milestones preserve first occurrence");
+  assert.equal(f.session.state.stats?.startup?.peerConnectedMs, 100);
+});
+
+test("reconnecting from a startup notification cannot mark the replacement ready", async t => {
+  const f = fixture(t); await f.session.connect(); f.session.setStatsEnabled(true); await flush();
+  let restarted = false;
+  f.setChanged(state => {
+    if (!restarted && state.stats?.startup?.controlsReadyMs !== undefined) {
+      restarted = true; f.session.reconnect();
+    }
+  });
+  f.peers[0]!.open(); await flush();
+  assert.equal(restarted, true); assert.equal(f.peers.length, 2);
+  assert.equal(f.session.state.connected, false);
+  assert.equal(f.session.state.stats?.startup?.controlsReadyMs, undefined);
+});
+
+test("startup diagnostics separate failed-attempt time from time to frame including recovery", async t => {
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
+  const retiredSocketOpen = f.sockets[0]!.onopen!;
+  await f.tick(100); f.peers[0]!.fail(); await f.tick(1000);
+  const next = f.peers[1]!; next.open();
+  next.ontrack?.({ track: { id: "replacement", kind: "video", stop() {} } });
+  await f.tick(100); f.frames.values().next().value!();
+  f.session.setStatsEnabled(true); await flush();
+  assert.equal(f.session.state.stats?.attempt, 2);
+  assert.equal(f.session.state.stats?.firstFrameMs, 100);
+  assert.equal(f.session.state.stats?.totalFirstFrameMs, 1200);
+  assert.equal(f.session.state.stats?.startup?.catalogReadyMs, 0);
+  retiredSocketOpen();
+  assert.equal(f.session.state.stats?.startup?.socketOpenMs, undefined, "retired callbacks cannot stamp the replacement");
+  f.session.reconnect(); await flush();
+  assert.equal(f.session.state.stats?.attempt, 1, "explicit reconnect starts a new user wait");
+  assert.equal(f.session.state.stats?.firstFrameMs, undefined);
+  assert.equal(f.session.state.stats?.totalFirstFrameMs, undefined);
 });
 
 test("first frame is measured on presentation, retained until stats open, and reset on reconnect", async t => {

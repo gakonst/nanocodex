@@ -76,3 +76,46 @@ test("legacy mediaType and unique nominated pair work without exposing candidate
   legacy.set("another", { id: "another", type: "candidate-pair", timestamp: 1000, nominated: true, state: "succeeded", currentRoundTripTime: .01 });
   assert.equal(sampler.sample(legacy).roundTripMs, undefined, "never guess between several nominated paths");
 });
+
+
+test("path diagnostics expose only selected candidate enums, never network addresses or credentials", () => {
+  const sample = report();
+  sample.set("pair", { ...sample.get("pair")!, localCandidateId: "local", remoteCandidateId: "remote" });
+  sample.set("local", { id: "local", type: "local-candidate", timestamp: 1000,
+    candidateType: "relay", protocol: "udp", relayProtocol: "tls", address: "private-address",
+    url: "turn:private-endpoint", usernameFragment: "private-credential", port: 12345 });
+  sample.set("remote", { id: "remote", type: "remote-candidate", timestamp: 1000,
+    candidateType: "prflx", protocol: "udp", address: "private-peer-address" });
+  const stats = new RemoteStatsSampler().sample(sample);
+  assert.equal(stats.localCandidateType, "relay");
+  assert.equal(stats.remoteCandidateType, "prflx");
+  assert.equal(stats.candidateProtocol, "udp");
+  assert.equal(stats.relayProtocol, "tls");
+  assert.equal(stats.roundTripMs, 25);
+  assert.equal(JSON.stringify(stats).includes("private"), false);
+});
+
+test("unknown candidate fields cannot escape the allowlist or label a direct pair as TURN", () => {
+  const sample = report();
+  sample.set("pair", { ...sample.get("pair")!, localCandidateId: "local", remoteCandidateId: "remote" });
+  sample.set("local", { id: "local", type: "local-candidate", timestamp: 1000,
+    candidateType: "host", protocol: "private-address", relayProtocol: "tls" });
+  sample.set("remote", { id: "remote", type: "remote-candidate", timestamp: 1000,
+    candidateType: "private-credential" });
+  const stats = new RemoteStatsSampler().sample(sample);
+  assert.equal(stats.localCandidateType, "host");
+  assert.equal(stats.remoteCandidateType, undefined);
+  assert.equal(stats.candidateProtocol, undefined);
+  assert.equal(stats.relayProtocol, undefined);
+  assert.equal(JSON.stringify(stats).includes("private"), false);
+});
+
+
+test("an unavailable selected pair cannot fall back to a retired or unrelated path", () => {
+  const sampler = new RemoteStatsSampler(), sample = report();
+  sample.delete("pair");
+  assert.equal(sampler.sample(sample).roundTripMs, undefined, "explicit selection takes precedence over an old nominated pair");
+  sample.set("transport", { id: "transport", type: "transport", timestamp: 1000 });
+  sample.set("old-pair", { ...sample.get("old-pair")!, transportId: "another-transport" });
+  assert.equal(sampler.sample(sample).roundTripMs, undefined, "another transport is not the video path");
+});

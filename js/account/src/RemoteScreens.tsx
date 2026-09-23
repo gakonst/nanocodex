@@ -1,7 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useAccountSession } from "./AccountSession";
 import { accountQueryKey } from "./queryClient";
-import { useEffect, useRef, useState, type PointerEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { Fragment, useEffect, useRef, useState, type PointerEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { Monitor, X } from "lucide-react";
 import { canStartBroadcast, listRemoteHands, RemoteBrowserSession, remoteKeys, type RemoteHand, type BroadcastPreset, type RemoteState, type RemoteInput } from "./handRemote";
@@ -425,11 +425,22 @@ export function Screen({ hand, onBack }: { hand: RemoteHand; onBack(): void }) {
         <dt>Decoded FPS</dt><dd>{state.stats?.decodeFps?.toFixed(1) ?? "—"}</dd>
         <dt>Video</dt><dd>{state.stats?.width && state.stats?.height ? `${state.stats.width} × ${state.stats.height}` : "—"}{state.stats?.codec ? ` · ${state.stats.codec}` : ""}</dd>
         <dt>Bitrate</dt><dd>{state.stats?.bitrateKbps === undefined ? "—" : `${(state.stats.bitrateKbps / 1000).toFixed(2)} Mbps`}</dd>
-        <dt title="Round trip on the selected network path">Network RTT</dt><dd>{state.stats?.roundTripMs === undefined ? "—" : `${state.stats.roundTripMs.toFixed(0)} ms`}</dd>
+        <dt title="Browser and Hand candidate types on the selected media path; no addresses are shown">Media path</dt><dd>{state.stats?.localCandidateType && state.stats?.remoteCandidateType
+          ? `${state.stats.localCandidateType} → ${state.stats.remoteCandidateType}${state.stats.candidateProtocol ? ` · ${state.stats.candidateProtocol}` : ""}${state.stats.relayProtocol ? ` · TURN ${state.stats.relayProtocol}` : ""}` : "—"}</dd>
+        <dt title="STUN round trip on the selected media ICE pair; excludes signaling and capture/display time">Network RTT</dt><dd>{state.stats?.roundTripMs === undefined ? "—" : `${state.stats.roundTripMs.toFixed(0)} ms`}</dd>
         <dt title="Average time to decode one frame in this interval">Decode</dt><dd>{state.stats?.decodeMs === undefined ? "—" : `${state.stats.decodeMs.toFixed(1)} ms`}</dd>
         <dt title="Average jitter buffer residence time in this interval">Jitter buffer</dt><dd>{state.stats?.jitterBufferMs === undefined ? "—" : `${state.stats.jitterBufferMs.toFixed(1)} ms`}</dd>
         <dt>Dropped / interval</dt><dd>{state.stats?.droppedFrames ?? "—"}</dd>
+        <dt title="Connection attempt number, including automatic recovery, and this attempt’s ICE candidate policy">Attempt</dt><dd>{state.stats?.attempt ?? "—"}{state.stats?.icePolicy ? ` · ${state.stats.icePolicy}` : ""}</dd>
+        {([
+          ["catalogReadyMs", "Discovery"], ["iceReadyMs", "ICE credentials"], ["socketOpenMs", "Viewer socket"],
+          ["offerReceivedMs", "Offer received"], ["answerSentMs", "Answer sent"],
+          ["peerConnectedMs", "Transport ready"], ["controlsReadyMs", "Controls ready"],
+        ] as const).map(([key, label]) => state.stats?.startup?.[key] === undefined ? null : <Fragment key={key}>
+          <dt title="Elapsed since this attempt started; concurrent stages overlap">{label}</dt><dd>{state.stats.startup[key]!.toFixed(0)} ms</dd>
+        </Fragment>)}
         <dt title="Time from connection attempt to first presented frame; older browsers report decoded readiness">First frame</dt><dd>{state.stats?.firstFrameMs === undefined ? "—" : `${state.stats.firstFrameMs.toFixed(0)} ms`}</dd>
+        {(state.stats?.attempt ?? 0) > 1 && <><dt title="Time from Connect or Reconnect through automatic retries to the first frame of this attempt">Including retries</dt><dd>{state.stats?.totalFirstFrameMs === undefined ? "—" : `${state.stats.totalFirstFrameMs.toFixed(0)} ms`}</dd></>}
       </dl>}
       {pointerLocked && !state.relativePointer && <svg ref={virtualCursor} className="remote-virtual-cursor" width="16" height="22" viewBox="0 0 16 22" aria-hidden="true"><path d="M1 1v17l4-4 3 7 3-1-3-7h6Z" fill="white" stroke="black" /></svg>}
       {pointerLocked && <span className="remote-capture-hint">Esc releases mouse and keyboard</span>}
