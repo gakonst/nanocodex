@@ -147,6 +147,64 @@ jobs:
           compression-level: 0
           retention-days: 3
 
+  preview-image-plan:
+    name: select preview container images
+    if: >-
+      vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
+      ((github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
+       (github.event_name == 'workflow_dispatch' && inputs.target == 'preview'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      required: ${{ steps.plan.outputs.required }}
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Select changed preview images
+        id: plan
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
+        run: node scripts/cloudflare/preview-images.mjs
+
+  preview-images:
+    needs: preview-image-plan
+    name: validate preview container (${{ matrix.image }})
+    concurrency:
+      group: cloudflare-preview-image-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}-${{ matrix.image }}
+      cancel-in-progress: true
+    if: needs.preview-image-plan.outputs.required == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.preview-image-plan.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+        id: builder
+      # Keep CI_TESTS_ENABLED unset so the sandbox retains its default tests.
+      - name: Build preview image without publication
+        env:
+          IMAGE: ${{ matrix.image }}
+          BUILDX_BUILDER: ${{ steps.builder.outputs.name }}
+        run: node scripts/cloudflare/managed-images.mjs preview "$IMAGE"
+
   preview:
     needs: worker-build
     if: >-
@@ -172,11 +230,6 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Select managed container rollout
-        id: managed-container
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: node scripts/cloudflare/preview-images.mjs
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -210,18 +263,9 @@ jobs:
         run: npx wrangler deploy --dry-run --env=""
       - name: Validate X Worker
         run: pnpm --filter @nanocodex/x-api run build
-      # Wrangler invokes plain `docker build`; the CLI override imports the
-      # registry cache anonymously and preserves the loaded image for push.
-      - name: Set up managed image builder
-        if: steps.managed-container.outputs.rollout != 'none'
-        id: managed-builder
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Validate managed Worker
         working-directory: js/managed
-        env:
-          WRANGLER_DOCKER_BIN: ${{ github.workspace }}/scripts/cloudflare/wrangler-docker.mjs
-          BUILDX_BUILDER: ${{ steps.managed-builder.outputs.name }}
-        run: npx wrangler deploy --dry-run --config wrangler.jsonc --containers-rollout "${{ steps.managed-container.outputs.rollout }}"
+        run: npx wrangler deploy --dry-run --config wrangler.jsonc --containers-rollout none
       - name: Upload Connect dialog preview version
         working-directory: js/connect-dialog
         run: npx wrangler versions upload --config wrangler.jsonc --preview-alias "pr-${{ github.event.pull_request.number || github.run_id }}" --message "$DEPLOY_MESSAGE"
@@ -240,6 +284,45 @@ jobs:
       - name: Upload Connect playground preview version
         working-directory: js/connect-playground
         run: npx wrangler versions upload --config wrangler.jsonc --preview-alias "pr-${{ github.event.pull_request.number || github.run_id }}" --message "$DEPLOY_MESSAGE"
+
+  preview-success:
+    name: Cloudflare preview success
+    needs: [worker-build, preview-image-plan, preview-images, preview]
+    if: >-
+      always() &&
+      vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
+      ((github.event_name == 'pull_request' &&
+        github.event.pull_request.head.repo.full_name == github.repository) ||
+       (github.event_name == 'workflow_dispatch' && inputs.target == 'preview'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require every selected preview validation
+        shell: bash
+        env:
+          WORKER_BUILD_RESULT: ${{ needs.worker-build.result }}
+          IMAGE_PLAN_RESULT: ${{ needs.preview-image-plan.result }}
+          PREVIEW_IMAGES_RESULT: ${{ needs.preview-images.result }}
+          PREVIEW_RESULT: ${{ needs.preview.result }}
+          IMAGES_REQUIRED: ${{ needs.preview-image-plan.outputs.required }}
+        run: |
+          set -euo pipefail
+          if [[ "$WORKER_BUILD_RESULT" != success ||
+                "$IMAGE_PLAN_RESULT" != success ||
+                "$PREVIEW_RESULT" != success ]]; then
+            printf '::error::Preview prerequisites did not succeed (worker=%s, plan=%s, preview=%s)\n' \
+              "$WORKER_BUILD_RESULT" "$IMAGE_PLAN_RESULT" "$PREVIEW_RESULT"
+            exit 1
+          fi
+          case "$IMAGES_REQUIRED:$PREVIEW_IMAGES_RESULT" in
+            true:success|false:skipped) ;;
+            *)
+              printf '::error::Invalid preview image result (required=%s, result=%s)\n' \
+                "$IMAGES_REQUIRED" "$PREVIEW_IMAGES_RESULT"
+              exit 1
+              ;;
+          esac
 
   image-plan:
     name: select changed Workers and required images
