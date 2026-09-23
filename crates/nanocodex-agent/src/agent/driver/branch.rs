@@ -104,6 +104,7 @@ where
         model: Model,
         thinking: Thinking,
         fast_mode: bool,
+        stateless_http: bool,
         host_context: Option<Arc<str>>,
     ) -> Result<(Nanocodex, AgentEvents)> {
         let session_id = SessionId::new();
@@ -113,6 +114,12 @@ where
         config.model = model;
         config.thinking = thinking;
         config.fast_mode = fast_mode;
+        if stateless_http {
+            config.responses_transport = ResponsesTransport::Https;
+            config.responses_history = ResponsesHistory::FullReplay;
+            config.store_responses = false;
+            config.websocket_warmup = false;
+        }
         let prompt_cache_key = self
             .prompt_cache_key
             .as_ref()
@@ -171,6 +178,12 @@ where
         config.model = snapshot.model;
         config.thinking = snapshot.thinking;
         config.fast_mode = snapshot.fast_mode;
+        if snapshot.stateless_http {
+            config.responses_transport = ResponsesTransport::Https;
+            config.responses_history = ResponsesHistory::FullReplay;
+            config.store_responses = false;
+            config.websocket_warmup = false;
+        }
         validate_model_thinking(config.model, config.thinking)?;
         validate_model_reasoning_mode(config.model, config.reasoning_mode)?;
         config.context_window_tokens = config
@@ -244,6 +257,7 @@ where
                 defaults.model,
                 defaults.thinking,
                 defaults.fast_mode,
+                false,
                 host_context
                     .as_ref()
                     .or(self.host_context.as_ref())

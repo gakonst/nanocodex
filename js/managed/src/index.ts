@@ -9,7 +9,7 @@ export { ProviderProbeCoordinator };
 import { gatewayAvailability, gatewayRuntime } from "./gateway-runtime";
 import { createSubagentRouteController, subagentRoutingPolicy, type RetainedChildRoute } from "./subagent-model-routing";
 import { SqliteProviderTelemetryStore, normalizeProviderColo, type ProviderObservation } from "./provider-telemetry";
-import { resolveThreadRoute, ROUTING_CANDIDATES, ThreadRoutePin, type ThreadRoute, type RoutingAi } from "./thread-model-routing";
+import { resolveThreadRoute, ROUTING_CANDIDATES, routingPolicySchema, ThreadRoutePin, type ThreadRoute, type RoutingAi } from "./thread-model-routing";
 import { AgentPresentationWriter, generatePresentationText, presentationPending } from "./agent-presentation";
 import { retireSessionProjects, isRetiredProjectCompletion } from "./retired-projects";
 import { downloadPath, downloadBrainFile, downloadHandFile, fileDownloadFailure, FileDownloadError } from "./file-download";
@@ -7915,11 +7915,16 @@ export class DurableAgentSession extends DurableComputerSession {
     const rootRoutingSessionId = () => this.ctx.storage.sql.exec<{ session_id: string }>(
       "SELECT session_id FROM nanocodex_cloudflare_agent WHERE singleton = 1",
     ).one().session_id;
-    const assertRoutingOwned = () => {
+    const assertRuntimeOwned = () => {
       this.#assertDurabilityAdmissionActive();
-      if (this.env.NANOCODEX_THREAD_ROUTING !== "true" || !this.env.AI
-        || this.#session()?.authorization_epoch !== session.authorization_epoch || !this.#threadRoute()) {
+      if (this.#session()?.authorization_epoch !== session.authorization_epoch) {
         throw new Error("Session route ownership is no longer active");
+      }
+    };
+    const assertRoutingOwned = () => {
+      assertRuntimeOwned();
+      if (this.env.NANOCODEX_THREAD_ROUTING !== "true" || !this.env.AI) {
+        throw new Error("Session routing is no longer available");
       }
     };
     const assertRoutingAuthority = (authorization: TurnAuthorization | undefined) => {
@@ -7929,9 +7934,24 @@ export class DurableAgentSession extends DurableComputerSession {
     };
     const bindings = this.#subagentBindings;
     const readChildRoute = (sessionId: string): RetainedChildRoute | undefined => bindings.routes.get(sessionId);
-    const subagentRouting = configuration.model_routing && this.#threadRoute() ? createSubagentRouteController({
-      ai: this.env.AI!, policy: subagentRoutingPolicy(configuration.model_routing, configuration.model_routing_selection === "manual"),
+    // A manual root pins its own model, not its children's inference transport.
+    // Install the router even when unavailable so explicit child requests fail
+    // at admission instead of falling through to the root's ChatGPT endpoint.
+    const subagentRouting = !multiplayer ? createSubagentRouteController({
+      ai: this.env.AI!, policy: subagentRoutingPolicy(configuration.model_routing ?? routingPolicySchema.parse({}), configuration.model_routing_selection === "manual"),
       availability: () => this.#routingAvailability(),
+      native: {
+        parentIsNative: parentSessionId => !this.#threadRoute()
+          && (parentSessionId === rootRoutingSessionId()
+            ? ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].includes(this.#settings().model)
+            : readChildRoute(parentSessionId)?.route === null),
+        authorize: (parentSessionId, hostContextRef) => {
+          assertRuntimeOwned();
+          if (!managedAuthorizationForRouting(this.ctx.storage, bindings, rootRoutingSessionId(), parentSessionId, hostContextRef)) {
+            throw new Error("Native child spawning authorization is no longer active");
+          }
+        },
+      },
       authorize: (parentSessionId, hostContextRef) => {
         assertRoutingOwned();
         assertRoutingAuthority(managedAuthorizationForRouting(
@@ -7952,20 +7972,32 @@ export class DurableAgentSession extends DurableComputerSession {
     // Called for every provider request, including live child continuations.
     const inferenceForSession = subagentRouting === undefined ? undefined : (sessionId: string) => {
       const assertSessionActive = () => {
-        assertRoutingOwned();
+        assertRuntimeOwned();
         const rootSessionId = rootRoutingSessionId();
         if (sessionId === rootSessionId) {
-          assertRoutingAuthority(this.#activeTurnAuthorization());
+          // Unrouted roots retain their ordinary admission and settings. Child
+          // routing must not opt the root into classification or extra authority.
+          if (this.#threadRoute()) {
+            assertRoutingOwned();
+            assertRoutingAuthority(this.#activeTurnAuthorization());
+          }
         } else {
           const binding = readChildRoute(sessionId);
           if (!binding) throw new Error("Child route is missing; refusing parent transport");
-          assertRoutingAuthority(managedAuthorizationForRouting(
+          const authorization = managedAuthorizationForRouting(
             this.ctx.storage, bindings, rootSessionId, sessionId, binding.hostContextRef,
-          ));
+          );
+          if (binding.route === null) {
+            if (!authorization) throw new Error("Native child spawning authorization is no longer active");
+          } else {
+            assertRoutingOwned();
+            assertRoutingAuthority(authorization);
+          }
         }
       };
       assertSessionActive();
-      const route = sessionId === rootRoutingSessionId() ? this.#threadRoute()! : readChildRoute(sessionId)!.route;
+      const route = sessionId === rootRoutingSessionId() ? this.#threadRoute() : readChildRoute(sessionId)!.route;
+      if (!route) return { native: true as const };
       return {
         model: route.model, thinking: route.thinking,
         ...(route.backend === "workers_ai" ? {
@@ -8339,6 +8371,7 @@ export class DurableAgentSession extends DurableComputerSession {
         ...hostedRuntime,
         subagentRouting,
         inferenceForSession,
+        preserveRootTransport: !this.#threadRoute(),
         subagentLifecycle: (event: unknown) => {
           applyManagedSubagentLifecycle(this.ctx.storage, bindings, event);
         },

@@ -242,9 +242,13 @@ struct JavaScriptSpawnRouter {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields, rename_all = "camelCase")]
 struct JavaScriptSpawnRoute {
-    model: String,
-    thinking: Thinking,
+    model: Option<String>,
+    thinking: Option<Thinking>,
+    #[serde(default)]
+    native: bool,
     route_id: String,
+    #[serde(default)]
+    stateless_http: bool,
 }
 
 #[async_trait::async_trait(?Send)]
@@ -257,6 +261,25 @@ impl nanocodex_subagents::SpawnRouter for JavaScriptSpawnRouter {
         options: SpawnOptions,
         host_context: Option<&str>,
     ) -> std::io::Result<nanocodex_subagents::SpawnRoute> {
+        match self
+            .resolve_spawn(parent_session_id, role, task, options, host_context)
+            .await?
+        {
+            nanocodex_subagents::SpawnDecision::Routed(route) => Ok(route),
+            nanocodex_subagents::SpawnDecision::Native { .. } => Err(std::io::Error::other(
+                "native spawn requires a spawn decision",
+            )),
+        }
+    }
+
+    async fn resolve_spawn(
+        &self,
+        parent_session_id: &str,
+        role: &str,
+        task: &str,
+        options: SpawnOptions,
+        host_context: Option<&str>,
+    ) -> std::io::Result<nanocodex_subagents::SpawnDecision> {
         let mut request = serde_json::json!({ "parentSessionId": parent_session_id,
             "role": role, "task": task });
         if let Some(model) = options.selected_model() {
@@ -278,8 +301,22 @@ impl nanocodex_subagents::SpawnRouter for JavaScriptSpawnRouter {
                 .as_string()
                 .ok_or_else(|| std::io::Error::other("invalid subagent route response"))?,
         )?;
+        if route.native {
+            if route.model.is_some() || route.thinking.is_some() || route.stateless_http {
+                return Err(std::io::Error::other(
+                    "native spawn cannot override requested settings",
+                ));
+            }
+            return Ok(nanocodex_subagents::SpawnDecision::Native {
+                reference: route.route_id,
+            });
+        }
+        let thinking = route
+            .thinking
+            .ok_or_else(|| std::io::Error::other("missing routed thinking"))?;
         let model = route
             .model
+            .ok_or_else(|| std::io::Error::other("missing routed model"))?
             .parse::<Model>()
             .map_err(std::io::Error::other)?;
         if options
@@ -287,7 +324,7 @@ impl nanocodex_subagents::SpawnRouter for JavaScriptSpawnRouter {
             .is_some_and(|requested| requested != model)
             || options
                 .selected_thinking()
-                .is_some_and(|thinking| thinking != route.thinking)
+                .is_some_and(|requested| requested != thinking)
         {
             return Err(std::io::Error::other(
                 "subagent route conflicts with explicit override",
@@ -296,10 +333,16 @@ impl nanocodex_subagents::SpawnRouter for JavaScriptSpawnRouter {
         if route.route_id.trim().is_empty() {
             return Err(std::io::Error::other("empty subagent route reference"));
         }
-        Ok(nanocodex_subagents::SpawnRoute {
-            options: SpawnOptions::new().model(model).thinking(route.thinking),
-            reference: route.route_id,
-        })
+        let mut options = SpawnOptions::new().model(model).thinking(thinking);
+        if route.stateless_http {
+            options = options.stateless_http();
+        }
+        Ok(nanocodex_subagents::SpawnDecision::Routed(
+            nanocodex_subagents::SpawnRoute {
+                options,
+                reference: route.route_id,
+            },
+        ))
     }
 
     fn bind(

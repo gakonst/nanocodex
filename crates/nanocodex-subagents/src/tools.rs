@@ -190,7 +190,7 @@ pub async fn start_agents_observed(
         let mut routes = Vec::with_capacity(prepared.len());
         for (task, _) in &prepared {
             let route = router
-                .resolve(
+                .resolve_spawn(
                     session_id,
                     &task.role,
                     &task.task,
@@ -205,7 +205,10 @@ pub async fn start_agents_observed(
             Vec::with_capacity(routes.len());
         for route in routes {
             let outcome = parent
-                .spawn_with_host_context(route.options, host_context.as_ref().map(Arc::clone))
+                .spawn_with_host_context(
+                    route.options(SpawnOptions::new()),
+                    host_context.as_ref().map(Arc::clone),
+                )
                 .await;
             let child = match outcome {
                 Ok(child) => child,
@@ -220,7 +223,7 @@ pub async fn start_agents_observed(
             if let Err(error) = router.bind(
                 session_id,
                 child.0.session_id(),
-                &route.reference,
+                route.reference(),
                 host_context.as_deref(),
             ) {
                 let _ = child.0.shutdown().await;
@@ -367,7 +370,7 @@ async fn start_agent_with_host_context(
     let router = registry.spawn_router();
     let route = if let Some(router) = &router {
         let route = router
-            .resolve(session_id, &role, &task, options, host_context.as_deref())
+            .resolve_spawn(session_id, &role, &task, options, host_context.as_deref())
             .await?;
         route.validate(options)?;
         Some(route)
@@ -376,7 +379,9 @@ async fn start_agent_with_host_context(
     };
     let (child, events) = parent
         .spawn_with_host_context(
-            route.as_ref().map_or(options, |route| route.options),
+            route
+                .as_ref()
+                .map_or(options, |route| route.options(options)),
             host_context.as_ref().map(Arc::clone),
         )
         .await?;
@@ -384,7 +389,7 @@ async fn start_agent_with_host_context(
         && let Err(error) = router.bind(
             session_id,
             child.session_id(),
-            &route.reference,
+            route.reference(),
             host_context.as_deref(),
         )
     {
@@ -1055,6 +1060,24 @@ mod tests {
         .unwrap();
         assert_eq!(astra.model, Some(Model::Astra));
         assert_eq!(astra.thinking, Some(Thinking::Max));
+    }
+
+    #[test]
+    fn every_advertised_spawn_model_deserializes() {
+        let parameters = spawn_agent_parameters();
+        for alias in parameters["properties"]["model"]["enum"]
+            .as_array()
+            .unwrap()
+        {
+            let task: SpawnAgentTask = serde_json::from_value(json!({
+                "role": "worker",
+                "task": "Inspect the fixture",
+                "model": alias,
+                "output_schema": { "type": "object" }
+            }))
+            .unwrap();
+            assert_eq!(task.model, Some(alias.as_str().unwrap().parse().unwrap()));
+        }
     }
 
     #[test]

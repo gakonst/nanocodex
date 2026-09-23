@@ -9,7 +9,7 @@ const requestSchema = z.object({
   role: z.string().max(4096),
   task: z.string().max(65536),
   model: z.string().optional(),
-  thinking: z.enum(["low", "medium", "high"]).optional(),
+  thinking: z.enum(["none", "low", "medium", "high", "xhigh", "max"]).optional(),
   hostContextRef: z.string().min(1).max(256),
 }).strict();
 const bindingSchema = z.object({
@@ -27,7 +27,8 @@ export type RetainedChildRoute = {
   routeId: string;
   parentSessionId: string;
   hostContextRef: string;
-  route: ThreadRoute;
+  /** null preserves native GPT spawning; it is never a missing routed pin. */
+  route: ThreadRoute | null;
 };
 export interface ChildRouteStore {
   read(sessionId: string): RetainedChildRoute | undefined;
@@ -49,6 +50,11 @@ export function createSubagentRouteController(options: {
   availability: () => RoutingAvailability | Promise<RoutingAvailability>;
   store: ChildRouteStore;
   authorize: (parentSessionId: string, hostContextRef: string) => void;
+  /** Manual GPT lineages can retain native defaults and authorization. */
+  native?: {
+    parentIsNative: (parentSessionId: string) => boolean;
+    authorize: (parentSessionId: string, hostContextRef: string) => void;
+  };
   id?: () => string;
   /** Monotonic milliseconds; injected for deterministic expiry tests. */
   now?: () => number;
@@ -61,55 +67,69 @@ export function createSubagentRouteController(options: {
       if (ticket.expiresAt <= current) pending.delete(id);
     }
   };
+  const authorizeBinding = (binding: RetainedChildRoute) => {
+    if (binding.route === null) {
+      if (!options.native?.parentIsNative(binding.parentSessionId)) throw new Error("Native parent is no longer active");
+      options.native.authorize(binding.parentSessionId, binding.hostContextRef);
+    } else {
+      options.authorize(binding.parentSessionId, binding.hostContextRef);
+    }
+  };
   let resolving = 0;
   return {
     async resolve(raw: unknown) {
       const request = requestSchema.parse(raw);
-      options.authorize(request.parentSessionId, request.hostContextRef);
+      const model = request.model === undefined ? undefined : aliases.get(request.model) ?? request.model;
+      const native = options.native?.parentIsNative(request.parentSessionId) === true
+        && (model === undefined || ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].includes(model));
+      if (native) options.native!.authorize(request.parentSessionId, request.hostContextRef);
+      else options.authorize(request.parentSessionId, request.hostContextRef);
       expirePending();
       if (pending.size + resolving >= 64) throw new Error("Too many pending child routes");
-      const model = request.model === undefined ? undefined : aliases.get(request.model) ?? request.model;
       const candidates = ROUTING_CANDIDATES.filter(candidate => (
         (!options.policy.candidates || options.policy.candidates.includes(candidate.id))
         && (model === undefined || candidate.model === model)
         && (request.thinking === undefined || candidate.thinking === request.thinking)
       )).map(candidate => candidate.id);
-      if (!candidates.length) throw new Error("Explicit child model/effort is outside eligible routing policy");
+      if (!native && !candidates.length) throw new Error("Explicit child model/effort is outside eligible routing policy");
       resolving++;
       try {
-        const route = await resolveThreadRoute(options.ai, JSON.stringify({ role: request.role, task: request.task }),
+        const route = native ? null : await resolveThreadRoute(options.ai, JSON.stringify({ role: request.role, task: request.task }),
           routingPolicySchema.parse({ ...options.policy, strategy: "direct", candidates }),
           { ...await options.availability(), bypassSingleCandidate: true });
         // Authority can change while the classifier is in flight. Bind checks it again.
-        options.authorize(request.parentSessionId, request.hostContextRef);
+        if (native) options.native!.authorize(request.parentSessionId, request.hostContextRef);
+        else options.authorize(request.parentSessionId, request.hostContextRef);
         const routeId = options.id ? options.id() : crypto.randomUUID();
         if (!routeId || pending.has(routeId)) throw new Error("Child route reference is not unique");
         pending.set(routeId, { expiresAt: now() + CHILD_ROUTE_TICKET_TTL_MS,
           binding: { routeId, parentSessionId: request.parentSessionId,
             hostContextRef: request.hostContextRef, route } });
-        return { model: route.model, thinking: route.thinking, routeId };
+        return route === null ? { native: true as const, routeId }
+          : { model: route.model, thinking: route.thinking, routeId, statelessHttp: true };
       } finally { resolving--; }
     },
     bind(raw: unknown) {
       const request = bindingSchema.parse(raw);
-      options.authorize(request.parentSessionId, request.hostContextRef);
       if (request.sessionId === request.parentSessionId) throw new Error("Child cannot replace parent route");
       expirePending();
       const retained = options.store.read(request.sessionId);
       if (retained) {
         if (retained.routeId !== request.routeId || retained.parentSessionId !== request.parentSessionId
           || retained.hostContextRef !== request.hostContextRef) throw new Error("Child route conflicts with retained binding");
+        authorizeBinding(retained);
         return;
       }
       const proposed = pending.get(request.routeId)?.binding;
       if (!proposed || proposed.parentSessionId !== request.parentSessionId
         || proposed.hostContextRef !== request.hostContextRef) throw new Error("Unknown or unauthorized child route reference");
+      authorizeBinding(proposed);
       options.store.commit(request.sessionId, proposed);
       pending.delete(request.routeId);
     },
     routeForSession(sessionId: string) {
       const retained = options.store.read(sessionId);
-      if (!retained) throw new Error("Child route is missing; refusing parent transport");
+      if (!retained?.route) throw new Error("Child route is missing; refusing parent transport");
       return retained.route;
     },
   };
