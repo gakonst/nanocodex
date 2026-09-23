@@ -34,7 +34,7 @@ final class ContextUITests: XCTestCase {
             throw XCTSkip("Requires a signed-in phone and NANOCODEX_CONTEXT_LIVE=1.")
         }
         let app = XCUIApplication(); app.launch()
-        XCTAssertTrue(app.buttons["app-menu"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 30))
         openContext(app)
         if app.switches["context-enabled"].value as? String != "1" { toggleCapture(app) }
         let message = "museum" + String(UUID().uuidString.lowercased().filter { $0.isLetter }.prefix(10))
@@ -268,7 +268,7 @@ final class ContextUITests: XCTestCase {
         }
         let app = XCUIApplication()
         app.launch()
-        XCTAssertTrue(app.buttons["app-menu"].waitForExistence(timeout: 30))
+        XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 30))
         app.buttons["new-conversation"].tap()
         let ready = XCTNSPredicateExpectation(predicate: NSPredicate { _, _ in
             app.staticTexts["agent-title"].label == "New agent" && app.textViews["composer"].isEnabled
