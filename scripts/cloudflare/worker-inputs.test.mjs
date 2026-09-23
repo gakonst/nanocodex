@@ -48,6 +48,7 @@ test('Worker inputs isolate services and follow dependencies, assets, config and
   await change('assets/template.html', 'changed', ['email']);
   await change('js/account/public/icon.svg', '<svg/>', ['account']);
   await change('js/account/wrangler.jsonc', '{}', ['account']);
+  await change('scripts/cloudflare/account-relay-image.mjs', '// publication policy', ['account']);
   await change('js/nanocodex/src/lib.rs', 'pub fn changed() {}', Object.keys(workerSpecs).filter(name => workerSpecs[name].needsWasm));
   await change('pnpm-lock.yaml', 'lockfileVersion: 9', Object.keys(workerSpecs));
   await change('js/managed/dist/index.js', 'generated', []);

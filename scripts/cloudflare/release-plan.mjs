@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import { workerSpecs, fingerprintWorkers } from './worker-inputs.mjs';
 import { createDeploymentLedger } from './deployment-ledger.mjs';
 import { fingerprint } from './managed-images.mjs';
+import { fingerprint as relayFingerprint } from './account-relay-image.mjs';
 
 export const planPath = '.ci-release-plan.json';
 export async function releaseFingerprints({cwd=process.cwd(),account=process.env.CLOUDFLARE_ACCOUNT_ID,epoch=process.env.MANAGED_IMAGE_CACHE_EPOCH || '1'}={}) {
@@ -16,6 +17,7 @@ export async function releaseFingerprints({cwd=process.cwd(),account=process.env
   // Validate immutable digest receipts only if managed is actually selected.
   const images = ['phone','sandbox'].map(image => fingerprint(image, account, epoch, cwd));
   result.managed = createHash('sha256').update(JSON.stringify([result.managed,...images])).digest('hex');
+  result.account = createHash('sha256').update(JSON.stringify([result.account,relayFingerprint(account,epoch,cwd)])).digest('hex');
   for (const name of Object.keys(result)) result[name] = createHash('sha256')
     .update(JSON.stringify([account, result[name]])).digest('hex');
   return result;

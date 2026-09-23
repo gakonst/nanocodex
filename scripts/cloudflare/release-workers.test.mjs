@@ -6,7 +6,7 @@ import { dirname } from 'node:path';
 import { releaseWorkers, releasePhases, guardedCommand, accountHealth } from './release-workers.mjs';
 function fixture(selected, overrides = {}) {
   const events = [], calls = [];
-  const plan = { selected, fingerprints: Object.fromEntries(selected.map(name => [name, 'a'.repeat(64)])) };
+  const plan = { revision: 'b'.repeat(40), selected, fingerprints: Object.fromEntries(selected.map(name => [name, 'a'.repeat(64)])) };
   const options = {
     env: { DEPLOY_MESSAGE: 'spaces "quotes" $HOME `literal` $(literal)' },
     ledger: { async start(name, fingerprint) { assert.equal(fingerprint, plan.fingerprints[name]); events.push(['start', name]); return name; }, async finish(name, state) { events.push([state, name]); } },
@@ -33,6 +33,9 @@ test('all selected Workers preserve dependency barriers, literal arguments and a
   assert.equal(f.events.filter(row => row[0] === 'health').length, releasePhases.length);
   assert.equal(f.calls.filter(({ command }) => command.includes('--env=')).length, 3);
   assert.equal(f.calls.at(-1).options.directory, 'js/account');
+  const account = f.calls.at(-1).command;
+  assert.equal(account[account.indexOf('--config') + 1], 'dist/nanocodex/wrangler.ci.json');
+  assert.equal(account[account.indexOf('--var') + 1], `DEPLOYMENT_SHA:${f.plan.revision}`);
   assert.deepEqual(f.events.slice(-2), [['health'], ['success', 'account']]);
 });
 
@@ -158,10 +161,22 @@ test('account health validates HTTP status and application identity', async t =>
     return response;
   });
   await accountHealth();
+  response = { status: 200, json: async () => ({ ...healthy, deployment_sha: 'b'.repeat(40) }) };
+  await accountHealth('b'.repeat(40));
+  await assert.rejects(accountHealth('c'.repeat(40)), /released revision/);
   response = { status: 503, json: async () => healthy };
   await assert.rejects(accountHealth());
   for (const key of ['service', 'runtime', 'status']) {
     response = { status: 200, json: async () => ({ ...healthy, [key]: 'wrong' }) };
     await assert.rejects(accountHealth());
   }
+});
+
+
+test('account phase health receives the revision before certifying its release', async () => {
+  const f = fixture(['managed', 'account']);
+  const revisions = [];
+  f.options.health = async revision => { revisions.push(revision); };
+  await f.release();
+  assert.deepEqual(revisions, [undefined, f.plan.revision]);
 });
