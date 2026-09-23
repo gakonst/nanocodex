@@ -12,6 +12,8 @@ concurrency:
   cancel-in-progress: true
 jobs:
   image:
+    # PRs (including forks) and branch dispatches only import public caches.
+    if: github.event_name != 'workflow_dispatch' || github.ref != 'refs/heads/master'
     strategy:
       fail-fast: false
       matrix:
@@ -22,11 +24,19 @@ jobs:
             dockerfile: Dockerfile.gpu
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 45
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Select toolkit cache
+        id: cache
+        env:
+          CACHE_IMAGE: ghcr.io/${{ github.repository }}-hand
+          CACHE_SCOPE: vm-toolkit-${{ matrix.runner }}-${{ matrix.dockerfile }}
+        run: echo "ref=${CACHE_IMAGE,,}:buildcache-$CACHE_SCOPE" >> "$GITHUB_OUTPUT"
       - name: Build VM toolkit
         uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
@@ -34,8 +44,69 @@ jobs:
           file: crates/nanocodex-vm/image/${{ matrix.dockerfile }}
           load: true
           tags: nanocodex-vm:toolkit
-          cache-from: type=gha,scope=vm-toolkit-${{ matrix.runner }}-${{ matrix.dockerfile }}
-          cache-to: type=gha,scope=vm-toolkit-${{ matrix.runner }}-${{ matrix.dockerfile }},mode=max,ignore-error=true,timeout=3m
+          # BuildKit treats a missing/private registry cache as a cache miss.
+          cache-from: type=registry,ref=${{ steps.cache.outputs.ref }}
+      - name: Exercise offline toolkit
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
+        run: docker run --rm --network none --entrypoint env nanocodex-vm:toolkit -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/root sh -lc nanocodex-check-hand-toolkit
+      - name: Package and validate the 16 GiB ext4 template
+        run: bash crates/nanocodex-vm/image/build-root.sh nanocodex-vm:toolkit "$RUNNER_TEMP/desktop.ext4"
+
+  image-cache:
+    # Keep package write permission out of PR jobs, including same-repo PRs.
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/master'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            dockerfile: Dockerfile
+          - runner: ubuntu-24.04-arm
+            dockerfile: Dockerfile.gpu
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Select toolkit cache
+        id: cache
+        env:
+          CACHE_IMAGE: ghcr.io/${{ github.repository }}-hand
+          CACHE_SCOPE: vm-toolkit-${{ matrix.runner }}-${{ matrix.dockerfile }}
+        run: echo "ref=${CACHE_IMAGE,,}:buildcache-$CACHE_SCOPE" >> "$GITHUB_OUTPUT"
+      - name: Log in to the image cache registry
+        id: cache-login
+        continue-on-error: true
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build VM toolkit
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: crates/nanocodex-vm/image
+          file: crates/nanocodex-vm/image/${{ matrix.dockerfile }}
+          load: true
+          tags: nanocodex-vm:toolkit
+          cache-from: type=registry,ref=${{ steps.cache.outputs.ref }}
+          cache-to: ${{ steps.cache-login.outcome == 'success' && format('type=registry,ref={0},mode=max,ignore-error=true', steps.cache.outputs.ref) || '' }}
+      - name: Report toolkit cache availability
+        if: steps.cache-login.outcome == 'success'
+        env:
+          CACHE_REF: ${{ steps.cache.outputs.ref }}
+        run: |
+          if timeout 30s docker buildx imagetools inspect --raw "$CACHE_REF" >/dev/null 2>&1; then
+            echo "::notice::Registry cache manifest available: $CACHE_REF"
+          else
+            echo "::notice::Registry cache manifest unavailable: $CACHE_REF. Build succeeded; check cache export logs and GHCR package write access."
+          fi
       - name: Exercise offline toolkit
         # Temporarily disabled: CI tests are paused.
         if: ${{ false }}

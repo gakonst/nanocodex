@@ -210,15 +210,12 @@ jobs:
         run: npx wrangler deploy --dry-run --env=""
       - name: Validate X Worker
         run: pnpm --filter @nanocodex/x-api run build
-      # Wrangler invokes plain `docker build`; the CLI override adds GHA cache
-      # import/export to the actual build and preserves its loaded image for push.
+      # Wrangler invokes plain `docker build`; the CLI override imports the
+      # registry cache anonymously and preserves the loaded image for push.
       - name: Set up managed image builder
         if: steps.managed-container.outputs.rollout != 'none'
         id: managed-builder
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - name: Expose BuildKit cache runtime
-        if: steps.managed-container.outputs.rollout != 'none'
-        uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
       - name: Validate managed Worker
         working-directory: js/managed
         env:
@@ -319,6 +316,7 @@ jobs:
     permissions:
       contents: read
       deployments: write
+      packages: write
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.image-plan.outputs.matrix) }}
@@ -367,13 +365,24 @@ jobs:
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
         if: steps.available.outputs.hit != 'true'
         id: builder
-      - uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
-        if: steps.available.outputs.hit != 'true'
+      - name: Log in to the image cache registry
+        id: cache-login
+        if: >-
+          steps.available.outputs.hit != 'true' &&
+          github.ref == 'refs/heads/master' &&
+          (github.event_name == 'push' || github.event_name == 'workflow_dispatch')
+        continue-on-error: true
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build, verify, and publish changed image
         if: steps.available.outputs.hit != 'true'
         env:
           IMAGE: ${{ matrix.image }}
           BUILDX_BUILDER: ${{ steps.builder.outputs.name }}
+          WRANGLER_DOCKER_CACHE_WRITE: ${{ steps.cache-login.outcome == 'success' }}
         run: node scripts/cloudflare/managed-images.mjs publish "$IMAGE"
       - name: Verify immutable image receipt
         env:

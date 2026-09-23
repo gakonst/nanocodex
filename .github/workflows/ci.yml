@@ -44,8 +44,8 @@ jobs:
         with:
           persist-credentials: false
           fetch-depth: 0
-      - name: Validate compiler cache policy
-        run: node --test scripts/ci/rust-compiler-cache.test.mjs
+      - name: Validate cache policies
+        run: node --test scripts/ci/rust-compiler-cache.test.mjs scripts/ci/docker-cache.test.mjs scripts/cloudflare/wrangler-docker.test.mjs
       - id: select
         run: node scripts/ci/select-jobs.mjs
 
@@ -360,6 +360,7 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      packages: write
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -388,6 +389,27 @@ jobs:
           --features guest-runtime --target ${{ matrix.target }}
 
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Configure Docker Hand registry cache
+        id: hand-cache
+        shell: bash
+        env:
+          CACHE_ARCH: ${{ matrix.arch }}
+          CACHE_WRITE: ${{ github.ref == 'refs/heads/master' && contains(fromJSON('["push","workflow_dispatch","schedule"]'), github.event_name) }}
+        run: |
+          cache_ref="ghcr.io/${GITHUB_REPOSITORY,,}-hand:buildcache-ci-hand-$CACHE_ARCH"
+          echo "ref=$cache_ref" >> "$GITHUB_OUTPUT"
+          echo "from=type=registry,ref=$cache_ref" >> "$GITHUB_OUTPUT"
+          if [ "$CACHE_WRITE" = true ]; then
+            echo "to=type=registry,ref=$cache_ref,mode=max,ignore-error=true" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        id: cache-login
+        continue-on-error: true
+        if: steps.hand-cache.outputs.to != ''
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Prepare Docker Hand build context
         env:
           TARGET: ${{ matrix.target }}
@@ -403,8 +425,18 @@ jobs:
           context: ${{ runner.temp }}/hand-context
           load: true
           tags: nanocodex-hand:ci
-          cache-from: type=gha,scope=ci-hand-${{ matrix.arch }}
-          cache-to: type=gha,scope=ci-hand-${{ matrix.arch }},mode=max,ignore-error=true,timeout=3m
+          cache-from: ${{ steps.hand-cache.outputs.from }}
+          cache-to: ${{ steps.cache-login.outcome == 'success' && steps.hand-cache.outputs.to || '' }}
+      - name: Verify registry cache is available
+        if: steps.cache-login.outcome == 'success'
+        env:
+          CACHE_REF: ${{ steps.hand-cache.outputs.ref }}
+        run: |
+          if timeout 30s docker buildx imagetools inspect "$CACHE_REF" > /dev/null 2>&1; then
+            echo "::notice title=Docker registry cache::verified $CACHE_REF"
+          else
+            echo "::warning title=Docker registry cache::Cache export unavailable; future runs will build normally."
+          fi
       - name: Exercise offline toolkit with a read-only root and unprivileged user
         # Temporarily disabled: CI tests are paused.
         if: ${{ false }}
