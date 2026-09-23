@@ -24,7 +24,7 @@ import { PreparedPersonalizationCache, personalizedVoiceContext, sameScope, type
 import { CommandReceipts } from "./command-receipts";
 import { prepareEnvironment } from "./environment-setup";
 import { SessionOperations } from "./session-operations";
-import { accountToolsEnabled, normalizeToolNames, parseConfiguration, restrictedEnvironment, type AgentConfiguration } from "./agent-configuration";
+import { accountToolsEnabled, normalizeToolNames, parseConfiguration, type AgentConfiguration } from "./agent-configuration";
 import { createHash } from "node:crypto";
 import { initializeTurnInputs, inputChunks, lazyTurnInput, readTurnInput, storeTurnInput } from "./managed-turn-input";
 import { DurableObject, WorkerEntrypoint } from "cloudflare:workers";
@@ -322,7 +322,7 @@ import {
 } from "./durable-memory";
 import { memorySessionTools } from "./memory-session-tools";
 import { managedExtensionTools } from "./extension-tools";
-import { markdownMemoryTools, injectMarkdownMemoryBootstrap, loadMarkdownMemoryBootstrap, markdownMemoryEnabled, configuredMemoryToolNames, markdownMemoryRequest, MARKDOWN_MEMORY_INSTRUCTIONS } from "./markdown-memory-tools";
+import { markdownMemoryTools, markdownMemoryEnabled, configuredMemoryToolNames, markdownMemoryRequest, MARKDOWN_MEMORY_INSTRUCTIONS } from "./markdown-memory-tools";
 import { ManagedStartupContext } from "./startup-context";
 import { performanceScope, performanceSyncScope, performanceStage, performanceRead, performanceState } from "./performance";
 import { managedPromptCacheKey } from "./prompt-cache-key";
@@ -4294,8 +4294,8 @@ export class DurableAgentSession extends DurableComputerSession {
     // Archival owns a separate durable retry deadline. It must neither block
     // accepted work nor keep retrying an unavailable bucket on every alarm.
     this.#maintainArchives();
-    if (this.#historyProjectionTask) await this.#historyProjectionTask.catch(() => {});
-    else await this.#drainHistoryProjections();
+    // Optional history indexing must not delay recovery or other alarm work.
+    this.#scheduleHistoryProjection();
     // An alarm may be the first event delivered to a freshly reconstructed
     // object. In-memory admission ownership is empty in that case even though
     // SQLite still contains accepted work. Never let the idle path fence the
@@ -5871,11 +5871,8 @@ export class DurableAgentSession extends DurableComputerSession {
         };
         assertActive();
         this.#warmPersonalization();
-        const bootstrap = this.#markdownMemoryBootstrap(authorization, assertActive);
-        const markdown = bootstrap ? await loadMarkdownMemoryBootstrap(bootstrap.options, bootstrap.context, assertActive) : undefined;
-        assertActive();
         return json({ ...result, context: personalizedVoiceContext(result.context,
-          this.#preparedPersonalization(authorization), markdown) });
+          this.#preparedPersonalization(authorization)) });
       }
       return json(result, { status: kind === "delegate" ? 202 : 200 });
     } catch (error) {
@@ -6912,7 +6909,6 @@ export class DurableAgentSession extends DurableComputerSession {
       assertAgentActive();
       if (dispatchInputJson === undefined && this.#managedTurn(row.id)?.state !== "cancelling") {
         await this.#startupContext.inject(row.id, agent.session, assertAgentActive);
-        await this.#injectMarkdownMemory(row, agent.session, assertAgentActive);
       }
       dispatchInputJson ??= JSON.stringify(input);
       const dispatchable = this.#managedTurn(row.id);
@@ -8567,27 +8563,6 @@ export class DurableAgentSession extends DurableComputerSession {
     }))];
   }
 
-  async #injectMarkdownMemory(row: ManagedTurnRow, agentSession: { appendDeveloperMessage(text: string): Promise<unknown> }, assertActive: () => void): Promise<void> {
-    const bootstrap = this.#markdownMemoryBootstrap(parseTurnAuthorization(row.authorization_json), assertActive);
-    if (bootstrap) await injectMarkdownMemoryBootstrap(bootstrap.options, bootstrap.context, agentSession, assertActive);
-  }
-
-  #markdownMemoryBootstrap(authorization: TurnAuthorization, assertActive: () => void) {
-    const session = this.#session()!;
-    if (session.runtime_profile !== "managed" || !authorization.capabilities.includes("memory:read")
-      || !markdownMemoryEnabled(this.#configuration().tools)
-      || restrictedEnvironment(this.#configuration())) return;
-    // The shared normal/voice loader bounds optional reads with its startup budget.
-    const context = { sessionId: session.session_id, callId: "markdown-bootstrap", parentCallId: "", model: "unknown", signal: new AbortController().signal };
-    const options = {
-      organizationId: session.organization_id, teamId: session.team_id, ownerId: session.owner_id,
-      sessionId: session.session_id, memories: this.env.NANOCODEX_MEMORY,
-      personal: () => !authorization.connectGrant,
-      authorize: () => { assertActive(); },
-    };
-    return { options, context };
-  }
-
   #personalizationScope(session: SessionRow): PersonalizationScope {
     return { organization_id: session.organization_id, team_id: session.team_id, user_id: session.owner_id };
   }
@@ -8621,8 +8596,17 @@ export class DurableAgentSession extends DurableComputerSession {
       const [team, personal] = await Promise.all([load("team").catch(() => undefined), load("personal").catch(() => undefined)]);
       if (!team || !personal) return team;
       return { ...team, expires_at: Math.min(team.expires_at, personal.expires_at),
-        user_facts: personal.team_facts, user_generation: personal.generation, user_version: personal.version };
-    }, task => this.ctx.waitUntil(task));
+        user_facts: personal.team_facts, user_generation: personal.generation, user_version: personal.version,
+        user_markdown: personal.team_markdown };
+    }, task => this.ctx.waitUntil(task.then(() => {
+      const current = this.#session();
+      if (!current || current.authorization_epoch !== session.authorization_epoch
+        || !sameScope(this.#personalizationScope(current), scope)) return;
+      const voice = this.#managedRealtimeSession();
+      if (!voice) return;
+      const profile = this.#preparedPersonalization(parseTurnAuthorization(voice.authorization_json));
+      if (profile) this.#publishVoiceMemory(voice.voice_session_id, { context: personalizedVoiceContext({}, profile) });
+    }).catch(() => {})));
   }
 
   #preparedPersonalization(authorization: TurnAuthorization): PersonalizationSnapshot | undefined {
@@ -8630,7 +8614,7 @@ export class DurableAgentSession extends DurableComputerSession {
     if (!session || session.runtime_profile !== "managed" || !this.#personalizationAllowed(authorization)) return;
     const profile = this.#personalization.peek(this.#personalizationScope(session));
     if (!profile || !authorization.connectGrant) return profile;
-    const { user_facts: _facts, user_generation: _generation, user_version: _version, ...team } = profile;
+    const { user_facts: _facts, user_generation: _generation, user_version: _version, user_markdown: _markdown, ...team } = profile;
     return team;
   }
 
@@ -8730,10 +8714,7 @@ export class DurableAgentSession extends DurableComputerSession {
         && this.#session()?.authorization_epoch === session.authorization_epoch
         && parseTurnAuthorization(currentVoice.authorization_json).capabilities.includes("memory:read")
         && (scope === "team" || !parseTurnAuthorization(currentVoice.authorization_json).connectGrant)) {
-        this.#recordAndBroadcast({ type: "event", event: {
-          protocol_version: 1, request_id: `voice-context:${crypto.randomUUID()}`, seq: 0,
-          type: "managed.voice.context", payload: { voice_session_id: voiceSession.voice_session_id, result: { ...result, scope } },
-        } }, this.#eventTurnId ?? null);
+        this.#publishVoiceMemory(voiceSession.voice_session_id, { result: { ...result, scope } });
       }
     } catch {
       // The memory write already committed; a voice notification cannot turn
@@ -8741,6 +8722,20 @@ export class DurableAgentSession extends DurableComputerSession {
       this.#observe("managed.voice.context_unavailable", { outcome: "failure" });
     }
     return result;
+  }
+
+  /** Optional memory context must never fence or fail the live event stream. */
+  #publishVoiceMemory(voiceSessionId: string, fields: Record<string, unknown>): void {
+    if (this.#deleting || this.#deleted || this.#streamError) return;
+    try {
+      const event = this.ctx.storage.transactionSync(() => this.#eventLog.append({ type: "event", event: {
+        protocol_version: 1, request_id: `voice-context:${crypto.randomUUID()}`, seq: 0,
+        type: "managed.voice.context", payload: { ...fields, voice_session_id: voiceSessionId },
+      } }, this.#eventTurnId ?? null));
+      this.#publish(event);
+    } catch {
+      this.#observe("managed.voice.context_unavailable", { outcome: "failure" });
+    }
   }
 
   #goalToolTurn(context: ToolContext): string {
@@ -9810,12 +9805,14 @@ export class DurableAgentSession extends DurableComputerSession {
     if (this.#deleting || this.#historyProjectionTask) return;
     const task = this.#drainHistoryProjections();
     this.#historyProjectionTask = task;
-    void task.finally(() => {
-      if (this.#historyProjectionTask === task) this.#historyProjectionTask = undefined;
-    }).catch(() => {});
-    this.ctx.waitUntil(task.catch(async (error) => {
+    this.ctx.waitUntil(task.catch((error) => {
       console.warn({ type: "managed.history_projection_failed", error_kind: errorKind(error) });
-      await this.#scheduleNextAlarm();
+    }).finally(async () => {
+      if (this.#historyProjectionTask === task) this.#historyProjectionTask = undefined;
+      // Both retries and the remainder of a successful bounded batch retain a wakeup.
+      if (!this.#deleting) await this.#scheduleNextAlarm();
+    }).catch((error) => {
+      console.warn({ type: "managed.history_projection_schedule_failed", error_kind: errorKind(error) });
     }));
   }
 
@@ -9836,7 +9833,7 @@ export class DurableAgentSession extends DurableComputerSession {
     for (const row of rows) {
       if (this.#deleting) return;
       try {
-        const projected = await memory.fetch("https://memory.internal/project", {
+        await fetchResponseWithDeadline(memory, "https://memory.internal/project", {
           method: "POST",
           headers: {
             "content-type": "application/json",
@@ -9845,8 +9842,9 @@ export class DurableAgentSession extends DurableComputerSession {
             [MEMORY_TEAM_ASSERTION]: session.team_id,
           },
           body: readTurnInput(this.ctx.storage, row.turn_id, row.payload_json, "managed_history_projection_chunks"),
+        }, 10_000, "memory projection", (projected) => {
+          if (!projected.ok) throw new Error(`memory projection failed with HTTP ${projected.status}`);
         });
-        if (!projected.ok) throw new Error(`memory projection failed with HTTP ${projected.status}`);
         this.ctx.storage.transactionSync(() => {
           // A recovered completion can replace this outbox while the request
           // is in flight. Only the exact projected cursor may release its body.

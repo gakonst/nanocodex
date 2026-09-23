@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { AgentSessionContext, PromptInput } from "nanocodex";
 import type { DurableAgentSession } from "../src/index";
 import { ManagedStartupContext, type StartupEnvironment } from "../src/startup-context";
+import { personalizedVoiceContext } from "../src/personalization";
 
 import { accountToolsEnabled, configuredBootstrapPlan, parseConfiguration } from "../src/agent-configuration";
 import { Agent } from "nanocodex/cloudflare";
@@ -398,6 +399,32 @@ describe("prepared personalization admission", () => {
       expect(execute).not.toHaveBeenCalled();
       expect(runtime.appendDeveloperMessage).toHaveBeenCalledTimes(1);
       expect(runtime.appendDeveloperMessage.mock.calls[0]?.[0]).toContain("Prefers concise answers");
+    });
+  });
+
+  it("injects the same prepared Markdown as voice without querying memory and notices Markdown-only edits", async () => {
+    await withStartup(async startup => {
+      const profile = { ...snapshot(), user_generation: 1, user_version: "empty",
+        team_markdown: { documents: [{ path: "MEMORY.md", revision: 1, content: "Shared cached fact.", truncated: false }] },
+        user_markdown: { documents: [{ path: "USER.md", revision: 1, content: "Private cached preference.", truncated: false }] } };
+      const runtime = developerSession();
+      const execute = vi.fn(() => new Promise<never>(() => {}));
+      const loadEnvironment = vi.fn(() => new Promise<never>(() => {}));
+      startup.reservePrepared("first", profile, false);
+      await startup.prepare("first", execute, loadEnvironment, assertActive);
+      await startup.inject("first", runtime, assertActive);
+      const voice = personalizedVoiceContext({}, profile);
+      expect(runtime.appendDeveloperMessage.mock.calls[0]?.[0]).toContain(voice.markdown_memory);
+      expect(runtime.appendDeveloperMessage.mock.calls[0]?.[0]).toContain(voice.prepared_personalization);
+      expect(execute).not.toHaveBeenCalled();
+      expect(loadEnvironment).not.toHaveBeenCalled();
+      profile.user_markdown.documents[0] = { path: "USER.md", revision: 2, content: "Corrected cached preference.", truncated: false };
+      startup.reservePrepared("second", profile, false);
+      await startup.prepare("second", execute, loadEnvironment, assertActive);
+      await startup.inject("second", runtime, assertActive);
+      expect(runtime.appendDeveloperMessage).toHaveBeenCalledTimes(2);
+      expect(runtime.appendDeveloperMessage.mock.calls[1]?.[0]).toContain("Corrected cached preference.");
+      expect(runtime.appendDeveloperMessage.mock.calls[1]?.[0]).not.toContain("Private cached preference.");
     });
   });
 

@@ -1,5 +1,8 @@
+import { createHash } from "node:crypto";
 import { contextData } from "nanocodex/tools/environment";
 import { readMemoryContent } from "./durable-memory-storage";
+import { MarkdownMemoryStore } from "./markdown-memory";
+import { preparedMarkdownText } from "./markdown-memory-tools";
 
 export const PERSONALIZATION_REFRESH_MS = 5 * 60_000;
 export const PERSONALIZATION_LEASE_MS = 5 * 60_000;
@@ -15,6 +18,8 @@ export type PersonalizationSnapshot = PersonalizationScope & Readonly<{
   // Existing memories are shared team data. Never relabel them as private user facts.
   team_facts: readonly { id: number; version: number; content: string }[];
   user_facts?: readonly { id: number; version: number; content: string }[];
+  team_markdown?: ReturnType<MarkdownMemoryStore["bootstrap"]>;
+  user_markdown?: ReturnType<MarkdownMemoryStore["bootstrap"]>;
   user_generation?: number;
   user_version?: string;
 }>;
@@ -22,9 +27,13 @@ type StoredProfile = { team_id: string; generation: number; invalidated_through:
   built_at: number; body_json: string | null; dirty: number };
 type FactRow = { id: number; version: number; content_json: string; probation_until_ms: number | null; use_count: number };
 
-/** Shared across agents. Builds only from saved facts, never from the current prompt. */
+/** Shared across agents. Builds only from saved memory, never from the current prompt. */
 export class PreparedPersonalizationStore {
+  private readonly markdown: MarkdownMemoryStore;
+
   constructor(private readonly storage: DurableObjectStorage) {
+    // Canonical tables must exist before their personalization triggers are installed.
+    this.markdown = new MarkdownMemoryStore(storage);
     storage.sql.exec(`
       CREATE INDEX IF NOT EXISTS durable_memories_personalization ON durable_memories(owner_team_id, updated_at_ms DESC, id DESC);
       CREATE TABLE IF NOT EXISTS prepared_personalization (
@@ -54,6 +63,25 @@ export class PreparedPersonalizationStore {
         ON CONFLICT(team_id) DO UPDATE SET generation = generation + 1,
           invalidated_through = generation + 1, body_json = NULL, dirty = 1;
       END;
+      CREATE TRIGGER IF NOT EXISTS personalization_markdown_insert AFTER INSERT ON markdown_memory_documents BEGIN
+        INSERT INTO prepared_personalization(team_id, generation, invalidated_through, dirty)
+          VALUES (new.owner, 1, 1, 1)
+        ON CONFLICT(team_id) DO UPDATE SET generation = generation + 1,
+          invalidated_through = generation + 1, body_json = NULL, dirty = 1;
+      END;
+      CREATE TRIGGER IF NOT EXISTS personalization_markdown_replace AFTER UPDATE OF revision ON markdown_memory_documents
+        WHEN new.revision <> old.revision BEGIN
+        INSERT INTO prepared_personalization(team_id, generation, invalidated_through, dirty)
+          VALUES (new.owner, 1, 1, 1)
+        ON CONFLICT(team_id) DO UPDATE SET generation = generation + 1,
+          invalidated_through = generation + 1, body_json = NULL, dirty = 1;
+      END;
+      CREATE TRIGGER IF NOT EXISTS personalization_markdown_delete AFTER DELETE ON markdown_memory_documents BEGIN
+        INSERT INTO prepared_personalization(team_id, generation, invalidated_through, dirty)
+          VALUES (old.owner, 1, 1, 1)
+        ON CONFLICT(team_id) DO UPDATE SET generation = generation + 1,
+          invalidated_through = generation + 1, body_json = NULL, dirty = 1;
+      END;
     `);
   }
 
@@ -67,25 +95,26 @@ export class PreparedPersonalizationStore {
       "SELECT COUNT(*) AS n FROM personalization_subscribers").one().n >= MAX_SUBSCRIBERS) return;
     this.storage.sql.exec("INSERT OR IGNORE INTO prepared_personalization(team_id) VALUES (?)", scope.team_id);
     let row = this.row(scope.team_id)!;
-    // Empty cache builds immediately on this *background* request. Normal additions
-    // coalesce for five minutes; replace/delete clear body_json immediately.
+    // Empty cache builds immediately on this *background* request. Fact additions
+    // coalesce for five minutes; fact replace/delete and Markdown edits clear body_json immediately.
     if (row.body_json === null || (row.dirty && now - row.built_at >= PERSONALIZATION_REFRESH_MS)) {
       this.build(scope.team_id, now);
       row = this.row(scope.team_id)!;
     }
-    const body = JSON.parse(row.body_json!) as { version: string; generation: number; valid_until: number; team_facts: PersonalizationSnapshot["team_facts"] };
-    if (body.valid_until <= now) { this.build(scope.team_id, now); return this.snapshot(scope, storageId, now); }
+    const body = JSON.parse(row.body_json!) as { version: string; generation: number; valid_until: number; team_facts: PersonalizationSnapshot["team_facts"]; team_markdown?: PersonalizationSnapshot["team_markdown"] };
+    if (body.valid_until <= now || body.team_markdown === undefined) { this.build(scope.team_id, now); return this.snapshot(scope, storageId, now); }
     const expiresAt = Math.min(now + PERSONALIZATION_LEASE_MS, body.valid_until);
     this.storage.sql.exec(`INSERT INTO personalization_subscribers(storage_id, team_id, user_id, expires_at, acknowledged_generation)
       VALUES (?, ?, ?, ?, ?) ON CONFLICT(storage_id) DO UPDATE SET expires_at = excluded.expires_at`,
     storageId, scope.team_id, scope.user_id, expiresAt, row.invalidated_through);
-    return { ...scope, generation: body.generation, version: body.version, expires_at: expiresAt, team_facts: body.team_facts };
+    return { ...scope, generation: body.generation, version: body.version, expires_at: expiresAt, team_facts: body.team_facts, team_markdown: body.team_markdown };
   }
 
   private build(teamId: string, now: number): void {
     const facts: { id: number; version: number; content: string }[] = [];
     let bytes = 0;
-    let validUntil = now + PERSONALIZATION_REFRESH_MS;
+    // The daily-note window changes at UTC midnight even without a document edit.
+    let validUntil = Math.min(now + PERSONALIZATION_REFRESH_MS, (Math.floor(now / 86_400_000) + 1) * 86_400_000);
     // Bounded deterministic source selection; no FTS, AI Search, model call or
     // query-dependent ranking. Reading a profile does not increment memory usage.
     for (const row of this.storage.sql.exec<FactRow>(`SELECT id, version, content_json, probation_until_ms, use_count
@@ -103,9 +132,13 @@ export class PreparedPersonalizationStore {
     const generation = this.row(teamId)!.generation;
     // Source versions identify the exact immutable content without timestamps in
     // the model-visible text. Content updates increment memory version.
-    const version = facts.map(f => `${f.id}:${f.version}`).join(",") || "empty";
+    const teamMarkdown = this.markdown.bootstrap(teamId, now);
+    // Keep model-visible identity fixed-size regardless of Markdown path lengths.
+    const markdownVersion = createHash("sha256")
+      .update(JSON.stringify(teamMarkdown.documents.map(doc => [doc.path, doc.revision]))).digest("hex");
+    const version = (facts.map(f => `${f.id}:${f.version}`).join(",") || "empty") + ";markdown:" + markdownVersion;
     this.storage.sql.exec("UPDATE prepared_personalization SET body_json = ?, built_at = ?, dirty = 0 WHERE team_id = ?",
-      JSON.stringify({ version, generation, valid_until: validUntil, team_facts: facts }), now, teamId);
+      JSON.stringify({ version, generation, valid_until: validUntil, team_facts: facts, team_markdown: teamMarkdown }), now, teamId);
   }
 
   invalidationPending(now = Date.now()): boolean {
@@ -209,8 +242,9 @@ export function personalizationText(snapshot: PersonalizationSnapshot): string {
 
 
 /** Also strips copies retained by older lifecycle receipts on replay. */
-export function personalizedVoiceContext(context: Record<string, unknown>, snapshot?: PersonalizationSnapshot, markdownMemory?: string): Record<string, unknown> {
+export function personalizedVoiceContext(context: Record<string, unknown>, snapshot?: PersonalizationSnapshot): Record<string, unknown> {
   const { prepared_personalization: _retained, markdown_memory: _markdown, ...current } = context;
+  const markdownMemory = preparedMarkdownText(snapshot);
   return { ...current, ...(snapshot ? { prepared_personalization: personalizationText(snapshot) } : {}),
     ...(markdownMemory ? { markdown_memory: markdownMemory } : {}) };
 }

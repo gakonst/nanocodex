@@ -56,23 +56,27 @@ an intent declaration, not a new source of authority. Every call still checks
 live read/write capabilities. Subagents cannot mutate memory. Internal calls
 carry the existing organization, team, subject, and private-owner assertions.
 
-Normal and voice startup share the same loader for bounded curated and recent
-daily excerpts from authorized scopes (UTC today and yesterday). Prepared profile
-facts are also rendered through the same function in both modes. Each Markdown
-scope contributes at most 12 KiB after serialization, with at most 4 KiB per file. Files are capped at 64 KiB
-and lines at 8 KiB; a ranged read returns at most 16 KiB and 200 lines.
+Normal and voice use the same already-prepared, scoped personalization snapshot.
+The existing background refresh loads saved facts and bounded curated/recent daily
+Markdown excerpts (UTC today and yesterday). Admission does not await a
+memory read, timeout, extraction, indexing pass, or consolidation job. A cache
+miss starts the turn or voice session without memory; a background refresh can
+make context available on later turns or through the active voice context channel.
+
+Each Markdown scope contributes at most 12 KiB after serialization, with at most
+4 KiB per file. Files are capped at 64 KiB and lines at 8 KiB; a ranged read returns
+at most 16 KiB and 200 lines. Prepared copies have bounded leases and are
+invalidated in the background after Markdown edits. Recent changes may lag until
+refresh or invalidation arrives. Expired copies are not injected; current user
+corrections take precedence, and explicit tools can verify canonical memory.
 Unchanged snapshots are not appended again to the same live agent session.
-The two scoped requests run concurrently within a shared 100 ms startup budget.
-A timeout or retrieval failure withdraws the previous snapshot and lets startup
-continue, even when a binding ignores cancellation. Saved prose is wrapped as untrusted data,
-never instructions or permission. Current user corrections take precedence.
-Fresh reads prevent an old local snapshot from being reused after a correction
-or deletion. Voice lifecycle replay refreshes these excerpts instead of reusing
-saved personalization, and rechecks the active session and authorization after
-loading. Voice clients deliver these fields through the existing background context
-channel when admission finishes, including after media connects. Large snapshots
-stay out of the bounded SDP call request. Already delivered conversation content
-cannot be erased.
+
+Saved prose is untrusted data, never instructions or permission. Voice lifecycle
+replay projects only currently eligible prepared context, retaining scope and
+authorization checks. Voice clients deliver prepared fields through the existing
+background context channel, including after media connects. Large snapshots stay
+out of the bounded SDP call request. Already delivered conversation content cannot
+be erased.
 
 Existing versioned records, prepared personalization, and append-only ad-hoc
 notes remain intact and available through their existing APIs. Canonical Markdown
@@ -105,7 +109,10 @@ physical removal from the remote index is not claimed until cleanup succeeds.
 Managed sessions do not invoke memory extraction before compaction and do not
 require a memory receipt to continue. Memory inference failures cannot block
 compaction or fail a conversation. Agents save useful context explicitly with
-`memories__write` during their work.
+`memories__write` during their work. Existing durable conversation records remain
+available independently of compaction. The old extraction endpoint has no
+production trigger; this implementation does not claim automatic extraction from
+every retained conversation. Saved-note consolidation runs in the background.
 
 ## Background consolidation
 

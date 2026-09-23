@@ -13,6 +13,7 @@ export async function createManagedBrowserVoice(agent, voice, options = {}) {
   await initializeBrowserEngine(options);
   const raw = new ManagedBrowserVoice(voice);
   const voiceSessionId = uuidV7();
+  raw.bindSession(voiceSessionId);
   const startOperationId = crypto.randomUUID();
   const stopOperationId = crypto.randomUUID();
   const tailOperationId = crypto.randomUUID();

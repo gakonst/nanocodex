@@ -2576,6 +2576,20 @@ impl WasmManagedBrowserVoice {
         })
     }
 
+    /// Binds the known managed call before admission or microphone setup begins.
+    ///
+    /// # Errors
+    /// Rejects invalid session IDs or rebinding an active call.
+    #[wasm_bindgen(js_name = bindSession)]
+    pub fn bind_session(&self, managed_session_id: &str) -> Result<(), JsValue> {
+        if self.started.get() || self.call_prepared.get() {
+            return Err(js_error("voice session binding requires a new call"));
+        }
+        let session_id = managed_voice_session_id(managed_session_id)?;
+        self.protocol.borrow_mut().bind_session(&session_id);
+        Ok(())
+    }
+
     /// Starts the protocol from the managed Agent's authoritative serialized context.
     ///
     /// # Errors

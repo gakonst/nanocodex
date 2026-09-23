@@ -164,15 +164,15 @@ and prepared personalization remain compatible.
 ## Prepared personalization
 
 Managed admission no longer runs prompt-derived history search or memory scan.
-The MemoryScope prepares deterministic snapshots of saved personal and team memories; Sessions
+The MemoryScope prepares snapshots of saved personal/team facts and Markdown notes; Sessions
 warm a disposable copy on create, open, or activity without awaiting it. Each turn
 pins the eligible local copy or a cache miss. A miss proceeds without retrieval.
 Explicit `find_session`, `read_session`, and memory tools remain available.
 
 Snapshots carry organization/team/user scope, source versions, and a five-minute
-lease. New memories coalesce until refresh; replacements and deletions invalidate
-issued copies before the mutation succeeds. Failed invalidations retain durable
-retry debt. Expiry is checked again before model injection. Previously delivered
+lease. New facts coalesce until refresh. Legacy fact replacements and deletions
+fence issued copies before the mutation succeeds; Markdown changes invalidate
+prepared copies in the background. Failed invalidations retain retry debt. Expiry is checked again before model injection. Previously delivered
 conversation history cannot be erased; later prepared blocks replace or withdraw
 prior prepared context. Existing team facts remain shared; personal facts are
 stored separately for the authenticated user within their organization.
@@ -185,9 +185,10 @@ proceed with a cache miss. Refresh is activity-driven, so idle users incur no
 periodic job. Identical content is not appended again on later turns, and pinned
 context is pruned when the associated turn receipts are archived.
 
-Voice startup receives optional prepared context in the existing context response.
-Updated Rust/WASM and Apple voice clients accept it as bounded background data;
-older clients ignore the optional field. Media readiness never awaits preparation.
+Voice startup consumes already-prepared context without waiting for memory.
+A background refresh can also send prepared context to an active voice session.
+Rust/WASM and Apple voice clients accept it as bounded background data. Media
+readiness and prompt admission never await memory preparation.
 Account/environment discovery remains a separate first-turn dependency.
 
 ### Personal memories and request attribution

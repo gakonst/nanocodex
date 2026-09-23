@@ -4,6 +4,7 @@ import type { DurableAgentSession } from "../src/index";
 import { ManagedStartupContext } from "../src/startup-context";
 import type { MemoryScope } from "../src/memory-scope";
 import { storeMemoryContent } from "../src/durable-memory-storage";
+import { MarkdownMemoryStore } from "../src/markdown-memory";
 import { PreparedPersonalizationCache, PreparedPersonalizationStore, PERSONALIZATION_REFRESH_MS, personalizedVoiceContext, personalizationText,
   type PersonalizationSnapshot } from "../src/personalization";
 
@@ -53,6 +54,125 @@ describe("prepared personalization owner", () => {
       const after = store.snapshot(scope, storageId, now + PERSONALIZATION_REFRESH_MS + 3)!;
       expect(after.team_facts.map(f => f.id)).toEqual([2]);
       expect(after.generation).toBeGreaterThan(refreshed.generation);
+    });
+  });
+
+  it("builds canonical Markdown in the background and fences copies after insert, edit, and delete", async () => {
+    await withStore(async (store, storage) => {
+      const markdown = new MarkdownMemoryStore(storage);
+      add(storage, 1);
+      const initial = store.snapshot(scope, storageId)!;
+      expect(initial.team_markdown).toEqual({ documents: [] });
+      const cache = new PreparedPersonalizationCache();
+      const tasks: Promise<void>[] = [];
+      cache.warm(scope, async () => initial, task => tasks.push(task));
+      await tasks[0];
+      markdown.write("other-team", { operation: "put", path: "USER.md", content: "other owner's private note" });
+      expect(store.invalidationPending()).toBe(false);
+      expect(store.snapshot(scope, storageId)?.generation).toBe(initial.generation);
+
+      markdown.write(scope.team_id, { operation: "put", path: "USER.md", content: "original preference" });
+      expect(storage.sql.exec<{ body_json: string | null }>(
+        "SELECT body_json FROM prepared_personalization WHERE team_id=?", scope.team_id).one().body_json).toBeNull();
+      expect(store.invalidationPending()).toBe(true);
+      const notify = vi.fn(async (_id: string, value: { generation: number }) => cache.invalidate(value.generation));
+      await store.invalidate(notify);
+      expect(cache.peek(scope)).toBeUndefined();
+      const created = store.snapshot(scope, storageId)!;
+      expect(created.team_markdown?.documents).toEqual([
+        { path: "USER.md", revision: 1, content: "original preference", truncated: false },
+      ]);
+      expect(created.team_facts).toEqual(initial.team_facts);
+      expect(created.user_markdown).toBeUndefined();
+      expect(created.generation).toBeGreaterThan(initial.generation);
+      expect(created.version).not.toBe(initial.version);
+      expect(notify).toHaveBeenCalledWith(storageId, { team_id: scope.team_id, user_id: scope.user_id, generation: created.generation });
+      // A stale in-flight response cannot restore the pre-edit Markdown profile.
+      cache.warm(scope, async () => initial, task => tasks.push(task));
+      await tasks[1];
+      expect(cache.peek(scope)).toBeUndefined();
+
+      markdown.write(scope.team_id, { operation: "put", path: "USER.md", expected_revision: 1, content: "corrected preference" });
+      const edited = store.snapshot(scope, storageId)!;
+      expect(edited.team_markdown?.documents[0]).toMatchObject({ revision: 2, content: "corrected preference" });
+      expect(edited.generation).toBeGreaterThan(created.generation);
+      expect(edited.version).not.toBe(created.version);
+      markdown.write(scope.team_id, { operation: "delete", path: "USER.md", expected_revision: 2 });
+      const deleted = store.snapshot(scope, storageId)!;
+      expect(deleted.team_markdown).toEqual({ documents: [] });
+      expect(deleted.generation).toBeGreaterThan(edited.generation);
+      expect(deleted.version).not.toBe(edited.version);
+      expect(store.invalidationPending()).toBe(true);
+      await store.invalidate(notify);
+      expect(notify).toHaveBeenLastCalledWith(storageId, { team_id: scope.team_id, user_id: scope.user_id, generation: deleted.generation });
+      expect(store.invalidationPending()).toBe(false);
+
+      // Physical canonical removal is fenced too, in addition to write's tombstones.
+      markdown.write(scope.team_id, { operation: "put", path: "MEMORY.md", content: "removed canonical row" });
+      const beforeRemoval = store.snapshot(scope, storageId)!;
+      storage.sql.exec("DELETE FROM markdown_memory_documents WHERE owner=? AND path='MEMORY.md'", scope.team_id);
+      const removed = store.snapshot(scope, storageId)!;
+      expect(removed.team_markdown).toEqual({ documents: [] });
+      expect(removed.generation).toBeGreaterThan(beforeRemoval.generation);
+      expect(store.invalidationPending()).toBe(true);
+    });
+  });
+
+  it("expires Markdown snapshots at the UTC day boundary and changes identity with the daily window", async () => {
+    await withStore(async (store, storage) => {
+      const markdown = new MarkdownMemoryStore(storage);
+      const midnight = Date.parse("2026-09-24T00:00:00Z");
+      markdown.write(scope.team_id, { operation: "put", path: "memory/2026-09-22.md", content: "older daily note" });
+      markdown.write(scope.team_id, { operation: "put", path: "memory/2026-09-24.md", content: "new daily note" });
+      markdown.write(scope.team_id, { operation: "put", path: "DREAMS.md", content: "excluded consolidation journal" });
+      const before = store.snapshot(scope, storageId, midnight - 1_000)!;
+      expect(before.expires_at).toBe(midnight);
+      expect(before.team_markdown?.documents.map(doc => doc.path)).toEqual(["memory/2026-09-22.md"]);
+      const after = store.snapshot(scope, storageId, midnight)!;
+      expect(after.team_markdown?.documents.map(doc => doc.path)).toEqual(["memory/2026-09-24.md"]);
+      expect(after.generation).toBe(before.generation);
+      expect(after.version).not.toBe(before.version);
+      expect(after.expires_at).toBe(midnight + PERSONALIZATION_REFRESH_MS);
+    });
+  });
+
+  it("keeps Markdown identity fixed-size with long paths and both escaped fact scopes within budget", async () => {
+    await withStore(async (store, storage) => {
+      const markdown = new MarkdownMemoryStore(storage);
+      const now = Date.parse("2026-09-23T12:00:00Z");
+      add(storage, 1);
+      const initial = store.snapshot(scope, storageId, now)!;
+      for (let i = 0; i < 4; i++) markdown.write(scope.team_id, {
+        operation: "put", path: `memory/2026-09-23-${"topic".repeat(20)}-${i}.md`, content: `daily note ${i}`,
+      });
+      const current = store.snapshot(scope, storageId, now + 1)!;
+      expect(current.team_markdown?.documents).toHaveLength(4);
+      expect(current.version).toMatch(/^1:1;markdown:[a-f0-9]{64}$/);
+      expect(current.version.length).toBe(initial.version.length);
+      expect(current.version).not.toBe(initial.version);
+      const value = { ...current, user_version: current.version,
+        team_facts: [{ id: 1, version: 1, content: `team ${"<&🦊".repeat(1_200)}` }],
+        user_facts: [{ id: 2, version: 1, content: `personal ${"<&🦊".repeat(1_200)}` }],
+      };
+      const text = personalizationText(value);
+      expect(personalizedVoiceContext({}, value).prepared_personalization).toBe(text);
+      expect(new TextEncoder().encode(text).byteLength).toBeLessThan(20_000);
+      expect(text).toContain('"content":"personal');
+      expect(text).toContain('"content":"team');
+      expect(text).toContain('"truncated":true');
+    });
+  });
+
+  it("upgrades retained fact-only profiles on the next background snapshot request", async () => {
+    await withStore(async (store, storage) => {
+      const markdown = new MarkdownMemoryStore(storage);
+      markdown.write(scope.team_id, { operation: "put", path: "MEMORY.md", content: "saved before deployment" });
+      const current = store.snapshot(scope, storageId)!;
+      storage.sql.exec("UPDATE prepared_personalization SET body_json=? WHERE team_id=?",
+        JSON.stringify({ version: "empty", generation: current.generation, valid_until: Date.now() + PERSONALIZATION_REFRESH_MS, team_facts: [] }), scope.team_id);
+      const upgraded = store.snapshot(scope, storageId)!;
+      expect(upgraded.team_markdown?.documents[0]?.content).toBe("saved before deployment");
+      expect(upgraded.version).not.toBe("empty");
     });
   });
 
@@ -166,10 +286,13 @@ describe("MemoryScope to Session invalidation", () => {
 it("reprojects voice replay context so a durable receipt cannot resurrect a forgotten profile", () => {
   const receipt = { history: [], prepared_personalization: "forgotten canary", markdown_memory: "deleted USER.md" };
   expect(personalizedVoiceContext(receipt)).toEqual({ history: [] });
-  const refreshed = personalizedVoiceContext(receipt, profile(2), "current USER.md");
+  const refreshed = personalizedVoiceContext(receipt, { ...profile(2), team_markdown: { documents: [
+    { path: "USER.md", revision: 2, content: "current USER.md", truncated: false },
+  ] } });
   expect(refreshed.prepared_personalization).toContain("concise answers");
   expect(refreshed.prepared_personalization).not.toContain("forgotten canary");
-  expect(refreshed.markdown_memory).toBe("current USER.md");
+  expect(refreshed.markdown_memory).toContain("current USER.md");
+  expect(refreshed.markdown_memory).not.toContain("deleted USER.md");
   expect(receipt.markdown_memory).toBe("deleted USER.md");
 });
 
