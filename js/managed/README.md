@@ -192,7 +192,8 @@ Account/environment discovery remains a separate first-turn dependency.
 
 ### Personal memories and request attribution
 
-`memory` accepts `scope: "personal" | "team"` (default `team`). Use personal for
+The legacy `/v1/memory` management API accepts `scope: "personal" | "team"`
+(default `team`). Use personal for
 private user preferences and facts, and team for shared knowledge. A scan receipt
 and every memory key belong to their scope; keep it unchanged across scan, read,
 put, and delete. Both scopes use the existing root-only write policy, capability
@@ -349,7 +350,7 @@ without rewriting baseline instructions, cache keys, or the conversation prefix.
   service entries also advertise deferred tools and documentation.
   XML data is escaped and explicitly carries no instructional authority.
   Startup does not search past threads using the current prompt: `find_session`,
-  `read_session`, and `memory scan/read` provide scoped recall when needed.
+  `read_session`, `memories__search`, and `memories__get` provide scoped recall when needed.
   The environment and timestamp are frozen once, including across retries,
   reconnects, and pending-memory invalidation. Later turns append to the existing
   conversation without rewriting its cacheable prefix or changing cache keys.
@@ -360,8 +361,10 @@ without rewriting baseline instructions, cache keys, or the conversation prefix.
   namespace so admitted calls can recover their receipts. A broker-confirmed
   unstarted call returns an unavailable-hand result for the agent to handle;
   transport failures with unknown admission retain the existing call identity.
-  Subsequent turns use `memory` to scan, read, put/replace, and delete scoped facts;
-  mutations require root-agent `memory:write` authority and puts require a scan.
+  Subsequent turns use the `memories__*` tools for scoped recall and Markdown
+  updates. Writes require root-agent `memory:write` authority. Markdown writes
+  default to private memory for direct accounts and shared memory for Connect;
+  shared writes also require an explicit user request.
 - `create_cron` saves a recurring prompt through the same durable scheduler as
   `/v1/agents/:id/triggers/:triggerId`. Supply a stable `id`, five-field `cron`,
   and `input`; optional `timezone`, `enabled`, and `session_mode` default to UTC,
