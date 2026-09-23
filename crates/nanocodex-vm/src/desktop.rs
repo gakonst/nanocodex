@@ -381,6 +381,9 @@ fn start_x(
                 "-nolisten",
                 "local",
                 "-noreset",
+                // This owned virtual display has no physical monitor to save.
+                "-s",
+                "0",
                 "+extension",
                 "GLX",
                 "-auth",
@@ -1047,6 +1050,7 @@ impl Desktop {
     }
     fn capture(&self) -> Result<Value> {
         self.check_cancel()?;
+        keep_virtual_display_awake(&self.connection)?;
         let (width, height) = self.dimensions()?;
         let setup = self.connection.setup();
         let screen = &setup.roots[0];
@@ -1133,6 +1137,19 @@ impl Drop for Desktop {
     }
 }
 
+// Only use this on the private Xvfb connection, never a host display. Setting
+// the timeout also covers retained X servers started before we added `-s 0`.
+// Reset an already active saver without synthesizing keyboard/pointer input.
+fn keep_virtual_display_awake(connection: &RustConnection<TimedStream>) -> Result<()> {
+    connection
+        .set_screen_saver(0, 0, xproto::Blanking::DEFAULT, xproto::Exposures::DEFAULT)?
+        .check()?;
+    connection
+        .force_screen_saver(xproto::ScreenSaver::RESET)?
+        .check()?;
+    Ok(())
+}
+
 /// Continuous X11 capture runs separately from the serialized input owner.
 /// The encoder has no account credentials, no audio input, and no frame queue.
 pub fn video_command(runtime: &Path) -> Result<Command> {
@@ -1161,6 +1178,7 @@ pub fn video_command(runtime: &Path) -> Result<Command> {
         b"MIT-MAGIC-COOKIE-1".to_vec(),
         cookie.to_vec(),
     )?;
+    keep_virtual_display_awake(&connection)?;
     let geometry = connection
         .get_geometry(connection.setup().roots[0].root)?
         .reply()?;
@@ -1244,6 +1262,7 @@ fn video_encoder_command(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use x11rb::protocol::screensaver::{ConnectionExt as _, State};
     #[test]
     fn auth_cookie_has_correct_xauthority_wire_format() {
         let record = auth_record(&[7; 32]);
@@ -1292,6 +1311,117 @@ mod tests {
         fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o755)).unwrap();
         assert!(Runtime::claim(directory.path()).is_err());
     }
+    #[test]
+    #[ignore = "requires an isolated Xvfb on Linux"]
+    fn live_virtual_display_stays_awake_after_idle() {
+        let directory = tempfile::tempdir().unwrap();
+        fs::set_permissions(directory.path(), fs::Permissions::from_mode(0o700)).unwrap();
+        let mut runtime = Runtime::claim(directory.path()).unwrap();
+        let mut children = Children::new().unwrap();
+        let (connection, display) =
+            start_x(&mut runtime, &mut children, &AtomicBool::new(false)).unwrap();
+        runtime
+            .write_private("display", display.as_bytes())
+            .unwrap();
+        let root = connection.setup().roots[0].root;
+        assert_eq!(
+            connection
+                .get_screen_saver()
+                .unwrap()
+                .reply()
+                .unwrap()
+                .timeout,
+            0
+        );
+        connection
+            .change_window_attributes(
+                root,
+                &xproto::ChangeWindowAttributesAux::new().background_pixel(0xffffff),
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        connection
+            .clear_area(false, root, 0, 0, 0, 0)
+            .unwrap()
+            .check()
+            .unwrap();
+        let pixels = || {
+            connection.stream().reset(OP_TIMEOUT);
+            connection
+                .get_image(ImageFormat::Z_PIXMAP, root, 0, 0, 8, 8, u32::MAX)
+                .unwrap()
+                .reply()
+                .unwrap()
+                .data
+        };
+        let visible = pixels();
+        assert!(visible.iter().any(|&byte| byte != 0));
+        // Model an older retained server: idle blanking is enabled and there
+        // is no keyboard/pointer input. Prove that the saver activates.
+        // Xvfb may retain root pixels even with the saver active.
+        connection
+            .set_screen_saver(
+                1,
+                0,
+                xproto::Blanking::PREFERRED,
+                xproto::Exposures::ALLOWED,
+            )
+            .unwrap()
+            .check()
+            .unwrap();
+        connection
+            .force_screen_saver(xproto::ScreenSaver::RESET)
+            .unwrap()
+            .check()
+            .unwrap();
+        thread::sleep(Duration::from_millis(2500));
+        connection.stream().reset(OP_TIMEOUT);
+        assert_eq!(
+            connection
+                .screensaver_query_info(root)
+                .unwrap()
+                .reply()
+                .unwrap()
+                .state,
+            u8::from(State::ON)
+        );
+        // Production video setup must repair the retained server as well as
+        // new desktop startup; no encoder or remote input is needed here.
+        let _command = video_command(directory.path()).unwrap();
+        assert_eq!(
+            connection
+                .get_screen_saver()
+                .unwrap()
+                .reply()
+                .unwrap()
+                .timeout,
+            0
+        );
+        assert_eq!(
+            connection
+                .screensaver_query_info(root)
+                .unwrap()
+                .reply()
+                .unwrap()
+                .state,
+            u8::from(State::DISABLED)
+        );
+        assert_eq!(pixels(), visible, "capture pixels changed");
+        thread::sleep(Duration::from_millis(2500));
+        connection.stream().reset(OP_TIMEOUT);
+        assert_eq!(
+            connection
+                .screensaver_query_info(root)
+                .unwrap()
+                .reply()
+                .unwrap()
+                .state,
+            u8::from(State::DISABLED)
+        );
+        assert_eq!(pixels(), visible, "virtual display changed while idle");
+    }
+
     #[test]
     #[ignore = "requires Xvfb, openbox, xterm, ffmpeg, and ffprobe on Linux"]
     fn live_capture_unicode_raw_input_and_shutdown() {
