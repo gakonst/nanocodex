@@ -39,3 +39,16 @@ python3 scripts/codex-parity/memory.py /path/to/codex
 ```
 
 The checker compiles upstream constructors without copying the full tool catalog.
+
+Run the deterministic contract and behavior evaluation (with workspace dependencies installed):
+
+```sh
+bash scripts/codex-parity/memory-eval.sh /path/to/codex-at-pinned-revision
+```
+
+This compiles the pinned upstream schema constructors, checks the JavaScript file
+adapter, runs the native managed-memory proxy tests, and exercises managed
+Markdown memory in the Worker/SQLite runtime. Regression cases cover Unicode
+normalization and ordering, line endings, result projection, and exclusion of
+consolidation reports from search. This evaluates tool compatibility and storage
+correctness; it does not measure a model's long-term recall quality.

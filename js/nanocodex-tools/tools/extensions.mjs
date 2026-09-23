@@ -3,6 +3,24 @@ import specs from './extension-specs.json' with { type: 'json' };
 /** Pinned declarations; host transport spells namespace members with __. */
 export const extensionSpecs = Object.freeze(specs);
 const encoder = new TextEncoder();
+// Rust str::trim uses Unicode White_Space (unlike JavaScript trim).
+const trimWhitespace = text => text.replace(/^\p{White_Space}+|\p{White_Space}+$/gu, '');
+// Rust strings sort by UTF-8 bytes, not UTF-16 code units.
+function comparePaths(left, right) {
+  const a = encoder.encode(left), b = encoder.encode(right);
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return a.length - b.length;
+}
+// str::lines removes CR only as part of a CRLF terminator.
+function searchLines(text) {
+  if (!text) return [];
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length - 1; i++) lines[i] = lines[i].replace(/\r$/, '');
+  if (lines.at(-1) === '') lines.pop();
+  return lines;
+}
 const fail = message => { throw new TypeError(message); };
 function validate(value, schema, optional = false) {
   if (optional && value == null) return;
@@ -51,7 +69,7 @@ function page(items, cursor, max) {
 export function fileMemoriesBackend(store) {
   async function files(path) {
     const scope = relativePath(path ?? '');
-    const all = [...await store.listFiles()].map(relativePath).sort();
+    const all = [...await store.listFiles()].map(relativePath).sort(comparePaths);
     if (scope && !all.some(file => file === scope || file.startsWith(scope + '/')) && !(await store.listDirectories?.() ?? []).includes(scope)) fail('path was not found');
     return all.filter(file => !scope || file === scope || file.startsWith(scope + '/'));
   }
@@ -73,7 +91,7 @@ export function fileMemoriesBackend(store) {
           entries.set((scope ? scope + '/' : '') + first, tail.includes('/') ? 'directory' : 'file');
         }
       }
-      const result = page([...entries].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([path, entry_type]) => ({ path, entry_type })), input.cursor, Math.max(1, Math.min(input.max_results ?? 2000, 2000)));
+      const result = page([...entries].sort(([a], [b]) => comparePaths(a, b)).map(([path, entry_type]) => ({ path, entry_type })), input.cursor, Math.max(1, Math.min(input.max_results ?? 2000, 2000)));
       return { path: input.path ?? null, entries: result.values, next_cursor: result.next_cursor, truncated: result.truncated };
     },
     async read(input) {
@@ -103,19 +121,22 @@ export function fileMemoriesBackend(store) {
     },
     async search(input) {
       validateExtensionInput('memories__search', input);
-      const queries = input.queries.map(query => query.trim());
+      const queries = input.queries.map(trimWhitespace);
       const prepare = text => {
         if (!(input.case_sensitive ?? true)) text = text.toLowerCase();
-        return input.normalized ? text.replace(/[^\p{L}\p{N}]/gu, '') : text;
+        return input.normalized ? text.replace(/[^\p{Alphabetic}\p{Number}]/gu, '') : text;
       };
       const prepared = queries.map(prepare);
       if (!prepared.length || prepared.some(query => !query)) fail('queries must not be empty or contain empty strings');
-      const match_mode = input.match_mode ?? { type: 'any' };
+      // Serde ignores unknown enum fields and serializes only the selected variant.
+      const mode = input.match_mode ?? { type: 'any' };
+      const match_mode = mode.type === 'all_within_lines'
+        ? { type: mode.type, line_count: mode.line_count } : { type: mode.type };
       if (match_mode.type === 'all_within_lines' && !match_mode.line_count) fail('line_count must be positive');
       const matches = [];
       for (const path of await files(input.path)) {
         const text = await store.readFile(path);
-        const lines = text === '' ? [] : text.replace(/\n$/, '').split('\n').map(line => line.replace(/\r$/, ''));
+        const lines = searchLines(text);
         const flags = lines.map(line => prepared.map(query => prepare(line).includes(query)));
         const windows = [];
         for (let start = 0; start < lines.length; start++) {
@@ -142,7 +163,7 @@ export function fileMemoriesBackend(store) {
       validateExtensionInput('memories__add_ad_hoc_note', input);
       // Upstream runtime permits a leading hyphen even though its schema does not.
       if (!/^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-[a-z0-9-]{1,80}\.md$/.test(input.filename) || encoder.encode(input.filename).length > 128) fail('invalid ad-hoc note filename');
-      if (!input.note.trim()) fail('ad-hoc note must not be empty');
+      if (!trimWhitespace(input.note)) fail('ad-hoc note must not be empty');
       await store.createFile('extensions/ad_hoc/notes/' + input.filename, input.note);
       return {};
     },
