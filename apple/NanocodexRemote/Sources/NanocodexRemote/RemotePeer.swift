@@ -73,7 +73,7 @@ public final class RemotePeer: NSObject {
     private var gatheredCandidates = 0
     private var receivedCandidates = 0
     private var appliedCandidates = 0
-    var diagnosticState: String { "\(connection.connectionState.rawValue)/\(connection.iceConnectionState.rawValue) channels=\(reliable?.readyState.rawValue ?? -1),\(motion?.readyState.rawValue ?? -1) ICE=\(gatheredCandidates)/\(receivedCandidates)/\(appliedCandidates) SDP=\(connection.localDescription != nil)/\(remoteDescriptionSet)" }
+    var diagnosticState: String { "\(connection.connectionState.rawValue)/\(connection.iceConnectionState.rawValue) channels=\(reliable?.readyState.rawValue ?? -1),\(motion?.readyState.rawValue ?? -1) ICE=\(gatheredCandidates)/\(receivedCandidates)/\(appliedCandidates) SDP=\(connection.localDescription != nil)/\(remoteDescriptionSet) policy=\(connection.configuration.iceTransportPolicy == .relay ? "relay" : "all")" }
     func diagnosticMedia() async -> [[String: String]] {
         await withCheckedContinuation { continuation in
             connection.statistics { report in
@@ -225,9 +225,18 @@ public final class RemotePeer: NSObject {
         onMicrophoneStopped()
     }
 
-    public func updateICE(_ ice: [RemoteICE]) throws {
+    public func updateICE(_ ice: [RemoteICE], preferRelay: Bool? = nil) throws {
         guard !closed else { throw RemoteError.closed }
         let config = connection.configuration
+        if let preferRelay {
+            // Keep direct candidates when the account has no usable TURN
+            // credentials; relay-only with STUN alone can never connect.
+            let hasRelay = ice.contains { server in
+                !(server.username ?? "").isEmpty && !(server.credential ?? "").isEmpty &&
+                server.urls.contains { $0.hasPrefix("turn:") || $0.hasPrefix("turns:") }
+            }
+            config.iceTransportPolicy = preferRelay && hasRelay ? .relay : .all
+        }
         config.iceServers = ice.map { RTCIceServer(urlStrings: $0.urls, username: $0.username, credential: $0.credential) }
         guard connection.setConfiguration(config) else { throw RemoteError.unavailable }
     }
