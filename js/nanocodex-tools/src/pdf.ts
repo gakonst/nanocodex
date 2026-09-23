@@ -60,7 +60,14 @@ export function createPdfTextCommand(filesystem: () => Workspace) {
           try {
             const content = await page.getTextContent();
             const items = content.items.filter(item => "str" in item) as TextItem[];
-            pages.push(formatPage(items, options));
+            // Normalize positions to displayed page coordinates, including /Rotate.
+            const [a, b, c, d, e, f] = page.getViewport({ scale: 1 }).transform;
+            const displayed = items.map(item => {
+              const [x, y] = item.transform.slice(4);
+              return { ...item, transform: [...item.transform.slice(0, 4),
+                a * x + c * y + e, -(b * x + d * y + f)] };
+            });
+            pages.push(formatPage(displayed, options));
           } finally { page.cleanup(); }
         }
         const text = pages.map(page => page + (options.pageBreaks ? "\f" : "")).join("");
@@ -117,7 +124,7 @@ function resolve(workspace: Workspace, cwd: string, path: string): string {
 
 function formatPage(items: TextItem[], options: Options): string {
   if (options.raw) {
-    return items.map(item => item.str + (item.hasEOL ? "\n" : " ")).join("").trimEnd() + "\n";
+    return items.map(item => item.str + (item.hasEOL ? "\n" : "")).join("").trimEnd() + "\n";
   }
   const lines: { y: number; height: number; items: TextItem[] }[] = [];
   for (const item of items) {

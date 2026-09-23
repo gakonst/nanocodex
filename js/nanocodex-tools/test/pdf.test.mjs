@@ -85,3 +85,19 @@ test("Just Bash command is installed by default, with quoting, pipes and redirec
   assert.equal(result.exit_code, 0, JSON.stringify(result));
   assert.equal(new TextDecoder().decode(await runtime.filesystem.readFile("/brain/docs/extracted.txt")), "Page two: Ω\n");
 });
+
+test("raw mode preserves words split across font changes", async () => {
+  const f = fixture();
+  f.files.set("docs/sample file.pdf", pdf({ fragments: true }));
+  const result = await f.command.execute(["-raw", "-l", "1", "-nopgbrk", "sample file.pdf", "-"], context);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.stdout, "microscope works\n");
+});
+
+for (const mode of [[], ["-layout"]]) test(`rotated page follows displayed word order (${mode})`, async () => {
+  const f = fixture();
+  f.files.set("docs/sample file.pdf", pdf({ rotated: true }));
+  const result = await f.command.execute([...mode, "-l", "1", "-nopgbrk", "sample file.pdf", "-"], context);
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.match(result.stdout, /^Hello +world\n$/);
+});
