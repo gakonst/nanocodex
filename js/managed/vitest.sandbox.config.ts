@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [cloudflareTest({ miniflare: {
     compatibilityDate: "2026-07-29",
     compatibilityFlags: ["nodejs_compat"],
-    durableObjects: { NANOCODEX_ACCOUNT_TOOLS: "AccountHostedTools" },
+    durableObjects: { NANOCODEX_ACCOUNT_TOOLS: { className: "AccountHostedTools", useSQLite: true } },
     outboundService: () => new Response("Unexpected test network request", { status: 502 }),
   }, main: "./test/sandbox-enrollment-worker.ts" })],
   test: { include: ["test/sandbox-desktop.test.ts", "test/sandbox-enrollment.test.ts"] },
