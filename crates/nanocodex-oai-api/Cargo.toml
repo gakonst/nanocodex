@@ -36,7 +36,7 @@ client = [
     "dep:url",
     "dep:uuid",
 ]
-native-tls = ["dep:rustls", "dep:rustls-native-certs", "dep:tokio", "dep:tracing"]
+native-tls = ["dep:rustls", "dep:rustls-native-certs", "dep:rustls-platform-verifier", "dep:tokio", "dep:tracing"]
 events = ["dep:futures-util", "dep:tokio", "dep:web-time"]
 realtime = ["client", "dep:opusic-c", "dep:webrtc"]
 
@@ -68,6 +68,9 @@ tokio-tungstenite = { workspace = true, optional = true }
 url = { workspace = true, optional = true }
 opusic-c = { workspace = true, optional = true }
 webrtc = { workspace = true, optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+rustls-platform-verifier = { version = "0.7.0", optional = true }
 
 [dev-dependencies]
 criterion.workspace = true

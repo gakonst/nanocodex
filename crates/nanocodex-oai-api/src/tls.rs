@@ -1,9 +1,12 @@
-//! Native trust roots and TLS session state shared across WebSocket connections.
+//! Native certificate verification and TLS session state shared across connections.
 //!
-//! Loading the OS certificate store can take hundreds of milliseconds on macOS.
-//! Reuse it for at most five minutes, reloading sooner if certificate environment
-//! overrides change. Loading runs off the async executor. Failed refreshes fail
-//! closed; this cache contains no application credentials or authorization.
+//! On macOS without certificate environment overrides, use the same platform
+//! verifier as Reqwest so startup does not enumerate the entire OS root store.
+//! Elsewhere, or with explicit overrides, load native roots off the async executor.
+//! Subsequent calls refresh cached configurations after five minutes, or sooner if
+//! overrides change. Retained configurations and connections are not revoked.
+//! Failed refreshes fail closed; this cache contains no application credentials
+//! or authorization.
 
 use rustls::{ClientConfig, RootCertStore};
 use std::{
@@ -28,15 +31,24 @@ impl Cached {
 }
 static CACHE: Mutex<Option<Cached>> = Mutex::const_new(None);
 
-/// Returns a native-root TLS configuration, sharing session resumption state.
+/// Returns a native-trust TLS configuration, sharing session resumption state.
 ///
-/// System root changes are picked up within five minutes on new connections.
-/// Changes to `SSL_CERT_FILE` or `SSL_CERT_DIR` invalidate the cache immediately.
-/// An explicitly installed Rustls crypto provider remains authoritative.
+/// Each call reuses a matching configuration for up to five minutes. A subsequent
+/// call refreshes it after that interval, or when `SSL_CERT_FILE` or `SSL_CERT_DIR`
+/// changes. Files changed at the same override paths are reloaded on expiry.
+/// Refreshing creates new session state; retained configurations and established
+/// connections remain usable. Resumed sessions do not repeat full chain checks.
+///
+/// On macOS without certificate environment overrides, full handshakes use
+/// Security.framework's SecTrust chain policy through the platform verifier.
+/// An explicitly installed Rustls crypto provider is retained for TLS handshake
+/// cryptography; SecTrust controls certificate chain validation.
 ///
 /// # Errors
-/// Returns an error if native trust roots cannot be loaded or contain no usable
-/// certificates. A failed refresh never falls back to expired trust roots.
+/// Returns an error if the platform verifier cannot be initialized, or native
+/// trust roots cannot be loaded or contain no usable certificates. A failed
+/// refresh never falls back to an expired configuration. Platform certificate
+/// verification errors are reported during the TLS handshake.
 pub async fn native_client_config() -> io::Result<Arc<ClientConfig>> {
     let environment = (
         std::env::var_os("SSL_CERT_FILE"),
@@ -64,6 +76,21 @@ fn load() -> io::Result<ClientConfig> {
     let began = Instant::now();
     if rustls::crypto::CryptoProvider::get_default().is_none() {
         let _ = rustls::crypto::ring::default_provider().install_default();
+    }
+    #[cfg(target_os = "macos")]
+    if std::env::var_os("SSL_CERT_FILE").is_none() && std::env::var_os("SSL_CERT_DIR").is_none() {
+        use rustls_platform_verifier::BuilderVerifierExt;
+
+        // This passes the builder's existing CryptoProvider to the verifier.
+        // Explicit overrides retain the native-certs replacement-store semantics
+        // below; adding them to platform roots would silently broaden trust.
+        let config = ClientConfig::builder()
+            .with_platform_verifier()
+            .map_err(io::Error::other)?
+            .with_no_client_auth();
+        tracing::info!(target: "nanocodex_tls", stage = "tls.platform_verifier",
+            elapsed_ms = began.elapsed().as_secs_f64() * 1000.0);
+        return Ok(config);
     }
     let loaded = rustls_native_certs::load_native_certs();
     let mut roots = RootCertStore::empty();

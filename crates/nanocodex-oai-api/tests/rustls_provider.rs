@@ -20,6 +20,18 @@ fn standard_session_installs_ring_provider() {
             .supported_schemes()
     );
 
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .build()
+        .unwrap();
+    let config = runtime
+        .block_on(nanocodex_oai_api::tls::native_client_config())
+        .expect("native TLS configuration should use the installed provider");
+    assert!(std::sync::Arc::ptr_eq(provider, config.crypto_provider()));
+    let cached = runtime
+        .block_on(nanocodex_oai_api::tls::native_client_config())
+        .unwrap();
+    assert!(std::sync::Arc::ptr_eq(&config, &cached));
+
     let _config = rustls::ClientConfig::builder()
         .with_root_certificates(rustls::RootCertStore::empty())
         .with_no_client_auth();
