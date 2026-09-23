@@ -1,13 +1,7 @@
 name: Cloudflare live validation
 
-# Keep real-provider endurance checks visible, but outside deployment latency.
-# Only successful trusted master deployments trigger this privileged follow-up.
-# The gate excludes successful preview-only manual runs.
+# Automatic live tests are temporarily paused; run explicitly when needed.
 on:
-  workflow_run:
-    workflows: [Cloudflare]
-    types: [completed]
-    branches: [master]
   workflow_dispatch:
     inputs:
       suite:

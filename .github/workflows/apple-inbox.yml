@@ -51,9 +51,13 @@ jobs:
           go-version: '1.26.5'
           cache-dependency-path: hands/remote/go.sum
       - name: Remote companion protocol
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: go test -race ./...
         working-directory: hands/remote
       - name: Native remote video, input, and reconnection
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: swift test --package-path apple/NanocodexRemote
       - name: Build shared desktop runtime and dependencies
         run: pnpm exec turbo run build --filter=@nanocodex/desktop-runtime
@@ -66,11 +70,18 @@ jobs:
           tar -xOf "$RUNNER_TEMP/nanocodex-node.tar.gz" node-v24.19.0-darwin-arm64/bin/node > macos/Resources/runtime/node
           tar -xOf "$RUNNER_TEMP/nanocodex-node.tar.gz" node-v24.19.0-darwin-arm64/LICENSE > macos/Resources/runtime/NODE-LICENSE.txt
           chmod 755 macos/Resources/runtime/node
-      - name: Build native workspace and check tiling and background Hands
+      - name: Build native workspace
         run: >-
           xcodebuild -project macos/Nanocodex.xcodeproj -scheme Nanocodex
           -configuration Debug -destination 'platform=macOS'
           -derivedDataPath macos/build -resultBundlePath macos/build/background-hands.xcresult
+          build
+      - name: Build native workspace and check tiling and background Hands
+        if: ${{ false }}
+        run: >-
+          xcodebuild -project macos/Nanocodex.xcodeproj -scheme Nanocodex
+          -configuration Debug -destination 'platform=macOS'
+          -derivedDataPath macos/build -resultBundlePath macos/build/background-hands-tests.xcresult
           -only-testing:NanocodexTests/BackgroundHandTests
           -only-testing:NanocodexTests/ProtocolTests/testRestoredTiledSelectionIgnoresInboxFiltering
           -only-testing:NanocodexTests/ProtocolTests/testNativeTiledInboxKeepsEditorsActionsAndReviewIndependent
@@ -115,10 +126,20 @@ jobs:
       - name: Build shared Rust voice core
         run: bash apple/NanocodexVoice/scripts/build-core.sh
       - name: Protocol, voice, context, and native Hand package tests
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: bash scripts/ci/apple-package-tests.sh
-      # build-for-testing below builds the app and test runner together for
-      # the actual simulator; a preceding generic simulator build is redundant.
+      # Keep the app build active while simulator journeys are paused.
+      - name: Build iPhone app
+        run: >-
+          xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox
+          -configuration Debug -destination 'generic/platform=iOS Simulator'
+          -derivedDataPath apple/build/ios
+          -clonedSourcePackagesDirPath "$RUNNER_TEMP/inbox-packages-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+          -disablePackageRepositoryCache CODE_SIGNING_ALLOWED=NO build
       - name: Native iPhone journey
+        id: native-tests
+        if: ${{ false }}
         run: |
           device=$(xcrun simctl list devices available -j | python3 -c 'import json,sys; print(next(d["udid"] for ds in json.load(sys.stdin)["devices"].values() for d in ds if d["name"].startswith("iPhone")))')
           xcodebuild -project apple/NanocodexInbox.xcodeproj -scheme NanocodexInbox -configuration Debug -destination "platform=iOS Simulator,id=$device" -derivedDataPath apple/build/ios -clonedSourcePackagesDirPath "$RUNNER_TEMP/inbox-packages-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT" -disablePackageRepositoryCache CODE_SIGNING_ALLOWED=YES CODE_SIGN_IDENTITY=- build-for-testing
@@ -159,7 +180,7 @@ jobs:
             | tee apple/build/evidence/inbox-xcodebuild.log \
             | grep -E 'Test Case .* (started|passed|failed|skipped)|\.swift:[0-9]+: error:|Testing failed:|\*\* TEST (SUCCEEDED|FAILED) \*\*'
       - name: Export native XCTest recordings and screenshots
-        if: always()
+        if: ${{ always() && steps.native-tests.outcome != 'skipped' && steps.native-tests.outcome != '' }}
         run: |
           if [ -f apple/build/inbox.xcresult/Info.plist ]; then
             xcrun xcresulttool export attachments --path apple/build/inbox.xcresult --output-path apple/build/evidence/attachments

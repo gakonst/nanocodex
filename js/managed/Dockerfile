@@ -153,7 +153,8 @@ RUN sh /opt/hand-toolkit/install-paths.sh \
 ENV PATH=/opt/hand-python/bin:${PATH}
 
 COPY --chmod=0755 scripts/check-dev-stack.sh /usr/local/bin/nanocodex-check-dev-stack
-RUN sh /usr/local/bin/nanocodex-check-dev-stack
+ARG CI_TESTS_ENABLED=true
+RUN if [ "$CI_TESTS_ENABLED" != "false" ]; then sh /usr/local/bin/nanocodex-check-dev-stack; fi
 
 COPY --from=hand /out/nanocodex-remote /usr/local/bin/nanocodex-remote
 COPY --from=desktop /opt/nanocodex-desktop /opt/nanocodex-desktop

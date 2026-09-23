@@ -56,7 +56,9 @@ test('wrong revision, run, output list, and archive corruption fail closed', () 
 test('deployment waits for matching image and Worker jobs; build job has no deployment credentials', () => {
   const workflow = readFileSync(new URL('../../.github/workflows/cloudflare.yml', import.meta.url), 'utf8');
   const job = name => workflow.split(`\n  ${name}:\n`)[1].split(/\n  [\w-]+:\n/)[0];
-  assert.match(job('production'), /needs: \[managed-images, worker-build\]/);
+  assert.match(job('production'), /needs: \[image-plan, managed-images, worker-build\]/);
+  assert.match(job('production'), /needs\.image-plan\.result == 'success'/);
+  assert.match(job('production'), /needs\.managed-images\.result == 'success' \|\| needs\.managed-images\.result == 'skipped'/);
   assert.match(job('preview'), /needs: worker-build/);
   assert.doesNotMatch(job('worker-build'), /\n    needs:|secrets\.|CLOUDFLARE_API_TOKEN|environment:/);
   for (const name of ['preview', 'production']) {

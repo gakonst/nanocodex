@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, copyFileSy
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { images, fingerprint, validateReceipt, registryDigest, deploymentConfig } from './managed-images.mjs';
+import { images, imageInputs, fingerprint, validateReceipt, registryDigest, deploymentConfig } from './managed-images.mjs';
 
 const account = 'a'.repeat(32), digest = 'b'.repeat(64), input = 'c'.repeat(64);
 const ref = image => `registry.cloudflare.com/${account}/nanocodex-ci-${image}@sha256:${digest}`;
@@ -40,11 +40,16 @@ test('input receipts survive unrelated commits and invalidate every relevant sou
   const commit = () => { git('add', '.'); git('-c', 'user.name=CI', '-c', 'user.email=ci@example.invalid', 'commit', '-qm', 'fixture'); };
   try {
     git('init', '-q');
-    put('Cargo.toml', 'workspace'); put('js/managed/Dockerfile', 'FROM scratch');
+    put('Cargo.toml', '[workspace]');
+    put('crates/nanocodex-phone/Cargo.toml', '[package]\nname = "nanocodex-phone"');
+    put('crates/nanocodex-remote/Cargo.toml', '[package]\nname = "nanocodex2-bin"'); put('js/managed/Dockerfile', 'FROM scratch');
     put('hands/remote/image/labwc/config', 'desktop'); commit();
     const firstPhone = fingerprint('phone', account, '1', dir);
     const firstSandbox = fingerprint('sandbox', account, '1', dir);
     put('js/managed/src/index.ts', 'Worker-only change'); commit();
+    assert.equal(fingerprint('phone', account, '1', dir), firstPhone);
+    assert.equal(fingerprint('sandbox', account, '1', dir), firstSandbox);
+    for (const path of ['js/nanocodex/package.json', 'examples/unrelated.rs', 'bin/nanousd/src/lib.rs', 'hands/remote/README.md']) put(path, 'unrelated'); commit();
     assert.equal(fingerprint('phone', account, '1', dir), firstPhone);
     assert.equal(fingerprint('sandbox', account, '1', dir), firstSandbox);
     put('js/managed/scripts/phone-bridge.mjs', 'phone change'); commit();
@@ -55,31 +60,45 @@ test('input receipts survive unrelated commits and invalidate every relevant sou
     const beforeRust = fingerprint('sandbox', account, '1', dir);
     put('crates/nanocodex-remote/src/runtime.rs', 'new shared publisher'); commit();
     assert.notEqual(fingerprint('sandbox', account, '1', dir), beforeRust);
+    put('crates/new-local/Cargo.toml', '[package]\nname = "new-local"');
+    put('crates/nanocodex-phone/Cargo.toml', '[package]\nname = "nanocodex-phone"\n[dependencies]\nnew-local = { path = "../new-local" }'); commit();
+    const beforeDependency = fingerprint('phone', account, '1', dir);
+    put('crates/new-local/src/lib.rs', 'new transitive input'); commit();
+    assert.notEqual(fingerprint('phone', account, '1', dir), beforeDependency);
     const current = fingerprint('sandbox', account, '1', dir);
     assert.notEqual(fingerprint('sandbox', account, '2', dir), current);
     assert.notEqual(fingerprint('sandbox', 'f'.repeat(32), '1', dir), current);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 
-test('every Docker COPY input is covered by the receipt fingerprint', () => {
+test('Rust inputs follow local Cargo packages and external binary sources', () => {
+  const phone = imageInputs('phone');
+  const sandbox = imageInputs('sandbox');
+  const covers = (inputs, path) => inputs.some(p => p === path || path.startsWith(p + '/'));
+  for (const inputs of [phone, sandbox]) {
+    for (const path of ['Cargo.lock', 'crates/nanocodex-managed/src/lib.rs', 'crates/nanocodex-tools/src/code_mode/bootstrap.js']) assert.ok(covers(inputs, path), path);
+    for (const path of ['js/managed/src/index.ts', 'js/nanocodex/package.json', 'examples/unrelated.rs', 'bin/nanousd/src/lib.rs']) assert.ok(!covers(inputs, path), path);
+  }
+  for (const path of ['examples/phone_voice.rs', 'examples/phone_audio.rs', 'examples/phone_capture.rs']) assert.ok(covers(phone, path), path);
+  assert.ok(!covers(phone, 'crates/nanocodex-remote/src/lib.rs'));
+  for (const path of ['bin/nanocodex/src/nanocodex2/main.rs', 'bin/nanocodex/src/computer.rs', 'bin/nanocodex/src/clipboard.rs', 'hands/remote/image/labwc/rc.xml', 'crates/nanocodex-vm/image/toolkit/python.txt']) assert.ok(covers(sandbox, path), path);
+  assert.ok(!covers(sandbox, 'hands/remote/README.md'));
+});
+
+test('Docker direct COPY and prepared assets remain covered', () => {
+  const rustCopies = new Set(['Cargo.toml', 'Cargo.lock', 'bin', 'crates', 'examples', 'js/nanocodex', 'py/bindings', 'third_party']);
   for (const [image, spec] of Object.entries(images)) {
     const dockerfile = readFileSync(new URL('../../' + spec.dockerfile, import.meta.url), 'utf8');
     for (const line of dockerfile.split('\n')) {
       if (!/^(COPY|ADD) /.test(line) || /--from=/.test(line)) continue;
-      assert.ok(!line.includes('[') && !line.endsWith('\\'), 'update input audit for new Dockerfile syntax');
-      const sources = line.split(/\s+/).slice(1).filter(token => !token.startsWith('--')).slice(0, -1);
-      for (let source of sources) {
-        if (source === '.generated/remote-rust/' || source.startsWith('.generated/remote-rust/')) {
-          for (const path of ['Cargo.toml', 'Cargo.lock', 'bin', 'crates', 'examples', 'js/nanocodex', 'py/bindings', 'third_party']) {
-            assert.ok(spec.inputs.includes(path), `${image}: Rust source ${path} is not fingerprinted`);
-          }
-          continue;
-        }
-        if (source.startsWith('.generated/hand/')) source = 'hands/remote';
-        else if (source.startsWith('.generated/toolkit/')) source = 'crates/nanocodex-vm/image/toolkit';
-        else source = spec.context === '.' ? source.replace(/^\.\//, '') : spec.context + '/' + source;
-        assert.ok(spec.inputs.some(path => source === path || source.startsWith(path + '/')),
-          `${image}: ${source} is not fingerprinted`);
+      assert.ok(!line.includes('[') && !line.endsWith('\\'), 'audit new COPY syntax');
+      for (let source of line.split(/\s+/).slice(1).filter(token => !token.startsWith('--')).slice(0, -1)) {
+        if (image === 'phone' && rustCopies.has(source)) continue; // Cargo closure audited above.
+        if (source === '.generated/remote-rust/') continue;
+        if (source.startsWith('.generated/hand/')) source = source.replace('.generated/hand/', 'hands/remote/image/');
+        else if (source.startsWith('.generated/toolkit/')) source = source.replace('.generated/toolkit/', 'crates/nanocodex-vm/image/toolkit/');
+        else source = spec.context === '.' ? source : spec.context + '/' + source;
+        assert.ok(spec.inputs.some(p => source === p || source.startsWith(p + '/')), `${image}: ${source}`);
       }
     }
   }
@@ -92,7 +111,7 @@ test('publication records the pushed digest and never publishes after failed ima
     mkdirSync(join(dir, 'scripts/cloudflare'), { recursive: true });
     mkdirSync(join(dir, 'js/phone-cloud'), { recursive: true });
     mkdirSync(join(dir, 'commands'));
-    for (const file of ['managed-images.mjs', 'wrangler-docker.mjs']) {
+    for (const file of ['managed-images.mjs', 'managed-image-inputs.py', 'wrangler-docker.mjs']) {
       copyFileSync(new URL(file, import.meta.url), join(dir, 'scripts/cloudflare', file));
     }
     writeFileSync(join(dir, 'js/phone-cloud/Dockerfile'), 'FROM scratch\n');
@@ -110,16 +129,16 @@ require('node:fs').appendFileSync(process.env.CAPTURE, JSON.stringify(['pnpm', .
 `, { mode: 0o755 });
     git('init', '-q'); git('add', '.');
     git('-c', 'user.name=CI', '-c', 'user.email=ci@example.invalid', 'commit', '-qm', 'fixture');
-    for (const overrides of [{}, { MISSING_LOCAL_DIGEST: '1' }, { FAIL_DOCKER: 'run' }]) {
+    for (const overrides of [{}, { MISSING_LOCAL_DIGEST: '1' }, { FAIL_DOCKER: 'run' }, { FAIL_DOCKER: 'run', CI_TESTS_ENABLED: 'false' }]) {
       rmSync(join(dir, '.ci-images'), { recursive: true, force: true });
       writeFileSync(capture, '');
       const result = spawnSync(process.execPath, ['scripts/cloudflare/managed-images.mjs', 'publish', 'phone'], {
         cwd: dir, encoding: 'utf8', env: { ...process.env, PATH: join(dir, 'commands') + ':' + process.env.PATH,
           CAPTURE: capture, GITHUB_WORKSPACE: dir, BUILDX_BUILDER: 'test-builder', CLOUDFLARE_ACCOUNT_ID: account,
-          MANAGED_IMAGE_CACHE_EPOCH: '1', ...overrides },
+          MANAGED_IMAGE_CACHE_EPOCH: '1', CI_TESTS_ENABLED: 'true', ...overrides },
       });
       const commands = readFileSync(capture, 'utf8').trim().split('\n').map(line => JSON.parse(line));
-      if (overrides.FAIL_DOCKER) {
+      if (overrides.FAIL_DOCKER && overrides.CI_TESTS_ENABLED !== 'false') {
         assert.notEqual(result.status, 0);
         assert.ok(!commands.some(command => command[0] === 'pnpm'), 'must not publish an unverified image');
       } else {
@@ -127,6 +146,7 @@ require('node:fs').appendFileSync(process.env.CAPTURE, JSON.stringify(['pnpm', .
         const receipt = JSON.parse(readFileSync(join(dir, '.ci-images/phone.json'), 'utf8'));
         assert.equal(validateReceipt(receipt, 'phone', account, fingerprint('phone', account, '1', dir)), ref('phone'));
         assert.ok(commands.some(command => command.includes('push')));
+        assert.equal(commands.some(command => command[0] === 'docker' && command[1] === 'run'), overrides.CI_TESTS_ENABLED !== 'false');
         assert.ok(!commands.some(command => command.includes('login')), 'Wrangler owns credential handling');
       }
     }

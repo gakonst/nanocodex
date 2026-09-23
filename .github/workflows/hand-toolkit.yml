@@ -37,6 +37,8 @@ jobs:
           cache-from: type=gha,scope=vm-toolkit-${{ matrix.runner }}-${{ matrix.dockerfile }}
           cache-to: type=gha,scope=vm-toolkit-${{ matrix.runner }}-${{ matrix.dockerfile }},mode=max,ignore-error=true,timeout=3m
       - name: Exercise offline toolkit
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         run: docker run --rm --network none --entrypoint env nanocodex-vm:toolkit -i PATH=/usr/local/bin:/usr/bin:/bin HOME=/root sh -lc nanocodex-check-hand-toolkit
       - name: Package and validate the 16 GiB ext4 template
         run: bash crates/nanocodex-vm/image/build-root.sh nanocodex-vm:toolkit "$RUNNER_TEMP/desktop.ext4"

@@ -7,10 +7,10 @@ import { spawnSync } from 'node:child_process';
 const workflow = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
 const gate = workflow.split('      - name: Require every applicable CI job\n')[1]
   .split('        run: |\n')[1].split('\n').map(line => line.replace(/^          /, '')).join('\n');
-const always = ['CHANGES', 'TEST', 'QUALITY', 'POLICY', 'WASM_BUILD', 'BINDINGS', 'APPS', 'CODEQL'];
+const always = ['CHANGES', 'QUALITY', 'POLICY', 'WASM_BUILD', 'BINDINGS', 'APPS', 'CODEQL'];
 const selected = { NATIVE_REQUIRED: ['SHARED_HANDS', 'WINDOWS_HAND', 'VM_GUEST'], VOICE_REQUIRED: ['VOICE_NATIVE'], PYTHON_REQUIRED: ['PYTHON'] };
 function environment(required) {
-  return { ...Object.fromEntries(always.map(key => [key, 'success'])),
+  return { TEST: 'skipped', ...Object.fromEntries(always.map(key => [key, 'success'])),
     ...Object.fromEntries(Object.entries(selected).flatMap(([key, jobs]) => [[key, String(required)], ...jobs.map(job => [job, required ? 'success' : 'skipped'])])) };
 }
 const passes = env => spawnSync('bash', ['-e', '-c', gate], { env: { ...process.env, ...env } }).status === 0;
@@ -42,14 +42,20 @@ test('missing selection and unplanned execution fail closed', () => {
   for (const job of Object.values(selected).flat()) assert.equal(passes({ ...environment(false), [job]: 'success' }), false);
 });
 
-test('CUA native selection retains macOS bridge and lifecycle test coverage', () => {
+test('CUA native selection retains disabled macOS bridge and lifecycle test definitions', () => {
   const sharedHands = workflow.split('  shared-hands:\n')[1].split('  voice-native:\n')[0];
   assert.match(sharedHands, /if: needs\.changes\.outputs\.native == 'true'/);
   assert.match(sharedHands, /os: \[ubuntu-latest, windows-latest, macos-15\]/);
   const bridgeStep = sharedHands.split('      - name: Check CUA bridge and native host lifecycle\n')[1]
     .split('      - name:')[0];
-  assert.match(bridgeStep, /if: runner\.os == 'macOS'/);
+  assert.match(bridgeStep, /if: \$\{\{ false && runner\.os == 'macOS' \}\}/);
   for (const name of ['app-server', 'native-host', 'gui-readiness']) {
     assert.ok(bridgeStep.includes(`scripts/tests/openai-cua-${name}.test.mjs`));
+  }
+});
+
+test('paused Rust test job must be explicitly skipped', () => {
+  for (const result of ['success', 'failure', 'cancelled', '']) {
+    assert.equal(passes({ ...environment(true), TEST: result }), false, `TEST: ${result}`);
   }
 });

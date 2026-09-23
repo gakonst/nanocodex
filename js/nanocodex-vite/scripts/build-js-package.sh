@@ -65,10 +65,22 @@ cleanup() {
 
 trap cleanup EXIT
 
+cache_helper="js/nanocodex-vite/scripts/wasm-output-cache.mjs"
+if node "$cache_helper" check "$build_mode"; then
+  node js/nanocodex/scripts/write-wasm-attestation.mjs .ci-wasm-cache/source.wasm
+  echo "WASM outputs are current; skipped Cargo and binding generation"
+  exit 0
+fi
+
+if [[ "$(wasm-bindgen --version)" != "wasm-bindgen 0.2.126" ]]; then
+  echo "Nanocodex WASM requires wasm-bindgen 0.2.126" >&2
+  exit 1
+fi
+
 if [[ "$build_mode" == release ]]; then
-  cargo build --locked -p nanocodex-wasm --target "$wasm_target" --profile wasm
+  cargo +1.97 build --locked -p nanocodex-wasm --target "$wasm_target" --profile wasm
 else
-  cargo build --locked -p nanocodex-wasm --target "$wasm_target"
+  cargo +1.97 build --locked -p nanocodex-wasm --target "$wasm_target"
 fi
 wasm_artifact="$target_dir/$wasm_target/$cargo_profile/nanocodex_wasm.wasm"
 stamp_path="js/nanocodex/pkg-web/.nanocodex-bindgen-stamp"
@@ -100,6 +112,7 @@ if [[ -f "$stamp_path" ]] \
   && [[ "$(<"$stamp_path")" == "$fingerprint" ]] \
   && node js/nanocodex/scripts/write-wasm-attestation.mjs --check-cache "$wasm_artifact" 2>/dev/null; then
   node js/nanocodex/scripts/write-wasm-attestation.mjs "$wasm_artifact"
+  node "$cache_helper" save "$build_mode" "$wasm_artifact"
   echo "wasm-bindgen outputs are current"
   exit 0
 fi
@@ -145,3 +158,4 @@ node js/nanocodex/scripts/deduplicate-wasm.mjs
 node js/nanocodex/scripts/write-package-types.mjs
 printf '%s\n' "$fingerprint" > "$stamp_path"
 node js/nanocodex/scripts/write-wasm-attestation.mjs "$wasm_artifact"
+node "$cache_helper" save "$build_mode" "$wasm_artifact"

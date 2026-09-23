@@ -127,7 +127,7 @@ printf 'end\\n' >> "$NANOCODEX_WASM_BUILD_EVENTS"
 `),
     writeExecutable(join(fakeBin, "wasm-bindgen"), `#!/bin/sh
 if [ "$1" = "--version" ]; then
-  printf 'wasm-bindgen-fixture\\n'
+  printf 'wasm-bindgen 0.2.126\\n'
   exit 0
 fi
 target=""
@@ -153,6 +153,10 @@ printf '%s\\n' "$target" >> "$NANOCODEX_WASM_BINDGEN_EVENTS"
 `),
     writeExecutable(join(fakeBin, "node"), `#!/bin/sh
 case "$1" in
+  *wasm-output-cache.mjs)
+    # These fixtures exercise binding regeneration below the output-cache layer.
+    if [ "$2" = "check" ]; then exit 1; fi
+    ;;
   *wasm-memory-views.mjs)
     exec '${process.execPath.replaceAll("'", "'\\''")}' "$@"
     ;;

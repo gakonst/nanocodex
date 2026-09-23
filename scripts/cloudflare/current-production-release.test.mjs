@@ -1,10 +1,11 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
+import { phases } from './deploy-workers.mjs';
 
 const guard = fileURLToPath(new URL('./current-production-release.mjs', import.meta.url));
 const workspace = fileURLToPath(new URL('../../', import.meta.url));
@@ -13,7 +14,7 @@ const production = workflow.split('\n  production:\n')[1];
 const oldSha = 'a'.repeat(40), newSha = 'b'.repeat(40);
 
 function fixture(t) {
-  const dir = mkdtempSync(join(tmpdir(), 'production-guard-'));
+  const dir = realpathSync(mkdtempSync(join(tmpdir(), 'production-guard-')));
   t.after(() => rmSync(dir, { recursive: true, force: true }));
   const bin = join(dir, 'bin');
   mkdirSync(bin);
@@ -51,7 +52,7 @@ function fixture(t) {
   return { dir, env, head, setHead, run, rows, queries, deployments,
     output: () => readFileSync(output, 'utf8'),
     shell: (source, overrides = {}) => spawnSync('bash', ['-e', '-o', 'pipefail', '-c', source], {
-      cwd: dir, env: { ...env, ...overrides }, encoding: 'utf8', input: '',
+      cwd: workspace, env: { ...env, ...overrides }, encoding: 'utf8', input: '',
     }),
   };
 }
@@ -148,15 +149,19 @@ test('command failure propagates and missing command cannot report success', t =
   assert.equal(f.rows(f.deployments).length, 1);
 });
 
-test('workflow guards all ten deploys and secret mutation, preserving serial account-last order', () => {
+test('workflow guards all ten deploys and secret mutation, preserving dependency phases and account-last order', () => {
   const all = steps();
   const mutations = all.filter(step => step.name?.startsWith('Deploy ') || step.name === 'Configure Astra trial secrets');
-  assert.equal(mutations.length, 11);
+  assert.equal(mutations.length, 5);
+  assert.equal(Object.values(phases).flat().length, 8);
   for (const step of mutations) {
-    assert.equal((step.run.match(/current-production-release\.mjs" -- /g) ?? []).length, 1, step.name);
+    if (step.run.includes('deploy-workers.mjs')) {
+      assert.match(step.run, /deploy-workers\.mjs (infrastructure|consumers)$/);
+    } else assert.equal((step.run.match(/current-production-release\.mjs" -- /g) ?? []).length, 1, step.name);
     assert.match(step.source, /if: steps\.current-release\.outputs\.active == 'true'/, step.name);
   }
-  assert.equal((production.match(/current-production-release\.mjs/g) ?? []).length, 12); // early check plus eleven mutations
+  assert.equal((production.match(/current-production-release\.mjs/g) ?? []).length, 4); // early check, managed, secret mutation, account
+  assert.deepEqual(mutations.map(step => step.name), ['Deploy egress and X Workers', 'Deploy managed agent service', 'Deploy independent consumer Workers', 'Configure Astra trial secrets', 'Deploy account application']);
   assert.equal(mutations.at(-1).name, 'Deploy account application');
   assert.match(mutations.at(-1).source, /id: account-release/);
   assert.match(all.find(step => step.name === 'Verify deployed account Worker health').source,
@@ -165,8 +170,8 @@ test('workflow guards all ten deploys and secret mutation, preserving serial acc
   assert.match(production, /GH_TOKEN: \$\{\{ github\.token \}\}/);
   assert.match(production, /DEPLOY_TARGET: \$\{\{ inputs\.target \}\}/);
   assert.doesNotMatch(production, /actions\/workflows\/cloudflare\.yml\/runs/);
-  assert.ok(all.findIndex(step => step.name === 'Build agent email service') < all.indexOf(mutations[0]));
-  assert.doesNotMatch(mutations.find(step => step.name === 'Deploy agent email service').run, /deploy:email|run build/);
+  assert.ok(!all.some(step => step.name === 'Build agent email service'));
+  assert.ok(!phases.consumers.find(([name])=>name==='email')[2].includes('build'));
 });
 
 test('actual workflow deployment commands preserve quoted message and empty env arguments', t => {
@@ -178,7 +183,10 @@ test('actual workflow deployment commands preserve quoted message and empty env 
     if (step.run.includes('--message')) assert.equal(args[args.indexOf('--message') + 1], f.env.DEPLOY_MESSAGE);
     if (step.name === 'Deploy Astra trial application') assert.ok(args.includes('--env='));
   }
-  assert.equal(f.rows(f.deployments).length, 10);
+  const deployments = f.rows(f.deployments);
+  assert.equal(deployments.length, 10);
+  for (const { args } of deployments) assert.equal(args[args.indexOf('--message') + 1], f.env.DEPLOY_MESSAGE);
+  assert.equal(deployments.filter(({args})=>args.includes('--env=')).length, 3);
   assert.equal(f.rows(f.queries).length, 10);
 });
 
