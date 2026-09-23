@@ -131,7 +131,7 @@ impl Microphone {
             tasks,
         }
     }
-    pub fn available(&self) -> bool {
+    pub const fn available(&self) -> bool {
         self.available
     }
     /// False after expiry, revoke, transport EOF or any decoder/sink failure.

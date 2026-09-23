@@ -61,7 +61,7 @@ impl PublisherTarget {
         })
     }
 
-    pub fn endpoint(&self) -> &Url {
+    pub const fn endpoint(&self) -> &Url {
         &self.endpoint
     }
     pub fn bearer(&self) -> &str {

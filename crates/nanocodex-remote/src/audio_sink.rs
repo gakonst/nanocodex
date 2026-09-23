@@ -335,7 +335,9 @@ mod linux {
             loop {
                 output.read_exact(&mut bytes).await.unwrap();
                 let peak = bytes
-                    .chunks_exact(2)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
                     .map(|s| i16::from_le_bytes([s[0], s[1]]).unsigned_abs())
                     .max()
                     .unwrap();

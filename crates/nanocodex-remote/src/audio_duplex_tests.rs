@@ -112,7 +112,9 @@ async fn opt_in_decodes_opus_and_mute_releases_without_replaying_old_packets() {
     let pcm = f.written().await;
     assert_eq!(pcm.len(), 960 * 2);
     assert!(
-        pcm.chunks_exact(2)
+        pcm.as_chunks::<2>()
+            .0
+            .iter()
             .any(|p| i16::from_le_bytes([p[0], p[1]]).unsigned_abs() > 100)
     );
     f.mic.revoke();

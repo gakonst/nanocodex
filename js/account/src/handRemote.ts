@@ -22,6 +22,16 @@ export type RemoteInput = {
 };
 
 const encoder = new TextEncoder();
+const mediaStartTimeout = 15_000;
+const mediaStallTimeout = 10_000;
+const mediaStableTime = 10_000;
+
+function hasTurnCredentials(servers: RTCIceServer[] | undefined): boolean {
+  return Array.isArray(servers) && servers.some(server => server
+    && typeof server.username === "string" && server.username.length > 0
+    && typeof server.credential === "string" && server.credential.length > 0
+    && (Array.isArray(server.urls) ? server.urls : [server.urls]).some(url => typeof url === "string" && /^turns?:/i.test(url)));
+}
 class RemoteError extends Error {
   readonly terminal: boolean;
   readonly status?: number;
@@ -99,12 +109,21 @@ export class RemoteBrowserSession {
   private statsEnabled = false;
   private statsRun = 0;
   private statsTimer?: ReturnType<typeof setTimeout>;
-  private statsRequest?: { peer: RTCPeerConnection; result: Promise<RTCStatsReport> };
+  private statsRequest?: { peer: RTCPeerConnection; result: Promise<RTCStatsReport>; startedAt: number };
   private startedAt = 0;
   private firstFrameMs?: number;
   private videoTrackId?: string;
-  private firstFrameCallback?: number;
-  private firstFrameListener?: () => void;
+  private videoFrameCallback?: number;
+  private videoFrameListener?: () => void;
+  private videoWatchRun = 0;
+  private videoProgressRun = 0;
+  private videoWatching = false;
+  private videoFrames = 0;
+  private decodedFrames = new Map<string, number>();
+  private mediaTimer?: ReturnType<typeof setTimeout>;
+  private mediaStartedAt?: number;
+  private lastVideoFrameAt?: number;
+  private mediaHealthySince?: number;
   private microphoneSupported = false;
   private microphoneTransceiver?: RTCRtpTransceiver;
   private microphoneRequest?: string;
@@ -148,6 +167,9 @@ export class RemoteBrowserSession {
   private epoch = 0;
   private retries = 0;
   private recoveryDeadline?: number;
+  // Keep a failed direct path out of subsequent retries, including resume.
+  // Each fresh credential response can still fall back to all when TURN is absent.
+  private preferRelay = false;
   private suspended = false;
   private closed = false;
   constructor(hand: RemoteHand, video: HTMLVideoElement, changed: (state: RemoteState) => void, canvas?: HTMLCanvasElement) {
@@ -208,7 +230,7 @@ export class RemoteBrowserSession {
       // Offers stay queued until this attempt's credentials and peer are ready.
       const peerReady = frames ? Promise.resolve() : request("/ice", "POST", undefined, signal).then(ice => {
         if (!this.current(epoch)) return;
-        peer = new RTCPeerConnection({ iceServers: ice.iceServers, bundlePolicy: "max-bundle" });
+        peer = new RTCPeerConnection({ iceServers: ice.iceServers, iceTransportPolicy: this.icePolicy(ice.iceServers), bundlePolicy: "max-bundle" });
         this.peer = peer;
         if (this.statsEnabled) this.startStats();
         const connectedPeer = peer;
@@ -235,7 +257,8 @@ export class RemoteBrowserSession {
           // Updating tracks in the attached stream preserves the browser's
           // decoder/playout pipeline; assigning srcObject again reloads media.
           if (!attached) this.video.srcObject = stream;
-          if (track.kind === "video") { this.videoTrackId = track.id; this.watchFirstFrame(epoch); }
+          if (track.kind === "video") { this.videoTrackId = track.id; this.watchVideo(epoch); }
+          if (!this.current(epoch)) return;
           this.update({ audioAvailable: stream.getAudioTracks().length > 0 });
           track.onended = () => {
             if (!this.current(epoch)) return;
@@ -254,7 +277,10 @@ export class RemoteBrowserSession {
           } else {
             clearTimeout(this.disconnectTimer); this.disconnectTimer = undefined;
             if (["failed", "closed"].includes(connectedPeer.connectionState)) this.fail(new RemoteError("Screen disconnected."));
-            else this.ready();
+            else {
+              if (connectedPeer.connectionState === "connected") this.startMediaWatchdog(epoch);
+              this.ready();
+            }
           }
         };
         peer.ondatachannel = ({ channel }) => { if (this.current(epoch)) this.channel(channel, epoch); else channel.close(); };
@@ -339,7 +365,7 @@ export class RemoteBrowserSession {
             if (peer.remoteDescription) {
               const ice = await request("/ice", "POST", undefined, signal);
               if (!this.current(epoch)) return;
-              peer.setConfiguration({ ...peer.getConfiguration(), iceServers: ice.iceServers });
+              peer.setConfiguration({ ...peer.getConfiguration(), iceServers: ice.iceServers, iceTransportPolicy: this.icePolicy(ice.iceServers) });
             }
             await peer.setRemoteDescription({ type: "offer", sdp: offer.sdp });
             if (!this.current(epoch)) return;
@@ -520,7 +546,11 @@ export class RemoteBrowserSession {
     }
   }
 
-  /** Sampling is opt-in; serialize slow getStats calls and retire stale results. */
+  private icePolicy(servers: RTCIceServer[] | undefined): RTCIceTransportPolicy {
+    return this.preferRelay && hasTurnCredentials(servers) ? "relay" : "all";
+  }
+
+  /** Detailed diagnostics are opt-in; media health does not depend on this UI. */
   setStatsEnabled(enabled: boolean): void {
     if (this.closed || this.statsEnabled === enabled) return;
     this.statsEnabled = enabled;
@@ -534,53 +564,164 @@ export class RemoteBrowserSession {
     const sampler = new RemoteStatsSampler();
     const valid = () => this.current(epoch) && this.statsEnabled && this.statsRun === run && this.peer === peer;
     const poll = async () => {
-      let request = this.statsRequest;
       try {
-        // A quick off/on toggle may reuse the same in-flight browser request.
-        // A retired peer must never block polling its replacement.
-        if (!request || request.peer !== peer) this.statsRequest = request = { peer, result: peer.getStats() };
-        const report = await request.result;
+        const report = await this.peerStats(peer);
         if (valid()) this.update({ stats: { ...sampler.sample(report, this.videoTrackId), firstFrameMs: this.firstFrameMs } });
       } catch {
         // Diagnostics must not break a working session or leave stale rates visible.
         if (valid()) this.update({ stats: { firstFrameMs: this.firstFrameMs } });
-      } finally { if (this.statsRequest === request) this.statsRequest = undefined; }
+      }
       if (valid()) this.statsTimer = setTimeout(() => { void poll(); }, 1000);
     };
     void poll();
   }
-  private watchFirstFrame(epoch: number): void {
-    this.cancelFirstFrame();
+  private peerStats(peer: RTCPeerConnection): Promise<RTCStatsReport> {
+    // Diagnostics and the health fallback share one browser request. A retired
+    // peer's unresolved request must never block its replacement.
+    if (!this.statsRequest || this.statsRequest.peer !== peer) {
+      const request = { peer, result: peer.getStats(), startedAt: performance.now() };
+      this.statsRequest = request;
+      const done = () => { if (this.statsRequest === request) this.statsRequest = undefined; };
+      void request.result.then(done, done);
+    }
+    return this.statsRequest.result;
+  }
+  private videoFrameCount(): number | undefined {
+    try {
+      if (typeof this.video.getVideoPlaybackQuality === "function") {
+        const quality = this.video.getVideoPlaybackQuality();
+        return Math.max(0, quality.totalVideoFrames - quality.droppedVideoFrames);
+      }
+      return (this.video as HTMLVideoElement & { webkitDecodedFrameCount?: number }).webkitDecodedFrameCount;
+    } catch { return undefined; }
+  }
+  private videoProgress(epoch: number, decoded = false): void {
+    if (!this.current(epoch)) return;
+    const now = performance.now();
+    if (this.recoveryDeadline !== undefined && now >= this.recoveryDeadline) {
+      this.fail(new RemoteError("Could not restore a stable screen connection.")); return;
+    }
+    if (this.lastVideoFrameAt === undefined || now - this.lastVideoFrameAt >= mediaStallTimeout) this.mediaHealthySince = now;
+    this.lastVideoFrameAt = now;
+    // Switching back from presentation to decoder sampling must establish a
+    // fresh baseline; its cumulative total includes these same local frames.
+    if (!decoded) { ++this.videoProgressRun; this.decodedFrames.clear(); }
+    // One decoded frame or open controls cannot erase a failing recovery loop.
+    if (this.state.connected && this.peer?.connectionState === "connected" && now - this.mediaHealthySince! >= mediaStableTime) {
+      this.retries = 0; this.recoveryDeadline = undefined;
+    }
     if (this.firstFrameMs !== undefined) return;
-    const displayed = () => {
-      if (!this.current(epoch)) return;
-      this.cancelFirstFrame();
-      this.firstFrameMs = Math.max(0, performance.now() - this.startedAt);
-      this.update({ mediaReady: true,
-        ...(!this.state.connected ? { status: "Watching · connecting controls…" } : {}),
-        ...(this.statsEnabled ? { stats: { ...this.state.stats, firstFrameMs: this.firstFrameMs } } : {}) });
-    };
-    if (typeof this.video.requestVideoFrameCallback === "function") this.firstFrameCallback = this.video.requestVideoFrameCallback(displayed);
-    else {
-      // An audio-first stream may already have fired loadeddata. Its first
-      // decoded video updates dimensions, so also observe resize without
-      // reattaching the stream just to trigger another load event.
-      const decoded = () => {
-        if (this.video.readyState >= 2 && this.video.videoWidth > 0 && this.video.videoHeight > 0) displayed();
+    this.firstFrameMs = Math.max(0, now - this.startedAt);
+    this.update({ mediaReady: true,
+      ...(!this.state.connected ? { status: "Watching · connecting controls…" } : {}),
+      ...(this.statsEnabled ? { stats: { ...this.state.stats, firstFrameMs: this.firstFrameMs } } : {}) });
+  }
+  private watchVideo(epoch: number): void {
+    this.cancelVideoWatch();
+    const run = this.videoWatchRun;
+    const valid = () => this.current(epoch) && this.videoWatchRun === run;
+    this.videoWatching = true;
+    this.videoFrames = this.videoFrameCount() ?? 0;
+    this.decodedFrames.clear();
+    if (typeof this.video.requestVideoFrameCallback === "function") {
+      const displayed = () => {
+        if (!valid()) return;
+        if (this.videoFrameCallback !== undefined) this.video.cancelVideoFrameCallback(this.videoFrameCallback);
+        this.videoFrameCallback = undefined;
+        this.videoProgress(epoch);
+        if (valid()) this.videoFrameCallback = this.video.requestVideoFrameCallback(displayed);
       };
-      this.firstFrameListener = decoded;
+      this.videoFrameCallback = this.video.requestVideoFrameCallback(displayed);
+    } else {
+      // An audio-first stream can already be loaded. Dimensions establish only
+      // its first picture; repeated load/resize events are not frame progress.
+      const decoded = () => {
+        if (valid() && this.firstFrameMs === undefined && this.video.readyState >= 2 && this.video.videoWidth > 0 && this.video.videoHeight > 0) this.videoProgress(epoch);
+      };
+      this.videoFrameListener = decoded;
       this.video.addEventListener("loadeddata", decoded);
       this.video.addEventListener("resize", decoded);
       decoded();
     }
   }
-  private cancelFirstFrame(): void {
-    if (this.firstFrameCallback !== undefined) this.video.cancelVideoFrameCallback(this.firstFrameCallback);
-    if (this.firstFrameListener) {
-      this.video.removeEventListener("loadeddata", this.firstFrameListener);
-      this.video.removeEventListener("resize", this.firstFrameListener);
+  private cancelVideoWatch(): void {
+    ++this.videoWatchRun;
+    this.videoWatching = false;
+    if (this.videoFrameCallback !== undefined) this.video.cancelVideoFrameCallback(this.videoFrameCallback);
+    if (this.videoFrameListener) {
+      this.video.removeEventListener("loadeddata", this.videoFrameListener);
+      this.video.removeEventListener("resize", this.videoFrameListener);
     }
-    this.firstFrameCallback = undefined; this.firstFrameListener = undefined;
+    this.videoFrameCallback = undefined; this.videoFrameListener = undefined;
+  }
+  private startMediaWatchdog(epoch: number): void {
+    if (this.mediaStartedAt !== undefined || !this.current(epoch)) return;
+    const peer = this.peer;
+    if (!peer) return;
+    this.mediaStartedAt = performance.now();
+    let sampling = false, lastPollAt = this.mediaStartedAt;
+    let delayedSampleDeadline: number | undefined, delayedSampleFrameAt: number | undefined;
+    const valid = () => this.current(epoch) && this.peer === peer;
+    const poll = () => {
+      if (!valid()) return;
+      const now = performance.now(), delayed = now - lastPollAt > 1500;
+      lastPollAt = now;
+      if (this.videoWatching) {
+        const count = this.videoFrameCount();
+        if (count !== undefined && Number.isFinite(count)) {
+          if (count > this.videoFrames) this.videoProgress(epoch);
+          if (!valid()) return;
+          this.videoFrames = count;
+        }
+        // Presentation callbacks can pause in background tabs. Check actual
+        // decoder progress when local presentation counters stop advancing.
+        // Never use bytes, audio, readyState or currentTime as a video heartbeat.
+        if (!sampling && now - (this.lastVideoFrameAt ?? this.mediaStartedAt!) >= 3000) {
+          sampling = true;
+          const run = this.videoWatchRun, progressRun = this.videoProgressRun;
+          void (async () => {
+            try {
+              const report = await this.peerStats(peer);
+              if (!valid() || run !== this.videoWatchRun || progressRun !== this.videoProgressRun) return;
+              let progress = false;
+              report.forEach(stat => {
+                if (stat.type !== "inbound-rtp" || (stat.kind ?? stat.mediaType) !== "video"
+                  || (this.videoTrackId && stat.trackIdentifier && stat.trackIdentifier !== this.videoTrackId)
+                  || !Number.isFinite(stat.framesDecoded)) return;
+                const previous = this.decodedFrames.get(stat.id);
+                this.decodedFrames.set(stat.id, stat.framesDecoded);
+                // A cumulative first sample can contain frames already seen by
+                // presentation. Baseline it without inventing a later heartbeat.
+                if (previous === undefined ? this.firstFrameMs === undefined && stat.framesDecoded > 0 : stat.framesDecoded > previous) progress = true;
+              });
+              if (progress) this.videoProgress(epoch, true);
+            } catch { /* A missing/slow stats API cannot disable the deadline. */ }
+            finally { sampling = false; }
+          })();
+        }
+      }
+      if (!valid()) return;
+      const stale = this.lastVideoFrameAt === undefined
+        ? now - this.mediaStartedAt! >= mediaStartTimeout
+        : now - this.lastVideoFrameAt >= mediaStallTimeout;
+      // A throttled background timer must let its decoder sample settle before
+      // declaring a stall. Two seconds allow a baseline and the next 1s sample
+      // after switching sources; this cannot extend the recovery budget or let
+      // a hung getStats request hold the session indefinitely.
+      if (!stale || this.lastVideoFrameAt !== delayedSampleFrameAt) delayedSampleDeadline = undefined;
+      if (stale && delayed && sampling && this.statsRequest?.peer === peer
+        && now - this.statsRequest.startedAt <= 1000 && delayedSampleDeadline === undefined) {
+        delayedSampleDeadline = now + 2000;
+        delayedSampleFrameAt = this.lastVideoFrameAt;
+      }
+      if ((stale && (delayedSampleDeadline === undefined || now >= delayedSampleDeadline))
+        || (this.recoveryDeadline !== undefined && now >= this.recoveryDeadline)) {
+        this.fail(new RemoteError(this.lastVideoFrameAt === undefined ? "This screen did not start video." : "This screen stopped sending video."));
+        return;
+      }
+      this.mediaTimer = setTimeout(poll, Math.min(1000, this.recoveryDeadline === undefined ? Infinity : Math.max(0, this.recoveryDeadline - now)));
+    };
+    this.mediaTimer = setTimeout(poll, Math.min(1000, this.recoveryDeadline === undefined ? Infinity : Math.max(0, this.recoveryDeadline - performance.now())));
   }
 
   takeControl(): void {
@@ -647,7 +788,9 @@ export class RemoteBrowserSession {
     ++this.epoch;
     this.clearMotion();
     ++this.statsRun; clearTimeout(this.statsTimer); this.statsTimer = undefined; this.statsRequest = undefined;
-    this.cancelFirstFrame(); this.firstFrameMs = undefined; this.videoTrackId = undefined;
+    this.cancelVideoWatch(); this.firstFrameMs = undefined; this.videoTrackId = undefined;
+    clearTimeout(this.mediaTimer); this.mediaTimer = undefined; this.mediaStartedAt = undefined;
+    this.lastVideoFrameAt = this.mediaHealthySince = undefined; this.videoFrames = 0; this.decodedFrames.clear();
     this.stopMicrophone(true);
     this.microphoneSupported = false; this.microphoneTransceiver = undefined;
     // A retired peer's unresolved sender operation must not block a new peer.
@@ -682,10 +825,12 @@ export class RemoteBrowserSession {
   private fail(error: unknown): void {
     if (this.closed || this.suspended) return;
     const status = error instanceof Error ? error.message : "Could not connect to this screen.";
+    const terminal = error instanceof RemoteError && error.terminal;
+    if (!terminal && this.hand.transport !== "frames-v1") this.preferRelay = true;
     this.detach();
     const now = performance.now();
     this.recoveryDeadline ??= now + 90_000;
-    const retry = !(error instanceof RemoteError && error.terminal) && now < this.recoveryDeadline;
+    const retry = !terminal && now < this.recoveryDeadline;
     this.update({ status: retry ? "Reconnecting…" : status, connected: false, controlling: false, connecting: retry });
     if (!retry) return;
     const epoch = this.epoch;
@@ -854,7 +999,9 @@ export class RemoteBrowserSession {
   }
   private ready(frame = false): void {
     if (!this.closed && !this.suspended && !this.state.connected && (frame || (this.peer?.connectionState === "connected" && this.reliable?.readyState === "open" && this.motion?.readyState === "open"))) {
-      clearTimeout(this.connectingTimer); this.retries = 0; this.recoveryDeadline = undefined;
+      clearTimeout(this.connectingTimer);
+      if (frame) { this.retries = 0; this.recoveryDeadline = undefined; }
+      else this.startMediaWatchdog(this.epoch);
       this.update({ connected: true, connecting: false, status: "Watching" });
     }
   }

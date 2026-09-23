@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 #[derive(Args)]
 pub(crate) struct ScreenCommand {
+    #[command(flatten)]
+    observability: super::hand_observability::HandObservabilityArgs,
     #[arg(long)]
     workspace: PathBuf,
     #[arg(long)]
@@ -38,6 +40,8 @@ pub(crate) struct NativeScreen {
     wayland: Option<super::screen_wayland::Platform>,
     #[cfg(target_os = "linux")]
     runtime: PathBuf,
+    #[cfg(target_os = "linux")]
+    workspace: PathBuf,
 }
 impl NativeScreen {
     pub(crate) async fn start(
@@ -90,7 +94,7 @@ impl NativeScreen {
                     && std::env::var_os("WAYLAND_DISPLAY").is_some())
             {
                 let wayland = super::screen_wayland::Platform::start().await?;
-                let publisher = ScreenPublisher::start(
+                let publisher = match ScreenPublisher::start(
                     target,
                     machine,
                     wayland.backend(),
@@ -99,70 +103,33 @@ impl NativeScreen {
                     super::screen_audio::native_source(),
                     super::observation_providers::Registry::local(),
                 )
-                .await?;
+                .await
+                {
+                    Ok(publisher) => publisher,
+                    Err(error) => {
+                        wayland.shutdown().await;
+                        return Err(error);
+                    }
+                };
                 return Ok(Self {
                     publisher: Some(publisher),
                     desktop: None,
                     wayland: Some(wayland),
                     runtime: directory.join("desktop"),
+                    workspace: machine.workspace().into(),
                 });
             }
-            use std::time::{Duration, Instant};
             let runtime = directory.join("desktop");
-            let mut command =
-                tokio::process::Command::new(std::env::current_exe().map_err(configuration)?);
-            command
-                .arg("__hand-desktop")
-                .arg("--workspace")
-                .arg(machine.workspace())
-                .arg("--runtime")
-                .arg(&runtime)
-                .current_dir("/")
-                .env_clear()
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .kill_on_drop(true);
-            for key in ["PATH", "HOME", "LANG", "LC_ALL"] {
-                if let Some(value) = std::env::var_os(key) {
-                    command.env(key, value);
-                }
-            }
-            let desktop = command.spawn().map_err(configuration)?;
+            let desktop = Self::spawn_desktop(Path::new(machine.workspace()), &runtime)?;
             let mut screen = Self {
                 publisher: None,
                 desktop: Some(desktop),
                 wayland: None,
                 runtime: runtime.clone(),
+                workspace: machine.workspace().into(),
             };
             let ready = async {
-                let deadline = Instant::now() + Duration::from_secs(30);
-                loop {
-                    if screen
-                        .desktop
-                        .as_mut()
-                        .expect("desktop child")
-                        .try_wait()
-                        .map_err(configuration)?
-                        .is_some()
-                    {
-                        return Err(configuration(
-                            "Hand desktop failed to start; install Xvfb, openbox, xterm, and fonts",
-                        ));
-                    }
-                    if desktop_request(runtime.clone(), serde_json::json!({"action":"observe"}))
-                        .await
-                        .is_ok_and(|reply| reply["status"] == "ok")
-                    {
-                        break;
-                    }
-                    if Instant::now() >= deadline {
-                        return Err(configuration(
-                            "Hand desktop did not become ready within 30 seconds",
-                        ));
-                    }
-                    tokio::time::sleep(Duration::from_millis(100)).await;
-                }
+                screen.wait_desktop().await?;
                 let video_runtime = runtime.clone();
                 let backend: ScreenBackend = std::sync::Arc::new(move |input| {
                     let runtime = runtime.clone();
@@ -198,13 +165,97 @@ impl NativeScreen {
         }
     }
     #[cfg(target_os = "linux")]
+    fn spawn_desktop(
+        workspace: &Path,
+        runtime: &Path,
+    ) -> Result<tokio::process::Child, ManagedError> {
+        let mut command =
+            tokio::process::Command::new(std::env::current_exe().map_err(configuration)?);
+        command
+            .arg("__hand-desktop")
+            .arg("--workspace")
+            .arg(workspace)
+            .arg("--runtime")
+            .arg(runtime)
+            .current_dir("/")
+            .env_clear()
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .kill_on_drop(true);
+        for key in ["PATH", "HOME", "LANG", "LC_ALL"] {
+            if let Some(value) = std::env::var_os(key) {
+                command.env(key, value);
+            }
+        }
+        command.spawn().map_err(configuration)
+    }
+    #[cfg(target_os = "linux")]
+    async fn wait_desktop(&mut self) -> Result<(), ManagedError> {
+        use std::time::{Duration, Instant};
+        let deadline = Instant::now() + Duration::from_secs(30);
+        loop {
+            if self
+                .desktop
+                .as_mut()
+                .expect("desktop child")
+                .try_wait()
+                .map_err(configuration)?
+                .is_some()
+            {
+                return Err(configuration(
+                    "Hand desktop failed to start; install Xvfb, openbox, xterm, and fonts",
+                ));
+            }
+            if desktop_request(
+                self.runtime.clone(),
+                serde_json::json!({"action":"observe"}),
+            )
+            .await
+            .is_ok_and(|reply| reply["status"] == "ok")
+            {
+                break;
+            }
+            if Instant::now() >= deadline {
+                return Err(configuration(
+                    "Hand desktop did not become ready within 30 seconds",
+                ));
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+        Ok(())
+    }
+    async fn maintain_capture(&mut self) -> Result<bool, ManagedError> {
+        #[cfg(target_os = "linux")]
+        {
+            if let Some(wayland) = self.wayland.as_mut() {
+                if wayland.is_finished() {
+                    wayland.restart().await?;
+                    return Ok(true);
+                }
+            } else if match self.desktop.as_mut() {
+                Some(desktop) => desktop.try_wait().map_err(configuration)?.is_some(),
+                None => true,
+            } {
+                self.desktop = Some(Self::spawn_desktop(&self.workspace, &self.runtime)?);
+                if let Err(error) = self.wait_desktop().await {
+                    if let Some(mut desktop) = self.desktop.take() {
+                        let _ = desktop.kill().await;
+                    }
+                    return Err(error);
+                }
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+    #[cfg(target_os = "linux")]
     pub(crate) async fn refresh(&self, target: &AttachmentTarget) -> Result<(), ManagedError> {
         match &self.publisher {
             Some(publisher) => publisher.refresh(target).await,
             None => Err(configuration("native screen publisher unavailable")),
         }
     }
-    #[cfg(target_os = "linux")]
     pub(crate) fn is_finished(&self) -> bool {
         self.publisher
             .as_ref()
@@ -238,10 +289,23 @@ impl NativeScreen {
         result
     }
 }
+impl super::screen_supervisor::Session for NativeScreen {
+    type Error = ManagedError;
+    fn is_finished(&self) -> bool {
+        self.is_finished()
+    }
+    async fn maintain(&mut self) -> Result<bool, Self::Error> {
+        self.maintain_capture().await
+    }
+    async fn shutdown(self) -> Result<(), Self::Error> {
+        self.shutdown().await
+    }
+}
 pub(crate) async fn serve(
     client: &ManagedClient,
     command: ScreenCommand,
 ) -> Result<(), ManagedError> {
+    let _observability = command.observability.install().map_err(configuration)?;
     let workspace = std::fs::canonicalize(command.workspace).map_err(configuration)?;
     let workspace = workspace
         .to_str()
