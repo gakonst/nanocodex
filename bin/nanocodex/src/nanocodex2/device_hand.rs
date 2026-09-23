@@ -23,6 +23,7 @@ use tokio_util::sync::CancellationToken;
 use super::native_hand::NativeState;
 
 mod account;
+mod power;
 #[cfg(any(target_os = "macos", target_os = "linux", test))]
 mod service_start;
 mod transport;
@@ -482,6 +483,8 @@ async fn share(
         .map_err(|_| error("another computer Hand daemon is running"))?;
     match open(directory) {
         Ok(mut state) => {
+            // Hold through reconnects and cleanup, after both publisher locks.
+            let _keep_awake = power::KeepAwake::acquire();
             let socket = socket_path(directory)?;
             let listener = transport::Listener::bind(&socket).map_err(error)?;
             let lease_cancel = cancel.clone();

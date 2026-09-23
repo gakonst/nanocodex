@@ -16,6 +16,10 @@ The broker durably claims each call before sending it once. The daemon owns exec
 
 The publisher lock protects the host identity. Closing the last client leaves the daemon running. The OS service manager owns startup, restart, and shutdown. Active calls are bounded across reconnects. Lease expiry reconnects, and the daemon leaves a live VM factory running through connection outages. Rejected credentials stop the daemon; log in again and restart the service.
 
+On macOS, the standalone daemon prevents idle system sleep by default using `/usr/bin/caffeinate -i -w <daemon PID>`. The assertion starts after exclusive publisher ownership and state opening, survives reconnects and client disconnects, and ends when the daemon shuts down. It does not keep the display awake or bypass lid-close sleep. If the helper cannot start, the daemon logs a warning and continues without sleep inhibition. Linux and Windows do not acquire this assertion.
+
+Set `NANOCODEX_HAND_KEEP_AWAKE=0` in the standalone service environment to opt out (for launchd, use its plist `EnvironmentVariables` dictionary and reload the service when convenient). An environment variable in an observing terminal does not change an already running service. The macOS app’s `keepMacAwake` preference controls its own ProcessInfo assertion separately; it does not configure the standalone daemon.
+
 ## Install
 
 First run `nanocodex2 login` as the machine owner. Then install the built binary:
