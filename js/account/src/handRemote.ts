@@ -12,7 +12,7 @@ export type RemoteScreenSelection = Readonly<{ hand?: RemoteHand; selected: bool
 const sameScreen = (a: RemoteHand | undefined, b: RemoteHand | undefined): boolean => a === b || !!a && !!b
   && a.machine_id === b.machine_id && a.id === b.id && a.generation === b.generation && a.transport === b.transport;
 
-/** One short-lived viewer for explicit pointer/keyboard intent. The UI keeps
+/** One prepared viewer while explicit pointer/keyboard intent remains active. The UI keeps
  * its Screen mounted when selected, preserving the actual video and peer. */
 export class RemoteScreenIntent {
   state: RemoteScreenSelection = { selected: false };
@@ -21,7 +21,6 @@ export class RemoteScreenIntent {
   private latestIntent: "pointer" | "focus" = "pointer";
   private pending?: RemoteHand;
   private delay?: ReturnType<typeof setTimeout>;
-  private expiry?: ReturnType<typeof setTimeout>;
   private closed = false;
   private readonly changed: (state: RemoteScreenSelection) => void;
   constructor(changed: (state: RemoteScreenSelection) => void) { this.changed = changed; }
@@ -54,8 +53,8 @@ export class RemoteScreenIntent {
     this.state = { selected: false };
   }
   private clear(): void {
-    clearTimeout(this.delay); clearTimeout(this.expiry);
-    this.delay = this.expiry = undefined; this.pending = undefined;
+    clearTimeout(this.delay);
+    this.delay = undefined; this.pending = undefined;
   }
   private prepare(): void {
     if (this.closed || this.state.selected) return;
@@ -67,17 +66,11 @@ export class RemoteScreenIntent {
     this.clear(); this.pending = hand;
     if (this.state.hand) this.publish({ selected: false });
     if (!hand) return;
-    // Ignore pointer transits. Expiry does not rearm until a new intent, even
-    // when a card stays hovered/focused for the remainder of the dialog.
+    // Ignore pointer transits; retain the viewer until intent or its owner ends.
     this.delay = setTimeout(() => {
       this.delay = undefined;
       if (this.closed || this.state.selected || this.pending !== hand) return;
       this.publish({ hand, selected: false });
-      if (this.closed || this.state.selected || this.pending !== hand) return;
-      this.expiry = setTimeout(() => {
-        this.expiry = undefined;
-        if (!this.closed && !this.state.selected && this.pending === hand) this.publish({ selected: false });
-      }, 5000);
     }, 150);
   }
   private publish(state: RemoteScreenSelection): void { this.state = state; this.changed(state); }

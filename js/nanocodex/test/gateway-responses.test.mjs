@@ -162,7 +162,7 @@ test("OpenRouter single-call mode does not require a parallel-call endpoint", as
   assert.equal(result.at(-1).response.output.length, 1);
 });
 
-test("OpenRouter fails closed when single-call mode receives multiple calls", async () => {
+test("OpenRouter preserves multiple validated calls despite a false parallel preference", async () => {
   const outcomes = [];
   const transport = createGatewayResponses({ ...options, onRequest: () => ({
     headers() {}, finish(outcome) { outcomes.push(outcome); },
@@ -171,9 +171,10 @@ test("OpenRouter fails closed when single-call mode receives multiple calls", as
     return completion({ tool_calls: ["one", "two"].map(id => ({ id,
       function: { name: body.tools[0].function.name, arguments: "{}" } })) }, "tool_calls");
   } });
-  await assert.rejects(invoke(transport, { parallel_tool_calls: false,
-    tools: [{ type: "function", name: "read", parameters: { type: "object" } }], input: "read" }), /Gateway Responses/);
-  assert.deepEqual(outcomes, ["protocol_error"]);
+  const result = await events(await invoke(transport, { parallel_tool_calls: false,
+    tools: [{ type: "function", name: "read", parameters: { type: "object" } }], input: "read" }));
+  assert.deepEqual(result.at(-1).response.output.map(item => item.call_id), ["one", "two"]);
+  assert.deepEqual(outcomes, ["success"]);
 });
 
 test("explicit parallel mode still requires provider support", async () => {
@@ -305,7 +306,7 @@ test("Cloudflare fails closed and sanitizes binding errors without retries or fa
       { error: { message: secret } }, { choices: [] }, nativeResponse([], { status: "failed", error: { message: secret } }),
       nativeResponse([{ type: "web_search_call", status: "completed" }]),
       nativeResponse([{ ...tool, name: secret }]), nativeResponse([{ ...tool, arguments: secret }]),
-      nativeResponse([{ ...tool, call_id: undefined }]), nativeResponse([tool, { ...tool, call_id: "two" }]),
+      nativeResponse([{ ...tool, call_id: undefined }]), nativeResponse([tool, { ...tool }]),
       nativeResponse([tool], { status: "incomplete", incomplete_details: { reason: "max_output_tokens" } }),
       nativeResponse([{ ...nativeText("x"), content: [{ type: "refusal", refusal: secret }] }]),
       nativeResponse([nativeText("x")], { usage: { input_tokens: secret } }),
@@ -663,7 +664,6 @@ for (const provider of ["openrouter", "vercel"]) for (const stream of [false, tr
       { calls: [call("tool_1", privateRaw, "")] },
       { calls: [call("tool_1", privateRaw, 42)] },
       { calls: [call("tool_1", privateRaw), call("tool_1", privateRaw)] },
-      { calls: [call("tool_1", privateRaw), call("tool_1", privateRaw, "second")], parallel_tool_calls: false },
       { calls: [call("tool_1", privateRaw)], finish: "length" },
       { calls: [call("tool_1", privateRaw)], finish: "content_filter" },
     ];

@@ -35,7 +35,7 @@ export function toBindingResponsesInput(chat, effort) {
   return payload;
 }
 
-export function fromBindingResponsesResult(result, parallelToolCalls) {
+export function fromBindingResponsesResult(result) {
   if (!result || typeof result !== "object" || result.error || result.object !== "response"
     || !["completed", "incomplete"].includes(result.status) || !Array.isArray(result.output)) fail();
   let finish_reason = "stop";
@@ -70,7 +70,6 @@ export function fromBindingResponsesResult(result, parallelToolCalls) {
       tool_calls.push({ id: item.call_id, type: "function", function: { name: item.name, arguments: item.arguments } });
     } else fail(); // Never accept provider-hosted tools or unsupported modalities.
   }
-  if (parallelToolCalls === false && tool_calls.length > 1) fail();
   if (tool_calls.length) finish_reason = "tool_calls";
   const message = { content: texts.join("\n"), reasoning_content: reasoning.join("\n"), tool_calls };
   let usage;

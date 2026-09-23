@@ -20,6 +20,12 @@ const normalizationCodes = new Map([
   ["required tool call missing", "normalize_tool_required"],
   ["unsupported completion tool call", "normalize_tool_type"],
   ["model returned an unknown tool alias", "normalize_tool_alias"],
+  ["model returned ambiguous original tool alias", "normalize_tool_alias_ambiguous"],
+  ["model returned namespaced wire tool alias", "normalize_tool_alias_namespace_wire"],
+  ["model returned flattened namespace tool alias", "normalize_tool_alias_namespace_flat"],
+  ["model returned repeated tool alias", "normalize_tool_alias_repeated"],
+  ["model returned unregistered wire tool alias", "normalize_tool_alias_unregistered_wire"],
+  ["model returned parallel wrapper tool alias", "normalize_tool_alias_parallel_wrapper"],
   ["model returned a different forced tool", "normalize_forced_tool"],
   ["model returned invalid tool JSON", "normalize_tool_json"],
   ["model returned unwrapped custom tool input", "normalize_custom_raw_input"],
@@ -84,7 +90,7 @@ async function* records(reader) {
   }
 }
 
-export function streamResponse(source, normalize, responseEvents, signal, parallelToolCalls) {
+export function streamResponse(source, normalize, responseEvents, signal) {
   if (!(source.body instanceof ReadableStream)) invalid("body_type");
   const checkedNormalize = (result, prologue) => {
     try { return normalize(result, prologue); }
@@ -146,9 +152,9 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
       { output_index: entry.index, item_id: entry.item.id, content_index: 0, delta: text });
   };
   // Tool declarations/arguments stay private until the existing normalizer has
-  // checked aliases, JSON, IDs, completeness and the single-call contract.
+  // checked aliases, JSON, IDs and completeness. The parallel request bit is a
+  // generation preference; the host scheduler owns execution concurrency.
   const complete = async result => {
-    if (parallelToolCalls === false && result.choices?.[0]?.message?.tool_calls?.length > 1) invalid("parallel_tools");
     const response = checkedNormalize(result);
     response.id = id;
     const output = [];
@@ -282,7 +288,7 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
           || item.call_id !== final.call_id || item.name !== final.name)) invalid("native_terminal_tool");
       }
       let result;
-      try { result = fromBindingResponsesResult(value.response, parallelToolCalls); }
+      try { result = fromBindingResponsesResult(value.response); }
       catch { invalid("native_normalization"); }
       await complete(result);
     } else if (!["response.created", "response.in_progress", "response.queued", "response.output_item.done",

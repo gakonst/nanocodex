@@ -28,27 +28,23 @@ test("screen intent ignores pointer transits and closes its one prepared viewer 
   f.tick(10_000); assert.equal(f.changes.length, 2);
 });
 
-test("selecting an intended screen adopts its same hand identity across catalog polls and cancels expiry", t => {
+test("selecting a screen after prolonged focus adopts its prepared hand identity across catalog polls", t => {
   const f = intentFixture(t);
   f.intent.focusOn(screen); f.tick(150);
   const prepared = f.intent.state.hand;
-  f.tick(1000); f.intent.select({ ...screen });
+  f.tick(60_000);
+  const refreshed = { ...screen };
+  f.intent.catalog([refreshed]);
+  assert.equal(f.intent.state.hand, prepared, "active focus must retain the prepared viewer beyond five seconds");
+  assert.equal(f.changes.length, 1, "catalog polling must not replace the prepared viewer");
+  f.intent.select(refreshed);
   assert.equal(f.intent.state.hand, prepared);
-  assert.equal(f.intent.state.selectedAt, 2150);
+  assert.equal(f.intent.state.selectedAt, 61_150);
   assert.equal(f.intent.state.selected, true);
   f.intent.focusOn(undefined); f.intent.hover(undefined); f.tick(10_000);
   assert.equal(f.intent.state.hand, prepared); assert.equal(f.changes.length, 2);
   f.intent.back(); assert.equal(f.intent.state.hand, undefined);
   f.tick(10_000); assert.equal(f.changes.length, 3, "returning to inventory does not prepare automatically");
-});
-
-test("a prepared viewer expires once and requires a new intent to prepare again", t => {
-  const f = intentFixture(t); f.intent.hover(screen); f.tick(150);
-  f.tick(4999); assert.equal(f.intent.state.hand, screen);
-  f.tick(1); assert.equal(f.intent.state.hand, undefined);
-  f.intent.hover({ ...screen }); f.tick(10_000); assert.equal(f.changes.length, 2);
-  f.intent.hover(undefined); f.intent.hover(screen); f.tick(150);
-  assert.equal(f.intent.state.hand, screen); assert.equal(f.changes.length, 3);
 });
 
 test("changing intent retires the previous screen before preparing another and preserves keyboard intent", t => {
@@ -68,14 +64,14 @@ for (const pointerPrepared of [false, true]) test(`keyboard focus supersedes a $
   f.intent.focusOn(screen); f.tick(150);
   assert.equal(f.intent.state.hand, screen, "a stationary pointer must not override newer keyboard intent");
   const prepared = f.intent.state.hand;
-  f.tick(3000);
+  f.tick(60_000);
   const refreshed = { ...screen };
   f.intent.catalog([refreshed, { ...other }]);
   f.intent.select(refreshed);
   assert.equal(f.intent.state.hand, prepared, "selection must retain the prepared Screen effect and decoder");
   assert.equal(f.intent.state.selected, true);
   f.tick(10_000);
-  assert.equal(f.intent.state.hand, prepared, "the retired preparation timer must not close a selected viewer");
+  assert.equal(f.intent.state.hand, prepared, "selection must keep the prepared viewer mounted");
 });
 
 for (const latest of ["pointer", "focus"] as const) test(`departure of older intent does not discard the newer ${latest} preparation`, t => {
@@ -92,15 +88,17 @@ for (const latest of ["pointer", "focus"] as const) test(`departure of older int
   assert.equal(f.changes.length, count, "leaving an inactive target must not restart preparation");
 });
 
-test("switching focus and hover on the same card preserves the original preparation deadline", t => {
+test("switching focus and hover on the same card retains its viewer until both intents leave", t => {
   const f = intentFixture(t);
   f.intent.hover(screen); f.tick(150); f.tick(4900);
-  f.intent.focusOn({ ...screen });
+  f.intent.focusOn({ ...screen }); f.tick(60_000);
   assert.equal(f.intent.state.hand, screen);
-  f.tick(100);
-  assert.equal(f.intent.state.hand, undefined, "focus must not extend a hovered viewer's five-second budget");
-  f.intent.hover({ ...screen }); f.intent.focusOn(screen); f.tick(10_000);
-  assert.equal(f.changes.length, 2, "same-card events must not rearm expired preparation");
+  f.intent.hover(undefined); f.tick(60_000);
+  assert.equal(f.intent.state.hand, screen, "focus must retain the viewer after pointer departure");
+  assert.equal(f.changes.length, 1, "same-card intent must not restart preparation");
+  f.intent.focusOn(undefined);
+  assert.equal(f.intent.state.hand, undefined);
+  assert.equal(f.changes.length, 2);
 });
 
 test("catalog replacement cancels preparation and never adopts an obsolete publication", t => {
