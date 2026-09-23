@@ -640,6 +640,7 @@ impl Service<ResponsesAttempt> for RevisionRecoveryProvider {
 }
 
 struct RecoveredRevisionProbe {
+    #[allow(clippy::type_complexity)]
     observations: Arc<Mutex<Vec<(Option<u64>, u32)>>>,
     compactions: Arc<AtomicU32>,
 }

@@ -66,7 +66,7 @@ impl SpawnDecision {
         }
     }
 
-    pub(crate) fn options(&self, requested: SpawnOptions) -> SpawnOptions {
+    pub(crate) const fn options(&self, requested: SpawnOptions) -> SpawnOptions {
         match self {
             Self::Routed(route) => route.options,
             Self::Native { .. } => requested,

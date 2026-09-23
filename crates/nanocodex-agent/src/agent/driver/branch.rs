@@ -97,6 +97,7 @@ where
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn spawn_clean(
         &self,
         workspace: Option<Arc<str>>,
