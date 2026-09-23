@@ -96,6 +96,7 @@ export async function fingerprintWorkers(cwd = process.cwd()) {
     }
     visit(spec.package);
     if (name === 'managed') files.add('js/managed/scripts/prepare-code-evaluator.mjs');
+    if (name === 'account') files.add('scripts/cloudflare/account-relay-image.mjs');
     for (const path of files) if (!contents.has(path)) files.delete(path);
     // Follow relative imports/re-exports and literal build asset URLs without
     // treating a development-only Wrangler service binding as a dependency.

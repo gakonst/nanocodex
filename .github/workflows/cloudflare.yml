@@ -94,6 +94,7 @@ jobs:
       cancel-in-progress: true
     permissions:
       contents: read
+      actions: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
@@ -126,15 +127,13 @@ jobs:
             --filter @nanocodex/connect-dialog \
             --filter @nanocodex/connect-playground \
             --filter nanocodex-web
-      - name: Save verified WASM outputs
-        if: github.ref == 'refs/heads/master' && steps.wasm.outputs.hit != 'true'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Retain verified WASM outputs
+        if: github.ref == 'refs/heads/master'
+        uses: ./.github/actions/save-wasm-outputs
         with:
           key: ${{ steps.wasm.outputs.key }}
-          path: |
-            js/nanocodex/pkg-web
-            js/nanocodex/pkg-node
-            .ci-wasm-cache
+          cache-hit: ${{ steps.wasm.outputs.cache-hit }}
+          rejected-artifact-id: ${{ steps.wasm.outputs.rejected-artifact-id }}
       - name: Build Astra trial application
         run: npm run build:client --prefix examples/astra-mpp-trial
       - name: Package same-revision Worker outputs
@@ -422,6 +421,7 @@ jobs:
     permissions:
       contents: read
       deployments: write
+      actions: read
     env:
       CI_TESTS_ENABLED: "false"
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
@@ -446,6 +446,16 @@ jobs:
         id: plan
         if: steps.current-release.outputs.active == 'true'
         run: node scripts/cloudflare/release-plan.mjs plan
+      - name: Fingerprint the shared account relay image
+        id: account-image
+        if: steps.plan.outputs.account == 'true'
+        run: echo "input=$(node scripts/cloudflare/account-relay-image.mjs key)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: account-image-cache
+        if: steps.plan.outputs.account == 'true'
+        with:
+          path: .ci-images/account-relay.json
+          key: account-relay-image-v1-${{ steps.account-image.outputs.input }}
       - name: Reconcile image receipts after the locked release plan
         id: image-state
         if: steps.plan.outputs.managed == 'true'
@@ -485,6 +495,15 @@ jobs:
       - name: Install only selected application dependencies
         if: steps.plan.outputs.any == 'true'
         run: node scripts/cloudflare/release-plan.mjs install
+      - name: Reuse or publish one image for all account relay regions
+        if: steps.plan.outputs.account == 'true'
+        run: node scripts/cloudflare/account-relay-image.mjs ensure
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.plan.outputs.account == 'true' && steps.account-image-cache.outputs.cache-hit != 'true'
+        continue-on-error: true
+        with:
+          path: .ci-images/account-relay.json
+          key: account-relay-image-v1-${{ steps.account-image.outputs.input }}
       - name: Prepare a builder only for an image missing after locked replan
         if: steps.recovered-images.outputs.build == 'true'
         id: recovery-builder
@@ -500,15 +519,16 @@ jobs:
       - name: Build only selected applications and their dependencies
         if: steps.plan.outputs.any == 'true'
         run: node scripts/cloudflare/release-plan.mjs build
-      - name: Save verified WASM outputs
-        if: steps.plan.outputs.wasm == 'true' && steps.wasm.outputs.hit != 'true' && github.ref == 'refs/heads/master'
-        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      - name: Configure the shared immutable account relay image
+        if: steps.plan.outputs.account == 'true'
+        run: node scripts/cloudflare/account-relay-image.mjs config
+      - name: Retain verified WASM outputs
+        if: steps.plan.outputs.wasm == 'true' && github.ref == 'refs/heads/master'
+        uses: ./.github/actions/save-wasm-outputs
         with:
           key: ${{ steps.wasm.outputs.key }}
-          path: |
-            js/nanocodex/pkg-web
-            js/nanocodex/pkg-node
-            .ci-wasm-cache
+          cache-hit: ${{ steps.wasm.outputs.cache-hit }}
+          rejected-artifact-id: ${{ steps.wasm.outputs.rejected-artifact-id }}
       - name: Deploy selected Workers and record successful releases
         if: steps.plan.outputs.any == 'true'
         env:

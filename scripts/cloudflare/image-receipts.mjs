@@ -7,11 +7,13 @@ import { fileURLToPath } from 'node:url';
 import { ghRequest } from './deployment-ledger.mjs';
 import { fingerprint, validateReceipt } from './managed-images.mjs';
 
-export function imageReceiptStore({ repository = process.env.GITHUB_REPOSITORY, ref = process.env.GITHUB_SHA, request = ghRequest } = {}) {
+export function imageReceiptStore({ repository = process.env.GITHUB_REPOSITORY, ref = process.env.GITHUB_SHA, request = ghRequest,
+  validate = validateReceipt, allowedImages = ['phone', 'sandbox'] } = {}) {
   assert.match(repository, /^[A-Za-z0-9][A-Za-z0-9-]*\/[A-Za-z0-9_.-]+$/);
   const base = `repos/${repository}/deployments`;
   const environment = image => {
-    assert.ok(['phone', 'sandbox'].includes(image));
+    assert.ok(allowedImages.includes(image));
+    assert.match(image, /^[a-z][a-z0-9-]*$/);
     return `nanocodex-image-${image}`;
   };
   return {
@@ -26,7 +28,7 @@ export function imageReceiptStore({ repository = process.env.GITHUB_REPOSITORY, 
           let payload = entry.payload;
           if (typeof payload === 'string') payload = JSON.parse(payload);
           if (payload?.schema !== 1 || payload.receipt?.input !== input) continue;
-          validateReceipt(payload.receipt, image, account, input);
+          validate(payload.receipt, image, account, input);
           const statuses = await request({ method: 'GET', path: `${base}/${entry.id}/statuses?per_page=1` });
           if (statuses?.[0]?.state === 'success' && statuses[0].environment === environment(image)) return payload.receipt;
         }
@@ -34,12 +36,12 @@ export function imageReceiptStore({ repository = process.env.GITHUB_REPOSITORY, 
       return null;
     },
     async retain(receipt, account, input) {
-      validateReceipt(receipt, receipt.image, account, input);
+      validate(receipt, receipt.image, account, input);
       const existing = await this.restore(receipt.image, account, input);
       if (existing?.ref !== receipt.ref) await this.save(receipt, account, input);
     },
     async save(receipt, account, input) {
-      validateReceipt(receipt, receipt.image, account, input);
+      validate(receipt, receipt.image, account, input);
       assert.match(ref, /^[a-f0-9]{40}$/);
       const env = environment(receipt.image);
       const entry = await request({ method: 'POST', path: base, body: {

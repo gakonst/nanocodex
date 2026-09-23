@@ -42,3 +42,26 @@ test('unfinished publication, foreign accounts and unknown history cannot be reu
   assert.equal(await unavailable.restore('phone', account, input), null);
   await assert.rejects(unavailable.save(receipt, account, input));
 });
+
+test('optional image and validator extension preserves default phone/sandbox boundary', async () => {
+  const custom = { ...receipt, image: 'account-relay', ref: receipt.ref.replace('phone', 'account-relay') };
+  const defaultStore = fixture().store;
+  await assert.rejects(defaultStore.save(custom, account, input));
+  let validated = 0;
+  const calls = [];
+  const store = imageReceiptStore({ repository: 'fixture/repo', ref, allowedImages: ['account-relay'],
+    validate: (value, image, targetAccount, targetInput) => {
+      validated++; assert.deepEqual(value, custom); assert.equal(image, 'account-relay');
+      assert.equal(targetAccount, account); assert.equal(targetInput, input);
+    },
+    request: async call => {
+      calls.push(call);
+      if (call.path.endsWith('/statuses')) return { state: 'success', environment: 'nanocodex-image-account-relay' };
+      return { id: 1, environment: 'nanocodex-image-account-relay', sha: ref };
+    },
+  });
+  await store.save(custom, account, input);
+  assert.equal(validated, 1);
+  assert.equal(calls[0].body.payload.schema, 1);
+  assert.equal(calls[0].body.payload.receipt.image, 'account-relay');
+});

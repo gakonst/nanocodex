@@ -15,7 +15,11 @@ Worker is declared JS-only. Source keys include runtime/config/assets and releva
 build scripts, not development stress tools or native-image preparation scripts.
 
 The shared `.github/actions/wasm-outputs` action verifies exact-input browser/Node
-bindings and retained raw WASM before setting up Rust. Verified hits skip Cargo,
+bindings and retained raw WASM before setting up Rust. Actions cache is the fast
+lookup; trusted master builds also retain exact-key artifacts for 90 days. Cache
+eviction restores that artifact before considering compilation. Publication
+deduplicates recent artifacts and refreshes those nearing expiry; PR/fork outputs
+cannot seed production reuse. Verified hits skip Cargo,
 wasm-bindgen and wasm-opt and reattest for the checkout. Misses rebuild with Rust
 1.97. Both the outer cache key and inner binding stamp cover generator policy.
 Provably non-WASM Cargo target tables and standalone tests/benches are excluded;
@@ -45,6 +49,13 @@ to refresh upstream content or recover deliberately deleted registry images. Aud
 new Docker COPY/build-script reads and external generated inputs in the input helper.
 Preview container decisions compare these same committed keys, so SDK JavaScript
 alone cannot trigger native image builds.
+
+The account Worker uses one immutable relay image across all regional controllers.
+Its separate key follows the audited Docker COPY inputs and build policy, so UI or
+Worker-only edits do not rebuild it. The serialized production job restores its
+receipt or publishes once, then replaces every regional image path with that digest
+in a generated config beside Vite's output. Account releases explicitly stamp the
+revision, and health must report that revision before the release is certified.
 
 Worker release identity combines source/dependency/config keys with account scope.
 The ledger records intent before mutation. Success requires command completion,

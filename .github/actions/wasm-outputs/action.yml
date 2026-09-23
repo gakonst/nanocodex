@@ -7,6 +7,12 @@ outputs:
   hit:
     description: Whether the restored outputs passed integrity checks
     value: ${{ steps.verify.outputs.hit }}
+  cache-hit:
+    description: Whether Actions cache contained the exact key (for cache warming)
+    value: ${{ steps.restore.outputs.cache-hit }}
+  rejected-artifact-id:
+    description: Retained artifact that failed download or integrity checks
+    value: ${{ steps.artifact.outputs.artifact-id != '' && steps.install.outputs.hit != 'true' && steps.artifact.outputs.artifact-id || '' }}
 runs:
   using: composite
   steps:
@@ -16,14 +22,15 @@ runs:
       run: echo "key=wasm-outputs-v1-${{ runner.os }}-${{ runner.arch }}-$(node js/nanocodex-vite/scripts/wasm-output-cache.mjs key release)" >> "$GITHUB_OUTPUT"
     - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       id: restore
+      continue-on-error: true
       with:
         key: ${{ steps.inputs.outputs.key }}
         path: |
           js/nanocodex/pkg-web
           js/nanocodex/pkg-node
           .ci-wasm-cache
-    - name: Verify restored WASM outputs
-      id: verify
+    - name: Verify cached WASM outputs
+      id: cached
       shell: bash
       run: |
         if node js/nanocodex-vite/scripts/wasm-output-cache.mjs check release; then
@@ -31,6 +38,43 @@ runs:
         else
           echo "hit=false" >> "$GITHUB_OUTPUT"
         fi
+    - name: Find retained WASM outputs from trusted master builds
+      id: artifact
+      if: steps.cached.outputs.hit != 'true'
+      continue-on-error: true
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+        WASM_CACHE_KEY: ${{ steps.inputs.outputs.key }}
+      run: node scripts/ci/wasm-artifacts.mjs find "$WASM_CACHE_KEY"
+    - name: Prepare isolated WASM download
+      id: directory
+      if: steps.artifact.outputs.artifact-id != ''
+      shell: bash
+      run: echo "path=$(mktemp -d "$RUNNER_TEMP/wasm-outputs.XXXXXX")" >> "$GITHUB_OUTPUT"
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      if: steps.artifact.outputs.artifact-id != ''
+      continue-on-error: true
+      with:
+        artifact-ids: ${{ steps.artifact.outputs.artifact-id }}
+        merge-multiple: true
+        run-id: ${{ steps.artifact.outputs.run-id }}
+        repository: ${{ github.repository }}
+        github-token: ${{ github.token }}
+        path: ${{ steps.directory.outputs.path }}
+    - name: Install and verify retained WASM outputs
+      id: install
+      if: steps.artifact.outputs.artifact-id != ''
+      continue-on-error: true
+      shell: bash
+      env:
+        WASM_CACHE_KEY: ${{ steps.inputs.outputs.key }}
+        WASM_ARTIFACT_DIRECTORY: ${{ steps.directory.outputs.path }}
+      run: node scripts/ci/wasm-artifacts.mjs restore "$WASM_CACHE_KEY" "$WASM_ARTIFACT_DIRECTORY"
+    - name: Report verified WASM reuse
+      id: verify
+      shell: bash
+      run: echo "hit=${{ steps.cached.outputs.hit == 'true' || steps.install.outputs.hit == 'true' }}" >> "$GITHUB_OUTPUT"
     - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
       if: steps.verify.outputs.hit != 'true'
       with:
