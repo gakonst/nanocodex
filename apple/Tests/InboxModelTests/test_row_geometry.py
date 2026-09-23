@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Exercise realized transcript rows supplied in viewport coordinates."""
+"""Exercise the app's actual geometry index with variable-height transcript rows."""
 from pathlib import Path
 import subprocess
 import tempfile
@@ -7,35 +7,32 @@ import tempfile
 root = Path(__file__).resolve().parents[2]
 view = (root / "NanocodexInbox/InboxView.swift").read_text()
 start = view.index("private final class ConversationRowGeometry {")
-end = view.index("private struct ConversationContentPosition:", start)
+end = view.index("private struct ConversationRowFrames:", start)
 source = "import Foundation\nimport CoreGraphics\n" + view[start:end] + r'''
 private let index = ConversationRowGeometry()
-let frames: [String: CGRect] = [
-    "above": CGRect(x: 20, y: -80, width: 350, height: 80),
-    "partial": CGRect(x: 20, y: -30, width: 350, height: 70),
-    "inside": CGRect(x: 20, y: 60, width: 350, height: 180),
-    "bottom": CGRect(x: 20, y: 690, width: 350, height: 100),
-    "below": CGRect(x: 20, y: 700, width: 350, height: 30)
-]
-index.updateViewportFrames(frames)
-precondition(Set(index.visibleFrames(height: 700).keys) == ["partial", "inside", "bottom"])
-precondition(index["partial"] == frames["partial"], "Viewport frames must not be transformed")
-precondition(index.firstFrame(where: { _ in true })?.key == "partial")
-precondition(index.firstFrame(where: { $0 == "inside" })?.key == "inside")
-precondition(index.firstFrame(where: { $0 == "above" }) == nil)
-// The native layout reports new viewport coordinates on scrolling/overscroll.
-let overscrolled = frames.mapValues { $0.offsetBy(dx: 0, dy: 120) }
-index.updateViewportFrames(overscrolled)
-precondition(index["partial"] == overscrolled["partial"])
-precondition(Set(index.visibleFrames(height: 700).keys) == ["above", "partial", "inside"])
-precondition(index.firstFrame(where: { _ in true })?.key == "above")
-index.updateViewportFrames(["replacement": CGRect(x: 0, y: -50, width: 200, height: 300)])
-precondition(index["inside"] == nil)
+var frames: [String: CGRect] = [:]
+var y: CGFloat = 24
+for i in 0..<10_000 {
+    let height = CGFloat(20 + i % 37 * 19)
+    frames["row-\(i)"] = CGRect(x: 20, y: y, width: 350, height: height)
+    y += height + 18
+}
+index.updateContentFrames(frames)
+for offset in [-40.0, 0, 24, 44, 62, 200, 17_000, Double(y - 500), Double(y), Double(y + 100)] {
+    index.updateOffset(offset)
+    let expected = frames.filter { $0.value.maxY > offset && $0.value.minY < offset + 700 }
+        .mapValues { $0.offsetBy(dx: 0, dy: -offset) }
+    precondition(index.visibleFrames(height: 700) == expected, "Viewport mismatch at \(offset)")
+    precondition(index["row-5"] == frames["row-5"]!.offsetBy(dx: 0, dy: -offset))
+    let first = frames.filter { $0.value.maxY > offset && $0.key != "row-0" }
+        .min { $0.value.minY < $1.value.minY }
+    precondition(index.firstFrame(where: { $0 != "row-0" })?.key == first?.key)
+}
+index.updateContentFrames(["replacement": CGRect(x: 0, y: 100, width: 200, height: 300)])
+index.updateOffset(150)
+precondition(index["row-5"] == nil)
 precondition(index.visibleFrames(height: 200) == ["replacement": CGRect(x: 0, y: -50, width: 200, height: 300)])
-index.updateViewportFrames([:])
-precondition(index.visibleFrames(height: 700).isEmpty)
-precondition(index.firstFrame(where: { _ in true }) == nil)
-print("PASS: viewport coordinates, boundaries, overscroll, working-set replacement, and empty viewport")
+print("PASS: 10,000 variable-height rows, viewport boundaries, overscroll, and layout replacement")
 '''
 with tempfile.TemporaryDirectory(prefix="nanocodex-geometry-") as temp:
     path = Path(temp)

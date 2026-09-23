@@ -12,7 +12,7 @@ fixtures = r'''
 import Foundation
 import Combine
 import os
-struct TranscriptRow: Sendable, Equatable { var id: String }
+struct TranscriptRow: Sendable { var id: String }
 struct PendingMessage: Sendable {}
 struct Message: Sendable, Equatable { var role: String }
 struct ConversationRenderedItem: Sendable, Equatable {
