@@ -676,7 +676,7 @@ mod tests {
     #[test]
     fn prepared_context_rejects_unbound_wrong_session_invalid_fields_and_decimal_cursors() {
         let context = json!({"markdown_memory":"current memory"});
-        let event = prepared_event("9007199254740993", context.clone());
+        let event = prepared_event("9007199254740993", context);
         let mut voice = ManagedVoiceProtocol::new("cove").unwrap();
         assert!(voice.managed_event(&event).frames.is_empty());
         voice.bind_session("call-1");
