@@ -20,6 +20,7 @@ it("preparation requires authority, acknowledges before discovery, and coalesces
     Object.defineProperty(session, "env", { value: { ...runtimeEnv, NANOCODEX: { fetch: broker },
       NANOCODEX_ACCOUNT_TOOLS: { getByName: () => ({ fetch: snapshot }) } } });
     const request = (h?: Record<string, string>) => session.fetch(new Request("https://session.internal/prepare", { method: "POST", headers: h }));
+    const sockets: WebSocket[] = [];
     try {
       expect((await request()).status).toBe(403);
       expect((await request({ ...headers, "x-nanocodex-capabilities": '["agents:read"]' })).status).toBe(403);
@@ -28,6 +29,28 @@ it("preparation requires authority, acknowledges before discovery, and coalesces
       expect((await session.fetch(new Request("https://session.internal/prepare", {
         method: "POST", headers, body: "{}",
       }))).status).toBe(400);
+      const upgrade = (h: Record<string, string>, cursor = "latest") => session.fetch(new Request(
+        `https://session.internal/socket?cursor=${cursor}`, { headers: { upgrade: "websocket", ...h } }));
+      const preparation = { ...headers, "x-nanocodex-prepare": "active-conversation" };
+      expect((await upgrade({ "x-nanocodex-prepare": "active-conversation" })).status).toBe(403);
+      expect((await upgrade({ ...preparation, "x-nanocodex-capabilities": '["agents:read"]' })).status).toBe(403);
+      expect((await upgrade(preparation, "invalid")).status).toBe(400);
+      expect(snapshot).not.toHaveBeenCalled();
+      const observer = await upgrade({ ...headers, "x-nanocodex-capabilities": '["agents:read"]' });
+      expect(observer.status).toBe(101);
+      expect(observer.headers.has("x-nanocodex-prepare")).toBe(false);
+      observer.webSocket!.accept(); sockets.push(observer.webSocket!);
+      expect(snapshot).not.toHaveBeenCalled();
+      for (let i = 0; i < 2; i++) {
+        // Discovery deliberately remains blocked. Ready must still arrive.
+        const admitted = await upgrade(preparation);
+        expect(admitted.status).toBe(101);
+        expect(admitted.headers.get("x-nanocodex-prepare")).toBe("active-conversation");
+        const socket = admitted.webSocket!;
+        const ready = new Promise<unknown>(resolve => socket.addEventListener("message", event => resolve(JSON.parse(event.data as string)), { once: true }));
+        socket.accept(); sockets.push(socket);
+        expect(await ready).toMatchObject({ type: "ready", active_turns: [] });
+      }
       const first = await request(headers);
       expect(first.status).toBe(202);
       expect(await first.json()).toEqual({ state: "preparing" });
@@ -39,6 +62,7 @@ it("preparation requires authority, acknowledges before discovery, and coalesces
       expect(broker.mock.calls.length).toBeGreaterThan(0);
       expect(state.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM managed_turns").one().count).toBe(0);
     } finally {
+      for (const socket of sockets) socket.close(1000);
       release();
       // Let the owned background failure settle before the Worker test tears down.
       await new Promise(resolve => setTimeout(resolve, 30));

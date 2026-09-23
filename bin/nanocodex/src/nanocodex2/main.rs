@@ -21,6 +21,8 @@ mod hand_workspace;
 mod host;
 #[allow(dead_code)]
 mod installation;
+#[path = "../launcher.rs"]
+mod launcher;
 mod native_hand;
 mod observation_providers;
 mod reload;
@@ -551,6 +553,7 @@ fn main() -> ExitCode {
 
 fn try_main() -> Result<(), ManagedError> {
     let _startup = startup_timing::Stage::new("process");
+    launcher::initialize_install_root();
     let _ = dotenvy::dotenv();
     #[cfg(target_os = "linux")]
     if std::env::var(screen_wayland_encoder::HELPER_ENV).as_deref() == Ok("1") {

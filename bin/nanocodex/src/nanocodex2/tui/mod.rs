@@ -1851,6 +1851,7 @@ async fn run_inner(
     client: &ManagedClient,
     attach: Option<Option<String>>,
 ) -> Result<(), ManagedError> {
+    let first_frame = crate::startup_timing::Stage::new("tui_first_frame");
     let workspace = HostConfig::load()
         .map_err(|error| ManagedError::Configuration(error.to_string()))?
         .workspace()
@@ -1868,11 +1869,7 @@ async fn run_inner(
     root.set_fast_mode(initial_settings.fast_mode);
     root.set_model(initial_settings.model);
 
-    let mut theme = Theme::default();
-    if let Some(scheme) = detect_system_scheme() {
-        theme.set_system_scheme(scheme);
-    }
-    let mut app = AppNode::new(theme, workspace.clone(), root);
+    let mut app = AppNode::new(Theme::default(), workspace.clone(), root);
     let mut reload = match crate::reload::register() {
         Ok(registration) => Some(registration),
         Err(error) => {
@@ -1886,7 +1883,7 @@ async fn run_inner(
     let mut scheduler = RenderScheduler::new(STREAM_FRAME_INTERVAL, Instant::now());
     let mut runtime = DriverRuntime {
         control_bridge: None,
-        screen: screen::Controller::new(components::video_picker()),
+        screen: screen::Controller::new(None),
         client: client.clone(),
         pending_voice: None,
         voice_selection: Default::default(),
@@ -1969,6 +1966,15 @@ async fn run_inner(
         .draw(|frame| app.render(frame))
         .map_err(terminal_error)?;
     scheduler.presented(Instant::now());
+    drop(first_frame);
+    // Theme and tmux discovery must not delay the first editable frame. These
+    // tasks never read stdin; the terminal event stream remains its sole owner.
+    let mut presentation_setup = JoinSet::new();
+    presentation_setup.spawn(async {
+        components::initialize_image_renderer().await;
+        None
+    });
+    presentation_setup.spawn_blocking(detect_system_scheme);
     match attach {
         Some(None) => {
             let update = app.open_resume_selector();
@@ -2175,6 +2181,13 @@ async fn run_inner(
                 (Some(&mut voice.status), Some(&mut voice.transcripts))
             });
         tokio::select! {
+            result = presentation_setup.join_next(), if !presentation_setup.is_empty() => {
+                if let Some(Ok(Some(scheme))) = result {
+                    request_render(app.update(AppEvent::SystemThemeChanged(scheme)), &mut scheduler);
+                } else {
+                    scheduler.request_immediate(Instant::now());
+                }
+            }
             command = async {
                 #[cfg(unix)]
                 if let Some(server) = &mut control_server {
@@ -2781,7 +2794,12 @@ async fn run_inner(
                             {
                                 runtime.start_submission(pane, id, prompt);
                             }
-                            runtime.refresh_routing();
+                            // Live creation accepts fixed model settings only;
+                            // routing starts disabled. Existing threads still
+                            // hydrate their durable routing configuration.
+                            if !created {
+                                runtime.refresh_routing();
+                            }
                             runtime.start_history_prefetch(pane);
                         }
                         ConnectionResult::Agent { purpose, result: Err(failure) } => {
@@ -4737,7 +4755,9 @@ mod tests {
                 .unwrap();
         DriverRuntime {
             control_bridge: None,
-            screen: crate::tui::screen::Controller::new(ratatui_image::picker::Picker::halfblocks()),
+            screen: crate::tui::screen::Controller::new(Some(
+                ratatui_image::picker::Picker::halfblocks(),
+            )),
             pending_voice: None,
             voice_selection: Default::default(),
             voice_tasks: JoinSet::new(),

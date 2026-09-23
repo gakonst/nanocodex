@@ -85,6 +85,8 @@ impl VersionStore {
     pub(super) fn discover() -> Result<Self> {
         let root = if let Some(root) = std::env::var_os("NANOCODEX_DIR") {
             PathBuf::from(root)
+        } else if let Some(root) = crate::launcher::running_install_root() {
+            root
         } else {
             let home = std::env::var_os("HOME")
                 .or_else(|| std::env::var_os("USERPROFILE"))
@@ -518,6 +520,12 @@ impl VersionStore {
 
     #[cfg(unix)]
     fn install_launcher(&self) -> Result<()> {
+        let path = self.root.join("bin").join(BINARY_NAME);
+        if fs::read(self.root.join("current").join(BINARY_NAME))
+            .is_ok_and(|contents| crate::launcher::supports_native_launcher(&contents))
+        {
+            return atomic_symlink(&path, &Path::new("../current").join(BINARY_NAME));
+        }
         const LAUNCHER: &str = r#"#!/bin/sh
 set -eu
 
@@ -614,7 +622,26 @@ exec "$install_root/current/nanocodex2" "$@"
             &self.version_dir(key).join(NANOCODEX2_BINARY_NAME),
             &self.version_dir(key).join(NANOCODEX2_CHECKSUM_FILE),
         )? {
+            let contents = fs::read(self.version_dir(key).join(NANOCODEX2_BINARY_NAME))?;
+            if crate::launcher::supports_native_launcher(&contents) {
+                return atomic_symlink(
+                    &path,
+                    &Path::new("../current").join(NANOCODEX2_BINARY_NAME),
+                );
+            }
             return atomic_write(&path, LAUNCHER.as_bytes(), true);
+        }
+        // Inspect the link itself, including a dangling link after activating a
+        // legacy version without the companion. Never follow/remove custom links.
+        if fs::read_link(&path).is_ok_and(|target| {
+            target == Path::new("../current").join(NANOCODEX2_BINARY_NAME)
+                || target == self.root.join("current").join(NANOCODEX2_BINARY_NAME)
+        }) {
+            return fs::remove_file(&path)
+                .wrap_err_with(|| format!("failed to remove {}", path.display()));
+        }
+        if path.is_symlink() {
+            return Ok(());
         }
         match fs::read(&path) {
             Ok(contents)
@@ -628,6 +655,28 @@ exec "$install_root/current/nanocodex2" "$@"
             Err(error) => Err(error).wrap_err_with(|| format!("failed to read {}", path.display())),
         }
     }
+}
+
+/// Replace either an older wrapper or link without exposing a missing launcher.
+#[cfg(unix)]
+fn atomic_symlink(path: &Path, target: &Path) -> Result<()> {
+    use std::os::unix::fs::symlink;
+
+    if fs::read_link(path).is_ok_and(|existing| existing == target) {
+        return Ok(());
+    }
+    let parent = path
+        .parent()
+        .ok_or_else(|| eyre!("launcher has no parent"))?;
+    fs::create_dir_all(parent)?;
+    // A private directory reserves a unique name without unlinking another
+    // update's staging path. Rename occurs on the same filesystem.
+    let staging = tempfile::Builder::new()
+        .prefix(".launcher-")
+        .tempdir_in(parent)?;
+    let temporary = staging.path().join("link");
+    symlink(target, &temporary)?;
+    fs::rename(&temporary, path).wrap_err_with(|| format!("failed to install {}", path.display()))
 }
 
 fn validate_key(key: &str) -> Result<()> {
@@ -696,6 +745,59 @@ pub(super) fn atomic_write(path: &Path, contents: &[u8], executable: bool) -> Re
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_launchers_switch_atomically_and_fall_back_for_older_versions() {
+        use std::os::unix::fs::{MetadataExt, symlink};
+
+        let directory = tempfile::tempdir().unwrap();
+        let store = VersionStore::at(directory.path());
+        let binary = crate::launcher::NATIVE_LAUNCHER_MARKER;
+        store
+            .install_bundle("native", binary, binary, None, None)
+            .unwrap();
+        store.activate("native").unwrap();
+        for name in [BINARY_NAME, NANOCODEX2_BINARY_NAME] {
+            let link = directory.path().join("bin").join(name);
+            assert_eq!(
+                fs::read_link(&link).unwrap(),
+                Path::new("../current").join(name)
+            );
+            assert_eq!(fs::read(&link).unwrap(), binary);
+        }
+        let launcher = directory.path().join("bin").join(BINARY_NAME);
+        let inode = fs::symlink_metadata(&launcher).unwrap().ino();
+        store.install_launcher().unwrap();
+        assert_eq!(fs::symlink_metadata(&launcher).unwrap().ino(), inode);
+
+        store.install("legacy", b"old binary").unwrap();
+        store.activate("legacy").unwrap();
+        assert!(!launcher.is_symlink());
+        assert!(
+            fs::read_to_string(&launcher)
+                .unwrap()
+                .contains("updater/nanocodex")
+        );
+        assert_eq!(fs::read(store.binary_path("native")).unwrap(), binary);
+        let companion = directory.path().join("bin").join(NANOCODEX2_BINARY_NAME);
+        assert!(fs::symlink_metadata(&companion).is_err());
+
+        // An older bundle gets its compatible companion wrapper as well.
+        store
+            .install_bundle("older-bundle", b"old", b"old2", None, None)
+            .unwrap();
+        store.activate("older-bundle").unwrap();
+        assert!(!companion.is_symlink());
+        store.activate("native").unwrap();
+        assert!(companion.is_symlink());
+        fs::remove_file(&companion).unwrap();
+        symlink("/custom/missing/companion", &companion).unwrap();
+        store.activate("legacy").unwrap();
+        assert_eq!(
+            fs::read_link(&companion).unwrap(),
+            Path::new("/custom/missing/companion")
+        );
+    }
 
     #[test]
     fn launchers_preserve_paths_arguments_and_cwd_without_external_utilities() {

@@ -229,7 +229,6 @@ impl TerminalSession {
         activate_commands(&mut output)?;
         TERMINAL_ACTIVE.store(true, Ordering::Release);
         let terminal = Terminal::new(StableCursorBackend::hidden(CrosstermBackend::new(output)))?;
-        crate::tui::components::initialize_image_renderer().await;
         restore.armed = false;
 
         Ok(Self {

@@ -246,7 +246,6 @@ if [ "${1-}" = "update" ] && [ -f "$install_root/updater/nanocodex.sha256" ]; th
 fi
 exec "$install_root/current/nanocodex" "$@"
 EOF
-install -m 755 "$temporary_dir/nanocodex-launcher" "$bin_dir/nanocodex"
 
 cat > "$temporary_dir/nanocodex2-launcher" <<'EOF'
 #!/bin/sh
@@ -261,7 +260,19 @@ install_root=$(dirname -- "$bin_dir")
 export NANOCODEX_DIR="$install_root"
 exec "$install_root/current/nanocodex2" "$@"
 EOF
-install -m 755 "$temporary_dir/nanocodex2-launcher" "$bin_dir/nanocodex2"
+# New binaries perform install-root setup and updater dispatch natively. Retain
+# the portable wrapper when installing releases that predate that capability.
+# Stage beside bin so replacement never follows an existing launcher symlink.
+for name in nanocodex nanocodex2; do
+  launcher_stage="$(mktemp -d "$bin_dir/.launcher.XXXXXX")"
+  if LC_ALL=C grep -aFq 'NANOCODEX_NATIVE_LAUNCHER_V1' "$version_dir/$name"; then
+    ln -s "../current/$name" "$launcher_stage/$name"
+  else
+    install -m 755 "$temporary_dir/$name-launcher" "$launcher_stage/$name"
+  fi
+  mv -f "$launcher_stage/$name" "$bin_dir/$name"
+  rmdir "$launcher_stage"
+done
 # Retire only launchers installed by older Nanocodex releases.
 retired_launcher="$bin_dir/nanocodex-computer"
 if [[ -L "$retired_launcher" ]]; then

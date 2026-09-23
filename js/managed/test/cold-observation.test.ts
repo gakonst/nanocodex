@@ -14,6 +14,9 @@ describe("cold managed observations", () => {
       let constructions = 0;
       Object.defineProperty(session, "env", { value: {
         ...runtimeEnv,
+        // Personalization is independent of runtime construction. Keep this
+        // observation fixture from creating unrelated subscribed Memory DOs.
+        NANOCODEX_MEMORY: { getByName: () => ({ fetch: async () => Response.json({ snapshot: null }) }) },
         NANOCODEX_ACCOUNT_TOOLS: { getByName: () => {
           constructions++;
           throw new Error("observations must not construct the agent");
