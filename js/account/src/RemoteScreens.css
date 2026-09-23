@@ -18,6 +18,9 @@
 
 .remote-screen-notice { margin: 0; padding: 8px 16px; font-size: 12px; }
 .remote-screens video, .remote-screen-frame { display: block; position: absolute; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+/* Keep a video layer when a prepared viewer enters the dialog layout.
+   A decoded stream must not need a fullscreen/control resize to become visible. */
+.remote-screen-canvas > video { transform: translateZ(0); }
 .remote-keyboard-input { position: absolute; top: 0; left: 0; width: 1px; height: 1px; opacity: 0; padding: 0; border: 0; pointer-events: none; resize: none; }
 .remote-screen-list { padding: 16px; overflow: auto; }
 .remote-screen-list > button { display: flex; align-items: center; gap: 16px; text-align: left; width: 100%; margin-bottom: 10px; padding: 16px; }

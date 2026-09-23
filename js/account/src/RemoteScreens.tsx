@@ -475,7 +475,7 @@ export function Screen({ hand, onBack, preparing = false, selectedAt, iceContext
           <dt title="Elapsed since this attempt started; concurrent stages overlap">{label}</dt><dd>{state.stats.startup[key]!.toFixed(0)} ms</dd>
         </Fragment>)}
         {state.stats?.preparationMs !== undefined && state.stats.preparationMs > 0 && <><dt title="Time the muted viewer was prepared before selection">Prepared before click</dt><dd>{state.stats.preparationMs.toFixed(0)} ms</dd></>}
-        {state.stats?.selectionFirstFrameMs !== undefined && <><dt title="Time from selecting this screen to its next presented frame, including automatic retries; older browsers report decoded readiness">After selection</dt><dd>{state.stats.selectionFirstFrameMs.toFixed(0)} ms</dd></>}
+        {state.stats?.selectionFirstFrameMs !== undefined && <><dt title="Time from selection or explicit reconnect/resume to its first presented frame, including retries before that frame; older browsers report decoded readiness">After selection</dt><dd>{state.stats.selectionFirstFrameMs.toFixed(0)} ms</dd></>}
         <dt title="Time from connection attempt to first presented frame; older browsers report decoded readiness">First frame</dt><dd>{state.stats?.firstFrameMs === undefined ? "—" : `${state.stats.firstFrameMs.toFixed(0)} ms`}</dd>
         {(state.stats?.attempt ?? 0) > 1 && <><dt title="Time from Connect or Reconnect through automatic retries to the first frame of this attempt">Including retries</dt><dd>{state.stats?.totalFirstFrameMs === undefined ? "—" : `${state.stats.totalFirstFrameMs.toFixed(0)} ms`}</dd></>}
       </dl>}

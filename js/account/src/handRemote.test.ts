@@ -1624,6 +1624,27 @@ test("selection timing includes failed attempts and cannot be satisfied by retir
   assert.equal(f.session.state.stats?.preparationMs, 0);
 });
 
+for (const statsOpen of [false, true]) test(`automatic recovery retains the first selected presentation with Stats ${statsOpen ? "open" : "closed"}`, async t => {
+  const f = fixture(t); await f.session.connect(); const first = f.peers[0]!; first.open();
+  first.ontrack?.({ track: { id: "selected", kind: "video", stop() {} } });
+  await f.tick(100); f.session.select(performance.now()); f.session.setStatsEnabled(statsOpen);
+  await f.tick(16); f.frames.values().next().value!();
+  await f.tick(1000); first.fail(); await f.tick(1000);
+  const next = f.peers[1]!; next.open(); next.ontrack?.({ track: { id: "recovered", kind: "video", stop() {} } });
+  f.session.setStatsEnabled(true); await flush();
+  assert.equal(f.session.state.stats?.selectionFirstFrameMs, 16, "retry must retain the completed selection measurement");
+  await f.tick(200); f.frames.values().next().value!();
+  assert.equal(f.session.state.stats?.selectionFirstFrameMs, 16);
+  assert.equal(f.session.state.stats?.preparationMs, 100);
+  assert.equal(f.session.state.stats?.firstFrameMs, 200, "attempt timing still measures recovery");
+  assert.equal(f.session.state.stats?.totalFirstFrameMs, 2316);
+  f.session.reconnect(); await flush();
+  assert.equal(f.session.state.stats?.selectionFirstFrameMs, undefined, "explicit reconnect starts a new wait");
+  f.peers[2]!.open(); f.peers[2]!.ontrack?.({ track: { id: "explicit", kind: "video", stop() {} } });
+  await f.tick(50); f.frames.values().next().value!();
+  assert.equal(f.session.state.stats?.selectionFirstFrameMs, 50);
+});
+
 test("older browsers can adopt an already decoded picture without reloading its stream", async t => {
   const f = fixture(t);
   delete (f.video as { requestVideoFrameCallback?: unknown }).requestVideoFrameCallback;
@@ -1860,6 +1881,37 @@ test("relay preference survives healthy media, reconnect, resume and refreshed I
   assert.equal(next.config.iceTransportPolicy, "relay");
   f.session.suspend(); f.session.resume(); await flush();
   assert.equal(f.peers[3]!.config.iceTransportPolicy, "relay");
+});
+
+test("publisher replacement permits direct ICE again without disrupting healthy relay video", async t => {
+  const f = fixture(t); f.setIceResponse(async () => Response.json({ iceServers: turnServers }));
+  await f.session.connect(); f.peers[0]!.fail(); await f.tick(1000);
+  const relay = f.peers[1]!; relay.open(); f.playVideo();
+  for (let i = 0; i < 12; i++) await f.tick(1000);
+  assert.equal(f.peers.length, 2, "healthy relay video must not trigger direct probes");
+  assert.equal(relay.config.iceTransportPolicy, "relay");
+  f.sockets[1]!.close(); f.setCatalog([]); await f.tick(1000);
+  assert.equal(f.peers.length, 2, "unavailable publisher cannot start a peer");
+  f.setCatalog([{ ...screen, generation: "restarted" }]); await f.tick(2000);
+  const restarted = f.peers[2]!;
+  assert.equal(f.sockets[2]!.url.searchParams.get("generation"), "restarted");
+  assert.equal(restarted.config.iceTransportPolicy, "all", "old publisher failure must not force the new publication through TURN");
+  restarted.open(); restarted.fail(); await f.tick(4000);
+  assert.equal(f.peers[3]!.config.iceTransportPolicy, "relay", "a blocked new direct path still falls back to TURN");
+});
+
+test("retired discovery cannot clear relay preference for the current publication", async t => {
+  const f = fixture(t); f.setIceResponse(async () => Response.json({ iceServers: turnServers }));
+  await f.session.connect(); f.peers[0]!.fail(); await f.tick(1000);
+  const catalog = deferred<Response>(); f.setCatalogResponse(() => catalog.promise);
+  f.session.reconnect(); await flush();
+  f.session.suspend();
+  f.setCatalogResponse(async () => Response.json({ surfaces: [screen] }));
+  f.session.resume(); await flush();
+  catalog.resolve(Response.json({ surfaces: [{ ...screen, generation: "retired" }] })); await flush();
+  assert.equal(f.session.hand.generation, screen.generation);
+  f.session.reconnect(); await flush();
+  assert.equal(f.peers.at(-1)!.config.iceTransportPolicy, "relay");
 });
 
 for (const singleFrame of [false, true]) {
