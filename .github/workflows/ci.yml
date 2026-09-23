@@ -65,10 +65,9 @@ jobs:
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
-          # These jobs use the same Rust version and native build profiles.
-          # rust-cache still separates runner image, OS, architecture and compiler inputs.
-          shared-key: native-ci
-          env-vars: ImageOS
+          # Concurrent jobs must not race to save incompatible target subsets.
+          shared-key: native-ci-${{ github.job }}
+          env-vars: CARGO CC CFLAGS CXX CMAKE RUST ImageOS
           workspaces: |
             . -> target
           cache-on-failure: true
@@ -98,13 +97,14 @@ jobs:
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
-          # These jobs use the same Rust version and native build profiles.
-          # rust-cache still separates runner image, OS, architecture and compiler inputs.
-          shared-key: native-ci
-          env-vars: ImageOS
+          # Concurrent jobs must not race to save incompatible target subsets.
+          shared-key: native-ci-${{ github.job }}
+          env-vars: CARGO CC CFLAGS CXX CMAKE RUST ImageOS
           workspaces: |
             . -> target
           cache-on-failure: true
+      - name: Cache Rust compilation
+        uses: ./.github/actions/rust-compiler-cache
       - name: Check media transport and IPC boundaries on every host OS
         # Temporarily disabled: CI tests are paused.
         if: ${{ false }}
@@ -238,13 +238,14 @@ jobs:
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
-          # These jobs use the same Rust version and native build profiles.
-          # rust-cache still separates runner image, OS, architecture and compiler inputs.
-          shared-key: native-ci
-          env-vars: ImageOS
+          # Concurrent jobs must not race to save incompatible target subsets.
+          shared-key: native-ci-${{ github.job }}
+          env-vars: CARGO CC CFLAGS CXX CMAKE RUST ImageOS
           workspaces: |
             . -> target
           cache-on-failure: true
+      - name: Cache Rust compilation
+        uses: ./.github/actions/rust-compiler-cache
       - name: Test the account Hand
         if: ${{ false }}
         shell: pwsh
@@ -281,7 +282,11 @@ jobs:
   quality:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
-    name: rustfmt, clippy, and docs
+    name: Rust quality (${{ matrix.check }})
+    strategy:
+      fail-fast: false
+      matrix:
+        check: [workspace-clippy, cli-clippy, contracts, docs]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -297,18 +302,23 @@ jobs:
       - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
+          # Each lane has different feature/profile artifacts; avoid first-writer wins.
+          shared-key: quality-${{ matrix.check }}
           cache-on-failure: true
       - run: cargo fmt --all -- --check
+        if: matrix.check == 'workspace-clippy'
       - name: Check Linux Hand installation boundaries
         # Temporarily disabled: CI tests are paused.
         if: ${{ false }}
         run: python3 bin/nanocodex/src/hand_setup/test_install.py
       - name: Clippy workspace targets
-        run: |
-          cargo clippy --workspace --all-targets --all-features --exclude nanocodex-bin -- -D warnings -A clippy::missing_const_for_fn
-          cargo clippy --package nanocodex-bin --all-features --bin nanocodex -- -D warnings -A clippy::missing_const_for_fn
-          cargo clippy --package nanocodex-bin --all-features --bench tui_render -- -D warnings -A clippy::missing_const_for_fn
+        if: matrix.check == 'workspace-clippy'
+        run: cargo clippy --locked --workspace --all-targets --all-features --exclude nanocodex-bin -- -D warnings -A clippy::missing_const_for_fn
+      - name: Clippy CLI and benchmark
+        if: matrix.check == 'cli-clippy'
+        run: cargo clippy --locked --package nanocodex-bin --all-features --bin nanocodex --bench tui_render -- -D warnings -A clippy::missing_const_for_fn
       - name: Check independently usable crates and public examples
+        if: matrix.check == 'contracts'
         run: |
           cargo check --locked --package nanocodex-oai-api
           cargo check --locked --package nanocodex-observability
@@ -316,6 +326,7 @@ jobs:
           cargo check --locked --package nanocodex-agent
           cargo check --locked --package nanocodex-examples --bins
       - run: cargo doc --workspace --all-features --no-deps --locked
+        if: matrix.check == 'docs'
         env:
           RUSTDOCFLAGS: -D warnings
 
@@ -349,6 +360,8 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
           cache-on-failure: true
+      - name: Cache Rust compilation
+        uses: ./.github/actions/rust-compiler-cache
       - run: sudo apt-get update && sudo apt-get install --yes musl-tools
       - name: Check the guest-only target matrix
         run: >-
@@ -628,6 +641,8 @@ jobs:
         with:
           save-if: ${{ github.ref == 'refs/heads/master' }}
           cache-on-failure: true
+      - name: Cache Rust compilation
+        uses: ./.github/actions/rust-compiler-cache
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: ${{ matrix.python }}
