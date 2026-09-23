@@ -58,7 +58,14 @@ export class HandHosts {
     const name = body.name.trim();
     const result = await this.storage.transaction(async transaction => {
       const existing = await transaction.get<Host>(PREFIX + id);
-      if (!existing && (await transaction.list({ prefix: PREFIX, limit: 64 })).size >= 64) return undefined;
+      // The public server enrollment limit must not count trusted, managed
+      // sandbox publishers: each retained mount has its own publisher record.
+      // machineId is supplied by the broker, never by the public request body.
+      if (!existing && !machineId.startsWith("cf:")) {
+        const records = await transaction.list<Host>({ prefix: PREFIX });
+        const servers = [...records.values()].filter(record => !record.machineId?.startsWith("cf:"));
+        if (servers.length >= 64) return undefined;
+      }
       const record: Host = { id, name, machineId, tokenDigest, createdAt: existing?.createdAt ?? now,
         expiresAt: now + CREDENTIAL_LIFETIME };
       await transaction.put(PREFIX + id, record);

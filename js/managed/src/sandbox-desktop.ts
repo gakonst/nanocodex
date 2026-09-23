@@ -60,7 +60,7 @@ export class SandboxDesktop {
     if (!prepared.success) throw new Error("sandbox desktop image is unavailable");
     if (!state.credential || (state.expiresAt ?? 0) <= Date.now() + 86_400_000) {
       const response = await this.manage(state, "PUT");
-      if (!response.ok) throw new Error("could not enroll sandbox desktop");
+      if (!response.ok) throw new Error(`could not enroll sandbox desktop (HTTP ${response.status})`);
       const receipt = await response.json<{ credential: string; expires_at: number }>();
       if (!/^[A-Za-z0-9_-]{43}$/.test(receipt.credential) || !Number.isSafeInteger(receipt.expires_at)
         || receipt.expires_at <= Date.now()) throw new Error("invalid sandbox desktop enrollment");
