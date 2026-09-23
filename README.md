@@ -1,0 +1,1 @@
+Evidence for mobile and tmux agent overview. All conversations and pane metadata are synthetic fixtures. iOS captures come from passing XCTest journeys on an iPhone 17 Pro simulator. The tmux GIF renders a real PTY recording of the popup with synthetic summaries; it is not a desktop screenshot. Media is kept on this evidence branch, outside the implementation diff.
