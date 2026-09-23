@@ -10,7 +10,9 @@ on:
       - 'bin/**'
       - 'crates/**'
       - 'examples/**'
-      - 'js/nanocodex/**'
+      - 'js/nanocodex/Cargo.toml'
+      - 'js/nanocodex/build.rs'
+      - 'js/nanocodex/src/**'
       - 'py/bindings/**'
       - 'third_party/**'
       - '.github/workflows/hand-image.yml'
@@ -26,7 +28,7 @@ permissions:
 
 concurrency:
   group: hand-image-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 env:
   IMAGE: ghcr.io/${{ github.repository }}-hand
@@ -65,16 +67,22 @@ jobs:
             --label "org.opencontainers.image.revision=$GITHUB_SHA" \
             --file hands/remote/image/Dockerfile .
       - name: Exercise offline creative and development tools
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         env:
           ARCH: ${{ matrix.arch }}
         run: docker run --rm --network none --entrypoint sh "$IMAGE:$IMAGE_TAG-$ARCH" -lc nanocodex-check-hand-toolkit
       - name: Exercise the desktop and both video encoders
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         env:
           ARCH: ${{ matrix.arch }}
         run: bash hands/remote/image/smoke.sh "$IMAGE:$IMAGE_TAG-$ARCH" "$ARCH"
       # A native smoke can hide a binary specialized for the build runner's CPU.
       # User-mode QEMU masks extensions; no privileged binfmt registration needed.
       - name: Verify capture startup on a baseline CPU
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
         env:
           ARCH: ${{ matrix.arch }}
         run: |

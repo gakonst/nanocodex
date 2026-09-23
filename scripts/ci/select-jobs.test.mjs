@@ -7,26 +7,59 @@ import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { changedPaths, selectJobs, selectionForEvent } from "./select-jobs.mjs";
 
-const full = { native: true, voice: true, python: true };
-const none = { native: false, voice: false, python: false };
+const keys = ["native", "voice", "python", "rust", "wasm", "bindings", "apps", "preview", "policy", "codeql"];
+const expected = (...selected) => Object.fromEntries(keys.map(key => [key, selected.includes(key)]));
+const full = expected(...keys);
+const none = expected();
+const policy = expected("policy");
+const native = expected("native", "policy");
+const bindings = expected("wasm", "bindings", "policy");
+const apps = expected("wasm", "apps", "policy");
+const sdk = expected("wasm", "bindings", "apps", "preview", "policy");
 
-test("known web/docs changes skip only optional jobs", () => {
-  for (const path of ["js/account/src/app.tsx", "js/nanocodex-react/src/index.ts", "docs/setup.md", "README.md"]) {
-    assert.deepEqual(selectJobs([path]), none, path);
+// Representative real changes from the audited master history.
+test("Worker JS provider fix keeps consumers without native or Rust builds", () => {
+  assert.deepEqual(selectJobs([
+    "js/nanocodex/cloudflare/workers-ai-responses.mjs",
+    "js/nanocodex/test/gateway-responses.test.mjs",
+    "js/nanocodex/test/provider-stream.test.mjs",
+  ]), sdk);
+});
+
+test("Apple Swift, fixtures, and documentation leave compiled checks to Apple workflows", () => {
+  assert.deepEqual(selectJobs([
+    "apple/NanocodexUI/Sources/NanocodexUI/ChatCodeText.swift",
+    "apple/NanocodexUI/Tests/NanocodexUITests/ChatCodeViewportTests.swift",
+    "apple/README.md", "macos/Nanocodex/AppModel.swift",
+  ]), policy);
+  assert.deepEqual(selectJobs(["apple/Brand/icon.png"]), none);
+  for (const path of ["docs/setup.md", "README.md", "js/nanocodex-computer/README.md"]) {
+    assert.deepEqual(selectJobs([path]), policy, path);
   }
   assert.deepEqual(selectJobs([]), none);
+});
+
+test("applications and bindings select their actual consumer groups", () => {
+  for (const path of ["js/account/src/app.tsx", "js/connect-dialog/src/index.ts", "examples/astra-mpp-trial/src/index.ts"]) {
+    assert.deepEqual(selectJobs([path]), apps, path);
+  }
+  for (const path of ["js/managed/src/memory.ts", "js/connect-api/src/connectorPolicy.mts", "js/nanocodex-computer/src/index.ts", "examples/privy/src/app.tsx"]) {
+    assert.deepEqual(selectJobs([path]), bindings, path);
+  }
+  for (const path of ["js/nanocodex-react/src/index.ts", "js/nanocodex-connect-protocol/src/index.ts"]) {
+    assert.deepEqual(selectJobs([path]), expected("wasm", "bindings", "apps", "policy"), path);
+  }
+  assert.deepEqual(selectJobs(["js/nanocodex-vite/scripts/build-js-package.sh"]), { ...sdk, rust: true });
+  assert.deepEqual(selectJobs(["js/nanocodex-tools/runtime/code-tools.mjs"]), full);
 });
 
 // Full changed-path lists from PRs #485 and #489, not just the bridge source.
 const cua485 = [
   "crates/experimental/nanocodex-computer/src/openai-cua-app-server.mjs",
   "crates/experimental/nanocodex-computer/src/openai-cua-native-host.mjs",
-  "docs/REMOTE_CONTROL.md",
-  "docs/computer/native-hand-consent.md",
-  "docs/computer/official-app-server-bridge.md",
-  "docs/computer/upstream-provider.md",
-  "js/managed/src/namespace-tools.ts",
-  "js/managed/test/namespace-tools.test.ts",
+  "docs/REMOTE_CONTROL.md", "docs/computer/native-hand-consent.md",
+  "docs/computer/official-app-server-bridge.md", "docs/computer/upstream-provider.md",
+  "js/managed/src/namespace-tools.ts", "js/managed/test/namespace-tools.test.ts",
   "js/nanocodex-computer/README.md",
   "scripts/tests/openai-cua-app-server.test.mjs",
   "scripts/tests/openai-cua-headless-upstream.test.mjs",
@@ -34,57 +67,55 @@ const cua485 = [
 ];
 const cua489 = [
   "crates/experimental/nanocodex-computer/src/openai-cua-app-server.mjs",
-  "docs/computer/official-app-server-bridge.md",
-  "docs/computer/upstream-provider.md",
-  "js/managed/src/namespace-tools.ts",
-  "js/managed/test/namespace-tools.test.ts",
+  "docs/computer/official-app-server-bridge.md", "docs/computer/upstream-provider.md",
+  "js/managed/src/namespace-tools.ts", "js/managed/test/namespace-tools.test.ts",
   "scripts/tests/openai-cua-app-server.test.mjs",
 ];
 
-test("CUA PRs retain native coverage without unrelated voice and Python builds", () => {
+test("CUA PRs retain native and managed consumer checks without voice/Python", () => {
   for (const paths of [cua485, cua489]) {
-    assert.deepEqual(selectJobs(paths), { ...none, native: true });
+    assert.deepEqual(selectJobs(paths), { ...bindings, native: true });
   }
   for (const path of [
     ...cua485.filter(path => /^(crates|scripts)\//.test(path)),
     "crates/experimental/nanocodex-computer/src/openai-cua-gui-readiness.mjs",
     "scripts/tests/openai-cua-gui-readiness.test.mjs",
-  ]) assert.deepEqual(selectJobs([path]), { ...none, native: true }, path);
-  assert.deepEqual(selectJobs([...cua489, "py/bindings/tests/test_binding.py"]), { native: true, voice: false, python: true });
+  ]) assert.deepEqual(selectJobs([path]), native, path);
+  assert.deepEqual(selectJobs([...cua489, "py/bindings/tests/test_binding.py"]), { ...bindings, native: true, python: true });
 });
 
-test("CUA exceptions never mask shared inputs, new files, or path traversal", () => {
-  for (const path of [
-    "Cargo.lock", "scripts/build-voice-native.py", ".github/workflows/ci.yml",
-    "crates/experimental/nanocodex-computer/src/provision.rs",
-    "crates/experimental/nanocodex-computer/Cargo.toml",
-    "crates/experimental/nanocodex-computer/src/openai-cua-new.mjs",
-    "scripts/tests/openai-cua-new.test.mjs",
-    "scripts/tests/../build-voice-native.py",
-    "js/nanocodex-computer/package.json", "js/nanocodex-computer/new.mjs",
-  ]) {
-    assert.deepEqual(selectJobs([...cua489, path]), full, path);
-    assert.deepEqual(selectJobs([path, ...cua489]), full, path);
-  }
+test("native and Python categories combine independently", () => {
+  assert.deepEqual(selectJobs(["windows/hand/build.ps1"]), native);
+  assert.deepEqual(selectJobs(["js/desktop-runtime/src/device-hand.mjs"]), native);
+  assert.deepEqual(selectJobs(["py/bindings/src/lib.rs", "examples/python/main.py"]), expected("python", "rust", "policy"));
+  assert.deepEqual(selectJobs(["docs/a.md", "windows/a", "py/a"]), expected("native", "python", "policy"));
 });
 
-test("native and Python categories combine", () => {
-  assert.deepEqual(selectJobs(["windows/hand/build.ps1"]), { ...none, native: true });
-  assert.deepEqual(selectJobs(["js/desktop-runtime/src/device-hand.mjs"]), { ...none, native: true });
-  assert.deepEqual(selectJobs(["py/bindings/src/lib.rs", "examples/python/main.py"]), { ...none, python: true });
-  assert.deepEqual(selectJobs(["docs/a.md", "windows/a", "py/a"]), { native: true, voice: false, python: true });
-});
-
-test("shared inputs and unknown paths always select everything", () => {
+test("shared configuration, Rust sources, and unknown paths fail open in either order", () => {
   for (const path of [
     "crates/nanocodex/src/lib.rs", "bin/tool/main.rs", "Cargo.toml", "Cargo.lock",
     "py/bindings/Cargo.toml", ".cargo/config.toml", "rust-toolchain", "rust-toolchain.toml",
     "scripts/ci/select-jobs.mjs", ".github/workflows/ci.yml", "third_party/code/file",
     "package.json", "pnpm-lock.yaml", "pnpm-workspace.yaml", "turbo.json", ".npmrc",
     "js/account/package.json", "js/desktop-runtime/package.json", "js/account/package-lock.json",
-    "js/connect-api/src/connectorPolicy.mts", "js/nanocodex/src/index.ts", "js/new-package/file.ts", "macos/app.swift", "apple/app.swift",
-    "web/new-file.ts", "unknown.txt", "docs/../crates/a", "docs/Cargo.toml",
-  ]) assert.deepEqual(selectJobs(["docs/a.md", path]), full, path);
+    "js/nanocodex/src/lib.rs", "js/nanocodex/build.rs", "js/new-package/file.ts",
+    "js/account/scripts/new-build.sh", "js/managed/Dockerfile", "apple/new.rs",
+    "crates/experimental/nanocodex-computer/src/provision.rs",
+    "crates/experimental/nanocodex-computer/src/openai-cua-new.mjs",
+    "scripts/tests/openai-cua-new.test.mjs", "scripts/tests/../build-voice-native.py",
+    "web/new-file.ts", "unknown.txt", "docs/../crates/a", "docs/Cargo.toml", "js//account/file.ts",
+  ]) {
+    assert.deepEqual(selectJobs([...cua489, path]), full, path);
+    assert.deepEqual(selectJobs([path, ...cua489]), full, path);
+  }
+});
+
+test("every selected JS consumer has a WASM artifact producer", () => {
+  for (const paths of [[], ["README.md"], ["apple/app.swift"], ["js/account/src/app.tsx"],
+    ["js/managed/src/memory.ts"], ["js/nanocodex/index.mjs"], ["Cargo.lock"], cua485]) {
+    const jobs = selectJobs(paths);
+    if (jobs.bindings || jobs.apps || jobs.preview) assert.equal(jobs.wasm, true);
+  }
 });
 
 function repo(t) {
@@ -129,7 +160,7 @@ test("PR compares event head to merge base even when base and checkout have adva
   const base = r.commit();
   const event = { pull_request: { base: { sha: base }, head: { sha: head } } };
   assert.deepEqual(changedPaths("pull_request", event, r.cwd), ["docs/feature.md"]);
-  assert.deepEqual(selectionForEvent("pull_request", event, r.cwd).jobs, none);
+  assert.deepEqual(selectionForEvent("pull_request", event, r.cwd).jobs, policy);
 });
 
 test("CUA deletions keep native checks and renames into unknown inputs run full CI", t => {
@@ -139,7 +170,7 @@ test("CUA deletions keep native checks and renames into unknown inputs run full 
   const before = r.commit();
   r.git("rm", source);
   const deleted = r.commit();
-  assert.deepEqual(selectionForEvent("push", { before, after: deleted }, r.cwd).jobs, { ...none, native: true });
+  assert.deepEqual(selectionForEvent("push", { before, after: deleted }, r.cwd).jobs, native);
   r.git("checkout", "-b", "rename", before);
   r.git("mv", source, "crates/experimental/nanocodex-computer/src/new-bridge.mjs");
   const renamed = r.commit();
@@ -170,14 +201,29 @@ test("CLI appends boolean output strings and readable summary; malformed payload
   writeFileSync(outputPath, "existing=value\n");
   writeFileSync(eventPath, JSON.stringify({ before: r.initial, after }));
   const run = () => execFileSync(process.execPath, [fileURLToPath(new URL("./select-jobs.mjs", import.meta.url))], {
-    cwd: r.cwd, encoding: "utf8", env: { ...process.env, GITHUB_EVENT_NAME: "push", GITHUB_EVENT_PATH: eventPath, GITHUB_OUTPUT: outputPath, GITHUB_STEP_SUMMARY: summaryPath },
+    cwd: r.cwd, encoding: "utf8", env: { ...process.env, GITHUB_REPOSITORY: "gakonst/nanocodex", GITHUB_EVENT_NAME: "push", GITHUB_EVENT_PATH: eventPath, GITHUB_OUTPUT: outputPath, GITHUB_STEP_SUMMARY: summaryPath },
   });
   assert.match(run(), /classified 1 changed path/);
-  assert.equal(readFileSync(outputPath, "utf8"), "existing=value\nnative=false\nvoice=false\npython=true\n");
+  assert.equal(readFileSync(outputPath, "utf8"), "existing=value\n" + Object.entries(expected("python", "policy")).map(([key, value]) => `${key}=${value}\n`).join(""));
   assert.match(readFileSync(summaryPath, "utf8"), /python=true/);
   writeFileSync(eventPath, "invalid json");
   assert.match(run(), /full CI/);
-  assert.match(readFileSync(outputPath, "utf8"), /native=true\nvoice=true\npython=true\n$/);
+  assert.ok(readFileSync(outputPath, "utf8").endsWith(Object.entries(full).map(([key, value]) => `${key}=${value}\n`).join("")));
   rmSync(eventPath);
   assert.match(run(), /full CI/);
+});
+
+test("fork CI does not require the upstream-only package publisher", t => {
+  const r = repo(t);
+  const eventPath = join(r.cwd, "event.json");
+  const outputPath = join(r.cwd, "output");
+  writeFileSync(eventPath, "{}");
+  execFileSync(process.execPath, [fileURLToPath(new URL("./select-jobs.mjs", import.meta.url))], {
+    cwd: r.cwd, env: { ...process.env, GITHUB_REPOSITORY: "example/fork", GITHUB_EVENT_NAME: "workflow_dispatch",
+      GITHUB_EVENT_PATH: eventPath, GITHUB_OUTPUT: outputPath, GITHUB_STEP_SUMMARY: "" },
+  });
+  const actual = Object.fromEntries(readFileSync(outputPath, "utf8").trim().split("\n").map(line => {
+    const [key, value] = line.split("="); return [key, value === "true"];
+  }));
+  assert.deepEqual(actual, { ...full, preview: false });
 });

@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 import { appendFileSync } from 'node:fs';
 import { execFileSync, spawnSync } from 'node:child_process';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const validSha = value => typeof value === 'string' && value.length === 40 && /^[a-f0-9]{40}$/.test(value);
 
 // Run immediately before each production mutation, after expensive preparation.
 // Workflow job concurrency serializes deployments; it does not make an older
 // checkout current after a newer master push arrived while the job was building.
-function currentRelease() {
+export function currentRelease() {
   if (process.env.GITHUB_EVENT_NAME === 'workflow_dispatch'
     && process.env.DEPLOY_TARGET === 'production') return true;
   if (process.env.GITHUB_EVENT_NAME !== 'push' || process.env.GITHUB_REF !== 'refs/heads/master') {
@@ -28,6 +30,7 @@ function currentRelease() {
   return false;
 }
 
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
 try {
   const args = process.argv.slice(2);
   if (args.length && (args[0] !== '--' || args.length < 2)) {
@@ -47,4 +50,6 @@ try {
   // Fail closed without printing subprocess output, tokens, or provider errors.
   console.error('::error::Production release check or command failed; deployment was not authorized or did not complete.');
   process.exitCode = 1;
+}
+
 }

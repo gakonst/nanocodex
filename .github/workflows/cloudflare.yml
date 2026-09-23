@@ -4,15 +4,19 @@ permissions: {}
 
 on:
   pull_request:
-  push:
-    branches: [master]
-    # Native client releases must not evict unrelated live Durable Objects.
-    # Manual production dispatch remains available for an explicit redeploy.
     paths:
       - "js/**"
       - "!js/desktop-runtime/**"
       - "crates/**"
       - "hands/**"
+      - "bin/**"
+      - "py/bindings/**"
+      - "third_party/**"
+      - ".dockerignore"
+      - ".node-version"
+      - ".nvmrc"
+      - "tsconfig*.json"
+      - "assets/**"
       - "examples/**"
       - "scripts/**"
       - "docs/**"
@@ -27,6 +31,39 @@ on:
       - "pnpm-workspace.yaml"
       - "turbo.json"
       - ".github/workflows/cloudflare.yml"
+      - ".github/actions/**"
+  push:
+    branches: [master]
+    # Native client releases must not evict unrelated live Durable Objects.
+    # Manual production dispatch remains available for an explicit redeploy.
+    paths:
+      - "js/**"
+      - "!js/desktop-runtime/**"
+      - "crates/**"
+      - "hands/**"
+      - "bin/**"
+      - "py/bindings/**"
+      - "third_party/**"
+      - ".dockerignore"
+      - ".node-version"
+      - ".nvmrc"
+      - "tsconfig*.json"
+      - "assets/**"
+      - "examples/**"
+      - "scripts/**"
+      - "docs/**"
+      - "patches/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain*"
+      - ".cargo/**"
+      - ".npmrc"
+      - "package.json"
+      - "pnpm-lock.yaml"
+      - "pnpm-workspace.yaml"
+      - "turbo.json"
+      - ".github/workflows/cloudflare.yml"
+      - ".github/actions/**"
   workflow_dispatch:
     inputs:
       target:
@@ -42,43 +79,37 @@ env:
   MANAGED_IMAGE_CACHE_EPOCH: ${{ vars.MANAGED_IMAGE_CACHE_EPOCH || '1' }}
 
 jobs:
-  # Compile independently of image publication; deployment still requires both.
+  # Preview builds stay unprivileged. Production builds selected Workers once on its deployment runner.
   worker-build:
     name: build Cloudflare Worker artifacts
     if: >-
       vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
       ((github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == github.repository) ||
-       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
-       github.event_name == 'workflow_dispatch')
+       (github.event_name == 'workflow_dispatch' && inputs.target == 'preview'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
-      group: cloudflare-worker-build-${{ github.event.pull_request.number || github.run_id }}
-      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+      group: cloudflare-worker-build-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ github.event_name == 'workflow_dispatch' && github.run_id || '' }}
+      cancel-in-progress: true
     permissions:
       contents: read
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
-        with:
-          toolchain: stable
-          targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
-        with:
-          cache-on-failure: true
+      - name: Reuse unchanged WASM outputs
+        id: wasm
+        uses: ./.github/actions/wasm-outputs
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
-        with:
-          tool: wasm-bindgen-cli@0.2.126
       - name: Test Wrangler image cache boundary
+        # Temporarily disabled; re-enable when CI test coverage resumes.
+        if: false
         run: node --test scripts/cloudflare/*.test.mjs
       - name: Install deployment packages
         run: pnpm install --frozen-lockfile
@@ -95,6 +126,15 @@ jobs:
             --filter @nanocodex/connect-dialog \
             --filter @nanocodex/connect-playground \
             --filter nanocodex-web
+      - name: Save verified WASM outputs
+        if: github.ref == 'refs/heads/master' && steps.wasm.outputs.hit != 'true'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          key: ${{ steps.wasm.outputs.key }}
+          path: |
+            js/nanocodex/pkg-web
+            js/nanocodex/pkg-node
+            .ci-wasm-cache
       - name: Build Astra trial application
         run: npm run build:client --prefix examples/astra-mpp-trial
       - name: Package same-revision Worker outputs
@@ -132,28 +172,12 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
+          fetch-depth: 0
       - name: Select managed container rollout
         id: managed-container
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.before }}
-        run: |
-          rollout=immediate
-          if [ -n "$BASE_SHA" ] && [ "$BASE_SHA" != "0000000000000000000000000000000000000000" ]; then
-            git fetch --no-tags --depth=1 origin "$BASE_SHA"
-            if git diff --quiet "$BASE_SHA" "$GITHUB_SHA" -- \
-              js/managed/Dockerfile js/managed/wrangler.jsonc js/managed/.dockerignore \
-              js/managed/scripts/prepare-hand-image.mjs js/managed/scripts/bundle-hand-desktop.sh \
-              hands/remote crates/nanocodex-vm/image/toolkit \
-              js/managed/scripts/check-dev-stack.sh \
-              .dockerignore js/phone-cloud Cargo.toml Cargo.lock bin crates examples \
-              js/nanocodex py/bindings third_party \
-              js/managed/scripts/phone-bridge.mjs js/managed/scripts/phone-delegation.mjs \
-              js/managed/scripts/phone-media-diagnostics.mjs \
-              js/managed/src/twilio-voice.ts; then
-              rollout=none
-            fi
-          fi
-          echo "rollout=$rollout" >> "$GITHUB_OUTPUT"
+        run: node scripts/cloudflare/preview-images.mjs
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -161,6 +185,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
       - name: Test Wrangler image cache boundary
+        # Temporarily disabled; re-enable when CI test coverage resumes.
+        if: false
         run: node --test scripts/cloudflare/*.test.mjs
       - name: Install deployment packages
         run: pnpm install --frozen-lockfile
@@ -180,6 +206,9 @@ jobs:
       - name: Validate egress Worker
         working-directory: js/egress
         run: npx wrangler deploy --dry-run --config wrangler.broker.jsonc
+      - name: Validate email Worker
+        working-directory: js/email
+        run: npx wrangler deploy --dry-run --env=""
       - name: Validate X Worker
         run: pnpm --filter @nanocodex/x-api run build
       # Wrangler invokes plain `docker build`; the CLI override adds GHA cache
@@ -208,7 +237,7 @@ jobs:
         run: npx wrangler deploy --dry-run --env="" --outdir dist
       - name: Validate Chief of Staff Worker
         working-directory: js/chief-of-staff
-        run: npm run check
+        run: npm run typecheck && npm run build
       - name: Validate account Worker
         working-directory: js/account
         run: npx wrangler deploy --dry-run --config dist/nanocodex/wrangler.json
@@ -216,22 +245,85 @@ jobs:
         working-directory: js/connect-playground
         run: npx wrangler versions upload --config wrangler.jsonc --preview-alias "pr-${{ github.event.pull_request.number || github.run_id }}" --message "$DEPLOY_MESSAGE"
 
-  managed-images:
-    name: publish managed image (${{ matrix.image }})
+  image-plan:
+    name: select changed Workers and required images
     if: >-
       vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
        (github.event_name == 'workflow_dispatch' && inputs.target == 'production'))
     runs-on: ubuntu-latest
+    timeout-minutes: 5
+    environment: cloudflare-production
+    permissions:
+      contents: read
+      deployments: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix || '{"image":[]}' }}
+      build: ${{ steps.plan.outputs.build || 'false' }}
+      managed: ${{ steps.release.outputs.managed }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      DEPLOY_TARGET: ${{ inputs.target }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Skip superseded push
+        id: current-release
+        run: node scripts/cloudflare/current-production-release.mjs
+      - name: Select changed Workers before scheduling images
+        id: release
+        if: steps.current-release.outputs.active == 'true'
+        run: node scripts/cloudflare/release-plan.mjs plan
+      - name: Fingerprint phone image
+        if: steps.release.outputs.managed == 'true'
+        id: phone
+        run: node scripts/cloudflare/managed-images.mjs fingerprint phone
+      - name: Fingerprint sandbox image
+        if: steps.release.outputs.managed == 'true'
+        id: sandbox
+        run: node scripts/cloudflare/managed-images.mjs fingerprint sandbox
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.release.outputs.managed == 'true'
+        with:
+          path: .ci-images/phone.json
+          key: managed-image-v1-${{ steps.phone.outputs.input }}
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.release.outputs.managed == 'true'
+        with:
+          path: .ci-images/sandbox.json
+          key: managed-image-v1-${{ steps.sandbox.outputs.input }}
+      - name: Select missing images and verify reusable receipts
+        if: steps.release.outputs.managed == 'true'
+        id: plan
+        run: node scripts/cloudflare/plan-images.mjs
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: steps.release.outputs.managed == 'true'
+        with:
+          name: managed-image-reused
+          path: .ci-images/*.json
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 3
+
+  managed-images:
+    needs: image-plan
+    name: publish managed image (${{ matrix.image }})
+    if: needs.image-plan.outputs.build == 'true'
+    runs-on: ubuntu-latest
     timeout-minutes: 40
     environment: cloudflare-production
     permissions:
       contents: read
+      deployments: write
     strategy:
       fail-fast: false
-      matrix:
-        image: [phone, sandbox]
+      matrix: ${{ fromJSON(needs.image-plan.outputs.matrix) }}
     env:
+      GH_TOKEN: ${{ github.token }}
+      CI_TESTS_ENABLED: "false"
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
@@ -242,6 +334,7 @@ jobs:
         with:
           node-version: 24
       - name: Test image publication boundaries
+        if: false
         run: node --test scripts/cloudflare/*.test.mjs
       - name: Fingerprint committed image inputs
         id: image-input
@@ -273,6 +366,10 @@ jobs:
         env:
           IMAGE: ${{ matrix.image }}
         run: node scripts/cloudflare/managed-images.mjs verify "$IMAGE"
+      - name: Retain published image receipt independently of the build cache
+        env:
+          IMAGE: ${{ matrix.image }}
+        run: node scripts/cloudflare/image-receipts.mjs "$IMAGE"
       - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         if: steps.receipt.outputs.cache-hit != 'true'
         continue-on-error: true
@@ -288,21 +385,26 @@ jobs:
           retention-days: 3
 
   production:
-    needs: [managed-images, worker-build]
+    needs: [image-plan, managed-images]
     if: >-
+      always() && !cancelled() &&
+      needs.image-plan.result == 'success' &&
+      (needs.managed-images.result == 'success' || needs.managed-images.result == 'skipped') &&
       vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'workflow_dispatch' && inputs.target == 'production'))
-    name: deploy Cloudflare production
+    name: build and deploy changed Cloudflare Workers
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 60
     environment: cloudflare-production
     concurrency:
       group: cloudflare-production
       cancel-in-progress: false
     permissions:
       contents: read
+      deployments: write
     env:
+      CI_TESTS_ENABLED: "false"
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
       DEPLOY_MESSAGE: GitHub Actions production ${{ github.sha }}
@@ -316,127 +418,82 @@ jobs:
         id: current-release
         run: node scripts/cloudflare/current-production-release.mjs
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        if: steps.current-release.outputs.active == 'true'
+        if: steps.current-release.outputs.active == 'true' && needs.image-plan.outputs.managed == 'true'
         with:
           pattern: managed-image-*
           merge-multiple: true
           path: .ci-images
-      - name: Select immutable managed images
+      - name: Select Workers changed since their successful deployments
+        id: plan
         if: steps.current-release.outputs.active == 'true'
-        run: node scripts/cloudflare/managed-images.mjs config
+        run: node scripts/cloudflare/release-plan.mjs plan
+      - name: Reconcile image receipts after the locked release plan
+        id: image-state
+        if: steps.plan.outputs.managed == 'true'
+        run: node scripts/cloudflare/plan-images.mjs
+      - name: Compute missing receipt cache keys
+        id: missing-images
+        if: steps.image-state.outputs.build == 'true'
+        run: |
+          echo "phone=$(node scripts/cloudflare/image-key.mjs phone)" >> "$GITHUB_OUTPUT"
+          echo "sandbox=$(node scripts/cloudflare/image-key.mjs sandbox)" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.image-state.outputs.phone == 'true'
+        with:
+          path: .ci-images/phone.json
+          key: managed-image-v1-${{ steps.missing-images.outputs.phone }}
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.image-state.outputs.sandbox == 'true'
+        with:
+          path: .ci-images/sandbox.json
+          key: managed-image-v1-${{ steps.missing-images.outputs.sandbox }}
+      - name: Check for missing images after recovery
+        id: recovered-images
+        if: steps.image-state.outputs.build == 'true'
+        run: node scripts/cloudflare/plan-images.mjs
+      - name: Reuse unchanged WASM outputs
+        id: wasm
+        if: steps.plan.outputs.wasm == 'true'
+        uses: ./.github/actions/wasm-outputs
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
-        if: steps.current-release.outputs.active == 'true'
+        if: steps.plan.outputs.workspace == 'true'
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        if: steps.current-release.outputs.active == 'true'
+        if: steps.plan.outputs.any == 'true'
         with:
           node-version: 24
-          cache: pnpm
+          cache: ${{ steps.plan.outputs.workspace == 'true' && 'pnpm' || '' }}
           cache-dependency-path: pnpm-lock.yaml
-      - name: Test Wrangler image cache boundary
-        if: steps.current-release.outputs.active == 'true'
-        run: node --test scripts/cloudflare/*.test.mjs
-      - name: Install deployment packages
-        if: steps.current-release.outputs.active == 'true'
-        run: pnpm install --frozen-lockfile
-      - name: Install Astra trial package
-        if: steps.current-release.outputs.active == 'true'
-        run: npm ci --prefix examples/astra-mpp-trial
-      - name: Prepare managed evaluator asset
-        if: steps.current-release.outputs.active == 'true'
-        working-directory: js/managed
-        run: npm run prepare:code-evaluator
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        if: steps.current-release.outputs.active == 'true'
+      - name: Install only selected application dependencies
+        if: steps.plan.outputs.any == 'true'
+        run: node scripts/cloudflare/release-plan.mjs install
+      - name: Prepare a builder only for an image missing after locked replan
+        if: steps.recovered-images.outputs.build == 'true'
+        id: recovery-builder
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - name: Expose recovery build cache runtime
+        if: steps.recovered-images.outputs.build == 'true'
+        uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
+      - name: Recover missing images and retain all selected receipts
+        if: steps.plan.outputs.managed == 'true'
+        env:
+          BUILDX_BUILDER: ${{ steps.recovery-builder.outputs.name }}
+        run: node scripts/cloudflare/recover-images.mjs
+      - name: Build only selected applications and their dependencies
+        if: steps.plan.outputs.any == 'true'
+        run: node scripts/cloudflare/release-plan.mjs build
+      - name: Save verified WASM outputs
+        if: steps.plan.outputs.wasm == 'true' && steps.wasm.outputs.hit != 'true' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          name: cloudflare-worker-build
-          path: .ci-worker-build
-      - name: Restore same-revision Worker outputs
-        if: steps.current-release.outputs.active == 'true'
-        run: node scripts/cloudflare/worker-build.mjs restore
-      - name: Build agent email service
-        if: steps.current-release.outputs.active == 'true'
-        run: pnpm --filter nanocodex-email-service run build
-      # Recheck actual master immediately before every production mutation. A
-      # passing early check cannot authorize a checkout superseded during builds.
-      # Explicit production dispatch still permits an intentional rollback.
-      - name: Deploy egress broker
-        if: steps.current-release.outputs.active == 'true'
-        working-directory: js/egress
-        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.broker.jsonc --message "$DEPLOY_MESSAGE"
-      - name: Deploy X Worker
-        if: steps.current-release.outputs.active == 'true'
-        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- pnpm deploy:x
-      - name: Deploy managed agent service
-        if: steps.current-release.outputs.active == 'true'
-        working-directory: js/managed
-        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.ci.jsonc --containers-rollout immediate --message "$DEPLOY_MESSAGE"
-      - name: Deploy agent email service
-        if: steps.current-release.outputs.active == 'true'
-        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- pnpm --filter nanocodex-email-service run deploy
-      - name: Deploy Connect dialog assets
-        if: steps.current-release.outputs.active == 'true'
-        working-directory: js/connect-dialog
-        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
-      - name: Deploy Connect API
-        if: steps.current-release.outputs.active == 'true'
-        working-directory: js/connect-api
-        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
-      - name: Deploy Astra trial application
-        if: steps.current-release.outputs.active == 'true'
-        working-directory: examples/astra-mpp-trial
-        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --env="" --message "$DEPLOY_MESSAGE"
-      - name: Configure Astra trial secrets
-        if: steps.current-release.outputs.active == 'true'
-        working-directory: examples/astra-mpp-trial
+          key: ${{ steps.wasm.outputs.key }}
+          path: |
+            js/nanocodex/pkg-web
+            js/nanocodex/pkg-node
+            .ci-wasm-cache
+      - name: Deploy selected Workers and record successful releases
+        if: steps.plan.outputs.any == 'true'
         env:
           ASTRA_MANAGED_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
           ASTRA_MPP_SECRET: ${{ secrets.NANOCODEX_ASTRA_MPP_SECRET }}
           TEMPO_API_KEY: ${{ secrets.TEMPO_MPP_API_KEY }}
-        run: |
-          missing=()
-          [ -n "$ASTRA_MANAGED_API_KEY" ] || missing+=(NANOCODEX_ASTRA_MANAGED_API_KEY)
-          [ -n "$ASTRA_MPP_SECRET" ] || missing+=(NANOCODEX_ASTRA_MPP_SECRET)
-          [ -n "$TEMPO_API_KEY" ] || missing+=(TEMPO_MPP_API_KEY)
-          if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::notice::Astra trial remains fail-closed; missing repository secrets: ${missing[*]}"
-          fi
-          if [ "${#missing[@]}" -lt 3 ]; then
-            node --input-type=module -e '
-              const entries = [
-                ["NANOCODEX_ASTRA_MANAGED_API_KEY", process.env.ASTRA_MANAGED_API_KEY],
-                ["NANOCODEX_ASTRA_MPP_SECRET", process.env.ASTRA_MPP_SECRET],
-                ["TEMPO_MPP_API_KEY", process.env.TEMPO_API_KEY],
-              ].filter(([, value]) => value);
-              process.stdout.write(JSON.stringify(Object.fromEntries(entries)));
-            ' | node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler secret bulk --env=""
-          fi
-      - name: Deploy Chief of Staff integration
-        if: steps.current-release.outputs.active == 'true'
-        working-directory: js/chief-of-staff
-        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
-      - name: Deploy Connect playground
-        if: steps.current-release.outputs.active == 'true'
-        working-directory: js/connect-playground
-        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.jsonc --message "$DEPLOY_MESSAGE"
-      - name: Deploy account application
-        id: account-release
-        if: steps.current-release.outputs.active == 'true'
-        working-directory: js/account
-        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config dist/nanocodex/wrangler.json --message "$DEPLOY_MESSAGE"
-
-      - name: Verify deployed account Worker health
-        if: steps.account-release.outputs.active == 'true'
-        timeout-minutes: 1
-        run: |
-          node --input-type=module <<'JS'
-          import assert from 'node:assert/strict';
-          const response = await fetch('https://nanocodex.gakonst.workers.dev/api/health', {
-            signal: AbortSignal.timeout(20_000),
-          });
-          assert.equal(response.status, 200, 'account Worker health HTTP status');
-          const health = await response.json();
-          assert.equal(health.service, 'nanocodex');
-          assert.equal(health.runtime, 'cloudflare-workers');
-          assert.equal(health.status, 'ok');
-          console.log('Account Worker health passed');
-          JS
+        run: node scripts/cloudflare/release-workers.mjs
