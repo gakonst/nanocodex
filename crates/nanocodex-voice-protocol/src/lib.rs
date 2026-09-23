@@ -9,9 +9,7 @@ pub use settings::{
     VoiceHandoffMode, VoiceOutputProvider, VoicePace, VoiceSettings, VoiceTextRole, VoiceUpdates,
 };
 
-pub use managed::{
-    ManagedVoiceProtocol, bootstrap_plan, format_delegation, managed_startup_context,
-};
+pub use managed::{ManagedVoiceProtocol, format_delegation, managed_startup_context};
 
 pub use transcript::project_transcript;
 

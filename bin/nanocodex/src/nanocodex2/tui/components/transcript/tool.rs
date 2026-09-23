@@ -6,7 +6,6 @@ mod browser;
 mod code;
 mod mcp;
 mod media;
-mod memory;
 mod patch;
 mod plan;
 mod sandbox;
@@ -196,7 +195,6 @@ fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: bool) -> Prese
         "web__run" => web::present(tool, width, theme, expanded),
         "browser" | "browser_execute" => browser::present(tool, width, theme, expanded),
         "view_image" | "image_gen__imagegen" => media::present(tool, width, theme, expanded),
-        "memory" => memory::present(tool, width, theme, expanded),
         "find_session" | "find_sessions" | "read_session" => {
             session::present(tool, width, theme, expanded)
         }

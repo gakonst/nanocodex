@@ -1,6 +1,8 @@
 import { env, runInDurableObject } from 'cloudflare:test';
 import { expect, it, vi } from 'vitest';
-import type { MemoryScope, MemoryScopeEnv } from '../src/memory-scope';
+import { retireLegacyMemoryStorage, type MemoryScope, type MemoryScopeEnv } from '../src/memory-scope';
+import { PreparedPersonalizationStore } from '../src/personalization';
+import { scopeFileMemories } from '../src/extension-memory-storage';
 import type { MarkdownMemoryFlushReceipt } from '../src/markdown-memory-flush';
 import { memoryTarget } from '../src/memory-target';
 import { managedExtensionTools } from '../src/extension-tools';
@@ -183,7 +185,7 @@ it('queues manual daily writes durably, reports them by owner, and does not requ
   expect(await (await call(where, 'status', {})).json()).toMatchObject({ consolidation: { next_at: null, pending: [] } });
 });
 
-it('rolls back the document, append receipt and search index when consolidation enqueue fails', async () => {
+it('keeps the document and search index when optional consolidation enqueue fails', async () => {
   const where = target(crypto.randomUUID(), 'team', 'alice', 'personal');
   await call(where, 'status', {});
   await runInDurableObject(where.stub, async (memory, state) => {
@@ -195,11 +197,14 @@ it('rolls back the document, append receipt and search index when consolidation 
         operation_id: 'atomic-daily-note', content: 'atomic-turquoise-canary' }),
     }));
     try {
-      const failure = await write();
-      expect(failure.status).toBe(500);
-      expect(await failure.json()).toMatchObject({ error: 'memory_scope_failed' });
+      const saved = await write();
+      expect(saved.status).toBe(200);
+      expect(await saved.json()).toMatchObject({ ok: true, revision: 1 });
       for (const table of ['markdown_memory_documents', 'markdown_memory_operations', 'markdown_memory_chunks',
-        'markdown_memory_fts', 'markdown_memory_ai_items', 'markdown_consolidation_events', 'markdown_consolidation_jobs']) {
+        'markdown_memory_fts', 'markdown_memory_ai_items']) {
+        expect(state.storage.sql.exec(`SELECT COUNT(*) AS count FROM ${table}`).one()).toEqual({ count: 1 });
+      }
+      for (const table of ['markdown_consolidation_events', 'markdown_consolidation_jobs', 'markdown_consolidation_seen']) {
         expect(state.storage.sql.exec(`SELECT COUNT(*) AS count FROM ${table}`).one()).toEqual({ count: 0 });
       }
     } finally {
@@ -210,6 +215,64 @@ it('rolls back the document, append receipt and search index when consolidation 
   expect(await (await call(where, 'get', { path: 'memory/2026-09-22.md' })).json()).toMatchObject({ revision: 1, content: 'atomic-turquoise-canary' });
   expect(await (await call(where, 'status', {})).json()).toMatchObject({
     semantic: { pending: 1 }, consolidation: { pending: [{ path: 'memory/2026-09-22.md', revision: 1 }] },
+  });
+});
+
+it('does not fail a saved note when optional alarm scheduling fails', async () => {
+  const where = target(crypto.randomUUID(), 'team', 'alice', 'personal');
+  await call(where, 'status', {});
+  await runInDurableObject(where.stub, async (memory, state) => {
+    const alarm = vi.spyOn(state.storage, 'deleteAlarm').mockRejectedValue(new Error('synthetic alarm failure'));
+    try {
+      const saved = await memory.fetch(new Request('https://memory.internal/markdown-memory/write', {
+        method: 'POST', headers: where.headers,
+        body: JSON.stringify({ operation: 'put', path: 'USER.md', content: 'Saved despite optional alarm failure.' }),
+      }));
+      expect(saved.status).toBe(200);
+      expect(await saved.json()).toMatchObject({ ok: true });
+      expect(alarm).toHaveBeenCalled();
+      expect(state.storage.sql.exec('SELECT content FROM markdown_memory_documents WHERE path=?', 'USER.md').one())
+        .toMatchObject({ content: 'Saved despite optional alarm failure.' });
+    } finally { alarm.mockRestore(); }
+  });
+});
+
+it('keeps canonical reads and background consolidation available during remote invalidation failure', async () => {
+  const where = target(crypto.randomUUID(), 'team', 'alice', 'personal');
+  await runInDurableObject(where.stub, async (memory, state) => {
+    const runtime = memory as unknown as { env: MemoryScopeEnv };
+    const original = runtime.env;
+    const notify = vi.fn(async () => new Response(null, { status: 503 }));
+    const run = vi.fn(async () => ({ response: { candidates: [] } }));
+    runtime.env = { ...original, AI: { run }, NANOCODEX_MEMORY_AUTOMATION: 'true',
+      NANOCODEX_SESSIONS: { idFromString: (id: string) => id, get: () => ({ fetch: notify }) } as unknown as DurableObjectNamespace };
+    const rpc = (path: string, body: unknown) => memory.fetch(new Request(`https://memory.internal/${path}`, {
+      method: 'POST', headers: where.headers, body: JSON.stringify(body),
+    }));
+    try {
+      expect((await rpc('markdown-memory/write', { operation: 'put', path: 'USER.md', content: 'canonical copper note' })).status).toBe(200);
+      state.storage.sql.exec('UPDATE prepared_personalization SET generation=generation+1,invalidated_through=generation+1 WHERE team_id=?', 'personal:alice');
+      state.storage.sql.exec('INSERT INTO personalization_subscribers(storage_id,team_id,user_id,expires_at,acknowledged_generation) VALUES(?,?,?,?,0)',
+        'b'.repeat(64), 'personal:alice', 'alice', Date.now() + 60_000);
+      const read = await rpc('extension-memories/read', { path: 'USER.md' });
+      expect(read.status).toBe(200);
+      expect(await read.text()).toContain('canonical copper note');
+      expect((await rpc('extension-memories/search', { queries: ['copper'] })).status).toBe(200);
+      expect(notify).not.toHaveBeenCalled();
+      expect((await rpc('markdown-memory/write', { operation: 'put', path: 'memory/2026-09-23.md', content: 'A separate daily fact.' })).status).toBe(200);
+      state.storage.sql.exec('UPDATE markdown_consolidation_jobs SET due=?', Date.now() - 1);
+      await memory.alarm();
+      expect(notify).toHaveBeenCalled();
+      expect(run).toHaveBeenCalledOnce();
+      expect(await (await rpc('markdown-memory/status', {})).json()).toMatchObject({ consolidation: { pending: [], receipts: [{ status: 'empty' }] } });
+      expect(state.storage.sql.exec('SELECT acknowledged_generation FROM personalization_subscribers').one()).toEqual({ acknowledged_generation: 0 });
+      // A canonical deletion commits locally even while notification debt remains.
+      expect((await rpc('markdown-memory/write', { operation: 'delete', path: 'USER.md' })).status).toBe(200);
+    } finally {
+      runtime.env = original;
+      state.storage.sql.exec('DELETE FROM personalization_subscribers');
+      await state.storage.deleteAlarm();
+    }
   });
 });
 
@@ -312,4 +375,61 @@ it.each([true, false])('excludes both audit journals through managedExtensionToo
     matches: personal ? [{ path: 'MEMORY.md' }, { path: 'team/MEMORY.md' }] : [{ path: 'MEMORY.md' }],
     next_cursor: null, truncated: false,
   });
+});
+
+
+it('retires versioned storage once while preserving canonical files, chunked Codex notes and subscriber debt', async () => {
+  const where = target(crypto.randomUUID(), 'team', 'alice', 'personal');
+  expect((await call(where, 'write', { operation: 'put', path: 'USER.md', content: 'canonical upgrade canary' })).status).toBe(200);
+  await runInDurableObject(where.stub, async (_memory, state) => {
+    const storage = state.storage;
+    const owner = 'personal:alice';
+    const backend = scopeFileMemories(storage, owner);
+    const filename = '2026-09-23T12-00-00-upgrade-note.md';
+    const note = 'chunked append-only canary\n'.repeat(10_000);
+    await backend.add_ad_hoc_note!({ filename, note });
+    const subscriber = 'c'.repeat(64);
+    const scope = { organization_id: where.headers['x-nanocodex-organization-id'], team_id: owner, user_id: 'alice' };
+    const before = new PreparedPersonalizationStore(storage).snapshot(scope, subscriber)!;
+    // Simulate the old schema and cached fact-bearing profile before deployment.
+    storage.sql.exec('ALTER TABLE prepared_personalization DROP COLUMN markdown_only');
+    storage.sql.exec('UPDATE prepared_personalization SET body_json=? WHERE team_id=?',
+      JSON.stringify({ version: 'legacy', generation: before.generation, valid_until: Date.now() + 60_000,
+        team_facts: [{ id: 1, version: 1, content: 'retired fact canary' }], team_markdown: before.team_markdown }), owner);
+    storage.sql.exec(`CREATE TABLE durable_memories(id INTEGER PRIMARY KEY, content TEXT);
+      INSERT INTO durable_memories VALUES(1, 'retired fact canary');
+      CREATE TABLE durable_memories_legacy(id INTEGER PRIMARY KEY);
+      CREATE TABLE durable_memory_content_chunks(turn_id TEXT);
+      CREATE TABLE memory_scan_receipts(subject_id TEXT);
+      CREATE TRIGGER durable_memories_ad AFTER DELETE ON durable_memories BEGIN
+        DELETE FROM durable_memory_content_chunks WHERE turn_id=CAST(old.id AS TEXT); END;
+      CREATE TRIGGER personalization_memory_delete AFTER DELETE ON durable_memories BEGIN
+        UPDATE prepared_personalization SET dirty=1; END;`);
+    storage.sql.exec('INSERT INTO memory_threads(thread_id,team_id,title,created_at,updated_at) VALUES(?,?,?,?,?)', 'history-canary', owner, 'preserved history', 1, 1);
+    retireLegacyMemoryStorage(storage);
+    const migrated = new PreparedPersonalizationStore(storage);
+    expect(migrated.invalidationPending()).toBe(true);
+    const row = storage.sql.exec<{ generation: number; body_json: string | null }>(
+      'SELECT generation,body_json FROM prepared_personalization WHERE team_id=?', owner).one();
+    expect(row).toEqual({ generation: before.generation + 1, body_json: null });
+    retireLegacyMemoryStorage(storage);
+    new PreparedPersonalizationStore(storage);
+    expect(storage.sql.exec('SELECT generation,body_json FROM prepared_personalization WHERE team_id=?', owner).one()).toEqual(row);
+    expect(storage.sql.exec("SELECT name FROM sqlite_master WHERE name IN ('durable_memories','durable_memories_legacy','durable_memory_content_chunks','memory_scan_receipts')").toArray()).toEqual([]);
+    expect(await backend.read!({ path: `extensions/ad_hoc/notes/${filename}`, max_lines: 2 })).toMatchObject({ content: 'chunked append-only canary\nchunked append-only canary\n', truncated: true });
+    await expect(backend.add_ad_hoc_note!({ filename, note: 'overwrite' })).rejects.toThrow('already exists');
+    expect(await backend.search!({ queries: ['canonical upgrade canary'] })).toMatchObject({ matches: [{ path: 'USER.md' }] });
+    expect(await backend.list!({})).not.toMatchObject({ entries: expect.arrayContaining([{ entry_type: 'directory', path: 'legacy' }]) });
+    expect(storage.sql.exec('SELECT title FROM memory_threads WHERE thread_id=?', 'history-canary').one()).toEqual({ title: 'preserved history' });
+    const after = migrated.snapshot(scope, subscriber)!;
+    expect(after.team_markdown?.documents[0]?.content).toBe('canonical upgrade canary');
+    expect(JSON.stringify(after)).not.toContain('retired fact canary');
+    expect(migrated.invalidationPending()).toBe(true);
+  });
+  // Canonical triggers still point to their retained snapshot table after migration.
+  expect((await call(where, 'write', { operation: 'put', path: 'USER.md', content: 'post-upgrade canary' })).status).toBe(200);
+  expect(await (await call(where, 'get', { path: 'USER.md' })).json()).toMatchObject({ content: 'post-upgrade canary' });
+  expect((await where.stub.fetch('https://memory.internal/memory', { method: 'POST', headers: where.headers,
+    body: JSON.stringify({ operation: 'scan', query: 'retired' }) })).status).toBe(404);
+  expect((await where.stub.fetch('https://memory.internal/memories', { headers: where.headers })).status).toBe(404);
 });

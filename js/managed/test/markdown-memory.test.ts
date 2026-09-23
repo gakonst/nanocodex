@@ -60,7 +60,7 @@ describe('canonical markdown memory', () => {
       for (const path of ['../MEMORY.md', '/MEMORY.md', 'memory/2026-02-30.md', 'memory/2026-09-22/evil.md', 'memory/2026-09-22-Upper.md', 'other.md']) {
         expect(() => store.write('alice', put(path, 'x'))).toThrow();
       }
-      for (const input of [null, [], { ...put('USER.md', 'x'), extra: true }, { ...put('USER.md', 'x'), expected_revision: undefined }, put('USER.md', 'é'.repeat(32769)), { ...put('USER.md', 'x'), expected_revision: -1 }]) {
+      for (const input of [null, [], { ...put('USER.md', 'x'), extra: true }, put('USER.md', 'é'.repeat(32769)), { ...put('USER.md', 'x'), expected_revision: -1 }]) {
         expect(() => store.write('alice', input)).toThrow();
       }
       expect(() => store.get('', { path: 'USER.md' })).toThrow();
@@ -146,5 +146,25 @@ describe('canonical markdown memory', () => {
       expect(storage.sql.exec('SELECT * FROM markdown_memory_operations').toArray()).toEqual([]);
       expect(restored.get('alice', { path: 'memory/2026-09-22.md' }).revision).toBe(1);
     });
+  });
+});
+
+
+it('supports plain writes while keeping internal revision fences and replay protection', async () => {
+  await withStore((store, storage) => {
+    const first = { operation: 'put', path: 'MEMORY.md', content: 'first', operation_id: 'host-call-1' };
+    expect(store.write('alice', first)).toMatchObject({ ok: true });
+    store.write('alice', { operation: 'put', path: 'MEMORY.md', content: 'corrected', operation_id: 'host-call-2' });
+    expect(new MarkdownMemoryStore(storage).write('alice', first)).toMatchObject({ replayed: true });
+    expect(store.readFile('alice', 'MEMORY.md')).toBe('corrected');
+    expect(store.write('alice', { ...put('MEMORY.md', 'stale', 0) })).toMatchObject({ ok: false, error: 'revision_conflict' });
+    const append = { operation: 'append', path: 'memory/2026-09-22.md', content: 'progress', operation_id: 'host-call-3' };
+    store.write('alice', append);
+    new MarkdownMemoryStore(storage).write('alice', append);
+    store.write('alice', { operation: 'append', path: append.path, content: 'next' });
+    expect(store.readFile('alice', append.path)).toBe('progress\nnext');
+    store.write('alice', { operation: 'delete', path: first.path, operation_id: 'host-call-4' });
+    store.write('alice', first);
+    expect(store.get('alice', { path: first.path }).deleted).toBe(true);
   });
 });

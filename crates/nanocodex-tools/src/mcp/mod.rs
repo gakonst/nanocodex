@@ -10,7 +10,7 @@ mod stdio;
 use std::{
     collections::{BTreeMap, btree_map::Entry},
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -72,6 +72,9 @@ pub struct Mcp {
     oauth_store: Option<Arc<dyn McpOAuthStore>>,
     oauth_metadata: Arc<oauth::OAuthMetadataCache>,
     started: AtomicBool,
+    // Discovery belongs to the provider, not its shared catalog or control handles.
+    // Dropping this JoinSet cancels unfinished handshakes instead of detaching them.
+    startup_tasks: Mutex<tokio::task::JoinSet<()>>,
 }
 
 pub(crate) struct PreparedMcpTool {
@@ -307,6 +310,7 @@ impl McpBuilder {
             oauth_store: self.oauth_store,
             oauth_metadata: Arc::new(oauth::OAuthMetadataCache::default()),
             started: AtomicBool::new(false),
+            startup_tasks: Mutex::new(tokio::task::JoinSet::new()),
         })
     }
 }
@@ -523,6 +527,10 @@ impl DynamicToolProvider for Mcp {
         if self.started.swap(true, Ordering::AcqRel) {
             return;
         }
+        let mut startup_tasks = self
+            .startup_tasks
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         for server in &*self.servers {
             let name = server.name.clone();
             let model_namespace = server.model_namespace.clone();
@@ -540,7 +548,7 @@ impl DynamicToolProvider for Mcp {
                 status = tracing::field::Empty,
                 tool.count = tracing::field::Empty,
             );
-            drop(tokio::spawn(async move {
+            startup_tasks.spawn(async move {
                 let result = client::connect(&name, &config, oauth_store, oauth_metadata, &span)
                     .await
                     .map(|connected| {
@@ -572,7 +580,7 @@ impl DynamicToolProvider for Mcp {
                     span.record("tool.count", catalog.entries.len());
                 }
                 state.complete_server(&name, 0, result);
-            }));
+            });
         }
     }
 
@@ -1681,6 +1689,65 @@ mod tests {
             panic!("attachment unexpectedly flattened MCP exposure policy");
         };
         assert!(attachment_error.contains("attachment cannot preserve"));
+    }
+
+    #[tokio::test]
+    async fn dropping_mcp_cancels_pending_discovery_with_a_retained_handle() {
+        struct PendingStore {
+            started: tokio::sync::Notify,
+            cancelled: tokio::sync::Notify,
+        }
+
+        struct PendingLoad<'a>(&'a tokio::sync::Notify);
+
+        impl Drop for PendingLoad<'_> {
+            fn drop(&mut self) {
+                self.0.notify_one();
+            }
+        }
+
+        #[async_trait]
+        impl McpOAuthStore for PendingStore {
+            async fn load(
+                &self,
+                _server_name: &str,
+                _server_url: &str,
+            ) -> Result<Option<McpOAuthCredentials>, String> {
+                let _pending = PendingLoad(&self.cancelled);
+                self.started.notify_one();
+                std::future::pending().await
+            }
+
+            async fn save(
+                &self,
+                _server_name: &str,
+                _server_url: &str,
+                _credentials: &McpOAuthCredentials,
+            ) -> Result<(), String> {
+                panic!("pending discovery must not write credentials");
+            }
+        }
+
+        let store = Arc::new(PendingStore {
+            started: tokio::sync::Notify::new(),
+            cancelled: tokio::sync::Notify::new(),
+        });
+        let mcp = Mcp::builder()
+            .oauth_store(store.clone())
+            .server("pending", McpServer::http("http://127.0.0.1:1/mcp"))
+            .build()
+            .unwrap();
+        let retained_handle = mcp.handle();
+        mcp.start();
+        tokio::time::timeout(Duration::from_secs(1), store.started.notified())
+            .await
+            .expect("discovery should enter its credential load");
+
+        drop(mcp);
+        tokio::time::timeout(Duration::from_secs(1), store.cancelled.notified())
+            .await
+            .expect("dropping the provider must cancel pending discovery");
+        drop(retained_handle);
     }
 
     #[cfg(unix)]

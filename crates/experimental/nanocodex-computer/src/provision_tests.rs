@@ -431,3 +431,317 @@ fn unsupported_cached_build_does_not_suggest_refreshing_damage() {
     assert!(!error.contains("--refresh"));
     assert_eq!(fs::read(root.join("provider.json")).unwrap(), published);
 }
+
+#[test]
+fn unchanged_bundle_reuses_deep_verification_until_expiry_and_does_not_republish_receipt() {
+    let mut fixture = Fixture::new();
+    let root = fixture.directory.join("runtime");
+    let receipt = provision(&root, &[], false, &mut fixture).unwrap();
+    // The first reuse establishes a before/after fingerprint around full verify.
+    assert_eq!(provision(&root, &[], false, &mut fixture).unwrap(), receipt);
+    let published = fs::metadata(root.join("provider.json")).unwrap().modified().unwrap();
+    fixture.calls.clear();
+    assert_eq!(provision(&root, &[], false, &mut fixture).unwrap(), receipt);
+    assert!(fixture.calls.is_empty(), "unchanged warm reuse must run no subprocesses");
+    assert_eq!(fs::metadata(root.join("provider.json")).unwrap().modified().unwrap(), published);
+    let path = root.join(".startup-cache/verification-v1.json");
+    let mut record: VerificationRecord = crate::startup_cache::read(&path).unwrap();
+    record.verified_at = crate::startup_cache::now() - crate::startup_cache::MAX_AGE_SECS;
+    crate::startup_cache::write(&path, &record).unwrap();
+    provision(&root, &[], false, &mut fixture).unwrap();
+    assert_eq!(fixture.calls.iter().filter(|program| program.ends_with("codesign")).count(), 2);
+}
+
+#[test]
+fn nested_bundle_mutations_invalidate_verification_and_signature_failures_are_not_cached() {
+    let mut fixture = Fixture::new();
+    let root = fixture.directory.join("runtime");
+    provision(&root, &[], false, &mut fixture).unwrap();
+    provision(&root, &[], false, &mut fixture).unwrap();
+    fixture.calls.clear();
+    let nested = root.join("current/Codex.app/Contents/Resources/nested-fixture");
+    fs::write(&nested, "mutation").unwrap();
+    provision(&root, &[], false, &mut fixture).unwrap();
+    assert!(fixture.calls.iter().any(|program| program.ends_with("codesign")));
+    fixture.calls.clear();
+    let tampered = root.join("current/Codex.app/tampered");
+    fs::write(&tampered, "unsigned mutation").unwrap();
+    for _ in 0..2 {
+        assert!(provision(&root, &[], false, &mut fixture).unwrap_err().contains("invalid signature"));
+    }
+    assert_eq!(fixture.calls.iter().filter(|program| program.ends_with("codesign")).count(), 2);
+}
+
+#[test]
+fn corrupt_future_or_symlinked_verification_records_force_full_verification() {
+    let mut fixture = Fixture::new();
+    let root = fixture.directory.join("runtime");
+    provision(&root, &[], false, &mut fixture).unwrap();
+    provision(&root, &[], false, &mut fixture).unwrap();
+    let path = root.join(".startup-cache/verification-v1.json");
+    let mut record: VerificationRecord = crate::startup_cache::read(&path).unwrap();
+    record.verified_at = crate::startup_cache::now() + 60;
+    crate::startup_cache::write(&path, &record).unwrap();
+    fixture.calls.clear();
+    provision(&root, &[], false, &mut fixture).unwrap();
+    assert_eq!(fixture.calls.iter().filter(|program| program.ends_with("codesign")).count(), 2);
+    fs::write(&path, "invalid JSON").unwrap();
+    fixture.calls.clear();
+    provision(&root, &[], false, &mut fixture).unwrap();
+    assert_eq!(fixture.calls.iter().filter(|program| program.ends_with("codesign")).count(), 2);
+    let copied = fixture.directory.join("saved-verification.json");
+    fs::rename(&path, &copied).unwrap();
+    std::os::unix::fs::symlink(copied, &path).unwrap();
+    fixture.calls.clear();
+    provision(&root, &[], false, &mut fixture).unwrap();
+    assert_eq!(fixture.calls.iter().filter(|program| program.ends_with("codesign")).count(), 2);
+    assert!(fs::symlink_metadata(path).unwrap().is_file());
+}
+
+#[test]
+fn explicit_refresh_bypasses_a_fresh_verification_cache() {
+    let mut fixture = Fixture::new();
+    let root = fixture.directory.join("runtime");
+    provision(&root, &[], false, &mut fixture).unwrap();
+    provision(&root, &[], false, &mut fixture).unwrap();
+    fixture.calls.clear();
+    cached(&root, &mut fixture, true).unwrap().unwrap();
+    assert_eq!(fixture.calls.iter().filter(|program| program.ends_with("codesign")).count(), 2);
+}
+
+#[cfg(target_os = "macos")]
+#[tokio::test]
+#[ignore = "catalog-only timing against an explicitly selected installed signed provider"]
+async fn installed_verified_startup_cache_timings() {
+    use std::time::Instant;
+    let receipt_path = PathBuf::from(std::env::var_os("NANOCODEX_TEST_INSTALLED_COMPUTER_RECEIPT").expect("explicit installed provider receipt"));
+    let output = PathBuf::from(std::env::var_os("NANOCODEX_TEST_COMPUTER_OUTPUT").expect("private measurement output directory"));
+    let receipt: serde_json::Value = serde_json::from_slice(&fs::read(&receipt_path).unwrap()).unwrap();
+    let root = receipt_path.parent().unwrap();
+    let app = root.join("current/Codex.app").canonicalize().unwrap();
+    fs::create_dir_all(&output).unwrap();
+    let cache_root = output.join(format!("cache-probe-{}", nonce()));
+    let mut results = Vec::new();
+    for run in 1..=4 {
+        let started = Instant::now();
+        let cancellation = Cancellation::new();
+        let (build, fingerprint) = verified_cached(&cache_root, &app, &mut System::new(cancellation.flag()), false).unwrap();
+        let verified_ms = started.elapsed().as_secs_f64() * 1000.0;
+        assert_eq!(build, SUPPORTED_GUI_BUILD);
+        let mut config = crate::provision::config_from_receipt(&receipt).unwrap();
+        config.catalog_cache = Some(crate::startup_cache::CatalogCache::managed(&cache_root, config.executable.parent().unwrap(), &fingerprint.unwrap()));
+        let started = Instant::now();
+        let computer = crate::ComputerTools::connect(config).await.unwrap();
+        let catalog_ms = started.elapsed().as_secs_f64() * 1000.0;
+        let row = serde_json::json!({"run":run, "verified_ms":verified_ms, "catalog_ms":catalog_ms, "tool_count":computer.catalog().len()});
+        println!("{row}");
+        results.push(row);
+    }
+    fs::write(output.join("installed-rust-cache-timings.json"), serde_json::to_vec_pretty(&results).unwrap()).unwrap();
+    fs::remove_dir_all(cache_root).unwrap();
+}
+
+#[test]
+fn bundle_mutation_during_verification_never_publishes_a_successful_cache() {
+    struct Mutating<'a> { fixture: &'a mut Fixture }
+    impl Commands for Mutating<'_> {
+        fn run(&mut self, program: &str, args: &[OsString]) -> Result<String, String> {
+            let result = self.fixture.run(program, args)?;
+            if program == "/usr/bin/codesign" && args[0] == "--verify" {
+                let app = PathBuf::from(args.last().unwrap());
+                fs::write(app.join("Contents/Resources/codex"), "changed after verification").unwrap();
+            }
+            Ok(result)
+        }
+    }
+    let mut fixture = Fixture::new();
+    let root = fixture.directory.join("runtime");
+    let app = fixture.directory.join("Codex.app");
+    Fixture::app(&app);
+    let error = verified_cached(&root, &app, &mut Mutating { fixture: &mut fixture }, false).unwrap_err();
+    assert!(error.contains("changed during signature verification"), "{error}");
+    assert!(!root.join(".startup-cache/verification-v1.json").exists());
+}
+
+#[test]
+fn system_drains_both_full_pipes_and_reports_normal_exit_status() {
+    let cancellation = Cancellation::new();
+    let mut system = System::new(cancellation.flag());
+    let text = system.run("/bin/sh", &[
+        "-c".into(),
+        "i=0; while [ \"$i\" -lt 8192 ]; do printf 'stdout-line-0123456789\\n'; printf 'stderr-line-0123456789\\n' >&2; i=$((i + 1)); done".into(),
+    ]).unwrap();
+    assert_eq!(text, format!("{}{}", "stdout-line-0123456789\n".repeat(8192), "stderr-line-0123456789\n".repeat(8192)));
+    let error = system.run("/bin/sh", &["-c".into(), "printf expected-failure >&2; exit 7".into()]).unwrap_err();
+    assert!(error.contains("7") && error.contains("expected-failure"), "{error}");
+}
+
+fn assert_direct_child_reaped(pid: libc::pid_t) {
+    let mut status = 0;
+    assert_eq!(unsafe { libc::waitpid(pid, &mut status, libc::WNOHANG) }, -1);
+    assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ECHILD));
+}
+
+fn assert_descendant_stopped(pid: libc::pid_t) {
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    loop {
+        if unsafe { libc::kill(pid, 0) } == -1 {
+            assert_eq!(std::io::Error::last_os_error().raw_os_error(), Some(libc::ESRCH));
+            return;
+        }
+        // Some Linux test containers do not reap adopted grandchildren promptly.
+        // A zombie is stopped; only its adopting parent can reap it. macOS init
+        // reaps these descendants, so assert disappearance there as well.
+        #[cfg(target_os = "linux")]
+        if fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| stat.rsplit_once(") ").is_some_and(|(_, tail)| tail.starts_with("Z "))) {
+            return;
+        }
+        assert!(std::time::Instant::now() < deadline, "descendant {pid} survived cancellation");
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    }
+}
+
+#[tokio::test]
+async fn aborted_blocking_command_reaps_own_group_and_descendants_within_shutdown_budget() {
+    use std::time::{Duration, Instant};
+    // Cover both a running group leader and an exited leader whose descendant
+    // still owns both pipes. Never signal the test harness's process group.
+    for parent_exits in [false, true] {
+        let fixture = Fixture::new();
+        let pid_file = fixture.directory.join("owned-pids");
+        let child_file = pid_file.clone();
+        let (completed, result) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let cancellation = Cancellation::new();
+            let mut system = System::new(cancellation.flag());
+            tokio::task::spawn_blocking(move || {
+                let script = format!("sleep 60 & descendant=$!; printf '%s %s\\n' \"$$\" \"$descendant\" > \"$1\"; {}", if parent_exits { "exit 0" } else { "wait \"$descendant\"" });
+                let result = system.run("/bin/sh", &["-c".into(), script.into(), "owned-cancel-test".into(), child_file.into_os_string()]);
+                let _ = completed.send(result);
+            }).await.unwrap();
+            drop(cancellation);
+        });
+        let pids = tokio::time::timeout(Duration::from_secs(5), async {
+            loop {
+                if let Ok(text) = fs::read_to_string(&pid_file) {
+                    let pids: Vec<libc::pid_t> = text.split_whitespace().map(|pid| pid.parse().unwrap()).collect();
+                    if pids.len() == 2 { break pids; }
+                }
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        }).await.unwrap();
+        // macOS getpgid reports ESRCH for an exited, still-unreaped leader.
+        if !parent_exits { assert_eq!(unsafe { libc::getpgid(pids[0]) }, pids[0]); }
+        assert_eq!(unsafe { libc::getpgid(pids[1]) }, pids[0]);
+        assert_ne!(unsafe { libc::getpgrp() }, pids[0]);
+        if parent_exits { tokio::time::sleep(Duration::from_millis(10)).await; }
+        let started = Instant::now();
+        task.abort();
+        assert!(task.await.unwrap_err().is_cancelled());
+        let error = tokio::time::timeout(Duration::from_millis(100), result).await.unwrap().unwrap().unwrap_err();
+        assert_eq!(error, CANCELLED);
+        assert_direct_child_reaped(pids[0]);
+        let elapsed = started.elapsed();
+        assert!(elapsed < Duration::from_millis(100), "reaping took {elapsed:?}");
+        assert_descendant_stopped(pids[1]);
+        println!("owned command cancellation parent_exits={parent_exits}: {:.3} ms; direct child reaped, descendant gone", elapsed.as_secs_f64() * 1000.0);
+    }
+}
+
+#[test]
+fn dropping_unreaped_command_stops_descendants_even_after_leader_exits() {
+    use std::os::unix::process::CommandExt;
+    let fixture = Fixture::new();
+    let pid_file = fixture.directory.join("descendant-pid");
+    let child = Command::new("/bin/sh")
+        .args(["-c", "sleep 60 & printf '%s\\n' \"$!\" > \"$1\"; exit 0", "owned-drop-test"])
+        .arg(&pid_file).process_group(0)
+        .stdin(std::process::Stdio::null()).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped())
+        .spawn().unwrap();
+    let child = OwnedCommand::new(child);
+    let parent = child.child.id() as libc::pid_t;
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    let descendant = loop {
+        if let Ok(text) = fs::read_to_string(&pid_file) {
+            if let Ok(pid) = text.trim().parse::<libc::pid_t>() { break pid; }
+        }
+        assert!(std::time::Instant::now() < deadline);
+        std::thread::sleep(std::time::Duration::from_millis(1));
+    };
+    std::thread::sleep(std::time::Duration::from_millis(10));
+    drop(child);
+    assert_direct_child_reaped(parent);
+    assert_descendant_stopped(descendant);
+}
+
+#[test]
+fn cancelled_download_detaches_and_retains_staging_if_detach_fails() {
+    struct Cancelling<'a> { fixture: &'a mut Fixture, cancelled: bool, fail_detach: bool, detached: bool }
+    impl Commands for Cancelling<'_> {
+        fn check_cancelled(&self) -> Result<(), String> {
+            if self.cancelled { Err(CANCELLED.into()) } else { Ok(()) }
+        }
+        fn run(&mut self, program: &str, args: &[OsString]) -> Result<String, String> {
+            if program == "/usr/bin/hdiutil" && args[0] == "detach" {
+                assert!(Path::new(args.last().unwrap()).join("ChatGPT.app").is_dir());
+                self.detached = true;
+                return if self.fail_detach { Err("test detach failure".into()) } else { Ok(String::new()) };
+            }
+            self.check_cancelled()?;
+            let result = self.fixture.run(program, args)?;
+            if program == "/usr/bin/hdiutil" && args[0] == "attach" {
+                self.cancelled = true;
+                return Err(CANCELLED.into());
+            }
+            Ok(result)
+        }
+    }
+    for fail_detach in [false, true] {
+        let mut fixture = Fixture::new();
+        let root = fixture.directory.join("runtime");
+        let mut commands = Cancelling { fixture: &mut fixture, cancelled: false, fail_detach, detached: false };
+        let error = provision(&root, &[], false, &mut commands).unwrap_err();
+        assert!(commands.detached);
+        assert!(!root.join("current").exists() && !root.join("provider.json").exists());
+        let retained = fs::read_dir(&root).unwrap().filter_map(Result::ok).any(|entry| entry.file_name().to_string_lossy().starts_with(".staging-"));
+        assert_eq!(retained, fail_detach);
+        assert!(error.contains(if fail_detach { "staging retained" } else { CANCELLED }), "{error}");
+    }
+}
+
+#[test]
+fn cancelled_cached_verification_and_receipt_commit_preserve_previous_publication() {
+    struct Cancelling<'a> { fixture: &'a mut Fixture, checks: std::cell::Cell<usize>, cancel_at: usize }
+    impl Commands for Cancelling<'_> {
+        fn check_cancelled(&self) -> Result<(), String> {
+            let checks = self.checks.get() + 1;
+            self.checks.set(checks);
+            if checks >= self.cancel_at { Err(CANCELLED.into()) } else { Ok(()) }
+        }
+        fn run(&mut self, program: &str, args: &[OsString]) -> Result<String, String> {
+            self.check_cancelled()?;
+            self.fixture.run(program, args)
+        }
+    }
+    let mut fixture = Fixture::new();
+    let root = fixture.directory.join("runtime");
+    let receipt = provision(&root, &[], false, &mut fixture).unwrap();
+    provision(&root, &[], false, &mut fixture).unwrap();
+    let cache = fs::read(root.join(".startup-cache/verification-v1.json")).unwrap();
+    let previous = b"prior receipt must survive cancellation";
+    fs::write(root.join("provider.json"), previous).unwrap();
+    let current = fs::read_link(root.join("current")).unwrap();
+    // Cancellation after fingerprint, after host preparation, and just before
+    // the receipt's atomic rename must all preserve the earlier publication.
+    for cancel_at in [3, 5, 7] {
+        fixture.calls.clear();
+        let mut commands = Cancelling { fixture: &mut fixture, checks: std::cell::Cell::new(0), cancel_at };
+        assert_eq!(provision(&root, &[], false, &mut commands).unwrap_err(), CANCELLED);
+        assert_eq!(fs::read(root.join("provider.json")).unwrap(), previous);
+        assert_eq!(fs::read_link(root.join("current")).unwrap(), current);
+        assert_eq!(fs::read(root.join(".startup-cache/verification-v1.json")).unwrap(), cache);
+        assert!(fixture.calls.is_empty(), "warm cancellation must not run verification commands");
+        assert!(!fs::read_dir(&root).unwrap().filter_map(Result::ok).any(|entry| entry.file_name().to_string_lossy().starts_with(".provider-")));
+    }
+    assert!(Path::new(receipt["executable"].as_str().unwrap()).is_file());
+}

@@ -262,6 +262,7 @@ test("standalone inference routes project through the managed service", async ()
 
 test("standard inference aliases project only their exact paths", async () => {
   for (const path of ["/v1/responses/", "/v1/responses/response-id", "/v1/responses-other",
+    "/v1/memory", "/v1/memory/1",
     "/v1/models/", "/v1/models/model-id", "/v1/models-other", "/v1/chat/completions", "/v1/sessions"]) {
     assert.equal(isManagedRoutePath(path), false, path);
     const request = new Request("https://nanocodex.example" + path, {
@@ -277,7 +278,7 @@ test("standard inference aliases project only their exact paths", async () => {
 
 test("inference credentials cannot reach account, connector, agent or hand proxy paths", async () => {
   for (const path of ["/v1/me", "/v1/agents", "/v1/api-keys", "/v1/connectors/github", "/v1/credentials",
-    "/v1/account/hands", "/v1/account/hands/screens", "/v1/account/tool-host", "/v1/history", "/v1/memory", "/v1/egress", "/v1/wallet"]) {
+    "/v1/account/hands", "/v1/account/hands/screens", "/v1/account/tool-host", "/v1/history", "/v1/memories/list", "/v1/memories/write", "/v1/memories/status", "/v1/markdown-memory/get", "/v1/egress", "/v1/wallet"]) {
     const request = new Request("https://nanocodex.example" + path, {
       headers: { authorization: "Bearer nci_live_synthetic", cookie: "synthetic=account", upgrade: "websocket", "x-nanocodex-managed-access": "synthetic" },
     });
@@ -514,5 +515,30 @@ test("live renewal and broker authorization failures clear browser access withou
       if (endpoint === "renew") assert.equal(response!.headers.get("x-nanocodex-request-id"), "rejection-fixture");
       else assert.ok(response!.headers.get("x-nanocodex-request-id"));
     }
+  }
+});
+
+test("memory routes forward only public file and Markdown operations", async () => {
+  const paths = [
+    ...["list", "read", "search", "add_ad_hoc_note", "write", "status"].map(operation => `/v1/memories/${operation}`),
+    ...["get", "search", "write", "status"].map(operation => `/v1/markdown-memory/${operation}`),
+  ];
+  for (const path of paths) {
+    assert.equal(isManagedRoutePath(path), true, path);
+    const request = new Request(`https://nanocodex.example${path}`, { method: "POST" });
+    let forwarded: Request | undefined;
+    const response = await routeManaged(request, { NANOCODEX_BACKEND: {
+      fetch(candidate: Request) {
+        forwarded = candidate;
+        return Promise.resolve(new Response(null, { status: 204 }));
+      },
+      connect() { throw new Error("unused"); },
+    } }, new URL(request.url));
+    assert.equal(forwarded, request);
+    assert.equal(response?.status, 204);
+  }
+  for (const path of ["/v1/memory", "/v1/memory/1", "/v1/memories", "/v1/memories/delete", "/v1/memories/list/extra",
+    "/v1/markdown-memory", "/v1/markdown-memory/flush", "/v1/markdown-memory/write/extra"]) {
+    assert.equal(isManagedRoutePath(path), false, path);
   }
 });

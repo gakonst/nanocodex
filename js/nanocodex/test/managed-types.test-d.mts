@@ -2,8 +2,6 @@ import { Agent, ManagedError } from "nanocodex/managed";
 import type {
   ManagedAgent,
   ManagedEvent,
-  ManagedMemoryRecord,
-  ManagedMemoryResult,
   ManagedOrganization,
   ManagedTurnResult,
 } from "nanocodex/managed";
@@ -125,44 +123,12 @@ async function checkManaged() {
   );
   read.turns[0]?.assistant;
   read.citations[0]?.sources[0]?.cursor;
-  const memories: readonly ManagedMemoryRecord[] = await Agent.listMemories({
-    baseUrl: "https://managed.example",
-    apiKey,
-  });
-  await Agent.deleteMemory(memories[0]!.key, {
-    baseUrl: "https://managed.example",
-    apiKey,
-  });
-  const scanned = await Agent.memory(
-    { operation: "scan", query: "deployment schedule", limit: 5 },
-    { baseUrl: "https://managed.example", apiKey },
-  );
-  scanned.candidates[0]?.key.version;
-  const stored = await Agent.memory(
-    { operation: "put", content: "Deploy on Tuesday" },
-    { baseUrl: "https://managed.example", apiKey },
-  );
-  const readMemory = await Agent.memory(
-    { operation: "read", keys: [stored.memory.key] },
-    { baseUrl: "https://managed.example", apiKey },
-  );
-  readMemory.memories[0]?.last_used_at_ms;
-  await Agent.memory(
-    { operation: "delete", key: stored.memory.key },
-    { baseUrl: "https://managed.example", apiKey },
-  );
-  const memoryResult: ManagedMemoryResult = scanned;
-  memoryResult.operation;
   const organization: ManagedOrganization = await Agent.getOrganization({
     baseUrl: "https://managed.example",
   });
   organization.rootTeam.name;
   await Agent.updateOrganization({ name: "Research" });
   await Agent.updateOrganization({ name: null });
-  // @ts-expect-error memory operation names are closed.
-  await Agent.memory({ operation: "list" });
-  // @ts-expect-error memory keys require both positive-integer-shaped numeric fields.
-  await Agent.memory({ operation: "read", keys: [{ id: 1 }] });
   // @ts-expect-error organization updates require a name.
   await Agent.updateOrganization({});
   for await (const event of serverAgent.events.watch({ cursor: result.cursor ?? "0" })) {
@@ -208,9 +174,6 @@ void configurationContracts;
 
 void Agent.create({ baseUrl: "https://managed.example", configuration: { chatgpt_account_id: "account-a" } });
 
-await Agent.listMemories({ scope: "personal" });
-await Agent.memory({ operation: "scan", query: "my preferences" }, { scope: "personal" });
-await Agent.deleteMemory({ id: 1, version: 1 }, { scope: "personal" });
 Agent.open("0198d3f0-8844-7000-8000-000000000001", {
   requestOrigin: { client: "web", timezone: "America/Los_Angeles" },
 });

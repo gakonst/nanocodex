@@ -23,7 +23,6 @@ import {
   parseCliRegisterBody,
   parseCliWalletRequest,
   sanitizeCliWalletResult,
-  managedMemoryCapability,
 } from "./devicePolicy.mts";
 import {
   allowsHeadlessConnectAuth,
@@ -245,8 +244,9 @@ const REGISTERED_APP_ID = "atlas-workspace";
 const MAX_BROKER_BODY_BYTES = 16 * 1024;
 const MAX_BROKER_CREDENTIALS_BODY_BYTES = 256 * 1024;
 const MAX_AGENT_TOOL_BODY_BYTES = 20 * 1024 * 1024;
-const MAX_MANAGED_MEMORY_REQUEST_BYTES = 16 * 1024;
-const MAX_MANAGED_MEMORY_RESPONSE_BYTES = 1024 * 1024;
+const MAX_MANAGED_HISTORY_REQUEST_BYTES = 16 * 1024;
+const MAX_MANAGED_MEMORY_REQUEST_BYTES = 1024 * 1024;
+const MAX_MANAGED_RECALL_RESPONSE_BYTES = 1024 * 1024;
 const MAX_ACCOUNT_AUTHORIZATIONS = 64;
 const MAX_DEVICE_REGISTER_BYTES = 64 * 1024;
 const MAX_CONNECTION_REQUEST_BYTES = 128 * 1024;
@@ -675,8 +675,8 @@ export default {
         return cors(await createConnection(request, env, store, context), request);
       }
 
-      const managedMemoryResponse = await handleManagedMemoryRoute(request, env, url);
-      if (managedMemoryResponse) return cors(managedMemoryResponse, request);
+      const managedRecallResponse = await handleManagedRecallRoute(request, env, url);
+      if (managedRecallResponse) return cors(managedRecallResponse, request);
 
       const browserCookieResponse = await handleBrowserCookieJarRoute(request, env, url);
       if (browserCookieResponse) return cors(browserCookieResponse, request);
@@ -1164,30 +1164,25 @@ async function browserCookieJsonResponse(
   }
 }
 
-async function handleManagedMemoryRoute(
+async function handleManagedRecallRoute(
   request: Request,
   env: Env,
   url: URL,
 ): Promise<Response | undefined> {
   const isSearchPath = url.pathname === "/v1/history/sessions/search";
   const readMatch = url.pathname.match(/^\/v1\/history\/sessions\/([^/]+)\/read$/);
-  const isMemoryPath = url.pathname === "/v1/memory";
-  const memoryDeleteMatch = url.pathname.match(/^\/v1\/memory\/([^/]+)$/);
-  if (!isSearchPath && !readMatch && !isMemoryPath && !memoryDeleteMatch) return undefined;
-  const validMethod = (isSearchPath || readMatch) ? request.method === "POST"
-    : isMemoryPath ? request.method === "GET" || request.method === "POST"
-      : request.method === "DELETE";
-  if (!validMethod) {
-    throw new ApiFailure(405, "method_not_allowed", "Unsupported hosted history or memory method.");
+  const memory = url.pathname.match(/^\/v1\/memories\/(list|read|search|add_ad_hoc_note|write|status)$/);
+  if (!isSearchPath && !readMatch && !memory) return undefined;
+  if (request.method !== "POST") {
+    throw new ApiFailure(405, "method_not_allowed", "Unsupported hosted recall method.");
   }
-  const isMemory = isMemoryPath;
-  if (url.search && !memoryDeleteMatch) {
-    throw new ApiFailure(400, "invalid_managed_request", "Hosted history and memory requests do not accept query parameters.");
+  if (url.search) {
+    throw new ApiFailure(400, "invalid_managed_request", "Hosted recall requests do not accept query parameters.");
   }
 
   const app = requireCallerApp(request);
   if (app.appId !== CLI_APP_ID || app.origin !== CLI_APP_ORIGIN) {
-    throw new ApiFailure(403, "app_identity_mismatch", "Hosted history and memory are available only to the Nanocodex CLI.");
+    throw new ApiFailure(403, "app_identity_mismatch", "Hosted recall is available only to the Nanocodex CLI.");
   }
   const { grant } = await authenticatedGrant(request, env);
   if (grant.appId !== CLI_APP_ID || grant.appOrigin !== CLI_APP_ORIGIN) {
@@ -1197,34 +1192,14 @@ async function handleManagedMemoryRoute(
     throw new ApiFailure(403, "grant_inactive", "The Connect grant is not active.");
   }
   remainingGrantTtl(grant);
-  const body = request.method === "POST"
-    ? await boundedJson(request, MAX_MANAGED_MEMORY_REQUEST_BYTES, "hosted history or memory")
-    : undefined;
-  const operation = isMemory && request.method === "GET" ? "list"
-    : memoryDeleteMatch ? "delete"
-      : body?.operation;
-  const requiredCapability = managedMemoryCapability(url.pathname, operation);
-  if (!requiredCapability) {
-    throw new ApiFailure(400, "invalid_memory_operation", "The hosted history or memory operation is invalid.");
+  const capability = memory
+    ? memory[1] === "add_ad_hoc_note" || memory[1] === "write" ? "memory:write" : "memory:read"
+    : "history:read";
+  if (!grant.capabilities.includes(capability)) {
+    throw new ApiFailure(403, `${capability.replace(":", "_")}_not_granted`, `This Connect grant does not include ${capability} access.`);
   }
-  if (!grant.capabilities.includes(requiredCapability)) {
-    const code = requiredCapability === "history:read"
-      ? "history_read_not_granted"
-      : requiredCapability === "memory:write"
-        ? "memory_write_not_granted"
-        : "memory_read_not_granted";
-    throw new ApiFailure(403, code, `This Connect grant does not include ${requiredCapability} access.`);
-  }
-  if (isMemory && request.method === "POST") {
-    const memoryOperation = body?.operation;
-    if (memoryOperation !== "scan" && memoryOperation !== "read"
-      && memoryOperation !== "put" && memoryOperation !== "delete") {
-      throw new ApiFailure(400, "invalid_memory_operation", "The hosted memory operation is invalid.");
-    }
-  }
-
+  const body = await boundedJson(request, memory ? MAX_MANAGED_MEMORY_REQUEST_BYTES : MAX_MANAGED_HISTORY_REQUEST_BYTES, "hosted recall");
   const target = new URL(url.pathname, "https://nanocodex.internal");
-  if (memoryDeleteMatch) target.search = url.search;
   const headers = new Headers(managedGrantHeaders(managedGrantAssertion(grant)));
   if (body !== undefined) headers.set("content-type", "application/json");
   const upstream = await env.ACCOUNTS.fetch(new Request(target, {
@@ -1250,7 +1225,7 @@ async function safeManagedJsonResponse(upstream: Response): Promise<Response> {
     await upstream.body?.cancel();
     throw new ApiFailure(502, "managed_response_invalid", "The hosted service returned a non-JSON response.");
   }
-  const bytes = new Uint8Array(await boundedResponseBytes(upstream, MAX_MANAGED_MEMORY_RESPONSE_BYTES));
+  const bytes = new Uint8Array(await boundedResponseBytes(upstream, MAX_MANAGED_RECALL_RESPONSE_BYTES));
   let value: unknown;
   try {
     value = JSON.parse(new TextDecoder().decode(bytes));

@@ -47,8 +47,10 @@ pub async fn provision_upstream(force_refresh: bool) -> Result<serde_json::Value
         if let Some(home) = std::env::var_os("HOME") {
             applications.push(PathBuf::from(home).join("Applications"));
         }
+        let cancellation = mac::Cancellation::new();
+        let mut commands = mac::System::new(cancellation.flag());
         tokio::task::spawn_blocking(move || {
-            mac::provision(&root, &applications, force_refresh, &mut mac::System)
+            mac::provision(&root, &applications, force_refresh, &mut commands)
         })
         .await
         .map_err(|e| format!("OpenAI CUA installation task failed: {e}"))?
@@ -75,6 +77,9 @@ pub fn config_from_receipt(receipt: &serde_json::Value) -> Result<crate::Compute
         args: Vec<String>,
         #[serde(default)]
         environment: std::collections::BTreeMap<String, String>,
+        #[cfg(unix)]
+        #[serde(default)]
+        catalog_cache: Option<crate::startup_cache::CatalogCache>,
     }
     let receipt: Receipt = serde_json::from_value(receipt.clone()).map_err(|e| e.to_string())?;
     if receipt.status != "installed"
@@ -90,6 +95,10 @@ pub fn config_from_receipt(receipt: &serde_json::Value) -> Result<crate::Compute
         .into_iter()
         .map(|(key, value)| (key.into(), value.into()))
         .collect();
+    #[cfg(unix)]
+    {
+        config.catalog_cache = receipt.catalog_cache;
+    }
     Ok(config)
 }
 
@@ -195,29 +204,172 @@ mod mac {
 
     pub(super) trait Commands {
         fn run(&mut self, program: &str, args: &[OsString]) -> Result<String, String>;
+        fn check_cancelled(&self) -> Result<(), String> {
+            Ok(())
+        }
     }
 
-    #[cfg(target_os = "macos")]
-    pub(super) struct System;
-    #[cfg(target_os = "macos")]
+    const CANCELLED: &str = "OpenAI CUA setup cancelled";
+
+    pub(super) struct Cancellation(std::sync::Arc<std::sync::atomic::AtomicBool>);
+    impl Cancellation {
+        pub(super) fn new() -> Self {
+            Self(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            )))
+        }
+        pub(super) fn flag(&self) -> std::sync::Arc<std::sync::atomic::AtomicBool> {
+            self.0.clone()
+        }
+    }
+    impl Drop for Cancellation {
+        fn drop(&mut self) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    pub(super) struct System {
+        cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    }
+    impl System {
+        pub(super) fn new(cancelled: std::sync::Arc<std::sync::atomic::AtomicBool>) -> Self {
+            Self { cancelled }
+        }
+    }
+
+    // The group leader's PID stays reserved until its final group signal. Never
+    // probe/reap it in Drop before terminating descendants which may own pipes.
+    struct OwnedCommand {
+        child: std::process::Child,
+        reaped: bool,
+    }
+    impl OwnedCommand {
+        fn new(child: std::process::Child) -> Self {
+            Self {
+                child,
+                reaped: false,
+            }
+        }
+        fn kill(&mut self) {
+            if !self.reaped {
+                // process_group(0) gives this command its own group; an unreaped
+                // leader's PID cannot be recycled into an unrelated process.
+                unsafe {
+                    libc::kill(-(self.child.id() as libc::pid_t), libc::SIGKILL);
+                }
+                let _ = self.child.kill();
+            }
+        }
+        fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+            let status = self.child.wait()?;
+            self.reaped = true;
+            Ok(status)
+        }
+        fn try_wait(&mut self) -> std::io::Result<Option<std::process::ExitStatus>> {
+            let status = self.child.try_wait()?;
+            self.reaped = status.is_some();
+            Ok(status)
+        }
+    }
+    impl Drop for OwnedCommand {
+        fn drop(&mut self) {
+            if !self.reaped {
+                self.kill();
+                let _ = self.wait();
+            }
+        }
+    }
+
     impl Commands for System {
+        fn check_cancelled(&self) -> Result<(), String> {
+            if self.cancelled.load(Ordering::Acquire) {
+                Err(CANCELLED.into())
+            } else {
+                Ok(())
+            }
+        }
         fn run(&mut self, program: &str, args: &[OsString]) -> Result<String, String> {
-            let output = std::process::Command::new(program)
-                .args(args)
-                .stdin(std::process::Stdio::null())
-                .output()
-                .map_err(|e| format!("{program}: {e}"))?;
-            if !output.status.success() {
+            use std::{io::Read, os::unix::process::CommandExt};
+            let cleanup =
+                program == "/usr/bin/hdiutil" && args.first().is_some_and(|arg| arg == "detach");
+            // Detach still runs after cancellation, with its own deadline.
+            if !cleanup {
+                self.check_cancelled()?;
+            }
+            let mut child = OwnedCommand::new(
+                std::process::Command::new(program)
+                    .args(args)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::piped())
+                    .stderr(std::process::Stdio::piped())
+                    .process_group(0)
+                    .spawn()
+                    .map_err(|error| format!("{program}: {error}"))?,
+            );
+            let mut stdout = child
+                .child
+                .stdout
+                .take()
+                .ok_or("CUA command stdout unavailable")?;
+            let mut stderr = child
+                .child
+                .stderr
+                .take()
+                .ok_or("CUA command stderr unavailable")?;
+            let out = std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                stdout.read_to_end(&mut bytes).map(|_| bytes)
+            });
+            let err = std::thread::spawn(move || {
+                let mut bytes = Vec::new();
+                stderr.read_to_end(&mut bytes).map(|_| bytes)
+            });
+            let started = std::time::Instant::now();
+            let mut cancelled = false;
+            let status = loop {
+                if (!cleanup && self.cancelled.load(Ordering::Acquire))
+                    || (cleanup && started.elapsed() > std::time::Duration::from_secs(10))
+                {
+                    child.kill();
+                    cancelled = true;
+                    break child.wait().map_err(|error| error.to_string())?;
+                }
+                // Do not reap while descendants still own pipes: keeping the PID
+                // reserved makes group cancellation safe if they block forever.
+                if out.is_finished()
+                    && err.is_finished()
+                    && let Some(status) = child.try_wait().map_err(|error| error.to_string())?
+                {
+                    break status;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            };
+            let stdout = out
+                .join()
+                .map_err(|_| "CUA command output reader failed")?
+                .map_err(|error| error.to_string())?;
+            let stderr = err
+                .join()
+                .map_err(|_| "CUA command error reader failed")?
+                .map_err(|error| error.to_string())?;
+            if cancelled {
+                return Err(if cleanup {
+                    "OpenAI CUA cleanup timed out"
+                } else {
+                    CANCELLED
+                }
+                .into());
+            }
+            if !status.success() {
                 return Err(format!(
-                    "{program} failed ({}): {}",
-                    output.status,
-                    String::from_utf8_lossy(&output.stderr).trim()
+                    "{program} failed ({status}): {}",
+                    String::from_utf8_lossy(&stderr).trim()
                 ));
             }
             Ok(format!(
                 "{}{}",
-                String::from_utf8_lossy(&output.stdout),
-                String::from_utf8_lossy(&output.stderr)
+                String::from_utf8_lossy(&stdout),
+                String::from_utf8_lossy(&stderr)
             ))
         }
     }
@@ -327,6 +479,60 @@ mod mac {
         Ok(build.to_owned())
     }
 
+    #[derive(serde::Deserialize, serde::Serialize)]
+    struct VerificationRecord {
+        format: u32,
+        verified_at: u64,
+        fingerprint: String,
+        build: String,
+    }
+
+    // Cache the result of deep signature verification, never a guessed version
+    // or a top-level mtime. Every nested entry participates in the fingerprint.
+    // A changed, expired, unsupported or unreadable record goes through the
+    // original full signature/build/runtime checks. Cache failures are harmless.
+    fn verified_cached(
+        root: &Path,
+        app: &Path,
+        commands: &mut impl Commands,
+        refresh: bool,
+    ) -> Result<(String, Option<String>), String> {
+        use crate::startup_cache as cache;
+        let path = root.join(".startup-cache/verification-v1.json");
+        commands.check_cancelled()?;
+        let before = cache::fingerprint(app);
+        commands.check_cancelled()?;
+        if !refresh
+            && let Some(fingerprint) = &before
+            && let Some(record) = cache::read::<VerificationRecord>(&path)
+            && record.format == 1
+            && record.build == SUPPORTED_GUI_BUILD
+            && cache::fresh(record.verified_at, cache::now())
+            && record.fingerprint == *fingerprint
+        {
+            return Ok((record.build, before));
+        }
+        let build = verify(app, commands)?;
+        let after = cache::fingerprint(app);
+        commands.check_cancelled()?;
+        if before.is_some() && before != after {
+            return Err("OpenAI CUA bundle changed during signature verification".into());
+        }
+        let verified_fingerprint = before.filter(|fingerprint| after.as_ref() == Some(fingerprint));
+        if let Some(fingerprint) = &verified_fingerprint {
+            let _ = cache::write(
+                &path,
+                &VerificationRecord {
+                    format: 1,
+                    verified_at: cache::now(),
+                    fingerprint: fingerprint.clone(),
+                    build: build.clone(),
+                },
+            );
+        }
+        Ok((build, verified_fingerprint))
+    }
+
     fn quote(path: &Path) -> Result<String, String> {
         let text = path
             .to_str()
@@ -363,6 +569,7 @@ mod mac {
     fn cached(
         root: &Path,
         commands: &mut impl Commands,
+        refresh: bool,
     ) -> Result<Option<serde_json::Value>, String> {
         let current = root.join("current");
         match fs::symlink_metadata(&current) {
@@ -389,12 +596,15 @@ mod mac {
             Ok(version)
         };
         let result = validate().and_then(|version| {
-            let build = verify(&version.join(APP), commands)?;
+            let (build, fingerprint) =
+                verified_cached(root, &version.join(APP), commands, refresh)?;
+            commands.check_cancelled()?;
             let host = ensure_host(root, &version, HOST_MODULES)?;
-            publish_receipt(root, &host, &build)
+            commands.check_cancelled()?;
+            publish_receipt(root, &host, &build, fingerprint.as_deref(), commands)
         });
         result.map(Some).map_err(|error| {
-            if error.starts_with("Unsupported OpenAI CUA build ") {
+            if error == CANCELLED || error.starts_with("Unsupported OpenAI CUA build ") {
                 error
             } else {
                 format!("Managed OpenAI CUA runtime is damaged: {error}. Run `nanocodex computer setup --refresh` to replace it")
@@ -536,15 +746,42 @@ mod mac {
         Ok(host)
     }
 
-    fn publish_receipt(root: &Path, host: &Path, build: &str) -> Result<serde_json::Value, String> {
-        let receipt = serde_json::json!({"status": "installed", "build": build,
+    fn publish_receipt(
+        root: &Path,
+        host: &Path,
+        build: &str,
+        fingerprint: Option<&str>,
+        commands: &impl Commands,
+    ) -> Result<serde_json::Value, String> {
+        commands.check_cancelled()?;
+        let mut receipt = serde_json::json!({"status": "installed", "build": build,
             "executable": host.join("cua-provider"), "transport": "mcp", "args": [], "environment": {}});
+        if let Some(fingerprint) = fingerprint {
+            receipt["catalog_cache"] = serde_json::to_value(
+                crate::startup_cache::CatalogCache::managed(root, host, fingerprint),
+            )
+            .map_err(|error| error.to_string())?;
+        }
+        // A cache hit must not republish an identical receipt on every startup.
+        // Keep existing running clients' metadata and file watchers quiet.
+        if fs::symlink_metadata(root.join("provider.json"))
+            .is_ok_and(|metadata| metadata.is_file() && metadata.len() <= 65536)
+            && fs::read(root.join("provider.json"))
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .as_ref()
+                == Some(&receipt)
+        {
+            return Ok(receipt);
+        }
         let stage = root.join(format!(".provider-{}.json", nonce()));
         io(fs::write(
             &stage,
             serde_json::to_vec(&receipt).map_err(|e| e.to_string())?,
         ))?;
-        let result = io(fs::rename(&stage, root.join("provider.json")));
+        let result = commands
+            .check_cancelled()
+            .and_then(|()| io(fs::rename(&stage, root.join("provider.json"))));
         if result.is_err() {
             let _ = fs::remove_file(&stage);
         }
@@ -598,6 +835,8 @@ mod mac {
         )?;
         let mount = stage.path.join("mount");
         io(fs::create_dir(&mount))?;
+        // A panic or interrupted worker must never recursively remove a mount.
+        stage.cleanup = false;
         let attached = commands.run(
             "/usr/bin/hdiutil",
             &[
@@ -635,6 +874,7 @@ mod mac {
                 stage.path.display()
             ));
         }
+        stage.cleanup = true;
         result
     }
 
@@ -644,7 +884,8 @@ mod mac {
         refresh: bool,
         commands: &mut impl Commands,
     ) -> Result<serde_json::Value, String> {
-        if !refresh && let Some(receipt) = cached(root, commands)? {
+        commands.check_cancelled()?;
+        if !refresh && let Some(receipt) = cached(root, commands, false)? {
             return Ok(receipt);
         }
         io(fs::create_dir_all(root.join("versions")))?;
@@ -675,11 +916,12 @@ mod mac {
         // Copying must preserve every signed resource; verify the destination.
         let build = verify(&app, commands)?;
         if refresh
-            && let Ok(Some(existing)) = cached(root, commands)
+            && let Ok(Some(existing)) = cached(root, commands, true)
             && existing["build"].as_str() == Some(&build)
         {
             return Ok(existing);
         }
+        commands.check_cancelled()?;
         let relative = PathBuf::from("versions").join(format!("{build}-{}", nonce()));
         let version = root.join(&relative);
         io(fs::rename(stage.path.join("payload"), &version))?;
@@ -693,8 +935,10 @@ mod mac {
         io(std::os::unix::fs::symlink(&relative, &next))?;
         #[cfg(not(unix))]
         return Err("macOS CUA publication requires Unix symlinks".into());
+        let fingerprint = crate::startup_cache::fingerprint(&version.join(APP));
+        commands.check_cancelled()?;
         io(fs::rename(&next, root.join("current")))?;
-        publish_receipt(root, &host, &build)
+        publish_receipt(root, &host, &build, fingerprint.as_deref(), commands)
     }
 
     #[cfg(test)]

@@ -146,6 +146,29 @@ test("managed SDP and sideband negotiation overlap admission without admitting e
   }
 });
 
+test("late managed personalization reaches an already connected voice channel", async () => {
+  const fixture = installBrowserVoiceFixture();
+  const calls = [];
+  let admit;
+  const admission = new Promise(resolve => { admit = resolve; });
+  const frame = JSON.stringify({ type: "session.context.append", channel: "commentary",
+    content: [{ type: "input_text", text: "Current prepared and Markdown preferences" }] });
+  const core = fakeVoiceCore(calls, {
+    parallelStartup: true, dataChannelControl: true,
+    async start() { await admission; return JSON.stringify({ frames: [frame], acknowledge_frames: true }); },
+  });
+  const session = new BrowserVoiceSession({ core, voice: "cove",
+    captureMicrophone: async () => fakeMicrophone(calls), onStatus() {}, onTranscript() {}, onTerminated() {} });
+  const starting = session.start();
+  try {
+    await waitFor(() => calls.some(([kind]) => kind === "sidebandOpened"));
+    admit();
+    await starting;
+    assert.ok(fixture.channel.sent.includes(frame));
+    assert.ok(calls.some(([kind, count]) => kind === "framesSent" && count === 1));
+  } finally { admit(); await session.close(); fixture.restore(); }
+});
+
 test("failed parallel admission closes negotiated media without publishing ready", async () => {
   const fixture = installBrowserVoiceFixture();
   const calls = [];
@@ -344,7 +367,7 @@ test("direct voice times out a stalled data channel and ignores late events", as
   } finally { await session.close(); fixture.restore(); }
 });
 
-test("the public managed voice forwards memory updates and durable admission failures over WebRTC", async () => {
+test("the public managed voice forwards prepared Markdown and ignores retired results over WebRTC", async () => {
   await initializeBrowserEngine({ module: await WebAssembly.compile(
     await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url)),
   ) });
@@ -358,7 +381,9 @@ test("the public managed voice forwards memory updates and durable admission fai
       const path = new URL(input).pathname;
       if (path.endsWith("/realtime/start")) {
         voiceSessionId = JSON.parse(init.body).voice_session_id;
-        return Response.json({ context: { workspace: "/brain", history: [] } });
+        return Response.json({ context: { workspace: "/brain", history: [],
+          prepared_personalization: "Current prepared voice preference.",
+          markdown_memory: "USER.md: Current Markdown voice preference." } });
       }
       if (path.endsWith("/realtime/calls")) return globalThis.fetch(input, init);
       if (path.endsWith("/realtime/delegate")) {
@@ -385,6 +410,9 @@ test("the public managed voice forwards memory updates and durable admission fai
     await voice.appendText("Selected README.md", { role: "developer" });
     await voice.appendContext("The editor selection changed.");
     const frames = fixture.channel.sent.map((frame) => JSON.parse(frame));
+    const background = frames.filter(frame => frame.channel === "commentary").map(frame => frame.content[0].text).join("");
+    assert.match(background, /Current prepared voice preference/);
+    assert.match(background, /Current Markdown voice preference/);
     assert.ok(frames.some((frame) => frame.channel === "speakable" && frame.content[0].text === "Read this aloud."));
     assert.ok(frames.some((frame) => frame.type === "session.context.append" && frame.content[0].text === "Selected README.md" && !("channel" in frame)));
     await assert.rejects(voice.speak(" "), /voice text/);
@@ -397,13 +425,19 @@ test("the public managed voice forwards memory updates and durable admission fai
       },
     } };
     events.enqueue(new TextEncoder().encode(`id: ${cursor}\nevent: event\ndata: ${JSON.stringify(event)}\n\n`));
-    await waitFor(() => fixture.channel.sent.some((frame) => frame.includes("delete")));
+    const updated = { ...event, cursor: "9007199254740994", event: {
+      type: "managed.voice.context", payload: { voice_session_id: voiceSessionId,
+        context: { markdown_memory: "USER.md: Updated canonical voice preference." } },
+    } };
+    events.enqueue(new TextEncoder().encode(`id: ${updated.cursor}\nevent: event\ndata: ${JSON.stringify(updated)}\n\n`));
+    await waitFor(() => fixture.channel.sent.some((frame) => frame.includes("Updated canonical voice preference")));
+    assert.ok(!fixture.channel.sent.some((frame) => frame.includes("Saved-memory update")));
     assert.equal(fixture.sidebandUrls.length, 0);
     fixture.channel.message({ type: "delegation.created", item: {
       type: "delegation", target: "client", id: "failed-handoff", content: [{ type: "input_text", text: "Look up the saved note" }],
     } });
     await waitFor(() => delegated);
-    events.enqueue(new TextEncoder().encode('id: 9007199254740994\nevent: turn_failed\ndata: {"type":"turn_failed","id":"failed-voice-turn","turn_id":"failed-voice-turn","error":"private backend error","cursor":"9007199254740994","created_at":2}\n\n'));
+    events.enqueue(new TextEncoder().encode('id: 9007199254740995\nevent: turn_failed\ndata: {"type":"turn_failed","id":"failed-voice-turn","turn_id":"failed-voice-turn","error":"private backend error","cursor":"9007199254740995","created_at":2}\n\n'));
     await waitFor(() => voice.getSnapshot().transcripts.some((entry) => entry.recovered && entry.text === "The coding agent could not complete the request."));
     assert.ok(!fixture.channel.sent.some((frame) => frame.includes("private backend error")));
   } finally {

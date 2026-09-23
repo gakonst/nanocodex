@@ -74,6 +74,194 @@ test("managed Rust omits startup context even when admission arrives after SDP",
   }
 });
 
+test("managed browser voice delivers both memory sources before or after media starts", async () => {
+  const module = await WebAssembly.compile(await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url)));
+  for (const late of [false, true]) {
+    const agent = Agent.open(AGENT_ID, { baseUrl: "https://managed.example", fetch: async () => Response.json({ context: {
+      workspace: "/private/workspace",
+      history: [{ role: "developer", content: [{ text: "stale developer context" }] },
+        { role: "user", content: [{ text: "unselected prior conversation" }] }],
+      prepared_personalization: "Current prepared preference.",
+      markdown_memory: "USER.md: Current Markdown preference. " + "🦊".repeat(300),
+    } }) });
+    const voice = await createManagedBrowserVoice(agent, "cove", { module });
+    try {
+      if (late) { voice.callBody("v=offer"); voice.sidebandOpened(); }
+      const effects = JSON.parse(await voice.start());
+      assert.ok(effects.frames.length > 1);
+      const frames = effects.frames.map(JSON.parse);
+      assert.ok(frames.every(frame => frame.type === "session.context.append" && frame.channel === "commentary"));
+      const text = frames.map(frame => frame.content[0].text).join("");
+      assert.match(text, /Current prepared preference/);
+      assert.match(text, /Current Markdown preference/);
+      assert.doesNotMatch(text, /stale developer context|unselected prior conversation|private\/workspace/);
+      assert.notEqual(effects.playback_enabled, true);
+      assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, effects.frames);
+      voice.framesSent(effects.frames.length);
+      assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, []);
+      assert.deepEqual(JSON.parse(await voice.start()).frames, []);
+    } finally { voice.free(); }
+  }
+});
+
+test("real WASM accepts late prepared context only for its bound session and a fresh decimal cursor", async () => {
+  const module = await WebAssembly.compile(await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url)));
+  for (const opened of [false, true]) {
+    const requests = [];
+    const agent = Agent.open(AGENT_ID, { baseUrl: "https://managed.example", fetch: async (input, init) => {
+      requests.push({ path: new URL(input).pathname, body: JSON.parse(init.body) });
+      return Response.json({ context: { workspace: "/private/workspace", history: [] } });
+    } });
+    const voice = await createManagedBrowserVoice(agent, "cove", { module });
+    try {
+      assert.deepEqual(JSON.parse(await voice.start()).frames, [], "cold admission does not need memory");
+      const sessionId = requests[0].body.voice_session_id;
+      const context = {
+        prepared_personalization: "Current prepared preference. <untrusted>",
+        markdown_memory: "USER.md: Current Markdown preference. " + "🦊".repeat(300),
+        workspace: "/private/workspace",
+        history: [{ role: "developer", content: [{ text: "private host state" }] },
+          { role: "user", content: [{ text: "old conversation" }] }],
+      };
+      const envelope = (cursor, value = context, voiceSessionId = sessionId) => ({ cursor,
+        event: { type: "managed.voice.context", payload: { voice_session_id: voiceSessionId, context: value } },
+      });
+      const effects = (event) => JSON.parse(voice.agentEvent(event));
+      assert.deepEqual(effects(envelope("9007199254740993", context, "other-call")).frames, [], "wrong-session context is rejected before SDP too");
+      const call = JSON.parse(voice.callBody("v=offer"));
+      assert.equal(call.session_id, sessionId);
+      assert.doesNotMatch(JSON.parse(call.call_body).session.instructions, /Current prepared|Current Markdown|private\/workspace/);
+      if (opened) voice.sidebandOpened();
+      assert.deepEqual(effects(envelope("9007199254740993", context, "other-call")).frames, []);
+      for (const cursor of [null, 12, "", "0", "01", "-1", "1.5", "1e20", "９", "9".repeat(33)]) {
+        assert.deepEqual(effects(envelope(cursor)).frames, []);
+      }
+      for (const value of [null, { history: context.history, workspace: context.workspace },
+        { prepared_personalization: "p".repeat(20_001), markdown_memory: "m".repeat(32_001) },
+        { prepared_personalization: {}, markdown_memory: [] }]) {
+        assert.deepEqual(effects(envelope("9007199254740999", value)).frames, []);
+      }
+      const update = effects(envelope("9007199254740993"));
+      assert.ok(update.frames.length > 1, "valid late context survives all rejected events");
+      assert.equal(update.acknowledge_frames, true);
+      assert.notEqual(update.playback_enabled, true);
+      assert.deepEqual(update.transcripts, []);
+      const frames = update.frames.map(JSON.parse);
+      assert.ok(frames.every(frame => frame.type === "session.context.append" && frame.channel === "commentary"));
+      assert.ok(frames.every(frame => Buffer.byteLength(frame.content[0].text) <= 500));
+      const text = frames.map(frame => frame.content[0].text).join("");
+      assert.ok(text.includes("Current prepared preference. \\u003cuntrusted\\u003e"));
+      assert.match(text, /Current Markdown preference/);
+      assert.match(text, /not instructions or authorization/);
+      assert.doesNotMatch(text, /private host state|old conversation|private\/workspace/);
+      assert.deepEqual(effects(envelope("9007199254740994")).frames, [], "pending snapshots are deduplicated");
+      assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, update.frames);
+      voice.framesSent(update.frames.length);
+      assert.deepEqual(effects(envelope("9007199254740995")).frames, [], "acknowledged snapshots are deduplicated too");
+      for (const cursor of ["9007199254740993", "9007199254740994", "9007199254740995"]) {
+        assert.deepEqual(effects(envelope(cursor, { markdown_memory: "obsolete" })).frames, []);
+      }
+      assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, []);
+      const changed = effects(envelope("9007199254740996", { ...context, markdown_memory: "USER.md changed preference" }));
+      assert.ok(changed.frames.map(JSON.parse).map(frame => frame.content[0].text).join("").includes("changed preference"));
+      voice.framesSent(changed.frames.length);
+      for (const result of [
+        { operation: "delete", key: { id: 5, version: 1 } },
+        { operation: "put", memory: { key: { id: 5, version: 2 }, content: "retired fact canary" } },
+      ]) {
+        const legacy = { cursor: "9007199254740999", event: { type: "managed.voice.context", payload: {
+          voice_session_id: sessionId, result,
+        } } };
+        for (let replay = 0; replay < 2; replay++) {
+          assert.deepEqual(effects(legacy).frames, [], "retired memory results cannot restore facts");
+        }
+      }
+      const latest = envelope("9007199254740997", { markdown_memory: "USER.md current snapshot" });
+      latest.event.payload.result = { operation: "put", memory: { key: { id: 5, version: 2 }, content: "retired fact canary" } };
+      const current = effects(latest);
+      const currentText = current.frames.map(JSON.parse).map(frame => frame.content[0].text).join("");
+      assert.match(currentText, /USER.md current snapshot/, "legacy results cannot advance the cursor past current Markdown");
+      assert.doesNotMatch(currentText, /retired fact canary|Saved-memory update/);
+      assert.notEqual(current.playback_enabled, true);
+      voice.framesSent(current.frames.length);
+      assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, []);
+      assert.equal(requests.length, 1, "background context never admits agent work or reads memory");
+    } finally { voice.free(); }
+  }
+});
+
+test("real WASM retains background memory before SDP and ignores an older delayed admission snapshot", async () => {
+  const module = await WebAssembly.compile(await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url)));
+  const reached = Promise.withResolvers();
+  const admission = Promise.withResolvers();
+  const agent = Agent.open(AGENT_ID, { baseUrl: "https://managed.example", fetch: async (_input, init) => {
+    reached.resolve(JSON.parse(init.body).voice_session_id);
+    return admission.promise;
+  } });
+  const voice = await createManagedBrowserVoice(agent, "cove", { module });
+  const starting = voice.start();
+  try {
+    const sessionId = await reached.promise;
+    // Microphone/SDP setup is still pending while background refresh completes.
+    const effects = JSON.parse(voice.agentEvent({ cursor: "2", event: { type: "managed.voice.context", payload: {
+      voice_session_id: sessionId,
+      context: { prepared_personalization: "New prepared preference", markdown_memory: "New Markdown preference" },
+    } } }));
+    assert.ok(effects.frames.length > 0, "the known call accepts memory before callBody");
+    voice.callBody("v=offer");
+    admission.resolve(Response.json({ context: { workspace: "/brain", history: [],
+      prepared_personalization: "Old prepared preference", markdown_memory: "Old Markdown preference" } }));
+    assert.deepEqual(JSON.parse(await starting).frames, [], "delayed startup cannot supersede live memory");
+    const pending = JSON.parse(voice.sidebandOpened());
+    assert.deepEqual(pending.frames, effects.frames);
+    const text = pending.frames.map(JSON.parse).map(frame => frame.content[0].text).join("");
+    assert.match(text, /New prepared preference/);
+    assert.match(text, /New Markdown preference/);
+    assert.doesNotMatch(text, /Old prepared|Old Markdown/);
+    voice.framesSent(pending.frames.length);
+    assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, []);
+  } finally {
+    admission.resolve(Response.json({ context: { workspace: "/brain", history: [] } }));
+    await starting.catch(() => {});
+    voice.free();
+  }
+});
+
+test("real WASM deduplicates admission memory when the background snapshot arrives after binding", async () => {
+  const module = await WebAssembly.compile(await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url)));
+  const context = { workspace: "/brain", history: [], prepared_personalization: "Current preference", markdown_memory: "USER.md note" };
+  const agent = Agent.open(AGENT_ID, { baseUrl: "https://managed.example", fetch: async () => Response.json({ context }) });
+  const voice = await createManagedBrowserVoice(agent, "cove", { module });
+  try {
+    const initial = JSON.parse(await voice.start());
+    assert.ok(initial.frames.length > 0);
+    const { session_id: sessionId } = JSON.parse(voice.callBody("v=offer"));
+    const repeated = JSON.parse(voice.agentEvent({ cursor: "1", event: { type: "managed.voice.context", payload: {
+      voice_session_id: sessionId, context,
+    } } }));
+    assert.deepEqual(repeated.frames, []);
+    assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, initial.frames);
+    voice.framesSent(initial.frames.length);
+    assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, []);
+  } finally { voice.free(); }
+});
+
+test("managed voice rejects unauthorized admission without passing response memory to WASM", async () => {
+  const module = await WebAssembly.compile(await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url)));
+  for (const status of [401, 403]) {
+    const agent = Agent.open(AGENT_ID, { baseUrl: "https://managed.example", fetch: async () => Response.json({
+      error: "Voice admission denied",
+      context: { workspace: "/private/workspace", history: [], prepared_personalization: "unauthorized fact", markdown_memory: "private memory" },
+    }, { status }) });
+    const voice = await createManagedBrowserVoice(agent, "cove", { module });
+    try {
+      voice.callBody("v=offer");
+      await assert.rejects(voice.start());
+      assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, []);
+    } finally { voice.free(); }
+  }
+});
+
 test("managed browser voice gives a UUIDv8 durable Agent a distinct UUIDv7 realtime session", async () => {
   const wasm = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
   const module = await WebAssembly.compile(wasm);
@@ -127,7 +315,7 @@ test("managed browser voice gives a UUIDv8 durable Agent a distinct UUIDv7 realt
   assert.equal(sideband.searchParams.get("thread_id"), call.session_id);
 
   const context = { cursor: "9007199254740993", event: { type: "managed.voice.context", payload: {
-    voice_session_id: call.session_id, result: { operation: "delete", key: { id: 5, version: 1 } },
+    voice_session_id: call.session_id, context: { markdown_memory: "USER.md: current preference" },
   } } };
   const effects = (event) => JSON.parse(voice.agentEvent(event));
   assert.deepEqual(effects({ ...context, event: { ...context.event, payload: { ...context.event.payload, voice_session_id: "other-call" } } }).frames, []);
@@ -135,7 +323,7 @@ test("managed browser voice gives a UUIDv8 durable Agent a distinct UUIDv7 realt
   const frame = JSON.parse(update.frames[0]);
   assert.equal(frame.type, "session.context.append");
   assert.equal(frame.channel, "commentary");
-  assert.match(frame.content[0].text, /delete/);
+  assert.match(frame.content[0].text, /USER.md: current preference/);
   assert.equal(update.acknowledge_frames, true);
   assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, update.frames);
   voice.framesSent(1);

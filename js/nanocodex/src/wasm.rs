@@ -2576,19 +2576,36 @@ impl WasmManagedBrowserVoice {
         })
     }
 
+    /// Binds the known managed call before admission or microphone setup begins.
+    ///
+    /// # Errors
+    /// Rejects invalid session IDs or rebinding an active call.
+    #[wasm_bindgen(js_name = bindSession)]
+    pub fn bind_session(&self, managed_session_id: &str) -> Result<(), JsValue> {
+        if self.started.get() || self.call_prepared.get() {
+            return Err(js_error("voice session binding requires a new call"));
+        }
+        let session_id = managed_voice_session_id(managed_session_id)?;
+        self.protocol.borrow_mut().bind_session(&session_id);
+        Ok(())
+    }
+
     /// Starts the protocol from the managed Agent's authoritative serialized context.
     ///
     /// # Errors
     ///
     /// Rejects malformed `AgentSessionContext` JSON.
-    pub fn start(&self, context_json: &str) -> Result<(), JsValue> {
+    pub fn start(&self, context_json: &str) -> Result<String, JsValue> {
         if self.started.get() {
-            return Ok(());
+            return encode_voice_effects(&BrowserVoiceEffects::default());
         }
-        let _context = serde_json::from_str::<WasmOwnedAgentSessionContext>(context_json)
+        let context: serde_json::Value = serde_json::from_str(context_json)
             .map_err(|error| js_error(format!("invalid AgentSessionContext: {error}")))?;
+        serde_json::from_value::<WasmOwnedAgentSessionContext>(context.clone())
+            .map_err(|error| js_error(format!("invalid AgentSessionContext: {error}")))?;
+        let effects = self.protocol.borrow_mut().personalization(&context);
         self.started.set(true);
-        Ok(())
+        encode_voice_effects(&effects)
     }
 
     /// Encodes the managed same-origin call request after the browser creates its SDP offer.
@@ -2768,12 +2785,6 @@ fn managed_voice_session_id(value: &str) -> Result<String, JsValue> {
         .parse::<SessionId>()
         .map(|session_id| session_id.to_string())
         .map_err(|error| js_error(format!("invalid managed session ID: {error}")))
-}
-
-/// Returns the shared bounded first-prompt retrieval plan for a managed host.
-#[wasm_bindgen(js_name = managedBootstrapPlan)]
-pub fn managed_bootstrap_plan(input: &str) -> String {
-    nanocodex_voice_protocol::bootstrap_plan(input).to_string()
 }
 
 fn encode_managed_voice_update(
