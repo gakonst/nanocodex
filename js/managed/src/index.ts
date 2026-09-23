@@ -3122,7 +3122,6 @@ export class DurableAgentSession extends DurableComputerSession {
   readonly #admissionTasks = new Map<string, Promise<ManagedTurnRow>>();
   readonly #accountCatalog = new AccountCatalogCache();
   #accountDiscoveryKey?: string;
-  #preparedAccountInfo?: { key: string; expiresAt: number; promise: Promise<AccountInfo> };
   #preparationTask?: Promise<void>;
   #preparationExpiresAt = 0;
   #accountMcpConnections?: readonly ManagedAccountMcpConnection[];
@@ -7523,27 +7522,21 @@ export class DurableAgentSession extends DurableComputerSession {
   }
 
   #startupAccountInfo(session: SessionRow, authorization: TurnAuthorization): Promise<AccountInfo> {
-    const key = canonicalJson([session.owner_id, session.organization_id, session.team_id,
-      session.authorization_epoch, authorization]);
-    const now = Date.now();
-    if (this.#preparedAccountInfo?.key === key && this.#preparedAccountInfo.expiresAt > now) {
-      return this.#preparedAccountInfo.promise;
-    }
-    const promise = withHardDeadline("startup accountInfo", 10_000, (signal) => accountInfo(
+    // Cache raw discovery once; project the current turn's authority on every
+    // use. A second projected cache would extend an older snapshot's deadline.
+    return withHardDeadline("startup accountInfo", 10_000, (signal) => accountInfo(
       this.env.NANOCODEX, session.owner_id, {
         allowedConnectors: accountConnectorProjection(authorization),
         allowedConnections: accountConnectionProjection(authorization),
         enabled: session.runtime_profile === "managed", signal,
-        ...(session.runtime_profile === "managed" ? { catalog: this.#catalog(session) } : {}),
+        ...(session.runtime_profile === "managed" ? {
+          catalog: this.#catalog(session),
+          vault: this.#accountCatalog.vault(this.env.NANOCODEX, session.owner_id,
+            JSON.stringify([session.organization_id, session.team_id, session.authorization_epoch])),
+        } : {}),
       },
     )).catch(() => accountInfo(this.env.NANOCODEX, session.owner_id, { enabled: false })
       .then((info) => ({ ...info, status: "unavailable" as const })));
-    const entry = { key, expiresAt: now + MANAGED_ACCESS_TTL_MS, promise };
-    this.#preparedAccountInfo = entry;
-    void promise.then((info) => {
-      if (info.status !== "ready" && this.#preparedAccountInfo === entry) this.#preparedAccountInfo = undefined;
-    });
-    return promise;
   }
 
   #catalog(session: SessionRow): Promise<unknown> {
@@ -7869,6 +7862,9 @@ export class DurableAgentSession extends DurableComputerSession {
     const computerRuntimeMs = performance.now() - phaseStartedAt;
     const currentAccountInfo = async (context: ToolContext) => {
       await this.#accountHostedTools?.refresh();
+      // Explicit environment/runtime inspection requests a fresh snapshot and
+      // seeds the next admission with that same metadata and original deadline.
+      this.#accountCatalog.invalidate();
       const authorization = this.#authorizationForToolContext(context);
       return await accountInfo(
         this.env.NANOCODEX,
@@ -7881,6 +7877,11 @@ export class DurableAgentSession extends DurableComputerSession {
             ? {}
             : accountConnectionProjection(authorization),
           enabled: !multiplayer,
+          ...(!multiplayer ? {
+            catalog: this.#catalog(session),
+            vault: this.#accountCatalog.vault(this.env.NANOCODEX, session.owner_id,
+              JSON.stringify([session.organization_id, session.team_id, session.authorization_epoch])),
+          } : {}),
           apis: this.env.NANOCODEX_X ? [X_API] : [],
           machines: this.#accountMachines(authorization, context),
           signal: context.signal,
@@ -10333,7 +10334,6 @@ export class DurableAgentSession extends DurableComputerSession {
     // settings changes, deletion, and credential recovery.
     if (!options.preserveAccountDiscovery) {
       this.#accountCatalog.invalidate();
-      this.#preparedAccountInfo = undefined;
       this.#accountHostedTools?.invalidate();
     }
     this.#preparationExpiresAt = 0;
@@ -10899,8 +10899,8 @@ export class DurableAgentSession extends DurableComputerSession {
   }
 
   #idleTimeoutMs(): number {
-    const configured = Number(this.env.AGENT_IDLE_TIMEOUT_MS ?? 30_000);
-    return Number.isFinite(configured) ? Math.min(15 * 60_000, Math.max(1_000, configured)) : 30_000;
+    const configured = Number(this.env.AGENT_IDLE_TIMEOUT_MS ?? 5 * 60_000);
+    return Number.isFinite(configured) ? Math.min(15 * 60_000, Math.max(1_000, configured)) : 5 * 60_000;
   }
 
   #ownershipIoTimeoutMs(): number {

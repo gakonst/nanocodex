@@ -4,6 +4,7 @@ import type { DurableAgentSession } from "../src/index";
 import { DEFAULT_AGENT_SETTINGS } from "../src/agent-settings";
 import { forwardPrincipalAssertions, type Principal } from "../src/account-auth";
 import { MANAGED_ACCESS_TTL_MS } from "../src/managed-access";
+import { ACCOUNT_DISCOVERY_TTL_MS } from "../src/account-catalog";
 
 const principal: Principal = {
   kind: "api_key", userId: "11111111-1111-4111-8111-111111111111",
@@ -15,9 +16,9 @@ const sessions = () => (env as unknown as {
   NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
 }).NANOCODEX_SESSIONS;
 
-async function fixture(run: (f: Awaited<ReturnType<typeof setup>>) => Promise<void>) {
+async function fixture(run: (f: Awaited<ReturnType<typeof setup>>) => Promise<void>, idleTimeoutMs = 30_000) {
   await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (instance, state) => {
-    const f = await setup(instance, state);
+    const f = await setup(instance, state, idleTimeoutMs);
     try { await run(f); }
     finally {
       f.logs.mockRestore();
@@ -26,7 +27,7 @@ async function fixture(run: (f: Awaited<ReturnType<typeof setup>>) => Promise<vo
   });
 }
 
-async function setup(instance: DurableAgentSession, state: DurableObjectState) {
+async function setup(instance: DurableAgentSession, state: DurableObjectState, idleTimeoutMs?: number) {
   const counts = { catalog: 0, vault: 0, hands: 0, inference: 0, responses: 0, close: 0 };
   const stages: Record<string, unknown>[] = [];
   const logs = vi.spyOn(console, "info").mockImplementation((entry) => {
@@ -58,6 +59,7 @@ async function setup(instance: DurableAgentSession, state: DurableObjectState) {
   const original = (instance as unknown as { env: Record<string, unknown> }).env;
   Object.defineProperty(instance, "env", { configurable: true, value: { ...original,
     NANOCODEX_THREAD_ROUTING: "true",
+    ...(idleTimeoutMs === undefined ? {} : { AGENT_IDLE_TIMEOUT_MS: String(idleTimeoutMs) }),
     AI: { run: async () => { counts.inference++; return {}; } },
     NANOCODEX: { fetch: async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = new URL(input instanceof Request ? input.url : String(input));
@@ -138,18 +140,47 @@ describe("fixed-model idle discovery lifecycle", () => {
     await f.prepare();
     const clock = vi.spyOn(Date, "now").mockReturnValue(startedAt + 36_000);
     try {
-      for (const elapsed of [36_000, 72_000, MANAGED_ACCESS_TTL_MS + 1_000]) {
+      let handRefreshes = 1;
+      let lastHandRefresh = 0;
+      for (const elapsed of [36_000, 72_000, MANAGED_ACCESS_TTL_MS + 1_000, ACCOUNT_DISCOVERY_TTL_MS + 1_000]) {
         clock.mockReturnValue(startedAt + elapsed);
         await f.instance.alarm();
         expect(await f.snapshot()).toMatchObject({ agent_loaded: false });
         await f.prepare();
-        const expected = elapsed > MANAGED_ACCESS_TTL_MS ? 2 : 1;
-        expect(f.counts).toMatchObject({ catalog: expected, vault: expected, hands: expected });
+        const expected = elapsed > ACCOUNT_DISCOVERY_TTL_MS ? 2 : 1;
+        if (elapsed - lastHandRefresh > MANAGED_ACCESS_TTL_MS) { handRefreshes++; lastHandRefresh = elapsed; }
+        expect(f.counts).toMatchObject({ catalog: expected, vault: expected, hands: handRefreshes });
       }
-      expect(f.sockets).toHaveLength(4);
+      expect(f.sockets).toHaveLength(5);
       expect(f.sends).toEqual([]);
     } finally { clock.mockRestore(); }
   }), 20_000);
+
+  it("retains the provider connection through a normal pause and retires it after five minutes", () => fixture(async f => {
+    await f.prepare();
+    expect((await f.request("/turns", { id: "initial-retained", input: "Say hello" })).status).toBe(202);
+    await vi.waitFor(async () => expect(await f.snapshot()).toMatchObject({ completed_turns: 1 }));
+    const startedAt = Date.now();
+    const before = { ...f.counts };
+    const clock = vi.spyOn(Date, "now").mockReturnValue(startedAt + 36_000);
+    try {
+      await f.instance.alarm();
+      expect(await f.snapshot()).toMatchObject({ agent_loaded: true });
+      expect(f.sockets).toHaveLength(1);
+      expect(f.sockets[0].readyState).toBe(1);
+      expect((await f.request("/turns", { id: "within-retention", input: "Say hello again" })).status).toBe(202);
+      await vi.waitFor(async () => expect(await f.snapshot()).toMatchObject({ completed_turns: 2 }));
+      expect(f.sends).toEqual([0, 0]);
+      expect(f.counts).toMatchObject({ catalog: before.catalog, vault: before.vault, close: before.close });
+      clock.mockReturnValue(startedAt + 36_000 + 301_000);
+      await f.instance.alarm();
+      expect(await f.snapshot()).toMatchObject({ agent_loaded: false });
+      expect(f.sockets[0].readyState).toBe(3);
+      await f.prepare();
+      expect(f.sockets).toHaveLength(2);
+      expect(f.counts).toMatchObject({ catalog: before.catalog, vault: before.vault });
+    } finally { clock.mockRestore(); }
+  }, 300_000), 20_000);
 
   it("keeps authorization projections and stale-epoch rejection after idle retirement", () => fixture(async f => {
     await f.prepare();
@@ -161,7 +192,7 @@ describe("fixed-model idle discovery lifecycle", () => {
       expect(f.counts).toEqual(before);
       const limited = { ...principal, capabilities: ["agents:write", "tools:use"] } as Principal;
       await f.prepare(limited);
-      expect(f.counts).toMatchObject({ catalog: 1, vault: 2, inference: 0 });
+      expect(f.counts).toMatchObject({ catalog: 1, vault: 1, inference: 0 });
     } finally { clock.mockRestore(); }
   }));
 

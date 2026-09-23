@@ -37,6 +37,16 @@ export async function performanceStage<T>(stage: string, run: () => Promise<T>):
     stage, started_at: Date.now() - (performance.now() - began), duration_ms: performance.now() - began, success }); }
 }
 
+/** One bounded discovery record; no owner, authority key or metadata payload. */
+export function performanceCache(stage: string, cacheState: "hit" | "miss", ageMs: number, remainingMs: number): void {
+  const context = contexts.getStore();
+  if (!context) return;
+  try {
+    console.info({ type: "managed.performance", trace_id: context.trace_id, stage,
+      cache_state: cacheState, cache_age_ms: Math.max(0, ageMs), remaining_ttl_ms: Math.max(0, remainingMs) });
+  } catch { /* Passive cache observations cannot fail admission. */ }
+}
+
 export function performanceRead<T>(table: string, run: () => T): T {
   const context = contexts.getStore();
   if (!context) return run();

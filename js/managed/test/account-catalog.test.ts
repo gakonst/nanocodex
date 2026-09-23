@@ -49,7 +49,7 @@ describe("admission account catalog", () => {
 describe("bounded account catalog snapshot", () => {
   it("coalesces discovery and expires or invalidates without caching failures", async () => {
     const { AccountCatalogCache } = await import("../src/account-catalog");
-    const { MANAGED_ACCESS_TTL_MS } = await import("../src/managed-access");
+    const { ACCOUNT_DISCOVERY_TTL_MS } = await import("../src/account-catalog");
     let now = 1000;
     const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
     const fetch = vi.fn(async () => Response.json({ connectors: {}, mcp_connections: [] }));
@@ -58,7 +58,7 @@ describe("bounded account catalog snapshot", () => {
     try {
       await Promise.all([cache.get(broker, "owner", "epoch1"), cache.get(broker, "owner", "epoch1")]);
       expect(fetch).toHaveBeenCalledTimes(1);
-      now += MANAGED_ACCESS_TTL_MS;
+      now += ACCOUNT_DISCOVERY_TTL_MS;
       await cache.get(broker, "owner", "epoch1");
       expect(fetch).toHaveBeenCalledTimes(2);
       await cache.get(broker, "owner", "epoch2");

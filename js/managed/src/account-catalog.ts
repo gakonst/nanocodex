@@ -1,21 +1,81 @@
-import { fetchResponseWithDeadline } from "./deadline";
-import { performanceStage } from "./performance";
-import { MANAGED_ACCESS_TTL_MS } from "./managed-access";
+import { accountVaultMetadata, type VaultEntry } from "./account-info";
+import { fetchResponseWithDeadline, withHardDeadline } from "./deadline";
+import { performanceCache, performanceStage } from "./performance";
 
-/** Discovery metadata only; tool execution still checks current authority. */
+/** Discovery freshness is independent of authentication and live hand presence. */
+export const ACCOUNT_DISCOVERY_TTL_MS = 15 * 60_000;
+const MAX_DISCOVERY_SNAPSHOTS = 64;
+type DiscoverySnapshot = {
+  readonly expiresAt: number;
+  readonly catalog: Promise<unknown>;
+  vault?: Promise<readonly VaultEntry[]>;
+};
+const snapshots = new WeakMap<object, Map<string, DiscoverySnapshot>>();
+
+/** Discovery only. Raw metadata is projected for each caller; execution checks live authority. */
 export class AccountCatalogCache {
-  #entry?: { key: string; expiresAt: number; promise: Promise<unknown> };
+  #current?: { entries: Map<string, DiscoverySnapshot>; key: string };
 
-  invalidate(): void { this.#entry = undefined; }
+  invalidate(): void {
+    // Another Session may have replaced the entry since our last read. An
+    // explicit refresh still invalidates this authority's current shared copy.
+    if (this.#current) this.#current.entries.delete(this.#current.key);
+    this.#current = undefined;
+  }
 
   get(broker: Fetcher, userId: string, authorityKey: string): Promise<unknown> {
+    return this.#snapshot(broker, userId, authorityKey).catalog;
+  }
+
+  vault(broker: Fetcher, userId: string, authorityKey: string): Promise<readonly VaultEntry[]> {
+    const entry = this.#snapshot(broker, userId, authorityKey);
+    if (!entry.vault) {
+      const { entries, key } = this.#current!;
+      // Startup requests both components in the same stack, so they run in
+      // parallel. Catalog-only discovery never starts an unnecessary vault read.
+      entry.vault = performanceStage("account.vault", () => withHardDeadline(
+        "account vault", 10_000, signal => accountVaultMetadata(broker, userId, signal),
+      ));
+      void entry.vault.catch(() => {
+        if (entries.get(key) === entry) entries.delete(key);
+      });
+    }
+    return entry.vault;
+  }
+
+  #snapshot(broker: Fetcher, userId: string, authorityKey: string): DiscoverySnapshot {
+    let entries = snapshots.get(broker);
+    if (!entries) {
+      entries = new Map();
+      snapshots.set(broker, entries);
+    }
     const key = JSON.stringify([userId, authorityKey]);
+    this.#current = { entries, key };
     const now = Date.now();
-    if (this.#entry?.key === key && this.#entry.expiresAt > now) return this.#entry.promise;
-    const entry = { key, expiresAt: now + MANAGED_ACCESS_TTL_MS, promise: accountCatalog(broker, userId) };
-    this.#entry = entry;
-    void entry.promise.catch(() => { if (this.#entry === entry) this.#entry = undefined; });
-    return entry.promise;
+    for (const [entryKey, entry] of entries) {
+      if (entry.expiresAt <= now) entries.delete(entryKey);
+    }
+    const current = entries.get(key);
+    if (current) {
+      // Refresh recency, never the original metadata expiry.
+      entries.delete(key);
+      entries.set(key, current);
+      performanceCache("account.discovery", "hit", now - (current.expiresAt - ACCOUNT_DISCOVERY_TTL_MS), current.expiresAt - now);
+      return current;
+    }
+    performanceCache("account.discovery", "miss", 0, ACCOUNT_DISCOVERY_TTL_MS);
+    const entry: DiscoverySnapshot = {
+      expiresAt: now + ACCOUNT_DISCOVERY_TTL_MS,
+      catalog: accountCatalog(broker, userId),
+    };
+    entries.set(key, entry);
+    while (entries.size > MAX_DISCOVERY_SNAPSHOTS) entries.delete(entries.keys().next().value!);
+    const evict = () => {
+      // An expired, invalidated or evicted read never removes its replacement.
+      if (entries.get(key) === entry) entries.delete(key);
+    };
+    void entry.catalog.catch(evict);
+    return entry;
   }
 }
 
