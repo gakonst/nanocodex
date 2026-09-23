@@ -106,21 +106,26 @@ PY
 
 run_case() {
   local format="$1"
-  local case_root="$temporary_root/$format-${2:-valid}"
+  local case_root="$temporary_root/$format-${2:-valid}-${3:-legacy}"
   local fixture="$case_root/fixture"
   local marker="$case_root/profile-injection"
   local install_root="$case_root/install '\$(touch $marker)'"
-  local asset digest output index
+  local asset digest output index source
 
   mkdir -p "$fixture" "$case_root/home"
   : > "$fixture/SHA256SUMS"
   for index in "${!binary_names[@]}"; do
+    source="$case_root/${binary_names[$index]}"
+    cp "${binary_sources[$index]}" "$source"
+    if [[ "${3:-legacy}" == native ]]; then
+      printf '\n# NANOCODEX_NATIVE_LAUNCHER_V1\n' >> "$source"
+    fi
     if [[ "$format" == gzip ]]; then
       asset="${binary_names[$index]}.gz"
-      gzip -n -9 -c "${binary_sources[$index]}" > "$fixture/$asset"
+      gzip -n -9 -c "$source" > "$fixture/$asset"
     else
       asset="${binary_names[$index]}"
-      cp "${binary_sources[$index]}" "$fixture/$asset"
+      cp "$source" "$fixture/$asset"
     fi
     digest="$(sha256_file "$fixture/$asset")"
     printf '%s  %s\n' "$digest" "$asset" >> "$fixture/SHA256SUMS"
@@ -149,6 +154,13 @@ run_case() {
   [[ "$("$install_root/bin/nanocodex2" --version)" == 'nanocodex2 1.2.3' ]]
   [[ ! -e "$install_root/bin/nanocodex-computer" && ! -L "$install_root/bin/nanocodex-computer" ]]
   [[ ! -e "$install_root/current/nanocodex-computer" ]]
+  for name in nanocodex nanocodex2; do
+    if [[ "${3:-legacy}" == native ]]; then
+      [[ "$(readlink "$install_root/bin/$name")" == "../current/$name" ]]
+    else
+      [[ ! -L "$install_root/bin/$name" ]]
+    fi
+  done
   [[ -f "$install_root/updater/nanocodex.sha256" ]]
   [[ -f "$install_root/versions/1.2.3/nanocodex.sha256" ]]
   [[ -f "$install_root/versions/1.2.3/nanocodex2.sha256" ]]
@@ -248,6 +260,8 @@ run_rejected_case() {
 run_case raw
 run_case gzip
 run_case raw static
+run_case raw valid native
+run_case gzip valid native
 run_rejected_case missing-main-checksum
 run_rejected_case missing-companion-checksum
 run_rejected_case invalid-main-checksum

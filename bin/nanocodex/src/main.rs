@@ -19,6 +19,7 @@ mod eval;
 mod eval;
 mod hand_service;
 mod hand_setup;
+mod launcher;
 mod login;
 mod managed_memory;
 mod managed_server;
@@ -43,7 +44,7 @@ mod vm;
 #[path = "vm_unsupported.rs"]
 mod vm;
 
-use std::{path::PathBuf, process::ExitCode};
+use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand, builder::NonEmptyStringValueParser};
 use eyre::{Result, WrapErr, eyre};
@@ -180,14 +181,12 @@ fn main() -> ExitCode {
 }
 
 fn try_main() -> Result<()> {
+    launcher::initialize_install_root();
+    launcher::dispatch_update()?;
     nanocodex::oai::transport::install_default_rustls_crypto_provider();
     // Keep direct `cargo run` behavior consistent with the Justfile without
     // requiring shell-specific syntax to load the repository's `.env` file.
     let _ = dotenvy::dotenv();
-
-    if let Err(error) = update::prepare_legacy_nightly_bootstrap() {
-        eprintln!("warning: failed to prepare the Nanocodex updater bootstrap: {error:#}");
-    }
 
     let cli = Cli::parse();
     if let Some(Command::VmRunConfig(command)) = &cli.command {
@@ -217,10 +216,16 @@ fn process_exit_code(error: &eyre::Report) -> u8 {
 }
 
 async fn run(cli: Cli) -> Result<()> {
-    if !matches!(&cli.command, Some(Command::Update(_)))
-        && let Err(error) = update::ensure_default_automatic_updates()
-    {
-        eprintln!("Could not configure automatic updates: {error:#}");
+    // Interactive startup owns maintenance after its first editable frame.
+    if !matches!(&cli.command, None | Some(Command::Resume(_))) {
+        if let Err(error) = update::prepare_legacy_nightly_bootstrap() {
+            eprintln!("warning: failed to prepare the Nanocodex updater bootstrap: {error:#}");
+        }
+        if !matches!(&cli.command, Some(Command::Update(_)))
+            && let Err(error) = update::ensure_default_automatic_updates()
+        {
+            eprintln!("Could not configure automatic updates: {error:#}");
+        }
     }
     match cli.command {
         Some(Command::Tui(command)) => command.run().await.map_err(Into::into),
@@ -269,24 +274,23 @@ async fn run(cli: Cli) -> Result<()> {
             let session = rollouts
                 .load_session(&thread_id)
                 .wrap_err_with(|| format!("failed to load Codex thread {thread_id}"))?;
-            let workspace = PathBuf::from(session.workspace());
-            let _observability = command.observability.install(true, &workspace)?;
-            tui::run(
+            tui::run_observed(
                 command.agent,
                 command.vm,
                 command.prompt.map(tui::InitialPrompt::plain),
                 Some(session),
+                Some(command.observability),
             )
             .await
         }
         Some(Command::Update(command)) => command.run().await,
         None => {
-            let _observability = cli.observability.install(true, cli.agent.cwd())?;
-            tui::run(
+            tui::run_observed(
                 cli.agent,
                 cli.vm,
                 cli.prompt.map(tui::InitialPrompt::plain),
                 None,
+                Some(cli.observability),
             )
             .await
         }

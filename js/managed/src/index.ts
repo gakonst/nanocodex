@@ -354,6 +354,10 @@ const DEFAULT_MULTIPLAYER_IO_TIMEOUT_MS = 10_000;
 const MAX_CLEANUP_RETRY_MS = 60_000;
 const SESSION_OWNER_ASSERTION = "x-nanocodex-owner-id";
 const SESSION_CREATE_ID_ASSERTION = "x-nanocodex-create-session-id";
+// Interactive native clients opt in without changing strict live URL queries.
+// Echoing this on the upgrade acknowledges scheduling, not runtime readiness.
+const CONVERSATION_PREPARE_HEADER = "x-nanocodex-prepare";
+const CONVERSATION_PREPARE_VALUE = "active-conversation";
 // ManagedTurnArchive owns the long-lived API projection. The portable Rust
 // state keeps a bounded exact-replay window so cutovers do not call the model.
 // The managed inbox/archive owns public exact-ID replay. Rust needs a short
@@ -3876,7 +3880,8 @@ export class DurableAgentSession extends DurableComputerSession {
       return json({ state: "preparing" }, { status: 202 });
     }
     if (request.method === "GET" && url.pathname === "/socket")
-      return this.#upgrade(turnAuthorization, url.searchParams.get("cursor"), callerContext(request.headers));
+      return this.#upgrade(turnAuthorization, url.searchParams.get("cursor"), callerContext(request.headers),
+        request.headers.get(CONVERSATION_PREPARE_HEADER) === CONVERSATION_PREPARE_VALUE);
     if (request.method === "POST" && url.pathname === "/vm-host-revoke") {
       const routeId = request.headers.get("x-nanocodex-vm-route-id");
       if (!routeId || !VM_HOST_ATTACHMENT_ROUTE.test(routeId)) {
@@ -4587,7 +4592,8 @@ export class DurableAgentSession extends DurableComputerSession {
         error_kind: errorKind(error),
       });
     }));
-    return this.#upgrade(asserted.authorization, null, callerContext(request.headers));
+    return this.#upgrade(asserted.authorization, null, callerContext(request.headers),
+      request.headers.get(CONVERSATION_PREPARE_HEADER) === CONVERSATION_PREPARE_VALUE);
   }
 
   #initializeSession(initialization: SessionInitialization, clientIngressColo: string | null = null): Response {
@@ -4735,14 +4741,20 @@ export class DurableAgentSession extends DurableComputerSession {
     return new Response(null, { status: 204 });
   }
 
-  #upgrade(authorization: TurnAuthorization, requestedCursor: string | null, caller: CallerContext = {}): Response {
+  #upgrade(authorization: TurnAuthorization, requestedCursor: string | null, caller: CallerContext = {}, prepare = false): Response {
     if (this.#deleting) return new Response("Agent is being deleted", { status: 409 });
     if (this.#durabilityExported) {
       return new Response("Agent durability state was exported", { status: 409 });
     }
     const session = this.#sessionStatus();
     if (!session) return new Response("Unknown session", { status: 404 });
-    this.#warmPersonalization();
+    if (prepare && (!authorization.capabilities.includes("agents:write")
+      || !authorization.capabilities.includes("tools:use"))) {
+      return json({ error: "forbidden" }, { status: 403 });
+    }
+    if (prepare && this.#session()?.runtime_profile !== "managed") {
+      return json({ error: "unsupported_runtime" }, { status: 409 });
+    }
     if (authorization.connectGrant
       && !authorization.connectGrant.connectors.includes("chatgpt")) {
       return json({ error: "connector_forbidden" }, { status: 403 });
@@ -4774,7 +4786,12 @@ export class DurableAgentSession extends DurableComputerSession {
       settings: this.#settings(),
     });
     if (cursor !== latestCursor) void this.#replayClientSocket(server, cursor);
-    return new Response(null, { status: 101, webSocket: client });
+    // Observers omit the opt-in; only admitted interactive sockets start the
+    // existing coalesced task. Neither ready nor replay waits for preparation.
+    if (prepare) this.#prepareActiveConversation(authorization);
+    else this.#warmPersonalization();
+    return new Response(null, { status: 101, webSocket: client,
+      ...(prepare ? { headers: { [CONVERSATION_PREPARE_HEADER]: CONVERSATION_PREPARE_VALUE } } : {}) });
   }
 
   async #replayClientSocket(socket: WebSocket, after: string): Promise<void> {

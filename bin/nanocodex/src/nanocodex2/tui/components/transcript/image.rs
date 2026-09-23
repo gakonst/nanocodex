@@ -14,7 +14,7 @@ use std::{
     path::{Path, PathBuf},
     process::Stdio,
     sync::{
-        Arc, OnceLock,
+        Arc,
         atomic::{AtomicU64, AtomicUsize, Ordering},
         mpsc,
     },
@@ -25,7 +25,7 @@ use url::Url;
 
 pub(super) const MAX_IMAGE_HEIGHT: u16 = 24;
 
-static PICKER: OnceLock<Picker> = OnceLock::new();
+static PICKER: tokio::sync::OnceCell<Picker> = tokio::sync::OnceCell::const_new();
 
 pub(super) struct Cache {
     entries: BoundedCache<CacheKey, CachedProtocol, PROTOCOL_CACHE_CAPACITY>,
@@ -170,10 +170,14 @@ struct TmuxClient {
 }
 
 pub(crate) fn video_picker() -> Picker {
-    PICKER.get_or_init(Picker::halfblocks).clone()
+    PICKER.get().cloned().unwrap_or_else(Picker::halfblocks)
 }
 
 pub(crate) async fn initialize() {
+    PICKER.get_or_init(discover_picker).await;
+}
+
+async fn discover_picker() -> Picker {
     let inside_tmux = env::var_os("TMUX").is_some();
     let tmux_client = tmux_client().await;
     // The capability probe leaves a stdin reader behind on timeout. Keyboard
@@ -201,7 +205,7 @@ pub(crate) async fn initialize() {
     ) {
         picker.set_protocol_type(protocol);
     }
-    drop(PICKER.set(picker));
+    picker
 }
 
 fn window_font_size(size: crossterm::terminal::WindowSize) -> Option<FontSize> {
@@ -324,7 +328,14 @@ impl Default for Cache {
 
 impl Cache {
     pub(super) fn load(&mut self, destination: &str, workspace: &Path, width: u16) -> LoadResult {
-        let picker = PICKER.get_or_init(Picker::halfblocks);
+        // Discovery runs after the first editable frame. An early image must
+        // not permanently install the fallback while the tmux query is pending.
+        if PICKER.get().is_none() && self.inline_images.is_none() {
+            self.blocked_retry = self.blocked_retry.max(LayoutChange::Pending);
+            self.next_poll.get_or_insert_with(Instant::now);
+            return LoadResult::Deferred;
+        }
+        let picker = video_picker();
         if !self
             .inline_images
             .unwrap_or_else(|| supports_inline_images(picker.protocol_type()))
@@ -471,7 +482,7 @@ impl Cache {
             return false;
         };
         let source = self.sources.get(&key.path).cloned();
-        let picker = PICKER.get_or_init(Picker::halfblocks).clone();
+        let picker = video_picker();
         let known_fingerprint = self.entries.get(&key).map(CachedProtocol::fingerprint);
         let epoch = Arc::clone(&self.epoch);
         let generation = self.generation;

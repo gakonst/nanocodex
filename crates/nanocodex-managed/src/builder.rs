@@ -222,9 +222,9 @@ impl Service<ManagedRequest> for ManagedService {
                     client.state(&agent_id).await.map(ManagedResponse::State)
                 }
                 ManagedRequest::Events { agent_id, cursor } => {
-                    client.prepare_active_conversation(&agent_id);
                     match transport {
                         ManagedTransport::Http => {
+                            client.prepare_active_conversation(&agent_id);
                             // Reading retained state must not wait for the live
                             // stream to become available. The driver reconnects
                             // from this cursor while the caller renders history.

@@ -137,5 +137,16 @@ name = "nanocodex"
 path = "src/main.rs"
 doc = false
 
-[lints]
-workspace = true
+# Like nanocodex2, the installed entrypoint initializes its environment before
+# starting any threads. Keep that one unsafe boundary locally auditable while
+# retaining every other workspace lint (Cargo cannot override inherited lints).
+[lints.rust]
+unsafe_code = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+missing-const-for-fn = "warn"
+use-self = "warn"
+redundant-clone = "warn"
+large-enum-variant = "allow"
+result-large-err = "allow"

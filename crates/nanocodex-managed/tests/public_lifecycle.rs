@@ -1,7 +1,10 @@
 use std::{
     collections::HashMap,
     convert::Infallible,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{
+        Arc, Mutex, MutexGuard,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -50,6 +53,8 @@ struct Fixture {
 
 struct FixtureInner {
     authorization: String,
+    preparation_acknowledged: AtomicBool,
+    preparation_posts: AtomicUsize,
     state_reads: Mutex<Vec<String>>,
     event_cursors: Mutex<Vec<String>>,
     event_streams: Mutex<Vec<mpsc::UnboundedSender<Bytes>>>,
@@ -84,6 +89,8 @@ impl Fixture {
         Self {
             inner: Arc::new(FixtureInner {
                 authorization: format!("Bearer {api_key}"),
+                preparation_acknowledged: AtomicBool::new(false),
+                preparation_posts: AtomicUsize::new(0),
                 state_reads: Mutex::new(Vec::new()),
                 event_cursors: Mutex::new(Vec::new()),
                 event_streams: Mutex::new(Vec::new()),
@@ -153,14 +160,24 @@ impl Fixture {
 
 #[tokio::test]
 async fn live_open_survives_delayed_ready_large_replay_and_lost_admission_ack() {
+    live_open_with_preparation(false).await;
+    live_open_with_preparation(true).await;
+}
+
+async fn live_open_with_preparation(acknowledged: bool) {
     tokio::time::timeout(Duration::from_secs(60), async {
         let api_key = format!("ncx_live_{}_{}", "e".repeat(12), "f".repeat(43));
         let fixture = Fixture::new(&api_key);
+        fixture
+            .inner
+            .preparation_acknowledged
+            .store(acknowledged, Ordering::SeqCst);
         let release = Arc::new(Notify::new());
         *lock(&fixture.inner.steer_release) = Some(release.clone());
         let app = Router::new()
             .route("/v1/agents/{agent_id}", get(agent_state))
             .route("/v1/agents/{agent_id}/ws", get(reconnecting_socket))
+            .route("/v1/agents/{agent_id}/prepare", post(prepare_conversation))
             .with_state(fixture.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
@@ -198,11 +215,25 @@ async fn live_open_survives_delayed_ready_large_replay_and_lost_admission_ack() 
             assert_eq!(submissions.len(), 2);
             assert_eq!(submissions[0].body, submissions[1].body);
         }
+        assert_eq!(
+            fixture.inner.preparation_posts.load(Ordering::SeqCst),
+            usize::from(!acknowledged),
+            "new Workers prepare on upgrade; old Workers receive one fallback despite reconnects"
+        );
         agent.disconnect().await.unwrap();
         server.abort();
     })
     .await
     .expect("live reconnect and replay must remain bounded");
+}
+
+async fn prepare_conversation(State(fixture): State<Fixture>, headers: HeaderMap) -> StatusCode {
+    authorize(&fixture, &headers);
+    fixture
+        .inner
+        .preparation_posts
+        .fetch_add(1, Ordering::SeqCst);
+    StatusCode::ACCEPTED
 }
 
 async fn reconnecting_socket(
@@ -212,80 +243,97 @@ async fn reconnecting_socket(
     upgrade: WebSocketUpgrade,
 ) -> impl IntoResponse {
     authorize(&fixture, &headers);
+    assert_eq!(
+        headers.get("x-nanocodex-prepare").unwrap(),
+        "active-conversation"
+    );
+    let acknowledged = fixture
+        .inner
+        .preparation_acknowledged
+        .load(Ordering::SeqCst);
     let cursor = query["cursor"].parse::<u64>().unwrap();
     lock(&fixture.inner.event_cursors).push(cursor.to_string());
     let release = lock(&fixture.inner.steer_release).take();
-    upgrade.on_upgrade(move |mut socket| async move {
-        if let Some(release) = release {
-            release.notified().await;
-        }
-        let mut ready = agent_state_json(AGENT_ID, "440");
-        ready["type"] = json!("ready");
-        ready["session_id"] = json!(AGENT_ID);
-        ready["restored"] = json!(true);
-        socket
-            .send(Message::Text(ready.to_string().into()))
-            .await
-            .unwrap();
-        let end = if cursor == 40 { 240 } else { 440 };
-        for next in cursor + 1..=end {
-            let event = nested_event(
-                next,
-                ROOT_SOURCE_REQUEST_ID,
-                None,
-                "assistant.message",
-                json!({"text": format!("event {next}")}),
-            );
+    let mut response = upgrade
+        .on_upgrade(move |mut socket| async move {
+            if let Some(release) = release {
+                release.notified().await;
+            }
+            let mut ready = agent_state_json(AGENT_ID, "440");
+            ready["type"] = json!("ready");
+            ready["session_id"] = json!(AGENT_ID);
+            ready["restored"] = json!(true);
             socket
-                .send(Message::Text(wire_event(event).into()))
+                .send(Message::Text(ready.to_string().into()))
                 .await
                 .unwrap();
-        }
-        if cursor == 40 {
-            socket.send(Message::Close(None)).await.unwrap();
-            return;
-        }
-        while let Some(Ok(Message::Text(frame))) = socket.recv().await {
-            let command: Value = serde_json::from_str(&frame).unwrap();
-            if command["type"] == "ping" {
-                socket
-                    .send(Message::Text(r#"{"type":"pong"}"#.into()))
-                    .await
-                    .unwrap();
-                continue;
-            }
-            assert_eq!(command["type"], "prompt");
-            assert_eq!(command["id"], ACTIVE_REQUEST_ID);
-            lock(&fixture.inner.submissions).push(Submission {
-                idempotency_key: ACTIVE_REQUEST_ID.to_owned(),
-                body: command,
-            });
-            if cursor == 240 {
-                // Lose only the admission response. The socket keeps answering
-                // heartbeats, so a heartbeat timeout cannot rescue this wait.
-                continue;
-            }
-            for event in [
-                accepted_event(441, ACTIVE_REQUEST_ID, "live prompt"),
-                nested_event(
-                    442,
+            let end = if cursor == 40 { 240 } else { 440 };
+            for next in cursor + 1..=end {
+                let event = nested_event(
+                    next,
                     ROOT_SOURCE_REQUEST_ID,
                     None,
-                    "run.completed",
-                    json!({"status": "completed"}),
-                ),
-                completed_event(443, ACTIVE_REQUEST_ID, "reconnected answer"),
-            ] {
+                    "assistant.message",
+                    json!({"text": format!("event {next}")}),
+                );
                 socket
                     .send(Message::Text(wire_event(event).into()))
                     .await
                     .unwrap();
             }
-            // Keep the stream alive until the caller explicitly detaches.
-            while socket.recv().await.is_some() {}
-            return;
-        }
-    })
+            if cursor == 40 {
+                socket.send(Message::Close(None)).await.unwrap();
+                return;
+            }
+            while let Some(Ok(Message::Text(frame))) = socket.recv().await {
+                let command: Value = serde_json::from_str(&frame).unwrap();
+                if command["type"] == "ping" {
+                    socket
+                        .send(Message::Text(r#"{"type":"pong"}"#.into()))
+                        .await
+                        .unwrap();
+                    continue;
+                }
+                assert_eq!(command["type"], "prompt");
+                assert_eq!(command["id"], ACTIVE_REQUEST_ID);
+                lock(&fixture.inner.submissions).push(Submission {
+                    idempotency_key: ACTIVE_REQUEST_ID.to_owned(),
+                    body: command,
+                });
+                if cursor == 240 {
+                    // Lose only the admission response. The socket keeps answering
+                    // heartbeats, so a heartbeat timeout cannot rescue this wait.
+                    continue;
+                }
+                for event in [
+                    accepted_event(441, ACTIVE_REQUEST_ID, "live prompt"),
+                    nested_event(
+                        442,
+                        ROOT_SOURCE_REQUEST_ID,
+                        None,
+                        "run.completed",
+                        json!({"status": "completed"}),
+                    ),
+                    completed_event(443, ACTIVE_REQUEST_ID, "reconnected answer"),
+                ] {
+                    socket
+                        .send(Message::Text(wire_event(event).into()))
+                        .await
+                        .unwrap();
+                }
+                // Keep the stream alive until the caller explicitly detaches.
+                while socket.recv().await.is_some() {}
+                return;
+            }
+        })
+        .into_response();
+    if acknowledged {
+        response.headers_mut().insert(
+            "x-nanocodex-prepare",
+            "active-conversation".parse().unwrap(),
+        );
+    }
+    response
 }
 
 fn wire_event(event: Bytes) -> String {

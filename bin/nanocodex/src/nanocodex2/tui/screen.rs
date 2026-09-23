@@ -129,11 +129,11 @@ pub(crate) struct Controller {
     sender: watch::Sender<Snapshot>,
     pub size: watch::Sender<Size>,
     task: Option<Task>,
-    picker: Picker,
+    picker: Option<Picker>,
     muted: watch::Sender<bool>,
 }
 impl Controller {
-    pub fn new(picker: Picker) -> Self {
+    pub fn new(picker: Option<Picker>) -> Self {
         let (sender, updates) = watch::channel(Snapshot::default());
         let (size, _) = watch::channel(Size::new(80, 30));
         Self {
@@ -198,6 +198,15 @@ impl Controller {
                         });
                     }
                     Command::Watch(surface) => {
+                        // Terminal discovery is optional startup work. Only a
+                        // screen viewer waits for its negotiated image format.
+                        let picker = match picker {
+                            Some(picker) => picker,
+                            None => {
+                                super::components::initialize_image_renderer().await;
+                                super::components::video_picker()
+                            }
+                        };
                         let mut failures = 0;
                         loop {
                             let frames = Arc::new(VideoFrames::default());
@@ -992,7 +1001,7 @@ mod tests {
     }
     #[test]
     fn retired_viewer_cannot_publish_into_the_next_selection() {
-        let mut controller = Controller::new(Picker::halfblocks());
+        let mut controller = Controller::new(Some(Picker::halfblocks()));
         let previous = controller.sender.clone();
         controller.reset();
         previous.send_modify(|snapshot| snapshot.status = "stale Hand".into());
@@ -1116,7 +1125,7 @@ mod tests {
         if performance {
             picker.set_protocol_type(ratatui_image::picker::ProtocolType::Kitty);
         }
-        let mut controller = Controller::new(picker);
+        let mut controller = Controller::new(Some(picker));
         controller.size.send_replace(Size::new(240, 70));
         controller.command(&client, Command::List);
         let surface = tokio::time::timeout(Duration::from_secs(20), async {
