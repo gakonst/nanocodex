@@ -208,8 +208,100 @@ pub(crate) async fn status() -> Result<ServiceStatus> {
 pub(crate) async fn stop() -> Result<()> {
     if status().await?.loaded {
         checked(&["bootout", &format!("{}/{LABEL}", domain().await?)]).await?;
+        // bootout acknowledges shutdown before launchd removes the job. Until
+        // print reports it absent, start() can mistake the SIGTERMed owner for
+        // a running service and skip bootstrapping the replacement. Allow the
+        // configured 90-second ExitTimeOut plus time for launchd to unload it.
+        wait_for_unload(Duration::from_secs(100), status).await?;
     }
     Ok(())
+}
+
+async fn wait_for_unload<F, Fut>(timeout: Duration, mut poll: F) -> Result<()>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<ServiceStatus>>,
+{
+    tokio::time::timeout(timeout, async {
+        loop {
+            // status() treats only launchctl's absent-service code (113) as
+            // unloaded. Missing PIDs and probe failures do not prove shutdown.
+            if !poll().await?.loaded {
+                return Ok(());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    })
+    .await
+    .wrap_err("Hand LaunchAgent did not unload before timeout")?
+}
+
+#[cfg(test)]
+mod stop_tests {
+    use super::*;
+    use std::future::{pending, ready};
+
+    fn absent() -> ServiceStatus {
+        ServiceStatus {
+            installed: true,
+            loaded: false,
+            pid: None,
+            executable: Some(PathBuf::from("/versions/previous/nanocodex2")),
+        }
+    }
+
+    #[tokio::test]
+    async fn waits_for_absence_after_running_and_sigtermed_states() {
+        let mut states = [
+            parse_status("state = running\npid = 123", true),
+            parse_status("state = SIGTERMed\npid = 123", true),
+            parse_status("state = SIGTERMed", true),
+            absent(),
+        ]
+        .into_iter();
+        let mut polls = 0;
+        wait_for_unload(Duration::from_secs(5), || {
+            polls += 1;
+            ready(Ok(states.next().expect("must stop polling once absent")))
+        })
+        .await
+        .unwrap();
+        assert_eq!(polls, 4);
+    }
+
+    #[tokio::test]
+    async fn loaded_job_and_stalled_probe_both_time_out() {
+        let loaded = wait_for_unload(Duration::from_millis(20), || {
+            ready(Ok(parse_status("state = SIGTERMed\npid = 123", true)))
+        })
+        .await
+        .unwrap_err();
+        assert!(loaded.to_string().contains("did not unload before timeout"));
+
+        let stalled = wait_for_unload(Duration::from_millis(20), || {
+            pending::<Result<ServiceStatus>>()
+        })
+        .await
+        .unwrap_err();
+        assert!(
+            stalled
+                .to_string()
+                .contains("did not unload before timeout")
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_failure_is_not_treated_as_absence_or_retried() {
+        let mut polls = 0;
+        let error = wait_for_unload(Duration::from_secs(5), || {
+            polls += 1;
+            ready(Err(eyre!("Cannot determine Hand LaunchAgent state")))
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(error.to_string(), "Cannot determine Hand LaunchAgent state");
+        assert_eq!(polls, 1);
+    }
 }
 pub(crate) async fn start() -> Result<()> {
     let state = status().await?;

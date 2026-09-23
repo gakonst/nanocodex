@@ -1,15 +1,30 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { expect, it, vi } from "vitest";
 import { type Env, DurableAgentSession } from "../src/index";
-import { performanceState } from "../src/performance";
+
+it.each([undefined, "false", "TRUE"])("keeps native SQL without the explicit audit opt-in (%s)", async (trace) => {
+  const sessions = (env as unknown as Env).NANOCODEX_SESSIONS as DurableObjectNamespace<DurableAgentSession>;
+  await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (_instance, original) => {
+    const logs = vi.spyOn(console, "info").mockImplementation(() => {});
+    try {
+      const session = new DurableAgentSession(original, { ...env, NANOCODEX_PERFORMANCE_TRACE: trace } as unknown as Env);
+      expect(session.computerContext).toBe(original);
+      expect(session.computerContext.storage.sql).toBe(original.storage.sql);
+      expect(session.computerContext.storage.sql.exec("SELECT ? AS value", "private-binding").one()).toEqual({ value: "private-binding" });
+      await Promise.resolve();
+      expect(logs.mock.calls.some(call => call[0]?.type === "managed.sql_batch")).toBe(false);
+    } finally { logs.mockRestore(); await original.storage.deleteAlarm(); }
+  });
+});
 
 it("preserves native SQL cursors, receivers, bindings and transaction rollback while auditing", async () => {
   const sessions = (env as unknown as Env).NANOCODEX_SESSIONS as DurableObjectNamespace<DurableAgentSession>;
   await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (_instance, original) => {
     const logs = vi.spyOn(console, "info").mockImplementation(() => {});
     try {
-      expect(() => new DurableAgentSession(original, { ...env, NANOCODEX_PERFORMANCE_TRACE: "true" } as unknown as Env)).not.toThrow();
-      const state = performanceState(original);
+      const session = new DurableAgentSession(original, { ...env, NANOCODEX_PERFORMANCE_TRACE: "true" } as unknown as Env);
+      const state = session.computerContext;
+      expect(state).not.toBe(original);
       state.storage.sql.exec("CREATE TABLE audit_test (id INTEGER PRIMARY KEY, value TEXT)");
       state.storage.sql.exec("INSERT INTO audit_test VALUES (?, ?)", 1, "private-binding");
       expect(state.storage.sql.exec("SELECT * FROM audit_test").one()).toEqual({ id: 1, value: "private-binding" });

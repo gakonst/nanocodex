@@ -8389,8 +8389,8 @@ export class DurableAgentSession extends DurableComputerSession {
       };
       Object.defineProperty(agentOptions, internalRuntime, { value: {
         ...hostedRuntime,
-        onSocketTiming: this.env.NANOCODEX_PERFORMANCE_TRACE === "true"
-          ? (timing: unknown) => performanceSocketTiming(session.session_id, timing) : undefined,
+        // Bounded connection summaries are always on; per-statement SQL auditing stays opt-in.
+        onSocketTiming: (timing: unknown) => performanceSocketTiming(session.session_id, timing),
         subagentRouting,
         inferenceForSession,
         preserveRootTransport: !this.#threadRoute(),

@@ -354,6 +354,10 @@ struct CallIdentity {
     deadline_at: u64,
 }
 
+#[allow(
+    clippy::too_many_arguments,
+    reason = "keep per-call identity and independently owned execution/event channels explicit"
+)]
 fn start_call(
     runtime: &Arc<PreparedToolRuntime>,
     execution: &Arc<RwLock<()>>,
