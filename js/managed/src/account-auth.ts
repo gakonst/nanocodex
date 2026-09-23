@@ -698,10 +698,11 @@ export async function authenticate(
   url = new URL(request.url),
 ): Promise<Principal | undefined> {
   const started = performance.now();
+  const startedAt = Date.now();
   const reuse = managedAccessRequest(request) && request.headers.has(MANAGED_ACCESS_HEADER);
   const principal = reuse ? await readManagedAccess(request, env) : await authenticateLive(request, env, url);
   recordHandTiming(request, "auth", performance.now() - started);
-  await observeManagedAccess(request, env, principal, reuse ? "access" : "live", performance.now() - started);
+  await observeManagedAccess(request, env, principal, reuse ? "access" : "live", performance.now() - started, startedAt);
   return principal;
 }
 
