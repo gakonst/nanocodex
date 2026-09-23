@@ -1795,3 +1795,131 @@ test("Cloudflare internal socket timing reaches the real InlineAgent host and cl
   assert.deepEqual(observations[0].provider_timings, [{ response_id: "resp_integration",
     pre_inference_ms: 21, engine_queue_max_ms: 3, engine_service_ttft_total_ms: 10 }]);
 });
+
+function nativePreparationOptions(prepare, signal) {
+  return {
+    durabilityId: "fixture-prepared-state",
+    eventPersistence: "caller",
+    [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: {
+      model: "gpt-6-sol", thinking: "high", reasoning_mode: "standard", fast_mode: false,
+    },
+    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: prepare === undefined
+      ? { waitForPreconnect: false }
+      : { prepare, preparationSignal: signal },
+  };
+}
+
+test("owned native preparation overlaps discovery and transfers exactly one scoped socket", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const storage = new MemoryStorage();
+  const discovery = deferred();
+  const dial = deferred();
+  const socket = new UpstreamSocket();
+  let requests = 0;
+  const owner = durableOwner(storage, { async fetch(_url, init) {
+    requests++;
+    assert.equal(init.method, "GET");
+    assert.equal(init.body, undefined);
+    assert.equal(init.headers.get("x-nanocodex-subject"), FIRST_OBJECT_ID);
+    assert.equal(init.headers.get("session-id"), storage.sessionId);
+    assert.notEqual(storage.sessionId, FIRST_OBJECT_ID);
+    dial.resolve();
+    return { status: 101, headers: new Headers(), webSocket: socket };
+  } });
+  const creating = create(module, owner, nativePreparationOptions(async finish => {
+    await discovery.promise;
+    return finish(nativePreparationOptions());
+  }));
+  await dial.promise;
+  assert.equal(requests, 1, "dial begins while discovery remains blocked");
+  assert.throws(() => destroy(owner), /creation must settle/);
+  await assert.rejects(exportDurabilityState(owner), /lifecycle operation/);
+  await assert.rejects(create(module, owner), /already in progress/);
+  discovery.resolve();
+  const agent = await creating;
+  assert.equal(agent.sessionId, storage.sessionId);
+  assert.equal(requests, 1, "host adopts the already owned connection");
+  await agent.session.shutdown();
+  assert.equal(socket.closed, true);
+  assert.doesNotThrow(() => destroy(owner));
+});
+
+test("aborted preparation closes a late socket and releases lifecycle after discovery joins", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const discovery = deferred();
+  const dial = deferred();
+  const socketReady = deferred();
+  const socket = new UpstreamSocket();
+  const controller = new AbortController();
+  const owner = durableOwner(new MemoryStorage(), { async fetch() {
+    dial.resolve();
+    await socketReady.promise;
+    return { status: 101, headers: new Headers(), webSocket: socket };
+  } });
+  const creating = create(module, owner, nativePreparationOptions(async finish => {
+    await discovery.promise;
+    return finish(nativePreparationOptions());
+  }, controller.signal));
+  await dial.promise;
+  controller.abort();
+  assert.throws(() => destroy(owner), /creation must settle/);
+  discovery.resolve();
+  await assert.rejects(creating, /abort/i);
+  socketReady.resolve();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(socket.closed, true);
+  const agent = await create(module, owner);
+  await agent.session.shutdown();
+});
+
+test("preparation failure and changed model close the owned socket without creating a runtime", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  for (const failure of ["discovery", "model", "route"]) {
+    const socket = new UpstreamSocket();
+    const dial = deferred();
+    const owner = durableOwner(new MemoryStorage(), { async fetch() {
+      dial.resolve();
+      return { status: 101, headers: new Headers(), webSocket: socket };
+    } });
+    const options = nativePreparationOptions(async finish => {
+      await dial.promise;
+      if (failure === "discovery") throw new Error("fixture discovery failed");
+      const prepared = nativePreparationOptions();
+      if (failure === "model") prepared[Symbol.for("nanocodex.cloudflare.internalConfiguration")].model = "gpt-6-luna";
+      else prepared[Symbol.for("nanocodex.cloudflare.internalRuntime")].gateway = {};
+      return finish(prepared);
+    });
+    await assert.rejects(create(module, owner, options), /discovery failed|changed its pinned transport/);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(socket.closed, true);
+    assert.doesNotThrow(() => destroy(owner));
+  }
+});
+
+test("a preparation continuation cannot create after its owning lifecycle has ended", async () => {
+  const owner = durableOwner(new MemoryStorage());
+  let finish;
+  await assert.rejects(create(undefined, owner, nativePreparationOptions(complete => {
+    finish = complete;
+  })), /must return its completed Agent/);
+  assert.throws(() => finish(nativePreparationOptions()), /already completed/);
+  assert.doesNotThrow(() => destroy(owner));
+});
+
+test("host shutdown closes a transferred preparation socket that resolves late", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const ready = deferred();
+  const socket = new UpstreamSocket();
+  let requests = 0;
+  const owner = durableOwner(new MemoryStorage(), { async fetch() {
+    requests++;
+    await ready.promise;
+    return { status: 101, headers: new Headers(), webSocket: socket };
+  } });
+  const agent = await create(module, owner, nativePreparationOptions(finish => finish(nativePreparationOptions())));
+  assert.equal(requests, 1);
+  await agent.session.shutdown();
+  ready.resolve();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(socket.closed, true);
+});

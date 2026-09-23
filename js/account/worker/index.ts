@@ -32,7 +32,7 @@ import {
   type PublicSecurityEnv,
 } from "./publicSecurity.ts";
 import { routeLinkPreview } from "./linkPreview.ts";
-import { routeManaged } from "./managedProxy.ts";
+import { routeManaged, type ManagedProxyEnv } from "./managedProxy.ts";
 import { routeAccountFunding, type AccountFundingProxyEnv } from "./accountFundingProxy.ts";
 import {
   routeChiefOfStaff,
@@ -107,6 +107,7 @@ type WorkerEnv = ElevenLabsEnv & GitStorageEnv & ThreadGitStorageEnv & EvalStora
   & ConnectDialogProxyEnv
   & LocalConnectApiEnv
   & ConnectApiProxyEnv
+  & ManagedProxyEnv
   & LocalConnectorCallbackRelayEnv
   & ChiefOfStaffProxyEnv
   & PublicSecurityEnv & CredentialVaultEnv & {

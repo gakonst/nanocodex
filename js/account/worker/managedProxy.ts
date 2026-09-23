@@ -1,9 +1,20 @@
+import { apiKeyDigest, apiKeyPrincipal } from "nanocodex/cloudflare/managed-auth";
+import { nativeLiveRequest, liveAgentSettings, liveAgentFailure, liveAgentRequest, newManagedAgentId } from "nanocodex/cloudflare/managed-live";
+import { durablePlacementOptions, ingressColo } from "nanocodex/cloudflare/durable-placement";
+
 import { MANAGED_ACCESS_HEADER, MANAGED_ACCESS_TTL_MS, isHandViewerUpgrade, readManagedAccess, handRequestFailure, handBrokerRequest } from "nanocodex/cloudflare/managed-access";
 
 export type ManagedProxyEnv = {
   NANOCODEX_BACKEND?: Fetcher;
   NANOCODEX_ACCESS_SECRET?: string;
   NANOCODEX_HAND_BROKER?: DurableObjectNamespace;
+  NANOCODEX_LIVE_API_KEYS?: { getByName(name: string, options?: ReturnType<typeof durablePlacementOptions>): {
+    resolveAuthorizedKey?: () => Promise<unknown>;
+  } };
+  NANOCODEX_LIVE_SESSIONS?: { getByName(name: string, options?: ReturnType<typeof durablePlacementOptions>): {
+    fetch(request: Request): Promise<Response>;
+  } };
+
 };
 
 const MANAGED_ROUTE = /^(?:\/auth(?:\/.*)?|\/webauthn\/.*|\/sandbox-preview\/[^/]+(?:\/.*)?|\/v1\/(?:auth(?:\/.*)?|me|account\/(?:admin|communication|tool-host|vm-host|hand-hosts(?:\/[0-9a-f-]{36})?|hands(?:\/(?:screens|host|view|renew|ice))?)|hand-hosts\/[0-9a-f-]{36}\/[0-9a-f-]{36}\/hands\/(?:host|ice|renew)|system\/vm-host|vm-host-attachments\/[A-Za-z0-9_-]{43}\/[0-9a-f-]{36}\/(?:tool-host|hands\/(?:host|ice|renew))|wallet(?:\/(?:balance|connect|revoke-access-key))?|egress|router|responses|models|inference(?:\/.*)?|api-keys(?:\/.*)?|credentials(?:\/.*)?|connect(?:\/.*)?|connectors(?:\/.*)?|agents(?:\/.*)?|rooms(?:\/.*)?|history(?:\/.*)?|memories\/(?:list|read|search|add_ad_hoc_note|write|status)|markdown-memory\/(?:get|search|write|status)|organization(?:\/.*)?))$/;
@@ -56,7 +67,9 @@ export async function routeManaged(
         const target = new URL(request.url); target.pathname = "/v1/router";
         request = new Request(target, request);
       }
-      response = await env.NANOCODEX_BACKEND.fetch(request);
+      // Undefined means ineligible/unconfigured before session creation. A failed
+      // direct dispatch throws to the 503 boundary; never create a second agent.
+      response = await directLiveAgent(request, env) ?? await env.NANOCODEX_BACKEND.fetch(request);
     }
     if (/^\/v1\/agents(?:\/(?:live|[0-9a-f-]{36}(?:\/(?:routing|settings|prepare|ws|events(?:\/history)?|turns(?:\/[A-Za-z0-9_.:-]{1,128}\/cancel)?))?))?$/.test(url.pathname)) {
       // Match the managed receipt without reading a body or changing upgraded
@@ -84,6 +97,54 @@ export async function routeManaged(
     });
     return json({ error: "managed_service_unavailable" }, { status: 503 });
   }
+}
+
+/** API-key-only entrypoint; authority still comes from the existing live key DO. */
+async function directLiveAgent(request: Request, env: ManagedProxyEnv): Promise<Response | undefined> {
+  if (!env.NANOCODEX_LIVE_API_KEYS || !env.NANOCODEX_LIVE_SESSIONS || !nativeLiveRequest(request)) return;
+  const settings = liveAgentSettings(request);
+  if (settings instanceof Response) return settings;
+  const started = performance.now();
+  const startedAt = Date.now();
+  const requestId = crypto.randomUUID();
+  const digest = await apiKeyDigest(request);
+  if (!digest) return;
+  const colo = ingressColo(request.cf?.colo);
+  const key = env.NANOCODEX_LIVE_API_KEYS.getByName(digest, durablePlacementOptions(colo));
+  // Older/unconfigured bindings keep the full managed route, before any create.
+  if (typeof key.resolveAuthorizedKey !== "function") return;
+  const principal = apiKeyPrincipal(await key.resolveAuthorizedKey(), digest);
+  const admitted = performance.now();
+  const authFinishedAt = Date.now();
+  const failure = liveAgentFailure(request, principal);
+  let response: Response;
+  if (failure) response = failure;
+  else {
+    const agentId = newManagedAgentId();
+    const internal = liveAgentRequest(request, principal!, settings, agentId, colo);
+    let status: number | undefined;
+    try {
+      response = await env.NANOCODEX_LIVE_SESSIONS.getByName(agentId, durablePlacementOptions(colo)).fetch(internal);
+      status = response.status;
+    } finally {
+      try {
+        console.info({ type: "managed.agent.live_created", auth_kind: "api_key", route: "direct_live",
+          request_id: requestId, agent_id: agentId, thread_id: agentId,
+          outcome: status === 101 ? "success" : "failure", create_ms: Math.round((performance.now() - started) * 100) / 100,
+          ...(status === undefined ? {} : { status }) });
+      } catch { /* Correlation cannot alter a completed or ambiguous creation. */ }
+    }
+  }
+  const headers = new Headers(response.headers);
+  headers.set("x-nanocodex-request-id", requestId);
+  headers.append("server-timing", `managed_auth;dur=${(admitted - started).toFixed(1)};desc="live", managed_session;dur=${(performance.now() - admitted).toFixed(1)}`);
+  try {
+    console.info({ type: "managed.auth", request_id: requestId, mode: "live", route: "direct_live",
+      auth_ms: admitted - started, auth_started_at_ms: startedAt, auth_finished_at_ms: authFinishedAt,
+      method: request.method, path: "/v1/agents/live", status: response.status });
+  } catch { /* Observations cannot alter the upgrade. */ }
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers,
+    ...(response.status === 101 ? { webSocket: response.webSocket } : {}) });
 }
 
 // A browser WebSocket cannot send the access header. Carry the existing signed

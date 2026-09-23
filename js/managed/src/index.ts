@@ -1,3 +1,4 @@
+import { liveAgentSettings, liveAgentFailure, liveAgentRequest } from "nanocodex/cloudflare/managed-live";
 import { durablePlacementOptions, withIngressPlacement } from "nanocodex/cloudflare/durable-placement";
 import { routerDashboard } from "./router-dashboard";
 import { routeObservation } from "./router-telemetry";
@@ -316,7 +317,7 @@ import { memorySessionTools } from "./memory-session-tools";
 import { managedExtensionTools } from "./extension-tools";
 import { markdownMemoryTools, markdownMemoryEnabled, configuredMemoryToolNames, markdownMemoryRequest, MARKDOWN_MEMORY_INSTRUCTIONS } from "./markdown-memory-tools";
 import { ManagedStartupContext } from "./startup-context";
-import { performanceScope, performanceSyncScope, performanceStage, performanceRead, performanceState, performanceSocketTiming } from "./performance";
+import { performanceScope, performanceSyncScope, performanceStage, performanceRead, performanceState, performanceSocketTiming, performanceCommit } from "./performance";
 import { managedPromptCacheKey } from "./prompt-cache-key";
 import { MemoryScope, MEMORY_INITIALIZE_ASSERTION } from "./memory-scope";
 export { MemoryScope } from "./memory-scope";
@@ -770,6 +771,7 @@ type HistoryProjectionOutboxRow = {
 type AgentRuntimeProfile = "managed" | "multiplayer";
 
 type AgentConstructionOwnership = {
+  readonly abort: AbortController;
   readonly deletionGeneration: number;
   readonly runtimeGeneration: number;
   promise: Promise<CloudflareAgent.Agent>;
@@ -1694,42 +1696,17 @@ async function managedFetchRoute(
     const history = await routeHistoryRequest(request, env, url);
     if (history) return history;
     if (request.method === "GET" && url.pathname === "/v1/agents/live") {
-      let settings: ManagedAgentSettings;
-      try {
-        settings = parseAgentSettingsQuery(url.searchParams);
-      } catch {
-        return json({ error: "invalid_request" }, { status: 400 });
-      }
-      if (request.headers.get("upgrade")?.toLowerCase() !== "websocket") {
-        return new Response("Expected WebSocket upgrade", { status: 426 });
-      }
+      const settings = liveAgentSettings(request);
+      if (settings instanceof Response) return settings;
       const creationStartedAt = performance.now();
       const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
-      if (!principal) return json({ error: "unauthorized" }, { status: 401 });
-      if (!principal.capabilities.includes("agents:read")
-        || !principal.capabilities.includes("agents:write")
-        || !principal.capabilities.includes("tools:use")) {
-        return json({ error: "forbidden" }, { status: 403 });
-      }
-      if (principal.connectGrant
-        && !principal.connectGrant.connectors.includes("chatgpt")) {
-        return json({ error: "connector_forbidden" }, { status: 403 });
-      }
-      if (principal.kind !== "api_key" && request.headers.get("origin") !== url.origin) {
-        return json({ error: "forbidden_origin" }, { status: 403 });
-      }
+      const failure = liveAgentFailure(request, principal);
+      if (failure) return failure;
       const agentId = uuidV7();
-      const headers = forwardManagedIngress(new Headers(request.headers), clientIngressColo);
-      forwardPrincipalAssertions(headers, principal);
-      headers.set(SESSION_CREATE_ID_ASSERTION, agentId);
       const stub = env.NANOCODEX_SESSIONS.getByName(agentId, durablePlacementOptions(clientIngressColo));
-      const internalQuery = agentSettingsQuery(settings);
-      internalQuery.set("public_origin", url.origin);
-      const response = await stub.fetch(
-        `https://session.internal/create-live?${internalQuery}`,
-        new Request(request, { headers }),
-      );
-      observeManagedPrincipal(env, "managed.agent.live_created", principal, {
+      const internal = liveAgentRequest(request, principal!, settings, agentId, clientIngressColo);
+      const response = await stub.fetch(internal.url, internal);
+      observeManagedPrincipal(env, "managed.agent.live_created", principal!, {
         agent_id: agentId,
         thread_id: agentId,
         outcome: response.status === 101 ? "success" : "failure",
@@ -3134,7 +3111,10 @@ export class DurableAgentSession extends DurableComputerSession {
   #preparationTask?: Promise<void>;
   #preparationExpiresAt = 0;
   #accountMcpConnections?: readonly ManagedAccountMcpConnection[];
-  #accountMcpRefreshTask?: Promise<void>;
+  #accountMcpRefreshTask?: {
+    key: string;
+    promise: Promise<readonly ManagedAccountMcpConnection[] | undefined>;
+  };
   readonly #cancellationTasks = new Map<string, Promise<void>>();
   readonly #hostedTools: HostedToolsBroker;
   #accountHostedTools?: AccountHostedToolsProvider;
@@ -3394,7 +3374,7 @@ export class DurableAgentSession extends DurableComputerSession {
     );
     this.#deleted = this.#initializationOwnership()?.state === "deleted";
     this.#streamError = this.#session()?.stream_error ?? undefined;
-    this.ctx.blockConcurrencyWhile(async () => {
+    this.ctx.blockConcurrencyWhile(() => performanceScope(this.ctx.id.toString(), "session.constructor.restore", async () => {
       const retained = await this.ctx.storage.get([
         SESSION_DELETING_KEY,
         CREDENTIAL_BINDING_KEY,
@@ -3421,7 +3401,7 @@ export class DurableAgentSession extends DurableComputerSession {
         this.#scheduleHistoryProjection();
         this.#resumeClientReplays();
       }
-    });
+    }));
   }
 
   /** Private RPC: live ownership without serializing a streamed HTTP body. */
@@ -4592,8 +4572,10 @@ export class DurableAgentSession extends DurableComputerSession {
         error_kind: errorKind(error),
       });
     }));
-    return this.#upgrade(asserted.authorization, null, callerContext(request.headers),
+    const response = this.#upgrade(asserted.authorization, null, callerContext(request.headers),
       request.headers.get(CONVERSATION_PREPARE_HEADER) === CONVERSATION_PREPARE_VALUE);
+    performanceCommit(this.ctx, "session.create.commit");
+    return response;
   }
 
   #initializeSession(initialization: SessionInitialization, clientIngressColo: string | null = null): Response {
@@ -7547,7 +7529,6 @@ export class DurableAgentSession extends DurableComputerSession {
     })();
     this.#preparationTask = task;
     this.ctx.waitUntil(task.catch((error) => {
-      console.warn("ROUTING_TEST_DIAGNOSTIC", error);
       this.#observe("managed.preparation_failed", { error_kind: errorKind(error) }, "warn");
     }).finally(async () => {
       if (this.#preparationTask === task) this.#preparationTask = undefined;
@@ -7596,23 +7577,6 @@ export class DurableAgentSession extends DurableComputerSession {
       throw retryableError("thread route is pending the first admitted text task");
     }
     if (options.reuseReady && this.#agent && !this.#agentShutdownPromise) return this.#agent;
-    const session = this.#session();
-    let accountMcpRefreshMs = 0;
-    if (session?.runtime_profile === "managed" && accountToolsEnabled(this.#configuration())) {
-      const discoveryKey = JSON.stringify([session.owner_id, session.organization_id, session.team_id, session.authorization_epoch]);
-      if (this.#accountDiscoveryKey !== discoveryKey) {
-        this.#accountHostedTools?.invalidate({ clearCatalog: true });
-        this.#accountDiscoveryKey = discoveryKey;
-      }
-      catalog ??= this.#catalog(session);
-      const refreshStartedAt = performance.now();
-      // Optional hand inventory must not gate admission or reuse of a ready agent.
-      this.#refreshAccountHostedTools(session);
-      await performanceStage("account.mcp_discovery", () => this.#refreshAccountMcpConnections(session, catalog));
-      accountMcpRefreshMs = roundMilliseconds(performance.now() - refreshStartedAt);
-    }
-    if (this.#durabilityExported) throw new Error("durability state was exported");
-    if (this.#deleting || this.#deleted) throw retryableError("agent is being deleted");
     if (this.#agentShutdownPromise) {
       try {
         await this.#agentShutdownPromise;
@@ -7625,7 +7589,12 @@ export class DurableAgentSession extends DurableComputerSession {
     if (this.#configuration().model_routing && !this.#threadRoute()) {
       throw retryableError("thread route is pending the first admitted text task");
     }
-    if (this.#agent) return this.#agent;
+    if (this.#agent) {
+      const agent = this.#agent;
+      await this.#refreshAgentAccount(catalog);
+      if (this.#agent !== agent) return this.#ensureAgent();
+      return agent;
+    }
     if (this.#agentPromise) return this.#agentPromise;
     if (this.#agentConstructions.size > 0) {
       // A failed publication may have already detached the construction from
@@ -7644,14 +7613,17 @@ export class DurableAgentSession extends DurableComputerSession {
     // Shutdown has drained the previous runtime; no child bindings cross this boundary.
     this.#subagentBindings = new ManagedSubagentBindings();
     const construction: AgentConstructionOwnership = {
+      abort: new AbortController(),
       deletionGeneration: this.#deletionGeneration,
       runtimeGeneration: this.#runtimeOwnershipGeneration,
       promise: undefined as unknown as Promise<CloudflareAgent.Agent>,
       publication: undefined as unknown as Promise<CloudflareAgent.Agent>,
     };
-    construction.promise = this.#createAgent(accountMcpRefreshMs);
     this.#agentConstruction = construction;
     this.#agentConstructions.add(construction);
+    // Register ownership before starting credential/catalog I/O. Retirement
+    // aborts preparation and joins this exact construction before replacement.
+    construction.promise = Promise.resolve().then(() => this.#createAgent(catalog, construction.abort.signal));
     const publication = this.#publishAgentConstruction(construction);
     construction.publication = publication;
     this.#agentPromise = publication;
@@ -7738,6 +7710,7 @@ export class DurableAgentSession extends DurableComputerSession {
     resolved?: CloudflareAgent.Agent,
   ): Promise<void> {
     if (construction.shutdown) return construction.shutdown;
+    construction.abort.abort();
     this.#agentConstructions.add(construction);
     const shutdown = (async () => {
       let agent = resolved;
@@ -7757,47 +7730,50 @@ export class DurableAgentSession extends DurableComputerSession {
     return shutdown;
   }
 
-  async #refreshAccountMcpConnections(session: SessionRow, catalog?: Promise<unknown>): Promise<void> {
-    const current = this.#accountMcpRefreshTask;
-    if (current) return current;
-    const refreshing = (async () => {
-      let connected: readonly ManagedAccountMcpConnection[];
-      try {
-        connected = [...await connectedManagedAccountMcps(
-          this.env.NANOCODEX,
-          session.owner_id,
-          catalog,
-        )].sort((left, right) => left.id.localeCompare(right.id));
-      } catch (error) {
-        console.warn({
-          type: "managed.account_mcp_listing_failed",
-          error_kind: errorKind(error),
-          fallback: "cached_or_empty",
+  async #refreshAccountMcpConnections(session: SessionRow, catalog?: Promise<unknown>, preparationSignal?: AbortSignal): Promise<void> {
+    const keyFor = (value: SessionRow) => JSON.stringify([
+      value.owner_id, value.organization_id, value.team_id, value.authorization_epoch,
+    ]);
+    const key = keyFor(session);
+    let refreshing = this.#accountMcpRefreshTask;
+    if (refreshing?.key !== key) {
+      // Coalesce only the read. Every caller must install the shared result
+      // under its own current construction/authority, even after retirement.
+      const promise = connectedManagedAccountMcps(this.env.NANOCODEX, session.owner_id, catalog)
+        .then(connected => [...connected].sort((left, right) => left.id.localeCompare(right.id)))
+        .catch(error => {
+          console.warn({ type: "managed.account_mcp_listing_failed", error_kind: errorKind(error), fallback: "cached_or_empty" });
+          return undefined;
         });
-        if (this.#accountMcpConnections === undefined) {
-          this.#accountMcpConnections = Object.freeze([]);
-        }
+      refreshing = { key, promise };
+      this.#accountMcpRefreshTask = refreshing;
+    }
+    try {
+      const connected = await refreshing.promise;
+      const currentSession = this.#session();
+      if (!currentSession || keyFor(currentSession) !== key) return;
+      if (connected === undefined) {
+        this.#accountMcpConnections ??= Object.freeze([]);
         return;
       }
       if (sameAccountMcpConnections(this.#accountMcpConnections, connected)) return;
-      // A construction has already captured the current catalog. Keep the
-      // prior fingerprint so the next safe ensure observes the change and
-      // retires that published runtime instead of permanently accepting a
-      // stale construction.
+      // Early construction owns a socket but has not captured any tools yet.
+      // Only that exact, still-active preparation may install its discovery.
+      if (preparationSignal !== undefined && !preparationSignal.aborted && !this.#agent
+        && this.#agentConstruction?.abort.signal === preparationSignal) {
+        this.#accountMcpConnections = Object.freeze(connected);
+        return;
+      }
+      // A later construction has already captured the catalog. Keep the old
+      // fingerprint so the next safe ensure retires that published runtime.
       if (this.#agentPromise || this.#agentConstructions.size > 0) return;
       const activeChildren = await this.#hasActiveSubagents();
       if (this.#agentPromise || this.#agentConstructions.size > 0 || activeChildren
         || this.#turns.size > 0 || this.#managedRealtimeSession() !== undefined) return;
       this.#accountMcpConnections = Object.freeze(connected);
       if (this.#agent) await this.#shutdownAgent();
-    })();
-    this.#accountMcpRefreshTask = refreshing;
-    try {
-      await refreshing;
     } finally {
-      if (this.#accountMcpRefreshTask === refreshing) {
-        this.#accountMcpRefreshTask = undefined;
-      }
+      if (this.#accountMcpRefreshTask === refreshing) this.#accountMcpRefreshTask = undefined;
     }
   }
 
@@ -7843,7 +7819,70 @@ export class DurableAgentSession extends DurableComputerSession {
     ));
   }
 
-  async #createAgent(accountMcpRefreshMs: number): Promise<CloudflareAgent.Agent> {
+  async #refreshAgentAccount(catalog?: Promise<unknown>, preparationSignal?: AbortSignal): Promise<number> {
+    const session = this.#session();
+    let accountMcpRefreshMs = 0;
+    if (session?.runtime_profile === "managed" && accountToolsEnabled(this.#configuration())) {
+      const discoveryKey = JSON.stringify([session.owner_id, session.organization_id, session.team_id, session.authorization_epoch]);
+      if (this.#accountDiscoveryKey !== discoveryKey) {
+        this.#accountHostedTools?.invalidate({ clearCatalog: true });
+        this.#accountDiscoveryKey = discoveryKey;
+      }
+      catalog ??= this.#catalog(session);
+      const refreshStartedAt = performance.now();
+      // Optional hand inventory must not gate admission or reuse of a ready agent.
+      this.#refreshAccountHostedTools(session);
+      await performanceStage("account.mcp_discovery", () => this.#refreshAccountMcpConnections(session, catalog, preparationSignal));
+      accountMcpRefreshMs = roundMilliseconds(performance.now() - refreshStartedAt);
+    }
+    return accountMcpRefreshMs;
+  }
+
+  async #createAgent(catalog: Promise<unknown> | undefined, signal: AbortSignal): Promise<CloudflareAgent.Agent> {
+    signal.throwIfAborted();
+    const preparation = { startedAt: performance.now(), credentialBindingMs: 0 };
+    const discovery = this.#refreshAgentAccount(catalog, signal);
+    void discovery.catch(() => {});
+    try {
+      const session = this.#session();
+      if (!session) throw new Error("session is not initialized");
+      const configuration = this.#configuration();
+      const complete = async (create?: (options: NonNullable<Parameters<typeof CloudflareAgent.create>[1]>) => Promise<CloudflareAgent.Agent>) => {
+        const accountMcpRefreshMs = await discovery;
+        signal.throwIfAborted();
+        return this.#createPreparedAgent(accountMcpRefreshMs, create, signal, create ? preparation : undefined);
+      };
+      // Routed and shared-room transports retain their existing admission path.
+      if (session.runtime_profile !== "managed" || configuration.model_routing || this.#threadRoute()) return await complete();
+      const bindingStartedAt = performance.now();
+      await this.#ensureCredentialBinding(session);
+      preparation.credentialBindingMs = performance.now() - bindingStartedAt;
+      signal.throwIfAborted();
+      let durabilityId = session.session_id;
+      try {
+        durabilityId = this.ctx.storage.sql.exec<{ state_id: string }>(
+          "SELECT state_id FROM nanocodex_cloudflare_durability WHERE singleton = 1",
+        ).toArray()[0]?.state_id ?? durabilityId;
+      } catch { /* The adapter creates its identity on first construction. */ }
+      const options = { durabilityId, eventPersistence: "caller" as const };
+      Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalConfiguration"), { value: this.#settings() });
+      Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalRuntime"), {
+        value: { prepare: complete, preparationSignal: signal },
+      });
+      return await CloudflareAgent.create({ ctx: this.ctx, env: { NANOCODEX: this.#modelEgress() } }, options);
+    } finally {
+      // A failed binding/create must not leave discovery owned by an obsolete
+      // construction that a retry can join without installing its MCP catalog.
+      await discovery.catch(() => {});
+    }
+  }
+
+  async #createPreparedAgent(
+    accountMcpRefreshMs: number,
+    create?: (options: NonNullable<Parameters<typeof CloudflareAgent.create>[1]>) => Promise<CloudflareAgent.Agent>,
+    signal?: AbortSignal,
+    preparation?: { startedAt: number; credentialBindingMs: number },
+  ): Promise<CloudflareAgent.Agent> {
     const constructionStartedAt = performance.now();
     let phaseStartedAt = constructionStartedAt;
     const session = this.#session();
@@ -7851,8 +7890,8 @@ export class DurableAgentSession extends DurableComputerSession {
     const multiplayer = session.runtime_profile === "multiplayer";
     const configuration = this.#configuration();
     const restrictedEnvironment = configuration.environment?.network.access !== undefined && configuration.environment.network.access !== "enabled";
-    if (!multiplayer) await this.#ensureCredentialBinding(session);
-    const credentialBindingMs = performance.now() - phaseStartedAt;
+    if (!multiplayer && create === undefined) await this.#ensureCredentialBinding(session);
+    const credentialBindingMs = preparation?.credentialBindingMs ?? performance.now() - phaseStartedAt;
     phaseStartedAt = performance.now();
     const workspace = await getWorkspace(this);
     const workspaceMs = performance.now() - phaseStartedAt;
@@ -8442,7 +8481,8 @@ export class DurableAgentSession extends DurableComputerSession {
         ctx: this.ctx,
         env: { NANOCODEX: this.#modelEgress() },
       } : this;
-      agent = await CloudflareAgent.create(owner, agentOptions);
+      signal?.throwIfAborted();
+      agent = await (create ? create(agentOptions) : CloudflareAgent.create(owner, agentOptions));
       cloudflareAgentMs = performance.now() - phaseStartedAt;
     } catch (error) {
       let cleanupError: unknown;
@@ -8470,7 +8510,8 @@ export class DurableAgentSession extends DurableComputerSession {
       cloudflare_agent_ms: roundMilliseconds(cloudflareAgentMs),
       construction_ms: roundMilliseconds(performance.now() - constructionStartedAt),
       runtime_ready_ms:
-        roundMilliseconds(performance.now() - constructionStartedAt + accountMcpRefreshMs),
+        roundMilliseconds(preparation ? performance.now() - preparation.startedAt
+          : performance.now() - constructionStartedAt + accountMcpRefreshMs),
     });
     return agent;
   }

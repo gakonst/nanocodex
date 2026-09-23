@@ -146,6 +146,18 @@
     "./cloudflare/gateway-responses": {
       "types": "./cloudflare/gateway-responses.d.mts",
       "import": "./cloudflare/gateway-responses.mjs"
+    },
+    "./cloudflare/agent-settings": {
+      "types": "./cloudflare/agent-settings.d.mts",
+      "import": "./cloudflare/agent-settings.mjs"
+    },
+    "./cloudflare/managed-auth": {
+      "types": "./cloudflare/managed-auth.d.mts",
+      "import": "./cloudflare/managed-auth.mjs"
+    },
+    "./cloudflare/managed-live": {
+      "types": "./cloudflare/managed-live.d.mts",
+      "import": "./cloudflare/managed-live.mjs"
     }
   },
   "files": [

@@ -4,7 +4,7 @@ import worker, { type DurableAgentSession } from "../src/index";
 import { DEFAULT_AGENT_SETTINGS } from "../src/agent-settings";
 import { forwardPrincipalAssertions, type Principal } from "../src/account-auth";
 import { ROUTING_CANDIDATES } from "../src/thread-model-routing";
-import { summarizeProviderObservationGroups, type ProviderObservation } from "../src/provider-telemetry";
+import type { ProviderObservation } from "../src/provider-telemetry";
 
 const header = "x-nanocodex-client-ingress-colo";
 const principal: Principal = {
@@ -62,7 +62,7 @@ describe("trusted managed ingress", () => {
     expect(calls).toEqual(path.endsWith("agent-runs") ? ["/create", "/turns"] : ["/create"]);
   });
 
-  it.each([false, true])("retains creation origin and uses shared live metrics with probes disabled (coordinator fails: %s)", async unavailable => {
+  it.each([false, true])("retains creation origin without telemetry reads before generation (observation coordinator fails: %s)", async unavailable => {
     const sessions = (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
     await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (session, state) => {
       const candidate = ROUTING_CANDIDATES.find(c => c.backend === "cloudflare" && c.model === "gpt-6-sol" && c.thinking === "low")!;
@@ -87,15 +87,11 @@ describe("trusted managed ingress", () => {
       } });
       const observations: ProviderObservation[] = [];
       const snapshots: unknown[] = [], choices: any[] = [];
-      const sample: ProviderObservation = { timestamp: Date.now(), source: "live", workerColo: null, clientIngressColo: "FRA",
-        backend: candidate.backend, model: candidate.model, effort: candidate.thinking, outcome: "success", status: 200,
-        headersMs: 1, generationTtftMs: 2, fullResponseMs: 3, clientDeliveryMs: null, elapsedMs: 3 };
-      const shared = summarizeProviderObservationGroups([sample, sample, sample], Date.now(), { clientIngressColo: "FRA", workerColo: null });
       const original = (session as unknown as { env: Record<string, unknown> }).env;
       Object.defineProperty(session, "env", { configurable: true, value: { ...original,
         NANOCODEX_THREAD_ROUTING: "true", NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true", NANOCODEX_PROVIDER_PROBES: "false",
         NANOCODEX_PROVIDER_PROBE_COORDINATOR: { getByName: () => ({
-          snapshot: async (origin: unknown) => { snapshots.push(origin); if (unavailable) throw Error("offline"); return shared; },
+          snapshot: async (origin: unknown) => { snapshots.push(origin); throw Error("routing must not read telemetry before generation"); },
           observe: async (observation: ProviderObservation) => { observations.push(observation); if (unavailable) throw Error("offline"); return true; },
         }) },
         NANOCODEX_MEMORY: { getByName: () => ({ fetch: async () => new Response(null, { status: 204 }) }) },
@@ -150,12 +146,8 @@ describe("trusted managed ingress", () => {
         }
         expect(choices).toHaveLength(2);
         expect(childCalls).toBe(2);
-        expect(snapshots).toEqual([{ clientIngressColo: "FRA", workerColo: null }, { clientIngressColo: "FRA", workerColo: null }]);
-        for (const choice of choices) expect(choice.provider_telemetry).toMatchObject({ clientIngressColo: "FRA", workerColo: null });
-        const chosen = choices[0].candidates.find((c: any) => c.id === candidate.id);
-        expect(chosen.responsiveness.probe).toBeNull();
-        if (unavailable) expect(chosen.responsiveness.live).toBeNull();
-        else expect(chosen.responsiveness.live).toMatchObject({ clientIngressColo: "FRA", workerColo: null, regionalMatch: true, regionalMatchKind: "client_ingress" });
+        expect(snapshots).toEqual([]);
+        for (const choice of choices) expect(choice).not.toHaveProperty("provider_telemetry");
         await vi.waitFor(() => expect(observations.length).toBeGreaterThanOrEqual(2));
         expect(observations.some(observation => observation.model === childCandidate.model)).toBe(true);
         for (const observation of observations) expect(observation).toMatchObject({ clientIngressColo: "FRA", workerColo: null });

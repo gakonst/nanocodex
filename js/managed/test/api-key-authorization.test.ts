@@ -1,3 +1,4 @@
+import { routeManaged, type ManagedProxyEnv } from "../../account/worker/managedProxy";
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import { ApiKeyRecord, authenticate, type AccountAuthEnv } from "../src/account-auth";
@@ -15,7 +16,7 @@ async function fixture() {
     label: "voice", createdAt: 1, userId: "11111111-1111-4111-8111-111111111111",
     organizationId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
     teamId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", role: "writer",
-    authorizationEpoch: 1, capabilities: ["agents:read", "agents:write"],
+    authorizationEpoch: 1, capabilities: ["agents:read", "agents:write", "tools:use"],
   };
   const account = {
     id: record.userId, organizationId: record.organizationId,
@@ -43,6 +44,42 @@ async function withKey(run: (key: ApiKeyRecord, f: Awaited<ReturnType<typeof fix
 }
 
 describe("live API key authorization beside the key", () => {
+  it.each(["key", "organization", "membership", "team", "epoch", "role", "capabilities"])(
+    "direct live creation observes %s revocation without cached access or a second create", async change => {
+      await withKey(async (key, f) => {
+        let creates = 0, fallback = 0;
+        const runtime: ManagedProxyEnv = {
+          NANOCODEX_BACKEND: { fetch: async () => { fallback++; throw Error("unexpected managed fallback"); } } as unknown as Fetcher,
+          NANOCODEX_LIVE_API_KEYS: { getByName: name => {
+            expect(name).toBe(f.record.digest);
+            return { resolveAuthorizedKey: () => key.resolveAuthorizedKey() };
+          } },
+          NANOCODEX_LIVE_SESSIONS: { getByName: () => ({ fetch: async internal => {
+            creates++;
+            expect(new URL(internal.url).pathname).toBe("/create-live");
+            expect(internal.headers.get("x-nanocodex-owner-id")).toBe(f.record.userId);
+            return new Response(null, { status: 200 });
+          } }) },
+        };
+        const create = () => {
+          const req = new Request("https://test.example/v1/agents/live", { headers: {
+            authorization: `Bearer ${token}`, upgrade: "websocket", "x-nanocodex-access": "not-authority",
+          } });
+          return routeManaged(req, runtime, new URL(req.url));
+        };
+        expect((await create())?.status).toBe(200);
+        if (change === "key") await key.fetch(new Request("https://key/record", { method: "DELETE" }));
+        if (change === "organization") f.account.organizationId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        if (change === "membership") f.organizations.mockImplementation(async () => new Response(null, { status: 404 }));
+        if (change === "team") f.grant.teamId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+        if (change === "epoch") f.grant.authorizationEpoch++;
+        if (change === "role") f.grant.role = "reader";
+        if (change === "capabilities") f.grant.capabilities = ["agents:read"];
+        expect((await create())?.status).toBe(401);
+        expect(creates).toBe(1); expect(fallback).toBe(0);
+      });
+    },
+  );
   it("uses one RPC reply and observes key deletion without a streamed response", async () => {
     await withKey(async (key, f) => {
       const rpc = vi.fn(() => key.resolveAuthorizedKey());

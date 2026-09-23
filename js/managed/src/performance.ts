@@ -148,6 +148,23 @@ export function performanceState<Props>(state: DurableObjectState<Props>): Durab
   });
 }
 
+/** Observe the existing output-gate commit without delaying the response path.
+ * sync waits for pending writes; it does not weaken durability or start an RPC.
+ * CF handler clocks cannot show time spent behind the output gate after return.
+ */
+export function performanceCommit(state: Pick<DurableObjectState, "id" | "storage" | "waitUntil">,
+  stage: "session.create.commit"): void {
+  const began = performance.now();
+  const traceId = state.id.toString();
+  const record = (success: boolean) => {
+    try { console.info({ type: "managed.performance", trace_id: traceId, stage,
+      duration_ms: performance.now() - began, success }); }
+    catch { /* Observation cannot alter a durable response. */ }
+  };
+  try { state.waitUntil(state.storage.sync().then(() => record(true), () => record(false))); }
+  catch { /* Native output gates remain authoritative if observation fails. */ }
+}
+
 /** One owned-connection summary. Only fixed numeric fields and correlation IDs. */
 export function performanceSocketTiming(sessionId: string, observation: unknown): void {
   if (!observation || typeof observation !== "object" || Array.isArray(observation)) return;

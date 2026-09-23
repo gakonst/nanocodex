@@ -28,6 +28,7 @@ import {
   importDurabilityState as importPortableState,
 } from "../runtime/durability-store.mjs";
 import { cloudflareEgress } from "./egress.mjs";
+import { prepareConnection } from "./prepared-connection.mjs";
 import { scopeCloudflareEgress } from "./egress-subject.mjs";
 import {
   clearCloudflareEventSocket,
@@ -277,13 +278,71 @@ export async function create(module, owner, options = {}, hostAgent = HostAgent)
   }
   lifecycle.creating = true;
   try {
-    return await createOwned(module, resolved, options, hostAgent, lifecycle);
+    const prepare = options?.[INTERNAL_RUNTIME]?.prepare;
+    if (prepare === undefined) return await createOwned(module, resolved, options, hostAgent, lifecycle);
+    return await createPrepared(module, resolved, options, hostAgent, lifecycle, prepare);
   } finally {
     lifecycle.creating = false;
   }
 }
 
-async function createOwned(module, resolved, options, hostAgent, lifecycle) {
+// Private managed construction barrier. The adapter retains lifecycle, identity,
+// endpoint and socket ownership throughout tool discovery; callers receive only
+// a single-use continuation, never a transport or a session identity.
+async function createPrepared(module, resolved, options, hostAgent, lifecycle, prepare) {
+  applicationOptions(options);
+  if (typeof prepare !== "function") throw new TypeError("Cloudflare Agent preparation must be a function");
+  const configuration = options[INTERNAL_CONFIGURATION];
+  validateInternalConfiguration(configuration);
+  if (!configuration || !["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].includes(configuration.model)) {
+    throw new Error("Cloudflare Agent preparation requires a native root configuration");
+  }
+  const runtime = options[INTERNAL_RUNTIME];
+  if (Object.keys(runtime).some(key => !["prepare", "preparationSignal"].includes(key))) {
+    throw new TypeError("Cloudflare Agent preparation owns its native transport policy");
+  }
+  const signal = runtime.preparationSignal;
+  signal?.throwIfAborted();
+  createCloudflareDurabilityStore(resolved.context.storage);
+  const { sessionId, stateId } = durableIdentity(resolved.context.storage, options.durabilityId);
+  const endpoint = cloudflareEgress({ binding: scopeCloudflareEgress(resolved.egress, resolved.subject) });
+  const connection = prepareConnection(endpoint, sessionId, signal);
+  let completing;
+  let accepting = true;
+  let attempted = false;
+  try {
+    const result = await prepare((prepared) => {
+      if (!accepting || attempted) throw new Error("Cloudflare Agent preparation was already completed");
+      attempted = true;
+      signal?.throwIfAborted();
+      const runtime = prepared?.[INTERNAL_RUNTIME];
+      const pinned = prepared?.[INTERNAL_CONFIGURATION];
+      validateInternalConfiguration(pinned);
+      if (prepared?.durabilityId !== stateId
+        || ["model", "reasoning_mode"].some(key => pinned?.[key] !== configuration[key])
+        || runtime?.prepare !== undefined || runtime?.workersAi !== undefined || runtime?.gateway !== undefined
+        || (runtime?.inferenceForSession !== undefined && runtime?.preserveRootTransport !== true)) {
+        throw new Error("Cloudflare Agent preparation changed its pinned transport or configuration");
+      }
+      completing = createOwned(module, resolved, prepared, hostAgent, lifecycle, connection);
+      void completing.catch(() => {});
+      return completing;
+    });
+    if (completing === undefined || result !== await completing) {
+      throw new Error("Cloudflare Agent preparation must return its completed Agent");
+    }
+    return result;
+  } catch (error) {
+    const agent = await completing?.catch(() => undefined);
+    if (agent !== undefined) await agent.session.shutdown();
+    throw error;
+  } finally {
+    accepting = false;
+    await connection.dispose();
+  }
+}
+
+async function createOwned(module, resolved, options, hostAgent, lifecycle, preparedConnection) {
   const { context, egress, subject } = resolved;
   const configured = applicationOptions(options);
   const {
@@ -424,7 +483,10 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
         }
       }
       try {
-        const opened = await endpoint.createWebSocket(url, id, request);
+        const preparation = request.authorization === "preconnect" ? preparedConnection : undefined;
+        if (preparation !== undefined) preparedConnection = undefined;
+        const opened = await (preparation === undefined
+          ? endpoint.createWebSocket(url, id, request) : preparation.take(url, id, request));
         if (request.authorization === "preconnect") startup.resolve();
         return { ...opened, socket: responseControlsSocket(opened.socket, internalRuntime?.responseControls) };
       } catch (error) {

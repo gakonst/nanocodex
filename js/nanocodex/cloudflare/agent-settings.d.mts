@@ -1,0 +1,15 @@
+export const AGENT_MODELS: readonly ["gpt-6-sol", "gpt-6-luna", "gpt-6-astra", "@cf/zai-org/glm-5.3", "kimi-k3", "mimo-v2.6-pro"];
+export const AGENT_THINKING: readonly ["none", "low", "medium", "high", "xhigh", "max"];
+export const AGENT_REASONING_MODES: readonly ["standard", "pro"];
+export type ManagedAgentSettings = Readonly<{ model: typeof AGENT_MODELS[number]; thinking: typeof AGENT_THINKING[number]; reasoning_mode: typeof AGENT_REASONING_MODES[number]; fast_mode: boolean }>;
+export type ManagedAgentSettingsPatch = Partial<ManagedAgentSettings>;
+export const DEFAULT_AGENT_SETTINGS: ManagedAgentSettings;
+export function parseAgentSettingsQuery(search: URLSearchParams): ManagedAgentSettings;
+export function agentSettingsQuery(settings: ManagedAgentSettings): URLSearchParams;
+export function parseAgentSettingsPatch(value: unknown): ManagedAgentSettingsPatch;
+export function parseCompleteAgentSettings(value: unknown): ManagedAgentSettings;
+export function validateAgentSettings(settings: ManagedAgentSettings): ManagedAgentSettings;
+export function validateAgentAdmissionSettings(settings: ManagedAgentSettings): ManagedAgentSettings;
+export function isAgentModel(value: unknown): value is ManagedAgentSettings["model"];
+export function isAgentThinking(value: unknown): value is ManagedAgentSettings["thinking"];
+export function isAgentReasoningMode(value: unknown): value is ManagedAgentSettings["reasoning_mode"];

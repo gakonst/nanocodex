@@ -1,3 +1,5 @@
+import { API_KEY, apiKeyDigest, apiKeyPrincipal, isOrganizationCapabilities, isApiKeyBase, isStoredApiKey, forwardPrincipalAssertions } from "nanocodex/cloudflare/managed-auth";
+export { isOrganizationCapabilities, forwardPrincipalAssertions };
 import { durablePlacementOptions, placementHeaders, TRUSTED_INGRESS_HEADER, type IngressPlacement } from "nanocodex/cloudflare/durable-placement";
 import type { AgentPresentation } from "./agent-presentation";
 import { retireAccountProjects } from "./retired-projects";
@@ -34,7 +36,7 @@ const ACCOUNT_PROVISION_TIMEOUT_MS = 10_000;
 const MAX_WALLET_MUTATION_BODY_BYTES = 16 * 1024;
 const USER_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-const API_KEY = /^ncx_live_([A-Za-z0-9_-]{12})_([A-Za-z0-9_-]{43})$/;
+
 const ANONYMOUS_SESSION_TOKEN = /^a_[A-Za-z0-9_-]{43}$/;
 const SMS_SESSION_TOKEN = /^s_[A-Za-z0-9_-]{43}$/;
 const LEGACY_PASSKEY_SESSION_TOKEN = /^[0-9a-f]{64}$/;
@@ -140,40 +142,6 @@ export type Principal = Readonly<{
   capabilities: readonly OrganizationCapability[];
   connectGrant?: ConnectGrantSlice;
 }>;
-
-export function forwardPrincipalAssertions(headers: Headers, principal: Principal): void {
-  headers.set("x-nanocodex-request-principal", JSON.stringify({ kind: principal.kind, user_id: principal.userId }));
-  headers.set(SESSION_OWNER_ASSERTION, principal.userId);
-  headers.set(SESSION_ORGANIZATION_ASSERTION, principal.organizationId);
-  headers.set(SESSION_TEAM_ASSERTION, principal.teamId);
-  headers.set(SESSION_AUTHORIZATION_EPOCH_ASSERTION, String(principal.authorizationEpoch));
-  headers.set(SESSION_CAPABILITIES_ASSERTION, JSON.stringify(principal.capabilities));
-  for (const name of [
-    CONNECT_USER_HEADER,
-    CONNECT_GRANT_ID_HEADER,
-    CONNECT_CAPABILITIES_HEADER,
-    CONNECT_CONNECTORS_HEADER,
-    CONNECT_CONNECTOR_CONNECTIONS_HEADER,
-    CONNECT_MCP_IDS_HEADER,
-    CONNECT_APP_TOOL_CATALOG_DIGEST_HEADER,
-  ]) {
-    headers.delete(name);
-  }
-  if (principal.connectGrant) {
-    headers.set(CONNECT_GRANT_ID_HEADER, principal.connectGrant.grantId);
-    headers.set(CONNECT_CONNECTORS_HEADER, JSON.stringify(principal.connectGrant.connectors));
-    if (principal.connectGrant.connectorConnections !== undefined) {
-      headers.set(
-        CONNECT_CONNECTOR_CONNECTIONS_HEADER,
-        JSON.stringify(principal.connectGrant.connectorConnections),
-      );
-    }
-    headers.set(CONNECT_MCP_IDS_HEADER, JSON.stringify(principal.connectGrant.mcpIds));
-    if (principal.connectGrant.appToolCatalogDigest !== undefined) {
-      headers.set(CONNECT_APP_TOOL_CATALOG_DIGEST_HEADER, principal.connectGrant.appToolCatalogDigest);
-    }
-  }
-}
 
 type UserRecord = Readonly<{
   id: string;
@@ -747,11 +715,8 @@ async function authenticateLive(request: Request, env: AccountAuthEnv, url: URL)
       return resolveUserPrincipal(env, passkeyUserId, credentialId);
     }
   }
-  const authorization = request.headers.get("authorization");
-  if (!authorization?.startsWith("Bearer ")) return undefined;
-  const token = authorization.slice("Bearer ".length);
-  if (!API_KEY.test(token)) return undefined;
-  const digest = await sha256(token);
+  const digest = await apiKeyDigest(request);
+  if (!digest) return undefined;
   const stub = env.NANOCODEX_API_KEYS.getByName(digest, durablePlacementOptions(env.trustedClientIngressColo));
   // RPC returns the small record in one reply. A fetch Response transports its
   // headers and JSON stream separately across Durable Object locations.
@@ -769,18 +734,7 @@ async function authenticateLive(request: Request, env: AccountAuthEnv, url: URL)
     if (response.headers.get("x-nanocodex-api-key-authorized") !== "1"
       && !await apiKeyAuthorized(env, record)) return undefined;
   }
-  if (!isStoredApiKey(record) || record.digest !== digest) return undefined;
-  return {
-    kind: "api_key",
-    userId: record.userId,
-    organizationId: record.organizationId,
-    teamId: record.teamId,
-    role: record.role,
-    subjectId: `api_key:${record.id}`,
-    credentialId: record.id,
-    authorizationEpoch: record.authorizationEpoch,
-    capabilities: record.capabilities,
-  };
+  return apiKeyPrincipal(record, digest);
 }
 
 async function apiKeyAuthorized(env: AccountAuthEnv, record: StoredApiKey): Promise<boolean> {
@@ -2259,23 +2213,6 @@ function organizationRoleRank(role: OrganizationRole): number {
   return role === "owner" ? 2 : role === "writer" ? 1 : 0;
 }
 
-export function isOrganizationCapabilities(value: unknown): value is readonly OrganizationCapability[] {
-  if (!Array.isArray(value) || new Set(value).size !== value.length) return false;
-  return value.every((capability) =>
-    capability === "agents:read"
-    || capability === "agents:portability"
-    || capability === "agents:write"
-    || capability === "api_keys:read"
-    || capability === "api_keys:write"
-    || capability === "history:read"
-    || capability === "memory:read"
-    || capability === "memory:write"
-    || capability === "tools:use"
-    || capability === "organization:read"
-    || capability === "organization:write"
-  );
-}
-
 const CONNECT_CAPABILITIES = new Set<OrganizationCapability>([
   "agents:read",
   "agents:portability",
@@ -2370,31 +2307,6 @@ function isOrganizationGrant(value: unknown): value is OrganizationGrant {
     && Number.isSafeInteger(grant.authorizationEpoch)
     && Number(grant.authorizationEpoch) >= 1
     && isOrganizationCapabilities(grant.capabilities);
-}
-
-function isApiKeyBase(value: unknown): value is ApiKeyBase {
-  if (typeof value !== "object" || value === null) return false;
-  const record = value as Partial<ApiKeyBase>;
-  return typeof record.id === "string"
-    && /^[A-Za-z0-9_-]{12}$/.test(record.id)
-    && typeof record.label === "string"
-    && record.label.length <= 120
-    && record.prefix === `ncx_live_${record.id}`
-    && Number.isFinite(record.createdAt)
-    && typeof record.digest === "string"
-    && /^[A-Za-z0-9_-]{43}$/.test(record.digest)
-    && isUserId(record.userId);
-}
-
-function isStoredApiKey(value: unknown): value is StoredApiKey {
-  if (!isApiKeyBase(value)) return false;
-  const record = value as Partial<StoredApiKey>;
-  return isUuid(record.organizationId)
-    && isUuid(record.teamId)
-    && isOrganizationRole(record.role)
-    && isOrganizationCapabilities(record.capabilities)
-    && Number.isSafeInteger(record.authorizationEpoch)
-    && Number(record.authorizationEpoch) >= 1;
 }
 
 function sameStoredApiKey(value: unknown, expected: StoredApiKey): boolean {

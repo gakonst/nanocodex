@@ -114,6 +114,75 @@ async function setup(instance: DurableAgentSession, state: DurableObjectState, i
 }
 
 describe("fixed-model idle discovery lifecycle", () => {
+  it("opens one owned socket while catalog is blocked and coalesces preparation", () => fixture(async f => {
+    const catalog = Promise.withResolvers<Response>();
+    f.behavior.catalog = () => catalog.promise;
+    try {
+      expect((await f.request("/prepare")).status).toBe(202);
+      await vi.waitFor(() => expect(f.sockets).toHaveLength(1));
+      expect(f.counts.catalog).toBe(1);
+      expect(f.sends).toEqual([]);
+      expect(await f.snapshot()).toMatchObject({ agent_loaded: false });
+      expect((await f.request("/prepare")).status).toBe(202);
+      expect(f.counts.catalog).toBe(1);
+    } finally { catalog.resolve(Response.json({ connectors: {}, mcp_connections: [] })); }
+    await vi.waitFor(async () => expect(await f.snapshot()).toMatchObject({ agent_loaded: true }));
+    expect(f.sockets).toHaveLength(1);
+    expect(f.sends).toEqual([]);
+  }), 20_000);
+
+  it("retires the preparation socket before a model change joins blocked discovery", () => fixture(async f => {
+    const catalog = Promise.withResolvers<Response>();
+    f.behavior.catalog = () => catalog.promise.then(response => response.clone());
+    let changed: Promise<Response> | undefined;
+    try {
+      expect((await f.request("/prepare")).status).toBe(202);
+      await vi.waitFor(() => expect(f.sockets).toHaveLength(1));
+      const headers = new Headers(); forwardPrincipalAssertions(headers, principal);
+      changed = f.instance.fetch(new Request("https://session.internal/settings", {
+        method: "PATCH", headers, body: JSON.stringify({ model: "gpt-6-luna" }),
+      }));
+      await vi.waitFor(() => expect(f.sockets[0].readyState).toBe(3));
+      expect(f.sockets).toHaveLength(1);
+      expect(f.sends).toEqual([]);
+    } finally { catalog.resolve(Response.json({ connectors: {}, mcp_connections: [] })); }
+    expect((await changed!).status).toBe(200);
+    expect(f.sockets).toHaveLength(2);
+    expect(await f.snapshot()).toMatchObject({ agent_loaded: true });
+    expect(f.sends).toEqual([]);
+  }), 20_000);
+
+  it("installs a ready-agent catalog refresh when replacement construction joins it", () => fixture(async f => {
+    await f.prepare();
+    const catalog = Promise.withResolvers<Response>();
+    f.behavior.catalog = () => catalog.promise.then(response => response.clone());
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + ACCOUNT_DISCOVERY_TTL_MS + 1_000);
+    let changed: Promise<Response> | undefined;
+    try {
+      expect((await f.request("/prepare")).status).toBe(202);
+      await vi.waitFor(() => expect(f.counts.catalog).toBe(2));
+      const headers = new Headers(); forwardPrincipalAssertions(headers, principal);
+      changed = f.instance.fetch(new Request("https://session.internal/settings", {
+        method: "PATCH", headers, body: JSON.stringify({ model: "gpt-6-luna" }),
+      }));
+      await vi.waitFor(() => expect(f.sockets).toHaveLength(2));
+    } finally {
+      catalog.resolve(Response.json({ connectors: {}, mcp_connections: [
+        { id: "a".repeat(43), name: "Fixture workspace", status: "connected" },
+      ] }));
+    }
+    try {
+      expect((await changed!).status).toBe(200);
+      await vi.waitFor(() => expect(f.stages.filter(e => e.stage === "conversation.prepare")).toHaveLength(2));
+      await new Promise(resolve => setTimeout(resolve, 0));
+      await f.prepare();
+      // Missing the joined discovery would cause the next ensure to detect a
+      // changed catalog and unnecessarily retire/rebuild this new runtime.
+      expect(f.sockets).toHaveLength(2);
+      expect(f.sends).toEqual([]);
+    } finally { clock.mockRestore(); }
+  }), 20_000);
+
   it("reuses unexpired discovery after idle while closing and reopening the model socket", () => fixture(async f => {
     await f.prepare();
     expect((await f.request("/turns", { id: "before-idle", input: "Say hello" })).status).toBe(202);

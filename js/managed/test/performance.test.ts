@@ -87,3 +87,31 @@ it("logs only bounded socket timing fields with the pinned managed session ID", 
     expect(() => performanceSocketTiming("managed-fixture-session", observation)).not.toThrow();
   } finally { logs.mockRestore(); }
 });
+
+it("observes pending creation commits without blocking or exposing storage errors", async () => {
+  const { performanceCommit } = await import("../src/performance");
+  const logs = vi.spyOn(console, "info").mockImplementation(() => {});
+  let complete!: () => void;
+  let retained: Promise<unknown> | undefined;
+  const pending = new Promise<void>(resolve => { complete = resolve; });
+  const sync = vi.fn(() => pending);
+  const state = { id: { toString: () => "fixture-storage-id" }, storage: { sync },
+    waitUntil(task: Promise<unknown>) { retained = task; } } as unknown as DurableObjectState;
+  try {
+    expect(performanceCommit(state, "session.create.commit")).toBeUndefined();
+    expect(sync).toHaveBeenCalledOnce();
+    expect(logs).not.toHaveBeenCalled();
+    complete(); await retained;
+    expect(logs.mock.calls[0]?.[0]).toMatchObject({ type: "managed.performance", trace_id: "fixture-storage-id",
+      stage: "session.create.commit", success: true });
+    sync.mockImplementation(() => Promise.reject(new Error("private storage details")));
+    performanceCommit(state, "session.create.commit"); await retained;
+    expect(logs.mock.calls[1]?.[0]).toMatchObject({ success: false });
+    expect(JSON.stringify(logs.mock.calls)).not.toContain("private");
+    logs.mockImplementation(() => { throw new Error("logging unavailable"); });
+    performanceCommit(state, "session.create.commit");
+    await expect(retained).resolves.toBeUndefined();
+    sync.mockImplementation(() => { throw new Error("storage unavailable"); });
+    expect(() => performanceCommit(state, "session.create.commit")).not.toThrow();
+  } finally { logs.mockRestore(); }
+});
