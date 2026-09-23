@@ -1,6 +1,12 @@
 //! Transport-independent input admission. Only the caller may inject accepted input.
 use serde_json::{Value, json};
-use std::time::{Duration, Instant};
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{Duration, Instant},
+};
 
 pub const LEASE_DURATION: Duration = Duration::from_secs(10);
 pub const INPUT_MAX_AGE: Duration = Duration::from_millis(250);
@@ -14,6 +20,7 @@ pub struct Lease {
     deadline: Option<Instant>,
     motion: u64,
     discrete: u64,
+    transport: Option<Arc<AtomicBool>>,
 }
 impl Lease {
     pub fn owner(&self) -> &str {
@@ -26,10 +33,31 @@ impl Lease {
         self.expired_at(Instant::now())
     }
     pub fn expired_at(&self, now: Instant) -> bool {
-        self.deadline.is_some_and(|deadline| now >= deadline)
+        self.transport
+            .as_ref()
+            .is_some_and(|permission| !permission.load(Ordering::Acquire))
+            || self.deadline.is_some_and(|deadline| now >= deadline)
     }
     pub fn acquire(&mut self, owner: &str) {
         self.acquire_at(owner, Instant::now());
+    }
+    pub(crate) const fn transport_permission(&self) -> Option<&Arc<AtomicBool>> {
+        self.transport.as_ref()
+    }
+    pub(crate) fn acquire_connected(
+        &mut self,
+        owner: &str,
+        transport: Option<Arc<AtomicBool>>,
+    ) -> bool {
+        if transport
+            .as_ref()
+            .is_some_and(|permission| !permission.load(Ordering::Acquire))
+        {
+            return false;
+        }
+        self.acquire(owner);
+        self.transport = transport;
+        !self.expired()
     }
     pub fn acquire_at(&mut self, owner: &str, now: Instant) {
         *self = Self {

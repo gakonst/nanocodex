@@ -342,7 +342,7 @@ impl MicrophoneControl {
 // WebSocket message and parsing them again on the latency-sensitive input path.
 enum Incoming {
     Broker(Message),
-    Peer(Value),
+    Peer(Value, Option<Arc<std::sync::atomic::AtomicBool>>),
 }
 fn broker_event(text: &str, webrtc: bool) -> Result<Option<Value>, SessionError> {
     let value: Value = serde_json::from_str(text).map_err(|_| SessionError::Closed)?;
@@ -378,7 +378,7 @@ impl Socket {
                         // A delayed key-up cannot be silently dropped. Revoke
                         // its whole lease instead of replaying stale input.
                         let Some(value) = timely_event(event.value, event.created.elapsed()) else { continue; };
-                        return Some(Ok(Incoming::Peer(value)));
+                        return Some(Ok(Incoming::Peer(value, event.active)));
                     }
                 }
             }
@@ -704,11 +704,11 @@ async fn session(
             },
             message = socket.next() => {
                 let message=message.ok_or(SessionError::SocketEnded)?.map_err(|_|SessionError::SocketReadFailed)?;
-                let value=match message {
-                    Incoming::Peer(value)=>value,
+                let (value, admission)=match message {
+                    Incoming::Peer(value, admission)=>(value, admission),
                     Incoming::Broker(Message::Text(text))=>{
                         let Some(value)=broker_event(&text, socket.video.is_some())? else {continue;};
-                        value
+                        (value, None)
                     },
                     Incoming::Broker(Message::Ping(bytes))=>{socket.send(Message::Pong(bytes)).await.map_err(|_|SessionError::Closed)?;continue;},
                     Incoming::Broker(Message::Close(close))=>return Err(match close {
@@ -719,6 +719,7 @@ async fn session(
                     Incoming::Broker(Message::Pong(_))=>continue,
                     _=>return Err(SessionError::Closed),
                 };
+                if admission.as_ref().is_some_and(|permission| !permission.load(std::sync::atomic::Ordering::Acquire)) { continue; }
                 let viewer=value["viewer_id"].as_str().unwrap_or("");
                 match value["type"].as_str().unwrap_or("") {
                     "ready"=>{
@@ -780,6 +781,12 @@ async fn session(
                             viewers.insert(viewer.into());
                         }
                     },
+                    "viewer_suspended" if viewers.contains(viewer)=>{
+                        if lease.owner()==viewer { release(&mut lease,backend,&mut socket).await?; }
+                    },
+                    "viewer_resumed" if viewers.contains(viewer)=>{
+                        send(&mut socket,json!({"type":"control","viewer_id":viewer,"data":{"type":"revoked"}})).await?;
+                    },
                     "viewer_left"=>{
                         preparations.remove(viewer);
                         viewers.remove(viewer);
@@ -808,7 +815,10 @@ async fn session(
                         *credits += count;
                     },
                     "control" if viewers.contains(viewer)=>{
+                        let permission = admission;
+                        if socket.video.is_some() && permission.is_none() { continue; }
                         let data=&value["data"];
+                        if socket.video.as_ref().is_some_and(|video| video.revoked_control(viewer, data)) { continue; }
                         match data["type"].as_str().unwrap_or("") {
                             "acquire" if data.get("generation").is_none()=>{
                                 // A human cancels an agent before receiving the input lease.
@@ -816,7 +826,9 @@ async fn session(
                                     if cancel_job(&mut job).await{send(&mut socket,json!({"type":"agent_result","request_id":std::mem::take(&mut request_id),"status":"cancelled"})).await?;}
                                     release(&mut lease,backend,&mut socket).await?;
                                 }
-                                if lease.owner().is_empty(){release(&mut lease,backend,&mut socket).await?;socket.microphone.refreshed(Instant::now());lease.acquire(viewer);
+                                if lease.owner().is_empty(){release(&mut lease,backend,&mut socket).await?;socket.microphone.refreshed(Instant::now());
+                                    if !lease.acquire_connected(viewer, permission) { continue; }
+                                    if socket.video.as_ref().is_some_and(|video| !lease.transport_permission().is_some_and(|permission| video.grant_control(viewer, permission, lease.generation()))) { continue; }
                                     let mut grant = control_grant(lease.generation(), capabilities);
                                     if socket.video.as_ref().is_some_and(Video::microphone_available) { grant["microphone"] = json!(true); }
                                     send(&mut socket,json!({"type":"control","viewer_id":viewer,"data":grant})).await?;}
@@ -835,7 +847,7 @@ async fn session(
                                 let ack = {
                                     let video = socket.video.as_ref();
                                     socket.microphone.request(&lease, viewer, data, |enabled, remaining| {
-                                        video.is_some_and(|v| v.set_microphone(viewer, enabled, remaining))
+                                        video.is_some_and(|v| lease.transport_permission().is_some_and(|permission| v.set_microphone(viewer, enabled, remaining, permission)))
                                     })
                                 };
                                 if let Some(ack) = ack { send(&mut socket, ack).await?; }
@@ -1263,11 +1275,8 @@ mod tests {
         .expect("peer offers did not complete");
         for viewer in ["owner", "survivor"] {
             assert!(
-                video
-                    .control(viewer, &json!({"type":"revoked"}))
-                    .await
-                    .is_err(),
-                "fixture peer must be installed with a failing control channel"
+                video.add(viewer, Vec::new(), deadline).is_err(),
+                "fixture peer must be installed"
             );
         }
         assert!(!video.failed());
@@ -1315,6 +1324,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn failed_control_acknowledgment_retires_only_its_viewer() {
+        let (mut socket, _broker, mut lease) = departing_owner_fixture().await;
+        let backend: Backend = Arc::new(|_| Box::pin(async { Ok(json!({"status":"ok"})) }));
+        release(&mut lease, &backend, &mut socket).await.unwrap();
+        let video = socket.video.as_mut().unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                let event = video.next().await.unwrap();
+                if !event.outgoing {
+                    break event;
+                }
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(event.value["type"], "viewer_left");
+        assert_eq!(event.value["viewer_id"], "owner");
+        assert!(!video.failed());
+        // The second peer can still receive signaling after the failed ack.
+        assert!(
+            video
+                .signal("survivor", &json!({"type":"candidate","candidate":null}))
+                .is_ok()
+        );
+    }
+
+    #[tokio::test]
     async fn departed_owner_is_removed_before_release_acknowledgments() {
         // Native failure must still close the session after the peer is gone.
         for status in ["ok", "unavailable"] {
@@ -1350,8 +1386,11 @@ mod tests {
             );
             assert!(
                 video
-                    .control("survivor", &json!({"type":"revoked"}))
-                    .await
+                    .add(
+                        "survivor",
+                        Vec::new(),
+                        tokio::time::Instant::now() + Duration::from_secs(5)
+                    )
                     .is_err(),
                 "the other unnegotiated peer must remain installed"
             );

@@ -36,7 +36,7 @@ async fn gather(peer: &RTCPeerConnection, description: RTCSessionDescription) {
 // Use real authenticated ICE, DTLS and SCTP over loopback; only the signaled
 // remote candidate type changes. This isolates nomination latency from TURN
 // provisioning and public network variability, not a simulation of a TURN hop.
-async fn nomination_before_deadline(candidate_type: RTCIceCandidateType) {
+async fn nomination_before_deadline(candidate_type: RTCIceCandidateType, late_host: bool) {
     crate::tls::ensure_crypto_provider();
     let publisher = Arc::new(peer(true).await);
     let viewer = Arc::new(peer(false).await);
@@ -72,14 +72,60 @@ async fn nomination_before_deadline(candidate_type: RTCIceCandidateType) {
             answer.sdp.contains(" typ host"),
             "fixture needs a loopback candidate"
         );
+        let host_candidates: Vec<_> = answer
+            .sdp
+            .lines()
+            .filter_map(|line| line.strip_prefix("a=candidate:"))
+            .map(|line| format!("candidate:{line}"))
+            .collect();
         answer.sdp = answer
             .sdp
             .replace(" typ host", &format!(" typ {candidate_type}"));
+        if late_host {
+            answer.sdp = answer
+                .sdp
+                .lines()
+                .map(|line| {
+                    if line.starts_with("a=candidate:") {
+                        let mut fields: Vec<_> = line.split_whitespace().collect();
+                        fields[3] = "16777215"; // Relay priority below the later host candidate.
+                        fields.join(" ")
+                    } else {
+                        line.to_owned()
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("\r\n")
+                + "\r\n";
+        }
         let started = std::time::Instant::now();
         publisher.set_remote_description(answer).await.unwrap();
         let connected = tokio::time::timeout(Duration::from_millis(800), opening.recv()).await;
         let elapsed = started.elapsed();
         let pair = selection.try_recv().ok();
+        if late_host {
+            assert!(matches!(connected, Ok(Some(()))));
+            for candidate in host_candidates {
+                publisher
+                    .add_ice_candidate(webrtc::ice_transport::ice_candidate::RTCIceCandidateInit {
+                        candidate,
+                        ..Default::default()
+                    })
+                    .await
+                    .unwrap();
+            }
+            // Characterize the current dependency: adding a reachable, higher
+            // priority host after selection does not migrate an established path.
+            tokio::time::sleep(Duration::from_millis(400)).await;
+            let selected = publisher
+                .dtls_transport()
+                .ice_transport()
+                .get_selected_candidate_pair()
+                .await
+                .unwrap();
+            assert_eq!(selected.remote.typ, RTCIceCandidateType::Relay);
+            assert!(selection.try_recv().is_err());
+        }
         (connected, elapsed, pair)
     })
     .await;
@@ -96,15 +142,20 @@ async fn nomination_before_deadline(candidate_type: RTCIceCandidateType) {
 
 #[tokio::test]
 async fn working_browser_relay_is_nominated_without_the_default_two_second_wait() {
-    nomination_before_deadline(RTCIceCandidateType::Relay).await;
+    nomination_before_deadline(RTCIceCandidateType::Relay, false).await;
 }
 
 #[tokio::test]
 async fn working_browser_prflx_is_nominated_without_the_default_one_second_wait() {
-    nomination_before_deadline(RTCIceCandidateType::Prflx).await;
+    nomination_before_deadline(RTCIceCandidateType::Prflx, false).await;
 }
 
 #[tokio::test]
 async fn directly_reachable_browser_host_is_still_selected() {
-    nomination_before_deadline(RTCIceCandidateType::Host).await;
+    nomination_before_deadline(RTCIceCandidateType::Host, false).await;
+}
+
+#[tokio::test]
+async fn late_direct_host_does_not_upgrade_an_already_selected_relay() {
+    nomination_before_deadline(RTCIceCandidateType::Relay, true).await;
 }

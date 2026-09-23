@@ -179,7 +179,7 @@ pub struct Event {
     pub value: Value,
     pub outgoing: bool,
     pub created: Instant,
-    active: Option<Arc<AtomicBool>>,
+    pub(crate) active: Option<Arc<AtomicBool>>,
 }
 struct Connection(Arc<RTCPeerConnection>);
 impl std::ops::Deref for Connection {
@@ -198,6 +198,8 @@ impl Drop for Connection {
 }
 struct Peer {
     microphone: Arc<Microphone>,
+    recovery: Arc<crate::peer_recovery::Recovery>,
+    _recovery: Task,
     _connection: Connection,
     control: Arc<RTCDataChannel>,
     _rtcp: Vec<Task>,
@@ -213,7 +215,7 @@ struct Peer {
 }
 impl Drop for Peer {
     fn drop(&mut self) {
-        self.microphone.revoke();
+        self.recovery.retire();
         self.active.store(false, Ordering::Release);
     }
 }
@@ -330,7 +332,7 @@ impl Video {
                             let active = peer.active.clone();
                             peer.relay = Some(Task(tokio::spawn(async move {
                                 while let Some(mut event) = incoming.recv().await {
-                                    event.active = Some(active.clone());
+                                    event.active.get_or_insert_with(|| active.clone());
                                     if events.send(event).await.is_err() { break; }
                                 }
                             })));
@@ -356,10 +358,16 @@ impl Video {
         self.microphone_factory.is_some()
     }
     /// Caller must validate the current control lease and explicit opt-in.
-    pub fn set_microphone(&self, viewer: &str, enabled: bool, lease_remaining: Duration) -> bool {
+    pub(crate) fn set_microphone(
+        &self,
+        viewer: &str,
+        enabled: bool,
+        lease_remaining: Duration,
+        permission: &Arc<AtomicBool>,
+    ) -> bool {
         self.peers
             .get(viewer)
-            .is_some_and(|p| p.microphone.set_enabled(enabled, lease_remaining))
+            .is_some_and(|p| p.recovery.microphone(enabled, lease_remaining, permission))
     }
     /// Poll alongside the lease timer; transition to false must notify the viewer.
     pub fn microphone_enabled(&self, viewer: &str) -> bool {
@@ -376,6 +384,21 @@ impl Video {
         if let Some(peer) = self.peers.get(viewer) {
             peer.microphone.revoke();
         }
+    }
+    pub(crate) fn grant_control(
+        &self,
+        viewer: &str,
+        permission: &Arc<AtomicBool>,
+        generation: &str,
+    ) -> bool {
+        self.peers
+            .get(viewer)
+            .is_some_and(|peer| peer.recovery.grant(permission, generation))
+    }
+    pub(crate) fn revoked_control(&self, viewer: &str, data: &Value) -> bool {
+        self.peers
+            .get(viewer)
+            .is_some_and(|peer| peer.recovery.revoked_control(data))
     }
     pub fn failed(&self) -> bool {
         self.failed.load(Ordering::Acquire)
@@ -402,11 +425,21 @@ impl Video {
     }
     pub async fn control(&mut self, id: &str, value: &Value) -> Result<()> {
         if let Some(peer) = self.peers.get(id) {
-            tokio::time::timeout(
+            // Revocation during an outage must not wait on a dead data channel.
+            // A recovered peer receives a fresh revocation before reacquiring.
+            if peer.recovery.suspended() {
+                return Ok(());
+            }
+            let result = tokio::time::timeout(
                 Duration::from_secs(1),
                 peer.control.send_text(value.to_string()),
             )
-            .await??;
+            .await;
+            if !matches!(result, Ok(Ok(_))) {
+                // Loss can race either state check or a pending acknowledgement.
+                // Every channel failure is local to its peer.
+                peer.recovery.transition(RTCPeerConnectionState::Failed);
+            }
         }
         Ok(())
     }
@@ -551,6 +584,12 @@ impl PeerBuilder {
         );
         let owned = Connection(connection.clone());
         let microphone = Arc::new(Microphone::install(&connection, self.microphone_factory));
+        let (recovery, recovery_task) = crate::peer_recovery::Recovery::new(
+            microphone.clone(),
+            peer_events.clone(),
+            self.failed.clone(),
+            id.to_owned(),
+        );
         let path_diagnostics = diagnostics.clone();
         connection
             .dtls_transport()
@@ -619,26 +658,14 @@ impl PeerBuilder {
             let failed = self.failed.clone();
             let id = id.to_owned();
             let latest = self.motion.clone();
-            let active = active.clone();
-            let closed = peer_events.clone();
-            let failure = self.failed.clone();
-            let viewer = id.clone();
+            let admission = recovery.clone();
+            let closed = recovery.clone();
             channel.on_close(Box::new(move || {
-                if closed
-                    .try_send(Event {
-                        value: json!({"type":"viewer_left","viewer_id":viewer}),
-                        outgoing: false,
-                        created: Instant::now(),
-                        active: None,
-                    })
-                    .is_err_and(|error| matches!(error, mpsc::error::TrySendError::Full(_)))
-                {
-                    tracing::warn!(target: "nanocodex2", stage = "screen.video.failed", phase = "peer_event_queue");
-                    failure.store(true, Ordering::Release);
-                }
+                closed.transition(RTCPeerConnectionState::Closed);
                 Box::pin(async {})
             }));
             channel.on_message(Box::new(move |message| {
+                let Some(permission) = admission.permission() else { return Box::pin(async {}); };
                 let value =
                     crate::input::data_channel_event(&id, motion, message.is_string, &message.data);
                 if motion && value["type"] == "input" {
@@ -652,12 +679,13 @@ impl PeerBuilder {
                                 value,
                                 outgoing: false,
                                 created: Instant::now(),
-                                active: Some(active.clone()),
+                                active: Some(permission),
                             },
                         );
                     latest.changed.notify_one();
                     return Box::pin(async {});
                 }
+                let permission = (value["type"] != "viewer_left").then_some(permission);
                 // Motion is disposable. Reliable queue overflow fails closed:
                 // never retain a key-down after losing its matching key-up.
                 if events
@@ -665,7 +693,7 @@ impl PeerBuilder {
                         value,
                         outgoing: false,
                         created: Instant::now(),
-                        active: None,
+                        active: permission,
                     })
                     .is_err_and(|error| matches!(error, mpsc::error::TrySendError::Full(_)))
                     && !motion
@@ -697,18 +725,11 @@ impl PeerBuilder {
             }
             Box::pin(async {})
         }));
-        let events = peer_events.clone();
-        let failed = self.failed.clone();
-        let viewer = id.to_owned();
-        let revoke_microphone = Arc::downgrade(&microphone);
         let peer_diagnostics = diagnostics.clone();
-        let connected = Arc::new(AtomicBool::new(false));
-        let connection_ready = connected.clone();
+        let connected = recovery.connected.clone();
+        let state_recovery = recovery.clone();
         connection.on_peer_connection_state_change(Box::new(move |state| {
-            connection_ready.store(
-                state == RTCPeerConnectionState::Connected,
-                Ordering::Release,
-            );
+            state_recovery.transition(state);
             peer_diagnostics.event(
                 "peer_connection",
                 match state {
@@ -722,31 +743,6 @@ impl PeerBuilder {
                 },
                 None,
             );
-            if matches!(
-                state,
-                RTCPeerConnectionState::Failed
-                    | RTCPeerConnectionState::Closed
-                    | RTCPeerConnectionState::Disconnected
-            ) && let Some(microphone) = revoke_microphone.upgrade()
-            {
-                microphone.revoke();
-            }
-            if matches!(
-                state,
-                RTCPeerConnectionState::Failed
-                    | RTCPeerConnectionState::Closed
-                    | RTCPeerConnectionState::Disconnected
-            ) && events
-                .try_send(Event {
-                    value: json!({"type":"viewer_left","viewer_id":viewer}),
-                    outgoing: false,
-                    created: Instant::now(),
-                    active: None,
-                })
-                .is_err_and(|error| matches!(error, mpsc::error::TrySendError::Full(_)))
-            {
-                failed.store(true, Ordering::Release);
-            }
             Box::pin(async {})
         }));
         let events = peer_events.clone();
@@ -832,6 +828,8 @@ impl PeerBuilder {
         )));
         let peer = Peer {
             microphone,
+            recovery,
+            _recovery: recovery_task,
             _connection: owned,
             control,
             _rtcp: rtcp,
