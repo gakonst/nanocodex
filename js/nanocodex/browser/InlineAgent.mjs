@@ -127,6 +127,7 @@ export async function create(options = {}) {
     toolProviders,
     subagentSessions,
     subagentRouting: internalRuntime?.subagentRouting,
+    onSocketTiming: internalRuntime?.onSocketTiming,
     toolMode,
     mcp: mcp === false
       ? undefined

@@ -317,6 +317,10 @@ async function check() {
     transport: HostTransport.hostManaged(),
   });
   await CloudflareAgent.create(cloudflareOwner, {
+    // @ts-expect-error the timing hook is available only through internalRuntime.
+    onSocketTiming() {},
+  });
+  await CloudflareAgent.create(cloudflareOwner, {
     // @ts-expect-error broker subjects are not caller-selected.
     subject: "caller-selected",
   });
@@ -636,6 +640,10 @@ async function check() {
     transport: Transport.openAi({ apiKey }),
     module: new WebAssembly.Module(new Uint8Array()),
   });
+  // @ts-expect-error socket diagnostics are internal, not a public Agent option.
+  await Agent.create({ transport: Transport.openAi({ apiKey }), onSocketTiming() {} });
+  // @ts-expect-error socket diagnostics are not credential/transport options.
+  BrowserTransport.openAi({ apiKey, onSocketTiming() {} });
   // @ts-expect-error transport queue policy is private to the adapter.
   await Agent.create({ transport: Transport.openAi({ apiKey }), maxQueuedMessages: 1 });
   // @ts-expect-error browser send-buffer policy is private to the adapter.

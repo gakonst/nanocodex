@@ -297,6 +297,10 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
     && (!internalRuntime || typeof internalRuntime !== "object" || Array.isArray(internalRuntime))) {
     throw new TypeError("Cloudflare Agent internal runtime options must be an object");
   }
+  if (internalRuntime?.onSocketTiming !== undefined
+    && typeof internalRuntime.onSocketTiming !== "function") {
+    throw new TypeError("Cloudflare Agent socket timing hook must be a function");
+  }
   if (internalRuntime?.subagentLifecycle !== undefined
     && typeof internalRuntime.subagentLifecycle !== "function") {
     throw new TypeError("Cloudflare Agent subagent lifecycle hook must be a function");
@@ -457,6 +461,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
         subagentMaxConcurrency: internalRuntime?.subagentMaxConcurrency,
         subagentSessions,
         subagentRouting: internalRuntime?.subagentRouting,
+        onSocketTiming: internalRuntime?.onSocketTiming,
         [CLOUDFLARE_SESSION_RESERVATION]: sessionReservation,
       },
       transport,

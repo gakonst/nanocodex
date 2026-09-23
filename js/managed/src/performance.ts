@@ -147,3 +147,32 @@ export function performanceState<Props>(state: DurableObjectState<Props>): Durab
     },
   });
 }
+
+/** One owned-connection summary. Only fixed numeric fields and correlation IDs. */
+export function performanceSocketTiming(sessionId: string, observation: unknown): void {
+  if (!observation || typeof observation !== "object" || Array.isArray(observation)) return;
+  const input = observation as Record<string, unknown>;
+  const metrics: Record<string, number> = {};
+  for (const key of ["message_count", "delivered_message_count", "buffered_message_count", "discarded_message_count",
+    "queue_residence_total_ms", "queue_residence_max_ms"]) {
+    const value = input[key];
+    if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return;
+    metrics[key] = value;
+  }
+  try {
+    console.info({ type: "managed.performance", stage: "transport.socket_queue", session_id: sessionId, ...metrics });
+    if (!Array.isArray(input.provider_timings)) return;
+    for (const provider of input.provider_timings.slice(0, 32)) {
+      if (!provider || typeof provider !== "object" || Array.isArray(provider)
+        || (provider.response_id !== undefined && (typeof provider.response_id !== "string"
+          || !/^resp_[A-Za-z0-9_-]{1,128}$/.test(provider.response_id)))) continue;
+      const timing: Record<string, number> = {};
+      for (const key of ["pre_inference_ms", "engine_queue_max_ms", "engine_service_ttft_total_ms"]) {
+        const value = provider[key];
+        if (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 86_400_000) timing[key] = value;
+      }
+      if (Object.keys(timing).length) console.info({ type: "managed.performance", stage: "transport.provider_timing",
+        session_id: sessionId, ...(provider.response_id === undefined ? {} : { response_id: provider.response_id }), ...timing });
+    }
+  } catch { /* Passive observations cannot fail transport cleanup. */ }
+}

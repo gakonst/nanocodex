@@ -1,10 +1,21 @@
 """Allowlisted tail collector. Raw requests, headers, bodies and stderr never touch disk."""
-import json, subprocess, threading, pathlib, signal, os, re, sys, time
+import json, subprocess, threading, pathlib, signal, os, re, sys, time, math
 root = pathlib.Path(sys.argv[1]); cwd = pathlib.Path.cwd(); processes=[]; threads=[]; stopping=False
 names=['nanocodex-durable-agent','nanocodex','nanocodex-egress']
 keep={'type','request_id','method','path','status','deployment_sha','was_running','recovered','transport','relay_transport','socket_reused','trace_id','stage','object_id','agent_id','session_id','turn_id','resolve_id','credential_broker_resolve_id','started_at','event','action','count','call_id','call_index','cache_hit','fact_count','message_type','operation_kind','attempt_count','outcome','failure_phase','replay_mode','next_attempt','max_attempts','connection_generation','model_call_index','status_code','opens_new_socket','server_requested_delay','reason','read_count','read_ms','statement_count','total_ms','agent_subject','rule','credential_kind','model_source','operation','model','queue_scope','egress_request_id','relay_id','operations_ahead','waiting_at_start','waiting_at_finish','active_operation_at_enqueue','cause','request_colo','cache_state','ready','relay_region','dns_observed','last_phase','recover'}
 def sanitize(m):
     if not isinstance(m,dict): return None
+    if m.get('type') == 'managed.performance' and m.get('stage') in {'transport.socket_queue','transport.provider_timing'}:
+        safe = {k:m[k] for k in ['type','stage']}
+        if isinstance(m.get('session_id'),str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}',m['session_id']): safe['session_id']=m['session_id']
+        if isinstance(m.get('response_id'),str) and re.fullmatch(r'resp_[A-Za-z0-9_-]{1,128}',m['response_id']): safe['response_id']=m['response_id']
+        counts = {'message_count','delivered_message_count','buffered_message_count','discarded_message_count'}
+        timings = {'queue_residence_total_ms','queue_residence_max_ms'} if m['stage'] == 'transport.socket_queue' else {'pre_inference_ms','engine_queue_max_ms','engine_service_ttft_total_ms'}
+        for k in timings | (counts if m['stage'] == 'transport.socket_queue' else set()):
+            value = m.get(k)
+            if type(value) in (int,float) and math.isfinite(value) and value >= 0:
+                if (k not in counts or isinstance(value,int)) and (k in counts or value <= 86_400_000): safe[k]=value
+        return safe
     if not str(m.get('type','')).startswith(('managed.','egress.','account.','model.','responses.relay','voice.relay')): return None
     safe={k:v for k,v in m.items() if ((k.endswith('_ms') and isinstance(v,(int,float))) or (k in keep and isinstance(v,(str,int,float,bool,type(None))))) }
     if 'path' in safe: safe['path']=str(safe['path']).split('?')[0] if str(safe['path']).startswith('/v1/agents') or str(safe['path']) in {'/v1/responses','/backend-api/codex/responses','/provider-api'} else '[other route]'

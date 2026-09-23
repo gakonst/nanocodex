@@ -82,6 +82,21 @@ export function createBrowserHost(options?: {
     bind(sessionId: string, descriptor: SubagentToolContext, hostContextRef?: string): void;
     release(sessionId: string, hostContextRef?: string): void;
   };
+  /** @internal Content-free summary, once when ownership closes; no public transport option. */
+  onSocketTiming?: (timing: {
+    message_count: number;
+    delivered_message_count: number;
+    buffered_message_count: number;
+    discarded_message_count: number;
+    queue_residence_total_ms: number;
+    queue_residence_max_ms: number;
+    provider_timings: Array<{
+      response_id?: string;
+      pre_inference_ms?: number;
+      engine_queue_max_ms?: number;
+      engine_service_ttft_total_ms?: number;
+    }>;
+  }) => void;
   maxQueuedMessages?: number;
   maxQueuedBytes?: number;
   maxBufferedSendBytes?: number;

@@ -19,6 +19,10 @@ const MPP_CLIENT_PROTOCOL_ERROR_CLOSE_CODE = 3008;
 const WEBSOCKET_OPEN = 1;
 
 export function createBrowserHost(options = {}) {
+  const onSocketTiming = options.onSocketTiming;
+  if (onSocketTiming !== undefined && typeof onSocketTiming !== "function") {
+    throw new TypeError("host socket timing hook must be a function");
+  }
   const preservation = createBeforeCompaction(options.beforeCompaction);
   const toolMode = options.toolMode ?? "code";
   if (toolMode !== "code" && toolMode !== "direct") {
@@ -194,6 +198,7 @@ export function createBrowserHost(options = {}) {
       let settled = false;
       const connection = {
         socket,
+        timing: socketTiming(),
         queue: [],
         queuedBytes: 0,
         waiter: undefined,
@@ -204,6 +209,7 @@ export function createBrowserHost(options = {}) {
         if (settled) return;
         settled = true;
         connectingConnections.delete(connection);
+        finishSocketTiming(connection);
         reject(error);
       };
       connection.reject = rejectConnection;
@@ -272,6 +278,7 @@ export function createBrowserHost(options = {}) {
     const handle = nextHandle++;
     const connection = {
       socket,
+      timing: socketTiming(),
       queue: [],
       queuedBytes: 0,
       waiter: undefined,
@@ -376,6 +383,13 @@ export function createBrowserHost(options = {}) {
     if (connection.queue.length) {
       const entry = connection.queue.shift();
       connection.queuedBytes -= entry.bytes;
+      if (entry.enqueuedAt !== undefined && connection.timing) {
+        const metrics = connection.timing.metrics;
+        const residenceMs = Math.max(0, performance.now() - entry.enqueuedAt);
+        metrics.delivered_message_count += 1;
+        metrics.queue_residence_total_ms += residenceMs;
+        metrics.queue_residence_max_ms = Math.max(metrics.queue_residence_max_ms, residenceMs);
+      }
       return Promise.resolve(JSON.stringify(entry.message));
     }
     if (connection.waiter) return Promise.reject(new Error("concurrent reads are unsupported"));
@@ -394,12 +408,30 @@ export function createBrowserHost(options = {}) {
     connection.intentionallyClosed = true;
     connection.wakeSend?.();
     connection.waiter?.({ kind: "closed", detail: "by the WASM runtime" });
+    finishSocketTiming(connection);
+    connection.queue.length = 0;
+    connection.queuedBytes = 0;
     return connection.socket.close();
   }
 
   function enqueue(connection, message) {
-    if (connection.overflowed) return;
+    if (connection.overflowed || connection.intentionallyClosed) return;
+    const timing = connection.timing;
+    const dataMessage = message.kind === "text" || message.kind === "binary";
+    const enqueuedAt = timing && dataMessage && !connection.waiter ? performance.now() : undefined;
+    if (timing && dataMessage) {
+      timing.metrics.message_count += 1;
+      // Only the exact metadata event can produce diagnostics; deltas stay opaque.
+      if (message.kind === "text" && timing.provider.size < 32) {
+        const metadata = providerSocketTiming(message.text);
+        if (metadata) {
+          const key = metadata.response_id ?? timing.provider.size;
+          if (!timing.provider.has(key)) timing.provider.set(key, metadata);
+        }
+      }
+    }
     if (connection.waiter) {
+      if (timing && dataMessage) timing.metrics.delivered_message_count += 1;
       connection.waiter(message);
       return;
     }
@@ -418,8 +450,45 @@ export function createBrowserHost(options = {}) {
       connection.socket.close(1009, "receive queue exceeded configured bounds");
       return;
     }
-    connection.queue.push({ message, bytes });
+    const entry = { message, bytes };
+    if (enqueuedAt !== undefined) {
+      entry.enqueuedAt = enqueuedAt;
+      timing.metrics.buffered_message_count += 1;
+    }
+    connection.queue.push(entry);
     connection.queuedBytes += bytes;
+  }
+
+  // No counters, timestamps, metadata parsing or observations without the internal hook.
+  function socketTiming() {
+    return onSocketTiming === undefined ? undefined : {
+      metrics: {
+        message_count: 0,
+        delivered_message_count: 0,
+        buffered_message_count: 0,
+        queue_residence_total_ms: 0,
+        queue_residence_max_ms: 0,
+      },
+      provider: new Map(),
+    };
+  }
+
+  function finishSocketTiming(connection) {
+    const timing = connection.timing;
+    if (!timing) return;
+    // Finalize owned consumption, not the remote close event: buffered frames may
+    // still be drained after that event. Clear first for reentrant close/dispose.
+    connection.timing = undefined;
+    const metrics = timing.metrics;
+    try {
+      const result = onSocketTiming({
+        ...metrics,
+        discarded_message_count: metrics.message_count - metrics.delivered_message_count,
+        provider_timings: [...timing.provider.values()],
+      });
+      // Diagnostics must never fail transport cleanup, including an async hook.
+      if (result?.then) void Promise.resolve(result).catch(() => {});
+    } catch { /* Passive observations cannot fail transport cleanup. */ }
   }
 
   function dispose() {
@@ -599,4 +668,27 @@ function normalizeWebSocketConnection(opened) {
     throw new TypeError("createWebSocket must return a WebSocket or a connection descriptor");
   }
   return { socket: opened };
+}
+
+// Provider-reported fields are nested spans, not additive measurements. Bound the
+// diagnostic parser and retain only three finite durations plus a response ID.
+function providerSocketTiming(text) {
+  if (text.length > 16_384 || !text.includes('"responsesapi.websocket_timing"')) return;
+  let event;
+  try { event = JSON.parse(text); } catch { return; }
+  if (event?.type !== "responsesapi.websocket_timing"
+    || (event.response_id !== undefined && (typeof event.response_id !== "string"
+      || !/^resp_[A-Za-z0-9_-]{1,128}$/.test(event.response_id)))
+    || !event.timing_metrics || typeof event.timing_metrics !== "object"
+    || Array.isArray(event.timing_metrics)) return;
+  const timing = {};
+  for (const key of ["pre_inference_ms", "engine_queue_max_ms", "engine_service_ttft_total_ms"]) {
+    const value = event.timing_metrics[key];
+    if (typeof value === "number" && Number.isFinite(value) && value >= 0 && value <= 86_400_000) {
+      timing[key] = value;
+    }
+  }
+  if (Object.keys(timing).length) return {
+    ...(event.response_id === undefined ? {} : { response_id: event.response_id }), ...timing,
+  };
 }

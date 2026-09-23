@@ -316,7 +316,7 @@ import { memorySessionTools } from "./memory-session-tools";
 import { managedExtensionTools } from "./extension-tools";
 import { markdownMemoryTools, markdownMemoryEnabled, configuredMemoryToolNames, markdownMemoryRequest, MARKDOWN_MEMORY_INSTRUCTIONS } from "./markdown-memory-tools";
 import { ManagedStartupContext } from "./startup-context";
-import { performanceScope, performanceSyncScope, performanceStage, performanceRead, performanceState } from "./performance";
+import { performanceScope, performanceSyncScope, performanceStage, performanceRead, performanceState, performanceSocketTiming } from "./performance";
 import { managedPromptCacheKey } from "./prompt-cache-key";
 import { MemoryScope, MEMORY_INITIALIZE_ASSERTION } from "./memory-scope";
 export { MemoryScope } from "./memory-scope";
@@ -8389,6 +8389,8 @@ export class DurableAgentSession extends DurableComputerSession {
       };
       Object.defineProperty(agentOptions, internalRuntime, { value: {
         ...hostedRuntime,
+        onSocketTiming: this.env.NANOCODEX_PERFORMANCE_TRACE === "true"
+          ? (timing: unknown) => performanceSocketTiming(session.session_id, timing) : undefined,
         subagentRouting,
         inferenceForSession,
         preserveRootTransport: !this.#threadRoute(),

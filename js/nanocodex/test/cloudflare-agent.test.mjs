@@ -1755,3 +1755,43 @@ test("manual root HTTP fallback follows live thinking changes", { timeout: 30_00
     assert.ok(sockets > 0, "real WASM starts on WebSocket and falls back to HTTP");
   } finally { await agent.session.shutdown(); }
 });
+
+test("Cloudflare internal socket timing reaches the real InlineAgent host and closes once", async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const observations = [];
+  class TimingSocket extends EventTarget {
+    readyState = 1;
+    bufferedAmount = 0;
+    accept() {}
+    close() { this.readyState = 3; }
+    send() {
+      queueMicrotask(() => {
+        for (const event of [
+          { type: "responsesapi.websocket_timing", response_id: "resp_integration",
+            timing_metrics: { pre_inference_ms: 21, engine_queue_max_ms: 3, engine_service_ttft_total_ms: 10 } },
+          { type: "response.completed", response: { id: "resp_integration", status: "completed", end_turn: true,
+            output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "OK" }] }],
+            usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 } } },
+        ]) this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify(event) }));
+      });
+    }
+  }
+  const owner = durableOwner(new MemoryStorage(), { async fetch() {
+    return { status: 101, headers: new Headers(), webSocket: new TimingSocket() };
+  } });
+  await assert.rejects(create(module, owner, {
+    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { onSocketTiming: true },
+  }), /socket timing hook must be a function/);
+  const agent = await create(module, owner, {
+    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { onSocketTiming: value => observations.push(value) },
+  });
+  try {
+    assert.equal((await agent.turn.prompt({ input: "Return OK." }).result()).finalMessage, "OK");
+  } finally { await agent.session.shutdown(); }
+  assert.equal(observations.length, 1);
+  assert.equal(observations[0].message_count, 2);
+  assert.equal(observations[0].delivered_message_count, 2);
+  assert.equal(observations[0].discarded_message_count, 0);
+  assert.deepEqual(observations[0].provider_timings, [{ response_id: "resp_integration",
+    pre_inference_ms: 21, engine_queue_max_ms: 3, engine_service_ttft_total_ms: 10 }]);
+});
