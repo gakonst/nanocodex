@@ -61,8 +61,15 @@ export function createMarkdownMemoryCompletion(ai: MarkdownMemoryAi | undefined,
     if (!raw || typeof raw !== 'object' || Array.isArray(raw)) throw invalidOutput();
     const result = raw as Record<string, unknown>;
     if (result.tool_calls !== undefined && (!Array.isArray(result.tool_calls) || result.tool_calls.length)) throw invalidOutput();
-    if (typeof result.response !== 'string' || bytes(result.response) > 16_384) throw invalidOutput();
-    try { return JSON.parse(result.response); } catch { throw invalidOutput(); }
+    // JSON-schema replies may already be decoded by Workers AI. Normalize both
+    // forms through the same byte bound and parser before downstream validation.
+    const response = result.response;
+    if (typeof response !== 'string' && (!response || typeof response !== 'object' || Array.isArray(response))) throw invalidOutput();
+    try {
+      const serialized = typeof response === 'string' ? response : JSON.stringify(response);
+      if (typeof serialized !== 'string' || bytes(serialized) > 16_384) throw invalidOutput();
+      return JSON.parse(serialized);
+    } catch { throw invalidOutput(); }
   };
 }
 function invalidOutput() {

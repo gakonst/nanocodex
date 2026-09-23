@@ -229,7 +229,7 @@ it('rejects secret-bearing daily notes before creating consolidation, semantic o
   });
 });
 
-it('persists an AI-backed flush through the internal RPC and exposes its queue, alarm and durable receipt', async () => {
+it.each(['string', 'object'] as const)('persists an AI-backed %s-response flush through the internal RPC and exposes its queue, alarm and durable receipt', async responseFormat => {
   const where = target(crypto.randomUUID(), 'team', 'alice', 'personal');
   const session = crypto.randomUUID();
   const content = 'I prefer concise project status updates.';
@@ -239,9 +239,10 @@ it('persists an AI-backed flush through the internal RPC and exposes its queue, 
     // Replace only this fresh instance's environment before its first initialized request.
     const runtime = memory as unknown as { env: MemoryScopeEnv };
     const original = runtime.env;
-    const run = vi.fn(async (_model: string, _input: Record<string, unknown>) => ({ response: JSON.stringify({
-      spans: [{ message_id: input.messages[0]!.id, start: 0, end: content.length, quote: content }],
-    }) }));
+    const run = vi.fn(async (_model: string, _input: Record<string, unknown>): Promise<{ response: unknown; tool_calls: unknown[] }> => {
+      const output = { spans: [{ message_id: input.messages[0]!.id, quote: content }] };
+      return { response: responseFormat === 'string' ? JSON.stringify(output) : output, tool_calls: [] };
+    });
     runtime.env = { ...original, AI: { run } };
     const headers = { ...where.headers, 'x-nanocodex-subject-id': `agent:${session}` };
     const rpc = (operation: string, body: unknown) => memory.fetch(new Request(`https://memory.internal/markdown-memory/${operation}`, {
@@ -272,7 +273,7 @@ it('persists an AI-backed flush through the internal RPC and exposes its queue, 
       expect((await rpc('flush', { ...input, truncated: true })).status).toBe(409);
       expect(run).toHaveBeenCalledTimes(1);
       // Exercise the production alarm dispatch, including its rescheduling decision.
-      run.mockResolvedValue({ response: JSON.stringify({ candidates: [] }) });
+      run.mockResolvedValue({ response: responseFormat === 'string' ? JSON.stringify({ candidates: [] }) : { candidates: [] }, tool_calls: [] });
       state.storage.sql.exec('UPDATE markdown_consolidation_jobs SET due=? WHERE owner=?', Date.now() - 1, 'personal:alice');
       await memory.alarm();
       expect(run).toHaveBeenCalledTimes(2);

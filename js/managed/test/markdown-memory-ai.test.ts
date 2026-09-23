@@ -15,6 +15,30 @@ describe('bounded Workers AI memory completion', () => {
     });
   });
 
+  it('accepts decoded JSON-schema responses while retaining the byte bound and tool guard', async () => {
+    const response = { spans: [{ message_id: 'synthetic-user-1', quote: 'I prefer concise updates.' }] };
+    const complete = createMarkdownMemoryCompletion({ run: async () => ({ response, tool_calls: [], choices: [] }) });
+    const output = await complete(request);
+    expect(output).toEqual(response);
+    expect(output).not.toBe(response);
+    // The bound applies to serialized UTF-8 bytes, not character count.
+    const prefix = JSON.stringify({ value: '' });
+    const atLimit = { value: 'é'.repeat(Math.floor((16_384 - prefix.length) / 2)) + 'x'.repeat((16_384 - prefix.length) % 2) };
+    expect(new TextEncoder().encode(JSON.stringify(atLimit)).length).toBe(16_384);
+    expect(await createMarkdownMemoryCompletion({ run: async () => ({ response: atLimit }) })(request)).toEqual(atLimit);
+    const cyclic: Record<string, unknown> = {};
+    cyclic.self = cyclic;
+    for (const raw of [
+      { response: { value: atLimit.value + 'x' } },
+      { response: null }, { response: [] }, { response: true },
+      { response: cyclic }, { response: { value: 1n } },
+      { response, tool_calls: [{}] }, { response, tool_calls: 'bad' },
+    ]) {
+      await expect(createMarkdownMemoryCompletion({ run: async () => raw })(request))
+        .rejects.toMatchObject({ code: 'memory_inference_invalid', status: 502 });
+    }
+  });
+
   it('constructs without an optional AI binding and fails only when completion is invoked', async () => {
     const complete = createMarkdownMemoryCompletion(undefined);
     await expect(complete(request)).rejects.toMatchObject({ status: 503, code: 'memory_inference_unavailable' });
