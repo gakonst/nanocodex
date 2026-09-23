@@ -557,14 +557,11 @@ fn try_main() -> Result<(), ManagedError> {
     let _ = dotenvy::dotenv();
     #[cfg(target_os = "linux")]
     if std::env::var(screen_wayland_encoder::HELPER_ENV).as_deref() == Ok("1") {
-        return tokio::runtime::Builder::new_multi_thread()
-            .enable_all()
-            .build()
-            .map_err(|e| ManagedError::Configuration(e.to_string()))?
-            .block_on(screen_wayland_encoder::run(
-                std::env::args().skip(1).collect(),
-            ))
-            .map_err(|e| ManagedError::Configuration(e.to_string()));
+        return run_with_runtime(async {
+            screen_wayland_encoder::run(std::env::args().skip(1).collect())
+                .await
+                .map_err(|error| ManagedError::Configuration(error.to_string()))
+        });
     }
     let cli = Cli::parse();
     #[cfg(target_os = "linux")]
@@ -594,17 +591,28 @@ fn try_main() -> Result<(), ManagedError> {
         };
         (cli, prepared)
     };
-    tokio::runtime::Builder::new_multi_thread()
+    run_with_runtime(async move {
+        #[cfg(target_os = "linux")]
+        if let Some(prepared) = prepared {
+            return screen_host::serve(prepared).await;
+        }
+        run(cli).await
+    })
+}
+
+fn run_with_runtime(
+    future: impl std::future::Future<Output = Result<(), ManagedError>>,
+) -> Result<(), ManagedError> {
+    let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
-        .map_err(|error| ManagedError::Configuration(format!("failed to start Tokio: {error}")))?
-        .block_on(async move {
-            #[cfg(target_os = "linux")]
-            if let Some(prepared) = prepared {
-                return screen_host::serve(prepared).await;
-            }
-            run(cli).await
-        })
+        .map_err(|error| ManagedError::Configuration(format!("failed to start Tokio: {error}")))?;
+    let result = runtime.block_on(future);
+    // Application cleanup has completed. Optional presentation discovery or DNS
+    // can still own blocking work that Tokio cannot cancel. Match the legacy
+    // CLI's bound instead of keeping the terminal process open for that work.
+    runtime.shutdown_timeout(std::time::Duration::from_millis(100));
+    result
 }
 
 async fn run(cli: Cli) -> Result<(), ManagedError> {
@@ -1223,6 +1231,51 @@ fn write_json_line<T: serde::Serialize>(value: &T) -> Result<(), ManagedError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_shutdown_does_not_wait_for_background_blocking_work() {
+        use std::{
+            sync::mpsc,
+            time::{Duration, Instant},
+        };
+
+        for fails in [false, true] {
+            let (release, blocked) = mpsc::channel();
+            let (finished, completion) = mpsc::channel();
+            let started = Instant::now();
+            let result = run_with_runtime(async move {
+                let (ready, received) = tokio::sync::oneshot::channel();
+                drop(tokio::task::spawn_blocking(move || {
+                    let _ = ready.send(());
+                    let _ = blocked.recv_timeout(Duration::from_secs(5));
+                    let _ = finished.send(());
+                }));
+                received.await.unwrap();
+                if fails {
+                    Err(ManagedError::Configuration(
+                        "synthetic runtime failure".into(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            });
+            let elapsed = started.elapsed();
+            // Release our synthetic blocking task even if the timing assertion fails.
+            let _ = release.send(());
+            completion.recv_timeout(Duration::from_secs(2)).unwrap();
+            assert!(
+                elapsed < Duration::from_secs(1),
+                "shutdown took {elapsed:?}"
+            );
+            assert_eq!(result.is_err(), fails);
+            if let Err(error) = result {
+                assert!(matches!(
+                    error,
+                    ManagedError::Configuration(message) if message == "synthetic runtime failure"
+                ));
+            }
+        }
+    }
 
     #[test]
     fn parses_attach_url_into_its_agent_id() {

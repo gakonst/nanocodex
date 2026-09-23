@@ -1,6 +1,6 @@
 //! Same-user reload broadcasts. OS file locks, never PIDs, identify live TUIs.
 //!
-//! Register before entering the TUI and keep the registration alive until teardown.
+//! Register off the TUI input loop and keep the registration alive until teardown.
 //! `requested` is cancellation safe and may be used directly in `tokio::select!`.
 
 use std::{
@@ -343,6 +343,65 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn deferred_registration_survives_contention_and_cleans_up_after_cancellation() {
+        for cancel in [false, true] {
+            let directory = tempfile::tempdir().unwrap();
+            let guard = coordination_lock(directory.path()).unwrap();
+            let path = directory.path().to_owned();
+            let (entered, started) = tokio::sync::oneshot::channel();
+            let mut setup = tokio::task::JoinSet::new();
+            let task = setup.spawn_blocking(move || {
+                let _ = entered.send(());
+                register_in(&path)
+            });
+            started.await.unwrap();
+            // The runtime stays responsive while a real OS lock holds the worker.
+            let pending = tokio::time::timeout(Duration::from_millis(25), setup.join_next())
+                .await
+                .is_err();
+            if cancel {
+                // Like TUI teardown: no waiting for a blocking registration worker.
+                drop(setup);
+                drop(guard);
+                tokio::time::timeout(Duration::from_secs(1), async {
+                    while !task.is_finished() {
+                        tokio::task::yield_now().await;
+                    }
+                })
+                .await
+                .unwrap();
+            } else {
+                drop(guard);
+                let mut registration =
+                    tokio::time::timeout(Duration::from_secs(1), setup.join_next())
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .unwrap()
+                        .unwrap();
+                assert_eq!(request_in(directory.path()).unwrap(), 1);
+                tokio::time::timeout(Duration::from_secs(1), registration.requested())
+                    .await
+                    .unwrap()
+                    .unwrap();
+                drop(registration);
+            }
+            assert!(pending, "registration acquired a held coordination lock");
+            // Inspect before request_in can remove stale files: cancellation must
+            // release and unlink a late result's lease, not merely make it stale.
+            assert!(fs::read_dir(directory.path()).unwrap().all(|entry| {
+                entry
+                    .unwrap()
+                    .path()
+                    .extension()
+                    .and_then(|value| value.to_str())
+                    != Some("lease")
+            }));
+            assert_eq!(request_in(directory.path()).unwrap(), 0);
+        }
     }
 
     #[test]

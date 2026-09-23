@@ -1870,13 +1870,7 @@ async fn run_inner(
     root.set_model(initial_settings.model);
 
     let mut app = AppNode::new(Theme::default(), workspace.clone(), root);
-    let mut reload = match crate::reload::register() {
-        Ok(registration) => Some(registration),
-        Err(error) => {
-            tracing::warn!(%error, "local reload unavailable");
-            None
-        }
-    };
+    let mut reload: Option<crate::reload::Registration> = None;
     let mut reload_requested = false;
     let mut terminal = TerminalSession::enter().await.map_err(terminal_error)?;
     let mut input = EventStream::new();
@@ -1967,6 +1961,11 @@ async fn run_inner(
         .map_err(terminal_error)?;
     scheduler.presented(Instant::now());
     drop(first_frame);
+    // An updater can hold reload's coordination lock. Keep registration owned,
+    // but wait off the input loop so it becomes available after contention clears.
+    // Dropping the JoinSet also drops any uncollected registration and its lease.
+    let mut reload_setup = JoinSet::new();
+    reload_setup.spawn_blocking(crate::reload::register);
     // Theme and tmux discovery must not delay the first editable frame. These
     // tasks never read stdin; the terminal event stream remains its sole owner.
     let mut presentation_setup = JoinSet::new();
@@ -2181,6 +2180,14 @@ async fn run_inner(
                 (Some(&mut voice.status), Some(&mut voice.transcripts))
             });
         tokio::select! {
+            result = reload_setup.join_next(), if !reload_setup.is_empty() => {
+                match result {
+                    Some(Ok(Ok(registration))) => reload = Some(registration),
+                    Some(Ok(Err(error))) => tracing::warn!(%error, "local reload unavailable"),
+                    Some(Err(error)) => tracing::warn!(%error, "local reload setup failed"),
+                    None => {}
+                }
+            }
             result = presentation_setup.join_next(), if !presentation_setup.is_empty() => {
                 if let Some(Ok(Some(scheme))) = result {
                     request_render(app.update(AppEvent::SystemThemeChanged(scheme)), &mut scheduler);
