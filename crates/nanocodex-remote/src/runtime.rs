@@ -731,7 +731,12 @@ async fn session(
                         if socket.video.is_none(){surface["transport"]=json!("frames-v1");surface["frame_window"]=json!(6);}
                         send(&mut socket,json!({"type":"catalog","machine_id":machine.id(),"machine_name":machine.name(),"surfaces":[surface]})).await?;
                     },
-                    "published"=>{tracing::info!(target: "nanocodex2", stage = "screen.published", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);generation=value["generation"].as_str().ok_or(SessionError::Closed)?.into();if socket.video.is_some(){ice.prefetch();}if let Some(ready)=ready.take(){let _=ready.send(());}},
+                    "published" => {
+                        tracing::info!(target: "nanocodex2", stage = "screen.published", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
+                        generation = value["generation"].as_str().ok_or(SessionError::Closed)?.into();
+                        if socket.video.is_some() { ice.prefetch(); }
+                        if let Some(ready) = ready.take() { let _ = ready.send(()); }
+                    },
                     // Status is read-only and is sent when the viewer socket opens,
                     // before asynchronous ICE preparation has admitted its peer.
                     "broadcast" if (viewers.contains(viewer) || (preparations.contains(viewer) && value["action"] == "status"))
