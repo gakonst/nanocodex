@@ -4994,6 +4994,30 @@ mod live_control_tests {
     }
 
     #[test]
+    fn empty_idle_transcript_does_not_schedule_frames_but_live_status_does() {
+        use super::RenderRequest;
+        let mut root = root_with_draft("");
+        assert_eq!(root.animation_deadline(), None);
+
+        let update = root.update(key(KeyCode::Char('x')));
+        assert_eq!(update.render, RenderRequest::Immediate);
+        assert_eq!(root.composer().draft(), "x");
+        assert_eq!(root.animation_deadline(), None);
+
+        root.update(RootEvent::ManagedActiveTurns(1));
+        let deadline = root.animation_deadline().expect("live status animates");
+        let update = root.update(RootEvent::AnimationFrame(deadline));
+        assert_ne!(update.render, RenderRequest::None);
+        assert!(
+            root.animation_deadline()
+                .is_some_and(|next| next > deadline)
+        );
+
+        root.update(RootEvent::ManagedActiveTurns(0));
+        assert_eq!(root.animation_deadline(), None);
+    }
+
+    #[test]
     fn finished_run_telemetry_does_not_replace_live_or_restored_context_usage() {
         let completed = |total| {
             json!({

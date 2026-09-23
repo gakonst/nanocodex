@@ -317,7 +317,7 @@ import { memorySessionTools } from "./memory-session-tools";
 import { managedExtensionTools } from "./extension-tools";
 import { markdownMemoryTools, markdownMemoryEnabled, configuredMemoryToolNames, markdownMemoryRequest, MARKDOWN_MEMORY_INSTRUCTIONS } from "./markdown-memory-tools";
 import { ManagedStartupContext } from "./startup-context";
-import { performanceScope, performanceSyncScope, performanceStage, performanceRead, performanceState, performanceSocketTiming, performanceCommit } from "./performance";
+import { performanceScope, performanceSyncScope, performanceStage, performanceRead, performanceState, performanceSocketTiming, performanceRequestShape, performanceCommit } from "./performance";
 import { managedPromptCacheKey } from "./prompt-cache-key";
 import { MemoryScope, MEMORY_INITIALIZE_ASSERTION } from "./memory-scope";
 export { MemoryScope } from "./memory-scope";
@@ -8425,6 +8425,7 @@ export class DurableAgentSession extends DurableComputerSession {
         ...hostedRuntime,
         // Bounded connection summaries are always on; per-statement SQL auditing stays opt-in.
         onSocketTiming: (timing: unknown) => performanceSocketTiming(session.session_id, timing),
+        onRequestShape: (shape: unknown) => performanceRequestShape(session.session_id, shape),
         subagentRouting,
         inferenceForSession,
         preserveRootTransport: !this.#threadRoute(),

@@ -1,5 +1,6 @@
+import { cachedAccountMetadata, validDiscoveryOptions } from "./metadata-cache";
 import { consumeRpcData } from "nanocodex/cloudflare/rpc";
-import type { CloudflareAccountCatalogResult, CloudflareAccountVaultResult } from "nanocodex/cloudflare/egress";
+import type { CloudflareAccountCatalogResult, CloudflareAccountVaultResult, CloudflareAccountDiscoveryResult } from "nanocodex/cloudflare/egress";
 import { durablePlacementOptions, ingressColo, TRUSTED_INGRESS_HEADER, type IngressPlacement } from "nanocodex/cloudflare/durable-placement";
 import { LINK_PATH } from "./connectors/link";
 import { chatGptFailoverSocket, chatGptLimitReset } from "./chatgpt-failover";
@@ -426,6 +427,23 @@ const OPERATIONS: readonly ModelOperation[] = [
 export default class Egress extends WorkerEntrypoint<EgressEnv> {
   fetch(request: Request): Promise<Response> {
     return handleEgress(request, this.env, this.ctx);
+  }
+
+  /** Explicit discovery opt-in; never used by the live HTTP metadata routes. */
+  async readAccountDiscovery(userId: unknown, component: unknown, options: unknown): Promise<CloudflareAccountDiscoveryResult> {
+    if (typeof userId !== "string" || !USER_ID.test(userId)
+      || (component !== "catalog" && component !== "vault") || !validDiscoveryOptions(options)) {
+      return { schema: 1, status: 400, data: null, expiresAt: 0 };
+    }
+    const namespace = component === "catalog" ? this.env.USER_CONNECTORS : this.env.USER_CREDENTIALS;
+    return cachedAccountMetadata(namespace.idFromName(userId).toString(), component, options, async () => {
+      if (component === "catalog") {
+        const result = await this.readAccountCatalog(userId);
+        return { status: result.status, data: result.catalog };
+      }
+      const result = await this.readAccountVault(userId);
+      return { status: result.status, data: result.vault };
+    }, this.ctx);
   }
 
   /** Service-binding control reads carry the same caller-selected owner as HTTP. */

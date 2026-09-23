@@ -115,3 +115,25 @@ it("observes pending creation commits without blocking or exposing storage error
     expect(() => performanceCommit(state, "session.create.commit")).not.toThrow();
   } finally { logs.mockRestore(); }
 });
+
+it("request control logs reject arbitrary values and never include request content", async () => {
+  const { performanceRequestShape } = await import("../src/performance");
+  const logs = vi.spyOn(console, "info").mockImplementation(() => {});
+  const input = { model: "gpt-6-astra", reasoning_effort: "low", reasoning_context: "all_turns",
+    service_tier: "default", text_verbosity: "low", tool_choice: "auto",
+    encoded_characters: 100, input_items: 1, tools_count: 2, store: false, stream: true,
+    cache_key_present: true, previous_response_present: false, encrypted_reasoning_included: true };
+  try {
+    performanceRequestShape("fixture-session", { ...input, session_id: "private", input: "private", headers: { authorization: "private" } });
+    expect(logs.mock.calls.map(call => call[0])).toEqual([{ type: "managed.performance", stage: "transport.request_controls", session_id: "fixture-session", ...input }]);
+    expect(JSON.stringify(logs.mock.calls)).not.toContain("private");
+    logs.mockClear();
+    for (const bad of [null, [], { ...input, model: "private" }, { ...input, service_tier: "private" },
+      { ...input, input_items: -1 }, { ...input, encoded_characters: Infinity }, { ...input, tools_count: 1.5 }]) {
+      performanceRequestShape("fixture-session", bad);
+    }
+    expect(logs).not.toHaveBeenCalled();
+    logs.mockImplementation(() => { throw Error("logger unavailable"); });
+    expect(() => performanceRequestShape("fixture-session", input)).not.toThrow();
+  } finally { logs.mockRestore(); }
+});

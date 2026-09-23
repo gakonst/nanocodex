@@ -129,3 +129,67 @@ test("empty response controls do not parse or re-encode request bodies", () => {
     assert.equal(responseControlsBody("opaque encoded request", controls), "opaque encoded request");
   }
 });
+
+
+test("request observations omit content and cannot affect a sent request", async () => {
+  const frames = [], observations = [];
+  const socket = { send(data) { frames.push(data); return "sent"; } };
+  const wrapped = responseControlsSocket(socket, { promptCacheKey: "private-cache-key" }, shape => {
+    assert.equal(frames.length, observations.length + 1, "send precedes observation");
+    observations.push(shape);
+    assert.ok(Object.isFrozen(shape));
+    return Promise.reject(new Error("observer unavailable"));
+  });
+  const request = { type: "response.create", model: "gpt-6-astra",
+    reasoning: { effort: "low", context: "all_turns", private_field: "private-reasoning" },
+    text: { verbosity: "low" }, service_tier: "default", tool_choice: "auto",
+    parallel_tool_calls: false, store: false, stream: true, generate: true,
+    previous_response_id: "private-response-id", include: ["reasoning.encrypted_content"],
+    input: [{ role: "user", content: "private-input" }],
+    tools: [{ name: "private-tool-name", parameters: { private_schema: "private" } }],
+    metadata: { authorization: "private-secret" }, instructions: "private-instructions" };
+  assert.equal(wrapped.send(JSON.stringify(request)), "sent");
+  assert.deepEqual(JSON.parse(frames[0]), { ...request, prompt_cache_key: "private-cache-key" });
+  assert.deepEqual(observations[0], { model: "gpt-6-astra", reasoning_effort: "low",
+    reasoning_context: "all_turns", service_tier: "default", text_verbosity: "low", tool_choice: "auto",
+    encoded_characters: frames[0].length, input_items: 1, tools_count: 1,
+    cache_key_present: true, previous_response_present: true, encrypted_reasoning_included: true,
+    parallel_tool_calls: false, store: false, stream: true, generate: true });
+  assert.doesNotMatch(JSON.stringify(observations), /private|authorization|instructions|parameters|metadata/);
+  await new Promise(resolve => setImmediate(resolve));
+});
+
+test("request observation alone preserves opaque frames, caps records and sanitizes enum values", () => {
+  const frames = [], observations = [];
+  const socket = { send(data) { frames.push(data); } };
+  assert.equal(responseControlsSocket(socket), socket);
+  const observed = responseControlsSocket(socket, {}, shape => observations.push(shape));
+  observed.send("opaque-not-json");
+  observed.send(new Uint8Array([1, 2, 3]));
+  observed.send(JSON.stringify({ type: "response.steer", input: "private" }));
+  const encoded = JSON.stringify({ type: "response.create", model: "private-model",
+    reasoning: { effort: "private-effort", context: "private-context" },
+    service_tier: "private-tier", text: { verbosity: "private-verbosity" },
+    tool_choice: { function: { name: "private-function" } },
+    input: "private", tools: "private", store: "private" });
+  for (let i = 0; i < 40; i++) observed.send(encoded);
+  assert.equal(frames.length, 43);
+  assert.equal(frames[0], "opaque-not-json");
+  assert.deepEqual(frames[1], new Uint8Array([1, 2, 3]));
+  assert.ok(frames.slice(3).every(frame => frame === encoded));
+  assert.equal(observations.length, 32);
+  assert.doesNotMatch(JSON.stringify(observations), /private|function/);
+  assert.equal(observations[0].model, "other_or_absent");
+  assert.equal(observations[0].store, undefined);
+  assert.throws(() => responseControlsSocket(socket, {}, true), /observer must be a function/);
+});
+
+test("failed sends produce no request observation and synchronous observer failure stays passive", () => {
+  let count = 0;
+  const broken = responseControlsSocket({ send() { throw Error("send failed"); } }, {}, () => count++);
+  assert.throws(() => broken.send('{"type":"response.create"}'), /send failed/);
+  assert.equal(count, 0);
+  const live = responseControlsSocket({ send() { count++; return 42; } }, {}, () => { throw Error("observer failed"); });
+  assert.equal(live.send('{"type":"response.create"}'), 42);
+  assert.equal(count, 1);
+});

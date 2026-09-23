@@ -13,10 +13,31 @@ export type CloudflareEgressBinding = Readonly<{
 export type CloudflareAccountCatalogResult = Readonly<{ status: number; catalog: unknown }>;
 export type CloudflareAccountVaultResult = Readonly<{ status: number; vault: unknown }>;
 
+export type CloudflareAccountMetadataComponent = "catalog" | "vault";
+export type CloudflareAccountDiscoveryOptions = Readonly<{
+  /** Current caller authority partition, at most 4096 UTF-8 bytes; not authorization. */
+  authorityKey: string;
+  /** Always read the backend. Does not globally invalidate other isolates. */
+  reload?: boolean;
+}>;
+/** Original backend-read expiry. Consumers must not start another 15-minute TTL. */
+export type CloudflareAccountDiscoveryResult = Readonly<{
+  schema: 1;
+  status: number;
+  data: unknown;
+  expiresAt: number;
+}>;
+
 /** Metadata only; this surface never returns provider credentials or Vault secrets. */
 export type CloudflareAccountMetadataBinding = CloudflareEgressBinding & Readonly<{
   readAccountCatalog?: (userId: string) => Promise<CloudflareAccountCatalogResult>;
   readAccountVault?: (userId: string) => Promise<CloudflareAccountVaultResult>;
+  /** Opt-in discovery cache. Live methods above and HTTP retain their existing defaults.
+   * Other isolates may see older metadata within its original 15-minute lifetime.
+   * Callers must project current authority; these snapshots never authorize execution.
+   */
+  readAccountDiscovery?: (userId: string, component: CloudflareAccountMetadataComponent,
+    options: CloudflareAccountDiscoveryOptions) => Promise<CloudflareAccountDiscoveryResult>;
 }>;
 
 export type CloudflareEgressOptions = Readonly<{

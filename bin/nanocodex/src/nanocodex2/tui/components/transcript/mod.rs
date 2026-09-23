@@ -410,11 +410,11 @@ impl Transcript {
     }
 
     pub(crate) fn animation_deadline(&self) -> Option<Instant> {
-        let empty = self.is_empty().then(|| self.empty_logo.deadline());
+        // The decorative empty logo follows animation frames from live UI activity.
+        // It must not wake an otherwise idle terminal on its own.
         self.tool_spinner
             .map(Spinner::deadline)
             .into_iter()
-            .chain(empty)
             .chain(self.retry_timer.and_then(|timer| timer.next_frame))
             .chain(self.cache.images.animation_deadline())
             .min()

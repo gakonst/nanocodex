@@ -2,7 +2,7 @@
 import json, subprocess, threading, pathlib, signal, os, re, sys, time, math
 root = pathlib.Path(sys.argv[1]); cwd = pathlib.Path.cwd(); processes=[]; threads=[]; stopping=False
 names=['nanocodex-durable-agent','nanocodex','nanocodex-egress']
-keep={'type','request_id','method','path','status','deployment_sha','was_running','recovered','transport','relay_transport','socket_reused','trace_id','stage','object_id','agent_id','session_id','turn_id','resolve_id','credential_broker_resolve_id','started_at','event','action','count','call_id','call_index','cache_hit','fact_count','message_type','operation_kind','attempt_count','outcome','failure_phase','replay_mode','next_attempt','max_attempts','connection_generation','model_call_index','status_code','opens_new_socket','server_requested_delay','reason','read_count','read_ms','statement_count','total_ms','agent_subject','rule','credential_kind','model_source','operation','model','queue_scope','egress_request_id','relay_id','operations_ahead','waiting_at_start','waiting_at_finish','active_operation_at_enqueue','cause','request_colo','cache_state','ready','relay_region','dns_observed','last_phase','recover'}
+keep={'type','request_id','method','path','status','deployment_sha','was_running','recovered','transport','relay_transport','socket_reused','trace_id','stage','object_id','agent_id','session_id','turn_id','resolve_id','credential_broker_resolve_id','started_at','event','action','count','call_id','call_index','cache_hit','fact_count','message_type','operation_kind','attempt_count','outcome','failure_phase','replay_mode','next_attempt','max_attempts','connection_generation','model_call_index','status_code','opens_new_socket','server_requested_delay','reason','read_count','read_ms','statement_count','total_ms','agent_subject','rule','credential_kind','model_source','operation','model','queue_scope','egress_request_id','relay_id','operations_ahead','waiting_at_start','waiting_at_finish','active_operation_at_enqueue','cause','request_colo','cache_state','component','write_scheduled','ready','relay_region','dns_observed','last_phase','recover'}
 def sanitize(m):
     if not isinstance(m,dict): return None
     if m.get('type') == 'managed.performance' and m.get('stage') in {'transport.socket_queue','transport.provider_timing'}:
@@ -15,6 +15,22 @@ def sanitize(m):
             value = m.get(k)
             if type(value) in (int,float) and math.isfinite(value) and value >= 0:
                 if (k not in counts or isinstance(value,int)) and (k in counts or value <= 86_400_000): safe[k]=value
+        return safe
+    if m.get('type') == 'managed.performance' and m.get('stage') == 'transport.request_controls':
+        safe = {k:m[k] for k in ['type','stage']}
+        if isinstance(m.get('session_id'),str) and re.fullmatch(r'[A-Za-z0-9_-]{1,128}',m['session_id']): safe['session_id']=m['session_id']
+        enums = {'model': {'gpt-6-astra','gpt-6-sol','gpt-6-luna'},
+            'reasoning_effort': {'none','minimal','low','medium','high','xhigh','max'},
+            'reasoning_context': {'all_turns','last_turn'}, 'service_tier': {'default','auto','priority','flex','fast'},
+            'text_verbosity': {'low','medium','high'}, 'tool_choice': {'auto','none','required'}}
+        for key, allowed in enums.items():
+            value = m.get(key)
+            if isinstance(value,str) and (value in allowed or value == 'other_or_absent'): safe[key]=value
+        for key in ['encoded_characters','input_items','tools_count']:
+            value = m.get(key)
+            if type(value) is int and 0 <= value <= 9007199254740991: safe[key]=value
+        for key in ['cache_key_present','previous_response_present','encrypted_reasoning_included','parallel_tool_calls','store','stream','generate']:
+            if type(m.get(key)) is bool: safe[key]=m[key]
         return safe
     if not str(m.get('type','')).startswith(('managed.','egress.','account.','model.','responses.relay','voice.relay')): return None
     safe={k:v for k,v in m.items() if ((k.endswith('_ms') and isinstance(v,(int,float))) or (k in keep and isinstance(v,(str,int,float,bool,type(None))))) }

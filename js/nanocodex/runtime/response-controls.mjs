@@ -1,15 +1,35 @@
 /** Apply stable managed response policy at the provider wire boundary, including replay. */
-export function responseControlsSocket(socket, controls = {}) {
+export function responseControlsSocket(socket, controls = {}, onRequestShape) {
   validateResponseControls(controls);
-  if (!hasResponseControls(controls)) return socket;
+  if (onRequestShape !== undefined && typeof onRequestShape !== "function") {
+    throw new TypeError("request shape observer must be a function");
+  }
+  const controlled = hasResponseControls(controls);
+  if (!controlled && onRequestShape === undefined) return socket;
+  let remainingObservations = 32;
   return new Proxy({}, {
     get(_target, property) {
       const target = socket;
       if (property === "send") return (data, ...args) => {
-        const body = typeof data === "string" ? JSON.parse(data) : undefined;
+        let body;
+        if (typeof data === "string" && (controlled || remainingObservations > 0)) {
+          // Reuse the policy parse. Observation alone never rejects an opaque frame.
+          if (controlled) body = JSON.parse(data);
+          else { try { body = JSON.parse(data); } catch { /* Pass through unchanged. */ } }
+        }
         if (body?.type === "response.create") {
-          applyResponseControls(body, controls);
-          return target.send(JSON.stringify(body), ...args);
+          if (controlled) applyResponseControls(body, controls);
+          const encoded = controlled ? JSON.stringify(body) : data;
+          const result = target.send(encoded, ...args);
+          if (onRequestShape !== undefined && remainingObservations > 0) {
+            remainingObservations -= 1;
+            // Send first; diagnostics retain only fixed enums, booleans and counts.
+            try {
+              const observation = onRequestShape(responseRequestShape(body, encoded.length));
+              if (observation?.then) void Promise.resolve(observation).catch(() => {});
+            } catch { /* Observation cannot change transport success. */ }
+          }
+          return result;
         }
         return target.send(data, ...args);
       };
@@ -64,4 +84,28 @@ function applyResponseControls(body, controls) {
       if (text) text.prompt_cache_breakpoint = { mode: "explicit" };
     }
   }
+}
+
+// Deliberately omit instructions, tool names/schemas, input, metadata and all IDs.
+// The observation describes post-policy controls; multiplex framing may omit stream.
+function responseRequestShape(body, encodedLength) {
+  const choose = (value, allowed) => allowed.includes(value) ? value : "other_or_absent";
+  const shape = {
+    model: choose(body.model, ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"]),
+    reasoning_effort: choose(body.reasoning?.effort, ["none", "minimal", "low", "medium", "high", "xhigh", "max"]),
+    reasoning_context: choose(body.reasoning?.context, ["all_turns", "last_turn"]),
+    service_tier: choose(body.service_tier, ["default", "auto", "priority", "flex", "fast"]),
+    text_verbosity: choose(body.text?.verbosity, ["low", "medium", "high"]),
+    tool_choice: choose(body.tool_choice, ["auto", "none", "required"]),
+    encoded_characters: encodedLength,
+    input_items: Array.isArray(body.input) ? body.input.length : 0,
+    tools_count: Array.isArray(body.tools) ? body.tools.length : 0,
+    cache_key_present: typeof body.prompt_cache_key === "string",
+    previous_response_present: typeof body.previous_response_id === "string",
+    encrypted_reasoning_included: Array.isArray(body.include) && body.include.includes("reasoning.encrypted_content"),
+  };
+  for (const key of ["parallel_tool_calls", "store", "stream", "generate"]) {
+    if (typeof body[key] === "boolean") shape[key] = body[key];
+  }
+  return Object.freeze(shape);
 }

@@ -1,7 +1,7 @@
 // Derived from clabby/tact; modified for Nanocodex2.
 // SPDX-License-Identifier: Apache-2.0
 
-//! Demand-driven empty transcript animation.
+//! Empty transcript decoration, animated alongside live UI activity.
 
 use crate::{config::ReasoningEffort, tui::theme::Theme};
 use ratatui::{
@@ -37,10 +37,6 @@ impl EmptyLogo {
             next_frame: now + FRAME_INTERVAL,
             frame: 0,
         }
-    }
-
-    pub(super) const fn deadline(&self) -> Instant {
-        self.next_frame
     }
 
     pub(super) fn advance(&mut self, now: Instant) -> bool {
@@ -250,6 +246,6 @@ mod tests {
         assert!(!logo.advance(start + FRAME_INTERVAL / 2));
         assert!(logo.advance(start + FRAME_INTERVAL));
         assert_ne!(symbols(&render(&logo, 60, 12)), first);
-        assert!(logo.deadline() > start + FRAME_INTERVAL);
+        assert!(!logo.advance(start + FRAME_INTERVAL + FRAME_INTERVAL / 2));
     }
 }

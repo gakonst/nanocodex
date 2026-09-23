@@ -703,7 +703,21 @@ const metadataBinding: import("nanocodex/cloudflare/egress").CloudflareAccountMe
     return { status: 200, catalog: { connectors: {}, mcp_connections: [] } };
   },
   async readAccountVault() { return { status: 200, vault: [] }; },
+  async readAccountDiscovery(userId, component, options) {
+    const owner: string = userId;
+    const authority: string = options.authorityKey;
+    const reload: boolean | undefined = options.reload;
+    void owner; void authority; void reload;
+    return { schema: 1, status: 200, expiresAt: Date.now() + 900_000,
+      data: component === "catalog" ? { connectors: {}, mcp_connections: [] } : [] };
+  },
 };
 const fetchOnlyMetadata: import("nanocodex/cloudflare/egress").CloudflareAccountMetadataBinding = cloudflareBinding;
 void metadataBinding;
 void fetchOnlyMetadata;
+
+metadataBinding.readAccountDiscovery?.("owner", "catalog", { authorityKey: "epoch", reload: true });
+// @ts-expect-error Discovery does not accept authentication decisions or credentials.
+metadataBinding.readAccountDiscovery?.("owner", "vault", { authorityKey: "epoch", accessToken: "secret" });
+// @ts-expect-error Live presence is not a metadata cache component.
+metadataBinding.readAccountDiscovery?.("owner", "machines", { authorityKey: "epoch" });

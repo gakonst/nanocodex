@@ -1,3 +1,4 @@
+import { discoveryMetadata, type DiscoveryRead } from "./account-discovery";
 import { consumeRpcData } from "nanocodex/cloudflare/rpc";
 import type { CloudflareAccountMetadataBinding } from "nanocodex/cloudflare/egress";
 import { isVmFactoryName } from "./vm-factory-name";
@@ -277,6 +278,7 @@ export async function accountVaultMetadata(
   binding: BrokerBinding,
   userId: string,
   signal?: AbortSignal,
+  discovery?: DiscoveryRead,
 ): Promise<readonly VaultEntry[]> {
   signal?.throwIfAborted();
   const project = (value: unknown) => {
@@ -285,6 +287,9 @@ export async function accountVaultMetadata(
     signal?.throwIfAborted();
     return Object.freeze(vault.map(entry => Object.freeze(entry)));
   };
+  if (discovery && typeof binding.readAccountDiscovery === "function") {
+    return project(await discoveryMetadata(binding, userId, "vault", discovery));
+  }
   const readAccountVault = binding.readAccountVault;
   if (typeof readAccountVault === "function") {
     const result = consumeRpcData(await Reflect.apply(readAccountVault, binding, [userId]));

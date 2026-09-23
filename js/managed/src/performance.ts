@@ -193,3 +193,34 @@ export function performanceSocketTiming(sessionId: string, observation: unknown)
     }
   } catch { /* Passive observations cannot fail transport cleanup. */ }
 }
+
+/** Post-policy WebSocket request controls; no input, tool schema, IDs or metadata. */
+export function performanceRequestShape(sessionId: string, observation: unknown): void {
+  if (!observation || typeof observation !== "object" || Array.isArray(observation)) return;
+  const input = observation as Record<string, unknown>;
+  const safe: Record<string, string | number | boolean> = {};
+  const enums: Record<string, readonly string[]> = {
+    model: ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"],
+    reasoning_effort: ["none", "minimal", "low", "medium", "high", "xhigh", "max"],
+    reasoning_context: ["all_turns", "last_turn"],
+    service_tier: ["default", "auto", "priority", "flex", "fast"],
+    text_verbosity: ["low", "medium", "high"],
+    tool_choice: ["auto", "none", "required"],
+  };
+  for (const [key, allowed] of Object.entries(enums)) {
+    const value = input[key];
+    if (typeof value !== "string" || (!allowed.includes(value) && value !== "other_or_absent")) return;
+    safe[key] = value;
+  }
+  for (const key of ["encoded_characters", "input_items", "tools_count"]) {
+    const value = input[key];
+    if (typeof value !== "number" || !Number.isSafeInteger(value) || value < 0) return;
+    safe[key] = value;
+  }
+  for (const key of ["cache_key_present", "previous_response_present", "encrypted_reasoning_included",
+    "parallel_tool_calls", "store", "stream", "generate"]) {
+    if (typeof input[key] === "boolean") safe[key] = input[key];
+  }
+  try { console.info({ type: "managed.performance", stage: "transport.request_controls", session_id: sessionId, ...safe }); }
+  catch { /* Diagnostics cannot change a sent request. */ }
+}

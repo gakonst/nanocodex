@@ -1,3 +1,5 @@
+import { ACCOUNT_DISCOVERY_TTL_MS, discoveryMetadata, type DiscoveryRead } from "./account-discovery";
+export { ACCOUNT_DISCOVERY_TTL_MS } from "./account-discovery";
 import { consumeRpcData } from "nanocodex/cloudflare/rpc";
 import type { CloudflareAccountMetadataBinding } from "nanocodex/cloudflare/egress";
 import { accountVaultMetadata, type VaultEntry } from "./account-info";
@@ -5,10 +7,10 @@ import { fetchResponseWithDeadline, withHardDeadline } from "./deadline";
 import { performanceCache, performanceStage } from "./performance";
 
 /** Discovery freshness is independent of authentication and live hand presence. */
-export const ACCOUNT_DISCOVERY_TTL_MS = 15 * 60_000;
 const MAX_DISCOVERY_SNAPSHOTS = 64;
 type DiscoverySnapshot = {
-  readonly expiresAt: number;
+  expiresAt: number;
+  readonly discovery: DiscoveryRead;
   readonly catalog: Promise<unknown>;
   vault?: Promise<readonly VaultEntry[]>;
 };
@@ -16,9 +18,11 @@ const snapshots = new WeakMap<object, Map<string, DiscoverySnapshot>>();
 
 /** Discovery only. Raw metadata is projected for each caller; execution checks live authority. */
 export class AccountCatalogCache {
+  #reload = false;
   #current?: { entries: Map<string, DiscoverySnapshot>; key: string };
 
   invalidate(): void {
+    this.#reload = true;
     // Another Session may have replaced the entry since our last read. An
     // explicit refresh still invalidates this authority's current shared copy.
     if (this.#current) this.#current.entries.delete(this.#current.key);
@@ -36,7 +40,7 @@ export class AccountCatalogCache {
       // Startup requests both components in the same stack, so they run in
       // parallel. Catalog-only discovery never starts an unnecessary vault read.
       entry.vault = performanceStage("account.vault", () => withHardDeadline(
-        "account vault", 10_000, signal => accountVaultMetadata(broker, userId, signal),
+        "account vault", 10_000, signal => accountVaultMetadata(broker, userId, signal, entry.discovery),
       ));
       void entry.vault.catch(() => {
         if (entries.get(key) === entry) entries.delete(key);
@@ -53,6 +57,9 @@ export class AccountCatalogCache {
     }
     const key = JSON.stringify([userId, authorityKey]);
     this.#current = { entries, key };
+    const reload = this.#reload;
+    this.#reload = false;
+    if (reload) entries.delete(key);
     const now = Date.now();
     for (const [entryKey, entry] of entries) {
       if (entry.expiresAt <= now) entries.delete(entryKey);
@@ -66,9 +73,14 @@ export class AccountCatalogCache {
       return current;
     }
     performanceCache("account.discovery", "miss", 0, ACCOUNT_DISCOVERY_TTL_MS);
+    const discovery: DiscoveryRead = { authorityKey, reload,
+      // Mutate only this entry: an old pending read cannot replace a refreshed one.
+      adoptExpiry: expiresAt => { entry.expiresAt = Math.min(entry.expiresAt, expiresAt); },
+    };
     const entry: DiscoverySnapshot = {
       expiresAt: now + ACCOUNT_DISCOVERY_TTL_MS,
-      catalog: accountCatalog(broker, userId),
+      discovery,
+      catalog: accountCatalog(broker, userId, discovery),
     };
     entries.set(key, entry);
     while (entries.size > MAX_DISCOVERY_SNAPSHOTS) entries.delete(entries.keys().next().value!);
@@ -81,9 +93,13 @@ export class AccountCatalogCache {
   }
 }
 
-/** One live read shared by runtime discovery and first-turn environment context. */
-export function accountCatalog(broker: Fetcher, userId: string): Promise<unknown> {
+/** Live by default; L1 opts into discovery and retains the original backend expiry. */
+export function accountCatalog(broker: Fetcher, userId: string, discovery?: DiscoveryRead): Promise<unknown> {
   const metadata: CloudflareAccountMetadataBinding = broker;
+  if (discovery && typeof metadata.readAccountDiscovery === "function") {
+    return performanceStage("account.catalog", () => withHardDeadline("account catalog", 10_000, async () =>
+      validateCatalog(await discoveryMetadata(metadata, userId, "catalog", discovery))));
+  }
   // Fetch-only adapters remain compatible; RPC errors never trigger an HTTP retry.
   // Service bindings resolve methods dynamically, so deploy egress before managed.
   const readAccountCatalog = metadata.readAccountCatalog;

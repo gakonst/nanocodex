@@ -30,6 +30,30 @@ const VAULT_ID: &str = "abcdefghijklmnopqrstuv";
 const VAULT_ORIGIN: &str = "https://vault-approval.example:8443";
 const TIMEOUT: Duration = Duration::from_secs(10);
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn terminal_empty_idle_stops_redrawing_and_still_accepts_input_and_live_updates() {
+    let mut fixture = Fixture::start().await;
+    fixture.terminal.wait_no_text("Connecting").await;
+    // Let presentation setup and the final ready frame reach the PTY reader.
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    let before = fixture.terminal.output.lock().unwrap().len();
+    tokio::time::sleep(Duration::from_millis(600)).await;
+    assert_eq!(
+        fixture.terminal.output.lock().unwrap().len(),
+        before,
+        "a ready empty terminal must not emit decorative animation frames"
+    );
+
+    fixture.terminal.input("IDLE_WAKE_INPUT");
+    fixture.terminal.wait_text("IDLE_WAKE_INPUT").await;
+    fixture.terminal.input("\r");
+    let turn = fixture.submission("IDLE_WAKE_INPUT").await;
+    fixture.nested(&turn, "assistant.delta", json!({"model_call_index": 1, "item_id": "idle-answer", "phase": "final_answer", "text": "LIVE_AFTER_IDLE"}));
+    fixture.terminal.wait_text("LIVE_AFTER_IDLE").await;
+    fixture.complete(&turn);
+    fixture.terminal.wait_text("Enter send").await;
+}
+
 #[cfg(unix)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn terminal_control_discovers_preserves_draft_and_deduplicates_prompt() {
