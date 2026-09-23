@@ -13,6 +13,60 @@ function fixture(extra: Partial<Parameters<typeof createSubagentRouteController>
 }
 
 describe("hosted child routing", () => {
+  it.each([
+    {}, { model: "astra", thinking: "max" }, { model: "luna", thinking: "xhigh" },
+    { model: "sol", thinking: "none" }, { thinking: "max" },
+  ])("preserves native manual GPT choices with routing disabled: %j", async overrides => {
+    const nativeAuthorize = vi.fn();
+    const availability = vi.fn(() => { throw new Error("routing disabled"); });
+    const { controller, rows, ai, authorize } = fixture({
+      native: { parentIsNative: id => id === "root", authorize: nativeAuthorize }, availability,
+      authorize: vi.fn(() => { throw new Error("gateway authority unavailable"); }),
+    });
+    const selected = await controller.resolve({ ...request, ...overrides });
+    expect(selected).toEqual({ native: true, routeId: expect.any(String) });
+    controller.bind({ ...requestBinding(selected.routeId), sessionId: "native-child" });
+    expect(rows.get("native-child")?.route).toBeNull();
+    expect(nativeAuthorize).toHaveBeenCalledWith("root", "account-turn");
+    expect(authorize).not.toHaveBeenCalled();
+    expect(ai.run).not.toHaveBeenCalled();
+    expect(availability).not.toHaveBeenCalled();
+  });
+
+  it("requires gateway admission for non-GPT requests even in a native lineage", async () => {
+    let enabled = false;
+    const nativeAuthorize = vi.fn();
+    const { controller, rows } = fixture({
+      native: { parentIsNative: () => true, authorize: nativeAuthorize },
+      authorize: () => { if (!enabled) throw new Error("routing disabled"); },
+      availability: () => ({ openrouter: true, vercel: false }),
+    });
+    for (const model of ["kimi", "mimo", "glm-5.3"]) {
+      await expect(controller.resolve({ ...request, model, thinking: "low" })).rejects.toThrow("routing disabled");
+    }
+    expect(nativeAuthorize).not.toHaveBeenCalled();
+    expect(rows.size).toBe(0);
+    enabled = true;
+    const selected = await controller.resolve({ ...request, model: "kimi", thinking: "low" });
+    enabled = false;
+    expect(() => controller.bind({ ...requestBinding(selected.routeId), sessionId: "denied" })).toThrow("routing disabled");
+    expect(rows.size).toBe(0);
+  });
+
+  it("native binding rechecks spawning provenance and never replaces a routed lineage", async () => {
+    let admitted = true;
+    const { controller, rows } = fixture({
+      native: { parentIsNative: id => id === "root", authorize: () => { if (!admitted) throw new Error("provenance lost"); } },
+    });
+    const selected = await controller.resolve(request);
+    expect(() => controller.bind({ ...requestBinding(selected.routeId), hostContextRef: "later-turn", sessionId: "child" })).toThrow("unauthorized");
+    admitted = false;
+    expect(() => controller.bind({ ...requestBinding(selected.routeId), sessionId: "child" })).toThrow("provenance lost");
+    expect(rows.size).toBe(0);
+    await expect(controller.resolve({ ...request, parentSessionId: "routed-child", model: "sol", thinking: "max" })).rejects.toThrow("outside eligible");
+    await expect(fixture().controller.resolve({ ...request, model: "sol", thinking: "max" })).rejects.toThrow("outside eligible");
+  });
+
   it("manual root selection leaves child models independent while explicit policy constraints remain", async () => {
     const policy = routingPolicySchema.parse({ candidates: ["openrouter:moonshotai/kimi-k3:low"] });
     expect(subagentRoutingPolicy(policy, false)).toBe(policy);
@@ -28,6 +82,7 @@ describe("hosted child routing", () => {
   it.each([["kimi", "kimi-k3"], ["mimo", "mimo-v2.6-pro"]])("routes %s children through an authorized gateway without account-model fallback", async (alias, model) => {
     const { controller } = fixture({ availability: () => ({ openrouter: false, vercel: true }) });
     const choice = await controller.resolve({ ...request, model: alias, thinking: "high" });
+    expect(choice).toMatchObject({ model, thinking: "high", statelessHttp: true });
     controller.bind({ ...requestBinding(choice.routeId), sessionId: "gateway-child" });
     expect(controller.routeForSession("gateway-child")).toMatchObject({ backend: "vercel", model, thinking: "high" });
     const unavailable = fixture();

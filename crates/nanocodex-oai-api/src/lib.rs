@@ -163,10 +163,10 @@ pub enum Model {
     #[serde(rename = "glm-5.3")]
     Glm53,
     /// Moonshot Kimi K3 through a host-managed gateway.
-    #[serde(rename = "kimi-k3")]
+    #[serde(rename = "kimi-k3", alias = "kimi")]
     Kimi,
     /// Xiaomi MiMo V2.6 Pro through a host-managed gateway.
-    #[serde(rename = "mimo-v2.6-pro")]
+    #[serde(rename = "mimo-v2.6-pro", alias = "mimo")]
     Mimo,
 }
 
@@ -779,6 +779,14 @@ mod tests {
         ] {
             assert_eq!(alias.parse(), Ok(model));
             assert_eq!(canonical.parse(), Ok(model));
+            assert_eq!(
+                serde_json::from_value::<Model>(json!(alias)).unwrap(),
+                model
+            );
+            assert_eq!(
+                serde_json::from_value::<Model>(json!(canonical)).unwrap(),
+                model
+            );
             assert_eq!(model.as_str(), canonical);
             assert_eq!(serde_json::to_value(model).unwrap(), json!(canonical));
             assert_eq!(model.default_thinking(), Thinking::Low);

@@ -1150,11 +1150,11 @@ for (const provider of ["openrouter", "vercel"]) {
   test(`Cloudflare Agent pins ${provider} transport and effort over two tool turns`, {timeout:30_000}, async () => {
     const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
     let calls=0, tools=0;
-    const gateway = {provider,model:"gpt-6-sol",reasoningEffort:"low",apiKey:"synthetic-fixture-key",
+    const gateway = {provider,model:"gpt-6-astra",reasoningEffort:"low",apiKey:"synthetic-fixture-key",
       async fetch(url,init) {
         assert.equal(url,provider === "openrouter" ? "https://openrouter.ai/api/v1/chat/completions" : "https://ai-gateway.vercel.sh/v1/chat/completions");
         const body=JSON.parse(init.body); calls++;
-        assert.equal(body.model,"openai/gpt-6-sol");
+        assert.equal(body.model,"openai/gpt-6-astra");
         assert.equal(provider === "openrouter" ? body.reasoning.effort : body.reasoning_effort,"low");
         if(calls===1 || calls===3){
           const tool=body.tools.find(t=>t.function.description.startsWith("runtimeInfo\n")); assert.ok(tool);
@@ -1202,11 +1202,11 @@ test("routed children use their own provider and reuse the pin on continuation",
         arguments: JSON.stringify({ output: JSON.stringify({ ok: childTurn }) }) },
     }] } }] };
   } };
-  const gateway = { provider: "openrouter", model: "gpt-6-sol", reasoningEffort: "low", apiKey: "synthetic-test-key",
+  const gateway = { provider: "openrouter", model: "gpt-6-astra", reasoningEffort: "low", apiKey: "synthetic-test-key",
     async fetch(_url, init) {
       rootCalls++;
       const body = JSON.parse(init.body);
-      assert.equal(body.model, "openai/gpt-6-sol");
+      assert.equal(body.model, "openai/gpt-6-astra");
       assert.equal(body.reasoning.effort, "low");
       return gatewayFixtureResponse(body, { choices: [{ finish_reason: "stop", message: { content: "ROOT_PIN_OK" } }] });
     },
@@ -1527,4 +1527,231 @@ test("Cloudflare beforeCompaction option reaches the host unchanged and is omitt
   }
   assert.equal(captured[0].beforeCompaction, beforeCompaction);
   assert.equal(Object.hasOwn(captured[1], "beforeCompaction"), false);
+});
+
+test("manual GPT root keeps WebSockets while a Kimi child uses gateway HTTP across continuation", { timeout: 30_000 }, async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const storage = new MemoryStorage();
+  const routes = new Map();
+  const rootRequests = [];
+  let sockets = 0, childCalls = 0, choices = 0, childTurn = 1, authorized = true;
+  class RootSocket extends EventTarget {
+    readyState = 1;
+    accept() {}
+    close() { this.readyState = 3; }
+    send(encoded) {
+      const request = JSON.parse(encoded);
+      rootRequests.push(request);
+      assert.ok(rootRequests.length <= 4);
+      assert.equal(request.model, "gpt-6-astra");
+      assert.equal(request.reasoning.effort, "xhigh");
+      queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({
+        type: "response.completed", response: {
+          id: `manual-root-${rootRequests.length}`, status: "completed", end_turn: true,
+          output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "MANUAL_ROOT_OK" }] }],
+          usage: { input_tokens: 100, output_tokens: 1, total_tokens: 101 },
+        },
+      }) })));
+    }
+  }
+  const egress = { async fetch(_url, init) {
+    assert.equal(init.method, "GET", "manual root retains WebSocket transport");
+    assert.equal(init.headers.get("thread-id"), storage.sessionId, "children never reach parent egress");
+    sockets++;
+    return { status: 101, headers: new Headers(), webSocket: new RootSocket() };
+  } };
+  const gateway = {
+    provider: "openrouter", model: "kimi-k3", reasoningEffort: "low", apiKey: "synthetic-test-key",
+    async fetch(_url, init) {
+      childCalls++;
+      assert.ok(childCalls <= 4, "bounded child requests");
+      assert.equal(routes.size, 1, "child route is bound before inference");
+      const body = JSON.parse(init.body);
+      assert.equal(body.model, "moonshotai/kimi-k3");
+      assert.equal(body.reasoning.effort, "low");
+      if (childTurn === 2) assert.ok(JSON.stringify(body.messages).includes("KIMI_HISTORY_1"), "continuation replays child history");
+      if (body.messages.at(-1)?.role === "tool") {
+        return gatewayFixtureResponse(body, { choices: [{ finish_reason: "stop", message: { content: `KIMI_HISTORY_${childTurn}` } }] });
+      }
+      const submit = body.tools.find(tool => tool.function.description.startsWith("submit_result\n"));
+      assert.ok(submit);
+      return gatewayFixtureResponse(body, { choices: [{ finish_reason: "tool_calls", message: {
+        content: null, tool_calls: [{ id: `manual-child-${childCalls}`, type: "function", function: {
+          name: submit.function.name, arguments: JSON.stringify({ output: JSON.stringify({ turn: childTurn }) }),
+        } }],
+      } }] });
+    },
+  };
+  const agent = await create(module, durableOwner(storage, egress), {
+    [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: {
+      model: "gpt-6-astra", thinking: "xhigh", reasoning_mode: "standard", fast_mode: false,
+    },
+    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: {
+      preserveRootTransport: true, toolMode: "direct", subagentsEnabled: true,
+      subagentRouting: {
+        async resolve(request) {
+          if (!authorized) throw new Error("gateway authorization lost");
+          choices++;
+          assert.equal(request.parentSessionId, storage.sessionId);
+          assert.equal(request.model, "kimi-k3");
+          return { model: "kimi-k3", thinking: "low", routeId: "manual-kimi-route", statelessHttp: true };
+        },
+        bind(request) {
+          routes.set(request.sessionId, { model: "kimi-k3", thinking: "low", gateway });
+        },
+      },
+      inferenceForSession(id) {
+        if (id === storage.sessionId) return { native: true, model: "gpt-6-astra", thinking: "xhigh" };
+        if (!authorized) throw new Error("gateway authorization lost");
+        return routes.get(id);
+      },
+    },
+  });
+  try {
+    assert.equal((await agent.turn.prompt({ input: "Respond briefly." }).result()).finalMessage, "MANUAL_ROOT_OK");
+    const child = await Subagents.spawn(agent, {
+      role: "gateway-child", task: "Return the first result.", model: "kimi", thinking: "low",
+      outputSchema: { type: "object", properties: { turn: { type: "integer" } }, required: ["turn"], additionalProperties: false },
+    });
+    assert.deepEqual((await Subagents.wait(agent, { agentIds: [child.agent_id], timeoutMs: 5_000 })).agents[0].status,
+      { state: "completed", output: { turn: 1 } });
+    childTurn = 2;
+    await Subagents.send(agent, { agentId: child.agent_id, message: "Return the second result." });
+    assert.deepEqual((await Subagents.wait(agent, { agentIds: [child.agent_id], timeoutMs: 5_000 })).agents[0].status,
+      { state: "completed", output: { turn: 2 } });
+    assert.equal((await agent.turn.prompt({ input: "Respond again." }).result()).finalMessage, "MANUAL_ROOT_OK");
+    assert.equal(choices, 1);
+    assert.equal(childCalls, 4);
+    assert.ok(sockets >= 1);
+    assert.ok(rootRequests.length >= 2);
+    authorized = false;
+    await assert.rejects(Subagents.spawn(agent, { role: "denied-gateway", task: "Must not start.", model: "kimi",
+      thinking: "low", outputSchema: { type: "object" } }), /not authorized/);
+    await Subagents.send(agent, { agentId: child.agent_id, message: "Authorization has been revoked." });
+    assert.equal((await Subagents.wait(agent, { agentIds: [child.agent_id], timeoutMs: 5_000 })).agents[0].status.state, "failed");
+    assert.equal(choices, 1);
+    assert.equal(childCalls, 4, "revoked continuation fails before provider inference");
+  } finally { await agent.session.shutdown(); }
+});
+
+test("manual GPT children preserve native defaults, max/xhigh/none, fast mode, and binding before WebSockets", { timeout: 30_000 }, async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const storage = new MemoryStorage();
+  const native = new Set();
+  const requests = new Map();
+  let choices = 0, admitted = true, responseId = 0;
+  class NativeSocket extends EventTarget {
+    readyState = 1;
+    constructor(id) { super(); this.id = id; }
+    accept() {}
+    close() { this.readyState = 3; }
+    send(encoded) {
+      const request = JSON.parse(encoded);
+      const isChild = this.id !== storage.sessionId;
+      if (isChild) {
+        assert.ok(native.has(this.id), "native admission is bound before inference");
+        const seen = requests.get(this.id) ?? [];
+        seen.push(request);
+        requests.set(this.id, seen);
+      }
+      const submitted = request.input.some(item => item.type === "function_call_output");
+      const output = request.generate === false ? [] : isChild && !submitted ? [{
+        type: "function_call", call_id: `native-submit-${++responseId}`, name: "submit_result",
+        arguments: JSON.stringify({ output: { ok: true } }),
+      }] : [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "NATIVE_OK" }] }];
+      queueMicrotask(() => this.dispatchEvent(new MessageEvent("message", { data: JSON.stringify({
+        type: "response.completed", response: { id: `native-response-${++responseId}`, status: "completed", output,
+          usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 } },
+      }) })));
+    }
+  }
+  const egress = { async fetch(_url, init) {
+    assert.equal(init.method, "GET", "native children retain WebSockets");
+    return { status: 101, headers: new Headers(), webSocket: new NativeSocket(init.headers.get("thread-id")) };
+  } };
+  const agent = await create(module, durableOwner(storage, egress), {
+    [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: {
+      model: "gpt-6-astra", thinking: "xhigh", reasoning_mode: "standard", fast_mode: true,
+    },
+    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: {
+      preserveRootTransport: true, toolMode: "direct", subagentsEnabled: true,
+      subagentRouting: {
+        async resolve() { choices++; return { native: true, routeId: `native-${choices}` }; },
+        bind(request) { if (!admitted) throw new Error("spawning authorization lost"); native.add(request.sessionId); },
+      },
+      inferenceForSession(id) {
+        if (id === storage.sessionId) return { native: true };
+        if (!admitted || !native.has(id)) throw new Error("native child authorization missing");
+        return { native: true };
+      },
+    },
+  });
+  try {
+    await agent.session.setThinking("max");
+    for (const [overrides, model, thinking] of [
+      [{}, "gpt-6-astra", "max"],
+      [{ model: "astra", thinking: "max" }, "gpt-6-astra", "max"],
+      [{ model: "luna", thinking: "xhigh" }, "gpt-6-luna", "xhigh"],
+      [{ model: "sol", thinking: "none" }, "gpt-6-sol", "none"],
+    ]) {
+      const child = await Subagents.spawn(agent, { role: "native-child", task: "Submit ok true.", ...overrides,
+        outputSchema: { type: "object", properties: { ok: { type: "boolean" } }, required: ["ok"], additionalProperties: false } });
+      assert.deepEqual((await Subagents.wait(agent, { agentIds: [child.agent_id], timeoutMs: 5_000 })).agents[0].status,
+        { state: "completed", output: { ok: true } });
+      const seen = [...requests.values()].at(-1);
+      assert.ok(seen.length >= 2);
+      for (const request of seen) {
+        assert.equal(request.model, model);
+        assert.equal(request.reasoning.effort, thinking);
+        assert.equal(request.service_tier, "priority");
+      }
+    }
+    const created = native.size;
+    await assert.rejects(Subagents.spawn(agent, { role: "invalid-native", task: "Must fail before inference.", model: "kimi",
+      thinking: "low", outputSchema: { type: "object" } }), /invalid native subagent choice/);
+    assert.equal(native.size, created, "a native choice cannot admit an explicit non-GPT request");
+    admitted = false;
+    await assert.rejects(Subagents.spawn(agent, { role: "revoked-native", task: "Must fail before inference.",
+      outputSchema: { type: "object" } }), /binding failed/);
+    assert.equal(native.size, created);
+  } finally { await agent.session.shutdown(); }
+});
+
+test("manual root HTTP fallback follows live thinking changes", { timeout: 30_000 }, async () => {
+  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
+  const storage = new MemoryStorage();
+  const efforts = [];
+  let sockets = 0;
+  const egress = { async fetch(_url, init) {
+    if (init.method === "GET") {
+      sockets++;
+      return { status: 426, headers: new Headers() };
+    }
+    const body = JSON.parse(init.body);
+    efforts.push(body.reasoning.effort);
+    assert.equal(body.model, "gpt-6-astra");
+    const response = { type: "response.completed", response: { id: `http-${efforts.length}`, status: "completed",
+      output: [{ type: "message", role: "assistant", content: [{ type: "output_text", text: "HTTP_OK" }] }],
+      usage: { input_tokens: 10, output_tokens: 1, total_tokens: 11 } } };
+    return new Response(`data: ${JSON.stringify(response)}\n\ndata: [DONE]\n\n`, { headers: { "content-type": "text/event-stream" } });
+  } };
+  const agent = await create(module, durableOwner(storage, egress), {
+    [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: {
+      model: "gpt-6-astra", thinking: "xhigh", reasoning_mode: "standard", fast_mode: false,
+    },
+    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: {
+      preserveRootTransport: true, waitForPreconnect: false,
+      inferenceForSession(id) {
+        assert.equal(id, storage.sessionId);
+        return { native: true };
+      },
+    },
+  });
+  try {
+    assert.equal((await agent.turn.prompt({ input: "First HTTP turn." }).result()).finalMessage, "HTTP_OK");
+    await agent.session.setThinking("max");
+    assert.equal((await agent.turn.prompt({ input: "Second HTTP turn." }).result()).finalMessage, "HTTP_OK");
+    assert.deepEqual(efforts, ["xhigh", "max"]);
+    assert.ok(sockets > 0, "real WASM starts on WebSocket and falls back to HTTP");
+  } finally { await agent.session.shutdown(); }
 });

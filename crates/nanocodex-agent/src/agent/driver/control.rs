@@ -343,6 +343,13 @@ pub(super) fn handle_idle_command<S>(
                 model: defaults.model,
                 thinking: defaults.thinking,
                 fast_mode: defaults.fast_mode,
+                stateless_http: matches!(
+                    spawner.config.responses_transport,
+                    ResponsesTransport::Https
+                ) && matches!(
+                    spawner.config.responses_history,
+                    ResponsesHistory::FullReplay
+                ) && !spawner.config.store_responses,
                 conversation: latest.map(|checkpoint| checkpoint.snapshot()),
             })));
         }
@@ -385,6 +392,7 @@ pub(super) fn handle_idle_command<S>(
                     model,
                     thinking,
                     defaults.fast_mode,
+                    options.stateless_http,
                     host_context.or_else(|| spawner.host_context.as_ref().map(Arc::clone)),
                 )
             });

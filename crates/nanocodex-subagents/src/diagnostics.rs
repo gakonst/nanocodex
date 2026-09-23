@@ -35,7 +35,7 @@ pub struct CompletionError {
 }
 
 impl CompletionError {
-    pub(crate) fn new(
+    pub(crate) const fn new(
         code: CompletionErrorCode,
         recoverable: bool,
         message: &'static str,

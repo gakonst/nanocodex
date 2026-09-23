@@ -375,6 +375,7 @@ impl From<&str> for PromptRequest {
 pub struct SpawnOptions {
     pub(super) model: Option<Model>,
     pub(super) thinking: Option<Thinking>,
+    pub(super) stateless_http: bool,
 }
 
 impl SpawnOptions {
@@ -384,6 +385,7 @@ impl SpawnOptions {
         Self {
             model: None,
             thinking: None,
+            stateless_http: false,
         }
     }
 
@@ -400,6 +402,15 @@ impl SpawnOptions {
         self.thinking = Some(thinking);
         self
     }
+    /// Uses full-history HTTP for this child without changing its parent transport.
+    /// Intended for host-owned routes to providers without Responses WebSockets.
+    #[doc(hidden)]
+    #[must_use]
+    pub const fn stateless_http(mut self) -> Self {
+        self.stateless_http = true;
+        self
+    }
+
     /// Returns the requested model override, when supplied.
     #[doc(hidden)]
     #[must_use]
@@ -426,6 +437,9 @@ pub struct ChildRuntimeSnapshot {
     pub thinking: Thinking,
     /// Fast-mode policy.
     pub fast_mode: bool,
+    /// Whether this child uses full-history HTTP independently of its parent.
+    #[serde(default)]
+    pub stateless_http: bool,
     /// Last safe conversation boundary; absent before the first model turn.
     pub conversation: Option<SessionSnapshot>,
 }

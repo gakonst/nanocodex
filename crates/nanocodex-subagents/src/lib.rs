@@ -12,7 +12,7 @@ mod model;
 mod platform;
 mod routing;
 mod runtime;
-pub use routing::{SpawnRoute, SpawnRouter};
+pub use routing::{SpawnDecision, SpawnRoute, SpawnRouter};
 mod task_tree;
 mod tools;
 

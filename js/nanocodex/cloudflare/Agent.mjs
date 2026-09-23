@@ -309,6 +309,10 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
     && typeof internalRuntime.waitForPreconnect !== "boolean") {
     throw new TypeError("Cloudflare Agent internal waitForPreconnect must be a boolean");
   }
+  if (internalRuntime?.preserveRootTransport !== undefined
+    && typeof internalRuntime.preserveRootTransport !== "boolean") {
+    throw new TypeError("Cloudflare Agent root transport policy must be a boolean");
+  }
   if (internalRuntime?.inferenceForSession !== undefined
     && typeof internalRuntime.inferenceForSession !== "function") {
     throw new TypeError("Cloudflare Agent inference routing must be a function");
@@ -331,7 +335,8 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
     throw new TypeError("Gateway profile must match the pinned model and thinking, with one transport only");
   }
   const routedInference = internalRuntime?.inferenceForSession !== undefined;
-  const directInference = workersAi !== undefined || gateway !== undefined || routedInference;
+  const directInference = workersAi !== undefined || gateway !== undefined
+    || (routedInference && internalRuntime?.preserveRootTransport !== true);
   if (workersAi !== undefined && (internalConfiguration?.model !== "@cf/zai-org/glm-5.3"
     || workersAi.model !== internalConfiguration.model || workersAi.thinking !== internalConfiguration.thinking)) {
     throw new TypeError("Workers AI profile must match the pinned model and thinking");
@@ -358,46 +363,66 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle) {
         // actual root/child branch registered by the Rust host bridge.
         const routedSessionId = request.threadId ?? id;
         const profile = await internalRuntime.inferenceForSession(routedSessionId);
-        if (!profile || typeof profile.model !== "string" || !["low", "medium", "high"].includes(profile.thinking)) {
-          throw new Error("Session inference route is missing or invalid");
-        }
-        if (routedSessionId === sessionId && (profile.model !== internalConfiguration?.model
-          || profile.thinking !== internalConfiguration?.thinking)) {
-          throw new Error("Root inference route conflicts with its pinned configuration");
-        }
-        const parsed = JSON.parse(body);
-        if (parsed.model !== profile.model || parsed.reasoning?.effort !== profile.thinking) {
-          throw new Error("Inference request conflicts with the session model or thinking pin");
-        }
-        if (profile.workersAi !== undefined && profile.gateway !== undefined) {
-          throw new Error("Session inference route has multiple transports");
-        }
-        if (profile.gateway !== undefined) {
-          if (profile.gateway.model !== profile.model || profile.gateway.reasoningEffort !== profile.thinking) {
-            throw new Error("Gateway profile conflicts with the session pin");
+        if (profile?.native === true) {
+          if (internalRuntime?.preserveRootTransport !== true || profile.gateway !== undefined || profile.workersAi !== undefined) {
+            throw new Error("Native inference cannot replace a routed transport");
           }
-          selected = createGatewayResponses(profile.gateway);
-        } else if (profile.workersAi !== undefined) {
-          if (profile.model !== "@cf/zai-org/glm-5.3" || profile.workersAi.model !== profile.model
-            || profile.workersAi.thinking !== profile.thinking) {
-            throw new Error("Workers AI profile conflicts with the session pin");
+          const parsed = JSON.parse(body);
+          if (!["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].includes(parsed.model)
+            || !["none", "low", "medium", "high", "xhigh", "max"].includes(parsed.reasoning?.effort)) {
+            throw new Error("Native inference requires a supported GPT model and thinking");
           }
-          selected = createWorkersAiResponses(profile.workersAi.ai);
-        } else {
-          if (!["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].includes(profile.model)) {
-            throw new Error("Session model requires an explicit inference binding");
-          }
+          // Native roots and children retain Rust-owned live defaults/overrides.
+          // Only routed sessions have immutable model/thinking pins.
           selected = frontierEndpoint;
+        } else {
+          if (!profile || typeof profile.model !== "string" || !["low", "medium", "high"].includes(profile.thinking)) {
+            throw new Error("Session inference route is missing or invalid");
+          }
+          if (routedSessionId === sessionId && (profile.model !== internalConfiguration?.model
+            || profile.thinking !== internalConfiguration?.thinking)) {
+            throw new Error("Root inference route conflicts with its pinned configuration");
+          }
+          const parsed = JSON.parse(body);
+          if (parsed.model !== profile.model || parsed.reasoning?.effort !== profile.thinking) {
+            throw new Error("Inference request conflicts with the session model or thinking pin");
+          }
+          if (profile.workersAi !== undefined && profile.gateway !== undefined) {
+            throw new Error("Session inference route has multiple transports");
+          }
+          if (profile.gateway !== undefined) {
+            if (profile.gateway.model !== profile.model || profile.gateway.reasoningEffort !== profile.thinking) {
+              throw new Error("Gateway profile conflicts with the session pin");
+            }
+            selected = createGatewayResponses(profile.gateway);
+          } else if (profile.workersAi !== undefined) {
+            if (profile.model !== "@cf/zai-org/glm-5.3" || profile.workersAi.model !== profile.model
+              || profile.workersAi.thinking !== profile.thinking) {
+              throw new Error("Workers AI profile conflicts with the session pin");
+            }
+            selected = createWorkersAiResponses(profile.workersAi.ai);
+          } else {
+            if (!["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].includes(profile.model)) {
+              throw new Error("Session model requires an explicit inference binding");
+            }
+            selected = frontierEndpoint;
+          }
+          if (url !== `${endpoint.apiBaseUrl}/responses`) {
+            throw new Error("Routed inference supports only full-history Responses requests");
+          }
+          url = `${selected.apiBaseUrl}/responses`;
         }
-        if (url !== `${endpoint.apiBaseUrl}/responses`) {
-          throw new Error("Routed inference supports only full-history Responses requests");
-        }
-        url = `${selected.apiBaseUrl}/responses`;
       }
       return selected.createResponse(url, id, { ...request, body });
     },
     async createWebSocket(url, id, request) {
       if (directInference) throw new Error("Direct inference threads require HTTP Responses transport");
+      if (routedInference && (request.threadId ?? id) !== sessionId) {
+        const profile = await internalRuntime.inferenceForSession(request.threadId ?? id);
+        if (profile?.native !== true || profile.gateway !== undefined || profile.workersAi !== undefined) {
+          throw new Error("Routed children require full-history HTTP Responses transport");
+        }
+      }
       try {
         const opened = await endpoint.createWebSocket(url, id, request);
         if (request.authorization === "preconnect") startup.resolve();

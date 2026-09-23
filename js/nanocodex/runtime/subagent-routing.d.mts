@@ -21,7 +21,7 @@ export type ChildRouteBinding = Readonly<{
   hostContextRef?: string;
 }>;
 export type SubagentRouting = Readonly<{
-  resolve(request: ChildRouteRequest): Promise<Readonly<{ model: ChildRoute['model']; thinking: Thinking; routeId: string }>>;
+  resolve(request: ChildRouteRequest): Promise<Readonly<{ model: ChildRoute['model']; thinking: Thinking; routeId: string; statelessHttp?: boolean }>>;
   bind(request: ChildRouteBinding): void;
   route(sessionId: string): ChildRoute;
 }>;
