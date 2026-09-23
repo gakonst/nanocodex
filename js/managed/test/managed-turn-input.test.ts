@@ -2,6 +2,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { commitManagedTransition, type DurableAgentSession } from "../src/index";
 import { DurableEventLog } from "../src/durable-events";
+import { withHardDeadline } from "../src/deadline";
 import type { ServerMessage } from "../src/protocol";
 import { parseCommand } from "../src/protocol";
 import { ManagedTurnArchive } from "../src/managed-turn-archive";
@@ -28,6 +29,7 @@ describe("chunked managed input", () => {
       const projections: Record<string, unknown>[] = [];
       Object.defineProperty(session, "env", { value: {
         ...runtimeEnv,
+        NANOCODEX: { fetch: async () => Response.json({ connectors: {}, mcp_connections: [], vault: [], tools: [], machines: [], connections: [], accounts: {} }) },
         NANOCODEX_MEMORY: { getByName: () => ({ fetch: async (url: string, options?: RequestInit) => {
           if (new URL(url).pathname === "/project") {
             if (!projectionAvailable) return new Response("fixture projection unavailable", { status: 503 });
@@ -74,14 +76,17 @@ describe("chunked managed input", () => {
       const terminal = { type: "turn_completed" as const, id: "large-input", final_message: finalMessage, usage: null, citations: [] };
       const log = new DurableEventLog<Extract<ServerMessage, { type: "turn_completed" }>>(state.storage);
       const completion = commitManagedTransition(state.storage, log, "large-input", terminal);
-      expect(completion.committed.state).toBe("completed");
+      expect(completion.committed.state, completion.committed.error ?? undefined).toBe("completed");
       expect(JSON.parse(completion.committed.terminal_json!)).toEqual(terminal);
       expect(state.storage.sql.exec<{ terminal_json: string }>("SELECT terminal_json FROM managed_turns WHERE id = 'large-input'").one().terminal_json).toMatch(/^chunks:/);
       expect(state.storage.sql.exec<{ payload_json: string }>("SELECT payload_json FROM history_projection_outbox WHERE turn_id = 'large-input'").one().payload_json).toMatch(/^chunks:/);
       expect(state.storage.sql.exec<{ completed_turns: number }>("SELECT completed_turns FROM session_state").one().completed_turns).toBe(1);
       commitManagedTransition(state.storage, log, "large-input", terminal);
       expect(state.storage.sql.exec<{ completed_turns: number }>("SELECT completed_turns FROM session_state").one().completed_turns).toBe(1);
-      await expect(session.alarm()).rejects.toThrow("memory projection failed with HTTP 503");
+      await expect(session.alarm()).resolves.toBeUndefined();
+      await expect.poll(() => state.storage.sql.exec<{ attempt_count: number }>(
+        "SELECT attempt_count FROM history_projection_outbox WHERE turn_id = 'large-input'",
+      ).one().attempt_count).toBe(1);
       const archive = new ManagedTurnArchive(state.storage, bindings.NANOCODEX_HISTORY, state.id.toString());
       const failing = new ManagedTurnArchive(state.storage, {
         put: async () => { throw new Error("fixture R2 unavailable"); },
@@ -102,6 +107,9 @@ describe("chunked managed input", () => {
       projectionAvailable = true;
       state.storage.sql.exec("UPDATE history_projection_outbox SET retry_at = 0");
       await session.alarm();
+      await expect.poll(() => state.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM history_projection_outbox",
+      ).one().count).toBe(0);
       expect(projections).toHaveLength(1);
       expect(projections[0]).toMatchObject({ input, final_message: finalMessage, turn_id: "large-input" });
       expect(state.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM managed_history_projection_chunks").one().count).toBe(0);
@@ -116,11 +124,19 @@ describe("chunked managed input", () => {
         onProjection = undefined;
         state.storage.sql.exec("UPDATE managed_turns SET state = 'accepted' WHERE id = 'projection-race'");
         commitManagedTransition(state.storage, log, first.id, { ...first, final_message: finalMessage });
+        // Hold the new generation until the old acknowledgement has settled;
+        // automatic background retries may otherwise consume it before assertion.
+        state.storage.sql.exec("UPDATE history_projection_outbox SET retry_at = ? WHERE turn_id = 'projection-race'", Date.now() + 60_000);
       };
       await session.alarm();
+      await expect.poll(() => projections.length).toBe(2);
       expect(state.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM history_projection_outbox").one().count).toBe(1);
       expect(state.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM managed_history_projection_chunks").one().count).toBeGreaterThan(0);
+      state.storage.sql.exec("UPDATE history_projection_outbox SET retry_at = 0 WHERE turn_id = 'projection-race'");
       await session.alarm();
+      await expect.poll(() => state.storage.sql.exec<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM history_projection_outbox",
+      ).one().count).toBe(0);
       expect(projections.at(-1)).toMatchObject({ turn_id: "projection-race", final_message: finalMessage });
       expect(state.storage.sql.exec<{ count: number }>("SELECT COUNT(*) AS count FROM history_projection_outbox").one().count).toBe(0);
       const conflict = await session.fetch(new Request("https://session.internal/turns", {
@@ -129,6 +145,66 @@ describe("chunked managed input", () => {
       }));
       expect(conflict.status).toBe(409);
       await state.storage.deleteAlarm();
+    });
+  });
+
+  it("recovers accepted work while history projection is stalled", async () => {
+    await runInDurableObject(bindings.NANOCODEX_SESSIONS.getByName(crypto.randomUUID()), async (session, state) => {
+      const runtimeEnv = (session as unknown as { env: Record<string, unknown> }).env;
+      let releaseProjection!: (response: Response) => void;
+      let projectionStarted = false;
+      const projection = new Promise<Response>(resolve => { releaseProjection = resolve; });
+      Object.defineProperty(session, "env", { value: {
+        ...runtimeEnv,
+        NANOCODEX: { fetch: async () => Response.json({ connectors: {}, mcp_connections: [], vault: [], tools: [], machines: [], connections: [], accounts: {} }) },
+        NANOCODEX_MEMORY: { getByName: () => ({ fetch: async (url: string) => {
+          if (new URL(url).pathname === "/project") {
+            projectionStarted = true;
+            return projection;
+          }
+          return new Response(null, { status: 204 });
+        } }) },
+        NANOCODEX_ACCOUNT_TOOLS: { getByName: () => {
+          throw Object.assign(new Error("fixture runtime temporarily unavailable"), { code: "retryable" });
+        } },
+      } });
+      state.storage.sql.exec(`INSERT INTO session_state (
+        singleton, session_id, owner_id, organization_id, team_id, authorization_epoch,
+        public_origin, runtime_profile, last_active
+      ) VALUES (1, ?, 'fixture-owner', 'fixture-organization', 'fixture-team', 1,
+        'https://nanocodex.example/', 'managed', ?)`, crypto.randomUUID(), Date.now());
+      const attempts = () => {
+        const row = state.storage.sql.exec<{ attempt_count: number; state: string; error: string | null }>(
+          "SELECT attempt_count,state,error FROM managed_turns WHERE id = 'recover-while-projecting'",
+        ).one();
+        if (row.state === "failed") throw new Error(row.error ?? "fixture unexpectedly failed");
+        return row.attempt_count;
+      };
+      try {
+        const admitted = await session.fetch(new Request("https://session.internal/turns", {
+          method: "POST", body: JSON.stringify({ id: "recover-while-projecting", input: "Synthetic recovery task" }),
+        }));
+        expect(admitted.status).toBe(202);
+        await expect.poll(attempts).toBeGreaterThan(0);
+        const previousAttempts = attempts();
+        state.storage.sql.exec("UPDATE managed_turns SET retry_at = 0 WHERE id = 'recover-while-projecting'");
+        state.storage.sql.exec(`INSERT INTO history_projection_outbox
+          (turn_id, payload_json, attempt_count, retry_at, source_cursor) VALUES ('earlier-turn', '{}', 0, 0, '1')`);
+        // The fixture ignores cancellation. The alarm and recovery must finish
+        // before we release the optional projection, not after its deadline.
+        await withHardDeadline("test alarm", 1_000, () => session.alarm());
+        expect(projectionStarted).toBe(true);
+        await expect.poll(attempts, { timeout: 1_000 }).toBeGreaterThan(previousAttempts);
+        expect(state.storage.sql.exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM history_projection_outbox",
+        ).one().count).toBe(1);
+      } finally {
+        releaseProjection(new Response(null, { status: 204 }));
+        await expect.poll(() => state.storage.sql.exec<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM history_projection_outbox",
+        ).one().count).toBe(0);
+        await state.storage.deleteAlarm();
+      }
     });
   });
 

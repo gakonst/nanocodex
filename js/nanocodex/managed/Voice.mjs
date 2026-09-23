@@ -13,6 +13,7 @@ export async function createManagedBrowserVoice(agent, voice, options = {}) {
   await initializeBrowserEngine(options);
   const raw = new ManagedBrowserVoice(voice);
   const voiceSessionId = uuidV7();
+  raw.bindSession(voiceSessionId);
   const startOperationId = crypto.randomUUID();
   const stopOperationId = crypto.randomUUID();
   const tailOperationId = crypto.randomUUID();
@@ -53,7 +54,7 @@ export async function createManagedBrowserVoice(agent, voice, options = {}) {
     dataChannelControl: true,
     async start() {
       const started = await startManagedRealtime(agent, voiceSessionId, startOperationId);
-      raw.start(JSON.stringify(started.context));
+      return raw.start(JSON.stringify(started.context));
     },
     callBody(sdp) {
       const envelope = JSON.parse(raw.callBody(sdp, voiceSessionId));

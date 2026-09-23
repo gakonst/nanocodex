@@ -4,6 +4,8 @@ import managed from './vitest.config.ts';
 // Keep the production Worker bindings/module graph while selecting memory checks.
 const configuration = mergeConfig(managed, defineConfig({ test: { fileParallelism: false } }));
 configuration.test = { ...configuration.test,
-  include: ['test/markdown-memory*.test.ts'],
+  include: ['test/markdown-memory*.test.ts', 'test/personal-memory.test.ts',
+    'test/personalization.test.ts', 'test/voice-personalization.test.ts', 'test/startup-context.test.ts',
+    'test/managed-turn-input.test.ts'],
 };
 export default configuration;

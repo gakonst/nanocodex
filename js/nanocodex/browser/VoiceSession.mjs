@@ -150,7 +150,8 @@ export class BrowserVoiceSession {
     // Only delegated work waits for admission on the direct control path.
     const coreStartup = coreReady.then(async (core) => {
       if (this.#directControl) await this.#options.beforeAgentTurn?.();
-      await core?.start();
+      const effects = await core?.start();
+      if (!this.#closed && !this.#closing.signal.aborted) await this.#apply(effects);
       return core;
     });
     this.#admission = coreStartup;

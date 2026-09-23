@@ -1,6 +1,7 @@
 import { projectCaller, type CallerContext } from "./request-origin";
 import { contextData, projectEnvironment } from "nanocodex/tools/environment";
 import { personalizationText, type PersonalizationSnapshot } from "./personalization";
+import { preparedMarkdownText } from "./markdown-memory-tools";
 import type { AgentSessionContext, PromptInput } from "nanocodex";
 import type { Agent } from "nanocodex/cloudflare";
 import { withHardDeadline } from "./deadline";
@@ -215,13 +216,17 @@ export class ManagedStartupContext {
       const current = this.prepared(turnId)!;
       const profile = current.profile_json === null ? undefined : JSON.parse(current.profile_json) as PersonalizationSnapshot;
       const eligible = profile && profile.expires_at > Date.now() ? profile : undefined;
-      const profileKey = eligible ? `${eligible.organization_id}:${eligible.team_id}:${eligible.user_id}:${eligible.version}:${eligible.user_version ?? "unavailable"}` : "unavailable";
+      const profileKey = eligible ? JSON.stringify([eligible.organization_id, eligible.team_id, eligible.user_id,
+        eligible.version, eligible.user_version,
+        eligible.team_markdown?.documents.map(({ path, revision }) => [path, revision]),
+        eligible.user_markdown?.documents.map(({ path, revision }) => [path, revision])]) : "unavailable";
       const prior = this.storage.sql.exec<{ profile_key: string }>("SELECT profile_key FROM managed_personalization_state WHERE singleton = 1").toArray()[0]?.profile_key;
       const changed = profileKey !== (prior ?? "unavailable");
       const content = [
         resolvedEnvironment ? "<startup_context>\n" + startupEnvironmentText(resolvedEnvironment) : "",
         changed ? (eligible ? personalizationText(eligible)
-          : "Prepared personalization is unavailable for this turn. Disregard prior prepared-memory blocks; use authorized recall tools if needed.") : "",
+          : "Prepared personalization is unavailable for this turn. Disregard prior prepared-memory blocks and Markdown snapshots; use authorized recall tools if needed.") : "",
+        changed && eligible ? preparedMarkdownText(eligible) : "",
         resolvedEnvironment ? (!eligible ? contextData("memory_context", { scope: "team", status: "unavailable" }) + "\n" : "") + "</startup_context>" : "",
       ].filter(Boolean).join("\n\n");
       this.storage.sql.exec("UPDATE managed_prepared_personalization SET profile_key = ? WHERE turn_id = ?", profileKey, turnId);

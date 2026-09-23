@@ -84,7 +84,7 @@ function parse(input: unknown): MarkdownMemoryFlushInput {
 /** Conservative admission: unsafe source messages are omitted before inference as well as at validation. */
 export function unsafeMemoryEvidence(text: string): boolean {
   return /-----BEGIN [\w ]*PRIVATE KEY-----|\b(?:authorization["']?\s*[:=]|bearer\s+\S+|(?:password|passwd|secret|api[_ -]?key|access[_ -]?token)["']?\s*[:=]\s*\S+)|\b(?:sk-|gh[pousr]_|github_pat_|ncx_live_|AKIA)[A-Za-z0-9_-]{8,}|[a-z]+:\/\/[^\s/]+:[^\s/]+@|\beyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+/i.test(text)
-    || /<\/?(?:system|tool|memory|recalled|developer|memory_context|retrieved_memory|memory_recall)\b|\b(?:recalled memor(?:y|ies)|saved memor(?:y|ies)|tool output|system prompt|memory_search|memory_get)\b|<!--\s*memory-consolidation:|^\s*(?:>|["“]|```|~~~|(?:system|assistant|tool|developer):)/im.test(text);
+    || /<\/?(?:system|tool|memory|recalled|developer|memory_context|retrieved_memory|memory_recall)\b|\b(?:recalled (?:memory|memories)|saved (?:memory|memories)|tool output|system prompt|memories__(?:search(?:_markdown)?|read|get)|memory_search|memory_get)\b|<!--\s*memory-consolidation:|^\s*(?:>|["“]|```|~~~|(?:system|assistant|tool|developer):)/im.test(text);
 }
 const correction = (text: string) => /\b(?:correction|actually|no longer|instead|not anymore|I meant|I changed my mind)\b/i.test(text);
 const contextual = (text: string) => correction(text) || /\b(?:not|never|no|without|unless|except|but|however|only|if|don['’]t|can['’]t|won['’]t)\b/i.test(text);

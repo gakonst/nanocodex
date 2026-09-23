@@ -10,10 +10,22 @@ final class VoiceStartupTests: XCTestCase {
     private func configuration(_ origin: String) -> VoiceConfiguration {
         .init(baseURL: URL(string: origin)!, apiKey: fixtureKey, agentID: agent, voice: "spruce")
     }
-    private func receipt(_ request: FixtureRequest, delay: Double = 0) -> FixtureReply {
+    private func receipt(_ request: FixtureRequest, delay: Double = 0, context: [String: Any] = [:]) -> FixtureReply {
         .init(body: String(data: try! JSONSerialization.data(withJSONObject: [
-            "voice_session_id": request.json["voice_session_id"]!, "operation_id": request.json["operation_id"]!, "context": []
+            "voice_session_id": request.json["voice_session_id"]!, "operation_id": request.json["operation_id"]!, "context": context
         ]), encoding: .utf8)!, delay: delay)
+    }
+    private func memoryContext(_ label: String) -> [String: Any] {
+        ["prepared_personalization": "Prepared preference: " + label,
+         "markdown_memory": "USER.md preference: " + label,
+         "workspace": "/private-workspace-canary",
+         "history": [
+             ["role": "developer", "content": [["text": "private-developer-canary"]]],
+             ["role": "user", "content": [["text": "old-history-canary"]]]
+         ]]
+    }
+    private func backgroundText(_ frames: [JSON]) -> String {
+        frames.flatMap { $0["content"].array }.map { $0["text"].string }.joined()
     }
     @MainActor func testBackendReadinessIsRequiredEvenAfterPeerAndControlConnect() throws {
         let voice = VoiceSession()
@@ -26,6 +38,102 @@ final class VoiceStartupTests: XCTestCase {
         XCTAssertEqual(voice.phase, .active)
         XCTAssertTrue(voice.isMuted)
         voice.stop()
+    }
+
+    @MainActor func testAdmissionPersonalizationIsDeliveredOnceBeforeOrAfterControlOpens() async throws {
+        for controlFirst in [false, true] {
+            let admitted = expectation(description: "Admission started")
+            let fixture = try HTTPFixture { request in
+                if request.path.hasSuffix("/start") {
+                    admitted.fulfill()
+                    return self.receipt(request, delay: controlFirst ? 0.2 : 0, context: self.memoryContext("copper-finch"))
+                }
+                if request.path.hasSuffix("/stop") { return self.receipt(request) }
+                if request.path.hasSuffix("/calls") { return .init(body: "pending", delay: 5) }
+                if request.path.hasSuffix("/events") {
+                    return .init(headers: ["Content-Type": "text/event-stream"], body: ": keepalive\n\n", delay: 5)
+                }
+                return .init(body: #"{"latest_event_cursor":"0"}"#)
+            }
+            defer { fixture.close() }
+            let transport = try ManagedVoiceTransport(credential: .init(origin: fixture.origin, apiKey: fixtureKey), agentID: agent, configuration: fixture.configuration)
+            let voice = VoiceSession()
+            var frames: [JSON] = []
+            voice.controlFrameSinkForTesting = { frames.append($0) }
+            voice.startPreparingForTesting(timeout: .seconds(5), transport: transport) { self.configuration(fixture.origin) }
+            await fulfillment(of: [admitted], timeout: 3)
+            if !controlFirst {
+                await voice.finishAdmissionForTesting()
+                XCTAssertTrue(frames.isEmpty, "Early personalization stays queued until control opens")
+            }
+            voice.receivePeerSignalForTesting(.connected)
+            voice.receivePeerSignalForTesting(.controlReady)
+            try voice.receiveRealtimeForTesting(.object(["type": .string("session.started")]))
+            if controlFirst { await voice.finishAdmissionForTesting() }
+            let text = backgroundText(frames)
+            for source in ["Prepared preference: copper-finch", "USER.md preference: copper-finch"] {
+                XCTAssertEqual(text.components(separatedBy: source).count - 1, 1)
+            }
+            for excluded in ["private-workspace-canary", "private-developer-canary", "old-history-canary"] {
+                XCTAssertFalse(text.contains(excluded))
+            }
+            XCTAssertFalse(frames.isEmpty)
+            XCTAssertTrue(frames.allSatisfy {
+                $0["type"].string == "session.context.append" && $0["channel"].string == "commentary"
+            }, "Admission adds background context without requesting speech")
+            XCTAssertTrue(voice.transcripts.isEmpty)
+            let delivered = frames
+            voice.receivePeerSignalForTesting(.controlReady)
+            XCTAssertEqual(frames, delivered, "Acknowledged context must not replay when control opens again")
+            voice.stop(); await voice.finishStopping()
+        }
+    }
+
+    @MainActor func testStoppedAdmissionCannotDeliverPersonalizationToReplacementCall() async throws {
+        let oldAdmission = expectation(description: "Old admission started")
+        let newAdmission = expectation(description: "Replacement admission started")
+        let otherAgent = "22222222-2222-7222-8222-222222222222"
+        let fixture = try HTTPFixture { request in
+            if request.path.hasSuffix("/start") {
+                let replacement = request.path.contains(otherAgent)
+                if replacement { newAdmission.fulfill() } else { oldAdmission.fulfill() }
+                return self.receipt(request, delay: replacement ? 0 : 0.4,
+                                    context: self.memoryContext(replacement ? "current-juniper" : "obsolete-lilac"))
+            }
+            if request.path.hasSuffix("/stop") { return self.receipt(request) }
+            if request.path.hasSuffix("/calls") { return .init(body: "pending", delay: 5) }
+            if request.path.hasSuffix("/events") {
+                return .init(headers: ["Content-Type": "text/event-stream"], body: ": keepalive\n\n", delay: 5)
+            }
+            return .init(body: #"{"latest_event_cursor":"0"}"#)
+        }
+        defer { fixture.close() }
+        let credential = try AccountCredential(origin: fixture.origin, apiKey: fixtureKey)
+        let oldTransport = try ManagedVoiceTransport(credential: credential, agentID: agent, configuration: fixture.configuration)
+        let voice = VoiceSession()
+        var frames: [JSON] = []
+        voice.controlFrameSinkForTesting = { frames.append($0) }
+        voice.startPreparingForTesting(timeout: .seconds(5), transport: oldTransport) { self.configuration(fixture.origin) }
+        await fulfillment(of: [oldAdmission], timeout: 3)
+        voice.stop()
+        XCTAssertTrue(frames.isEmpty)
+        let replacement = try ManagedVoiceTransport(credential: credential, agentID: otherAgent, configuration: fixture.configuration)
+        voice.startPreparingForTesting(timeout: .seconds(5), transport: replacement) {
+            .init(baseURL: URL(string: fixture.origin)!, apiKey: fixtureKey, agentID: otherAgent)
+        }
+        await fulfillment(of: [newAdmission], timeout: 3)
+        voice.receivePeerSignalForTesting(.connected)
+        voice.receivePeerSignalForTesting(.controlReady)
+        try voice.receiveRealtimeForTesting(.object(["type": .string("session.started")]))
+        await voice.finishAdmissionForTesting()
+        await voice.finishStopping() // Wait for the previous call's retained cleanup.
+        let text = backgroundText(frames)
+        XCTAssertTrue(text.contains("Prepared preference: current-juniper"))
+        XCTAssertTrue(text.contains("USER.md preference: current-juniper"))
+        XCTAssertFalse(text.contains("obsolete-lilac"))
+        XCTAssertEqual(voice.conversationID, otherAgent)
+        XCTAssertTrue(voice.isEngaged)
+        voice.stop(); await voice.finishStopping()
     }
 
     @MainActor func testListeningDoesNotWaitForTaskSetupButDelegationDoes() async throws {

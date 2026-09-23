@@ -183,7 +183,7 @@ it('queues manual daily writes durably, reports them by owner, and does not requ
   expect(await (await call(where, 'status', {})).json()).toMatchObject({ consolidation: { next_at: null, pending: [] } });
 });
 
-it('rolls back the document, append receipt and search index when consolidation enqueue fails', async () => {
+it('keeps the document and search index when optional consolidation enqueue fails', async () => {
   const where = target(crypto.randomUUID(), 'team', 'alice', 'personal');
   await call(where, 'status', {});
   await runInDurableObject(where.stub, async (memory, state) => {
@@ -195,11 +195,14 @@ it('rolls back the document, append receipt and search index when consolidation 
         operation_id: 'atomic-daily-note', content: 'atomic-turquoise-canary' }),
     }));
     try {
-      const failure = await write();
-      expect(failure.status).toBe(500);
-      expect(await failure.json()).toMatchObject({ error: 'memory_scope_failed' });
+      const saved = await write();
+      expect(saved.status).toBe(200);
+      expect(await saved.json()).toMatchObject({ ok: true, revision: 1 });
       for (const table of ['markdown_memory_documents', 'markdown_memory_operations', 'markdown_memory_chunks',
-        'markdown_memory_fts', 'markdown_memory_ai_items', 'markdown_consolidation_events', 'markdown_consolidation_jobs']) {
+        'markdown_memory_fts', 'markdown_memory_ai_items']) {
+        expect(state.storage.sql.exec(`SELECT COUNT(*) AS count FROM ${table}`).one()).toEqual({ count: 1 });
+      }
+      for (const table of ['markdown_consolidation_events', 'markdown_consolidation_jobs', 'markdown_consolidation_seen']) {
         expect(state.storage.sql.exec(`SELECT COUNT(*) AS count FROM ${table}`).one()).toEqual({ count: 0 });
       }
     } finally {
@@ -210,6 +213,65 @@ it('rolls back the document, append receipt and search index when consolidation 
   expect(await (await call(where, 'get', { path: 'memory/2026-09-22.md' })).json()).toMatchObject({ revision: 1, content: 'atomic-turquoise-canary' });
   expect(await (await call(where, 'status', {})).json()).toMatchObject({
     semantic: { pending: 1 }, consolidation: { pending: [{ path: 'memory/2026-09-22.md', revision: 1 }] },
+  });
+});
+
+it('does not fail a saved note when optional alarm scheduling fails', async () => {
+  const where = target(crypto.randomUUID(), 'team', 'alice', 'personal');
+  await call(where, 'status', {});
+  await runInDurableObject(where.stub, async (memory, state) => {
+    const alarm = vi.spyOn(state.storage, 'deleteAlarm').mockRejectedValue(new Error('synthetic alarm failure'));
+    try {
+      const saved = await memory.fetch(new Request('https://memory.internal/markdown-memory/write', {
+        method: 'POST', headers: where.headers,
+        body: JSON.stringify({ operation: 'put', path: 'USER.md', content: 'Saved despite optional alarm failure.' }),
+      }));
+      expect(saved.status).toBe(200);
+      expect(await saved.json()).toMatchObject({ ok: true });
+      expect(alarm).toHaveBeenCalled();
+      expect(state.storage.sql.exec('SELECT content FROM markdown_memory_documents WHERE path=?', 'USER.md').one())
+        .toMatchObject({ content: 'Saved despite optional alarm failure.' });
+    } finally { alarm.mockRestore(); }
+  });
+});
+
+it('keeps canonical reads and background consolidation available during remote invalidation failure', async () => {
+  const where = target(crypto.randomUUID(), 'team', 'alice', 'personal');
+  await runInDurableObject(where.stub, async (memory, state) => {
+    const runtime = memory as unknown as { env: MemoryScopeEnv };
+    const original = runtime.env;
+    const notify = vi.fn(async () => new Response(null, { status: 503 }));
+    const run = vi.fn(async () => ({ response: { candidates: [] } }));
+    runtime.env = { ...original, AI: { run }, NANOCODEX_MEMORY_AUTOMATION: 'true',
+      NANOCODEX_SESSIONS: { idFromString: (id: string) => id, get: () => ({ fetch: notify }) } as unknown as DurableObjectNamespace };
+    const rpc = (path: string, body: unknown) => memory.fetch(new Request(`https://memory.internal/${path}`, {
+      method: 'POST', headers: where.headers, body: JSON.stringify(body),
+    }));
+    try {
+      expect((await rpc('memory', { operation: 'scan', query: 'canonical copper fact' })).status).toBe(200);
+      const saved = await (await rpc('memory', { operation: 'put', content: 'canonical copper fact' })).json<{ memory: { key: { id: number; version: number } } }>();
+      state.storage.sql.exec('UPDATE prepared_personalization SET generation=generation+1,invalidated_through=generation+1 WHERE team_id=?', 'personal:alice');
+      state.storage.sql.exec('INSERT INTO personalization_subscribers(storage_id,team_id,user_id,expires_at,acknowledged_generation) VALUES(?,?,?,?,0)',
+        'b'.repeat(64), 'personal:alice', 'alice', Date.now() + 60_000);
+      const read = await rpc('memory', { operation: 'read', keys: [saved.memory.key] });
+      expect(read.status).toBe(200);
+      expect(await read.text()).toContain('canonical copper fact');
+      expect((await rpc('memory', { operation: 'scan', query: 'canonical copper fact' })).status).toBe(200);
+      expect(notify).not.toHaveBeenCalled();
+      expect((await rpc('markdown-memory/write', { operation: 'put', path: 'memory/2026-09-23.md', content: 'A separate daily fact.' })).status).toBe(200);
+      state.storage.sql.exec('UPDATE markdown_consolidation_jobs SET due=?', Date.now() - 1);
+      await memory.alarm();
+      expect(notify).toHaveBeenCalled();
+      expect(run).toHaveBeenCalledOnce();
+      expect(await (await rpc('markdown-memory/status', {})).json()).toMatchObject({ consolidation: { pending: [], receipts: [{ status: 'empty' }] } });
+      expect(state.storage.sql.exec('SELECT acknowledged_generation FROM personalization_subscribers').one()).toEqual({ acknowledged_generation: 0 });
+      // Explicit forgetting still reports failure until outstanding copies are fenced.
+      expect((await rpc('memory', { operation: 'delete', key: saved.memory.key })).status).toBe(500);
+    } finally {
+      runtime.env = original;
+      state.storage.sql.exec('DELETE FROM personalization_subscribers');
+      await state.storage.deleteAlarm();
+    }
   });
 });
 

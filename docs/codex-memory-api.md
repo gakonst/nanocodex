@@ -8,8 +8,11 @@ consumed copies. No other tool catalog is included.
 The native CLI calls the managed `/v1/memories/{method}` API. The managed agent
 uses the same file adapter. The old `memory` model tool is no longer registered;
 old configuration entries select these compatibility tools plus the managed
-[Markdown memory tools](workers-markdown-memory.md), while an empty tool list
-remains empty. The pinned Codex schemas themselves remain unchanged.
+[Markdown memory tools](workers-markdown-memory.md), all under `memories__*`.
+The same `read` and `search` operations cover canonical Markdown, using Codex
+arguments and result shapes. Markdown adds only `write` and `status`; writes need
+an operation, path, and content, with storage bookkeeping handled by the host.
+An empty tool list remains empty. The four pinned Codex schemas remain unchanged.
 
 No existing memories are migrated or deleted. Versioned records appear as
 `legacy/<id>-v<version>.md`, and reads use the existing ownership and lifecycle
@@ -47,8 +50,24 @@ bash scripts/codex-parity/memory-eval.sh /path/to/codex-at-pinned-revision
 ```
 
 This compiles the pinned upstream schema constructors, checks the JavaScript file
-adapter, runs the native managed-memory proxy tests, and exercises managed
-Markdown memory in the Worker/SQLite runtime. Regression cases cover Unicode
+adapter, runs the native managed-memory proxy and voice context tests, rebuilds
+the browser WASM for voice transport checks, and exercises managed Markdown
+memory, prepared text/voice personalization, and independent history projection
+in the Worker/SQLite runtime. Regression cases cover Unicode
 normalization and ordering, line endings, result projection, and exclusion of
 consolidation reports from search. This evaluates tool compatibility and storage
 correctness; it does not measure a model's long-term recall quality.
+
+On macOS, also verify the native Apple consumer against a freshly built Rust core:
+
+```sh
+pnpm build:voice-core
+swift test --package-path apple/NanocodexVoice
+```
+
+Voice regressions check both memory sources before and after the control channel
+opens, stop/replacement boundaries, background-only delivery, and large escaped
+snapshots. Stalled background fetch/body reads must not delay admission, and
+optional notification failures must not fail the live event stream. Recovery must
+continue while history projection is unresolved. Live provider tests remain
+separate from these deterministic checks.

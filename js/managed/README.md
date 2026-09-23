@@ -150,28 +150,30 @@ storage ownership.
 
 ## Markdown memory
 
-Managed agents use `memory_get`, `memory_search`, and `memory_write` for editable
-curated Markdown and daily notes stored in Durable Object SQLite. Hybrid semantic
-retrieval, daily consolidation and awaited pre-compaction saves use the existing
-AI Search and Workers AI bindings. `memory_status` reports availability and
-durable job receipts. Set `NANOCODEX_MEMORY_AUTOMATION=false` to disable automatic
-saves and consolidation. See the
-[design and API](../../docs/workers-markdown-memory.md) for ownership, revision
-checks, startup excerpts, and implementation boundaries. Existing memory APIs
+Managed agents use `memories__read`, `memories__search`, and `memories__write` for editable
+curated Markdown and daily notes stored in Durable Object SQLite. Read and search
+keep the Codex argument/result contracts. Background indexing and daily consolidation
+use the existing AI Search and Workers AI
+bindings. Compaction is independent of memory; agents save useful context during
+their work. `memories__status` reports availability and
+durable job receipts. Set `NANOCODEX_MEMORY_AUTOMATION=false` to disable background
+consolidation. See the
+[design and API](../../docs/workers-markdown-memory.md) for ownership, simple writes,
+startup excerpts, and implementation boundaries. Existing memory APIs
 and prepared personalization remain compatible.
 
 ## Prepared personalization
 
 Managed admission no longer runs prompt-derived history search or memory scan.
-The MemoryScope prepares deterministic snapshots of saved personal and team memories; Sessions
+The MemoryScope prepares snapshots of saved personal/team facts and Markdown notes; Sessions
 warm a disposable copy on create, open, or activity without awaiting it. Each turn
 pins the eligible local copy or a cache miss. A miss proceeds without retrieval.
 Explicit `find_session`, `read_session`, and memory tools remain available.
 
 Snapshots carry organization/team/user scope, source versions, and a five-minute
-lease. New memories coalesce until refresh; replacements and deletions invalidate
-issued copies before the mutation succeeds. Failed invalidations retain durable
-retry debt. Expiry is checked again before model injection. Previously delivered
+lease. New facts coalesce until refresh. Legacy fact replacements and deletions
+fence issued copies before the mutation succeeds; Markdown changes invalidate
+prepared copies in the background. Failed invalidations retain retry debt. Expiry is checked again before model injection. Previously delivered
 conversation history cannot be erased; later prepared blocks replace or withdraw
 prior prepared context. Existing team facts remain shared; personal facts are
 stored separately for the authenticated user within their organization.
@@ -184,14 +186,16 @@ proceed with a cache miss. Refresh is activity-driven, so idle users incur no
 periodic job. Identical content is not appended again on later turns, and pinned
 context is pruned when the associated turn receipts are archived.
 
-Voice startup receives optional prepared context in the existing context response.
-Updated Rust/WASM and Apple voice clients accept it as bounded background data;
-older clients ignore the optional field. Media readiness never awaits preparation.
+Voice startup consumes already-prepared context without waiting for memory.
+A background refresh can also send prepared context to an active voice session.
+Rust/WASM and Apple voice clients accept it as bounded background data. Media
+readiness and prompt admission never await memory preparation.
 Account/environment discovery remains a separate first-turn dependency.
 
 ### Personal memories and request attribution
 
-`memory` accepts `scope: "personal" | "team"` (default `team`). Use personal for
+The legacy `/v1/memory` management API accepts `scope: "personal" | "team"`
+(default `team`). Use personal for
 private user preferences and facts, and team for shared knowledge. A scan receipt
 and every memory key belong to their scope; keep it unchanged across scan, read,
 put, and delete. Both scopes use the existing root-only write policy, capability
@@ -348,7 +352,7 @@ without rewriting baseline instructions, cache keys, or the conversation prefix.
   service entries also advertise deferred tools and documentation.
   XML data is escaped and explicitly carries no instructional authority.
   Startup does not search past threads using the current prompt: `find_session`,
-  `read_session`, and `memory scan/read` provide scoped recall when needed.
+  `read_session`, `memories__search`, and `memories__read` provide scoped recall when needed.
   The environment and timestamp are frozen once, including across retries,
   reconnects, and pending-memory invalidation. Later turns append to the existing
   conversation without rewriting its cacheable prefix or changing cache keys.
@@ -359,8 +363,10 @@ without rewriting baseline instructions, cache keys, or the conversation prefix.
   namespace so admitted calls can recover their receipts. A broker-confirmed
   unstarted call returns an unavailable-hand result for the agent to handle;
   transport failures with unknown admission retain the existing call identity.
-  Subsequent turns use `memory` to scan, read, put/replace, and delete scoped facts;
-  mutations require root-agent `memory:write` authority and puts require a scan.
+  Subsequent turns use the `memories__*` tools for scoped recall and Markdown
+  updates. Writes require root-agent `memory:write` authority. Markdown writes
+  default to private memory for direct accounts and shared memory for Connect;
+  shared writes also require an explicit user request.
 - `create_cron` saves a recurring prompt through the same durable scheduler as
   `/v1/agents/:id/triggers/:triggerId`. Supply a stable `id`, five-field `cron`,
   and `input`; optional `timezone`, `enabled`, and `session_mode` default to UTC,
