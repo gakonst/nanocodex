@@ -265,6 +265,8 @@ pub(super) struct Conversation {
     viewport_height: Option<u16>,
     pending_scroll_anchor: Option<PendingScrollAnchor>,
     streamed_this_turn: bool,
+    first_response_pending: bool,
+    first_response_redraw_pending: bool,
     pending_run_error: Option<String>,
     run_started_at: Option<Instant>,
     pending_code_execs: HashMap<String, PendingCodeExec>,
@@ -298,6 +300,8 @@ impl Conversation {
             viewport_height: None,
             pending_scroll_anchor: None,
             streamed_this_turn: false,
+            first_response_pending: false,
+            first_response_redraw_pending: false,
             pending_run_error: None,
             run_started_at: None,
             pending_code_execs: HashMap::new(),
@@ -418,6 +422,8 @@ impl Conversation {
                 self.last_cost_usd = None;
                 self.run_generation = self.run_generation.saturating_add(1);
                 self.streamed_this_turn = false;
+                self.first_response_pending = false;
+                self.first_response_redraw_pending = false;
                 self.pending_run_error = None;
                 self.run_started_at = Some(Instant::now());
                 self.pending_code_execs.clear();
@@ -918,7 +924,12 @@ impl Conversation {
     }
 
     pub(super) fn push_assistant_delta(&mut self, delta: &str) {
+        if delta.is_empty() {
+            return;
+        }
         let append_to_current = self.streamed_this_turn;
+        self.first_response_pending |= !append_to_current;
+        self.first_response_redraw_pending |= !append_to_current;
         self.streamed_this_turn = true;
         if append_to_current && self.transcript.tail_is_assistant() {
             self.note_tail_will_change();
@@ -953,6 +964,7 @@ impl Conversation {
     ) {
         let viewport_changed =
             self.viewport_width != Some(width) || self.viewport_height != Some(height);
+        let first_response = std::mem::take(&mut self.first_response_pending);
         if let Some(pending) = self.pending_scroll_anchor.take() {
             let changed_tail_rows = pending.changed_tail.map_or(0, |(index, before)| {
                 self.transcript
@@ -977,8 +989,20 @@ impl Conversation {
                     .saturating_add(changed_tail_rows)
                     .saturating_add(new_entry_rows)
                     .saturating_sub(usize::from(height));
-                self.queue_smooth_scroll(viewport_shift);
+                if !first_response {
+                    self.queue_smooth_scroll(viewport_shift);
+                }
             }
+        }
+        // A new answer must be visible in its first frame. Keep manual history
+        // and selection anchoring, but do not animate the response in from below
+        // the viewport when the reader is following the live bottom.
+        if first_response
+            && self.scroll_from_bottom == 0
+            && self.selected_user.is_none()
+            && !preserve_view
+        {
+            self.smooth_scroll_from_bottom = 0;
         }
         self.viewport_width = Some(width);
         self.viewport_height = Some(height);
@@ -2900,6 +2924,28 @@ impl App {
         transcript.semanticize_copy(text)
     }
 
+    // Consume scheduling independently of viewport settlement: branch navigation
+    // may render another conversation while this response remains offscreen.
+    pub(super) fn take_first_response_redraw(&mut self) -> bool {
+        let mut pending = std::mem::take(&mut self.main.first_response_redraw_pending);
+        if let Some(btw) = &mut self.btw {
+            pending |= std::mem::take(&mut btw.conversation.first_response_redraw_pending);
+        }
+        for branch in &mut self.main_branches {
+            pending |= std::mem::take(&mut branch.conversation.first_response_redraw_pending);
+        }
+        pending
+    }
+
+    #[cfg(test)]
+    pub(super) fn first_response_pending(&self) -> bool {
+        self.main.first_response_pending
+            || self
+                .btw
+                .as_ref()
+                .is_some_and(|btw| btw.conversation.first_response_pending)
+    }
+
     pub(super) fn advance_smooth_scroll(&mut self) {
         self.main.advance_smooth_scroll();
         if let Some(btw) = &mut self.btw {
@@ -4596,6 +4642,50 @@ mod tests {
             limit.saturating_sub(3),
             "scrolling down should move immediately after reaching the top",
         );
+    }
+
+    #[test]
+    fn first_response_is_visible_without_smooth_scroll_after_viewport_fills() {
+        let mut app = App::new(".".into());
+        for index in 0..12 {
+            app.main
+                .push_output(TranscriptItem::User(format!("prompt {index}")));
+        }
+        app.main.settle_viewport(20, 6);
+        app.main.jump_to_bottom();
+
+        app.main.push_assistant_delta("");
+        assert!(!app.first_response_pending());
+        app.main.push_assistant_delta("first response");
+        assert!(app.first_response_pending());
+        app.main.settle_viewport(20, 6);
+
+        assert_eq!(app.main.display_scroll_from_bottom(), 0);
+        assert!(!app.smooth_scroll_pending());
+        assert!(!app.first_response_pending());
+    }
+
+    #[test]
+    fn first_response_preserves_manual_history_and_selection_anchors() {
+        for preserve_selection in [false, true] {
+            let mut app = App::new(".".into());
+            for index in 0..12 {
+                app.main
+                    .push_output(TranscriptItem::User(format!("prompt {index}")));
+            }
+            app.main.settle_viewport(20, 6);
+            app.main.jump_to_bottom();
+            if !preserve_selection {
+                app.main.scroll_up(3);
+            }
+            let before = app.main.display_scroll_from_bottom();
+            app.main.push_assistant_delta("first response");
+            app.main
+                .settle_viewport_with_selection(20, 6, preserve_selection);
+
+            assert!(app.main.display_scroll_from_bottom() > before);
+            assert!(!app.smooth_scroll_pending());
+        }
     }
 
     #[test]

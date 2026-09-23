@@ -632,7 +632,11 @@ impl UiModel {
                 let updated = self.app.on_main_agent_event(0, &event);
                 request_navigated_branch_switch(&mut self.app, commands)?;
                 if updated {
-                    Ok(UiUpdate::Redraw(RedrawPriority::Streaming))
+                    Ok(UiUpdate::Redraw(if self.app.take_first_response_redraw() {
+                        RedrawPriority::Immediate
+                    } else {
+                        RedrawPriority::Streaming
+                    }))
                 } else {
                     Ok(UiUpdate::Ignore)
                 }
@@ -679,7 +683,11 @@ impl UiModel {
                     });
                 }
                 handle_worker_update(&mut self.app, update, commands)?;
-                Ok(UiUpdate::Redraw(RedrawPriority::Streaming))
+                Ok(UiUpdate::Redraw(if self.app.take_first_response_redraw() {
+                    RedrawPriority::Immediate
+                } else {
+                    RedrawPriority::Streaming
+                }))
             }
             UiAction::WorkerStopped => {
                 self.app
@@ -981,7 +989,7 @@ pub(crate) async fn run_observed(
                 if let Some(received) = received {
                     stream_telemetry.event_applied(
                         received,
-                        matches!(update, UiUpdate::Redraw(RedrawPriority::Streaming)),
+                        matches!(update, UiUpdate::Redraw(_)),
                     );
                 }
                 if apply_update(update, &mut scheduler) {
@@ -1137,10 +1145,7 @@ fn apply_main_agent_event(
     });
     let update = ui.update(action, worker_tx)?;
     if let Some(received) = received {
-        stream_telemetry.event_applied(
-            received,
-            matches!(update, UiUpdate::Redraw(RedrawPriority::Streaming)),
-        );
+        stream_telemetry.event_applied(received, matches!(update, UiUpdate::Redraw(_)));
     }
     Ok(apply_update(update, scheduler))
 }
@@ -4622,6 +4627,68 @@ mod tests {
     }
 
     #[test]
+    fn first_response_is_scheduled_once_while_branch_navigator_hides_its_viewport() {
+        let mut app = App::new("/workspace".into());
+        app.main
+            .transcript
+            .push_editable_user("root prompt".to_owned(), 1);
+        app.move_up();
+        assert!(app.start_historical_edit());
+        app.replace_input("branch prompt".to_owned());
+        let request = app.commit_historical_edit().unwrap();
+        let _ = app.main_branch_opened(
+            request.new_branch,
+            request.source_branch,
+            request.prompt,
+            Arc::from("branch-session"),
+        );
+        assert!(app.toggle_branch_navigator());
+        app.move_branch_navigator(-1);
+        let (commands, _worker) = mpsc::unbounded_channel();
+        let mut ui = UiModel::new(app, Arc::from("main-session"));
+        let (events, mut agent_events) = EventSink::channel("test".to_owned());
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 24)).unwrap();
+
+        for (text, expected) in [
+            ("A", RedrawPriority::Immediate),
+            ("B", RedrawPriority::Streaming),
+        ] {
+            events
+                .emit(
+                    AgentEventKind::AssistantDelta,
+                    json!({"model_call_index": 0, "text": text}),
+                )
+                .unwrap();
+            let update = ui
+                .update(
+                    UiAction::Worker(WorkerEvent::MainBranchAgentEvent {
+                        id: request.new_branch,
+                        event: agent_events.try_recv_timed().unwrap(),
+                    }),
+                    &commands,
+                )
+                .unwrap();
+            assert_eq!(update, UiUpdate::Redraw(expected));
+            terminal
+                .draw(|frame| super::view::render(frame, &mut ui.app))
+                .unwrap();
+            assert!(terminal.backend().to_string().contains("Branch 0 preview"));
+            assert!(
+                ui.app.first_response_pending(),
+                "hidden viewport has not settled"
+            );
+        }
+
+        ui.app.close_branch_navigator();
+        terminal
+            .draw(|frame| super::view::render(frame, &mut ui.app))
+            .unwrap();
+        assert!(terminal.backend().to_string().contains("AB"));
+        assert!(!ui.app.first_response_pending());
+    }
+
+    #[test]
     fn main_event_batches_apply_assistant_deltas_individually() {
         let (events, mut agent_events) = EventSink::channel("test".to_owned());
         events
@@ -4675,6 +4742,22 @@ mod tests {
                 &mut scheduler,
                 &mut agent_events,
                 first,
+            )
+            .unwrap()
+        );
+        assert_eq!(ui.app.main.transcript.assistant_sources(), ["A"]);
+        assert!(scheduler.is_due(Instant::now()));
+        ui.app.main.settle_viewport(80, 24);
+        scheduler.presented(Instant::now());
+        let next = agent_events.try_recv_timed();
+        assert!(
+            !apply_main_agent_event_batch(
+                &mut ui,
+                &commands,
+                &mut telemetry,
+                &mut scheduler,
+                &mut agent_events,
+                next,
             )
             .unwrap()
         );

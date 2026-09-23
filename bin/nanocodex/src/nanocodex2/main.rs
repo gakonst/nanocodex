@@ -609,9 +609,10 @@ fn run_with_runtime(
         .map_err(|error| ManagedError::Configuration(format!("failed to start Tokio: {error}")))?;
     let result = runtime.block_on(future);
     // Application cleanup has completed. Optional presentation discovery or DNS
-    // can still own blocking work that Tokio cannot cancel. Match the legacy
-    // CLI's bound instead of keeping the terminal process open for that work.
-    runtime.shutdown_timeout(std::time::Duration::from_millis(100));
+    // can still own blocking work that Tokio cannot cancel. Foreground work and
+    // its owned cleanup were awaited above; give no extra exit grace period to
+    // these disposable background tasks.
+    runtime.shutdown_background();
     result
 }
 
@@ -1231,6 +1232,37 @@ fn write_json_line<T: serde::Serialize>(value: &T) -> Result<(), ManagedError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_waits_for_foreground_cleanup_before_success_or_error() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        for fails in [false, true] {
+            let cleaned = Arc::new(AtomicBool::new(false));
+            let observed = Arc::clone(&cleaned);
+            let result = run_with_runtime(async move {
+                // The application future owns and awaits this cleanup, even on
+                // its error path. Runtime background shutdown must follow it.
+                let cleanup = tokio::spawn(async move {
+                    tokio::task::yield_now().await;
+                    observed.store(true, Ordering::SeqCst);
+                });
+                cleanup.await.unwrap();
+                if fails {
+                    Err(ManagedError::Configuration(
+                        "synthetic runtime failure".into(),
+                    ))
+                } else {
+                    Ok(())
+                }
+            });
+            assert!(cleaned.load(Ordering::SeqCst));
+            assert_eq!(result.is_err(), fails);
+        }
+    }
 
     #[test]
     fn runtime_shutdown_does_not_wait_for_background_blocking_work() {

@@ -201,9 +201,10 @@ fn run_with_runtime(future: impl std::future::Future<Output = Result<()>>) -> Re
         .build()?;
     let result = runtime.block_on(future);
     // Application cleanup has completed. Optional MCP discovery can still own a
-    // blocking DNS lookup, which Tokio cannot cancel. Do not let that lookup
-    // hold the terminal process open until the system resolver times out.
-    runtime.shutdown_timeout(std::time::Duration::from_millis(100));
+    // blocking DNS lookup, which Tokio cannot cancel. Foreground work and its
+    // owned cleanup were awaited above; give no extra exit grace period to
+    // these disposable background tasks.
+    runtime.shutdown_background();
     result
 }
 
@@ -300,6 +301,35 @@ async fn run(cli: Cli) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn runtime_waits_for_foreground_cleanup_before_success_or_error() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        for fails in [false, true] {
+            let cleaned = Arc::new(AtomicBool::new(false));
+            let observed = Arc::clone(&cleaned);
+            let result = run_with_runtime(async move {
+                // The application future owns and awaits this cleanup, even on
+                // its error path. Runtime background shutdown must follow it.
+                let cleanup = tokio::spawn(async move {
+                    tokio::task::yield_now().await;
+                    observed.store(true, Ordering::SeqCst);
+                });
+                cleanup.await.unwrap();
+                if fails {
+                    Err(eyre!("synthetic runtime failure"))
+                } else {
+                    Ok(())
+                }
+            });
+            assert!(cleaned.load(Ordering::SeqCst));
+            assert_eq!(result.is_err(), fails);
+        }
+    }
 
     #[test]
     fn runtime_shutdown_does_not_wait_for_background_blocking_work() {

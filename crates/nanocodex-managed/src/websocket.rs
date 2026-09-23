@@ -1,4 +1,7 @@
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::{
+    sync::OnceLock,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
+};
 
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -541,6 +544,7 @@ async fn connect_endpoint(
         .max_message_size(None)
         .max_frame_size(None);
     let (mut socket, response) = tokio::time::timeout(CONNECT_TIMEOUT, async {
+        let tls_timing = ConnectionTiming::new("managed_native_tls");
         let connector = if request.uri().scheme_str() == Some("wss") {
             Some(tokio_tungstenite::Connector::Rustls(
                 nanocodex_oai_api::tls::native_client_config().await?,
@@ -548,11 +552,14 @@ async fn connect_endpoint(
         } else {
             None
         };
+        drop(tls_timing);
+        let _upgrade_timing = ConnectionTiming::new("managed_ws_upgrade");
         connect_async_tls_with_config(request, Some(config), true, connector).await
     })
     .await
     .map_err(|_| live_error("managed WebSocket handshake timed out"))?
     .map_err(|error| live_error(format!("managed WebSocket handshake failed: {error}")))?;
+    let _ready_timing = ConnectionTiming::new("managed_ws_ready");
     match tokio::time::timeout(CONNECT_TIMEOUT, socket.next())
         .await
         .map_err(|_| live_error("managed WebSocket ready timed out"))?
@@ -592,6 +599,41 @@ async fn connect_endpoint(
             ))
         }
         _ => Err(live_error("managed WebSocket closed before ready")),
+    }
+}
+
+// Opt-in, content-free connection phases share the CLI startup diagnostic.
+// Only static stage names and monotonic durations enter stderr; requests,
+// responses, origins, identifiers and credentials are never formatted here.
+struct ConnectionTiming {
+    stage: &'static str,
+    started: Option<Instant>,
+}
+
+impl ConnectionTiming {
+    fn new(stage: &'static str) -> Self {
+        static ENABLED: OnceLock<bool> = OnceLock::new();
+        let enabled = *ENABLED.get_or_init(|| {
+            std::env::var_os("NANOCODEX_STARTUP_TIMING").is_some_and(|value| value == "1")
+        });
+        Self {
+            stage,
+            started: enabled.then(Instant::now),
+        }
+    }
+}
+
+impl Drop for ConnectionTiming {
+    fn drop(&mut self) {
+        if let Some(started) = self.started {
+            eprintln!(
+                "{}",
+                serde_json::json!({
+                    "type": "client.startup", "stage": self.stage,
+                    "duration_ms": started.elapsed().as_secs_f64() * 1000.0,
+                })
+            );
+        }
     }
 }
 
