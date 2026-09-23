@@ -11,6 +11,7 @@ export type RemoteStartupTiming = Readonly<{
 }>;
 type CandidateType = "host" | "srflx" | "prflx" | "relay";
 type CandidateProtocol = "udp" | "tcp";
+type AddressFamily = "ipv4" | "ipv6" | "unknown";
 
 /** Receiver measurements. Delays are local decode/jitter averages or transport
  * RTT, never an estimate of capture-to-display latency. Missing data stays absent. */
@@ -33,12 +34,24 @@ export type RemoteStats = Readonly<{
   remoteCandidateType?: CandidateType;
   candidateProtocol?: CandidateProtocol;
   relayProtocol?: CandidateProtocol | "tls";
+  localAddressFamily?: AddressFamily;
+  remoteAddressFamily?: AddressFamily;
 }>;
 
 type Stat = { id: string; type: string; timestamp: number; [key: string]: unknown };
 const number = (value: unknown): number | undefined => typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
 function choice<T extends string>(value: unknown, choices: readonly T[]): T | undefined {
   return typeof value === "string" && choices.includes(value as T) ? value as T : undefined;
+}
+function addressFamily(value: unknown): AddressFamily {
+  if (typeof value !== "string" || value.length > 128) return "unknown";
+  if (/^(?:[0-9]{1,3}\.){3}[0-9]{1,3}$/.test(value) && value.split(".").every(part => Number(part) <= 255)) return "ipv4";
+  if (!value.includes(":") || !/^[0-9a-f:.]+$/i.test(value)) return "unknown"; // Includes browser-redacted mDNS names.
+  try {
+    // URL validates IPv6 syntax locally. Never retain the address or URL.
+    const host = new URL(`http://[${value}]/`).hostname;
+    return host.startsWith("[") && host.endsWith("]") ? "ipv6" : "unknown";
+  } catch { return "unknown"; }
 }
 function delta(current: unknown, previous: unknown): number | undefined {
   const a = number(current), b = number(previous);
@@ -76,6 +89,8 @@ export class RemoteStatsSampler {
     stats.localCandidateType = choice(local?.candidateType, ["host", "srflx", "prflx", "relay"]);
     stats.remoteCandidateType = choice(remote?.candidateType, ["host", "srflx", "prflx", "relay"]);
     stats.candidateProtocol = choice(local?.protocol, ["udp", "tcp"]);
+    if (local) stats.localAddressFamily = addressFamily(local.address ?? local.ip);
+    if (remote) stats.remoteAddressFamily = addressFamily(remote.address ?? remote.ip);
     if (stats.localCandidateType === "relay") stats.relayProtocol = choice(local?.relayProtocol, ["udp", "tcp", "tls"]);
     const previous = this.previous;
     this.previous = { ...video };

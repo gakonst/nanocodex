@@ -425,8 +425,8 @@ export function Screen({ hand, onBack }: { hand: RemoteHand; onBack(): void }) {
         <dt>Decoded FPS</dt><dd>{state.stats?.decodeFps?.toFixed(1) ?? "—"}</dd>
         <dt>Video</dt><dd>{state.stats?.width && state.stats?.height ? `${state.stats.width} × ${state.stats.height}` : "—"}{state.stats?.codec ? ` · ${state.stats.codec}` : ""}</dd>
         <dt>Bitrate</dt><dd>{state.stats?.bitrateKbps === undefined ? "—" : `${(state.stats.bitrateKbps / 1000).toFixed(2)} Mbps`}</dd>
-        <dt title="Browser and Hand candidate types on the selected media path; no addresses are shown">Media path</dt><dd>{state.stats?.localCandidateType && state.stats?.remoteCandidateType
-          ? `${state.stats.localCandidateType} → ${state.stats.remoteCandidateType}${state.stats.candidateProtocol ? ` · ${state.stats.candidateProtocol}` : ""}${state.stats.relayProtocol ? ` · TURN ${state.stats.relayProtocol}` : ""}` : "—"}</dd>
+        <dt title="Browser and Hand candidate types and address families on the selected media path; no addresses are shown">Media path</dt><dd>{state.stats?.localCandidateType && state.stats?.remoteCandidateType
+          ? `${state.stats.localCandidateType}/${state.stats.localAddressFamily ?? "unknown"} → ${state.stats.remoteCandidateType}/${state.stats.remoteAddressFamily ?? "unknown"}${state.stats.candidateProtocol ? ` · ${state.stats.candidateProtocol}` : ""}${state.stats.relayProtocol ? ` · TURN ${state.stats.relayProtocol}` : ""}` : "—"}</dd>
         <dt title="STUN round trip on the selected media ICE pair; excludes signaling and capture/display time">Network RTT</dt><dd>{state.stats?.roundTripMs === undefined ? "—" : `${state.stats.roundTripMs.toFixed(0)} ms`}</dd>
         <dt title="Average time to decode one frame in this interval">Decode</dt><dd>{state.stats?.decodeMs === undefined ? "—" : `${state.stats.decodeMs.toFixed(1)} ms`}</dd>
         <dt title="Average jitter buffer residence time in this interval">Jitter buffer</dt><dd>{state.stats?.jitterBufferMs === undefined ? "—" : `${state.stats.jitterBufferMs.toFixed(1)} ms`}</dd>
