@@ -1,3 +1,4 @@
+import { toolAliasFailure } from "./tool-alias-diagnostic.mjs";
 import { chatReasoningText } from "./chat-reasoning.mjs";
 import { providerStream, streamResponse } from "./provider-stream.mjs";
 const MODEL = "@cf/zai-org/glm-5.3";
@@ -305,7 +306,10 @@ function normalizeResponse(result, registry, model, toolChoice) {
         || returnedName === (candidate.namespace ? `${candidate.namespace}.${candidate.name}` : candidate.name));
       if (matches.length === 1) entry = matches[0];
     }
-    if (!entry) fail("model returned an unknown tool alias");
+    if (!entry) {
+      const diagnostic = toolAliasFailure(returnedName, registry);
+      fail(diagnostic === "unknown tool alias" ? "model returned an unknown tool alias" : `model returned ${diagnostic}`);
+    }
     if (toolChoice && typeof toolChoice === "object" && (entry.name !== (toolChoice.name ?? "tool_search")
       || entry.namespace !== toolChoice.namespace)) fail("model returned a different forced tool");
     const argumentsText = json(call.function.arguments);

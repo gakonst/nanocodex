@@ -187,7 +187,7 @@ test("accepts GLM's exact original tool name only when registered and unambiguou
   assert.equal(item.name, "read");
   assert.equal(item.call_id, "live-read");
   const duplicate = { type: "namespace", name: "other", tools: namespace.tools };
-  await assert.rejects(invoke({ input: "read circuit", tools: [namespace, duplicate] }), /unknown tool alias/);
+  await assert.rejects(invoke({ input: "read circuit", tools: [namespace, duplicate] }), /ambiguous original tool alias/);
   const qualified = fixture(async () => completion({ tool_calls: [{ function: { name: "files.read", arguments: "{}" } }] }, "tool_calls"));
   const qualifiedOut = await events(await qualified({ input: "read", tools: [namespace, duplicate] }));
   assert.equal(qualifiedOut.find(e => e.type === "response.output_item.done").item.namespace, "files");
