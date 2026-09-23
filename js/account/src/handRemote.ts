@@ -18,14 +18,19 @@ export class RemoteScreenIntent {
   state: RemoteScreenSelection = { selected: false };
   private pointer?: RemoteHand;
   private focus?: RemoteHand;
+  private latestIntent: "pointer" | "focus" = "pointer";
   private pending?: RemoteHand;
   private delay?: ReturnType<typeof setTimeout>;
   private expiry?: ReturnType<typeof setTimeout>;
   private closed = false;
   private readonly changed: (state: RemoteScreenSelection) => void;
   constructor(changed: (state: RemoteScreenSelection) => void) { this.changed = changed; }
-  hover(hand: RemoteHand | undefined): void { this.pointer = hand; this.prepare(); }
-  focusOn(hand: RemoteHand | undefined): void { this.focus = hand; this.prepare(); }
+  hover(hand: RemoteHand | undefined): void {
+    this.pointer = hand; if (hand) this.latestIntent = "pointer"; this.prepare();
+  }
+  focusOn(hand: RemoteHand | undefined): void {
+    this.focus = hand; if (hand) this.latestIntent = "focus"; this.prepare();
+  }
   select(hand: RemoteHand): void {
     if (this.closed) return;
     this.clear(); this.pointer = this.focus = undefined;
@@ -54,7 +59,10 @@ export class RemoteScreenIntent {
   }
   private prepare(): void {
     if (this.closed || this.state.selected) return;
-    const hand = this.pointer ?? this.focus;
+    // A stationary pointer must not override a later keyboard focus (or vice
+    // versa). Leaving the older target preserves the newer prepared viewer;
+    // leaving the newer target falls back to the remaining explicit intent.
+    const hand = this.latestIntent === "pointer" ? this.pointer ?? this.focus : this.focus ?? this.pointer;
     if (sameScreen(hand, this.pending)) return;
     this.clear(); this.pending = hand;
     if (this.state.hand) this.publish({ selected: false });
