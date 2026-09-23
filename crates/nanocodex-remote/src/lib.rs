@@ -10,6 +10,7 @@ pub mod capture;
 mod diagnostics;
 pub mod frames;
 pub mod ice;
+mod ice_cache;
 pub mod input;
 mod media_guard;
 mod playout;

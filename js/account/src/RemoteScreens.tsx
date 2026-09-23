@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useAccountSession } from "./AccountSession";
 import { accountQueryKey } from "./queryClient";
-import { useEffect, useRef, useState, type PointerEvent, type KeyboardEvent, type MouseEvent } from "react";
+import { Fragment, useEffect, useRef, useState, type PointerEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { Monitor, X } from "lucide-react";
-import { canStartBroadcast, listRemoteHands, RemoteBrowserSession, remoteKeys, type RemoteHand, type BroadcastPreset, type RemoteState, type RemoteInput } from "./handRemote";
+import { canStartBroadcast, listRemoteHands, RemoteBrowserSession, RemoteScreenIntent, remoteKeys, type RemoteScreenSelection, type RemoteHand, type BroadcastPreset, type RemoteState, type RemoteInput } from "./handRemote";
 import { RemoteMotionBuffer, RemoteMouseButtons } from "./handRemoteInput";
 import "./RemoteScreens.css";
 
@@ -12,7 +12,7 @@ export function RemoteScreens({ showLabel = false }: { showLabel?: boolean }) {
   const accountId = useAccountSession().account?.id;
   const [open, setOpen] = useState(false);
   // Warm discovery while the account UI is visible; no viewer/media connection
-  // is opened until a screen is selected. The dialog reuses this account cache.
+  // is opened by discovery. Explicit card intent prepares at most one viewer.
   useQuery({
     queryKey: [...accountQueryKey(accountId), "remote-screens"],
     queryFn: ({ signal }) => listRemoteHands(signal),
@@ -37,31 +37,54 @@ function ScreensDialog({ onClose }: { onClose(): void }) {
   });
   const hands = query.data ?? [];
   const error = query.error?.message;
-  const [selected, setSelected] = useState<RemoteHand>();
+  const [selection, setSelection] = useState<RemoteScreenSelection>({ selected: false });
+  const intent = useRef<RemoteScreenIntent | undefined>(undefined);
+  intent.current ??= new RemoteScreenIntent(setSelection);
+  const selected = selection.selected ? selection.hand : undefined;
+  useEffect(() => { intent.current?.catalog(hands); }, [hands]);
   useEffect(() => {
+    // Strict Mode can set up again after cleanup; never reuse a closed owner.
+    const owner = intent.current ??= new RemoteScreenIntent(setSelection);
+    const background = () => { if (document.hidden) owner.cancelPreparation(); };
+    const leaving = () => owner.cancelPreparation();
+    document.addEventListener("visibilitychange", background);
+    window.addEventListener("pagehide", leaving); window.addEventListener("blur", leaving);
     dialog.current?.showModal();
-    return () => dialog.current?.close();
+    return () => {
+      owner.close(); if (intent.current === owner) intent.current = undefined;
+      document.removeEventListener("visibilitychange", background);
+      window.removeEventListener("pagehide", leaving); window.removeEventListener("blur", leaving);
+      dialog.current?.close();
+    };
   }, []);
   return <dialog ref={dialog} className="remote-screens" aria-labelledby="remote-screens-title"
     onCancel={event => { event.preventDefault(); if (!selected) onClose(); }}>
     <header><h2 id="remote-screens-title">{selected ? `${selected.machine_name} · ${selected.name}` : "Remote screens"}</h2>
       <button type="button" aria-label="Close remote screens" onClick={onClose}><X size={18} /></button></header>
-    {selected ? <Screen key={`${selected.machine_id}:${selected.id}`} hand={selected} onBack={() => setSelected(undefined)} /> : <div className="remote-screen-list">
+    {!selected && <div className="remote-screen-list">
       {error && <p role="alert">{error}</p>}
       {!hands.length && !error && <p role={query.isPending && accountId ? "status" : undefined}>
         {!accountId ? "Sign in to view your remote screens." : query.isPending ? "Loading remote screens…"
           : "Start screen sharing on a connected Hand to view and control it here."}
       </p>}
-      {hands.map(hand => <button type="button" key={`${hand.machine_id}:${hand.id}`} data-testid={`remote-screen:${hand.machine_id}:${hand.id}`} onClick={() => setSelected(hand)}>
+      {hands.map(hand => <button type="button" key={`${hand.machine_id}:${hand.id}`} data-testid={`remote-screen:${hand.machine_id}:${hand.id}`}
+        onPointerEnter={event => { if (event.pointerType !== "touch") intent.current?.hover(hand); }}
+        onPointerLeave={() => intent.current?.hover(undefined)}
+        onFocus={() => intent.current?.focusOn(hand)} onBlur={() => intent.current?.focusOn(undefined)}
+        onClick={() => intent.current?.select(hand)}>
         <Monitor size={22} aria-hidden="true" /><span><strong>{hand.machine_name}</strong><small>{hand.name}</small></span>
         <small>{hand.controllable ? "View and control" : "View only"}</small>
       </button>)}
     </div>}
+    {/* Keep this element at the same position/key on selection: moving srcObject
+        to another video would discard the prepared decoder/playout pipeline. */}
+    {selection.hand && <Screen key={`${selection.hand.machine_id}:${selection.hand.id}:${selection.hand.generation}:${selection.hand.transport}`}
+      hand={selection.hand} preparing={!selection.selected} selectedAt={selection.selectedAt} onBack={() => intent.current?.back()} />}
   </dialog>;
 }
 
 type Pointer = { x: number; y: number; originX: number; originY: number; pressed: boolean; button: number; touch: boolean };
-export function Screen({ hand, onBack }: { hand: RemoteHand; onBack(): void }) {
+export function Screen({ hand, onBack, preparing = false, selectedAt }: { hand: RemoteHand; onBack(): void; preparing?: boolean; selectedAt?: number }) {
   const view = useRef<HTMLDivElement>(null);
   const picture = useRef<HTMLDivElement>(null);
   const virtualCursor = useRef<SVGSVGElement>(null);
@@ -126,6 +149,7 @@ export function Screen({ hand, onBack }: { hand: RemoteHand; onBack(): void }) {
     };
   }, [hand]);
 
+  useEffect(() => { if (!preparing) session.current?.select(selectedAt ?? performance.now()); }, [preparing, selectedAt, hand]);
   useEffect(() => { session.current?.setStatsEnabled(statsOpen); }, [statsOpen, hand]);
 
   useEffect(() => {
@@ -366,7 +390,7 @@ export function Screen({ hand, onBack }: { hand: RemoteHand; onBack(): void }) {
     else if (down) { keys.current.add(key); sendInput({ kind: "key", key, down: true }); }
     else if (keys.current.delete(key)) sendInput({ kind: "key", key, down: false });
   }
-  return <div ref={view} className={`remote-screen-view${expanded ? " remote-screen-expanded" : ""}`} data-pointer-locked={pointerLocked}
+  return <div ref={view} hidden={preparing} style={preparing ? { display: "none" } : undefined} className={`remote-screen-view${expanded ? " remote-screen-expanded" : ""}`} data-pointer-locked={pointerLocked}
     onKeyDownCapture={event => {
       if (event.repeat) return;
       if (event.code === "KeyF" && event.ctrlKey && event.metaKey) {
@@ -425,11 +449,24 @@ export function Screen({ hand, onBack }: { hand: RemoteHand; onBack(): void }) {
         <dt>Decoded FPS</dt><dd>{state.stats?.decodeFps?.toFixed(1) ?? "—"}</dd>
         <dt>Video</dt><dd>{state.stats?.width && state.stats?.height ? `${state.stats.width} × ${state.stats.height}` : "—"}{state.stats?.codec ? ` · ${state.stats.codec}` : ""}</dd>
         <dt>Bitrate</dt><dd>{state.stats?.bitrateKbps === undefined ? "—" : `${(state.stats.bitrateKbps / 1000).toFixed(2)} Mbps`}</dd>
-        <dt title="Round trip on the selected network path">Network RTT</dt><dd>{state.stats?.roundTripMs === undefined ? "—" : `${state.stats.roundTripMs.toFixed(0)} ms`}</dd>
+        <dt title="Browser and Hand candidate types and address families on the selected media path; no addresses are shown">Media path</dt><dd>{state.stats?.localCandidateType && state.stats?.remoteCandidateType
+          ? `${state.stats.localCandidateType}/${state.stats.localAddressFamily ?? "unknown"} → ${state.stats.remoteCandidateType}/${state.stats.remoteAddressFamily ?? "unknown"}${state.stats.candidateProtocol ? ` · ${state.stats.candidateProtocol}` : ""}${state.stats.relayProtocol ? ` · TURN ${state.stats.relayProtocol}` : ""}` : "—"}</dd>
+        <dt title="STUN round trip on the selected media ICE pair; excludes signaling and capture/display time">Network RTT</dt><dd>{state.stats?.roundTripMs === undefined ? "—" : `${state.stats.roundTripMs.toFixed(0)} ms`}</dd>
         <dt title="Average time to decode one frame in this interval">Decode</dt><dd>{state.stats?.decodeMs === undefined ? "—" : `${state.stats.decodeMs.toFixed(1)} ms`}</dd>
         <dt title="Average jitter buffer residence time in this interval">Jitter buffer</dt><dd>{state.stats?.jitterBufferMs === undefined ? "—" : `${state.stats.jitterBufferMs.toFixed(1)} ms`}</dd>
         <dt>Dropped / interval</dt><dd>{state.stats?.droppedFrames ?? "—"}</dd>
+        <dt title="Connection attempt number, including automatic recovery, and this attempt’s ICE candidate policy">Attempt</dt><dd>{state.stats?.attempt ?? "—"}{state.stats?.icePolicy ? ` · ${state.stats.icePolicy}` : ""}</dd>
+        {([
+          ["catalogReadyMs", "Discovery"], ["iceReadyMs", "ICE credentials"], ["socketOpenMs", "Viewer socket"],
+          ["offerReceivedMs", "Offer received"], ["answerSentMs", "Answer sent"],
+          ["peerConnectedMs", "Transport ready"], ["controlsReadyMs", "Controls ready"],
+        ] as const).map(([key, label]) => state.stats?.startup?.[key] === undefined ? null : <Fragment key={key}>
+          <dt title="Elapsed since this attempt started; concurrent stages overlap">{label}</dt><dd>{state.stats.startup[key]!.toFixed(0)} ms</dd>
+        </Fragment>)}
+        {state.stats?.preparationMs !== undefined && state.stats.preparationMs > 0 && <><dt title="Time the muted viewer was prepared before selection">Prepared before click</dt><dd>{state.stats.preparationMs.toFixed(0)} ms</dd></>}
+        {state.stats?.selectionFirstFrameMs !== undefined && <><dt title="Time from selecting this screen to its next presented frame, including automatic retries; older browsers report decoded readiness">After selection</dt><dd>{state.stats.selectionFirstFrameMs.toFixed(0)} ms</dd></>}
         <dt title="Time from connection attempt to first presented frame; older browsers report decoded readiness">First frame</dt><dd>{state.stats?.firstFrameMs === undefined ? "—" : `${state.stats.firstFrameMs.toFixed(0)} ms`}</dd>
+        {(state.stats?.attempt ?? 0) > 1 && <><dt title="Time from Connect or Reconnect through automatic retries to the first frame of this attempt">Including retries</dt><dd>{state.stats?.totalFirstFrameMs === undefined ? "—" : `${state.stats.totalFirstFrameMs.toFixed(0)} ms`}</dd></>}
       </dl>}
       {pointerLocked && !state.relativePointer && <svg ref={virtualCursor} className="remote-virtual-cursor" width="16" height="22" viewBox="0 0 16 22" aria-hidden="true"><path d="M1 1v17l4-4 3 7 3-1-3-7h6Z" fill="white" stroke="black" /></svg>}
       {pointerLocked && <span className="remote-capture-hint">Esc releases mouse and keyboard</span>}

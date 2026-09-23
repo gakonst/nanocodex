@@ -2,6 +2,7 @@
 use crate::Result as CoreResult;
 use crate::audio_duplex::SinkFactory;
 use crate::diagnostics::{Budget, HttpOutcome, close_reason};
+use crate::ice_cache::{IceCache, Response as IceResponse};
 use crate::input::{Lease, timely_event};
 use crate::preparation::{Preparations, VIEWER_CAPACITY};
 use crate::target::PublisherTarget;
@@ -604,7 +605,8 @@ async fn session(
     let mut connection = String::new();
     let mut generation = String::new();
     let mut viewers = HashSet::<String>::new();
-    let mut preparations: Preparations<Result<Value, reqwest::Error>> = Preparations::new();
+    let mut preparations: Preparations<IceResponse> = Preparations::new();
+    let mut ice = IceCache::new(http.clone(), base.clone(), target.bearer());
     let mut pending_frames = HashMap::<String, u64>::new();
     let mut frame_tick = tokio::time::interval(Duration::from_nanos(33_333_333));
     frame_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -635,6 +637,7 @@ async fn session(
                 if socket.microphone.active.is_some() && !socket.video.as_ref().is_some_and(|v| v.microphone_enabled(lease.owner()))
                     && let Some(ack) = socket.microphone.stopped() { send(&mut socket, ack).await?; }
                 if last_authorized.elapsed()>Duration::from_secs(25) { return Err(SessionError::Unauthorized); }
+                ice.refresh();
                 if !connection.is_empty() && last_renewal.elapsed()>=Duration::from_secs(10) && renewal.is_none() {
                     last_renewal=Instant::now(); let http=http.clone(); let url=renew_url.clone(); let token=target.bearer().to_string(); let id=connection.clone();
                     renewal=Some(Box::pin(async move { HttpOutcome::response(&http.post(url).bearer_auth(token).json(&json!({"connection_id":id})).send().await) }));
@@ -649,6 +652,7 @@ async fn session(
                 }
                 if !outcome.success { return Err(SessionError::Renewal(outcome)); } *last_authorized=Instant::now();
             },
+            _ = ice.next() => {},
             (viewer, deadline, response) = preparations.next() => {
                 let video = socket.video.as_mut().ok_or(SessionError::Closed)?;
                 let offer: CoreResult<()> = (|| {
@@ -727,7 +731,12 @@ async fn session(
                         if socket.video.is_none(){surface["transport"]=json!("frames-v1");surface["frame_window"]=json!(6);}
                         send(&mut socket,json!({"type":"catalog","machine_id":machine.id(),"machine_name":machine.name(),"surfaces":[surface]})).await?;
                     },
-                    "published"=>{tracing::info!(target: "nanocodex2", stage = "screen.published", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);generation=value["generation"].as_str().ok_or(SessionError::Closed)?.into();if let Some(ready)=ready.take(){let _=ready.send(());}},
+                    "published" => {
+                        tracing::info!(target: "nanocodex2", stage = "screen.published", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
+                        generation = value["generation"].as_str().ok_or(SessionError::Closed)?.into();
+                        if socket.video.is_some() { ice.prefetch(); }
+                        if let Some(ready) = ready.take() { let _ = ready.send(()); }
+                    },
                     // Status is read-only and is sent when the viewer socket opens,
                     // before asynchronous ICE preparation has admitted its peer.
                     "broadcast" if (viewers.contains(viewer) || (preparations.contains(viewer) && value["action"] == "status"))
@@ -765,12 +774,8 @@ async fn session(
                         if viewers.len()+preparations.len()>=VIEWER_CAPACITY {
                             send(&mut socket,json!({"type":"close_viewer","viewer_id":viewer})).await?;
                         } else if socket.video.is_some() {
-                            let mut url=base.clone();url.set_path(&format!("{}/ice",base.path()));
-                            let http=http.clone();let token=target.bearer().to_string();
                             let deadline=tokio::time::Instant::now()+Duration::from_secs(8);
-                            preparations.insert(viewer, deadline, async move {
-                                http.post(url).bearer_auth(token).send().await?.error_for_status()?.json::<Value>().await
-                            }).map_err(|_|SessionError::Closed)?;
+                            preparations.insert(viewer, deadline, ice.request()).map_err(|_|SessionError::Closed)?;
                         } else {
                             viewers.insert(viewer.into());
                         }
@@ -1893,3 +1898,7 @@ mod microphone_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "runtime_ice_tests.rs"]
+mod ice_tests;

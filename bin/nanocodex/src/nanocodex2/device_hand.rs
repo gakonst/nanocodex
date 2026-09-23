@@ -517,66 +517,43 @@ async fn share(
                     supervise_factory(recipe, &directory, &origin, &key, &cancel, &status).await;
                 })
             });
-            // Capture permissions and optional VM startup must not hold up
-            // publication of the native shell/filesystem catalog.
-            let screen_cancel = cancel.clone();
+            // Share the native Hand's capture supervision: keep the shell ready
+            // while capture starts, repair helpers in place, and retain replacement
+            // fences instead of leaving a failed screen idle until daemon restart.
             let screen_target = client.account_attachment_target()?;
-            let screen_machine = state.machine.clone();
-            let screen_directory = directory.to_owned();
-            let mut screen = tokio::spawn(async move {
-                loop {
-                    let started = tokio::select! {
-                        () = screen_cancel.cancelled() => break,
-                        result = super::screen_native::NativeScreen::start(
-                            &screen_target, &screen_machine, &screen_directory,
-                        ) => result,
-                    };
-                    match started {
-                        Ok(screen) => {
-                            screen_cancel.cancelled().await;
-                            let _ = screen.shutdown().await;
-                            break;
-                        }
-                        Err(error) => {
-                            tracing::warn!(%error, "native screen startup failed; retrying")
-                        }
-                    }
-                    tokio::select! {
-                        () = screen_cancel.cancelled() => break,
-                        () = tokio::time::sleep(Duration::from_secs(5)) => {},
-                    }
-                }
-            });
-            let result = super::native_hand::run_observed(
-                client.account_attachment_target()?,
-                &state,
-                async {
-                    cancel.cancelled().await;
-                    Ok(())
+            let result = super::screen_supervisor::while_attached(
+                || {
+                    super::screen_native::NativeScreen::start(
+                        &screen_target,
+                        &state.machine,
+                        directory,
+                    )
                 },
-                |event| {
-                    let next = match event {
-                        AttachmentEvent::CatalogPublished { .. } => "connected",
-                        AttachmentEvent::Connecting => "connecting",
-                        _ => return,
-                    };
-                    let mut status = status.lock().unwrap();
-                    status["status"] = json!(next);
-                    let _ = publish(directory, &status);
-                    emit(&status);
-                },
+                super::native_hand::run_observed(
+                    client.account_attachment_target()?,
+                    &state,
+                    async {
+                        cancel.cancelled().await;
+                        Ok(())
+                    },
+                    |event| {
+                        let next = match event {
+                            AttachmentEvent::CatalogPublished { .. } => "connected",
+                            AttachmentEvent::Connecting => "connecting",
+                            _ => return,
+                        };
+                        let mut status = status.lock().unwrap();
+                        status["status"] = json!(next);
+                        let _ = publish(directory, &status);
+                        emit(&status);
+                    },
+                ),
             )
             .await;
             cancel.cancel();
             let _ = leases.await;
             if let Some(factory) = factory {
                 let _ = factory.await;
-            }
-            if tokio::time::timeout(Duration::from_secs(5), &mut screen)
-                .await
-                .is_err()
-            {
-                screen.abort();
             }
             let _ = fs::remove_file(directory.join("status.json"));
             result

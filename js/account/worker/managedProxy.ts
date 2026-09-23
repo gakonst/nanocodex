@@ -1,4 +1,4 @@
-import { isHandViewerUpgrade, readManagedAccess, handRequestFailure, handBrokerRequest } from "nanocodex/cloudflare/managed-access";
+import { MANAGED_ACCESS_HEADER, MANAGED_ACCESS_TTL_MS, isHandViewerUpgrade, readManagedAccess, handRequestFailure, handBrokerRequest } from "nanocodex/cloudflare/managed-access";
 
 export type ManagedProxyEnv = {
   NANOCODEX_BACKEND?: Fetcher;
@@ -40,7 +40,7 @@ export async function routeManaged(
     // Only a locally verified, credential-bound snapshot skips the managed hop.
     // Every other request retains the original authenticator and rejection protocol.
     const cached = env.NANOCODEX_HAND_BROKER && isHandViewerUpgrade(request)
-      ? await readManagedAccess(request, env) : undefined;
+      ? await viewerAccess(request, env) : undefined;
     const admitted = performance.now();
     const local = cached && !handRequestFailure(request, cached);
     let response: Response;
@@ -75,7 +75,7 @@ export async function routeManaged(
         backend_ms: performance.now() - started, started_at_ms: startedAt, finished_at_ms: Date.now(),
         request_colo: typeof request.cf?.colo === "string" ? request.cf.colo : undefined });
     }
-    return response;
+    return await browserAccessResponse(request, response, env);
   } catch (error) {
     console.error({
       type: "managed.backend_failure",
@@ -84,6 +84,73 @@ export async function routeManaged(
     });
     return json({ error: "managed_service_unavailable" }, { status: 503 });
   }
+}
+
+// A browser WebSocket cannot send the access header. Carry the existing signed
+// snapshot in a host-only cookie; it never replaces the original session cookie.
+const HAND_ACCESS_COOKIE = "__Secure-nanocodex_hand_access";
+const HAND_ACCESS_COOKIE_SCOPE = "Path=/v1/account/hands; Secure; HttpOnly; SameSite=Strict";
+
+function handAccessCookie(request: Request): string | undefined {
+  const values = (request.headers.get("cookie") ?? "").split(";").flatMap(part => {
+    const separator = part.indexOf("=");
+    return separator >= 0 && part.slice(0, separator).trim() === HAND_ACCESS_COOKIE
+      ? [part.slice(separator + 1).trim()] : [];
+  });
+  // Do not choose between conflicting path/domain cookies.
+  return values.length === 1 && values[0] ? values[0] : undefined;
+}
+
+function browserOrigin(request: Request): boolean {
+  const url = new URL(request.url);
+  const origin = request.headers.get("origin");
+  const site = request.headers.get("sec-fetch-site");
+  return url.protocol === "https:" && (!origin || origin === url.origin)
+    && (!site || site === "same-origin");
+}
+
+function accessVerificationRequest(request: Request, token: string): Request {
+  const headers = new Headers(request.headers);
+  headers.set(MANAGED_ACCESS_HEADER, token);
+  // Verification uses only URL, method and headers; an ICE body may already
+  // have been consumed by the managed service. Never clone or read that body.
+  return new Request(request.url, { method: request.method, headers });
+}
+
+async function viewerAccess(request: Request, env: ManagedProxyEnv) {
+  // An explicit header retains existing native/API admission and precedence.
+  if (request.headers.has(MANAGED_ACCESS_HEADER)) return readManagedAccess(request, env);
+  if (!browserOrigin(request) || request.headers.get("origin") !== new URL(request.url).origin) return;
+  const token = handAccessCookie(request);
+  if (!token) return;
+  const principal = await readManagedAccess(accessVerificationRequest(request, token), env);
+  return principal?.kind === "account_session" ? principal : undefined;
+}
+
+async function browserAccessResponse(request: Request, response: Response, env: ManagedProxyEnv): Promise<Response> {
+  const path = new URL(request.url).pathname;
+  if (!/^\/v1\/account\/hands(?:\/(?:screens|ice|view|renew))?$/.test(path) || !browserOrigin(request)) return response;
+  let cookie: string | undefined;
+  if ((response.status === 401 || response.status === 403) && handAccessCookie(request)) {
+    cookie = `${HAND_ACCESS_COOKIE}=; Max-Age=0; ${HAND_ACCESS_COOKIE_SCOPE}`;
+  } else if (response.ok && (path === "/v1/account/hands/screens" || path === "/v1/account/hands/ice")) {
+    const token = response.headers.get(MANAGED_ACCESS_HEADER);
+    const remaining = Number(response.headers.get("x-nanocodex-access-ttl-ms"));
+    const maxAge = Math.floor(Math.min(remaining, MANAGED_ACCESS_TTL_MS) / 1_000);
+    // Leave room under browser cookie limits; unsupported snapshots simply keep
+    // the existing managed path. No issuance or re-signing happens here.
+    if (token && token.length <= 3_800 && Number.isFinite(remaining) && maxAge > 0) {
+      const principal = await readManagedAccess(accessVerificationRequest(request, token), env);
+      if (principal?.kind === "account_session" && !handRequestFailure(request, principal)) {
+        cookie = `${HAND_ACCESS_COOKIE}=${token}; Max-Age=${maxAge}; ${HAND_ACCESS_COOKIE_SCOPE}`;
+      }
+    }
+  }
+  if (!cookie) return response;
+  const headers = new Headers(response.headers);
+  headers.append("set-cookie", cookie);
+  headers.set("cache-control", "no-store");
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers });
 }
 
 function json(body: unknown, init: ResponseInit): Response {
