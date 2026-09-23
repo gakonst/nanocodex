@@ -27,6 +27,8 @@ export type RemoteStats = Readonly<{
   codec?: string;
   firstFrameMs?: number;
   totalFirstFrameMs?: number;
+  selectionFirstFrameMs?: number;
+  preparationMs?: number;
   attempt?: number;
   icePolicy?: "all" | "relay";
   startup?: RemoteStartupTiming;

@@ -1,12 +1,89 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { canStartBroadcast, listRemoteHands, RemoteBrowserSession, type RemoteHand } from "./handRemote.ts";
+import { canStartBroadcast, listRemoteHands, RemoteBrowserSession, RemoteScreenIntent, type RemoteScreenSelection, type RemoteHand } from "./handRemote.ts";
 
 const screen: RemoteHand = {
   id: "desktop", name: "Desktop", kind: "desktop", width: 1600, height: 900, controllable: true,
   machine_id: "server:018f0000-0000-7000-8000-000000000001", machine_name: "Linux server", generation: "first",
 };
 const flush = async () => { for (let i = 0; i < 30; i++) await Promise.resolve(); };
+
+function intentFixture(t: TestContext) {
+  t.mock.timers.enable({ apis: ["setTimeout", "Date"], now: 1000 });
+  t.mock.method(performance, "now", () => Date.now());
+  const changes: RemoteScreenSelection[] = [];
+  const intent = new RemoteScreenIntent(state => changes.push(state));
+  t.after(() => intent.close());
+  return { intent, changes, tick(ms: number) { t.mock.timers.tick(ms); } };
+}
+
+test("screen intent ignores pointer transits and closes its one prepared viewer on departure", t => {
+  const f = intentFixture(t);
+  f.intent.hover(screen); f.tick(149); assert.equal(f.changes.length, 0);
+  f.intent.hover(undefined); f.tick(1000); assert.equal(f.changes.length, 0);
+  f.intent.hover(screen); f.tick(150);
+  assert.equal(f.intent.state.hand, screen); assert.equal(f.intent.state.selected, false);
+  f.intent.hover(undefined);
+  assert.equal(f.intent.state.hand, undefined);
+  f.tick(10_000); assert.equal(f.changes.length, 2);
+});
+
+test("selecting an intended screen adopts its same hand identity across catalog polls and cancels expiry", t => {
+  const f = intentFixture(t);
+  f.intent.focusOn(screen); f.tick(150);
+  const prepared = f.intent.state.hand;
+  f.tick(1000); f.intent.select({ ...screen });
+  assert.equal(f.intent.state.hand, prepared);
+  assert.equal(f.intent.state.selectedAt, 2150);
+  assert.equal(f.intent.state.selected, true);
+  f.intent.focusOn(undefined); f.intent.hover(undefined); f.tick(10_000);
+  assert.equal(f.intent.state.hand, prepared); assert.equal(f.changes.length, 2);
+  f.intent.back(); assert.equal(f.intent.state.hand, undefined);
+  f.tick(10_000); assert.equal(f.changes.length, 3, "returning to inventory does not prepare automatically");
+});
+
+test("a prepared viewer expires once and requires a new intent to prepare again", t => {
+  const f = intentFixture(t); f.intent.hover(screen); f.tick(150);
+  f.tick(4999); assert.equal(f.intent.state.hand, screen);
+  f.tick(1); assert.equal(f.intent.state.hand, undefined);
+  f.intent.hover({ ...screen }); f.tick(10_000); assert.equal(f.changes.length, 2);
+  f.intent.hover(undefined); f.intent.hover(screen); f.tick(150);
+  assert.equal(f.intent.state.hand, screen); assert.equal(f.changes.length, 3);
+});
+
+test("changing intent retires the previous screen before preparing another and preserves keyboard intent", t => {
+  const f = intentFixture(t), other = { ...screen, id: "other" };
+  f.intent.focusOn(screen); f.tick(150);
+  f.intent.hover(other); assert.equal(f.intent.state.hand, undefined);
+  f.tick(150); assert.equal(f.intent.state.hand, other);
+  f.intent.hover(undefined); assert.equal(f.intent.state.hand, undefined);
+  f.tick(150); assert.equal(f.intent.state.hand, screen);
+  f.intent.focusOn(undefined); assert.equal(f.intent.state.hand, undefined);
+  assert.deepEqual(f.changes.map(state => state.hand?.id), [screen.id, undefined, "other", undefined, screen.id, undefined]);
+});
+
+test("catalog replacement cancels preparation and never adopts an obsolete publication", t => {
+  const f = intentFixture(t); f.intent.hover(screen); f.tick(150);
+  const replacement = { ...screen, generation: "replacement" };
+  f.intent.catalog([replacement]); assert.equal(f.intent.state.hand, undefined);
+  f.tick(10_000); assert.equal(f.changes.length, 2);
+  f.intent.select(replacement); assert.equal(f.intent.state.hand, replacement);
+  f.intent.catalog([]); assert.equal(f.intent.state.hand, replacement, "selected sessions own recovery");
+});
+
+for (const pending of [true, false]) test(`closing intent ownership cancels ${pending ? "pending" : "active"} preparation and ignores late events`, t => {
+  const f = intentFixture(t); f.intent.hover(screen); if (!pending) f.tick(150);
+  f.intent.close(); const count = f.changes.length;
+  f.intent.hover(screen); f.intent.focusOn(screen); f.intent.select(screen); f.tick(10_000);
+  assert.equal(f.intent.state.hand, undefined); assert.equal(f.changes.length, count);
+});
+
+test("backgrounding cancels preparation while preserving an explicitly selected viewer", t => {
+  const f = intentFixture(t); f.intent.hover(screen); f.tick(150);
+  f.intent.cancelPreparation(); assert.equal(f.intent.state.hand, undefined);
+  f.intent.select(screen); f.intent.cancelPreparation();
+  assert.equal(f.intent.state.hand, screen); assert.equal(f.intent.state.selected, true);
+});
 
 test("relative control is negotiated per lease and deltas use reliable ordering", async t => {
   const f = fixture(t);
@@ -1472,6 +1549,49 @@ test("stats update from interval reports, recover from rejection and stop after 
   assert.equal(f.session.state.stats?.decodeFps, undefined); assert.equal(f.session.state.connected, true);
   f.session.close(); const calls = peer.statsCalls; await f.tick(1000);
   assert.equal(peer.statsCalls, calls); assert.equal(f.session.state.stats, undefined);
+});
+
+test("selection adopts an already decoding muted viewer and measures the next presented frame", async t => {
+  const f = fixture(t); await f.session.connect(); const peer = f.peers[0]!; peer.open();
+  peer.ontrack?.({ track: { id: "prepared", kind: "video", stop() {} } });
+  const stream = f.video.srcObject;
+  await f.tick(100); f.frames.values().next().value!();
+  f.session.select(performance.now()); f.session.setStatsEnabled(true); await flush();
+  assert.equal(f.session.state.stats?.selectionFirstFrameMs, undefined, "earlier hidden frames cannot satisfy selection");
+  await f.tick(16); f.frames.values().next().value!();
+  assert.equal(f.session.state.stats?.selectionFirstFrameMs, 16);
+  assert.equal(f.session.state.stats?.preparationMs, 100);
+  assert.equal(f.session.state.stats?.firstFrameMs, 100);
+  assert.equal(f.peers.length, 1); assert.equal(f.sockets.length, 1); assert.equal(f.video.srcObject, stream);
+  assert.equal(f.video.muted, true); assert.equal(f.session.state.controlling, false);
+  assert.equal(f.captures.length, 0); assert.deepEqual(peer.reliable.sent, []);
+});
+
+test("selection timing includes failed attempts and cannot be satisfied by retired callbacks", async t => {
+  const f = fixture(t); f.session.select(performance.now()); await f.session.connect();
+  const first = f.peers[0]!; first.open(); first.ontrack?.({ track: { id: "failed", kind: "video", stop() {} } });
+  const retired = f.frames.values().next().value!;
+  await f.tick(300); first.fail(); await f.tick(1000);
+  const next = f.peers[1]!; next.open(); next.ontrack?.({ track: { id: "replacement", kind: "video", stop() {} } });
+  f.session.setStatsEnabled(true); await flush(); retired();
+  assert.equal(f.session.state.stats?.selectionFirstFrameMs, undefined);
+  await f.tick(200); f.frames.values().next().value!();
+  assert.equal(f.session.state.stats?.selectionFirstFrameMs, 1500);
+  assert.equal(f.session.state.stats?.firstFrameMs, 200);
+  assert.equal(f.session.state.stats?.totalFirstFrameMs, 1500);
+  assert.equal(f.session.state.stats?.preparationMs, 0);
+});
+
+test("older browsers can adopt an already decoded picture without reloading its stream", async t => {
+  const f = fixture(t);
+  delete (f.video as { requestVideoFrameCallback?: unknown }).requestVideoFrameCallback;
+  await f.session.connect(); f.peers[0]!.open();
+  Object.assign(f.video, { readyState: 2, videoWidth: 1600, videoHeight: 900 });
+  f.peers[0]!.ontrack?.({ track: { id: "decoded", kind: "video", stop() {} } });
+  await f.tick(100); const stream = f.video.srcObject;
+  f.session.select(performance.now()); f.session.setStatsEnabled(true); await flush();
+  assert.equal(f.session.state.stats?.selectionFirstFrameMs, 0);
+  assert.equal(f.session.state.stats?.preparationMs, 100); assert.equal(f.video.srcObject, stream);
 });
 
 test("startup diagnostics retain concurrent milestones with Stats closed and never sample signaling RTT", async t => {

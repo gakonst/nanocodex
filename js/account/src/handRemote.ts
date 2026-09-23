@@ -8,6 +8,73 @@ export type RemoteHand = Readonly<{
   frame_window?: number;
   broadcast?: boolean;
 }>;
+export type RemoteScreenSelection = Readonly<{ hand?: RemoteHand; selected: boolean; selectedAt?: number }>;
+const sameScreen = (a: RemoteHand | undefined, b: RemoteHand | undefined): boolean => a === b || !!a && !!b
+  && a.machine_id === b.machine_id && a.id === b.id && a.generation === b.generation && a.transport === b.transport;
+
+/** One short-lived viewer for explicit pointer/keyboard intent. The UI keeps
+ * its Screen mounted when selected, preserving the actual video and peer. */
+export class RemoteScreenIntent {
+  state: RemoteScreenSelection = { selected: false };
+  private pointer?: RemoteHand;
+  private focus?: RemoteHand;
+  private pending?: RemoteHand;
+  private delay?: ReturnType<typeof setTimeout>;
+  private expiry?: ReturnType<typeof setTimeout>;
+  private closed = false;
+  private readonly changed: (state: RemoteScreenSelection) => void;
+  constructor(changed: (state: RemoteScreenSelection) => void) { this.changed = changed; }
+  hover(hand: RemoteHand | undefined): void { this.pointer = hand; this.prepare(); }
+  focusOn(hand: RemoteHand | undefined): void { this.focus = hand; this.prepare(); }
+  select(hand: RemoteHand): void {
+    if (this.closed) return;
+    this.clear(); this.pointer = this.focus = undefined;
+    // Catalog polling makes new objects; retain the prepared hand reference so
+    // React's connection effect and the attached decoder do not restart.
+    this.publish({ hand: sameScreen(this.state.hand, hand) ? this.state.hand : hand, selected: true, selectedAt: performance.now() });
+  }
+  back(): void {
+    if (this.closed) return;
+    this.clear(); this.pointer = this.focus = undefined; this.publish({ selected: false });
+  }
+  cancelPreparation(): void { if (!this.state.selected) this.back(); }
+  catalog(hands: readonly RemoteHand[]): void {
+    if (this.state.selected || this.closed) return;
+    if (this.pointer && !hands.some(hand => sameScreen(hand, this.pointer))) this.pointer = undefined;
+    if (this.focus && !hands.some(hand => sameScreen(hand, this.focus))) this.focus = undefined;
+    if (this.pending && !hands.some(hand => sameScreen(hand, this.pending))) this.prepare();
+  }
+  close(): void {
+    this.closed = true; this.clear(); this.pointer = this.focus = undefined;
+    this.state = { selected: false };
+  }
+  private clear(): void {
+    clearTimeout(this.delay); clearTimeout(this.expiry);
+    this.delay = this.expiry = undefined; this.pending = undefined;
+  }
+  private prepare(): void {
+    if (this.closed || this.state.selected) return;
+    const hand = this.pointer ?? this.focus;
+    if (sameScreen(hand, this.pending)) return;
+    this.clear(); this.pending = hand;
+    if (this.state.hand) this.publish({ selected: false });
+    if (!hand) return;
+    // Ignore pointer transits. Expiry does not rearm until a new intent, even
+    // when a card stays hovered/focused for the remainder of the dialog.
+    this.delay = setTimeout(() => {
+      this.delay = undefined;
+      if (this.closed || this.state.selected || this.pending !== hand) return;
+      this.publish({ hand, selected: false });
+      if (this.closed || this.state.selected || this.pending !== hand) return;
+      this.expiry = setTimeout(() => {
+        this.expiry = undefined;
+        if (!this.closed && !this.state.selected && this.pending === hand) this.publish({ selected: false });
+      }, 5000);
+    }, 150);
+  }
+  private publish(state: RemoteScreenSelection): void { this.state = state; this.changed(state); }
+}
+
 export type BroadcastPreset = "source" | "1080p" | "720p" | "twitch" | "x";
 export type BroadcastStatus = "idle" | "starting" | "live" | "reconnecting" | "stopping" | "failed" | "stopped";
 export type RemoteState = Readonly<{ stats?: RemoteStats; mediaReady?: boolean; broadcastStatus?: BroadcastStatus; broadcastAudio?: boolean; broadcastPending?: boolean; broadcastError?: string; status: string; connected: boolean; controlling: boolean; connecting: boolean; audioAvailable?: boolean; audioEnabled?: boolean; microphoneAvailable?: boolean; microphoneEnabled?: boolean; microphonePending?: boolean; microphoneError?: string; controlPending?: boolean; relativePointer?: boolean }>;
@@ -116,6 +183,8 @@ export class RemoteBrowserSession {
   private startup: RemoteStartupTiming = {};
   private attemptIcePolicy?: RTCIceTransportPolicy;
   private firstFrameMs?: number;
+  private selectedAt?: number;
+  private selectionFirstFrameMs?: number;
   private videoTrackId?: string;
   private videoFrameCallback?: number;
   private videoFrameListener?: () => void;
@@ -185,6 +254,7 @@ export class RemoteBrowserSession {
     if (this.closed) return;
     this.suspended = false; this.retries = 0; this.recoveryDeadline = undefined;
     this.connectionStartedAt = undefined; this.attempt = 0;
+    if (this.selectedAt !== undefined) this.selectedAt = performance.now();
     void this.start(true);
   }
   suspend(delay = 0): void {
@@ -584,6 +654,23 @@ export class RemoteBrowserSession {
     return this.preferRelay && hasTurnCredentials(servers) ? "relay" : "all";
   }
 
+  /** Selection adopts the same muted viewer; it never acquires input or audio. */
+  select(at: number): void {
+    if (this.closed || this.selectedAt !== undefined) return;
+    this.selectedAt = at;
+    // Older browsers can report decoded readiness only. With frame callbacks,
+    // wait for a frame after selection, not buffered/hidden decoder progress.
+    if (this.hand.transport === "frames-v1" ? this.state.mediaReady
+      : typeof this.video.requestVideoFrameCallback !== "function" && this.video.readyState >= 2 && this.video.videoWidth > 0 && this.video.videoHeight > 0) {
+      this.selectionProgress(this.epoch);
+    }
+  }
+  private selectionProgress(epoch: number): void {
+    if (!this.current(epoch) || this.selectedAt === undefined || this.selectionFirstFrameMs !== undefined) return;
+    this.selectionFirstFrameMs = Math.max(0, performance.now() - this.selectedAt);
+    if (this.statsEnabled) this.update({ stats: { ...this.state.stats, ...this.timingStats() } });
+  }
+
   private markStartup(key: keyof RemoteStartupTiming): void {
     if (this.startup[key] !== undefined) return;
     this.startup = { ...this.startup, [key]: Math.max(0, performance.now() - this.startedAt) };
@@ -591,7 +678,8 @@ export class RemoteBrowserSession {
   }
   private timingStats(): RemoteStats {
     return { firstFrameMs: this.firstFrameMs, startup: this.startup, attempt: this.attempt,
-      icePolicy: this.attemptIcePolicy,
+      icePolicy: this.attemptIcePolicy, selectionFirstFrameMs: this.selectionFirstFrameMs,
+      preparationMs: this.selectedAt === undefined || this.connectionStartedAt === undefined ? undefined : Math.max(0, this.selectedAt - this.connectionStartedAt),
       totalFirstFrameMs: this.firstFrameMs === undefined || this.connectionStartedAt === undefined ? undefined
         : this.startedAt - this.connectionStartedAt + this.firstFrameMs };
   }
@@ -675,6 +763,7 @@ export class RemoteBrowserSession {
         if (this.videoFrameCallback !== undefined) this.video.cancelVideoFrameCallback(this.videoFrameCallback);
         this.videoFrameCallback = undefined;
         this.videoProgress(epoch);
+        this.selectionProgress(epoch);
         if (valid()) this.videoFrameCallback = this.video.requestVideoFrameCallback(displayed);
       };
       this.videoFrameCallback = this.video.requestVideoFrameCallback(displayed);
@@ -682,7 +771,10 @@ export class RemoteBrowserSession {
       // An audio-first stream can already be loaded. Dimensions establish only
       // its first picture; repeated load/resize events are not frame progress.
       const decoded = () => {
-        if (valid() && this.firstFrameMs === undefined && this.video.readyState >= 2 && this.video.videoWidth > 0 && this.video.videoHeight > 0) this.videoProgress(epoch);
+        if (valid() && this.video.readyState >= 2 && this.video.videoWidth > 0 && this.video.videoHeight > 0) {
+          if (this.firstFrameMs === undefined) this.videoProgress(epoch);
+          this.selectionProgress(epoch);
+        }
       };
       this.videoFrameListener = decoded;
       this.video.addEventListener("loadeddata", decoded);
@@ -834,7 +926,7 @@ export class RemoteBrowserSession {
     ++this.epoch;
     this.clearMotion();
     ++this.statsRun; clearTimeout(this.statsTimer); this.statsTimer = undefined; this.statsRequest = undefined;
-    this.cancelVideoWatch(); this.firstFrameMs = undefined; this.videoTrackId = undefined;
+    this.cancelVideoWatch(); this.firstFrameMs = undefined; this.selectionFirstFrameMs = undefined; this.videoTrackId = undefined;
     this.startup = {}; this.attemptIcePolicy = undefined;
     clearTimeout(this.mediaTimer); this.mediaTimer = undefined; this.mediaStartedAt = undefined;
     this.lastVideoFrameAt = this.mediaHealthySince = undefined; this.videoFrames = 0; this.decodedFrames.clear();
@@ -973,6 +1065,8 @@ export class RemoteBrowserSession {
         this.firstFrameMs = Math.max(0, performance.now() - this.startedAt);
         this.update({ mediaReady: true, ...(this.statsEnabled ? { stats: this.timingStats() } : {}) });
       }
+      if (!this.current(epoch)) return;
+      this.selectionProgress(epoch);
       if (!this.current(epoch)) return;
       this.ready(true);
       if (!this.current(epoch)) return;
