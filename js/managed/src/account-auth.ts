@@ -1,3 +1,4 @@
+import { consumeRpcData } from "nanocodex/cloudflare/rpc";
 import { API_KEY, apiKeyDigest, apiKeyPrincipal, isOrganizationCapabilities, isApiKeyBase, isStoredApiKey, forwardPrincipalAssertions } from "nanocodex/cloudflare/managed-auth";
 export { isOrganizationCapabilities, forwardPrincipalAssertions };
 import { durablePlacementOptions, placementHeaders, TRUSTED_INGRESS_HEADER, type IngressPlacement } from "nanocodex/cloudflare/durable-placement";
@@ -723,7 +724,7 @@ async function authenticateLive(request: Request, env: AccountAuthEnv, url: URL)
   let record: StoredApiKey | undefined;
   const rpc = stub.resolveAuthorizedKey;
   if (typeof rpc === "function") {
-    record = await Reflect.apply(rpc, stub, []);
+    record = consumeRpcData(await Reflect.apply(rpc, stub, []));
   } else {
     const response = await stub.fetch("https://api-key.internal/resolve?authorize=1");
     if (!response.ok) {
@@ -1397,7 +1398,7 @@ async function readAccount(env: AccountAuthEnv, userId: string): Promise<UserRec
   let record: UserRecord | undefined;
   const rpc = stub.readAccount;
   if (typeof rpc === "function") {
-    record = await Reflect.apply(rpc, stub, []);
+    record = consumeRpcData(await Reflect.apply(rpc, stub, []));
   } else {
     const response = await stub.fetch("https://user.internal/account");
     if (!response.ok) {
@@ -1421,7 +1422,7 @@ async function resolveOrganizationGrant(
   let grant: OrganizationGrant | undefined;
   const rpc = stub.resolveOrganizationGrant;
   if (typeof rpc === "function") {
-    grant = await Reflect.apply(rpc, stub, [account.id]);
+    grant = consumeRpcData(await Reflect.apply(rpc, stub, [account.id]));
   } else {
     const response = await stub.fetch(
       `https://organization.internal/resolve?userId=${encodeURIComponent(account.id)}`,

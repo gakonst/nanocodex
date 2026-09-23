@@ -54,6 +54,8 @@ const requiredFiles = [
   "browser/workspace.d.mts",
   "cloudflare/managed-access.mjs",
   "cloudflare/managed-access.d.mts",
+  "cloudflare/rpc.mjs",
+  "cloudflare/rpc.d.mts",
   "cloudflare/egress.mjs",
   "cloudflare/egress.d.mts",
   "cloudflare/egress-subject.mjs",
@@ -127,6 +129,8 @@ export async function checkPackage(packageRoot = root) {
   assert.equal(packageJson.exports?.["./cloudflare"]?.import, "./cloudflare/index.mjs");
   assert.equal(packageJson.exports?.["./cloudflare/managed-access"]?.import, "./cloudflare/managed-access.mjs");
   assert.equal(packageJson.exports?.["./cloudflare/managed-access"]?.types, "./cloudflare/managed-access.d.mts");
+  assert.equal(packageJson.exports?.["./cloudflare/rpc"]?.import, "./cloudflare/rpc.mjs");
+  assert.equal(packageJson.exports?.["./cloudflare/rpc"]?.types, "./cloudflare/rpc.d.mts");
   assert.equal(packageJson.exports?.["./managed"]?.import, "./managed/index.mjs");
   assert.equal(packageJson.exports?.["./connect"]?.import, "./cloud/index.mjs");
   assert.equal(packageJson.exports?.["./connect"]?.types, "./cloud/index.d.mts");

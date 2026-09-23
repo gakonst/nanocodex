@@ -1,3 +1,4 @@
+import { consumeRpcData } from "nanocodex/cloudflare/rpc";
 import type { CloudflareAccountMetadataBinding } from "nanocodex/cloudflare/egress";
 import { isVmFactoryName } from "./vm-factory-name";
 import { connectorToolMetadata } from "./connector-tools";
@@ -286,7 +287,7 @@ export async function accountVaultMetadata(
   };
   const readAccountVault = binding.readAccountVault;
   if (typeof readAccountVault === "function") {
-    const result = await Reflect.apply(readAccountVault, binding, [userId]);
+    const result = consumeRpcData(await Reflect.apply(readAccountVault, binding, [userId]));
     if (result.status !== 200) throw new Error(`account vault failed with HTTP ${result.status}`);
     return project(result.vault);
   }

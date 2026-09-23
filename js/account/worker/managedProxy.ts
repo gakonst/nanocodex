@@ -1,3 +1,4 @@
+import { consumeRpcData } from "nanocodex/cloudflare/rpc";
 import { apiKeyDigest, apiKeyPrincipal } from "nanocodex/cloudflare/managed-auth";
 import { nativeLiveRequest, liveAgentSettings, liveAgentFailure, liveAgentRequest, newManagedAgentId } from "nanocodex/cloudflare/managed-live";
 import { durablePlacementOptions, ingressColo } from "nanocodex/cloudflare/durable-placement";
@@ -114,7 +115,7 @@ async function directLiveAgent(request: Request, env: ManagedProxyEnv): Promise<
   // Older/unconfigured bindings keep the full managed route, before any create.
   const resolve = key.resolveAuthorizedKey;
   if (typeof resolve !== "function") return;
-  const principal = apiKeyPrincipal(await Reflect.apply(resolve, key, []), digest);
+  const principal = apiKeyPrincipal(consumeRpcData(await Reflect.apply(resolve, key, [])), digest);
   const admitted = performance.now();
   const authFinishedAt = Date.now();
   const failure = liveAgentFailure(request, principal);

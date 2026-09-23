@@ -67,7 +67,11 @@ export class AgentPresentationWriter {
       this.#facts = []; this.#factTurn = undefined;
       this.#save({ ...this.#value, status, activeTurnIds, activity: undefined, activityTurnId: undefined });
     }
-    if (!this.#value.title && !this.#titleBusy && Date.now() - this.#lastTitleAttempt >= 60_000 && prompt.trim()) {
+    // Admission already has a deterministic prompt-derived fallback title.
+    // Let the primary response begin before spending another provider request
+    // on sidebar copy; complete commentary or a terminal turn supplies that point.
+    const responseStarted = activeTurnIds.length === 0 || commentary !== undefined;
+    if (responseStarted && !this.#value.title && !this.#titleBusy && Date.now() - this.#lastTitleAttempt >= 60_000 && prompt.trim()) {
       this.#titleBusy = true; this.#lastTitleAttempt = Date.now();
       this.waitUntil(this.generate("title", prompt).then(title => {
         if (title) this.#save({ ...this.#value, title });

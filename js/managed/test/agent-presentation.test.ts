@@ -28,6 +28,38 @@ describe("agent sidebar presentation", () => {
     });
   });
 
+  it("defers advisory title inference until commentary or a terminal turn", async () => {
+    await runInDurableObject(runtime.NANOCODEX_USERS.getByName(crypto.randomUUID()), async (_, state) => {
+      const pending: Promise<unknown>[] = [], published: AgentPresentation[] = [], calls: string[] = [];
+      const writer = new AgentPresentationWriter(state.storage, async value => { published.push(value); }, async kind => {
+        calls.push(kind); return kind === "title" ? "Fix startup" : "I'm checking startup timing";
+      }, p => pending.push(p));
+      writer.observe("running", ["first"], "Fix startup", "first");
+      writer.observe("stopping", ["first"], "Fix startup", "first");
+      await Promise.all(pending);
+      expect(calls).toEqual([]);
+      expect(published.at(-1)).toMatchObject({ status: "stopping", activeTurnIds: ["first"] });
+      writer.observe("running", ["first"], "Fix startup", "first", "Checking startup timing");
+      await Promise.all(pending);
+      writer.observe("completed", [], "Fix startup", "first");
+      await Promise.all(pending);
+      expect(calls).toEqual(["title", "activity"]);
+      expect(published.at(-1)).toMatchObject({ status: "completed", title: "Fix startup" });
+    });
+    await runInDurableObject(runtime.NANOCODEX_USERS.getByName(crypto.randomUUID()), async (_, state) => {
+      const pending: Promise<unknown>[] = [], calls: string[] = [];
+      const writer = new AgentPresentationWriter(state.storage, async () => {}, async kind => {
+        calls.push(kind); return "Fix startup";
+      }, p => pending.push(p));
+      writer.observe("running", ["first"], "Fix startup", "first");
+      await Promise.all(pending);
+      expect(calls).toEqual([]);
+      writer.observe("completed", [], "Fix startup", "first");
+      await Promise.all(pending);
+      expect(calls).toEqual(["title"]);
+    });
+  });
+
   it("uses the small model and bounds source and output", async () => {
     let body: Record<string, any> = {};
     const fetcher = { fetch: async (request: Request) => {

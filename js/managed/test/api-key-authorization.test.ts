@@ -310,3 +310,56 @@ describe("live account and organization RPC authorization", () => {
     });
   });
 });
+
+describe("data-only authorization RPC ownership", () => {
+  it.each([true, false])("disposes the key reply before projecting or denying it (valid=%s)", async valid => {
+    const f = await fixture();
+    const dispose = vi.fn();
+    const raw = { ...structuredClone(f.record), digest: valid ? f.record.digest : "x".repeat(43),
+      [Symbol.dispose]() { raw.capabilities.length = 0; dispose(); } };
+    const fetch = vi.fn(async () => { throw new Error("unexpected HTTP fallback"); });
+    const bindings = { ...f.bindings,
+      NANOCODEX_API_KEYS: { getByName: () => ({ resolveAuthorizedKey: async () => raw, fetch }) },
+    } as unknown as AccountAuthEnv;
+    const principal = await authenticate(request(), bindings);
+    expect(dispose).toHaveBeenCalledOnce();
+    if (valid) expect(principal).toMatchObject({ kind: "api_key", capabilities: f.record.capabilities });
+    else expect(principal).toBeUndefined();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it.each(["authorized", "account", "grant"])("disposes both authority replies before %s validation", async outcome => {
+    await withKey(async (key, f) => {
+      const accountDispose = vi.fn(), grantDispose = vi.fn();
+      const account = { ...f.account, id: outcome === "account" ? "cccccccc-cccc-4ccc-8ccc-cccccccccccc" : f.account.id,
+        [Symbol.dispose]() { account.id = "disposed"; accountDispose(); } };
+      const grant = { ...structuredClone(f.grant), authorizationEpoch: outcome === "grant" ? 2 : 1,
+        [Symbol.dispose]() { grant.capabilities.length = 0; grantDispose(); } };
+      const fetch = vi.fn(async () => { throw new Error("unexpected authority HTTP fallback"); });
+      f.bindings.NANOCODEX_USERS = { getByName: () => ({ readAccount: async () => account, fetch }) } as unknown as AccountAuthEnv["NANOCODEX_USERS"];
+      f.bindings.NANOCODEX_ORGANIZATIONS = { getByName: () => ({ resolveOrganizationGrant: async () => grant, fetch }) } as unknown as AccountAuthEnv["NANOCODEX_ORGANIZATIONS"];
+      const result = await key.resolveAuthorizedKey();
+      if (outcome === "authorized") expect(result).toEqual(f.record);
+      else expect(result).toBeUndefined();
+      expect(accountDispose).toHaveBeenCalledOnce(); expect(grantDispose).toHaveBeenCalledOnce();
+      expect(fetch).not.toHaveBeenCalled();
+    });
+  });
+
+  it.each(["account", "grant"])("disposes a late %s reply after the other authority rejects", async late => {
+    await withKey(async (key, f) => {
+      let release!: (value: unknown) => void;
+      const pending = new Promise(resolve => { release = resolve; });
+      let finalized!: () => void;
+      const disposed = new Promise<void>(resolve => { finalized = resolve; });
+      const dispose = vi.fn(finalized);
+      const failure = async () => { throw new Error("synthetic authority failure"); };
+      f.bindings.NANOCODEX_USERS = { getByName: () => ({ readAccount: late === "account" ? () => pending : failure }) } as unknown as AccountAuthEnv["NANOCODEX_USERS"];
+      f.bindings.NANOCODEX_ORGANIZATIONS = { getByName: () => ({ resolveOrganizationGrant: late === "grant" ? () => pending : failure }) } as unknown as AccountAuthEnv["NANOCODEX_ORGANIZATIONS"];
+      await expect(key.resolveAuthorizedKey()).rejects.toThrow("synthetic authority failure");
+      release({ ...(late === "account" ? f.account : f.grant), [Symbol.dispose]: dispose });
+      await disposed;
+      expect(dispose).toHaveBeenCalledOnce();
+    });
+  });
+});

@@ -1,3 +1,4 @@
+import { consumeRpcData } from "nanocodex/cloudflare/rpc";
 import type { CloudflareAccountCatalogResult, CloudflareAccountVaultResult } from "nanocodex/cloudflare/egress";
 import { durablePlacementOptions, ingressColo, TRUSTED_INGRESS_HEADER, type IngressPlacement } from "nanocodex/cloudflare/durable-placement";
 import { LINK_PATH } from "./connectors/link";
@@ -428,18 +429,19 @@ export default class Egress extends WorkerEntrypoint<EgressEnv> {
   }
 
   /** Service-binding control reads carry the same caller-selected owner as HTTP. */
-  readAccountCatalog(userId: unknown): Promise<CloudflareAccountCatalogResult> {
+  async readAccountCatalog(userId: unknown): Promise<CloudflareAccountCatalogResult> {
     if (typeof userId !== "string" || !USER_ID.test(userId)) {
-      return Promise.resolve({ status: 400, catalog: null });
+      return { status: 400, catalog: null };
     }
-    return connectorBroker(this.env, userId).readCatalog();
+    // Never forward the DO result's runtime disposer into the next RPC hop.
+    return consumeRpcData(await connectorBroker(this.env, userId).readCatalog());
   }
 
-  readAccountVault(userId: unknown): Promise<CloudflareAccountVaultResult> {
+  async readAccountVault(userId: unknown): Promise<CloudflareAccountVaultResult> {
     if (typeof userId !== "string" || !USER_ID.test(userId)) {
-      return Promise.resolve({ status: 400, vault: null });
+      return { status: 400, vault: null };
     }
-    return userBroker(this.env, userId).readVaultMetadata();
+    return consumeRpcData(await userBroker(this.env, userId).readVaultMetadata());
   }
 }
 
@@ -2816,7 +2818,7 @@ async function resolveUserCredential(
   revision?: number,
   accountId?: string,
 ): Promise<UserCredentialSnapshot & Pick<ResolvedModelCredential, "broker_ms" | "broker_activation_ms" | "broker_age_ms" | "broker_resolve_id">> {
-  const result = await userBroker(env, userId).resolveModelCredential(recover, revision, accountId);
+  const result = consumeRpcData(await userBroker(env, userId).resolveModelCredential(recover, revision, accountId));
   if (result.status < 200 || result.status >= 300) {
     if (result.status === 429) throw new EgressFailure(429, accountId ? "chatgpt_account_exhausted" : "chatgpt_accounts_exhausted");
     throw new EgressFailure(result.status === 404 ? 409 : 503, accountId ? "chatgpt_account_unavailable" : "user_credential_unavailable");

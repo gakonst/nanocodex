@@ -1,3 +1,4 @@
+import { consumeRpcData } from "nanocodex/cloudflare/rpc";
 import type { CloudflareAccountMetadataBinding } from "nanocodex/cloudflare/egress";
 import { accountVaultMetadata, type VaultEntry } from "./account-info";
 import { fetchResponseWithDeadline, withHardDeadline } from "./deadline";
@@ -88,7 +89,7 @@ export function accountCatalog(broker: Fetcher, userId: string): Promise<unknown
   const readAccountCatalog = metadata.readAccountCatalog;
   if (typeof readAccountCatalog === "function") {
     return performanceStage("account.catalog", () => withHardDeadline("account catalog", 10_000, async () => {
-      const result = await Reflect.apply(readAccountCatalog, metadata, [userId]);
+      const result = consumeRpcData(await Reflect.apply(readAccountCatalog, metadata, [userId]));
       if (result.status !== 200) throw new Error(`account catalog failed with HTTP ${result.status}`);
       return validateCatalog(result.catalog);
     }));

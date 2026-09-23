@@ -133,3 +133,82 @@ describe("account metadata RPC discovery", () => {
     } finally { vi.useRealTimers(); }
   });
 });
+
+describe("discovery RPC result ownership", () => {
+  it("disposes both owners once and retains detached metadata across cache hits", async () => {
+    const f = fixture();
+    const catalogDispose = vi.fn(), vaultDispose = vi.fn();
+    const rawCatalog = { status: 200, catalog: structuredClone(catalog), [Symbol.dispose]: catalogDispose };
+    const rawVault = { status: 200, vault: structuredClone(vault), [Symbol.dispose]: vaultDispose };
+    f.readAccountCatalog.mockResolvedValueOnce(rawCatalog);
+    f.readAccountVault.mockResolvedValueOnce(rawVault);
+    const cache = new AccountCatalogCache();
+    const first = await cache.get(f.broker, "owner", "authority");
+    const entries = await cache.vault(f.broker, "owner", "authority");
+    expect(catalogDispose).toHaveBeenCalledOnce(); expect(vaultDispose).toHaveBeenCalledOnce();
+    expect(Object.getOwnPropertySymbols(first as object)).toEqual([]);
+    rawCatalog.catalog.connectors = { github: { connected: false } };
+    rawVault.vault[0]!.name = "changed after disposal";
+    expect(await cache.get(f.broker, "owner", "authority")).toBe(first);
+    expect(first).toEqual(catalog); expect(entries).toEqual(vault);
+    expect(f.readAccountCatalog).toHaveBeenCalledOnce(); expect(f.readAccountVault).toHaveBeenCalledOnce();
+  });
+
+  it("disposes status errors and invalid projections before rejecting", async () => {
+    const f = fixture();
+    for (const result of [{ status: 503, catalog: null }, { status: 200, catalog: {} }]) {
+      const dispose = vi.fn();
+      const owned = { ...result, [Symbol.dispose]: dispose };
+      f.readAccountCatalog.mockResolvedValueOnce(owned);
+      await expect(accountCatalog(f.broker, "owner")).rejects.toThrow();
+      expect(dispose).toHaveBeenCalledOnce();
+    }
+    for (const result of [{ status: 503, vault: null }, { status: 200, vault: [{}] }]) {
+      const dispose = vi.fn();
+      const owned = { ...result, [Symbol.dispose]: dispose };
+      f.readAccountVault.mockResolvedValueOnce(owned);
+      await expect(accountVaultMetadata(f.broker, "owner")).rejects.toThrow();
+      expect(dispose).toHaveBeenCalledOnce();
+    }
+  });
+
+  it.each([200, 503])("disposes late catalog replies after deadline eviction (status=%s)", async status => {
+    vi.useFakeTimers();
+    const f = fixture();
+    let release!: (value: CloudflareAccountCatalogResult) => void;
+    const dispose = vi.fn();
+    f.readAccountCatalog.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const cache = new AccountCatalogCache();
+    try {
+      const expired = expect(cache.get(f.broker, "owner", "authority")).rejects.toThrow("timed out");
+      await vi.advanceTimersByTimeAsync(10_000); await expired;
+      const replacement = await cache.get(f.broker, "owner", "authority");
+      release({ status, catalog, [Symbol.dispose]: dispose } as CloudflareAccountCatalogResult);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(await cache.get(f.broker, "owner", "authority")).toBe(replacement);
+      expect(f.readAccountCatalog).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+});
+
+describe("late vault RPC ownership", () => {
+  it.each([200, 503])("disposes late vault replies even when their signal is aborted (status=%s)", async status => {
+    vi.useFakeTimers();
+    const f = fixture();
+    let release!: (value: CloudflareAccountVaultResult) => void;
+    const dispose = vi.fn();
+    f.readAccountVault.mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    const cache = new AccountCatalogCache();
+    try {
+      const expired = expect(cache.vault(f.broker, "owner", "authority")).rejects.toThrow("timed out");
+      await vi.advanceTimersByTimeAsync(10_000); await expired;
+      const replacement = await cache.vault(f.broker, "owner", "authority");
+      release({ status, vault, [Symbol.dispose]: dispose } as CloudflareAccountVaultResult);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(dispose).toHaveBeenCalledOnce();
+      expect(await cache.vault(f.broker, "owner", "authority")).toBe(replacement);
+      expect(f.readAccountVault).toHaveBeenCalledTimes(2);
+    } finally { vi.useRealTimers(); }
+  });
+});

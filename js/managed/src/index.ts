@@ -3374,22 +3374,14 @@ export class DurableAgentSession extends DurableComputerSession {
     );
     this.#deleted = this.#initializationOwnership()?.state === "deleted";
     this.#streamError = this.#session()?.stream_error ?? undefined;
-    this.ctx.blockConcurrencyWhile(() => performanceScope(this.ctx.id.toString(), "session.constructor.restore", async () => {
-      const retained = await this.ctx.storage.get([
-        SESSION_DELETING_KEY,
-        CREDENTIAL_BINDING_KEY,
-        SESSION_DELETION_GENERATION_KEY,
-        DURABILITY_EXPORTED_KEY,
-        DURABILITY_IMPORT_STATE_KEY,
-      ]);
+    performanceSyncScope(this.ctx.id.toString(), "session.constructor.restore", () => {
+      // SQLite KV reads restore lifecycle fences before the constructor returns.
+      const retained = this.ctx.storage.kv;
       this.#deleting = retained.get(SESSION_DELETING_KEY) === true;
-      this.#credentialBinding = retained.get(CREDENTIAL_BINDING_KEY) as
-        CredentialBindingOwnership | undefined;
-      this.#deletionGeneration =
-        (retained.get(SESSION_DELETION_GENERATION_KEY) as number | undefined) ?? 0;
+      this.#credentialBinding = retained.get<CredentialBindingOwnership>(CREDENTIAL_BINDING_KEY);
+      this.#deletionGeneration = retained.get<number>(SESSION_DELETION_GENERATION_KEY) ?? 0;
       this.#durabilityExported = retained.get(DURABILITY_EXPORTED_KEY) === true;
-      this.#durabilityImportState = retained.get(DURABILITY_IMPORT_STATE_KEY) as
-        "pending" | "complete" | undefined;
+      this.#durabilityImportState = retained.get<"pending" | "complete">(DURABILITY_IMPORT_STATE_KEY);
       // Durable state and SSE replay are immediately usable after eviction.
       // Re-admission or deletion may load external resources, so neither sits
       // on the object's request-readiness boundary.
@@ -3401,7 +3393,7 @@ export class DurableAgentSession extends DurableComputerSession {
         this.#scheduleHistoryProjection();
         this.#resumeClientReplays();
       }
-    }));
+    });
   }
 
   /** Private RPC: live ownership without serializing a streamed HTTP body. */

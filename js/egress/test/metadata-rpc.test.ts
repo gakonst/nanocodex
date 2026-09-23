@@ -100,3 +100,26 @@ describe("private account metadata RPC", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 });
+
+describe("metadata forwarding ownership", () => {
+  it.each([200, 503])("disposes both DO owners and forwards detached data (status=%s)", async status => {
+    const catalogDispose = vi.fn(), vaultDispose = vi.fn();
+    const catalog = { status, catalog: { connectors: {}, mcp_connections: [] as unknown[] },
+      [Symbol.dispose]() { catalog.catalog.mcp_connections.push({ id: "disposed" }); catalogDispose(); } };
+    const vault = { status, vault: [] as unknown[],
+      [Symbol.dispose]() { vault.vault.push({ id: "disposed" }); vaultDispose(); } };
+    const fetch = vi.fn(async () => { throw new Error("unexpected metadata HTTP fallback"); });
+    const entry = new Egress(createExecutionContext(), {
+      USER_CONNECTORS: { getByName: () => ({ readCatalog: async () => catalog, fetch }) },
+      USER_CREDENTIALS: { getByName: () => ({ readVaultMetadata: async () => vault, fetch }) },
+    } as unknown as EgressEnv);
+    const forwardedCatalog = await entry.readAccountCatalog("rpc-owner");
+    const forwardedVault = await entry.readAccountVault("rpc-owner");
+    expect(catalogDispose).toHaveBeenCalledOnce(); expect(vaultDispose).toHaveBeenCalledOnce();
+    expect(forwardedCatalog).toEqual({ status, catalog: { connectors: {}, mcp_connections: [] } });
+    expect(forwardedVault).toEqual({ status, vault: [] });
+    expect(Object.getOwnPropertySymbols(forwardedCatalog)).toEqual([]);
+    expect(Object.getOwnPropertySymbols(forwardedVault)).toEqual([]);
+    expect(fetch).not.toHaveBeenCalled();
+  });
+});

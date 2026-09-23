@@ -135,3 +135,18 @@ test("inference-scoped credentials cannot touch direct namespaces even with ambi
   const env = new Proxy({} as ManagedProxyEnv, { get() { assert.fail("scope rejection must precede bindings"); } });
   assert.equal((await run(req, env)).status, 403);
 });
+
+test("direct live auth disposes returned records before dispatch and denial", async () => {
+  for (const valid of [true, false]) {
+    let disposals = 0;
+    const value = { ...record, digest: valid ? digest : "x".repeat(43),
+      [Symbol.dispose]() { disposals++; } };
+    const f = fixture(value);
+    const result = await run(request(), f.env);
+    assert.equal(disposals, 1);
+    assert.equal(result.status, valid ? 200 : 401);
+    assert.equal(f.calls.session, valid ? 1 : 0);
+    if (valid) assert.deepEqual(JSON.parse(f.forwarded().headers.get("x-nanocodex-capabilities")!), record.capabilities);
+    assert.equal(f.calls.fallback, 0);
+  }
+});
