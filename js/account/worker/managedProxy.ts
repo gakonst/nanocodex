@@ -58,6 +58,17 @@ export async function routeManaged(
       }
       response = await env.NANOCODEX_BACKEND.fetch(request);
     }
+    if (/^\/v1\/agents(?:\/(?:live|[0-9a-f-]{36}(?:\/(?:routing|settings|prepare|ws|events(?:\/history)?|turns(?:\/[A-Za-z0-9_.:-]{1,128}\/cancel)?))?))?$/.test(url.pathname)) {
+      // Match the managed receipt without reading a body or changing upgraded
+      // sockets. This separates account forwarding from managed execution and
+      // the caller's network/scheduling residual in end-to-end traces.
+      try {
+        console.info({ type: "managed.proxy", request_id: response.headers.get("x-nanocodex-request-id"),
+          method: request.method, path: url.pathname, status: response.status,
+          backend_ms: performance.now() - started, started_at_ms: startedAt, finished_at_ms: Date.now(),
+          request_colo: typeof request.cf?.colo === "string" ? request.cf.colo : undefined });
+      } catch { /* Observation must preserve admission, streams and cancellation. */ }
+    }
     if (/^\/v1\/account\/hands\/(?:screens|host|view|ice|renew)$/.test(url.pathname)) {
       console.info({ type: "hand.proxy", request_id: response.headers.get("x-nanocodex-request-id"),
         method: request.method, path: url.pathname, status: response.status, route: local ? "local_access" : "managed",

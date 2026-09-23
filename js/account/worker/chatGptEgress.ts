@@ -23,7 +23,40 @@ export class ChatGptEgress extends Container {
   }
 
   override async fetch(request: Request): Promise<Response> {
-    if (new URL(request.url).pathname !== "/backend-api/codex/realtime/calls") {
+    const pathname = new URL(request.url).pathname;
+    if (pathname === "/backend-api/codex/responses"
+      && request.headers.get("upgrade")?.toLowerCase() === "websocket") {
+      const began = performance.now();
+      const wasRunning = this.ctx.container?.running;
+      // Generated here, never copied from a caller's identifier or credential.
+      // The Node relay does not forward this private correlation header upstream.
+      const relayId = crypto.randomUUID();
+      // Parent ID is generated/overwritten by egress at the private DO boundary.
+      // UUID validation bounds the log value; it does not authenticate its origin.
+      const egressRequestId = request.headers.get("x-nanocodex-egress-request-id");
+      const headers = new Headers(request.headers);
+      headers.set("x-nanocodex-relay-id", relayId);
+      headers.delete("x-nanocodex-egress-request-id");
+      let status: number | undefined;
+      try {
+        const response = await super.fetch(new Request(request, { headers }));
+        status = response.status;
+        // Preserve the exact upgrade Response and its webSocket; do not wrap it.
+        return response;
+      } finally {
+        try {
+          console.info({
+            type: "responses.relay", transport: "websocket", relay_id: relayId,
+            ...(egressRequestId
+              && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(egressRequestId)
+              ? { egress_request_id: egressRequestId } : {}),
+            was_running: wasRunning, duration_ms: performance.now() - began,
+            ...(status === undefined ? { outcome: "error" } : { status, outcome: "response" }),
+          });
+        } catch { /* Observability must not change the upgrade result. */ }
+      }
+    }
+    if (pathname !== "/backend-api/codex/realtime/calls") {
       return super.fetch(request);
     }
     const began = performance.now();

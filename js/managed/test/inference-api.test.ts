@@ -62,10 +62,12 @@ it("real key issuance and public gateway sessions isolate two callers", async ()
     const result = await call("/models", "GET", undefined, key1.api_key);
     expect(result.status).toBe(200);
     const expanded = await result.json<{ data: Array<{ id: string; provider: string }> }>();
-    expect(expanded.data).toHaveLength(gate === "true" ? 55 : 43);
+    expect(expanded.data).toHaveLength(gate === "true" ? 34 : 25);
     expect(expanded.data.some(c => c.provider === "chatgpt")).toBe(false);
+    // Sol/Luna Chat gateways require unsupported effort none; only their gated Responses routes remain.
+    expect(expanded.data.some(c => /^openrouter:openai\/gpt-6-(sol|luna):/.test(c.id))).toBe(false);
     const cloudflare = expanded.data.filter(c => c.provider === "cloudflare");
-    expect(cloudflare).toHaveLength(gate === "true" ? 12 : 0);
+    expect(cloudflare).toHaveLength(gate === "true" ? 9 : 0);
     if (gate === "true") expect(cloudflare.map(c => c.id).sort()).toEqual(
       ["gpt-6-astra", "gpt-6-sol", "gpt-6-luna"].flatMap(model =>
         ["low", "medium", "high"].map(effort => `cloudflare:openai/${model}:${effort}`)).sort());

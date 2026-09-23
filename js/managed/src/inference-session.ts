@@ -11,6 +11,7 @@ import { gatewayAvailability, gatewayRuntime } from "./gateway-runtime";
 import { PROBE_OWNER } from "./provider-probe-schedule";
 import { finalizeInferenceResponse, projectInferenceStream } from "./inference-stream";
 import type { ProviderObservation } from "./provider-telemetry";
+export type InferenceExecutionContext = Pick<ExecutionContext, "waitUntil">;
 export type InferenceOrigin = { clientIngressColo: string | null };
 export const INFERENCE_INGRESS_HEADER = "x-inference-ingress-colo";
 const unknownOrigin: InferenceOrigin = { clientIngressColo: null };
@@ -162,7 +163,7 @@ export function normalizeInferencePolicy(value: unknown = {}): ThreadRoutingPoli
 /** Routing never waits for geographic/probe snapshots. Passive observations are
  * retained for the dashboard; regional latency selection is deferred until proven.
  */
-export async function inferenceRoutingAvailability(env: InferenceSessionEnv, signal: AbortSignal, origin: InferenceOrigin = unknownOrigin): Promise<RoutingAvailability> {
+export async function inferenceRoutingAvailability(env: InferenceSessionEnv, signal: AbortSignal, origin: InferenceOrigin = unknownOrigin, context: InferenceExecutionContext = { waitUntil }): Promise<RoutingAvailability> {
   const availability: RoutingAvailability = {
     ...gatewayAvailability(env), signal,
     workerColo: null, clientIngressColo: origin.clientIngressColo, provider_performance: [],
@@ -173,7 +174,7 @@ export async function inferenceRoutingAvailability(env: InferenceSessionEnv, sig
     const observation = routeObservation(route, origin.clientIngressColo);
     if (!observation) return;
     // Persist diagnostics out of band; the first token must not wait for an RPC.
-    waitUntil(Promise.resolve().then(() => coordinator.getByName(PROBE_OWNER).observeRoute?.(observation)).catch(() => {}));
+    context.waitUntil(Promise.resolve().then(() => coordinator.getByName(PROBE_OWNER).observeRoute?.(observation)).catch(() => {}));
   };
   return availability;
 }
@@ -225,9 +226,9 @@ async function abortable<T>(pending: Promise<T>, signal: AbortSignal): Promise<T
   } finally { if (abort) signal.removeEventListener("abort", abort); }
 }
 async function resolveInferenceRoute(env: InferenceSessionEnv, input: InferenceRequest,
-  policy: ThreadRoutingPolicy, signal: AbortSignal, origin: InferenceOrigin = unknownOrigin): Promise<InferenceRoute> {
+  policy: ThreadRoutingPolicy, signal: AbortSignal, origin: InferenceOrigin = unknownOrigin, context: InferenceExecutionContext = { waitUntil }): Promise<InferenceRoute> {
   const constrained = requestPolicy(policy, input);
-  const availability = await inferenceRoutingAvailability(env, signal, origin);
+  const availability = await inferenceRoutingAvailability(env, signal, origin, context);
   signal.throwIfAborted();
   if (!ROUTING_CANDIDATES.some(c => constrained.candidates!.includes(c.id)
     && (c.backend === "workers_ai" || c.backend !== "chatgpt" && availability[c.backend])))
@@ -241,7 +242,7 @@ async function resolveInferenceRoute(env: InferenceSessionEnv, input: InferenceR
 
 /** Executes one generation using a resolved route; returned tools remain caller-owned. */
 async function executeRoutedResponse(env: InferenceSessionEnv, route: InferenceRoute,
-  input: InferenceRequest, signal: AbortSignal, fetchImpl: typeof fetch, sessionId?: string, origin: InferenceOrigin = unknownOrigin): Promise<Response> {
+  input: InferenceRequest, signal: AbortSignal, fetchImpl: typeof fetch, sessionId?: string, origin: InferenceOrigin = unknownOrigin, context: InferenceExecutionContext = { waitUntil }): Promise<Response> {
   if (!admittedRoute(route)) throw new InferenceRequestError("invalid_pinned_route", 503);
   assertPinnedRequest(route, input);
   signal.throwIfAborted();
@@ -261,22 +262,27 @@ async function executeRoutedResponse(env: InferenceSessionEnv, route: InferenceR
   }
   const began = performance.now(), timestamp = Date.now();
   let ttft: number | null = null, observed = false;
-  const observe = async (success: boolean) => {
+  const observe = (success: boolean) => {
     if (observed) return;
     observed = true;
     const elapsedMs = performance.now() - began;
-    let timeout: ReturnType<typeof setTimeout> | undefined;
-    try {
-      const coordinator = env.NANOCODEX_PROVIDER_PROBE_COORDINATOR?.getByName(PROBE_OWNER);
-      if (!coordinator?.observe) return;
-      await Promise.race([coordinator.observe({ timestamp, source: "live", workerColo: null,
-        clientIngressColo: origin.clientIngressColo, backend: route.backend, model: route.model, effort: route.thinking,
-        outcome: success ? "success" : signal.aborted ? (signal.reason?.name === "TimeoutError" ? "timeout" : "cancelled") : "protocol_error",
-        status: success ? 200 : null, headersMs: null, fullResponseMs: success ? elapsedMs : null,
-        generationTtftMs: success ? ttft : null, clientDeliveryMs: null, elapsedMs }),
-        new Promise(resolve => { timeout = setTimeout(resolve, INFERENCE_PROBE_TIMEOUT_MS); })]);
-    } catch { /* telemetry must never fail generation */ }
-    finally { clearTimeout(timeout); }
+    // Passive diagnostics must not delay JSON delivery, stream EOF or session release.
+    const observationTask = (async () => {
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      try {
+        const coordinator = env.NANOCODEX_PROVIDER_PROBE_COORDINATOR?.getByName(PROBE_OWNER);
+        if (!coordinator?.observe) return;
+        await Promise.race([coordinator.observe({ timestamp, source: "live", workerColo: null,
+          clientIngressColo: origin.clientIngressColo, backend: route.backend, model: route.model, effort: route.thinking,
+          outcome: success ? "success" : signal.aborted ? (signal.reason?.name === "TimeoutError" ? "timeout" : "cancelled") : "protocol_error",
+          status: success ? 200 : null, headersMs: null, fullResponseMs: success ? elapsedMs : null,
+          generationTtftMs: success ? ttft : null, clientDeliveryMs: null, elapsedMs }),
+          new Promise(resolve => { timeout = setTimeout(resolve, INFERENCE_PROBE_TIMEOUT_MS); })]);
+      } catch { /* telemetry must never fail generation */ }
+      finally { clearTimeout(timeout); }
+    })();
+    try { context.waitUntil(observationTask); }
+    catch { /* telemetry registration must never fail generation */ }
   };
   try {
     const response = await transport.createResponse(`${transport.apiBaseUrl}/responses`, sessionId ?? "", {
@@ -301,19 +307,20 @@ async function executeRoutedResponse(env: InferenceSessionEnv, route: InferenceR
     if (input.stream) return finalizeInferenceResponse(new Response(stream, {
       headers: { ...headers, "content-type": "text/event-stream; charset=utf-8" },
     }), signal, observe);
-    await new Response(stream).arrayBuffer();
+    // Validate every frame without retaining a second, encoded copy of the response.
+    await stream.pipeTo(new WritableStream());
     if (!completed) throw new Error("invalid_provider_protocol");
     signal.throwIfAborted();
-    await observe(true);
+    observe(true);
     return Response.json(completed, { headers });
-  } catch (error) { await observe(false); throw error; }
+  } catch (error) { observe(false); throw error; }
 }
 
 /** Session wrapper preserves the committed provider/model/effort pin. */
 export async function executeInferenceResponse(env: InferenceSessionEnv, session: Pick<InferenceSessionMetadata, "id" | "route">,
-  input: InferenceRequest, signal: AbortSignal, fetchImpl: typeof fetch = fetch, origin: InferenceOrigin = unknownOrigin): Promise<Response> {
+  input: InferenceRequest, signal: AbortSignal, fetchImpl: typeof fetch = fetch, origin: InferenceOrigin = unknownOrigin, context: InferenceExecutionContext = { waitUntil }): Promise<Response> {
   if (!session.route) throw new InferenceRequestError("invalid_pinned_route", 503);
-  return executeRoutedResponse(env, session.route, input, signal, fetchImpl, session.id, origin);
+  return executeRoutedResponse(env, session.route, input, signal, fetchImpl, session.id, origin, context);
 }
 
 function inferenceErrorResponse(error: unknown, signal: AbortSignal): Response {
@@ -324,7 +331,7 @@ function inferenceErrorResponse(error: unknown, signal: AbortSignal): Response {
 
 /** Standard Responses request: no storage, retained transcript, or account context. */
 export async function executeStatelessInferenceResponse(env: InferenceSessionEnv, rawBody: unknown,
-  maxOutputTokens: number, signal: AbortSignal, origin: InferenceOrigin = unknownOrigin): Promise<Response> {
+  maxOutputTokens: number, signal: AbortSignal, origin: InferenceOrigin = unknownOrigin, context: InferenceExecutionContext = { waitUntil }): Promise<Response> {
   const controller = new AbortController();
   const abort = () => controller.abort(signal.reason);
   signal.addEventListener("abort", abort, { once: true });
@@ -335,8 +342,8 @@ export async function executeStatelessInferenceResponse(env: InferenceSessionEnv
   try {
     const input = validateInferenceRequest(rawBody, maxOutputTokens);
     controller.signal.throwIfAborted();
-    const route = await resolveInferenceRoute(env, input, normalizeInferencePolicy(), controller.signal, origin);
-    const response = await abortable(executeRoutedResponse(env, route, input, controller.signal, fetch, undefined, origin), controller.signal);
+    const route = await resolveInferenceRoute(env, input, normalizeInferencePolicy(), controller.signal, origin, context);
+    const response = await abortable(executeRoutedResponse(env, route, input, controller.signal, fetch, undefined, origin, context), controller.signal);
     if (input.stream) {
       streaming = true;
       return finalizeInferenceResponse(response, controller.signal, cleanup);
@@ -383,7 +390,8 @@ const json = (value: unknown, status = 200) => Response.json(value, { status, he
  */
 export class InferenceSessionRuntime {
   #busy = false;
-  constructor(private readonly ctx: Pick<DurableObjectState, "id" | "storage">, private readonly env: InferenceSessionEnv) {}
+  constructor(private readonly ctx: Pick<DurableObjectState, "id" | "storage">, private readonly env: InferenceSessionEnv,
+    private readonly context: InferenceExecutionContext = { waitUntil }) {}
   async fetch(request: Request): Promise<Response> {
     if (this.#busy) return json({ error: { code: "session_busy" } }, 409);
     this.#busy = true;
@@ -436,14 +444,13 @@ export class InferenceSessionRuntime {
     signal.throwIfAborted();
     const origin = inferenceOrigin(request.headers.get(INFERENCE_INGRESS_HEADER));
     if (!retained.route) {
-      retained.route = await resolveInferenceRoute(this.env, input, retained.routing, signal, origin);
-      // Await durable commit before issuing the generation request. Failed generation keeps this exact pin.
-      await this.ctx.storage.put(STORAGE_KEY, retained);
+      retained.route = await resolveInferenceRoute(this.env, input, retained.routing, signal, origin, this.context);
     }
     retained.counters.requests++;
+    // Commit the pin and admission together before generation. Failed generation keeps this exact pin.
     await this.ctx.storage.put(STORAGE_KEY, retained);
     try {
-      const response = await executeInferenceResponse(this.env, retained, input, signal, fetch, origin);
+      const response = await executeInferenceResponse(this.env, retained, input, signal, fetch, origin, this.context);
       if (input.stream) return finalizeInferenceResponse(response, signal, async success => {
         retained.counters[success ? "completed" : "failed"]++;
         await this.ctx.storage.put(STORAGE_KEY, retained);
@@ -464,7 +471,7 @@ export class InferenceSession extends DurableObject<InferenceSessionEnv> {
   readonly #runtime: InferenceSessionRuntime;
   constructor(ctx: DurableObjectState, env: InferenceSessionEnv) {
     super(ctx, env);
-    this.#runtime = new InferenceSessionRuntime(ctx, env);
+    this.#runtime = new InferenceSessionRuntime(ctx, env, ctx);
   }
   fetch(request: Request): Promise<Response> { return this.#runtime.fetch(request); }
 }

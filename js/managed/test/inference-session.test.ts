@@ -1,8 +1,8 @@
-import { env, runInDurableObject } from "cloudflare:test";
+import { createExecutionContext, waitOnExecutionContext, env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it, vi, afterEach } from "vitest";
 import {
   InferenceSession, InferenceSessionRuntime, executeStatelessInferenceResponse, INFERENCE_KEY_ID_HEADER, INFERENCE_MAX_OUTPUT_TOKENS_HEADER,
-  INFERENCE_MAX_BODY_BYTES, INFERENCE_TIMEOUT_MS, normalizeInferencePolicy, validateInferenceRequest,
+  INFERENCE_MAX_BODY_BYTES, INFERENCE_TIMEOUT_MS, INFERENCE_PROBE_TIMEOUT_MS, normalizeInferencePolicy, validateInferenceRequest,
   type InferenceSessionEnv, type InferenceSessionMetadata,
 } from "../src/inference-session";
 import { OSS_MODEL, ROUTING_CANDIDATES, taskFamily } from "../src/thread-model-routing";
@@ -16,6 +16,7 @@ const classification = (choice = candidate) => ({ answers: {
   candidate: { choice, confidence: 0.95 }, family: { choice: "other", confidence: 0.95 },
 }, usage: { arbitrary_provider_payload: "private-router-echo" } });
 function fixture(env?: Partial<InferenceSessionEnv>) {
+  const context = createExecutionContext();
   const persisted = new Map<string, unknown>();
   const commits: InferenceSessionMetadata[] = [];
   const storage = {
@@ -25,17 +26,17 @@ function fixture(env?: Partial<InferenceSessionEnv>) {
   const ctx = { id: { toString: () => "synthetic-do-id" }, storage } as unknown as DurableObjectState;
   const ai = vi.fn(async (model: string, _input: unknown): Promise<unknown> => model === "typesafe/jev" ? classification() : completion());
   const bindings = { AI: { run: ai }, ...env };
-  let session = new InferenceSessionRuntime(ctx, bindings);
-  const call = (method: string, path = "/session", body?: unknown, key: string | null = owner, extra: Record<string, string> = {}) => {
+  let session = new InferenceSessionRuntime(ctx, bindings, context);
+  const call = (method: string, path = "/session", body?: unknown, key: string | null = owner, extra: Record<string, string> = {}, signal?: AbortSignal) => {
     const headers: Record<string, string> = { ...extra };
     if (key !== null) headers[INFERENCE_KEY_ID_HEADER] = key;
     return session.fetch(new Request(`https://private.invalid${path}`, {
-      method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      method, headers, signal, ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     }));
   };
-  return { ai, bindings, persisted, commits, call,
+  return { ai, bindings, persisted, commits, storage, context, call,
     create: (routing: unknown = { candidates: [candidate] }) => call("PUT", "/session", { key_id: owner, session_id: sessionId, routing }),
-    restart: () => { session = new InferenceSessionRuntime(ctx, bindings); },
+    restart: () => { session = new InferenceSessionRuntime(ctx, bindings, context); },
   };
 }
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
@@ -57,6 +58,42 @@ describe("standalone inference session isolation", () => {
       buffering: "buffered", status: "completed", route: { backend: "workers_ai" } });
     expect(JSON.stringify(f.commits)).not.toContain("private");
     expect(f.commits.at(-1)?.counters).toEqual({ requests: 1, completed: 1, failed: 0 });
+  });
+
+  it("commits the first route and admission together before issuing generation", async () => {
+    const f = fixture(); await f.create();
+    let release!: () => void, entered!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const committing = new Promise<void>(resolve => { entered = resolve; });
+    const put = f.storage.put;
+    vi.spyOn(f.storage, "put").mockImplementationOnce(async (key, value) => {
+      entered(); await gate; await put(key, value);
+    });
+    f.ai.mockImplementation(async model => {
+      if (model === "typesafe/jev") return classification();
+      expect(f.commits).toHaveLength(2);
+      expect(f.commits.at(-1)).toMatchObject({ route: { model: OSS_MODEL, thinking: "medium" },
+        counters: { requests: 1, completed: 0, failed: 0 } });
+      return completion();
+    });
+    const response = f.call("POST", "/responses", { input: "fixture" });
+    try {
+      await committing;
+      expect(f.ai.mock.calls.map(([model]) => model)).toEqual(["typesafe/jev"]);
+      expect(f.commits).toHaveLength(1);
+    } finally { release(); }
+    expect((await response).status).toBe(200);
+    expect(f.commits.at(-1)?.counters).toEqual({ requests: 1, completed: 1, failed: 0 });
+  });
+  it("does not issue generation if the combined route and admission commit fails", async () => {
+    const f = fixture(); await f.create();
+    vi.spyOn(f.storage, "put").mockRejectedValueOnce(Error("synthetic storage failure"));
+    const response = await f.call("POST", "/responses", { input: "fixture" });
+    expect(response.status).toBe(502);
+    expect(f.ai.mock.calls.map(([model]) => model)).toEqual(["typesafe/jev"]);
+    f.restart();
+    expect(await (await f.call("GET")).json()).toMatchObject({ route: null,
+      counters: { requests: 0, completed: 0, failed: 0 } });
   });
   it("denies other keys and parent-like keys and never rebinds after deletion", async () => {
     const f = fixture(); await f.create();
@@ -372,6 +409,98 @@ describe("telemetry stays off the routing path", () => {
       expect(response.status).toBe(200);
       expect(observeRoute).toHaveBeenCalledOnce();
     } finally { finish(); }
+  });
+
+  it.each([false, true])("finishes stateless and session responses while provider telemetry is pending (stream=%s)", async stream => {
+    vi.useFakeTimers();
+    let release!: () => void, reported = false;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const observe = vi.fn(async (_observation: unknown) => { await gate; reported = true; });
+    const f = fixture({ NANOCODEX_PROVIDER_PROBE_COORDINATOR: {
+      getByName: () => ({ snapshot: async () => [], observe }),
+    } });
+    await f.create();
+    const responses = [
+      executeStatelessInferenceResponse(f.bindings, { input: "fixture", stream }, 32, new AbortController().signal, undefined, f.context),
+      f.call("POST", "/responses", { input: "fixture", stream }),
+    ];
+    let delivered = 0;
+    const consumed = Promise.all(responses.map(async pending => {
+      const response = await pending;
+      expect(response.status).toBe(200);
+      const text = await response.text();
+      expect(text).toContain(stream ? "event: response.completed" : '"status":"completed"');
+      delivered++;
+    }));
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(delivered).toBe(2);
+      expect(reported).toBe(false);
+      expect(observe).toHaveBeenCalledTimes(2);
+      for (const [observation] of observe.mock.calls)
+        expect(observation).toMatchObject({ source: "live", outcome: "success", status: 200, backend: "workers_ai" });
+      expect((await f.call("GET")).status).toBe(200);
+      expect(f.commits.at(-1)?.counters).toEqual({ requests: 1, completed: 1, failed: 0 });
+      let backgroundFinished = false;
+      const background = waitOnExecutionContext(f.context).then(() => { backgroundFinished = true; });
+      await vi.advanceTimersByTimeAsync(INFERENCE_PROBE_TIMEOUT_MS - 1);
+      expect(backgroundFinished).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      await background;
+      expect(backgroundFinished).toBe(true);
+      expect(reported).toBe(false);
+    } finally { release(); await consumed; await waitOnExecutionContext(f.context); }
+  });
+
+  it.each([false, true])("keeps responses successful when completion telemetry registration throws (stream=%s)", async stream => {
+    const observe = vi.fn(async () => { throw Error("private telemetry failure"); });
+    const f = fixture({ NANOCODEX_PROVIDER_PROBE_COORDINATOR: {
+      getByName: () => ({ snapshot: async () => [], observe }),
+    } });
+    await f.create();
+    const registration = vi.spyOn(f.context, "waitUntil");
+    f.ai.mockImplementation(async model => {
+      if (model === "typesafe/jev") return classification();
+      // Fail registration only after routing, at the completion telemetry boundary.
+      registration.mockImplementation(() => { throw Error("private context failure"); });
+      return completion();
+    });
+    const response = await f.call("POST", "/responses", { input: "fixture", stream });
+    expect(response.status).toBe(200);
+    const text = await response.text();
+    expect(text).toContain(stream ? "event: response.completed" : '"status":"completed"');
+    expect(text).not.toContain("private");
+    expect(registration.mock.results.some(result => result.type === "throw")).toBe(true);
+    expect(observe).toHaveBeenCalledOnce();
+    expect(f.commits.at(-1)?.counters).toEqual({ requests: 1, completed: 1, failed: 0 });
+    expect((await f.call("GET")).status).toBe(200);
+    await waitOnExecutionContext(f.context);
+  });
+
+  it("returns sanitized provider errors while failure telemetry is pending", async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const observe = vi.fn(async (_observation: unknown) => { await gate; });
+    const f = fixture({ NANOCODEX_PROVIDER_PROBE_COORDINATOR: {
+      getByName: () => ({ snapshot: async () => [], observe }),
+    } });
+    f.ai.mockImplementation(async model => {
+      if (model === "typesafe/jev") return classification();
+      throw Error("private provider failure");
+    });
+    let delivered = false;
+    const response = executeStatelessInferenceResponse(f.bindings, { input: "fixture" }, 32,
+      new AbortController().signal, undefined, f.context).then(async result => {
+      expect(result.status).toBe(502);
+      expect(await result.json()).toEqual({ error: { code: "inference_failed" } });
+      delivered = true;
+    });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(delivered).toBe(true);
+      expect(observe).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ outcome: "protocol_error" }));
+    } finally { release(); await response; await waitOnExecutionContext(f.context); }
   });
 
   it.each(["failure", "malformed", "disabled"])("does not consult %s probe context", async mode => {
@@ -771,7 +900,7 @@ describe("Cloudflare REST inference transport", () => {
     const second=await f.call("POST","/responses",{input:[{role:"user",content:"fixture"},...body.output,
       {type:"function_call_output",call_id:"fixture_call",output:"42"}],tools});
     expect(second.status).toBe(200); expect(f.commits.at(-1)!.route).toEqual(pin);
-    expect((await f.call("POST","/responses",{model:"openrouter:openai/gpt-6-sol:low",input:"fixture"})).status).toBe(409);
+    expect((await f.call("POST","/responses",{model:"openrouter:openai/gpt-6-astra:low",input:"fixture"})).status).toBe(409);
     delete f.bindings.CLOUDFLARE_AI_API_TOKEN;
     expect((await f.call("POST","/responses",{input:"fixture"})).status).toBe(503);
     expect(send).toHaveBeenCalledTimes(2); expect(f.ai).not.toHaveBeenCalled();
@@ -816,15 +945,27 @@ describe("incremental inference lifecycle", () => {
     expect(f.commits.at(-1)?.counters).toEqual({ requests: 1, completed: 1, failed: 0 });
     expect((await f.call("GET")).status).toBe(200);
   });
-  it("client cancellation releases ownership and marks failure, preserving the pin", async () => {
-    const f = streamingFixture(); await f.create({ candidates: [exact] });
+  it("client cancellation releases ownership while telemetry is pending, preserving the pin", async () => {
+    vi.useFakeTimers();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const observe = vi.fn(async (_observation: unknown) => { await gate; });
+    const f = streamingFixture();
+    f.bindings.NANOCODEX_PROVIDER_PROBE_COORDINATOR = { getByName: () => ({ snapshot: async () => [], observe }) };
+    await f.create({ candidates: [exact] });
     const response = await f.call("POST", "/responses", { model: exact, input: "fixture", stream: true });
     const pin = f.commits.at(-1)?.route;
-    await response.body!.cancel();
-    expect(f.cancel).toHaveBeenCalled();
-    expect(f.commits.at(-1)?.counters).toEqual({ requests: 1, completed: 0, failed: 1 });
-    expect(f.commits.at(-1)?.route).toEqual(pin);
-    expect((await f.call("GET")).status).toBe(200);
+    let cancelled = false;
+    const cancellation = response.body!.cancel().then(() => { cancelled = true; });
+    try {
+      await vi.advanceTimersByTimeAsync(0);
+      expect(cancelled).toBe(true);
+      expect(f.cancel).toHaveBeenCalled();
+      expect(observe).toHaveBeenCalledOnce();
+      expect(f.commits.at(-1)?.counters).toEqual({ requests: 1, completed: 0, failed: 1 });
+      expect(f.commits.at(-1)?.route).toEqual(pin);
+      expect((await f.call("GET")).status).toBe(200);
+    } finally { release(); await cancellation; await waitOnExecutionContext(f.context); }
   });
 });
 

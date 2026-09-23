@@ -308,6 +308,20 @@ function subjectTombstoneOwner(value: string | undefined): string | undefined {
     : undefined;
 }
 
+type CredentialOperation = "credential_rpc" | "credential_http" | "http" | "alarm";
+type CredentialOperationObservation = Readonly<{
+  operation: CredentialOperation;
+  resolveId?: string;
+}>;
+type CredentialActivationPhase = "storage_load_ms" | "vault_open_ms" | "restore_ms"
+  | "migration_ms" | "reseal_ms" | "alarm_ms";
+
+// Workers' Date.now() only advances after I/O: these are coarse elapsed
+// times, not CPU profiles. Zero does not imply that a phase did no work.
+function credentialMetric(detail: Readonly<Record<string, unknown>>): void {
+  try { console.info(detail); } catch { /* Observation must not affect credential state. */ }
+}
+
 export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   readonly #state: DurableObjectState;
   readonly #env: BrokerEnv;
@@ -315,6 +329,10 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
   readonly #ready: Promise<void>;
   #activatedAt = 0;
   #activationMs = 0;
+  #activationPhase: CredentialActivationPhase = "storage_load_ms";
+  readonly #activationPhases: Partial<Record<CredentialActivationPhase, number>> = {};
+  #pendingOperations = 0;
+  #activeOperation: CredentialOperation | undefined;
   #credentials: CredentialState = { version: 1, active: null };
   #tail: Promise<void> = Promise.resolve();
 
@@ -325,9 +343,21 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     this.#vault = new CredentialVault(env, `user/${state.id.toString()}`);
     const startedAt = Date.now();
     this.#ready = state.blockConcurrencyWhile(async () => {
-      await this.#initialize();
-      this.#activatedAt = Date.now();
-      this.#activationMs = this.#activatedAt - startedAt;
+      let completed = false;
+      try {
+        await this.#initialize();
+        this.#activatedAt = Date.now();
+        this.#activationMs = this.#activatedAt - startedAt;
+        completed = true;
+      } finally {
+        credentialMetric({
+          type: "egress.credential.activation",
+          outcome: completed ? "ok" : "error",
+          activation_ms: Date.now() - startedAt,
+          last_phase: this.#activationPhase,
+          activation_phases: { ...this.#activationPhases },
+        });
+      }
     });
   }
 
@@ -341,13 +371,14 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       try {
         return await this.#dispatch(request);
       } finally {
-        if (measureCredential) console.info({
+        if (measureCredential) credentialMetric({
           type: "egress.credential.resolve",
+          queue_scope: "after_method_entry",
           queue_ms: startedAt - queuedAt,
           operation_ms: Date.now() - startedAt,
         });
       }
-    });
+    }, { operation: measureCredential ? "credential_http" : "http" });
   }
 
   /** Read the live snapshot under the same serialization and recovery as HTTP. */
@@ -367,16 +398,18 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
       operationAt = Date.now();
       try {
         return { status: 200, credential: await this.#credential(
-          recover === true, Number.isSafeInteger(revision) ? revision : undefined, accountId,
+          recover === true, Number.isSafeInteger(revision) ? revision : undefined, accountId, resolveId,
         ) };
       } catch (error) {
         const problem = await this.#recoverFailedOperation(error);
         return { status: problem.status, credential: null };
       }
-    });
-    console.info({ type: "egress.credential.rpc", resolve_id: resolveId, status: result.status,
+    }, { operation: "credential_rpc", resolveId });
+    credentialMetric({ type: "egress.credential.rpc", resolve_id: resolveId, status: result.status,
+      queue_scope: "after_method_entry", recover: recover === true,
       queue_ms: operationAt - startedAt, operation_ms: Date.now() - operationAt,
-      activation_ms: this.#activationMs, activation_age_ms: Date.now() - this.#activatedAt });
+      activation_ms: this.#activationMs, activation_age_ms: Date.now() - this.#activatedAt,
+      activation_phases: { ...this.#activationPhases } });
     return {
       resolve_id: resolveId,
       ...result,
@@ -398,7 +431,7 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
           && credential.expiresAt <= Date.now() + REFRESH_EARLY_MS
           && (credential.refreshAfter ?? 0) <= Date.now()) {
           try {
-            await this.#refreshChatGpt(credential);
+            await this.#refreshChatGpt(credential, "alarm");
           } catch (error) {
             console.warn({
               type: "user_credential.refresh_failed",
@@ -408,36 +441,89 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
         }
       }
       await this.#schedule();
-    });
+    }, { operation: "alarm" });
   }
 
-  async #exclusive<T>(operation: () => Promise<T>): Promise<T> {
+  async #exclusive<T>(
+    operation: () => Promise<T>,
+    observation: CredentialOperationObservation,
+  ): Promise<T> {
+    // Only the application queue after method entry is visible here. The
+    // runtime can hold invocation delivery behind blockConcurrencyWhile.
+    const queuedAt = Date.now();
+    const operationsAhead = this.#pendingOperations++;
+    const activeAtEnqueue = this.#activeOperation ?? "none";
     const previous = this.#tail;
     let release!: () => void;
     this.#tail = new Promise<void>((resolve) => { release = resolve; });
+    if (operationsAhead > 0) credentialMetric({
+      type: "egress.credential.queued",
+      operation: observation.operation,
+      ...(observation.resolveId ? { resolve_id: observation.resolveId } : {}),
+      operations_ahead: operationsAhead,
+      active_operation_at_enqueue: activeAtEnqueue,
+    });
     await previous;
+    const startedAt = Date.now();
+    const waitingAtStart = this.#pendingOperations - 1;
+    this.#activeOperation = observation.operation;
+    let completed = false;
     try {
-      return await operation();
+      const result = await operation();
+      completed = true;
+      return result;
     } finally {
+      const finishedAt = Date.now();
+      this.#pendingOperations -= 1;
+      this.#activeOperation = undefined;
       release();
+      credentialMetric({
+        type: "egress.credential.operation",
+        operation: observation.operation,
+        ...(observation.resolveId ? { resolve_id: observation.resolveId } : {}),
+        outcome: completed ? "returned" : "threw",
+        queue_scope: "after_method_entry",
+        operations_ahead: operationsAhead,
+        active_operation_at_enqueue: activeAtEnqueue,
+        waiting_at_start: waitingAtStart,
+        waiting_at_finish: this.#pendingOperations,
+        exclusive_wait_ms: startedAt - queuedAt,
+        exclusive_operation_ms: finishedAt - startedAt,
+      });
     }
   }
 
   async #initialize(): Promise<void> {
-    const row = await this.#state.storage.get<StoredRow>(STATE_KEY);
-    if (!row) return;
-    const opened = await this.#vault.open<CredentialState>(row.envelope);
-    const installed = this.#installRestoredState(opened.value);
-    if (installed.legacy.length) {
-      await this.#migrateLegacyVault(installed.legacy);
-    } else if (installed.changed || opened.reseal) {
-      await this.#persist();
-    }
-    // An existing alarm survives eviction. Rewriting it on every activation
-    // adds a storage write and can postpone an alarm that woke this object.
-    if (await this.#state.storage.getAlarm() === null) {
-      const alarm = this.#nextAlarm();
-      if (alarm !== undefined) await this.#state.storage.setAlarm(alarm);
+    let phaseStartedAt = Date.now();
+    const advance = (phase: CredentialActivationPhase): void => {
+      const now = Date.now();
+      this.#activationPhases[this.#activationPhase] = now - phaseStartedAt;
+      this.#activationPhase = phase;
+      phaseStartedAt = now;
+    };
+    try {
+      const row = await this.#state.storage.get<StoredRow>(STATE_KEY);
+      if (!row) return;
+      advance("vault_open_ms");
+      const opened = await this.#vault.open<CredentialState>(row.envelope);
+      advance("restore_ms");
+      const installed = this.#installRestoredState(opened.value);
+      if (installed.legacy.length) {
+        advance("migration_ms");
+        await this.#migrateLegacyVault(installed.legacy);
+      } else if (installed.changed || opened.reseal) {
+        advance("reseal_ms");
+        await this.#persist();
+      }
+      advance("alarm_ms");
+      // An existing alarm survives eviction. Rewriting it on every activation
+      // adds a storage write and can postpone an alarm that woke this object.
+      if (await this.#state.storage.getAlarm() === null) {
+        const alarm = this.#nextAlarm();
+        if (alarm !== undefined) await this.#state.storage.setAlarm(alarm);
+      }
+    } finally {
+      this.#activationPhases[this.#activationPhase] = Date.now() - phaseStartedAt;
     }
   }
 
@@ -1358,7 +1444,12 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     return selected;
   }
 
-  async #credential(recover: boolean, revision: number | undefined, accountId?: string): Promise<UserCredentialSnapshot> {
+  async #credential(
+    recover: boolean,
+    revision: number | undefined,
+    accountId?: string,
+    resolveId?: string,
+  ): Promise<UserCredentialSnapshot> {
     if (accountId !== undefined && (typeof accountId !== "string" || !/^[\x21-\x7e]{1,256}$/.test(accountId))) {
       throw new BrokerFailure(400, "invalid_chatgpt_account");
     }
@@ -1400,7 +1491,9 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     let credential = current;
     if (refreshNeeded) {
       try {
-        credential = await this.#refreshChatGpt(current);
+        credential = await this.#refreshChatGpt(
+          current, recover ? "recovery" : current.expiresAt <= now ? "expired" : "expiring", resolveId,
+        );
       } catch (error) {
         if (recover || !(error instanceof BrokerFailure)
           || error.code !== "chatgpt_refresh_rate_limited"
@@ -1570,7 +1663,29 @@ export class UserCredentialBroker extends DurableObject<BrokerEnv> {
     await this.#persistAndSchedule();
   }
 
-  async #refreshChatGpt(current: ChatGptCredential): Promise<ChatGptCredential> {
+  async #refreshChatGpt(
+    current: ChatGptCredential,
+    cause: "alarm" | "recovery" | "expired" | "expiring",
+    resolveId?: string,
+  ): Promise<ChatGptCredential> {
+    const startedAt = Date.now();
+    let completed = false;
+    try {
+      const next = await this.#rotateChatGpt(current);
+      completed = true;
+      return next;
+    } finally {
+      credentialMetric({
+        type: "egress.credential.refresh",
+        ...(resolveId ? { resolve_id: resolveId } : {}),
+        cause,
+        outcome: completed ? "ok" : "error",
+        refresh_ms: Date.now() - startedAt,
+      });
+    }
+  }
+
+  async #rotateChatGpt(current: ChatGptCredential): Promise<ChatGptCredential> {
     if (!current.refreshToken) throw new BrokerFailure(503, "chatgpt_refresh_unavailable");
     const claimed = { ...current, refreshState: "in_flight" as const };
     this.#setChatGpt(claimed);

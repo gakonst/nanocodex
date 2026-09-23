@@ -73,12 +73,38 @@ export function sessionCredentialOwner(input: Readonly<{
   return binding.owner_id;
 }
 
+type ModelRelayRegion = "wnam" | "enam" | "sam" | "weur" | "eeur" | "apac" | "oc";
+
+// Deliberately bounded Cloudflare colo/city allowlist (cloudflarestatus.com).
+// Uses the Session's trusted INITIAL ingress, not its current execution location
+// or the user's current location. Unknown colos retain legacy relay placement.
+const MODEL_RELAY_COLOS: Readonly<Record<string, ModelRelayRegion>> = {
+  SFO: "wnam", SJC: "wnam", LAX: "wnam", SEA: "wnam", PDX: "wnam",
+  PHX: "wnam", DEN: "wnam", LAS: "wnam", SLC: "wnam",
+  IAD: "enam", EWR: "enam", BOS: "enam", ATL: "enam", ORD: "enam", MIA: "enam",
+  LHR: "weur", CDG: "weur", FRA: "weur", AMS: "weur", MXP: "weur",
+  MAD: "weur", DUB: "weur", ZRH: "weur",
+  WAW: "eeur", OTP: "eeur", ATH: "eeur",
+  SIN: "apac", NRT: "apac", HKG: "apac",
+  SYD: "oc", MEL: "oc", AKL: "oc",
+  GRU: "sam", SCL: "sam", EZE: "sam",
+};
+
+export function sessionModelRelayRegion(clientIngressColo: unknown): ModelRelayRegion | undefined {
+  return typeof clientIngressColo === "string" && /^[A-Z]{3}$/.test(clientIngressColo)
+    ? MODEL_RELAY_COLOS[clientIngressColo] : undefined;
+}
+
 /** Preserve the SDK's context identity and scope only its private model egress. */
 export function scopedManagedModelEgress(
   binding: Fetcher,
   storageId: string,
   subject: string,
-  sessionModel?: Readonly<{ binding: Fetcher; owner(): string | undefined }>,
+  sessionModel?: Readonly<{
+    binding: Fetcher;
+    owner(): string | undefined;
+    clientIngressColo?(): string | null;
+  }>,
   chatGptAccountId?: string,
 ): Pick<Fetcher, "fetch"> {
   if (subject !== storageId && subject !== managedCredentialSubject(storageId)) throw new TypeError("invalid managed subject");
@@ -89,6 +115,8 @@ export function scopedManagedModelEgress(
         throw new TypeError("managed model subject mismatch");
       }
       request.headers.set("x-nanocodex-subject", subject);
+      // Runtime headers never establish placement, including generic fallback.
+      request.headers.delete("x-nanocodex-model-region");
       // The retained session configuration owns selection, never a runtime header.
       request.headers.delete("x-nanocodex-chatgpt-account-id");
       if (chatGptAccountId !== undefined) request.headers.set("x-nanocodex-chatgpt-account-id", chatGptAccountId);
@@ -98,6 +126,8 @@ export function scopedManagedModelEgress(
         const owner = sessionModel.owner();
         if (!owner) throw new Error("managed model ownership is unavailable");
         request.headers.set("x-nanocodex-session-model-owner", owner);
+        const region = sessionModelRelayRegion(sessionModel.clientIngressColo?.());
+        if (region) request.headers.set("x-nanocodex-model-region", region);
         return sessionModel.binding.fetch(request);
       }
       return binding.fetch(request);

@@ -297,3 +297,49 @@ test("malformed inference authorization cannot fall back to a cached owner cooki
     assert.equal(response?.status,403);
   }
 });
+
+test("agent lifecycle timings correlate across Workers without touching responses or logging private inputs", async () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  for (const path of ["/v1/agents", "/v1/agents/live", ...["", "/routing", "/settings", "/prepare", "/ws", "/events", "/events/history", "/turns", "/turns/fixture-turn/cancel"].map(suffix => `/v1/agents/${id}${suffix}`)]) {
+    const request = new Request(`https://nanocodex.example${path}?cursor=private-cursor`, {
+      method: "POST", headers: { authorization: "Bearer private-key", "x-nanocodex-access": "private-access" }, body: "private-body",
+    });
+    const response = new Response("private-response", { headers: { "x-nanocodex-request-id": "timing-fixture" } });
+    const logs: Record<string, unknown>[] = [];
+    const original = console.info;
+    console.info = value => { logs.push(value); };
+    try {
+      const result = await routeManaged(request, { NANOCODEX_BACKEND: {
+        async fetch(forwarded: Request) { assert.equal(forwarded, request); return response; },
+        connect() { throw new Error("unused"); },
+      } }, new URL(request.url));
+      assert.equal(result, response);
+      assert.equal(result.bodyUsed, false);
+      assert.equal(logs.length, 1);
+      assert.equal(logs[0].type, "managed.proxy");
+      assert.equal(logs[0].request_id, "timing-fixture");
+      assert.equal(logs[0].path, path);
+      assert.equal(typeof logs[0].backend_ms, "number");
+      assert.ok(Number(logs[0].finished_at_ms) >= Number(logs[0].started_at_ms));
+      assert.equal(JSON.stringify(logs).includes("private-"), false);
+    } finally { console.info = original; }
+  }
+});
+
+
+test("inference lifecycle observation failures preserve the backend response", async () => {
+  const id = "11111111-1111-4111-8111-111111111111";
+  for (const suffix of ["turns", "turns/fixture-turn/cancel", "events", "ws"]) {
+    const request = new Request(`https://nanocodex.example/v1/agents/${id}/${suffix}`);
+    const response = new Response("untouched stream", { status: 202 });
+    const original = console.info;
+    console.info = () => { throw new Error("synthetic logger failure"); };
+    try {
+      const result = await routeManaged(request, { NANOCODEX_BACKEND: {
+        async fetch() { return response; }, connect() { throw new Error("unused"); },
+      } }, new URL(request.url));
+      assert.equal(result, response);
+      assert.equal(result.bodyUsed, false);
+    } finally { console.info = original; }
+  }
+});

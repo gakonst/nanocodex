@@ -282,6 +282,13 @@ export class ChiefOfStaffEgress extends WorkerEntrypoint<EgressEnv> {
 }
 
 const SESSION_MODEL_OWNER_HEADER = "x-nanocodex-session-model-owner";
+const SESSION_MODEL_REGION_HEADER = "x-nanocodex-model-region";
+type SessionModelAuthority = Readonly<{ subject: string; owner: string; region?: DurableObjectLocationHint }>;
+
+function validatedRelayRegion(value: string | null | undefined): DurableObjectLocationHint | undefined {
+  return value && ["wnam", "enam", "sam", "weur", "eeur", "apac", "oc"].includes(value)
+    ? value as DurableObjectLocationHint : undefined;
+}
 
 /** Bound only to the managed Session's private model transport, never tools. */
 export class SessionModelEgress extends WorkerEntrypoint<EgressEnv> {
@@ -295,7 +302,11 @@ export class SessionModelEgress extends WorkerEntrypoint<EgressEnv> {
     }
     const forwarded = new Request(request);
     forwarded.headers.delete(SESSION_MODEL_OWNER_HEADER);
-    return handleEgress(forwarded, this.env, this.ctx, fetch, undefined, { subject, owner });
+    // Only the private Session wrapper may assert placement; generic egress
+    // never derives a region from this header. Nothing private goes upstream.
+    const region = validatedRelayRegion(forwarded.headers.get(SESSION_MODEL_REGION_HEADER));
+    forwarded.headers.delete(SESSION_MODEL_REGION_HEADER);
+    return handleEgress(forwarded, this.env, this.ctx, fetch, undefined, { subject, owner, ...(region ? { region } : {}) });
   }
 }
 
@@ -385,7 +396,7 @@ export function handleEgress(
   ctx?: Pick<ExecutionContext, "waitUntil">,
   upstreamFetch: typeof fetch = fetch,
   diagnostics?: Readonly<{ upstreamException(error: Readonly<{ name: string }>): void }>,
-  sessionModelAuthority?: Readonly<{ subject: string; owner: string }>,
+  sessionModelAuthority?: SessionModelAuthority,
 ): Promise<Response> {
   return handleEgressWithOwner(request, env, ctx, upstreamFetch, diagnostics, sessionModelAuthority);
 }
@@ -396,7 +407,7 @@ async function handleEgressWithOwner(
   ctx?: Pick<ExecutionContext, "waitUntil">,
   upstreamFetch: typeof fetch = fetch,
   diagnostics?: Readonly<{ upstreamException(error: Readonly<{ name: string }>): void }>,
-  sessionModelAuthority?: Readonly<{ subject: string; owner: string }>,
+  sessionModelAuthority?: SessionModelAuthority,
   verifiedVoiceOwner?: Readonly<{ subject: string; userId: string }>,
 ): Promise<Response> {
   const started = Date.now();
@@ -498,6 +509,9 @@ async function handleEgressWithOwner(
   }
 
   let userId: string | undefined;
+  // Responses-only private correlation; preserve unrelated audit schemas.
+  // Never derived from caller input.
+  const egressRequestId = operation.id === "responses" ? crypto.randomUUID() : undefined;
   try {
     if (sessionModelAuthority && (operation.id !== "responses" || sessionModelAuthority.subject !== subject)) {
       return jsonError(403, "invalid_session_model_authority");
@@ -520,7 +534,7 @@ async function handleEgressWithOwner(
     if (operation.chatGptOnly && credential.kind !== "chatgpt") {
       return auditedError(409, "chatgpt_credential_required", request, url, operation.id, started, {
         user_id: userId,
-        deployment_sha: env.DEPLOYMENT_SHA,
+        deployment_sha: env.DEPLOYMENT_SHA, egress_request_id: egressRequestId,
       });
     }
     // Sponsored admission is enforced per response.create frame, including
@@ -543,6 +557,8 @@ async function handleEgressWithOwner(
         buildUpstreamRequest(request, env, operation, credential, body),
         upstreamFetch,
         request.headers.get("x-nanocodex-voice-region"),
+        egressRequestId,
+        sessionModelAuthority?.region,
       );
       let recovered = false;
       if (upstream.status === 401 && credential.kind === "chatgpt") {
@@ -558,7 +574,7 @@ async function handleEgressWithOwner(
         if (operation.chatGptOnly && credential.kind !== "chatgpt") {
           return auditedError(409, "chatgpt_credential_required", request, url, operation.id, started, {
             user_id: userId,
-            deployment_sha: env.DEPLOYMENT_SHA,
+            deployment_sha: env.DEPLOYMENT_SHA, egress_request_id: egressRequestId,
           });
         }
         upstream = await fetchUpstream(
@@ -569,6 +585,8 @@ async function handleEgressWithOwner(
           buildUpstreamRequest(request, env, operation, credential, body),
           upstreamFetch,
           request.headers.get("x-nanocodex-voice-region"),
+          egressRequestId,
+          sessionModelAuthority?.region,
         );
         recovered = true;
       }
@@ -586,7 +604,7 @@ async function handleEgressWithOwner(
         if (!resetAt) break;
         if (!await reportChatGptLimit(env, userId, credential, resetAt, !accountId)) {
           return auditedError(429, accountId ? "chatgpt_account_exhausted" : "chatgpt_accounts_exhausted", request, url, operation.id, started, {
-            user_id: userId, deployment_sha: env.DEPLOYMENT_SHA,
+            user_id: userId, deployment_sha: env.DEPLOYMENT_SHA, egress_request_id: egressRequestId,
           });
         }
         credential = await resolveCredential(env, userId, false);
@@ -595,14 +613,14 @@ async function handleEgressWithOwner(
         rejectionBody = undefined;
         upstream = await fetchUpstream(env, userId, credential, operation,
           buildUpstreamRequest(request, env, operation, credential, body), upstreamFetch,
-          request.headers.get("x-nanocodex-voice-region"));
+          request.headers.get("x-nanocodex-voice-region"), egressRequestId, sessionModelAuthority?.region);
         recovered = true;
       }
       if (REDIRECT_STATUS.has(upstream.status)) {
         await cancelResponseBody(upstream);
         return auditedError(502, "upstream_redirect_blocked", request, url, operation.id, started, {
           user_id: userId,
-          deployment_sha: env.DEPLOYMENT_SHA,
+          deployment_sha: env.DEPLOYMENT_SHA, egress_request_id: egressRequestId,
         });
       }
       if (upstream.status >= 400) {
@@ -618,7 +636,7 @@ async function handleEgressWithOwner(
           const { code } = diagnostic;
           audit(upstreamStatus >= 500 ? "error" : "deny", request, url, operation.id, started, {
             code, status: upstreamStatus, upstream_status: upstreamStatus,
-            deployment_sha: env.DEPLOYMENT_SHA,
+            deployment_sha: env.DEPLOYMENT_SHA, egress_request_id: egressRequestId,
           });
           const response = json({
             error: { ...diagnostic, message: diagnostic.message ?? `Upstream model request rejected (HTTP ${upstreamStatus}; ${code}).` },
@@ -640,7 +658,7 @@ async function handleEgressWithOwner(
           {
             upstream_status: upstreamStatus,
             user_id: userId,
-            deployment_sha: env.DEPLOYMENT_SHA,
+            deployment_sha: env.DEPLOYMENT_SHA, egress_request_id: egressRequestId,
           },
         );
       }
@@ -649,8 +667,11 @@ async function handleEgressWithOwner(
         recovered,
         model_source: credential.source,
         user_id: userId,
-        deployment_sha: env.DEPLOYMENT_SHA,
+        deployment_sha: env.DEPLOYMENT_SHA, egress_request_id: egressRequestId,
         credential_kind: credential.kind,
+        ...(operation.id === "responses" && credential.kind === "chatgpt" && env.CHATGPT_EGRESS
+          && !env.CODEX_RELAY_URL && sessionModelAuthority?.region
+          ? { relay_region: sessionModelAuthority.region } : {}),
         subject_ms: subjectResolvedAt - started,
         credential_ms: credentialResolvedAt - subjectResolvedAt,
         credential_broker_ms: credentialBrokerMs,
@@ -700,7 +721,7 @@ async function handleEgressWithOwner(
     return auditedError(problem.status, problem.code, request, url, operation.id, started,
       {
         ...(userId === undefined ? {} : { user_id: userId }),
-        deployment_sha: env.DEPLOYMENT_SHA,
+        deployment_sha: env.DEPLOYMENT_SHA, egress_request_id: egressRequestId,
       });
   }
 }
@@ -2484,6 +2505,8 @@ async function fetchUpstream(
   request: Request,
   upstreamFetch: typeof fetch,
   voiceRegion: string | null,
+  egressRequestId: string | undefined,
+  textRegion: DurableObjectLocationHint | undefined,
 ): Promise<Response> {
   if (credential.kind !== "chatgpt" || env.CODEX_RELAY_URL || operation.directChatGpt) {
     return upstreamFetch(request);
@@ -2491,13 +2514,15 @@ async function fetchUpstream(
   if (env.CHATGPT_EGRESS) {
     const target = new URL(request.url);
     const internal = new URL(`${target.pathname}${target.search}`, "https://chatgpt-egress.internal");
-    // Voice media placement follows the call-creation relay. Keep a separate
-    // regional relay so a user's older text relay cannot anchor calls overseas.
-    const region = operation.id === "realtime-call" && voiceRegion
-      && ["wnam", "enam", "sam", "weur", "eeur", "apac", "oc"].includes(voiceRegion)
-      ? voiceRegion as DurableObjectLocationHint : undefined;
-    const id = env.CHATGPT_EGRESS.idFromName(region
-      ? `voice-v1:${region}:${userId}` : `user-v1:${userId}`);
+    // Hints apply only to initial allocation and are best effort. New text
+    // identities avoid legacy relay anchors; existing DOs never move. Keep
+    // voice separate because call-creation placement also affects media.
+    const region = operation.id === "realtime-call" ? validatedRelayRegion(voiceRegion)
+      : operation.id === "responses" ? validatedRelayRegion(textRegion) : undefined;
+    const relayName = region
+      ? `${operation.id === "realtime-call" ? "voice" : "text"}-v1:${region}:${userId}`
+      : `user-v1:${userId}`;
+    const id = env.CHATGPT_EGRESS.idFromName(relayName);
     const relay = env.CHATGPT_EGRESS.get(id, region ? { locationHint: region } : undefined);
     if (operation.id === "realtime-call" && realtimeRelayRpc(env, request)) {
       const rpc = relay as typeof relay & {
@@ -2509,9 +2534,15 @@ async function fetchUpstream(
       // Do not retry through fetch: an RPC failure can occur after call creation.
       return new Response(response.body, { status: response.status, headers: response.headers });
     }
+    // The private container hop receives this join key. Its upstream header
+    // allowlist excludes it; direct public provider requests are unchanged.
+    const relayHeaders = new Headers(request.headers);
+    if (operation.id === "responses" && operation.websocket && egressRequestId) {
+      relayHeaders.set("x-nanocodex-egress-request-id", egressRequestId);
+    }
     return relay.fetch(new Request(internal, {
       method: request.method,
-      headers: request.headers,
+      headers: relayHeaders,
       body: request.body,
       redirect: "manual",
       signal: request.signal,
@@ -2964,6 +2995,11 @@ function audit(
     || rule === "slack" || rule === "x" || rule === "spotify" || rule === "soundcloud" || rule === "link" || rule === "mcp";
   const log = action === "error" ? console.error : action === "deny" ? console.warn : console.info;
   const safeDetail = {
+    ...(rule === "responses" && typeof detail.relay_region === "string" && validatedRelayRegion(detail.relay_region)
+      ? { relay_region: detail.relay_region } : {}),
+    ...(typeof detail.egress_request_id === "string"
+      && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(detail.egress_request_id)
+      ? { egress_request_id: detail.egress_request_id } : {}),
     ...(typeof detail.voice_session_id === "string" && /^[0-9a-f-]{36}$/.test(detail.voice_session_id)
       ? { voice_session_id: detail.voice_session_id } : {}),
     ...(detail.relay_transport === "rpc" || detail.relay_transport === "fetch"

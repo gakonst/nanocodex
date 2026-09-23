@@ -1460,7 +1460,7 @@ async function managedFetchRoute(
   clientIngressColo: string | null = null,
 ): Promise<Response> {
     const url = new URL(request.url);
-    const inference = await routeInferenceApi(request, env, url, trustedAgentPrincipal);
+    const inference = await routeInferenceApi(request, env, url, trustedAgentPrincipal, ctx);
     if (inference) return inference;
     if (url.pathname.startsWith("/v1/phone/bridge/")) {
       if (!env.NANOCODEX_PHONES || !env.NANOCODEX_PHONE_OWNER_ID || !phoneAdminConfigured(env)) return new Response("Not found", { status: 404 });
@@ -4331,7 +4331,10 @@ export class DurableAgentSession extends DurableComputerSession {
       await this.#scheduleNextAlarm();
       return;
     }
-    await this.#shutdownAgent();
+    // Idle retires the execution runtime, not the account metadata snapshot.
+    // Keep discovery's original TTL and authority key so a returning prompt
+    // need not repeat the same account RPC before reconstructing its runtime.
+    await this.#shutdownAgent(false, { preserveAccountDiscovery: true });
     if (this.#recoverableTurnCount() > 0) this.#scheduleRecovery();
     else await this.#scheduleNextAlarm();
   }
@@ -9926,6 +9929,7 @@ export class DurableAgentSession extends DurableComputerSession {
       this.env.NANOCODEX, this.ctx.id.toString(), this.#credentialSubject(),
       this.#credentialBinding?.strategy !== "session_v1" || this.env.NANOCODEX_SESSION_MODEL_EGRESS === undefined ? undefined : {
         binding: this.env.NANOCODEX_SESSION_MODEL_EGRESS,
+        clientIngressColo: () => this.#routingOrigin().clientIngressColo,
         owner: () => sessionCredentialOwner({
           subject: this.#credentialSubject(), storageId: this.ctx.id.toString(),
           binding: this.#credentialBinding, session: this.#session(),
@@ -10287,10 +10291,18 @@ export class DurableAgentSession extends DurableComputerSession {
     }
   }
 
-  async #shutdownAgent(strict = false): Promise<void> {
-    this.#accountCatalog.invalidate();
-    this.#preparedAccountInfo = undefined;
-    this.#accountHostedTools?.invalidate();
+  async #shutdownAgent(
+    strict = false,
+    options: { preserveAccountDiscovery?: boolean } = {},
+  ): Promise<void> {
+    // Idle retirement leaves account authority and the original discovery TTL
+    // intact. Other lifecycle transitions still invalidate discovery, including
+    // settings changes, deletion, and credential recovery.
+    if (!options.preserveAccountDiscovery) {
+      this.#accountCatalog.invalidate();
+      this.#preparedAccountInfo = undefined;
+      this.#accountHostedTools?.invalidate();
+    }
     this.#preparationExpiresAt = 0;
     let shutdown = this.#agentShutdownPromise;
     if (!shutdown) {

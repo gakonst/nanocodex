@@ -58,6 +58,7 @@ describe("Service-Binding-only ChatGPT credential import", () => {
     expect(first.resolve_id).toMatch(/^[0-9a-f-]{36}$/);
     expect(info).toHaveBeenCalledWith({
       type: "egress.credential.rpc", resolve_id: first.resolve_id, status: 200,
+      queue_scope: "after_method_entry", recover: false, activation_phases: expect.any(Object),
       queue_ms: expect.any(Number), operation_ms: expect.any(Number),
       activation_ms: expect.any(Number), activation_age_ms: expect.any(Number),
     });
@@ -66,6 +67,77 @@ describe("Service-Binding-only ChatGPT credential import", () => {
     expect((await stub.resolveModelCredential(true, -1)).credential).toEqual(first.credential);
     expect((await stub.fetch("https://credentials.internal/v1/chatgpt", { method: "DELETE" })).status).toBe(204);
     expect(await stub.resolveModelCredential(false)).toMatchObject({ status: 404, credential: null });
+  });
+
+  it("serializes a queued resolve after refresh and emits bounded correlation without credentials", async () => {
+    const logs = ["info", "warn", "error"].map((method) => vi.spyOn(console, method as "info").mockImplementation(() => {}));
+    const user = "metrics-queue-user";
+    const stub = workerEnv.USER_CREDENTIALS.getByName(user);
+    const imported = importedCredential("synthetic-private-account-marker", { marker: "synthetic-private-access-marker" });
+    expect((await importThroughControl(user, imported)).status).toBe(204);
+    await runInDurableObject(stub, async (instance: UserCredentialBroker, state) => {
+      const restored = new UserCredentialBroker(state, workerEnv);
+      expect((await restored.resolveModelCredential(false)).status).toBe(200);
+      let started!: () => void;
+      let release!: () => void;
+      const entered = new Promise<void>((resolve) => { started = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      const nextAccess = jwt({ exp: Math.ceil(Date.now() / 1000) + 3600, marker: "synthetic-private-rotated-marker" });
+      const refresh = vi.spyOn(globalThis, "fetch").mockImplementation(async (_request, init) => {
+        expect(JSON.parse(String(init?.body)).refresh_token).toBe(imported.refresh_token);
+        started();
+        await gate;
+        return Response.json({ access_token: nextAccess, refresh_token: "synthetic-private-rotated-refresh-marker" });
+      });
+      const first = restored.resolveModelCredential(true, 0);
+      await entered;
+      let secondFinished = false;
+      const second = restored.resolveModelCredential(false).then((result) => { secondFinished = true; return result; });
+      await Promise.resolve();
+      expect(secondFinished).toBe(false);
+      release();
+      const [recovered, queued] = await Promise.all([first, second]);
+      expect(recovered.credential).toMatchObject({ secret: nextAccess, revision: 1 });
+      expect(queued.credential).toEqual(recovered.credential);
+      expect(refresh).toHaveBeenCalledTimes(1);
+      const records = logs.flatMap((log) => log.mock.calls.map(([record]) => record));
+      expect(records).toContainEqual(expect.objectContaining({ type: "egress.credential.queued", resolve_id: queued.resolve_id,
+        operation: "credential_rpc", operations_ahead: 1, active_operation_at_enqueue: "credential_rpc" }));
+      expect(records).toContainEqual(expect.objectContaining({ type: "egress.credential.operation", resolve_id: queued.resolve_id,
+        operations_ahead: 1, waiting_at_start: 0, waiting_at_finish: 0, queue_scope: "after_method_entry" }));
+      expect(records).toContainEqual(expect.objectContaining({ type: "egress.credential.refresh", resolve_id: recovered.resolve_id,
+        cause: "recovery", outcome: "ok", refresh_ms: expect.any(Number) }));
+      expect(records).toContainEqual(expect.objectContaining({ type: "egress.credential.activation", outcome: "ok",
+        activation_phases: expect.objectContaining({ storage_load_ms: expect.any(Number), vault_open_ms: expect.any(Number),
+          restore_ms: expect.any(Number), alarm_ms: expect.any(Number) }) }));
+      const serialized = JSON.stringify(records);
+      for (const marker of ["synthetic-private-", imported.access_token, imported.refresh_token, nextAccess]) {
+        expect(serialized).not.toContain(marker);
+      }
+    });
+  });
+
+  it("releases queued reads after a failed refresh claim even when metrics logging throws", async () => {
+    const user = "metrics-recovery-queue-user";
+    const stub = workerEnv.USER_CREDENTIALS.getByName(user);
+    const imported = importedCredential("metrics-recovery-account");
+    expect((await importThroughControl(user, imported)).status).toBe(204);
+    await runInDurableObject(stub, async (instance: UserCredentialBroker, state) => {
+      let entered!: () => void;
+      let release!: () => void;
+      const started = new Promise<void>((resolve) => { entered = resolve; });
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      vi.spyOn(console, "info").mockImplementation(() => { throw new Error("synthetic-private-logger-marker"); });
+      vi.spyOn(state.storage, "put").mockImplementationOnce(async () => {
+        entered(); await gate; throw new Error("synthetic-private-storage-marker");
+      });
+      const failed = instance.resolveModelCredential(true, 0);
+      await started;
+      const queued = instance.resolveModelCredential(false);
+      release();
+      expect(await failed).toMatchObject({ status: 503, credential: null });
+      expect(await queued).toMatchObject({ status: 200, credential: { secret: imported.access_token, revision: 0 } });
+    });
   });
 
   it("accepts only the exact bounded five-field document", async () => {

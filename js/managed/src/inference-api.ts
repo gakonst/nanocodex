@@ -1,6 +1,6 @@
 import { authenticate, requireSameOriginMutation, type AccountAuthEnv, type Principal } from "./account-auth";
 import { authorizeInferenceKey, routeInferenceKeys, type InferenceKeysEnv } from "./inference-keys";
-import { executeStatelessInferenceResponse, inferenceOrigin, INFERENCE_INGRESS_HEADER, type InferenceSessionEnv } from "./inference-session";
+import { executeStatelessInferenceResponse, inferenceOrigin, INFERENCE_INGRESS_HEADER, type InferenceSessionEnv, type InferenceExecutionContext } from "./inference-session";
 import { ROUTING_CANDIDATES } from "./thread-model-routing";
 import { gatewayAvailability } from "./gateway-runtime";
 
@@ -44,8 +44,8 @@ async function readBody(request: Request): Promise<Record<string, unknown>> {
 }
 /** Standard SDK entry points use the familiar structured error envelope. */
 export async function routeInferenceApi(request: Request, env: InferenceApiEnv, url: URL,
-  trustedPrincipal?: Principal): Promise<Response | undefined> {
-  const response = await routeInferenceApiInternal(request, env, url, trustedPrincipal);
+  trustedPrincipal?: Principal, context?: InferenceExecutionContext): Promise<Response | undefined> {
+  const response = await routeInferenceApiInternal(request, env, url, trustedPrincipal, context);
   if (!response || response.status < 400 || (url.pathname !== "/v1/responses" && url.pathname !== "/v1/models")) return response;
   const body = await response.json<{error?: string | {code?: string}}>();
   const code = typeof body.error === "string" ? body.error : body.error?.code ?? "inference_unavailable";
@@ -57,7 +57,7 @@ export async function routeInferenceApi(request: Request, env: InferenceApiEnv, 
 
 /** Separate credential and runtime boundary. No managed agent is constructed here. */
 async function routeInferenceApiInternal(request: Request, env: InferenceApiEnv, url: URL,
-  trustedPrincipal?: Principal): Promise<Response | undefined> {
+  trustedPrincipal?: Principal, context?: InferenceExecutionContext): Promise<Response | undefined> {
   const standardPath = url.pathname === "/v1/responses" ? "/responses" : url.pathname === "/v1/models" ? "/models" : undefined;
   const inNamespace = standardPath !== undefined || url.pathname === BASE || url.pathname.startsWith(BASE + "/");
   // Run before all account/connector/hand routers, including cached authorization.
@@ -108,7 +108,7 @@ async function routeInferenceApiInternal(request: Request, env: InferenceApiEnv,
     } else if (suffix === "/responses") {
       body = await readBody(request);
       if (body.session_id === undefined) {
-        return executeStatelessInferenceResponse({ ...env, AI: env.AI }, body, key.limits.maxOutputTokens, request.signal, origin);
+        return executeStatelessInferenceResponse({ ...env, AI: env.AI }, body, key.limits.maxOutputTokens, request.signal, origin, context);
       }
       if (typeof body.session_id !== "string" || !SESSION_ID.test(body.session_id)) return json({ error: "session_id_required" }, 400);
       id = body.session_id; delete body.session_id; path = "/responses";
