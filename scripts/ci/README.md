@@ -141,3 +141,9 @@ Preview image validation uses BuildKit's `cacheonly` output. It still evaluates
 the complete Dockerfile, including its checks, but does not export and load an
 unused image into Docker Engine. Production publication retains `--load` for
 its runtime verification, registry push, and immutable digest receipt.
+
+The native Linux, macOS, and Windows jobs keep Node/pnpm setup paused alongside
+their existing JavaScript lifecycle suites. Their active Cargo builds and Windows
+installer do not consume the pnpm workspace. Re-enable the three dependency
+setup steps together with those lifecycle tests; JavaScript build/consumer jobs
+retain their active dependency installation.

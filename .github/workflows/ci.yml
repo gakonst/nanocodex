@@ -117,11 +117,17 @@ jobs:
         if: ${{ false }}
         run: cargo test --locked -p nanocodex-remote -p nanocodex-tui-control
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        # Required only by the paused JavaScript lifecycle tests below.
+        if: ${{ false }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        # Required only by the paused JavaScript lifecycle tests below.
+        if: ${{ false }}
         with:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+        # Re-enable dependency setup together with the lifecycle tests.
+        if: ${{ false }}
       - name: Check CUA bridge and native host lifecycle
         # Temporarily disabled: CI tests are paused.
         if: ${{ false && runner.os == 'macOS' }}
@@ -242,11 +248,17 @@ jobs:
       - name: Cache Rust compilation
         uses: ./.github/actions/rust-compiler-cache
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+        # Required only by the paused JavaScript lifecycle tests below.
+        if: ${{ false }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        # Required only by the paused JavaScript lifecycle tests below.
+        if: ${{ false }}
         with:
           node-version: 24
           cache: pnpm
       - run: pnpm install --frozen-lockfile
+        # Re-enable dependency setup together with the lifecycle tests.
+        if: ${{ false }}
       - name: Check media transport and IPC boundaries on every host OS
         # Temporarily disabled: CI tests are paused.
         if: ${{ false }}
