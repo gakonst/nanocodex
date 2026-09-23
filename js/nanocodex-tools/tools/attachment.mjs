@@ -86,6 +86,7 @@ function createClient(endpoint, transport, options, admission, machines, attachm
     catalog: hostedCatalog(admission.catalog(options.provider ?? "javascript")),
     machines,
     attachmentId,
+    runtimeId: crypto.randomUUID(),
     calls: new Map(),
     receipts: new Set(),
     active: new Set(),
@@ -230,6 +231,7 @@ function createClient(endpoint, transport, options, admission, machines, attachm
     send(socket, {
       type: "catalog",
       capabilities: ["turn_metadata"],
+      runtime_id: state.runtimeId,
       tools: state.catalog,
       ...(state.machines.length === 0 ? {} : { machines: state.machines }),
       ...(state.attachmentId === undefined ? {} : { attachment_id: state.attachmentId }),
@@ -280,11 +282,9 @@ function createClient(endpoint, transport, options, admission, machines, attachm
   async function handleCall(frame, socket) {
     const callId = frame.call_id;
     if (state.calls.has(callId) || state.receipts.has(callId)) throw new Error("duplicate call on socket");
-    if (state.calls.size + state.receipts.size >= 64) throw new Error("attachment receipt capacity exceeded");
-    if (state.active.size >= 32) {
-      retainAndSend(callId, { status: "unavailable", message: "attachment is busy" }, socket);
-      return;
-    }
+    // The retained ToolRouter schedules parallel/nonparallel work and honors
+    // cancellation while queued. A connection-local count must not reject
+    // otherwise valid calls or disconnect a socket with unacknowledged results.
     if (frame.deadline_at <= Date.now()) {
       retainAndSend(callId, { status: "unavailable", message: "tool attachment call deadline elapsed before dispatch" }, socket);
       return;

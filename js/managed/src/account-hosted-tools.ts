@@ -23,6 +23,7 @@ import { HostedToolsBroker } from "./hosted-tools-broker";
 
 const OWNER_ASSERTION = "x-nanocodex-owner-id";
 const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
+const PROCESS_SESSION_TOOL = Symbol.for("nanocodex.processSessionTool");
 
 type AccountHostedTool = HostedToolsCatalogCandidate & Readonly<{
   route_token: string;
@@ -73,6 +74,7 @@ type InvocationResult = Readonly<{
   metadata: unknown;
   value: unknown;
   pre_admission_unavailable?: true;
+  process_route_token?: string;
 }>;
 
 type InvocationContext = Readonly<{
@@ -268,6 +270,11 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
       if (tool.routeToken !== invocation.route_token) {
         return Response.json({ error: "stale_catalog" }, { status: 409 });
       }
+      // Capture the process owner's route before invoking. Exec can wait while
+      // a replacement host publishes, and the caller may have refreshed an old
+      // command route before admission. Its original snapshot is insufficient.
+      const processRoute = invocation.machine_id !== undefined && invocation.name === "exec_command"
+        ? this.#broker.machineTool(invocation.machine_id, "write_stdin")?.routeToken : undefined;
       const resolvedAt = performance.now();
       const result = await tool.handler(invocation.input, {
         sessionId: invocation.session_id,
@@ -286,6 +293,7 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
         success: branded.success === true,
         metadata: branded.metadata,
         value: branded.value,
+        ...(processRoute === undefined ? {} : { process_route_token: processRoute }),
         ...(branded[HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE] === true
           ? { pre_admission_unavailable: true as const }
           : {}),
@@ -594,7 +602,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     if (!response.ok) {
       try { await response.body?.cancel(); } catch { /* No call was admitted for 404/409. */ }
       const preAdmission = response.status === 404 || response.status === 409;
-      if (preAdmission && refreshRoute && !context.signal?.aborted) {
+      if (preAdmission && refreshRoute && name !== "write_stdin" && !context.signal?.aborted) {
         // Only an explicit routing rejection permits local reconciliation. Keep
         // the original effect identity so the broker replays any prior receipt;
         // transport/decoding failures and server errors never trigger a retry.
@@ -610,6 +618,12 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         if (route?.routeToken && route.routeToken !== routeToken) {
           return this.#invoke(name, route.routeToken, input, context, machineId, false);
         }
+      }
+      if (machineId !== undefined && name === "write_stdin" && response.status === 409) {
+        // A modern process route is stable across transport reconnects. A
+        // changed token means a different runtime (or a legacy host without
+        // continuity proof), whose numeric process IDs may have been reused.
+        return failedToolResult("The Hand process runtime changed or cannot prove session continuity. This saved process session cannot be routed to the replacement; any earlier poll or stdin outcome remains unknown. The command and stdin were not resent.", "ambiguous");
       }
       // HTTP status alone cannot exclude an earlier dispatch of this call ID.
       // Preserve uncertainty locally instead of interrupting the agent runtime.
@@ -647,6 +661,11 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       success: result.success,
       metadata: result.metadata,
       value: result.value,
+      ...(machineId !== undefined && name === "exec_command" && typeof result.process_route_token === "string"
+        ? { [PROCESS_SESSION_TOOL]: Object.freeze({
+          handler: (input: unknown, context: InvocationContext) =>
+            this.#invoke("write_stdin", result.process_route_token!, input, context, machineId, false),
+        }) } : {}),
       ...(result.pre_admission_unavailable === true
         ? { [HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE]: true as const }
         : {}),

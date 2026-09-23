@@ -30,6 +30,7 @@ test("attachment publishes one exact catalog and exchanges ready, call, result, 
   await waitFor(() => socket.frames().length === 1);
   assert.deepEqual(socket.frames()[0], {
     type: "catalog",
+    runtime_id: socket.frames()[0].runtime_id,
     capabilities: ["turn_metadata"],
     tools: [{
       provider: "javascript",
@@ -154,6 +155,7 @@ test("Tools publishes its non-secret user-machine snapshot with each attachment"
   await waitFor(() => socket.frames().length === 1);
   assert.deepEqual(socket.frames()[0], {
     type: "catalog",
+    runtime_id: socket.frames()[0].runtime_id,
     capabilities: ["turn_metadata"],
     tools: [],
     attachment_id: "laptop",
@@ -177,6 +179,8 @@ test("independent Tools runtimes publish distinct attachment identifiers", async
   const firstConnecting = firstTools.attach(reverseTarget(async () => firstSocket)).connect();
   const secondConnecting = secondTools.attach(reverseTarget(async () => secondSocket)).connect();
   await waitFor(() => firstSocket.frames().length === 1 && secondSocket.frames().length === 1);
+  assert.match(firstSocket.frames()[0].runtime_id, /^[a-f0-9-]{36}$/);
+  assert.notEqual(firstSocket.frames()[0].runtime_id, secondSocket.frames()[0].runtime_id);
   assert.equal(firstSocket.frames()[0].attachment_id, "machine:first");
   assert.equal(secondSocket.frames()[0].attachment_id, "machine:second");
   firstSocket.receive({ type: "ready" });
@@ -732,3 +736,33 @@ async function waitForTimer(predicate) {
   }
   throw new Error("timer condition did not become true");
 }
+
+
+test("attachment queues serial work beyond the former call and receipt caps", async () => {
+  let release;
+  const seen = [];
+  const fixture = await readyAttachment({ handler: async ({ index }) => {
+    seen.push(index);
+    if (index === 0) await new Promise(resolve => { release = resolve; });
+    return index;
+  } });
+  for (let index = 0; index < 70; index++) {
+    fixture.socket.receive({ ...callFrame({ index }), call_id: `queued:${index}` });
+  }
+  await waitFor(() => release);
+  assert.deepEqual(seen, [0]);
+  assert.equal(fixture.socket.closed, undefined);
+  assert.equal(fixture.socket.frames().filter(frame => frame.type === "result").length, 0);
+  fixture.socket.receive({ type: "cancel", call_id: "queued:35" });
+  release();
+  await waitFor(() => fixture.socket.frames().filter(frame => frame.type === "result").length === 70);
+  assert.equal(fixture.socket.closed, undefined);
+  assert.equal(seen.includes(35), false);
+  assert.equal(seen.length, 69);
+  for (const frame of fixture.socket.frames().filter(frame => frame.type === "result")) {
+    assert.equal(frame.outcome.status, frame.call_id === "queued:35" ? "ambiguous" : "completed");
+    fixture.socket.receive({ type: "ack", call_id: frame.call_id });
+  }
+  await drain(fixture.client, fixture.socket);
+  await fixture.tools.close();
+});
