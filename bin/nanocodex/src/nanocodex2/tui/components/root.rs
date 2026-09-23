@@ -3529,12 +3529,10 @@ impl RootNode {
             {
                 continue;
             }
-            // Local submission is rendered before the server starts the run.
-            // An idle transcript must not clear that pending turn's activity.
-            let active = effect.active || self.has_active_turns();
-            let status = effect
-                .status
-                .or_else(|| active.then(|| "Thinking…".to_owned()));
+            // Child runs remain in the transcript after their parent turn ends.
+            // Only foreground turns should keep the composer activity spinning.
+            let active = self.has_active_turns();
+            let status = active.then(|| effect.status.unwrap_or_else(|| "Thinking…".to_owned()));
             let composer = self
                 .composer
                 .component_mut()
@@ -5401,6 +5399,93 @@ mod live_control_tests {
             terminal_expected: false,
         });
         assert!(!rendered(&mut root).contains("Thinking…"));
+    }
+
+    #[test]
+    fn child_activity_after_managed_turn_stops_does_not_spin_the_composer() {
+        let mut root = root_with_draft("");
+        let _ = root.update(RootEvent::ManagedActiveTurns(1));
+        let child = |sequence, kind| {
+            Arc::new(
+                TranscriptRecord::from_agent(
+                    sequence,
+                    sequence * 10,
+                    AgentEvent {
+                        protocol_version: 1,
+                        request_id: Arc::from("child-request"),
+                        seq: sequence,
+                        kind,
+                        payload: to_raw_value(&json!({})).unwrap().into(),
+                    },
+                )
+                .with_managed_turn_id(Some("failed-turn"))
+                .with_managed_agent_id(Some(7)),
+            )
+        };
+        let _ = root.update(RootEvent::Transcript(child(1, AgentEventKind::RunStarted)));
+        let _ = root.update(RootEvent::ManagedActiveTurns(0));
+        let terminal = TranscriptRecord::from_local(
+            2,
+            20,
+            LocalEvent::ManagedTurnStopped {
+                turn_id: "failed-turn".to_owned(),
+                error: Some("provider failed".to_owned()),
+            },
+        )
+        .unwrap();
+        let _ = root.update(RootEvent::Transcript(Arc::new(terminal)));
+        let _ = root.update(RootEvent::Transcript(child(
+            3,
+            AgentEventKind::ModelCallStarted,
+        )));
+        let running_tool = Arc::new(
+            TranscriptRecord::from_agent(
+                4,
+                40,
+                AgentEvent {
+                    protocol_version: 1,
+                    request_id: Arc::from("child-request"),
+                    seq: 4,
+                    kind: AgentEventKind::ToolCall,
+                    payload: to_raw_value(&json!({
+                        "call_id": "child-exec", "tool": "exec_command", "arguments": {"cmd": "build"}
+                    }))
+                    .unwrap()
+                    .into(),
+                },
+            )
+            .with_managed_turn_id(Some("failed-turn"))
+            .with_managed_agent_id(Some(7)),
+        );
+        let _ = root.update(RootEvent::Transcript(running_tool));
+
+        assert!(root.transcript.component().activity().active);
+        assert_eq!(
+            root.transcript.component().activity().status.as_deref(),
+            Some("Running exec command…")
+        );
+        assert!(!root.has_active_turns());
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(100, 30)).unwrap();
+        terminal
+            .draw(|frame| {
+                root.render_focused(
+                    frame,
+                    frame.area(),
+                    &crate::tui::theme::Theme::default(),
+                    true,
+                )
+            })
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(!screen.contains("Thinking…"));
+        assert!(!screen.contains("Running exec command"));
     }
 
     #[test]
