@@ -19,12 +19,13 @@ describe("Cloudflare TURN credential boundary", () => {
         });
         return Response.json({ iceServers: servers }, { status: 201 });
       });
-      return { iceServers: servers, relay: true };
+      return { iceServers: servers, relay: true, expires_at: Date.now() + 3600_000 };
     };
     const first = issue("first-credential");
     const response = await remoteICE(env, "remote-test-owner");
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(await response.json()).toEqual(first);
+    vi.setSystemTime(Date.now() + 60_000);
     expect(await (await remoteICE(env, "remote-test-owner")).json()).toEqual(first);
     expect(upstream).toHaveBeenCalledTimes(1);
     vi.setSystemTime(Date.now() + 10 * 60_000 + 1);
@@ -44,6 +45,8 @@ describe("Cloudflare TURN credential boundary", () => {
   });
 
   it("coalesces simultaneous host and viewer setup while keeping responses independent", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    const issuedAt = Date.now();
     const env = { NANOCODEX_TURN_KEY_ID: "concurrent-key", NANOCODEX_TURN_API_TOKEN: "test-token" };
     let finish!: (response: Response) => void;
     const upstream = vi.fn(() => new Promise<Response>(resolve => { finish = resolve; }));
@@ -52,11 +55,15 @@ describe("Cloudflare TURN credential boundary", () => {
     const viewer = remoteICE(env, "same-owner");
     expect(upstream).toHaveBeenCalledTimes(1);
     const iceServers = [{ urls: ["turn:turn.example:3478"], username: "temporary", credential: "credential" }];
+    vi.setSystemTime(issuedAt + 4500);
     finish(Response.json({ iceServers }));
     const responses = await Promise.all([host, viewer]);
     expect(responses[0]).not.toBe(responses[1]);
     expect(await Promise.all(responses.map(response => response.json())))
-      .toEqual([{ iceServers, relay: true }, { iceServers, relay: true }]);
+      .toEqual([
+        { iceServers, relay: true, expires_at: issuedAt + 3600_000 },
+        { iceServers, relay: true, expires_at: issuedAt + 3600_000 },
+      ]);
     expect(responses.every(response => response.headers.get("cache-control") === "no-store")).toBe(true);
   });
 
