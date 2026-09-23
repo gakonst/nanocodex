@@ -150,9 +150,10 @@ storage ownership.
 
 ## Markdown memory
 
-Managed agents use `memories__get`, `memories__search_markdown`, and `memories__write` for editable
-curated Markdown and daily notes stored in Durable Object SQLite. Hybrid semantic
-retrieval and daily consolidation use the existing AI Search and Workers AI
+Managed agents use `memories__read`, `memories__search`, and `memories__write` for editable
+curated Markdown and daily notes stored in Durable Object SQLite. Read and search
+keep the Codex argument/result contracts. Background indexing and daily consolidation
+use the existing AI Search and Workers AI
 bindings. Compaction is independent of memory; agents save useful context during
 their work. `memories__status` reports availability and
 durable job receipts. Set `NANOCODEX_MEMORY_AUTOMATION=false` to disable background
@@ -351,7 +352,7 @@ without rewriting baseline instructions, cache keys, or the conversation prefix.
   service entries also advertise deferred tools and documentation.
   XML data is escaped and explicitly carries no instructional authority.
   Startup does not search past threads using the current prompt: `find_session`,
-  `read_session`, `memories__search`, and `memories__get` provide scoped recall when needed.
+  `read_session`, `memories__search`, and `memories__read` provide scoped recall when needed.
   The environment and timestamp are frozen once, including across retries,
   reconnects, and pending-memory invalidation. Later turns append to the existing
   conversation without rewriting its cacheable prefix or changing cache keys.

@@ -11700,7 +11700,7 @@ async function routeHistoryRequest(
   const memory = url.pathname === "/v1/memory";
   const memoryDelete = url.pathname.match(/^\/v1\/memory\/([^/]+)$/);
   const markdown = url.pathname.match(/^\/v1\/markdown-memory\/(get|search|write|status)$/);
-  const canonical = url.pathname.match(/^\/v1\/memories\/(list|read|search|add_ad_hoc_note|get|search_markdown|write|status)$/);
+  const canonical = url.pathname.match(/^\/v1\/memories\/(list|read|search|add_ad_hoc_note|write|status)$/);
   if (!find && !read && !memory && !memoryDelete && !canonical && !markdown) return undefined;
   const validMethod = (find || read || canonical || markdown) ? request.method === "POST"
     : memory ? request.method === "GET" || request.method === "POST"

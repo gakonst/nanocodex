@@ -9,7 +9,8 @@ The native CLI calls the managed `/v1/memories/{method}` API. The managed agent
 uses the same file adapter. The old `memory` model tool is no longer registered;
 old configuration entries select these compatibility tools plus the managed
 [Markdown memory tools](workers-markdown-memory.md), all under `memories__*`.
-Markdown adds `get`, `search_markdown`, `write`, and `status`; its writes need only
+The same `read` and `search` operations cover canonical Markdown, using Codex
+arguments and result shapes. Markdown adds only `write` and `status`; writes need
 an operation, path, and content, with storage bookkeeping handled by the host.
 An empty tool list remains empty. The four pinned Codex schemas remain unchanged.
 

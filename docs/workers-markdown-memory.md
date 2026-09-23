@@ -18,13 +18,14 @@ Worker restart does not lose files or an acknowledged append receipt.
 
 All memory tools use the `memories__*` namespace. The four pinned Codex tools
 (`list`, `read`, `search`, `add_ad_hoc_note`) keep their input/output schemas.
-Markdown adds `memories__get`, `memories__search_markdown`, `memories__write`, and
-`memories__status`. Hybrid search has a distinct member because Codex's
-`memories__search` accepts substring queries and matching modes.
+The same `memories__read` and `memories__search` operations cover curated Markdown
+and daily notes. Markdown adds only `memories__write` and `memories__status`.
 
-`memories__search_markdown` returns bounded hybrid lexical/semantic excerpts with
-paths and line ranges. `memories__get` reads a bounded range; use `next_line` to
-continue. To save a note, provide the operation, path, and content:
+`memories__read` accepts `path`, optional one-based `line_offset`, and `max_lines`.
+`memories__search` accepts a `queries` array and Codex substring matching options,
+and returns file/line matches. Semantic indexing is an internal retrieval facility;
+it does not change the baseline Codex search contract. To save a note, provide
+the operation, path, and content:
 
 ```json
 { "operation": "put", "path": "MEMORY.md", "content": "Use UTC for scheduled exports." }
@@ -36,8 +37,7 @@ the host supplies delivery identity and storage commits each write atomically.
 Internal consolidation still uses revision fences, and repeated delivery of the
 same tool call reuses its stored result.
 
-Authenticated POST endpoints are `/v1/memories/get`,
-`/v1/memories/search_markdown`, `/v1/memories/write`, and `/v1/memories/status`.
+Authenticated POST endpoints are `/v1/memories/{list,read,search,add_ad_hoc_note,write,status}`.
 Existing `/v1/markdown-memory/{get,search,write,status}` endpoints remain available
 for older clients, including their optional explicit revision and delivery fields.
 
@@ -49,8 +49,9 @@ advertising duplicate tools. An empty tool configuration stays empty.
 
 Direct account calls default to the authenticated user's private partition,
 which follows that user across teams in the same organization. Connect calls
-default to their authorized team and cannot select private memory. Explicit
-`scope: "team"` selects shared knowledge. Shared writes require
+default to their authorized team and cannot select private memory. For direct
+accounts, Codex file reads/searches access shared notes through the `team/` path
+prefix. `write` and `status` accept `scope: "team"`. Shared writes require
 `user_requested: true` and a user request to share that information; this flag is
 an intent declaration, not a new source of authority. Every call still checks
 live read/write capabilities. Subagents cannot mutate memory. Internal calls
@@ -64,8 +65,8 @@ miss starts the turn or voice session without memory; a background refresh can
 make context available on later turns or through the active voice context channel.
 
 Each Markdown scope contributes at most 12 KiB after serialization, with at most
-4 KiB per file. Files are capped at 64 KiB and lines at 8 KiB; a ranged read returns
-at most 16 KiB and 200 lines. Prepared copies have bounded leases and are
+4 KiB per file. Files are capped at 64 KiB and lines at 8 KiB. Codex reads retain
+the upstream line-selection and truncation behavior. Prepared copies have bounded leases and are
 invalidated in the background after Markdown edits. Recent changes may lag until
 refresh or invalidation arrives. Expired copies are not injected; current user
 corrections take precedence, and explicit tools can verify canonical memory.
