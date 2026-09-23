@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createGatewayResponses } from "../cloudflare/gateway-responses.mjs";
+import { providerStream, streamResponse } from "../cloudflare/provider-stream.mjs";
 import { createWorkersAiResponses } from "../cloudflare/workers-ai-responses.mjs";
 const encoder = new TextEncoder();
 const wire = value => `data: ${typeof value === "string" ? value : JSON.stringify(value)}\r\n\r\n`;
@@ -227,7 +228,7 @@ for (const scenario of ["early-close", "failed", "mismatched-final", "unknown-it
     if (scenario === "mismatched-final") upstream.send(nativeFinal("different"));
   }
   upstream.close();
-  await assert.rejects(pending, error => error.message === "Responses: invalid provider stream");
+  await assert.rejects(pending, error => /^Responses: invalid provider stream \[[a-z_]+\]$/.test(error.message));
   assert.equal(fixture.observed.at(-1), "protocol_error");
 });
 
@@ -270,7 +271,7 @@ for (const scenario of ["unterminated-frame", "aggregate-text", "aggregate-tools
     else if (scenario === "aggregate-text") for (let index = 0; index < 9; index++) upstream.send(chunk({ content: block }));
     else if (scenario === "aggregate-tools") for (let index = 0; index < 5; index++) upstream.send(chunk({ tool_calls: [{ index: 0, function: { arguments: block } }] }));
     else upstream.send(chunk({ tool_calls: [{ index: 1024, function: { name: "tool_0" } }] }));
-    await assert.rejects(pending, { message: "Responses: invalid provider stream" });
+    await assert.rejects(pending, { message: /^Responses: invalid provider stream \[[a-z_]+\]$/ });
     assert.equal(fixture.observed.at(-1), "protocol_error");
     assert.equal(upstream.cancelled, 1);
   });
@@ -304,7 +305,7 @@ test("native Responses reject changes to declared tool identity", async () => {
     upstream.send({ type: "response.output_item.added", output_index: 0, item });
     upstream.send({ type: "response.function_call_arguments.delta", output_index: 0, item_id: item.id, delta: "{}" });
     upstream.send({ type: "response.completed", response: { object: "response", status: "completed", output: [{ ...item, status: "completed", arguments: "{}", [field]: field === "name" ? "tool_1" : "call-2" }] } });
-    await assert.rejects(pending, { message: "Responses: invalid provider stream" });
+    await assert.rejects(pending, { message: /^Responses: invalid provider stream \[[a-z_]+\]$/ });
     assert.deepEqual(fixture.observed, [200, "protocol_error"]);
   }
 });
@@ -347,7 +348,7 @@ for (const scenario of ["aggregate-distinct-tools", "total-wire-keepalives"]) {
     } else {
       for (let index = 0; index < 33; index++) upstream.raw(encoder.encode(`: ${block}\n\n`));
     }
-    await assert.rejects(pending, { message: "Responses: invalid provider stream" });
+    await assert.rejects(pending, { message: /^Responses: invalid provider stream \[[a-z_]+\]$/ });
     assert.deepEqual(fixture.observed, [200, "protocol_error"]);
     assert.equal(upstream.cancelled, 1);
   });
@@ -427,7 +428,7 @@ for (const scenario of ["no-usage", "changed-finish", "new-text", "new-reasoning
     upstream.send(trailer);
     if (scenario !== "missing-DONE") upstream.send("[DONE]");
     upstream.close();
-    await assert.rejects(pending, { message: "Responses: invalid provider stream" });
+    await assert.rejects(pending, { message: /^Responses: invalid provider stream \[[a-z_]+\]$/ });
     assert.deepEqual(fixture.observed, [200, "first", "protocol_error"]);
   });
 }
@@ -512,7 +513,7 @@ for (const scenario of ["before-finish", "nonempty-response", "missing-usage", "
     if (scenario === "output-after-trailer") upstream.send(chunk({ content: "unexpected" }));
     if (scenario !== "missing-DONE") upstream.send("[DONE]");
     upstream.close();
-    await assert.rejects(pending, { message: "Responses: invalid provider stream" });
+    await assert.rejects(pending, { message: /^Responses: invalid provider stream \[[a-z_]+\]$/ });
   });
 }
 
@@ -569,6 +570,59 @@ for (const detail of [{ type: "reasoning.text", text: { private: "fixture" } }, 
     const upstream = feed(), fixture = setup("openrouter", upstream), pending = all(await fixture.invoke());
     upstream.send(chunk({ reasoning_details: [detail] }));
     upstream.send(chunk({}, "stop")); upstream.send("[DONE]");
-    await assert.rejects(pending, { message: "Responses: invalid provider stream" });
+    await assert.rejects(pending, { message: /^Responses: invalid provider stream \[[a-z_]+\]$/ });
   });
 }
+
+// Distinct rejection codes cross the same public error boundary; no wire data
+// or normalizer exception text is reflected to the caller.
+test("stream diagnostics distinguish parser, tool identity, terminal and normalization failures", async () => {
+  const scenarios = [
+    ["frame_json", upstream => upstream.send("synthetic-secret")],
+    ["tool_fragment_index", upstream => upstream.send(chunk({ tool_calls: [{ index: "synthetic-secret" }] }))],
+    ["tool_fragment_id_changed", upstream => {
+      upstream.send(chunk({ tool_calls: [{ index: 0, id: "synthetic-secret-a" }] }));
+      upstream.send(chunk({ tool_calls: [{ index: 0, id: "synthetic-secret-b" }] }));
+    }],
+    ["tool_terminal_id_missing", upstream => {
+      upstream.send(chunk({ tool_calls: [{ index: 0, function: { name: "tool_0", arguments: "{}" } }] }));
+      upstream.send(chunk({}, "tool_calls")); upstream.send("[DONE]");
+    }],
+    ["chat_usage_trailer", upstream => {
+      upstream.send(chunk({}, "stop"));
+      upstream.send({ ...chunk({ tool_calls: [] }, "stop"), usage: {} });
+    }],
+    ["normalize_tool_alias", upstream => {
+      upstream.send(chunk({ tool_calls: [{ index: 0, id: "synthetic-secret", function: { name: "synthetic-secret", arguments: "{}" } }] }));
+      upstream.send(chunk({}, "tool_calls")); upstream.send("[DONE]");
+    }],
+    ["normalize_tool_json", upstream => {
+      upstream.send(chunk({ tool_calls: [{ index: 0, id: "synthetic-secret", function: { name: "tool_0", arguments: "synthetic-secret" } }] }));
+      upstream.send(chunk({}, "tool_calls")); upstream.send("[DONE]");
+    }],
+  ];
+  for (const [code, send] of scenarios) {
+    const upstream = feed(), fixture = setup("openrouter", upstream);
+    const pending = all(await fixture.invoke({ tools: [{ type: "function", name: "read" }] }));
+    send(upstream);
+    await assert.rejects(pending, { message: `Responses: invalid provider stream [${code}]` });
+    assert.deepEqual(fixture.observed, [200, "protocol_error"]);
+    assert.equal(upstream.cancelled, 1);
+  }
+});
+
+test("normalizer diagnostics reject unknown or forged exception details", async () => {
+  for (const error of [new Error("synthetic-secret https://private.invalid authorization=secret"),
+    Object.assign(new Error("Workers AI Responses: model returned an unknown tool alias synthetic-secret"), { code: "synthetic-secret" }),
+    { message: "Workers AI Responses: model returned an unknown tool alias", code: "synthetic-secret" }]) {
+    const upstream = feed();
+    const response = streamResponse(providerStream(upstream.body), (_result, prologue) => {
+      if (prologue) return {};
+      throw error;
+    }, () => []);
+    const pending = response.text();
+    upstream.send(chunk({}, "stop")); upstream.send("[DONE]");
+    await assert.rejects(pending, { message: "Responses: invalid provider stream [normalize_unknown]" });
+    assert.equal(upstream.cancelled, 1);
+  }
+});

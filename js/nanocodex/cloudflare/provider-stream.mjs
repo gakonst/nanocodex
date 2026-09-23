@@ -1,7 +1,38 @@
 import { chatReasoningText } from "./chat-reasoning.mjs";
 import { fromBindingResponsesResult } from "./gateway-binding-responses.mjs";
 
-const invalid = () => { throw new Error("Responses: invalid provider stream"); };
+// Codes are local constants only. Never surface an upstream exception/message.
+class StreamProtocolError extends Error {
+  constructor(code) { super(`Responses: invalid provider stream [${code}]`); this.code = code; }
+}
+const invalid = code => { throw new StreamProtocolError(code); };
+// The portable normalizer has static failures but can also throw arbitrary
+// exceptions. Only exact known messages map to public diagnostics.
+const normalizationCodes = new Map([
+  ["invalid chat completion or unsupported finish reason", "normalize_completion"],
+  ["unsupported completion content", "normalize_content"],
+  ["invalid completion tool calls", "normalize_tool_calls"],
+  ["provider refused completion", "normalize_refusal"],
+  ["incomplete completion cannot dispatch tool calls", "normalize_incomplete_tools"],
+  ["invalid reasoning details", "normalize_reasoning_details"],
+  ["reasoning details exceed limit", "normalize_reasoning_size"],
+  ["tool choice forbids calls", "normalize_tool_forbidden"],
+  ["required tool call missing", "normalize_tool_required"],
+  ["unsupported completion tool call", "normalize_tool_type"],
+  ["model returned an unknown tool alias", "normalize_tool_alias"],
+  ["model returned a different forced tool", "normalize_forced_tool"],
+  ["model returned invalid tool JSON", "normalize_tool_json"],
+  ["invalid tool call ID", "normalize_tool_id"],
+  ["tool arguments must be a JSON object", "normalize_tool_arguments"],
+  ["model returned duplicate tool call IDs", "normalize_tool_duplicate_id"],
+  ["custom tool arguments must contain a string input", "normalize_custom_input"],
+  ["tool_calls finish reason omitted tool calls", "normalize_missing_tools"],
+].map(([message, code]) => [`Workers AI Responses: ${message}`, code]));
+for (const [message, code] of [
+  ["invalid reasoning text", "normalize_reasoning_text"],
+  ["invalid reasoning details", "normalize_reasoning_details"],
+  ["invalid reasoning detail text", "normalize_reasoning_detail_text"],
+]) normalizationCodes.set(`Responses: ${message}`, code);
 class StreamReadError extends Error {}
 const encoder = new TextEncoder();
 const frame = event => encoder.encode(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
@@ -19,7 +50,7 @@ async function* records(reader) {
       return record;
     }
     size += value.length;
-    if (size > 4 * 1024 * 1024) invalid();
+    if (size > 4 * 1024 * 1024) invalid("frame_size");
     const colon = value.indexOf(":");
     const field = colon < 0 ? value : value.slice(0, colon);
     let valueText = colon < 0 ? "" : value.slice(colon + 1);
@@ -33,9 +64,10 @@ async function* records(reader) {
     try { read = await reader.read(); } catch { throw new StreamReadError(); }
     const { value, done } = read;
     total += value?.byteLength ?? 0;
-    if (total > 32 * 1024 * 1024) invalid();
-    buffer += done ? decoder.decode() : decoder.decode(value, { stream: true });
-    if (buffer.length > 4 * 1024 * 1024) invalid();
+    if (total > 32 * 1024 * 1024) invalid("wire_size");
+    try { buffer += done ? decoder.decode() : decoder.decode(value, { stream: true }); }
+    catch { invalid("frame_utf8"); }
+    if (buffer.length > 4 * 1024 * 1024) invalid("frame_buffer_size");
     let match;
     while ((match = /\r\n|\r|\n/.exec(buffer))) {
       if (!done && match[0] === "\r" && match.index === buffer.length - 1) break;
@@ -45,14 +77,18 @@ async function* records(reader) {
     }
     if (done) {
       // A terminal event must be fully framed; never accept a truncated last frame.
-      if (buffer || data.length) invalid();
+      if (buffer || data.length) invalid("frame_truncated");
       return;
     }
   }
 }
 
 export function streamResponse(source, normalize, responseEvents, signal, parallelToolCalls) {
-  if (!(source.body instanceof ReadableStream)) invalid();
+  if (!(source.body instanceof ReadableStream)) invalid("body_type");
+  const checkedNormalize = (result, prologue) => {
+    try { return normalize(result, prologue); }
+    catch (error) { invalid(normalizationCodes.get(error instanceof Error ? error.message : undefined) ?? "normalize_unknown"); }
+  };
   const reader = source.body.getReader();
   const iterator = records(reader);
   let controller, settled = false, first = false, sequence = 0, finalSeen = false;
@@ -61,7 +97,7 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
   let retainedSize = 0;
   const retain = text => {
     retainedSize += encoder.encode(text).byteLength;
-    if (retainedSize > 8 * 1024 * 1024) invalid();
+    if (retainedSize > 8 * 1024 * 1024) invalid("retained_size");
   };
   const live = new Map();
   const calls = new Map();
@@ -89,7 +125,7 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
     void finish(signal?.reason?.name === "TimeoutError" ? "timeout" : "cancelled");
   };
   const delta = (kind, text) => {
-    if (typeof text !== "string") invalid();
+    if (typeof text !== "string") invalid("text_type");
     if (!text) return;
     retain(text);
     if (kind === "message") firstToken();
@@ -111,13 +147,13 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
   // Tool declarations/arguments stay private until the existing normalizer has
   // checked aliases, JSON, IDs, completeness and the single-call contract.
   const complete = async result => {
-    if (parallelToolCalls === false && result.choices?.[0]?.message?.tool_calls?.length > 1) invalid();
-    const response = normalize(result);
+    if (parallelToolCalls === false && result.choices?.[0]?.message?.tool_calls?.length > 1) invalid("parallel_tools");
+    const response = checkedNormalize(result);
     response.id = id;
     const output = [];
     for (const [kind, entry] of live) {
       const item = response.output.find(value => value.type === kind);
-      if (!item || item.content[0].text !== entry.text) invalid();
+      if (item?.content?.[0]?.text !== entry.text) invalid("output_text_mismatch");
       item.id = entry.item.id;
       output.push(item);
     }
@@ -143,81 +179,84 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
     if (source.format === "workers_ai_chat" && value && Object.hasOwn(value, "response")) {
       if (!finishReason || bindingUsageSeen || value.response !== "" || !value.usage
         || typeof value.usage !== "object" || Array.isArray(value.usage)
-        || Object.keys(value).some(key => !["response", "usage"].includes(key))) invalid();
+        || Object.keys(value).some(key => !["response", "usage"].includes(key))) invalid("binding_usage_trailer");
       bindingUsageSeen = true;
       usage = value.usage;
       return;
     }
-    if (bindingUsageSeen || !value || value.error || !Array.isArray(value.choices) || value.choices.length > 1) invalid();
+    if (bindingUsageSeen || !value || value.error || !Array.isArray(value.choices) || value.choices.length > 1) invalid("chat_envelope");
     if (value.usage != null) usage = value.usage;
     const choice = value.choices[0];
-    if (!choice) { if (!finishReason || value.usage == null) invalid(); return; }
-    if (choice.index !== undefined && choice.index !== 0) invalid();
+    if (!choice) { if (!finishReason || value.usage == null) invalid("chat_empty_choice"); return; }
+    if (choice.index !== undefined && choice.index !== 0) invalid("chat_choice_index");
     const part = choice.delta;
     if (!part || typeof part !== "object" || Array.isArray(part) || part.refusal
-      || (part.role != null && part.role !== "assistant")) invalid();
+      || (part.role != null && part.role !== "assistant")) invalid("chat_delta");
     if (finishReason) {
       // OpenRouter repeats its finish choice with an empty delta on the usage
       // trailer before [DONE]. Admit metadata only, never additional output or
       // a changed terminal reason after the first finish chunk.
       if (value.usage == null || choice.finish_reason !== finishReason
         || Object.entries(part).some(([field, fragment]) => field === "role" ? fragment != null && fragment !== "assistant"
-          : !["content", "reasoning_content", "reasoning"].includes(field) || (fragment !== null && fragment !== ""))) invalid();
+          : !["content", "reasoning_content", "reasoning"].includes(field) || (fragment !== null && fragment !== ""))) invalid("chat_usage_trailer");
       return;
     }
     if (part.content != null) delta("message", part.content);
-    delta("reasoning", chatReasoningText(part));
+    let reasoning;
+    try { reasoning = chatReasoningText(part); } catch { invalid("chat_reasoning"); }
+    delta("reasoning", reasoning);
     if (part.reasoning_details != null) {
-      if (!Array.isArray(part.reasoning_details) || part.reasoning_details.some(d => !d || typeof d !== "object" || Array.isArray(d))) invalid();
+      if (!Array.isArray(part.reasoning_details) || part.reasoning_details.some(d => !d || typeof d !== "object" || Array.isArray(d))) invalid("chat_reasoning_details");
       retain(JSON.stringify(part.reasoning_details));
       reasoningDetails.push(...part.reasoning_details);
     }
     if (part.tool_calls != null) {
-      if (!Array.isArray(part.tool_calls)) invalid();
+      if (!Array.isArray(part.tool_calls)) invalid("tool_calls_type");
       for (const fragment of part.tool_calls) {
-        if (!Number.isSafeInteger(fragment.index) || fragment.index < 0 || fragment.index >= 1024
-          || (fragment.type != null && fragment.type !== "function")) invalid();
+        if (!Number.isSafeInteger(fragment?.index) || fragment.index < 0 || fragment.index >= 1024) invalid("tool_fragment_index");
+        if (fragment.type != null && fragment.type !== "function") invalid("tool_fragment_type");
         let call = calls.get(fragment.index);
         if (!call) { call = { type: "function", function: { name: "", arguments: "" } }; calls.set(fragment.index, call); }
         if (fragment.id != null) {
-          if (typeof fragment.id !== "string" || !fragment.id || (call.id && call.id !== fragment.id)) invalid();
+          if (typeof fragment.id !== "string" || !fragment.id) invalid("tool_fragment_id");
+          if (call.id && call.id !== fragment.id) invalid("tool_fragment_id_changed");
           call.id = fragment.id;
         }
         for (const field of ["name", "arguments"]) if (fragment.function?.[field] != null) {
-          if (typeof fragment.function[field] !== "string") invalid();
+          if (typeof fragment.function[field] !== "string") invalid("tool_fragment_field_type");
           retain(fragment.function[field]);
           call.function[field] += fragment.function[field];
-          if (call.function[field].length > 4 * 1024 * 1024) invalid();
+          if (call.function[field].length > 4 * 1024 * 1024) invalid("tool_fragment_size");
 
         }
       }
     }
     if (choice.finish_reason != null) {
-      if (!["stop", "tool_calls", "length", "content_filter"].includes(choice.finish_reason)) invalid();
+      if (!["stop", "tool_calls", "length", "content_filter"].includes(choice.finish_reason)) invalid("chat_finish_reason");
       finishReason = choice.finish_reason;
     }
   };
   const native = async value => {
-    if (!value || typeof value.type !== "string" || value.error) invalid();
+    if (!value || typeof value.type !== "string" || value.error) invalid("native_envelope");
     if (value.type === "response.output_item.added") {
       if (!Number.isSafeInteger(value.output_index) || value.output_index < 0 || value.output_index >= 1024 || nativeItems.has(value.output_index)
         || !value.item || typeof value.item.id !== "string" || !value.item.id || !["message", "reasoning", "function_call"].includes(value.item.type)
         || [...nativeItems.values()].some(item => item.id === value.item.id)
-        || (value.item.type === "message" && value.item.role !== "assistant")) invalid();
+        || (value.item.type === "message" && value.item.role !== "assistant")) invalid("native_item");
       nativeItems.set(value.output_index, { ...value.item, streamedText: "", streamedArguments: "" });
     } else if (["response.output_text.delta", "response.reasoning_text.delta", "response.reasoning_summary_text.delta", "response.function_call_arguments.delta"].includes(value.type)) {
       const item = nativeItems.get(value.output_index);
-      if (!item || value.item_id !== item.id || typeof value.delta !== "string") invalid();
+      if (!item || value.item_id !== item.id || typeof value.delta !== "string") invalid("native_delta");
       if (value.type === "response.function_call_arguments.delta") {
-        if (item.type !== "function_call") invalid();
+        if (item.type !== "function_call") invalid("native_tool_type");
         retain(value.delta);
         item.streamedArguments += value.delta;
-        if (item.streamedArguments.length > 4 * 1024 * 1024) invalid();
+        if (item.streamedArguments.length > 4 * 1024 * 1024) invalid("native_arguments_size");
 
       } else {
         const kind = value.type === "response.output_text.delta" ? "message" : "reasoning";
         if (item.type !== kind || (value.content_index !== undefined && (!Number.isSafeInteger(value.content_index) || value.content_index < 0))
-          || (value.summary_index !== undefined && (!Number.isSafeInteger(value.summary_index) || value.summary_index < 0))) invalid();
+          || (value.summary_index !== undefined && (!Number.isSafeInteger(value.summary_index) || value.summary_index < 0))) invalid("native_text_part");
         if (value.delta) {
           const part = `${value.output_index}:${value.type}:${value.content_index ?? value.summary_index ?? 0}`;
           if (nativeParts.get(kind) !== part) {
@@ -230,22 +269,25 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
         }
       }
     } else if (["response.completed", "response.incomplete"].includes(value.type)) {
-      if (value.response?.status !== value.type.slice("response.".length)) invalid();
+      if (value.response?.status !== value.type.slice("response.".length)) invalid("native_terminal_status");
       for (const [index, item] of nativeItems) {
         const final = value.response?.output?.[index];
-        if (!final || item.id !== final.id || item.type !== final.type) invalid();
+        if (!final || item.id !== final.id || item.type !== final.type) invalid("native_terminal_item");
         if (item.streamedText) {
           const parts = item.type === "message" ? final.content : [...(final.summary ?? []), ...(final.content ?? [])];
-          if (!Array.isArray(parts) || parts.map(part => part?.text).join("\n") !== item.streamedText) invalid();
+          if (!Array.isArray(parts) || parts.map(part => part?.text).join("\n") !== item.streamedText) invalid("native_terminal_text");
         }
         if (item.type === "function_call" && (item.streamedArguments !== final.arguments
-          || item.call_id !== final.call_id || item.name !== final.name)) invalid();
+          || item.call_id !== final.call_id || item.name !== final.name)) invalid("native_terminal_tool");
       }
-      await complete(fromBindingResponsesResult(value.response, parallelToolCalls));
+      let result;
+      try { result = fromBindingResponsesResult(value.response, parallelToolCalls); }
+      catch { invalid("native_normalization"); }
+      await complete(result);
     } else if (!["response.created", "response.in_progress", "response.queued", "response.output_item.done",
       "response.content_part.added", "response.content_part.done", "response.output_text.done", "response.reasoning_text.done",
       "response.reasoning_summary_part.added", "response.reasoning_summary_part.done", "response.reasoning_summary_text.done",
-      "response.function_call_arguments.done"].includes(value.type)) invalid();
+      "response.function_call_arguments.done"].includes(value.type)) invalid("native_event_type");
   };
   const body = new ReadableStream({
     start(value) {
@@ -259,7 +301,7 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
         if (!started) {
           started = true;
           // Obtain canonical model identity without admitting provider data.
-          const base = normalize({ choices: [{ message: { content: "" }, finish_reason: "stop" }] }, true);
+          const base = checkedNormalize({ choices: [{ message: { content: "" }, finish_reason: "stop" }] }, true);
           emit("response.created", { response: { ...base, id, status: "in_progress", output: [], usage: null, end_turn: false } });
           return;
         }
@@ -267,19 +309,21 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
         do {
           const record = await iterator.next();
           if (settled) return;
-          if (record.done) invalid();
+          if (record.done) invalid("terminal_missing");
           if (record.value.data === "[DONE]") {
-            if (!["chat", "workers_ai_chat"].includes(source.format) || !finishReason) invalid();
+            if (!["chat", "workers_ai_chat"].includes(source.format) || !finishReason) invalid("terminal_done");
             const tool_calls = [...calls].sort(([a], [b]) => a - b).map(([index, call], position) => {
-              if (index !== position || !call.id) invalid();
+              if (index !== position) invalid("tool_terminal_index");
+              if (!call.id) invalid("tool_terminal_id_missing");
               return call;
             });
             await complete({ choices: [{ message: { content: live.get("message")?.text ?? "",
               reasoning_content: live.get("reasoning")?.text ?? "", ...(reasoningDetails.length ? { reasoning_details: reasoningDetails } : {}), tool_calls }, finish_reason: finishReason }], usage });
           } else {
-            const value = JSON.parse(record.value.data);
+            let value;
+            try { value = JSON.parse(record.value.data); } catch { invalid("frame_json"); }
             if (source.format === "responses") {
-              if (record.value.event && record.value.event !== value.type) invalid();
+              if (record.value.event && record.value.event !== value.type) invalid("native_event_mismatch");
               await native(value);
             } else await chat(value);
           }
@@ -288,7 +332,8 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
         if (settled) return;
         cancelReader();
         controller.error(new Error(error instanceof StreamReadError
-          ? "Responses: provider stream read failed" : "Responses: invalid provider stream"));
+          ? "Responses: provider stream read failed"
+          : `Responses: invalid provider stream [${error instanceof StreamProtocolError ? error.code : "unknown"}]`));
         await finish(error instanceof StreamReadError ? "network_error" : "protocol_error");
       }
     },
