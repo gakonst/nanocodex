@@ -51,14 +51,17 @@ The quality matrix runs workspace Clippy, CLI/benchmark Clippy, independent
 public crate checks, and documentation concurrently. The independent crate
 checks intentionally remain separate Cargo invocations: merging their package
 flags would unify features and weaken that check. CLI and benchmark targets
-belong to the same package and share one Clippy invocation. Workspace Clippy,
-CLI Clippy, and docs read the workspace dependency cache; only successful
-workspace Clippy runs on master write it. Independent crate checks retain their
-own cache because their default-feature variants differ. These two designated
-writers remove overlapping archives without serializing the jobs. Cargo still
-checks fingerprints and builds missing variants in each lane. `ci success`
-requires the complete matrix to pass. Compare per-lane compilation time when
-changing this sharing policy.
+belong to the same package and share one Clippy invocation. All four lanes read
+the workspace dependency cache; only successful workspace Clippy runs on master
+write it. This keeps one archive across the parallel feature/profile variants.
+Cargo still checks fingerprints and builds missing variants in each lane;
+independent crate checks keep their separate default-feature invocations.
+`ci success` requires the complete matrix to pass.
+
+This policy favors a smaller retained working set. A dedicated independent-crate
+archive reduced its warm check time, but was evicted between consecutive runs of
+the same revision and had to be rebuilt and uploaded. Compare both cache retention
+and per-lane compilation time when changing this sharing policy.
 
 Native Hand, Windows installer, VM guest, and Python wheel builds use pinned
 sccache with GitHub's cache backend, in addition to the dependency cache. This

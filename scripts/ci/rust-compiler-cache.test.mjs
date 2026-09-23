@@ -32,26 +32,25 @@ test('compiler cache keeps reads enabled and exports the selected write policy',
 });
 
 
-test('quality caches have one successful master writer per archive', () => {
+test('quality lanes share one archive with one successful master writer', () => {
   const workflow = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
   const quality = workflow.split('  quality:\n')[1].split('  vm-guest:\n')[0];
   const cache = quality.split('      - uses: Swatinem/rust-cache@')[1].split('      - ')[0];
   assert.match(cache, /cache-on-failure: false/);
   const policy = cache.match(/save-if: \$\{\{ (.+) \}\}/)?.[1];
-  const key = cache.match(/shared-key: \$\{\{ (.+) \}\}/)?.[1];
+  const key = cache.match(/shared-key: (\S+)/)?.[1];
   assert.ok(policy && key, 'quality cache key and writer policy must be explicit');
   const saves = new Function('github', 'matrix', `return (${policy});`);
-  const archive = new Function('matrix', `return (${key});`);
+  assert.equal(key, 'quality-workspace-clippy');
   for (const ref of ['refs/heads/master', 'refs/heads/feature', 'refs/pull/1/merge', '']) {
     const writers = new Map();
     for (const check of ['workspace-clippy', 'cli-clippy', 'contracts', 'docs']) {
-      const selected = archive({ check });
-      assert.equal(selected, check === 'contracts' ? 'quality-contracts' : 'quality-workspace-clippy');
+      const selected = key;
       const writer = saves({ ref }, { check });
-      assert.equal(writer, ref === 'refs/heads/master' && ['workspace-clippy', 'contracts'].includes(check), `${ref} ${check}`);
+      assert.equal(writer, ref === 'refs/heads/master' && check === 'workspace-clippy', `${ref} ${check}`);
       if (writer) writers.set(selected, (writers.get(selected) ?? 0) + 1);
     }
-    assert.equal(writers.size, ref === 'refs/heads/master' ? 2 : 0);
+    assert.equal(writers.size, ref === 'refs/heads/master' ? 1 : 0);
     for (const count of writers.values()) assert.equal(count, 1);
   }
 });
