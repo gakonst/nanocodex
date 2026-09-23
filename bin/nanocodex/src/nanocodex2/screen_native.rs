@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 
 #[derive(Args)]
 pub(crate) struct ScreenCommand {
+    #[command(flatten)]
+    observability: super::hand_observability::HandObservabilityArgs,
     #[arg(long)]
     workspace: PathBuf,
     #[arg(long)]
@@ -242,6 +244,7 @@ pub(crate) async fn serve(
     client: &ManagedClient,
     command: ScreenCommand,
 ) -> Result<(), ManagedError> {
+    let _observability = command.observability.install().map_err(configuration)?;
     let workspace = std::fs::canonicalize(command.workspace).map_err(configuration)?;
     let workspace = workspace
         .to_str()

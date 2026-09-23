@@ -7,6 +7,7 @@
 pub mod audio;
 pub mod audio_duplex;
 pub mod capture;
+mod diagnostics;
 pub mod frames;
 pub mod ice;
 pub mod input;

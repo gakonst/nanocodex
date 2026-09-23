@@ -1,6 +1,7 @@
 //! Rust Hand screen publication. Credentials and signaling remain on the host.
 use crate::Result as CoreResult;
 use crate::audio_duplex::SinkFactory;
+use crate::diagnostics::{Budget, HttpOutcome, close_reason};
 use crate::input::{Lease, timely_event};
 use crate::preparation::{Preparations, VIEWER_CAPACITY};
 use crate::target::PublisherTarget;
@@ -164,6 +165,7 @@ impl Publisher {
                     broadcast.stop().await;
                 }
                 let target = targets.borrow_and_update().clone();
+                let session_started = Instant::now();
                 let result = tokio::select! {
                     _ = &mut stopped => break,
                     changed = targets.changed() => {
@@ -174,6 +176,9 @@ impl Publisher {
                     },
                     result = session(&target, &machine, &backend, video.as_ref(), audio.as_ref(), microphone_factory.clone(), dimensions, &capabilities, input_keepalive, require_video, &mut ready, &providers, &mut broadcast, &mut authorized_at) => result,
                 };
+                if let Err(error) = &result {
+                    tracing::warn!(target: "nanocodex2", stage = "screen.session.exit", reason = error.category(), http_status = error.http_status(), close_code = error.close_code(), elapsed_ms = session_started.elapsed().as_millis() as u64);
+                }
                 let _ = tokio::time::timeout(
                     Duration::from_secs(3),
                     backend(json!({"action":"release"})),
@@ -244,6 +249,37 @@ enum SessionError {
     Closed,
     Replaced,
     Unauthorized,
+    MediaFailed,
+    Renewal(HttpOutcome),
+    SocketEnded,
+    SocketReadFailed,
+    BrokerClosed(u16, &'static str),
+}
+impl SessionError {
+    fn category(&self) -> &'static str {
+        match self {
+            Self::Closed => "session_closed",
+            Self::Replaced => "host_replaced",
+            Self::Unauthorized => "authorization_expired",
+            Self::MediaFailed => "media_pipeline_failed",
+            Self::Renewal(outcome) => outcome.category,
+            Self::SocketEnded => "socket_or_peer_stream_ended",
+            Self::SocketReadFailed => "socket_read_failed",
+            Self::BrokerClosed(_, reason) => reason,
+        }
+    }
+    fn http_status(&self) -> Option<u16> {
+        match self {
+            Self::Renewal(outcome) => outcome.status,
+            _ => None,
+        }
+    }
+    fn close_code(&self) -> Option<u16> {
+        match self {
+            Self::BrokerClosed(code, _) => Some(*code),
+            _ => None,
+        }
+    }
 }
 type Wire =
     tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
@@ -537,11 +573,13 @@ async fn session(
     renew_url.set_path(&format!("{}/renew", base.path()));
     let mut tick = tokio::time::interval(Duration::from_secs(1));
     let mut last_renewal = Instant::now();
-    let mut renewal: Option<BoxFuture<'static, bool>> = None;
+    let mut renewal: Option<BoxFuture<'static, HttpOutcome>> = None;
+    let diagnostics = Budget::default();
+    let mut renewal_reported = false;
     let mut connection = String::new();
     let mut generation = String::new();
     let mut viewers = HashSet::<String>::new();
-    let mut preparations = Preparations::new();
+    let mut preparations: Preparations<Result<Value, reqwest::Error>> = Preparations::new();
     let mut pending_frames = HashMap::<String, u64>::new();
     let mut frame_tick = tokio::time::interval(Duration::from_nanos(33_333_333));
     frame_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
@@ -557,7 +595,7 @@ async fn session(
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                if socket.video.as_ref().is_some_and(Video::failed) { return Err(SessionError::Closed); }
+                if socket.video.as_ref().is_some_and(Video::failed) { return Err(SessionError::MediaFailed); }
                 for viewer in socket.video.as_ref().map(Video::expired).unwrap_or_default() {
                     if lease.owner() == viewer { release(&mut lease, backend, &mut socket).await?; }
                     viewers.remove(&viewer);
@@ -574,22 +612,32 @@ async fn session(
                 if last_authorized.elapsed()>Duration::from_secs(25) { return Err(SessionError::Unauthorized); }
                 if !connection.is_empty() && last_renewal.elapsed()>=Duration::from_secs(10) && renewal.is_none() {
                     last_renewal=Instant::now(); let http=http.clone(); let url=renew_url.clone(); let token=target.bearer().to_string(); let id=connection.clone();
-                    renewal=Some(Box::pin(async move { http.post(url).bearer_auth(token).json(&json!({"connection_id":id})).send().await.is_ok_and(|r|r.status().is_success()) }));
+                    renewal=Some(Box::pin(async move { HttpOutcome::response(&http.post(url).bearer_auth(token).json(&json!({"connection_id":id})).send().await) }));
                 }
             },
-            ok = async { match &mut renewal { Some(future)=>future.await,None=>std::future::pending().await } } => {
-                renewal=None; if !ok { return Err(SessionError::Unauthorized); } *last_authorized=Instant::now();
+            outcome = async { match &mut renewal { Some(future)=>future.await,None=>std::future::pending().await } } => {
+                renewal=None;
+                // One success per session; failures are terminal. No response body/error text.
+                if !renewal_reported || !outcome.success {
+                    tracing::info!(target: "nanocodex2", stage = "screen.renewal", outcome = outcome.category, http_status = outcome.status, elapsed_ms = last_renewal.elapsed().as_millis() as u64);
+                    renewal_reported = true;
+                }
+                if !outcome.success { return Err(SessionError::Renewal(outcome)); } *last_authorized=Instant::now();
             },
             (viewer, deadline, response) = preparations.next() => {
                 let video = socket.video.as_mut().ok_or(SessionError::Closed)?;
                 let offer: CoreResult<()> = (|| {
-                    let response = response??;
+                    let response = response.map_err(|error| {
+                        diagnostics.event("ice_fetch", "deadline_exceeded", None); error
+                    })?.map_err(|error| {
+                        diagnostics.event("ice_fetch", "request_or_decode_failed", error.status().map(|status| status.as_u16())); error
+                    })?;
                     video.add(&viewer, ice_servers(&response)?, deadline)
                 })();
                 match offer {
-                    Ok(()) => { viewers.insert(viewer.clone()); },
-                    failure => {
-                        eprintln!("Hand video negotiation failed: {failure:?}");
+                    Ok(()) => { diagnostics.event("peer_prepare", "scheduled", None); viewers.insert(viewer.clone()); },
+                    Err(_) => {
+                        diagnostics.event("peer_prepare", "failed", None);
                         send(&mut socket, json!({"type":"close_viewer","viewer_id":viewer})).await?;
                     }
                 }
@@ -625,7 +673,7 @@ async fn session(
                 pending_frames.retain(|_, credits| *credits > 0);
             },
             message = socket.next() => {
-                let message=message.ok_or(SessionError::Closed)?.map_err(|_|SessionError::Closed)?;
+                let message=message.ok_or(SessionError::SocketEnded)?.map_err(|_|SessionError::SocketReadFailed)?;
                 let value=match message {
                     Incoming::Peer(value)=>value,
                     Incoming::Broker(Message::Text(text))=>{
@@ -633,7 +681,11 @@ async fn session(
                         value
                     },
                     Incoming::Broker(Message::Ping(bytes))=>{socket.send(Message::Pong(bytes)).await.map_err(|_|SessionError::Closed)?;continue;},
-                    Incoming::Broker(Message::Close(close))=>return Err(if close.is_some_and(|c|c.reason=="Host replaced") {SessionError::Replaced}else{SessionError::Closed}),
+                    Incoming::Broker(Message::Close(close))=>return Err(match close {
+                        Some(close) if close.reason == "Host replaced" => SessionError::Replaced,
+                        Some(close) => SessionError::BrokerClosed(close.code.into(), close_reason(&close.reason)),
+                        None => SessionError::BrokerClosed(1005, "no_close_frame"),
+                    }),
                     Incoming::Broker(Message::Pong(_))=>continue,
                     _=>return Err(SessionError::Closed),
                 };
@@ -669,6 +721,7 @@ async fn session(
                     "renewed"=>*last_authorized=Instant::now(),
                     "pong"=>{},
                     "viewer"=>{
+                        diagnostics.event("viewer", "received", None);
                         if viewer.is_empty() || value["surface_id"]!="desktop" {return Err(SessionError::Closed);}
                         // A duplicate ID is ambiguous even at capacity: cancel
                         // that viewer without disturbing unrelated peers.
@@ -701,6 +754,7 @@ async fn session(
                         if let Some(video)=&mut socket.video{video.remove(viewer);}
                     },
                     "signal" if preparations.contains(viewer)=>{
+                        diagnostics.event("signal", "before_offer", None);
                         // No pre-offer signaling queue: cancel and fail closed.
                         preparations.remove(viewer);
                         send(&mut socket,json!({"type":"close_viewer","viewer_id":viewer})).await?;
@@ -708,6 +762,7 @@ async fn session(
                     "signal" if viewers.contains(viewer)=>{
                         if let Some(video)=&mut socket.video
                             && video.signal(viewer,&value["signal"]).is_err() {
+                            diagnostics.event("signal", "rejected", None);
                             if lease.owner()==viewer{release(&mut lease,backend,&mut socket).await?;}
                             send(&mut socket,json!({"type":"close_viewer","viewer_id":viewer})).await?;viewers.remove(viewer);
                         }

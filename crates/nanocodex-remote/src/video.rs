@@ -512,6 +512,7 @@ impl PeerBuilder {
         );
         let owned = Connection(connection.clone());
         let microphone = Arc::new(Microphone::install(&connection, self.microphone_factory));
+        let diagnostics = Arc::new(crate::diagnostics::Budget::default());
         let sender = connection.add_track(self.track.clone()).await?;
         let rtcp = Task(tokio::spawn(async move {
             while sender.read_rtcp().await.is_ok() {}
@@ -644,7 +645,21 @@ impl PeerBuilder {
         let failed = self.failed.clone();
         let viewer = id.to_owned();
         let revoke_microphone = Arc::downgrade(&microphone);
+        let peer_diagnostics = diagnostics.clone();
         connection.on_peer_connection_state_change(Box::new(move |state| {
+            peer_diagnostics.event(
+                "peer_connection",
+                match state {
+                    RTCPeerConnectionState::New => "new",
+                    RTCPeerConnectionState::Connecting => "connecting",
+                    RTCPeerConnectionState::Connected => "connected",
+                    RTCPeerConnectionState::Disconnected => "disconnected",
+                    RTCPeerConnectionState::Failed => "failed",
+                    RTCPeerConnectionState::Closed => "closed",
+                    _ => "unspecified",
+                },
+                None,
+            );
             if matches!(
                 state,
                 RTCPeerConnectionState::Failed
@@ -693,6 +708,7 @@ impl PeerBuilder {
         }));
         let offer = connection.create_offer(None).await?;
         connection.set_local_description(offer.clone()).await?;
+        diagnostics.event("offer", "created", None);
         let (signals, mut incoming) = mpsc::channel::<Value>(128);
         let answered = Arc::new(AtomicBool::new(false));
         let answer = answered.clone();
@@ -707,7 +723,19 @@ impl PeerBuilder {
                     apply_signal(&connection, &answer, &mut candidates, &signal),
                 )
                 .await;
+                if signal["type"] == "answer" && matches!(result, Ok(Ok(()))) {
+                    diagnostics.event("answer", "applied", None);
+                }
                 if !matches!(result, Ok(Ok(()))) {
+                    diagnostics.event(
+                        "apply_signal",
+                        if result.is_err() {
+                            "timeout"
+                        } else {
+                            "rejected"
+                        },
+                        None,
+                    );
                     if events
                         .try_send(Event {
                             value: json!({"type":"viewer_left","viewer_id":viewer}),
