@@ -313,9 +313,12 @@ public struct RemoteDashboard: View {
                         .frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else if hands.isEmpty {
                     VStack(spacing: 6) {
-                        Text("No screens available").font(.headline)
-                        Text("VM desktops appear when ready. Start screen sharing on a Mac to view it here.")
+                        Text(discoveryError == nil ? "No screens available" : "Couldn’t load screens").font(.headline)
+                        Text(discoveryError == nil
+                             ? "Bring a Hand online and start screen sharing to view its desktop here."
+                             : "Try again to load the available screens.")
                             .font(.caption).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                        Button(discoveryError == nil ? "Refresh" : "Retry") { Task { await refresh() } }
                     }.frame(maxWidth: .infinity, maxHeight: .infinity)
                 } else {
 #if os(iOS)

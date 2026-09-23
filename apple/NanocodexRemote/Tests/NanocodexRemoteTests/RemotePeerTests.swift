@@ -242,3 +242,26 @@ extension RemotePeerTests {
         XCTAssertTrue(viewer.diagnosticState.contains("/32/32 SDP="), "All queued candidates are still applied before receive returns")
     }
 }
+
+extension RemotePeerTests {
+    @MainActor func testRelayPreferenceRequiresTurnCredentialsAndPreservesHostPolicy() throws {
+        let peer = try RemotePeer(publishing: false, ice: [])
+        defer { peer.close() }
+        for servers in [
+            [],
+            [RemoteICE(urls: ["stun:127.0.0.1:3478"])]
+        ] {
+            try peer.updateICE(servers, preferRelay: true)
+            XCTAssertTrue(peer.diagnosticState.contains("policy=all"),
+                          "Without usable TURN credentials direct candidates remain available")
+        }
+        let turn = [RemoteICE(urls: ["turn:127.0.0.1:3478"], username: "fixture", credential: "fixture")]
+        try peer.updateICE(turn, preferRelay: true)
+        XCTAssertTrue(peer.diagnosticState.contains("policy=relay"))
+        try peer.updateICE(turn)
+        XCTAssertTrue(peer.diagnosticState.contains("policy=relay"),
+                      "Existing host ICE renewal must retain its policy")
+        try peer.updateICE(turn, preferRelay: false)
+        XCTAssertTrue(peer.diagnosticState.contains("policy=all"))
+    }
+}

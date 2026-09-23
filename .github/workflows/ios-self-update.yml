@@ -73,6 +73,8 @@ jobs:
           [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]
           [[ "$BUILD_VERSION" =~ ^[1-9][0-9]*$ ]]
           printf 'request_id=%s\nversion=%s\nbuild_version=%s\n' "$REQUEST_ID" "$VERSION" "$BUILD_VERSION" >> "$GITHUB_OUTPUT"
+      - name: Test remote screen connections
+        run: swift test --package-path apple/NanocodexRemote --filter 'Remote(Peer|Viewer|Signaling|ICEPreparation)Tests'
       - name: Build shared Rust voice core
         run: bash apple/NanocodexVoice/scripts/build-core.sh
       - name: Install App Store signing credentials

@@ -133,6 +133,7 @@ public final class RemoteViewer: ObservableObject {
     private var service: RemoteService?
     private var suspended = false
     private var retries = 0
+    private var preferRelay = false
     private let recoveryWindow: Duration
     private var recoveryDeadline: ContinuousClock.Instant?
     private var lastFailure = ""
@@ -283,6 +284,7 @@ public final class RemoteViewer: ObservableObject {
                 guard let current = hands.first(where: { $0.machineID == selected.machineID && $0.id == selected.id }) else {
                     throw RemoteError.unavailable
                 }
+                if current.generation != selected.generation { preferRelay = false }
                 hand = current
             }
             if hand?.transport == .frames {
@@ -300,7 +302,7 @@ public final class RemoteViewer: ObservableObject {
                 let ice = try await service.ice()
                 try Task.checkCancellation()
                 guard let self, self.epoch == attempt, let peer else { throw CancellationError() }
-                try peer.updateICE(ice)
+                try peer.updateICE(ice, preferRelay: self.preferRelay)
                 self.recordConnectionEvent("initial ICE ready")
             }
             connectionSetup = setup
@@ -369,7 +371,7 @@ public final class RemoteViewer: ObservableObject {
                             if receivedOffer {
                                 let ice = try await service.ice()
                                 guard epoch == attempt, !Task.isCancelled else { return }
-                                try peer.updateICE(ice)
+                                try peer.updateICE(ice, preferRelay: self.preferRelay)
                             }
                             receivedOffer = true
                         }
@@ -536,7 +538,7 @@ public final class RemoteViewer: ObservableObject {
     }
 
     public func close() {
-        suspended = false; retries = 0; recoveryDeadline = nil; lastFailure = ""
+        suspended = false; retries = 0; preferRelay = false; recoveryDeadline = nil; lastFailure = ""
         detach(); hand = nil; service = nil; status = "Disconnected"
     }
 
@@ -594,6 +596,9 @@ public final class RemoteViewer: ObservableObject {
         detach(); status = error.localizedDescription
         guard !suspended, hand != nil, service != nil,
               error as? RemoteError != .unauthorized, error as? RemoteError != .invalidMessage else { return }
+        // Avoid repeatedly selecting a failed direct path for this publication.
+        // A new generation (or explicit screen selection) gets a fresh attempt.
+        if hand?.transport != .frames { preferRelay = true }
         let clock = ContinuousClock()
         let deadline = recoveryDeadline ?? clock.now + recoveryWindow
         recoveryDeadline = deadline

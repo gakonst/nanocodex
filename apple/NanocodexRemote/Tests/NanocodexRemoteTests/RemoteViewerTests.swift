@@ -1316,3 +1316,50 @@ final class RemoteViewerTests: XCTestCase {
         XCTAssertEqual(viewer.status, RemoteError.unavailable.localizedDescription)
     }
 }
+
+extension RemoteViewerTests {
+    @MainActor func testRelayFallbackSurvivesResumeButResetsWithPublicationAndSelection() async throws {
+        let lock = NSLock()
+        var currentGeneration = "original"
+        let service = try service { request in
+            if request.request.url?.path.hasSuffix("/screens") == true {
+                let generation = lock.withLock { currentGeneration }
+                request.respond(200, ["surfaces": [[
+                    "id": "desktop", "name": "Desktop", "machine_id": "vm:test", "machine_name": "Test VM",
+                    "kind": "vm", "width": 1600, "height": 900, "controllable": true, "generation": generation
+                ]]])
+            } else {
+                request.respond(200, ["iceServers": [[
+                    "urls": ["turn:127.0.0.1:3478"], "username": "fixture", "credential": "fixture"
+                ]]])
+            }
+        }
+        let viewer = viewer()
+        var sockets: [ViewerSocket] = []
+        viewer.makeSignaling = { _ in
+            let socket = ViewerSocket(); sockets.append(socket); return socket
+        }
+        defer { viewer.close(); service.close() }
+        await viewer.connect(service: service, hand: try hand("original"))
+        XCTAssertTrue(viewer.diagnosticState.contains("policy=all"))
+        sockets.last?.onClose(RemoteError.unavailable)
+        await viewer.reconnect()
+        XCTAssertTrue(viewer.diagnosticState.contains("policy=relay"),
+                      "Same publication must avoid the failed direct path")
+        viewer.suspend()
+        await viewer.resume()
+        XCTAssertTrue(viewer.diagnosticState.contains("policy=relay"),
+                      "Backgrounding must not forget a failed path")
+        lock.withLock { currentGeneration = "replacement" }
+        await viewer.reconnect()
+        XCTAssertTrue(viewer.diagnosticState.contains("policy=all"),
+                      "A replacement publisher must get a fresh direct attempt")
+        sockets.last?.onClose(RemoteError.unavailable)
+        await viewer.reconnect()
+        XCTAssertTrue(viewer.diagnosticState.contains("policy=relay"))
+        await viewer.connect(service: service, hand: try hand("replacement"))
+        XCTAssertTrue(viewer.diagnosticState.contains("policy=all"),
+                      "Explicit selection starts a new viewer scope")
+        XCTAssertFalse(viewer.controlling)
+    }
+}
