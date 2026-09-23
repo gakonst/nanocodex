@@ -106,3 +106,24 @@ Old Actions cache entries can expire normally; no cache deletion is required.
 The selection job always runs the small compiler and Docker cache policy tests,
 including the Wrangler Docker argument/exit-status boundary tests. The existing
 behavioral test pause is otherwise unchanged.
+
+## Cloudflare preview latency
+
+Preview Worker bundling and image selection start independently. Only changed
+phone or sandbox image inputs create container validation jobs, which run in
+parallel. Selection compares the committed production image dependency closure
+against the PR base; missing history or an uncertain comparison selects both.
+Manual preview dispatches always validate both images.
+
+The Worker preview job restores its same-revision artifacts and validates
+Wrangler configuration with `--containers-rollout none`, so Docker compilation
+does not delay asset preview URLs. Independent container jobs still prepare and
+build the same images, preserving Dockerfile checks and importing registry caches
+without deployment credentials or cache writes. Production publication and its
+receipt validation keep their existing behavior.
+
+`Cloudflare preview success` requires the Worker build, selection, Worker
+validation/publication, and all selected image builds to succeed. An image build
+may be skipped only when a successful selection explicitly requires none.
+The small orchestration tests run in the main CI selection job even while
+behavioral test suites remain paused.

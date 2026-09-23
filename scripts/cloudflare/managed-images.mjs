@@ -73,6 +73,14 @@ export function deploymentConfig(source, refs) {
   return output;
 }
 const run = (command, args, options = {}) => execFileSync(command, args, { stdio: 'inherit', ...options });
+function buildImage(image, tag, epoch, buildOptions) {
+  const spec = images[image];
+  if (image === 'sandbox') run(process.execPath, ['js/managed/scripts/prepare-hand-image.mjs']);
+  run(process.execPath, ['scripts/cloudflare/wrangler-docker.mjs', 'build', '--load', '-t', tag,
+    '--platform', 'linux/amd64', '--provenance=false', '--pull',
+    '--build-arg', `NANOCODEX_IMAGE_CACHE_EPOCH=${epoch}`,
+    ...(image === 'sandbox' ? ['--build-arg', `CI_TESTS_ENABLED=${process.env.CI_TESTS_ENABLED || 'true'}`] : []), '-f', spec.dockerfile, spec.context], buildOptions);
+}
 const receiptPath = image => `.ci-images/${image}.json`;
 export function main([command, image]) {
   const account = process.env.CLOUDFLARE_ACCOUNT_ID;
@@ -84,6 +92,14 @@ export function main([command, image]) {
     return;
   }
   assert.ok(images[image], 'unknown managed image');
+  if (command === 'preview') {
+    // Validate the same prepared image without an account, publication or receipts.
+    // A preview stays read-only even when invoked in a trusted master environment.
+    buildImage(image, `nanocodex-ci-${image}:preview`, epoch, {
+      env: { ...process.env, WRANGLER_DOCKER_CACHE_WRITE: 'false' },
+    });
+    return;
+  }
   const input = fingerprint(image, account, epoch);
   if (command === 'fingerprint') {
     appendFileSync(process.env.GITHUB_OUTPUT, `input=${input}\n`);
@@ -94,18 +110,13 @@ export function main([command, image]) {
     return;
   }
   assert.equal(command, 'publish');
-  const spec = images[image];
   // The receipt hashes HEAD; publication must consume those same bytes.
   const dirty = execFileSync('git', ['status', '--porcelain', '--untracked-files=all', '--', ...imageInputs(image),
     'bin', 'crates', 'examples', 'js/nanocodex', 'py/bindings', 'third_party'], { encoding: 'utf8' });
   assert.equal(dirty.trim(), '', 'Commit relevant image inputs before publication');
   const tag = `nanocodex-ci-${image}:input-${input}`;
   const repository = `registry.cloudflare.com/${account}/nanocodex-ci-${image}`;
-  if (image === 'sandbox') run(process.execPath, ['js/managed/scripts/prepare-hand-image.mjs']);
-  run(process.execPath, ['scripts/cloudflare/wrangler-docker.mjs', 'build', '--load', '-t', tag,
-    '--platform', 'linux/amd64', '--provenance=false', '--pull',
-    '--build-arg', `NANOCODEX_IMAGE_CACHE_EPOCH=${epoch}`,
-    ...(image === 'sandbox' ? ['--build-arg', `CI_TESTS_ENABLED=${process.env.CI_TESTS_ENABLED || 'true'}`] : []), '-f', spec.dockerfile, spec.context]);
+  buildImage(image, tag, epoch);
   if (process.env.CI_TESTS_ENABLED !== 'false') {
     if (image === 'sandbox') {
       for (const check of ['nanocodex-check-dev-stack', 'nanocodex-check-hand-toolkit']) {

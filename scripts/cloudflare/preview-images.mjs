@@ -7,7 +7,9 @@ import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { fingerprint } from './managed-images.mjs';
 
-export function changedImages({ base, account, epoch = '1', cwd = process.cwd() }) {
+// Only compare source identities here. Both revisions use the same synthetic
+// account so preview selection needs no deployment credentials.
+export function changedImages({ base, account = '0'.repeat(32), epoch = '1', cwd = process.cwd() }) {
   if (!/^[a-f0-9]{40}$/.test(base ?? '')) return ['phone', 'sandbox'];
   const directory = mkdtempSync(join(tmpdir(), 'nanocodex-image-base-'));
   const checkout = join(directory, 'checkout');
@@ -20,9 +22,24 @@ export function changedImages({ base, account, epoch = '1', cwd = process.cwd() 
     rmSync(directory, { recursive: true, force: true });
   }
 }
+export function previewPlan(options = {}) {
+  const changed = options.event === 'workflow_dispatch'
+    ? ['phone', 'sandbox'] : changedImages(options);
+  return {
+    changed,
+    required: changed.length > 0,
+    rollout: changed.length ? 'immediate' : 'none',
+    // GitHub validates matrices even for skipped jobs; keep the empty plan valid.
+    matrix: { image: changed.length ? changed : ['phone', 'sandbox'] },
+  };
+}
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
-  const changed = changedImages({ base: process.env.BASE_SHA, account: process.env.CLOUDFLARE_ACCOUNT_ID, epoch: process.env.MANAGED_IMAGE_CACHE_EPOCH || '1' });
-  const rollout = changed.length ? 'immediate' : 'none';
-  appendFileSync(process.env.GITHUB_OUTPUT, `rollout=${rollout}\n`);
-  console.log(changed.length ? `Changed image inputs: ${changed.join(', ')}` : 'No managed image input changes');
+  const plan = previewPlan({
+    base: process.env.BASE_SHA,
+    event: process.env.GITHUB_EVENT_NAME,
+    epoch: process.env.MANAGED_IMAGE_CACHE_EPOCH || '1',
+  });
+  appendFileSync(process.env.GITHUB_OUTPUT,
+    `rollout=${plan.rollout}\nrequired=${plan.required}\nmatrix=${JSON.stringify(plan.matrix)}\n`);
+  console.log(plan.required ? `Changed image inputs: ${plan.changed.join(', ')}` : 'No managed image input changes');
 }
