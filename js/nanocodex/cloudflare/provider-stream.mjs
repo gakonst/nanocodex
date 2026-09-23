@@ -22,6 +22,7 @@ const normalizationCodes = new Map([
   ["model returned an unknown tool alias", "normalize_tool_alias"],
   ["model returned a different forced tool", "normalize_forced_tool"],
   ["model returned invalid tool JSON", "normalize_tool_json"],
+  ["model returned unwrapped custom tool input", "normalize_custom_raw_input"],
   ["invalid tool call ID", "normalize_tool_id"],
   ["tool arguments must be a JSON object", "normalize_tool_arguments"],
   ["model returned duplicate tool call IDs", "normalize_tool_duplicate_id"],
