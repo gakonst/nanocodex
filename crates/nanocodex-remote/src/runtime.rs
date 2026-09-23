@@ -645,7 +645,8 @@ async fn session(
             result = async { match &mut broadcast_job { Some(job) => job.await, None => std::future::pending().await } } => {
                 broadcast_job = None;
                 let result = result?;
-                if viewers.contains(result["viewer_id"].as_str().unwrap_or("")) {
+                if viewers.contains(result["viewer_id"].as_str().unwrap_or(""))
+                    || preparations.contains(result["viewer_id"].as_str().unwrap_or("")) {
                     send(&mut socket, result).await?;
                 }
             },
@@ -702,7 +703,10 @@ async fn session(
                         send(&mut socket,json!({"type":"catalog","machine_id":machine.id(),"machine_name":machine.name(),"surfaces":[surface]})).await?;
                     },
                     "published"=>{tracing::info!(target: "nanocodex2", stage = "screen.published", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);generation=value["generation"].as_str().ok_or(SessionError::Closed)?.into();if let Some(ready)=ready.take(){let _=ready.send(());}},
-                    "broadcast" if viewers.contains(viewer) && value["surface_id"] == "desktop" => {
+                    // Status is read-only and is sent when the viewer socket opens,
+                    // before asynchronous ICE preparation has admitted its peer.
+                    "broadcast" if (viewers.contains(viewer) || (preparations.contains(viewer) && value["action"] == "status"))
+                        && value["surface_id"] == "desktop" => {
                         if broadcast_job.is_some() {
                             send(&mut socket, broadcast_failure(&value, "busy")).await?;
                         } else {
@@ -858,7 +862,9 @@ async fn session(
                             }).await.unwrap_or_else(|_|json!({"status":"cancelled"}))
                         })));
                     },
-                    "frame_request"|"input"|"control"=>{},
+                    // A stale viewer, or a start/stop before preparation completes,
+                    // has no authority. It must not tear down unrelated viewers.
+                    "frame_request"|"input"|"control"|"broadcast"=>{},
                     _=>return Err(SessionError::Closed),
                 }
             },
@@ -1081,6 +1087,115 @@ mod tests {
         .unwrap();
         (publisher, peer.await.unwrap())
     }
+    #[tokio::test]
+    async fn early_broadcast_status_does_not_cancel_webrtc_preparation() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        struct Status(Arc<std::sync::Mutex<Vec<String>>>);
+        impl Broadcast for Status {
+            fn supported(&self) -> bool {
+                true
+            }
+            fn request<'a>(&'a mut self, request: &'a Value) -> BoxFuture<'a, Value> {
+                self.0
+                    .lock()
+                    .unwrap()
+                    .push(request["action"].as_str().unwrap().into());
+                Box::pin(async move {
+                    json!({"type":"broadcast_result", "viewer_id":request["viewer_id"], "request_id":request["request_id"], "status":"idle"})
+                })
+            }
+            fn stop(&mut self) -> BoxFuture<'_, ()> {
+                Box::pin(async {})
+            }
+        }
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let video: VideoSource = Arc::new(|| {
+            Box::pin(async {
+                Ok(crate::capture::Capture::packets(
+                    futures_util::stream::once(async {
+                        Ok(bytes::Bytes::from_static(&[0, 0, 0, 1, 0x65, 1]))
+                    })
+                    .chain(futures_util::stream::pending()),
+                    None,
+                ))
+            })
+        });
+        let backend: Backend =
+            Arc::new(|_| Box::pin(async { Ok(json!({"status":"ok","width":1,"height":1})) }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = PublisherTarget::from_attachment(
+            &format!(
+                "ws://{}/v1/account/tool-host",
+                listener.local_addr().unwrap()
+            ),
+            "test-token",
+        )
+        .unwrap();
+        let (ice_started, waiting_ice) = oneshot::channel();
+        let (allow_ice, ice_allowed) = oneshot::channel();
+        let peer = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut wire = tokio_tungstenite::accept_async(stream).await.unwrap();
+            wire_send(&mut wire, json!({"type":"ready","connection_id":"test"})).await;
+            let catalog = wire_read(&mut wire).await;
+            assert_eq!(catalog["type"], "catalog");
+            assert!(
+                catalog["surfaces"][0].get("transport").is_none(),
+                "fixture must exercise WebRTC"
+            );
+            wire_send(&mut wire, json!({"type":"published","generation":"g"})).await;
+            wire_send(
+                &mut wire,
+                json!({"type":"viewer","viewer_id":"v","surface_id":"desktop"}),
+            )
+            .await;
+            let http = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut bytes = [0; 4096];
+                assert!(stream.read(&mut bytes).await.unwrap() > 0);
+                ice_started.send(()).unwrap();
+                ice_allowed.await.unwrap();
+                let body = r#"{"iceServers":[]}"#;
+                stream.write_all(format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",body.len()).as_bytes()).await.unwrap();
+            });
+            (wire, http)
+        });
+        let publisher = Publisher::start(
+            &target,
+            &Machine::new("test", "Test").unwrap(),
+            backend,
+            Options {
+                video: Some(video),
+                require_video: true,
+                broadcast: Box::new(Status(calls.clone())),
+                ..Options::default()
+            },
+        )
+        .await
+        .unwrap();
+        let (mut wire, http) = peer.await.unwrap();
+        tokio::time::timeout(Duration::from_secs(1), waiting_ice)
+            .await
+            .unwrap()
+            .unwrap();
+        // The browser asks for status as soon as its socket opens, before ICE is ready.
+        wire_send(&mut wire,json!({"type":"broadcast","viewer_id":"v","surface_id":"desktop","request_id":"early","action":"status"})).await;
+        assert_eq!(wire_read(&mut wire).await["request_id"], "early");
+        // Preparing viewers gain no start/stop authority; stale IDs cannot disrupt others.
+        for (viewer, action) in [("v", "start"), ("v", "stop"), ("gone", "status")] {
+            wire_send(&mut wire,json!({"type":"broadcast","viewer_id":viewer,"surface_id":"desktop","request_id":"ignored","action":action})).await;
+        }
+        wire_send(&mut wire,json!({"type":"broadcast","viewer_id":"v","surface_id":"desktop","request_id":"still-live","action":"status"})).await;
+        assert_eq!(wire_read(&mut wire).await["request_id"], "still-live");
+        assert_eq!(*calls.lock().unwrap(), ["status", "status"]);
+        allow_ice.send(()).unwrap();
+        http.await.unwrap();
+        let offer = wire_read(&mut wire).await;
+        assert_eq!(offer["signal"]["type"], "offer");
+        assert_eq!(offer["viewer_id"], "v");
+        publisher.shutdown().await.unwrap();
+    }
+
     #[tokio::test]
     async fn failed_native_release_cannot_grant_control() {
         for failure in ["status", "error", "timeout"] {
