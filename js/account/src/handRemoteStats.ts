@@ -21,6 +21,8 @@ export type RemoteStats = Readonly<{
   roundTripMs?: number;
   decodeMs?: number;
   jitterBufferMs?: number;
+  jitterBufferTargetMs?: number;
+  jitterBufferMinimumMs?: number;
   droppedFrames?: number;
   width?: number;
   height?: number;
@@ -106,8 +108,11 @@ export class RemoteStatsSampler {
     const decode = delta(video.totalDecodeTime, previous.totalDecodeTime);
     if (decode !== undefined && frames !== undefined && frames > 0) stats.decodeMs = decode * 1000 / frames;
     const emitted = delta(video.jitterBufferEmittedCount, previous.jitterBufferEmittedCount);
-    const jitter = delta(video.jitterBufferDelay, previous.jitterBufferDelay);
-    if (jitter !== undefined && emitted !== undefined && emitted > 0) stats.jitterBufferMs = jitter * 1000 / emitted;
+    for (const [counter, field] of [["jitterBufferDelay", "jitterBufferMs"],
+      ["jitterBufferTargetDelay", "jitterBufferTargetMs"], ["jitterBufferMinimumDelay", "jitterBufferMinimumMs"]] as const) {
+      const delay = delta(video[counter], previous[counter]);
+      if (delay !== undefined && emitted !== undefined && emitted > 0) stats[field] = delay * 1000 / emitted;
+    }
     stats.droppedFrames = delta(video.framesDropped, previous.framesDropped);
     return stats;
   }

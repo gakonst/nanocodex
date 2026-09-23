@@ -4,7 +4,7 @@ import { accountQueryKey } from "./queryClient";
 import { Fragment, useEffect, useRef, useState, type PointerEvent, type KeyboardEvent, type MouseEvent } from "react";
 import { createPortal } from "react-dom";
 import { Monitor, X } from "lucide-react";
-import { canStartBroadcast, listRemoteHands, RemoteBrowserSession, RemoteScreenIntent, remoteKeys, type RemoteScreenSelection, type RemoteHand, type BroadcastPreset, type RemoteState, type RemoteInput } from "./handRemote";
+import { canStartBroadcast, listRemoteHands, RemoteBrowserSession, RemoteScreenIntent, RemoteIceCredentials, type RemoteIceContext, remoteKeys, type RemoteScreenSelection, type RemoteHand, type BroadcastPreset, type RemoteState, type RemoteInput } from "./handRemote";
 import { RemoteMotionBuffer, RemoteMouseButtons } from "./handRemoteInput";
 import "./RemoteScreens.css";
 
@@ -35,6 +35,15 @@ function ScreensDialog({ onClose }: { onClose(): void }) {
     staleTime: 5_000,
     refetchInterval: 5_000,
   });
+  const [iceContext, setIceContext] = useState<RemoteIceContext>();
+  useEffect(() => {
+    if (!accountId) return;
+    // Effect ownership survives Strict Mode replay without reusing a closed
+    // owner. The account-keyed dialog closes this scope on account changes.
+    const credentials = new RemoteIceCredentials(accountId);
+    setIceContext({ accountId, credentials }); credentials.prefetch();
+    return () => credentials.close();
+  }, [accountId]);
   const hands = query.data ?? [];
   const error = query.error?.message;
   const [selection, setSelection] = useState<RemoteScreenSelection>({ selected: false });
@@ -79,12 +88,12 @@ function ScreensDialog({ onClose }: { onClose(): void }) {
     {/* Keep this element at the same position/key on selection: moving srcObject
         to another video would discard the prepared decoder/playout pipeline. */}
     {selection.hand && <Screen key={`${selection.hand.machine_id}:${selection.hand.id}:${selection.hand.generation}:${selection.hand.transport}`}
-      hand={selection.hand} preparing={!selection.selected} selectedAt={selection.selectedAt} onBack={() => intent.current?.back()} />}
+      hand={selection.hand} iceContext={iceContext} preparing={!selection.selected} selectedAt={selection.selectedAt} onBack={() => intent.current?.back()} />}
   </dialog>;
 }
 
 type Pointer = { x: number; y: number; originX: number; originY: number; pressed: boolean; button: number; touch: boolean };
-export function Screen({ hand, onBack, preparing = false, selectedAt }: { hand: RemoteHand; onBack(): void; preparing?: boolean; selectedAt?: number }) {
+export function Screen({ hand, onBack, preparing = false, selectedAt, iceContext }: { hand: RemoteHand; onBack(): void; preparing?: boolean; selectedAt?: number; iceContext?: RemoteIceContext }) {
   const view = useRef<HTMLDivElement>(null);
   const picture = useRef<HTMLDivElement>(null);
   const virtualCursor = useRef<SVGSVGElement>(null);
@@ -126,7 +135,7 @@ export function Screen({ hand, onBack, preparing = false, selectedAt }: { hand: 
       if (!mounted) return;
       if (!next.connected || !next.controlling) discardInput();
       setState(next);
-    }, frameCanvas.current!);
+    }, frameCanvas.current!, iceContext);
     session.current = connection;
     const release = () => { discardInput(); connection.releaseControl(); };
     const pause = () => { discardInput(); connection.suspend(); };
@@ -147,10 +156,10 @@ export function Screen({ hand, onBack, preparing = false, selectedAt }: { hand: 
       window.removeEventListener("blur", release); window.removeEventListener("pagehide", pause); window.removeEventListener("pageshow", resume);
       document.removeEventListener("visibilitychange", visibility); connection.close(); session.current = undefined;
     };
-  }, [hand]);
+  }, [hand, iceContext]);
 
-  useEffect(() => { if (!preparing) session.current?.select(selectedAt ?? performance.now()); }, [preparing, selectedAt, hand]);
-  useEffect(() => { session.current?.setStatsEnabled(statsOpen); }, [statsOpen, hand]);
+  useEffect(() => { if (!preparing) session.current?.select(selectedAt ?? performance.now()); }, [preparing, selectedAt, hand, iceContext]);
+  useEffect(() => { session.current?.setStatsEnabled(statsOpen); }, [statsOpen, hand, iceContext]);
 
   useEffect(() => {
     const lockChanged = () => {
@@ -454,6 +463,8 @@ export function Screen({ hand, onBack, preparing = false, selectedAt }: { hand: 
         <dt title="STUN round trip on the selected media ICE pair; excludes signaling and capture/display time">Network RTT</dt><dd>{state.stats?.roundTripMs === undefined ? "—" : `${state.stats.roundTripMs.toFixed(0)} ms`}</dd>
         <dt title="Average time to decode one frame in this interval">Decode</dt><dd>{state.stats?.decodeMs === undefined ? "—" : `${state.stats.decodeMs.toFixed(1)} ms`}</dd>
         <dt title="Average jitter buffer residence time in this interval">Jitter buffer</dt><dd>{state.stats?.jitterBufferMs === undefined ? "—" : `${state.stats.jitterBufferMs.toFixed(1)} ms`}</dd>
+        {state.stats?.jitterBufferTargetMs !== undefined && <><dt title="Browser's average target jitter-buffer delay in this interval">Buffer target</dt><dd>{state.stats.jitterBufferTargetMs.toFixed(1)} ms</dd></>}
+        {state.stats?.jitterBufferMinimumMs !== undefined && <><dt title="Average minimum jitter-buffer delay required by network conditions in this interval">Buffer minimum</dt><dd>{state.stats.jitterBufferMinimumMs.toFixed(1)} ms</dd></>}
         <dt>Dropped / interval</dt><dd>{state.stats?.droppedFrames ?? "—"}</dd>
         <dt title="Connection attempt number, including automatic recovery, and this attempt’s ICE candidate policy">Attempt</dt><dd>{state.stats?.attempt ?? "—"}{state.stats?.icePolicy ? ` · ${state.stats.icePolicy}` : ""}</dd>
         {([

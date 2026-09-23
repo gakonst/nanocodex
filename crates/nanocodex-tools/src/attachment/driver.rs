@@ -6,7 +6,7 @@ use std::{
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{RwLock, mpsc, watch};
 use tokio_tungstenite::{
     client_async_tls_with_config,
     tungstenite::{
@@ -37,8 +37,6 @@ const STABLE_CONNECTION: Duration = Duration::from_secs(30);
 #[cfg(test)]
 const STABLE_CONNECTION: Duration = Duration::from_millis(250);
 
-const MAX_ACTIVE_CALLS: usize = 32;
-
 pub(crate) struct Config {
     pub(crate) endpoint: Url,
     pub(crate) authorization: Box<str>,
@@ -58,6 +56,10 @@ pub(crate) async fn run(
     status: watch::Sender<AttachmentStatus>,
     closed: watch::Sender<Option<Result<(), AttachmentError>>>,
 ) {
+    // Transport generations may change while the same runtime owns processes.
+    // A new driver gets a new identity so local numeric IDs cannot be retargeted.
+    let runtime_id = uuid::Uuid::new_v4().to_string();
+    let execution = Arc::new(RwLock::new(()));
     let mut active = Vec::<InFlight>::new();
     let mut backoff = Duration::from_millis(100);
     let terminal = loop {
@@ -127,6 +129,8 @@ pub(crate) async fn run(
             socket,
             ConnectionContext {
                 config: &config,
+                runtime_id: &runtime_id,
+                execution: &execution,
                 runtime: &runtime,
                 events: &events,
                 status: &status,
@@ -211,7 +215,6 @@ enum Completion {
 
 struct InFlight {
     task: tokio::task::JoinHandle<()>,
-    parallel_safe: bool,
 }
 
 async fn shutdown_calls(active: &mut Vec<InFlight>) {
@@ -353,6 +356,7 @@ struct CallIdentity {
 
 fn start_call(
     runtime: &Arc<PreparedToolRuntime>,
+    execution: &Arc<RwLock<()>>,
     active: &mut Vec<InFlight>,
     identity: CallIdentity,
     tool_timeout: u64,
@@ -362,6 +366,7 @@ fn start_call(
 ) -> tokio::task::AbortHandle {
     let parallel_safe = runtime.parallel_safe(&identity.name);
     let runtime = Arc::clone(runtime);
+    let execution = Arc::clone(execution);
     let task_span = events.span.clone();
     let mut events = TaskEvents {
         call: Some(events),
@@ -387,7 +392,23 @@ fn start_call(
                     task_identity.output_token_budget as usize,
                 )
                 .with_turn_id(task_identity.turn_id.as_deref().map(str::to_owned));
-                match tokio::time::timeout(duration, runtime.execute(call)).await {
+                // A nonparallel provider owns the execution gate exclusively;
+                // other calls wait fairly within their original deadline. Keep
+                // this gate across reconnects so abandoned socket work cannot
+                // overlap a replacement generation's nonparallel execution.
+                let mut dispatched = false;
+                let execute = async {
+                    if parallel_safe {
+                        let _permit = execution.read().await;
+                        dispatched = true;
+                        runtime.execute(call).await
+                    } else {
+                        let _permit = execution.write().await;
+                        dispatched = true;
+                        runtime.execute(call).await
+                    }
+                };
+                match tokio::time::timeout(duration, execute).await {
                     Ok(Ok(output)) => match serde_json::to_value(output) {
                         Ok(output)
                             if serde_json::to_vec(&output).is_ok_and(|bytes| {
@@ -416,6 +437,10 @@ fn start_call(
                         unavailable(&error.to_string()),
                         AttachmentCallOutcome::Unavailable,
                     ),
+                    Err(_) if !dispatched => (
+                        unavailable("tool deadline elapsed while waiting for execution"),
+                        AttachmentCallOutcome::Unavailable,
+                    ),
                     Err(_) => (
                         ambiguous("tool deadline elapsed"),
                         AttachmentCallOutcome::Ambiguous,
@@ -434,15 +459,14 @@ fn start_call(
         .instrument(task_span),
     );
     let abort = task.abort_handle();
-    active.push(InFlight {
-        task,
-        parallel_safe,
-    });
+    active.push(InFlight { task });
     abort
 }
 
 struct ConnectionContext<'a> {
     config: &'a Config,
+    runtime_id: &'a str,
+    execution: &'a Arc<RwLock<()>>,
     runtime: &'a Arc<PreparedToolRuntime>,
     events: &'a mpsc::Sender<AttachmentEvent>,
     status: &'a watch::Sender<AttachmentStatus>,
@@ -459,6 +483,8 @@ where
 {
     let ConnectionContext {
         config,
+        runtime_id,
+        execution,
         runtime,
         events,
         status,
@@ -469,6 +495,7 @@ where
         &mut socket,
         &ExecutorFrame::Catalog {
             capabilities: ["turn_metadata"],
+            runtime_id,
             tools: &config.tools,
             machines: config
                 .metadata
@@ -582,9 +609,6 @@ where
                         if receipts.contains(call_id.as_str()) || in_flight.contains_key(call_id.as_str()) {
                             break ConnectionEnd::Rejected("duplicate call on socket".into());
                         }
-                        if receipts.len() + in_flight.len() >= 64 {
-                            break ConnectionEnd::Disconnected;
-                        }
                         let call_events = begin_call_events(
                             events,
                             call_id.clone().into(),
@@ -592,15 +616,11 @@ where
                             config.metadata.as_ref().map(AttachmentMetadata::attachment_id),
                         );
                         let tool_timeout = runtime.timeout_ms(&name).unwrap_or(0);
-                        let parallel_safe = runtime.parallel_safe(&name);
                         active.retain(|call| !call.task.is_finished());
                         let reason = if tool_timeout == 0 {
                             Some("tool is not in the pinned catalog")
                         } else if deadline_at <= now_ms() {
                             Some("tool deadline elapsed before execution")
-                        } else if active.len() >= MAX_ACTIVE_CALLS
-                            || active.iter().any(|call| !parallel_safe || !call.parallel_safe) {
-                            Some("attachment execution capacity exhausted")
                         } else { None };
                         if let Some(reason) = reason {
                             call_events.complete(events, AttachmentCallOutcome::Unavailable);
@@ -608,7 +628,7 @@ where
                             receipts.insert(call_id.into());
                             continue;
                         }
-                        let task = start_call(runtime, active, identity, tool_timeout, call_events, completed_tx.clone(), events);
+                        let task = start_call(runtime, execution, active, identity, tool_timeout, call_events, completed_tx.clone(), events);
                         in_flight.insert(call_id.into(), task);
                     }
                     RemoteFrame::Cancel { call_id } => {

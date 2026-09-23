@@ -1,3 +1,4 @@
+import { toolAliasFailure } from "./tool-alias-diagnostic.mjs";
 import { chatReasoningText } from "./chat-reasoning.mjs";
 import { providerStream, streamResponse } from "./provider-stream.mjs";
 const MODEL = "@cf/zai-org/glm-5.3";
@@ -41,13 +42,10 @@ export function createWorkersAiResponses(ai, options = {}) {
         const source = result instanceof ReadableStream ? providerStream(result, "workers_ai_chat") : result;
         if (source?.providerStream) {
           return streamResponse(source, (value, prologue = false) => normalizeResponse(value, registry, model, prologue ? undefined : body.tool_choice), responseEvents,
-            request.signal, input.parallel_tool_calls);
+            request.signal);
         }
         // Some bindings return a completed object despite stream:true. Validate
         // normally and label this honestly; HTTP gateways never take this path.
-      }
-      if (input.parallel_tool_calls === false && result?.choices?.[0]?.message?.tool_calls?.length > 1) {
-        fail("provider returned parallel tool calls despite a single-call contract");
       }
       return toResponse(result, registry, model, body.tool_choice);
     },
@@ -308,7 +306,10 @@ function normalizeResponse(result, registry, model, toolChoice) {
         || returnedName === (candidate.namespace ? `${candidate.namespace}.${candidate.name}` : candidate.name));
       if (matches.length === 1) entry = matches[0];
     }
-    if (!entry) fail("model returned an unknown tool alias");
+    if (!entry) {
+      const diagnostic = toolAliasFailure(returnedName, registry);
+      fail(diagnostic === "unknown tool alias" ? "model returned an unknown tool alias" : `model returned ${diagnostic}`);
+    }
     if (toolChoice && typeof toolChoice === "object" && (entry.name !== (toolChoice.name ?? "tool_search")
       || entry.namespace !== toolChoice.namespace)) fail("model returned a different forced tool");
     const argumentsText = json(call.function.arguments);

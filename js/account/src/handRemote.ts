@@ -12,20 +12,24 @@ export type RemoteScreenSelection = Readonly<{ hand?: RemoteHand; selected: bool
 const sameScreen = (a: RemoteHand | undefined, b: RemoteHand | undefined): boolean => a === b || !!a && !!b
   && a.machine_id === b.machine_id && a.id === b.id && a.generation === b.generation && a.transport === b.transport;
 
-/** One short-lived viewer for explicit pointer/keyboard intent. The UI keeps
+/** One prepared viewer while explicit pointer/keyboard intent remains active. The UI keeps
  * its Screen mounted when selected, preserving the actual video and peer. */
 export class RemoteScreenIntent {
   state: RemoteScreenSelection = { selected: false };
   private pointer?: RemoteHand;
   private focus?: RemoteHand;
+  private latestIntent: "pointer" | "focus" = "pointer";
   private pending?: RemoteHand;
   private delay?: ReturnType<typeof setTimeout>;
-  private expiry?: ReturnType<typeof setTimeout>;
   private closed = false;
   private readonly changed: (state: RemoteScreenSelection) => void;
   constructor(changed: (state: RemoteScreenSelection) => void) { this.changed = changed; }
-  hover(hand: RemoteHand | undefined): void { this.pointer = hand; this.prepare(); }
-  focusOn(hand: RemoteHand | undefined): void { this.focus = hand; this.prepare(); }
+  hover(hand: RemoteHand | undefined): void {
+    this.pointer = hand; if (hand) this.latestIntent = "pointer"; this.prepare();
+  }
+  focusOn(hand: RemoteHand | undefined): void {
+    this.focus = hand; if (hand) this.latestIntent = "focus"; this.prepare();
+  }
   select(hand: RemoteHand): void {
     if (this.closed) return;
     this.clear(); this.pointer = this.focus = undefined;
@@ -49,27 +53,24 @@ export class RemoteScreenIntent {
     this.state = { selected: false };
   }
   private clear(): void {
-    clearTimeout(this.delay); clearTimeout(this.expiry);
-    this.delay = this.expiry = undefined; this.pending = undefined;
+    clearTimeout(this.delay);
+    this.delay = undefined; this.pending = undefined;
   }
   private prepare(): void {
     if (this.closed || this.state.selected) return;
-    const hand = this.pointer ?? this.focus;
+    // A stationary pointer must not override a later keyboard focus (or vice
+    // versa). Leaving the older target preserves the newer prepared viewer;
+    // leaving the newer target falls back to the remaining explicit intent.
+    const hand = this.latestIntent === "pointer" ? this.pointer ?? this.focus : this.focus ?? this.pointer;
     if (sameScreen(hand, this.pending)) return;
     this.clear(); this.pending = hand;
     if (this.state.hand) this.publish({ selected: false });
     if (!hand) return;
-    // Ignore pointer transits. Expiry does not rearm until a new intent, even
-    // when a card stays hovered/focused for the remainder of the dialog.
+    // Ignore pointer transits; retain the viewer until intent or its owner ends.
     this.delay = setTimeout(() => {
       this.delay = undefined;
       if (this.closed || this.state.selected || this.pending !== hand) return;
       this.publish({ hand, selected: false });
-      if (this.closed || this.state.selected || this.pending !== hand) return;
-      this.expiry = setTimeout(() => {
-        this.expiry = undefined;
-        if (!this.closed && !this.state.selected && this.pending === hand) this.publish({ selected: false });
-      }, 5000);
     }, 150);
   }
   private publish(state: RemoteScreenSelection): void { this.state = state; this.changed(state); }
@@ -116,6 +117,61 @@ async function request(path: string, method = "GET", body?: unknown, signal?: Ab
   }
   return response.json();
 }
+type RemoteIceResponse = { iceServers: RTCIceServer[]; expires_at?: number };
+export type RemoteIceContext = Readonly<{ accountId: string; credentials: RemoteIceCredentials }>;
+
+/** Credentials belong to one account's open dialog, never to a publication or
+ * a global cache. Sharing HTTP work does not prepare a peer or authorize a lease. */
+export class RemoteIceCredentials {
+  private readonly accountId: string;
+  private lifetime = new AbortController();
+  private closed = false;
+  private cached?: { ice: RemoteIceResponse; deadline: number };
+  private pending?: Promise<RemoteIceResponse>;
+  constructor(accountId: string) { this.accountId = accountId; }
+  prefetch(): void { void this.get(this.accountId).catch(() => {}); }
+  invalidate(): void {
+    this.lifetime.abort(); this.lifetime = new AbortController();
+    this.cached = undefined; this.pending = undefined;
+  }
+  close(): void { this.closed = true; this.invalidate(); }
+  async get(accountId: string, signal?: AbortSignal): Promise<RemoteIceResponse> {
+    if (this.closed || !accountId || accountId !== this.accountId) throw new RemoteError("This remote session is no longer authorized.", true);
+    signal?.throwIfAborted();
+    const lifetime = this.lifetime;
+    // Check both clocks: backward wall-clock changes cannot extend retention,
+    // and forward changes must respect the server's absolute expiration.
+    if (this.cached && (performance.now() >= this.cached.deadline || Date.now() + 30_000 >= this.cached.ice.expires_at!)) this.cached = undefined;
+    let work = this.cached ? Promise.resolve(this.cached.ice) : this.pending;
+    if (!work) {
+      work = request("/ice", "POST", undefined, lifetime.signal).then((ice: RemoteIceResponse) => {
+        lifetime.signal.throwIfAborted();
+        const expires = ice.expires_at;
+        // Legacy/STUN-only replies without a valid expiry may serve this lookup
+        // but cannot enter the cache. Never use explicitly expired credentials.
+        if (typeof expires === "number" && Number.isFinite(expires)) {
+          if (expires <= Date.now()) throw new RemoteError("Screen credentials have expired.");
+          const remaining = Math.min(expires - Date.now() - 30_000, 10 * 60_000);
+          if (remaining > 0) this.cached = { ice, deadline: performance.now() + remaining };
+        }
+        return ice;
+      }).finally(() => { if (this.lifetime === lifetime) this.pending = undefined; });
+      this.pending = work;
+    }
+    // A retired viewer stops waiting immediately, without aborting the dialog's
+    // request that a newer intent may already be using. Closing the owner aborts
+    // every waiter and prevents even a late HTTP completion from being cached.
+    const waiting = signal ? AbortSignal.any([signal, lifetime.signal]) : lifetime.signal;
+    return new Promise((resolve, reject) => {
+      const aborted = () => { cleanup(); reject(waiting.reason); };
+      const cleanup = () => waiting.removeEventListener("abort", aborted);
+      waiting.addEventListener("abort", aborted, { once: true });
+      work.then(ice => { cleanup(); if (waiting.aborted) reject(waiting.reason); else resolve(ice); }, error => { cleanup(); reject(error); });
+      if (waiting.aborted) aborted();
+    });
+  }
+}
+
 export async function listRemoteHands(signal?: AbortSignal): Promise<readonly RemoteHand[]> {
   const value = await request("/screens", "GET", undefined, signal);
   const string = (value: unknown) => typeof value === "string" && value.length > 0 && value.length <= 512;
@@ -165,6 +221,7 @@ export class RemoteBrowserSession {
   hand: RemoteHand;
   private readonly video: HTMLVideoElement;
   private readonly canvas?: HTMLCanvasElement;
+  private readonly iceContext?: RemoteIceContext;
   private readonly changed: (state: RemoteState) => void;
   private peer?: RTCPeerConnection;
   private socket?: WebSocket;
@@ -245,8 +302,8 @@ export class RemoteBrowserSession {
   private preferRelay = false;
   private suspended = false;
   private closed = false;
-  constructor(hand: RemoteHand, video: HTMLVideoElement, changed: (state: RemoteState) => void, canvas?: HTMLCanvasElement) {
-    this.hand = hand; this.video = video; this.changed = changed; this.canvas = canvas;
+  constructor(hand: RemoteHand, video: HTMLVideoElement, changed: (state: RemoteState) => void, canvas?: HTMLCanvasElement, iceContext?: RemoteIceContext) {
+    this.hand = hand; this.video = video; this.changed = changed; this.canvas = canvas; this.iceContext = iceContext;
   }
 
   async connect(): Promise<void> { await this.start(false); }
@@ -275,6 +332,11 @@ export class RemoteBrowserSession {
     if (this.suspended && !this.closed) this.reconnect();
   }
 
+  private lookupIce(signal: AbortSignal): Promise<RemoteIceResponse> {
+    return this.iceContext ? this.iceContext.credentials.get(this.iceContext.accountId, signal)
+      : request("/ice", "POST", undefined, signal);
+  }
+
   private current(epoch: number): boolean { return epoch === this.epoch && !this.closed && !this.suspended; }
   private async start(refresh: boolean): Promise<void> {
     if (this.closed || this.suspended) return;
@@ -291,11 +353,11 @@ export class RemoteBrowserSession {
       if (this.current(epoch)) this.fail(new RemoteError("Could not establish a screen connection."));
     }, Math.max(0, Math.min(25_000, remaining)));
     try {
-      // A retry needs a current publication and fresh credentials. These HTTP
-      // requests are independent; do not put TURN behind catalog discovery.
+      // A retry needs a current publication and unexpired credentials. Discovery
+      // and credential lookup are independent; never reuse publication state.
       // Capture failure as data until discovery determines the transport (a
       // publication can switch to frames-v1), including after cancellation.
-      const lookupIce = () => request("/ice", "POST", undefined, signal).then(ice => {
+      const lookupIce = () => this.lookupIce(signal).then(ice => {
         if (this.current(epoch)) this.markStartup("iceReadyMs");
         return { ice };
       }, error => {
@@ -327,7 +389,7 @@ export class RemoteBrowserSession {
         const ice = result.ice;
         this.attemptIcePolicy = this.icePolicy(ice.iceServers);
         // Gather one session's candidates while the publisher prepares its
-        // offer. The pool belongs to this attempt and its fresh TURN response;
+        // offer. The pool belongs to this attempt, even when credentials are reused;
         // closing the peer discards it, including after a direct-path failure.
         peer = new RTCPeerConnection({ iceServers: ice.iceServers, iceTransportPolicy: this.attemptIcePolicy, bundlePolicy: "max-bundle", iceCandidatePoolSize: 1 });
         this.peer = peer;
@@ -462,10 +524,10 @@ export class RemoteBrowserSession {
             if (peer.remoteDescription) await peer.addIceCandidate(offer);
             else candidates.push(offer);
           } else if (offer.type === "offer" && typeof offer.sdp === "string" && encoder.encode(offer.sdp).length <= 65_536) {
-            // Initial credentials are already fresh; only subsequent offers
-            // (host ICE restarts) need another authenticated TURN request.
+            // Host ICE restarts recheck credential expiry through the same owner.
+            // The signed viewer lease remains independently authorized.
             if (peer.remoteDescription) {
-              const ice = await request("/ice", "POST", undefined, signal);
+              const ice = await this.lookupIce(signal);
               if (!this.current(epoch)) return;
               this.attemptIcePolicy = this.icePolicy(ice.iceServers);
               peer.setConfiguration({ ...peer.getConfiguration(), iceServers: ice.iceServers, iceTransportPolicy: this.attemptIcePolicy });
@@ -965,6 +1027,7 @@ export class RemoteBrowserSession {
     if (this.closed || this.suspended) return;
     const status = error instanceof Error ? error.message : "Could not connect to this screen.";
     const terminal = error instanceof RemoteError && error.terminal;
+    if (terminal) this.iceContext?.credentials.invalidate();
     if (!terminal && this.hand.transport !== "frames-v1") this.preferRelay = true;
     this.detach();
     const now = performance.now();

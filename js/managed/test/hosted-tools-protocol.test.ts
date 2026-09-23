@@ -34,6 +34,15 @@ const outcome = {
 };
 
 describe("hosted tools socket protocol", () => {
+  it("accepts only bounded runtime identities while keeping old catalogs valid", () => {
+    const catalog = { type: "catalog", tools: [tool], capabilities: ["turn_metadata"] };
+    expect(parseHostedToolsHostFrame(JSON.stringify({ ...catalog, runtime_id: "runtime-one" })))
+      .toMatchObject({ runtime_id: "runtime-one" });
+    expect(parseHostedToolsHostFrame(JSON.stringify(catalog))).not.toHaveProperty("runtime_id");
+    for (const runtime_id of ["", null, 1, "a/b", "a".repeat(124)]) {
+      expect(() => parseHostedToolsHostFrame(JSON.stringify({ ...catalog, runtime_id }))).toThrow();
+    }
+  });
   it("requires the fixed publisher contract without capability negotiation", () => {
     expect(parseHostedToolsHostFrame(JSON.stringify({
       type: "catalog", tools: [tool], capabilities: ["turn_metadata"],

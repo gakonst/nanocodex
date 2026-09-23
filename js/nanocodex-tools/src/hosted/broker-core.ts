@@ -104,6 +104,7 @@ type HostedToolsSocketAttachment = {
   active?: true;
   draining?: true;
   machines?: readonly HostedMachine[];
+  runtimeId?: string;
 };
 
 type PendingCall = {
@@ -164,6 +165,7 @@ type HostedToolsCatalogBinding = Readonly<{
   leaseId: string;
   generation: number;
   wireName: string;
+  runtimeId?: string;
   providerDefinition: HostedToolCatalogEntry["definition"];
   machine?: HostedMachine;
   entry: HostedToolCatalogEntry;
@@ -239,6 +241,7 @@ export interface HostedToolsBrokerPersistence {
 export type HostedToolsBrokerCoreOptions = Readonly<{
   now?: () => number;
   randomUUID?: () => string;
+  /** Optional operator resource limit; ordinary attachments have no fixed call cap. */
   maxInFlight?: number;
   maxCallsPerGeneration?: number;
   persistence: HostedToolsBrokerPersistence;
@@ -278,7 +281,7 @@ export class HostedToolsBrokerCore {
   readonly #now: () => number;
   readonly #onCallTiming: HostedToolsBrokerCoreOptions["onCallTiming"];
   readonly #randomUUID: () => string;
-  readonly #maxInFlight: number;
+  readonly #maxInFlight: number | undefined;
   readonly #maxCallsPerGeneration: number;
   readonly #persistence: HostedToolsBrokerPersistence;
   readonly #onCatalogChanged: ((definitions: readonly HostedToolsProviderDefinition[]) => void) | undefined;
@@ -301,8 +304,9 @@ export class HostedToolsBrokerCore {
     this.#now = options.now ?? Date.now;
     this.#onCallTiming = options.onCallTiming;
     this.#randomUUID = options.randomUUID ?? (() => crypto.randomUUID());
-    this.#maxInFlight = options.maxInFlight ?? 32;
-    if (!Number.isSafeInteger(this.#maxInFlight) || this.#maxInFlight < 1) {
+    this.#maxInFlight = options.maxInFlight;
+    if (this.#maxInFlight !== undefined
+      && (!Number.isSafeInteger(this.#maxInFlight) || this.#maxInFlight < 1)) {
       throw new TypeError("maxInFlight must be a positive safe integer");
     }
     this.#maxCallsPerGeneration = options.maxCallsPerGeneration ?? Number.MAX_SAFE_INTEGER;
@@ -756,6 +760,7 @@ export class HostedToolsBrokerCore {
       routeId,
       leaseId,
       generation,
+      ...(frame.runtime_id === undefined ? {} : { runtimeId: frame.runtime_id }),
     } satisfies HostedToolsSocketAttachment;
     this.context.writeAttachment(socket, candidate);
     const catalogJson = JSON.stringify(frame.tools);
@@ -1005,12 +1010,11 @@ export class HostedToolsBrokerCore {
 
   #preparedTool(binding: HostedToolsCatalogBinding): HostedToolsPreparedTool {
     return Object.freeze({
-      routeToken: JSON.stringify([
-        binding.routeId,
-        binding.generation,
-        binding.leaseId,
-        binding.wireName,
-      ]),
+      // Process IDs belong to the executor runtime, not its WebSocket lease.
+      // Keep commands/CUA generation-pinned and fence legacy hosts on reconnect.
+      routeToken: JSON.stringify(binding.machine && binding.wireName === "write_stdin" && binding.runtimeId
+        ? [binding.routeId, "process-runtime", binding.runtimeId, binding.wireName]
+        : [binding.routeId, binding.generation, binding.leaseId, binding.wireName]),
       ...(binding.connectGrantId === undefined ? {} : { connectGrantId: binding.connectGrantId }),
       ...(binding.appToolCatalogDigest === undefined
         ? {}
@@ -1080,6 +1084,15 @@ export class HostedToolsBrokerCore {
     request: HostedToolsInvokeRequest,
   ): Promise<HostedToolsInvocationOutcome> {
     const receivedAt = performance.now();
+    if (binding.machine && binding.wireName === "write_stdin" && binding.runtimeId) {
+      // Rebind only the transport of the exact process-owning runtime. A new
+      // runtime can reuse numeric process IDs and must never receive this poll
+      // or stdin. Already-admitted calls still resolve through their ledger.
+      const current = this.#catalogBindings().find(candidate => candidate.routeId === binding.routeId
+        && candidate.machine?.id === binding.machine!.id && candidate.wireName === binding.wireName
+        && candidate.runtimeId === binding.runtimeId);
+      if (current) binding = current;
+    }
     const retained = this.#persistence.callBySource(request.sessionId, request.callId);
     if (!retained && !this.#routingSocketForState(this.#persistence.state(binding.routeId))) {
       return Promise.resolve(preAdmissionUnavailable("Hosted machine is reconnecting"));
@@ -1135,9 +1148,9 @@ export class HostedToolsBrokerCore {
       result_json: null,
       receipt_json: null,
     };
-    if (retained) return this.#repeatedCall(retained, proposed);
+    if (retained) return this.#repeatedCall(retained, proposed, binding);
     const existing = this.#persistence.call(call.call_id);
-    if (existing) return this.#repeatedCall(existing, proposed);
+    if (existing) return this.#repeatedCall(existing, proposed, binding);
     if (!this.#attachmentIsPresent(binding, now)) {
       return Promise.resolve(preAdmissionUnavailable(
         "Hosted Tools attachment was absent before durable admission",
@@ -1160,7 +1173,7 @@ export class HostedToolsBrokerCore {
     } catch {
       const recovered = this.#persistence.callBySource(request.sessionId, request.callId)
         ?? this.#persistence.call(call.call_id);
-      if (recovered) return this.#repeatedCall(recovered, proposed);
+      if (recovered) return this.#repeatedCall(recovered, proposed, binding);
       return Promise.resolve(hostedToolsAmbiguous("Hosted Tools admission may have persisted; replay is unsafe"));
     }
     if (request.signal?.aborted) {
@@ -1185,7 +1198,8 @@ export class HostedToolsBrokerCore {
         hostedToolsUnavailable("Hosted Tools binding became unavailable before dispatch"),
       ));
     }
-    if (this.#persistence.activeCallCount(leaseId, binding.generation) > this.#maxInFlight) {
+    if (this.#maxInFlight !== undefined
+      && this.#persistence.activeCallCount(leaseId, binding.generation) > this.#maxInFlight) {
       return Promise.resolve(this.#finishBeforeDispatch(
         proposed,
         "unavailable",
@@ -1242,19 +1256,33 @@ export class HostedToolsBrokerCore {
       && this.#routingSocketForState(current) !== undefined;
   }
 
-  #repeatedCall(existing: HostedToolsCallRow, proposed: HostedToolsCallRow): Promise<HostedToolsInvocationOutcome> {
+  async #repeatedCall(existing: HostedToolsCallRow, proposed: HostedToolsCallRow, binding: HostedToolsCatalogBinding): Promise<HostedToolsInvocationOutcome> {
     if (!sameImmutableCall(existing, proposed)) {
       const state = this.#stateForLease(existing.lease_id, existing.generation);
       const socket = this.#socketForState(state);
       if (socket) this.#fence(socket, "call ID was reused with different immutable fields");
       return Promise.resolve(hostedToolsAmbiguous("Hosted Tools call ID conflicts with retained durable state"));
     }
-    if (existing.result_json) return Promise.resolve(JSON.parse(existing.result_json) as HostedToolCallOutcome);
     const pending = this.#pending.get(existing.call_id);
-    if (existing.state === "dispatched" && pending) return pending.promise;
-    return Promise.resolve(existing.state === "admitted"
-      ? hostedToolsUnavailable("Hosted Tools call was admitted but never dispatched")
-      : hostedToolsAmbiguous("Hosted Tools call has no retained terminal receipt"));
+    const outcome = existing.result_json
+      ? JSON.parse(existing.result_json) as HostedToolCallOutcome
+      : existing.state === "dispatched" && pending
+        ? await pending.promise
+        : existing.state === "admitted"
+          ? hostedToolsUnavailable("Hosted Tools call was admitted but never dispatched")
+          : hostedToolsAmbiguous("Hosted Tools call has no retained terminal receipt");
+    if (binding.machine && binding.wireName === "exec_command"
+      && (existing.lease_id !== binding.leaseId || existing.generation !== binding.generation)
+      && outcome.status === "completed"
+      && outcome.output.structured_result !== null
+      && typeof outcome.output.structured_result === "object"
+      && "session_id" in outcome.output.structured_result) {
+      // Old receipts retain their transport lease, not their process runtime.
+      // Never attach an old numeric process ID to the caller's refreshed route.
+      // Already-bound sessions use their original runtime token independently.
+      return hostedToolsAmbiguous("The retained command receipt belongs to an earlier Hand connection and cannot prove process ownership. Use its original saved process session if available. The command was not resent.");
+    }
+    return outcome;
   }
 
   #finishBeforeDispatch(
@@ -1439,6 +1467,7 @@ export class HostedToolsBrokerCore {
           leaseId: state.lease_id ?? "offline",
           generation: state.generation,
           wireName: entry.definition.name,
+          ...(attachment?.runtimeId === undefined ? {} : { runtimeId: attachment.runtimeId }),
           providerDefinition: entry.definition,
           ...(machine === undefined ? {} : { machine }),
           entry: exposedEntry(entry, machine),

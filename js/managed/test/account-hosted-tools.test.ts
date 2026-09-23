@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   EXEC_COMMAND_PARAMETERS,
   EXECUTION_OUTPUT_SCHEMA,
+  WRITE_STDIN_PARAMETERS,
 } from "nanocodex-tools/execution-contract";
 import { HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE } from "nanocodex-tools/hosted";
 // @ts-expect-error The runtime subpath is intentionally JavaScript-only.
@@ -937,4 +938,140 @@ it("clears inventory on authority changes and fences a late prior discovery", as
   await current;
   expect(fetch).toHaveBeenCalledTimes(3);
   expect(provider.machines()).toEqual([]);
+});
+
+describe("process session transport recovery", () => {
+  async function fixture(runtimeId: string | undefined) {
+    const namespace = (env as unknown as { NANOCODEX_ACCOUNT_TOOLS: DurableObjectNamespace<AccountHostedTools> }).NANOCODEX_ACCOUNT_TOOLS;
+    const owner = crypto.randomUUID();
+    const stub = namespace.getByName(owner);
+    const sockets: WebSocket[] = [];
+    const attach = async (runtime: string | undefined) => {
+      const response = await stub.fetch("https://account-tools.internal/tool-host", {
+        headers: { upgrade: "websocket", "x-nanocodex-owner-id": owner },
+      });
+      const socket = response.webSocket!;
+      socket.accept(); sockets.push(socket);
+      const ready = nextFrame(socket);
+      const writer = machineEntry();
+      socket.send(JSON.stringify({ type: "catalog", capabilities: ["turn_metadata"],
+        attachment_id: "session-hand", ...(runtime === undefined ? {} : { runtime_id: runtime }),
+        machines: [{ id: "session-hand", name: "Session Hand", workspace: "/fixture", capabilities: ["process"] }],
+        tools: [writer, { ...writer, remote_name: "write_stdin",
+          definition: { ...writer.definition, name: "write_stdin", parameters: WRITE_STDIN_PARAMETERS } }],
+      }));
+      await expect(ready).resolves.toEqual({ type: "ready" });
+      return socket;
+    };
+    const first = await attach(runtimeId);
+    const provider = new AccountHostedToolsProvider(namespace, owner, () => true);
+    await provider.refresh();
+    const tools = createNamespaceExecutionTools(() => provider.machines(), (id, name, context) => provider.machineTool(id, name, context));
+    const router = new ToolRouter([toolMapSource("namespace", tools)]);
+    const context = (callId: string, sessionId = "agent") => ({ sessionId, callId, model: "fixture", signal: new AbortController().signal });
+    const finish = async (socket: WebSocket, frame: Record<string, unknown>, result: Record<string, unknown>) => {
+      const ack = nextFrame(socket);
+      socket.send(JSON.stringify({ type: "result", call_id: frame.call_id, outcome: { status: "completed", output: {
+        output: "process output", success: true, structured_result: { wall_time_seconds: 0, output: "process output", ...result },
+        metadata: null, process_trace: null,
+      } } }));
+      await expect(ack).resolves.toEqual({ type: "ack", call_id: frame.call_id });
+    };
+    const start = async (socket = first) => {
+      const frame = nextFrame(socket);
+      const pending = router.execute("exec_command", { cmd: "fixture-command", workdir: "/session-hand" }, context("start"));
+      await finish(socket, await frame, { session_id: 1 });
+      return ((await pending) as { structuredResult: { session_id: number } }).structuredResult.session_id;
+    };
+    return { first, provider, attach, router, context, finish, start,
+      close: () => { for (const socket of sockets) socket.close(1000, "test complete"); } };
+  }
+
+  it("polls a retained process across reconnects, preserves ownership, and releases its completed binding", async () => {
+    const f = await fixture("runtime-one");
+    try {
+      const session = await f.start();
+      const oldWriter = f.provider.machineTool("session-hand", "write_stdin")!.routeToken;
+      const oldExec = f.provider.machineTool("session-hand", "exec_command")!.routeToken;
+      const second = await f.attach("runtime-one");
+      await f.provider.refresh();
+      expect(f.provider.machineTool("session-hand", "write_stdin")!.routeToken).toBe(oldWriter);
+      expect(f.provider.machineTool("session-hand", "exec_command")!.routeToken).not.toBe(oldExec);
+      await expect(f.router.execute("write_stdin", { session_id: session }, f.context("foreign", "other-agent"))).rejects.toThrow("unknown or stale");
+      const frame = nextFrame(second);
+      const poll = f.router.execute("write_stdin", { session_id: session }, f.context("poll"));
+      const sent = await frame;
+      expect(sent).toMatchObject({ name: "write_stdin", input: { session_id: 1 } });
+      await f.finish(second, sent, { exit_code: 0 });
+      await expect(poll).resolves.toMatchObject({ success: true, structuredResult: { exit_code: 0 } });
+      await expect(f.router.execute("write_stdin", { session_id: session }, f.context("finished"))).rejects.toThrow("unknown or stale");
+    } finally { f.close(); }
+  });
+
+  it("does not replay an ambiguous poll or stdin when its socket is replaced", async () => {
+    const f = await fixture("runtime-one");
+    try {
+      const session = await f.start();
+      const frame = nextFrame(f.first);
+      const input = { session_id: session, chars: "one write\n" };
+      const poll = f.router.execute("write_stdin", input, f.context("pending-write"));
+      await frame;
+      const second = await f.attach("runtime-one");
+      const sent: unknown[] = [];
+      second.addEventListener("message", event => { sent.push(JSON.parse(String(event.data))); });
+      await expect(poll).resolves.toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
+      // Reconciliation keeps the same effect identity; the old receipt wins.
+      await expect(f.router.execute("write_stdin", input, f.context("pending-write")))
+        .resolves.toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
+      expect(sent).toEqual([]);
+      const next = nextFrame(second);
+      const freshPoll = f.router.execute("write_stdin", { session_id: session }, f.context("next-poll"));
+      await f.finish(second, await next, { exit_code: 0 });
+      await expect(freshPoll).resolves.toMatchObject({ success: true });
+      expect(sent.filter((frame: any) => frame.type === "call")).toHaveLength(1);
+    } finally { f.close(); }
+  });
+
+  it.each(["runtime-one", undefined])("fences saved polls and stdin after replacement of %s", async original => {
+    const f = await fixture(original);
+    try {
+      const session = await f.start();
+      const second = await f.attach("different-runtime");
+      const sent: unknown[] = [];
+      second.addEventListener("message", event => { sent.push(JSON.parse(String(event.data))); });
+      for (const chars of ["", "must not reach process 1\n"]) {
+        await expect(f.router.execute("write_stdin", { session_id: session, chars }, f.context(`poll-${chars.length}`)))
+          .resolves.toMatchObject({ success: false, output: expect.stringContaining("cannot prove session continuity") });
+      }
+      expect(sent).toEqual([]);
+    } finally { f.close(); }
+  });
+
+  it("does not bind a completed exec receipt to a replacement runtime", async () => {
+    const f = await fixture("runtime-one");
+    try {
+      await f.start();
+      const second = await f.attach("runtime-two");
+      const sent: unknown[] = [];
+      second.addEventListener("message", event => { sent.push(JSON.parse(String(event.data))); });
+      // Reuse the original effect identity after its completed receipt survived
+      // the socket. A refreshed exec route must not relabel old process 1.
+      await expect(f.router.execute("exec_command", { cmd: "fixture-command", workdir: "/session-hand" }, f.context("start")))
+        .resolves.toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
+      expect(sent).toEqual([]);
+    } finally { f.close(); }
+  });
+
+  it("binds an exec refreshed before admission to the runtime that actually started it", async () => {
+    const f = await fixture("runtime-one");
+    try {
+      const second = await f.attach("runtime-two");
+      // The namespace captures the old snapshot; account routing refreshes exec.
+      const session = await f.start(second);
+      const frame = nextFrame(second);
+      const poll = f.router.execute("write_stdin", { session_id: session }, f.context("poll"));
+      await f.finish(second, await frame, { exit_code: 0 });
+      await expect(poll).resolves.toMatchObject({ success: true });
+    } finally { f.close(); }
+  });
 });

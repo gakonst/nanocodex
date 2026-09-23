@@ -86,6 +86,7 @@ function createClient(endpoint, transport, options, admission, machines, attachm
     catalog: hostedCatalog(admission.catalog(options.provider ?? "javascript")),
     machines,
     attachmentId,
+    runtimeId: crypto.randomUUID(),
     calls: new Map(),
     receipts: new Set(),
     active: new Set(),
@@ -230,6 +231,7 @@ function createClient(endpoint, transport, options, admission, machines, attachm
     send(socket, {
       type: "catalog",
       capabilities: ["turn_metadata"],
+      runtime_id: state.runtimeId,
       tools: state.catalog,
       ...(state.machines.length === 0 ? {} : { machines: state.machines }),
       ...(state.attachmentId === undefined ? {} : { attachment_id: state.attachmentId }),
@@ -280,11 +282,9 @@ function createClient(endpoint, transport, options, admission, machines, attachm
   async function handleCall(frame, socket) {
     const callId = frame.call_id;
     if (state.calls.has(callId) || state.receipts.has(callId)) throw new Error("duplicate call on socket");
-    if (state.calls.size + state.receipts.size >= 64) throw new Error("attachment receipt capacity exceeded");
-    if (state.active.size >= 32) {
-      retainAndSend(callId, { status: "unavailable", message: "attachment is busy" }, socket);
-      return;
-    }
+    // The retained ToolRouter schedules parallel/nonparallel work and honors
+    // cancellation while queued. A connection-local count must not reject
+    // otherwise valid calls or disconnect a socket with unacknowledged results.
     if (frame.deadline_at <= Date.now()) {
       retainAndSend(callId, { status: "unavailable", message: "tool attachment call deadline elapsed before dispatch" }, socket);
       return;
@@ -524,14 +524,14 @@ function bindSocket(socket, handlers) {
 function send(socket, frame) {
   try {
     const encoded = JSON.stringify(frame);
-    if (utf8ByteLength(encoded) > 2 * 1024 * 1024 || (socket.bufferedAmount ?? 0) > 2 * 1024 * 1024) throw new Error("attachment output capacity exceeded");
+    // Results already obey the admitted output byte budget. Let the transport
+    // own its frame limits and send queue; buffered bytes are not a failed call.
     socket.send(encoded);
   }
   catch (error) { throw new AttachmentTransportError(error); }
 }
 function parseFrame(encoded) {
   if (typeof encoded !== "string") throw new TypeError("tool attachments require text frames");
-  if (utf8ByteLength(encoded) > 2 * 1024 * 1024) throw new Error("attachment frame capacity exceeded");
   const frame = JSON.parse(encoded);
   if (!frame || typeof frame !== "object" || Array.isArray(frame)) throw new TypeError("tool attachment frame must be an object");
   const keys = DO_KEYS[frame.type];

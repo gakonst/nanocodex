@@ -13,6 +13,7 @@ pub mod ice;
 mod ice_cache;
 pub mod input;
 mod media_guard;
+mod peer_recovery;
 mod playout;
 pub mod video;
 mod video_packets;

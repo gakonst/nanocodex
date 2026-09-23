@@ -41,6 +41,31 @@ type CallRow = NonNullable<ReturnType<HostedToolsBrokerPersistence["call"]>>;
 type CallState = CallRow["state"];
 
 describe("HostedToolsBroker socket-owned protocol", () => {
+  it.each([undefined, 2])("admits beyond old fixed caps unless a resource limit is configured (%s)", async maxInFlight => {
+    const fixture = createFixture(undefined, { maxInFlight });
+    const host = fixture.socket();
+    await catalog(fixture.broker, host);
+    const tool = fixture.broker.provider().resolve("fixture__lookup")!;
+    const pending = Array.from({ length: 70 }, (_, index) => tool.handler({}, {
+      sessionId: "session", callId: `concurrent-${index}`, model: "fixture",
+    }));
+    const dispatched = host.sent.filter(frame => frame.type === "call");
+    expect(dispatched).toHaveLength(maxInFlight ?? 70);
+    expect(host.closed).toBeUndefined();
+    for (const frame of dispatched) {
+      await fixture.broker.message(host.webSocket, result(String(frame.call_id), "ok"));
+    }
+    const results = await Promise.all(pending);
+    expect(results.filter(value => (value as { success: boolean }).success)).toHaveLength(maxInFlight ?? 70);
+    if (maxInFlight !== undefined) {
+      for (const value of results.slice(maxInFlight)) {
+        expect(value).toMatchObject({ success: false, structuredResult: { status: "unavailable" } });
+      }
+    }
+    expect(host.closed).toBeUndefined();
+    fixture.broker.close(host.webSocket, "test complete");
+  });
+
   it("sends current turn metadata through hibernation", async () => {
     const fixture = createFixture();
     const host = fixture.socket();
@@ -1207,6 +1232,7 @@ function createFixture(
   options?: Readonly<{
     now?: () => number;
     onCallTiming?: HostedToolsBrokerOptions["onCallTiming"];
+    maxInFlight?: number;
     renewLeasedAttachment?: (renewal: {
       expectedAttachmentId: string;
       fixedRouteId: string;
@@ -1226,6 +1252,7 @@ function createFixture(
     persistence,
     now: options?.now ?? (() => NOW),
     onCallTiming: options?.onCallTiming,
+    maxInFlight: options?.maxInFlight,
     ...(options?.renewLeasedAttachment === undefined ? {} : {
       renewLeasedAttachment: options.renewLeasedAttachment,
     }),

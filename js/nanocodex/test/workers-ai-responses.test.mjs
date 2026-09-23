@@ -187,7 +187,7 @@ test("accepts GLM's exact original tool name only when registered and unambiguou
   assert.equal(item.name, "read");
   assert.equal(item.call_id, "live-read");
   const duplicate = { type: "namespace", name: "other", tools: namespace.tools };
-  await assert.rejects(invoke({ input: "read circuit", tools: [namespace, duplicate] }), /unknown tool alias/);
+  await assert.rejects(invoke({ input: "read circuit", tools: [namespace, duplicate] }), /ambiguous original tool alias/);
   const qualified = fixture(async () => completion({ tool_calls: [{ function: { name: "files.read", arguments: "{}" } }] }, "tool_calls"));
   const qualifiedOut = await events(await qualified({ input: "read", tools: [namespace, duplicate] }));
   assert.equal(qualifiedOut.find(e => e.type === "response.output_item.done").item.namespace, "files");
@@ -233,12 +233,13 @@ test("binding failures are redacted before a response exists", async () => {
   }
 });
 
-test("buffered binding results enforce the single-call contract even for stream requests", async () => {
+test("buffered binding results preserve multiple calls even with a false parallel preference", async () => {
   for (const stream of [false, true]) {
     const invoke = fixture(async () => completion({ tool_calls: ["one", "two"].map(id => ({
       id, type: "function", function: { name: "tool_0", arguments: "{}" },
     })) }, "tool_calls"));
-    await assert.rejects(invoke({ input: "hi", stream, parallel_tool_calls: false,
-      tools: [{ type: "function", name: "read" }] }), /single-call contract/);
+    const result = await events(await invoke({ input: "hi", stream, parallel_tool_calls: false,
+      tools: [{ type: "function", name: "read" }] }));
+    assert.deepEqual(result.at(-1).response.output.map(item => item.call_id), ["one", "two"]);
   }
 });

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { canStartBroadcast, listRemoteHands, RemoteBrowserSession, RemoteScreenIntent, type RemoteScreenSelection, type RemoteHand } from "./handRemote.ts";
+import { canStartBroadcast, listRemoteHands, RemoteBrowserSession, RemoteScreenIntent, RemoteIceCredentials, type RemoteScreenSelection, type RemoteHand } from "./handRemote.ts";
 
 const screen: RemoteHand = {
   id: "desktop", name: "Desktop", kind: "desktop", width: 1600, height: 900, controllable: true,
@@ -28,27 +28,23 @@ test("screen intent ignores pointer transits and closes its one prepared viewer 
   f.tick(10_000); assert.equal(f.changes.length, 2);
 });
 
-test("selecting an intended screen adopts its same hand identity across catalog polls and cancels expiry", t => {
+test("selecting a screen after prolonged focus adopts its prepared hand identity across catalog polls", t => {
   const f = intentFixture(t);
   f.intent.focusOn(screen); f.tick(150);
   const prepared = f.intent.state.hand;
-  f.tick(1000); f.intent.select({ ...screen });
+  f.tick(60_000);
+  const refreshed = { ...screen };
+  f.intent.catalog([refreshed]);
+  assert.equal(f.intent.state.hand, prepared, "active focus must retain the prepared viewer beyond five seconds");
+  assert.equal(f.changes.length, 1, "catalog polling must not replace the prepared viewer");
+  f.intent.select(refreshed);
   assert.equal(f.intent.state.hand, prepared);
-  assert.equal(f.intent.state.selectedAt, 2150);
+  assert.equal(f.intent.state.selectedAt, 61_150);
   assert.equal(f.intent.state.selected, true);
   f.intent.focusOn(undefined); f.intent.hover(undefined); f.tick(10_000);
   assert.equal(f.intent.state.hand, prepared); assert.equal(f.changes.length, 2);
   f.intent.back(); assert.equal(f.intent.state.hand, undefined);
   f.tick(10_000); assert.equal(f.changes.length, 3, "returning to inventory does not prepare automatically");
-});
-
-test("a prepared viewer expires once and requires a new intent to prepare again", t => {
-  const f = intentFixture(t); f.intent.hover(screen); f.tick(150);
-  f.tick(4999); assert.equal(f.intent.state.hand, screen);
-  f.tick(1); assert.equal(f.intent.state.hand, undefined);
-  f.intent.hover({ ...screen }); f.tick(10_000); assert.equal(f.changes.length, 2);
-  f.intent.hover(undefined); f.intent.hover(screen); f.tick(150);
-  assert.equal(f.intent.state.hand, screen); assert.equal(f.changes.length, 3);
 });
 
 test("changing intent retires the previous screen before preparing another and preserves keyboard intent", t => {
@@ -60,6 +56,49 @@ test("changing intent retires the previous screen before preparing another and p
   f.tick(150); assert.equal(f.intent.state.hand, screen);
   f.intent.focusOn(undefined); assert.equal(f.intent.state.hand, undefined);
   assert.deepEqual(f.changes.map(state => state.hand?.id), [screen.id, undefined, "other", undefined, screen.id, undefined]);
+});
+
+for (const pointerPrepared of [false, true]) test(`keyboard focus supersedes a ${pointerPrepared ? "prepared" : "pending"} pointer target and selection reuses its viewer identity`, t => {
+  const f = intentFixture(t), other = { ...screen, id: "other" };
+  f.intent.hover(other); f.tick(pointerPrepared ? 150 : 75);
+  f.intent.focusOn(screen); f.tick(150);
+  assert.equal(f.intent.state.hand, screen, "a stationary pointer must not override newer keyboard intent");
+  const prepared = f.intent.state.hand;
+  f.tick(60_000);
+  const refreshed = { ...screen };
+  f.intent.catalog([refreshed, { ...other }]);
+  f.intent.select(refreshed);
+  assert.equal(f.intent.state.hand, prepared, "selection must retain the prepared Screen effect and decoder");
+  assert.equal(f.intent.state.selected, true);
+  f.tick(10_000);
+  assert.equal(f.intent.state.hand, prepared, "selection must keep the prepared viewer mounted");
+});
+
+for (const latest of ["pointer", "focus"] as const) test(`departure of older intent does not discard the newer ${latest} preparation`, t => {
+  const f = intentFixture(t), other = { ...screen, id: "other" };
+  if (latest === "focus") { f.intent.hover(other); f.intent.focusOn(screen); }
+  else { f.intent.focusOn(other); f.intent.hover(screen); }
+  f.tick(150);
+  assert.equal(f.intent.state.hand, screen);
+  const count = f.changes.length;
+  if (latest === "focus") f.intent.hover(undefined);
+  else f.intent.focusOn(undefined);
+  assert.equal(f.intent.state.hand, screen);
+  f.tick(1000);
+  assert.equal(f.changes.length, count, "leaving an inactive target must not restart preparation");
+});
+
+test("switching focus and hover on the same card retains its viewer until both intents leave", t => {
+  const f = intentFixture(t);
+  f.intent.hover(screen); f.tick(150); f.tick(4900);
+  f.intent.focusOn({ ...screen }); f.tick(60_000);
+  assert.equal(f.intent.state.hand, screen);
+  f.intent.hover(undefined); f.tick(60_000);
+  assert.equal(f.intent.state.hand, screen, "focus must retain the viewer after pointer departure");
+  assert.equal(f.changes.length, 1, "same-card intent must not restart preparation");
+  f.intent.focusOn(undefined);
+  assert.equal(f.intent.state.hand, undefined);
+  assert.equal(f.changes.length, 2);
 });
 
 test("catalog replacement cancels preparation and never adopts an obsolete publication", t => {
@@ -127,7 +166,7 @@ function deferred<T>() {
   return { promise, resolve };
 }
 
-function fixture(t: TestContext, hand: RemoteHand = screen) {
+function fixture(t: TestContext, hand: RemoteHand = screen, withCredentials = false) {
   t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"], now: 1000 });
   t.mock.method(performance, "now", () => Date.now());
   const peers: Peer[] = [], sockets: Socket[] = [];
@@ -217,10 +256,13 @@ function fixture(t: TestContext, hand: RemoteHand = screen) {
     cancelVideoFrameCallback(id: number) { frames.delete(id); },
   });
   let changed = (_state: RemoteBrowserSession["state"]) => {};
-  const session = new RemoteBrowserSession(hand, video as HTMLVideoElement, state => changed(state), canvas as unknown as HTMLCanvasElement);
+  const credentials = withCredentials ? new RemoteIceCredentials("account-a") : undefined;
+  if (credentials) t.after(() => credentials.close());
+  const session = new RemoteBrowserSession(hand, video as HTMLVideoElement, state => changed(state), canvas as unknown as HTMLCanvasElement,
+    credentials ? { accountId: "account-a", credentials } : undefined);
   t.after(() => session.close());
   return {
-    peers, sockets, requests, session, video, canvas, drawn, decoded, captures, frames,
+    peers, sockets, requests, session, video, canvas, drawn, decoded, captures, frames, credentials,
     // Long-lived control/auth tests need actual advancing video, independently
     // of the presentation callback tests and optional diagnostics.
     playVideo() {
@@ -2020,4 +2062,169 @@ test("a decoder report captured before local frames cannot seed their later fall
   peer.fail(); f.setCatalog([]);
   while (Date.now() < deadline) await f.tick(Math.min(1000, deadline - Date.now()));
   assert.equal(f.session.state.connecting, false, "the old pending sample cannot credit already-presented frames");
+});
+
+
+const reusableIce = () => ({ iceServers: [{ urls: "turn:ice.example", username: "viewer", credential: "temporary" }], expires_at: Date.now() + 3600_000 });
+
+function credentialFixture(t: TestContext) {
+  const f = fixture(t, screen, true);
+  f.setIceResponse(async () => Response.json(reusableIce()));
+  return Object.assign(f, { credentials: f.credentials! });
+}
+
+test("dialog prefetch hides a 628ms credential lookup without opening viewers, then reuses it for a new publication", async t => {
+  const f = credentialFixture(t), ice = deferred<Response>();
+  f.setIceResponse(() => ice.promise);
+  f.credentials.prefetch();
+  assert.equal(f.requests.length, 1);
+  assert.equal(f.peers.length, 0); assert.equal(f.sockets.length, 0);
+  await f.tick(628); ice.resolve(Response.json(reusableIce())); await flush();
+  const selectedAt = performance.now();
+  await f.session.connect(); await flush();
+  assert.equal(performance.now() - selectedAt, 0, "initial peer no longer waits for the completed HTTP lookup");
+  assert.equal(f.peers.length, 1); assert.equal(f.sockets.length, 1);
+  assert.equal(f.requests.filter(r => r.path.endsWith("/ice")).length, 1);
+  f.setCatalog([{ ...screen, generation: "replacement" }]);
+  f.session.reconnect(); await flush();
+  assert.equal(f.catalogReads, 1, "credentials cannot substitute for fresh discovery");
+  assert.equal(f.session.hand.generation, "replacement");
+  assert.equal(f.sockets[1]!.url.searchParams.get("generation"), "replacement");
+  assert.equal(f.sockets.length, 2, "a replacement must obtain a new signed viewer lease");
+  assert.equal(f.peers.length, 2, "the old peer and pool are never cached");
+  assert.equal(f.requests.filter(r => r.path.endsWith("/ice")).length, 1);
+});
+
+test("selection joins a dialog lookup already in flight while its own socket opens independently", async t => {
+  const f = credentialFixture(t), ice = deferred<Response>();
+  f.setIceResponse(() => ice.promise); f.credentials.prefetch();
+  await f.tick(400);
+  const connecting = f.session.connect();
+  assert.equal(f.sockets.length, 1); assert.equal(f.peers.length, 0);
+  assert.equal(f.requests.filter(r => r.path.endsWith("/ice")).length, 1);
+  await f.tick(228); ice.resolve(Response.json(reusableIce())); await connecting; await flush();
+  assert.equal(f.peers.length, 1);
+});
+
+test("cancelling an old viewer does not cancel the credential request used by new intent", async t => {
+  const f = credentialFixture(t), ice = deferred<Response>(), cancelled = new AbortController();
+  f.setIceResponse(() => ice.promise);
+  const retired = f.credentials.get("account-a", cancelled.signal);
+  const rejected = assert.rejects(retired, { name: "AbortError" });
+  const current = f.credentials.get("account-a");
+  cancelled.abort(); await rejected;
+  assert.equal(f.requests[0]!.signal!.aborted, false);
+  ice.resolve(Response.json(reusableIce()));
+  assert.deepEqual(await current, await f.credentials.get("account-a"));
+  assert.equal(f.requests.length, 1);
+});
+
+test("closing the dialog aborts all waiters and rejects late completion and reuse", async t => {
+  const f = credentialFixture(t), ice = deferred<Response>();
+  f.setIceResponse(() => ice.promise);
+  const pending = f.credentials.get("account-a");
+  const rejected = assert.rejects(pending, { name: "AbortError" });
+  f.credentials.close(); await rejected;
+  assert.equal(f.requests[0]!.signal!.aborted, true);
+  ice.resolve(Response.json(reusableIce())); await flush();
+  await assert.rejects(f.credentials.get("account-a"), /no longer authorized/);
+  assert.equal(f.requests.length, 1); assert.equal(f.peers.length, 0);
+});
+
+test("account ownership prevents credential sharing and a new owner starts its own lookup", async t => {
+  const f = credentialFixture(t);
+  await f.credentials.get("account-a");
+  await assert.rejects(f.credentials.get("account-b"), /no longer authorized/);
+  assert.equal(f.requests.length, 1);
+  f.credentials.close();
+  const other = new RemoteIceCredentials("account-b"); t.after(() => other.close());
+  await other.get("account-b");
+  assert.equal(f.requests.length, 2);
+});
+
+for (const expires of [undefined, "invalid", NaN]) test(`credentials with ${String(expires)} expiry cannot be cached`, async t => {
+  const f = credentialFixture(t);
+  f.setIceResponse(async () => Response.json({ ...reusableIce(), expires_at: expires }));
+  await f.credentials.get("account-a"); await f.credentials.get("account-a");
+  assert.equal(f.requests.length, 2);
+});
+
+test("server expiry refreshes credentials with a 30 second safety margin", async t => {
+  const f = credentialFixture(t);
+  f.setIceResponse(async () => Response.json({ ...reusableIce(), expires_at: Date.now() + 31_000 }));
+  await f.credentials.get("account-a");
+  await f.tick(999); await f.credentials.get("account-a"); assert.equal(f.requests.length, 1);
+  await f.tick(1); await f.credentials.get("account-a"); assert.equal(f.requests.length, 2);
+  f.credentials.invalidate();
+  f.setIceResponse(async () => Response.json({ ...reusableIce(), expires_at: Date.now() - 1 }));
+  await assert.rejects(f.credentials.get("account-a"), /expired/);
+});
+
+test("monotonic retention expires even when the wall clock moves backwards", async t => {
+  const f = credentialFixture(t);
+  let monotonic = 0;
+  t.mock.method(performance, "now", () => monotonic);
+  await f.credentials.get("account-a");
+  t.mock.timers.setTime(0); monotonic = 600_000;
+  await f.credentials.get("account-a"); assert.equal(f.requests.length, 2);
+});
+
+test("a failed prefetch is retryable and invalidation cannot publish an old pending response", async t => {
+  const f = credentialFixture(t);
+  f.setStatus(503); f.credentials.prefetch(); await flush();
+  f.setStatus(200);
+  const old = deferred<Response>(); f.setIceResponse(() => old.promise);
+  const pending = f.credentials.get("account-a");
+  const rejected = assert.rejects(pending, { name: "AbortError" });
+  f.credentials.invalidate(); await rejected;
+  f.setIceResponse(async () => Response.json(reusableIce()));
+  const fresh = await f.credentials.get("account-a");
+  old.resolve(Response.json({ ...reusableIce(), iceServers: [{ urls: "stun:obsolete.example" }] })); await flush();
+  assert.deepEqual(await f.credentials.get("account-a"), fresh);
+  assert.equal(f.requests.length, 3);
+});
+
+test("cached credentials do not bypass viewer authorization, and a terminal rejection clears them", async t => {
+  const f = credentialFixture(t);
+  await f.credentials.get("account-a");
+  await f.session.connect(); f.peers[0]!.open();
+  f.sockets[0]!.message({ type: "ready", connection_id: "viewer" }); await flush();
+  f.setStatus(403); await f.tick(10_000);
+  assert.equal(f.session.state.connected, false);
+  assert.equal(f.session.state.connecting, false);
+  assert.equal(f.session.state.status, "This remote session is no longer authorized.");
+  assert.equal(f.sockets[0]!.readyState, 3);
+  f.setStatus(200); await f.credentials.get("account-a");
+  assert.equal(f.requests.filter(r => r.path.endsWith("/ice")).length, 2);
+});
+
+
+test("a cancelled viewer cannot construct a peer when the shared prefetch later completes", async t => {
+  const f = credentialFixture(t), ice = deferred<Response>();
+  f.setIceResponse(() => ice.promise); f.credentials.prefetch();
+  const connecting = f.session.connect();
+  f.session.close(); await connecting;
+  ice.resolve(Response.json(reusableIce())); await flush();
+  assert.equal(f.peers.length, 0); assert.equal(f.sockets[0]!.readyState, 3);
+  await f.credentials.get("account-a"); assert.equal(f.requests.length, 1, "the dialog can still serve a later selection");
+});
+
+test("host offers reuse valid credentials and refresh an expired cache without replacing the peer", async t => {
+  const f = credentialFixture(t);
+  f.setIceResponse(async () => Response.json({ ...reusableIce(), expires_at: Date.now() + 31_000 }));
+  await f.session.connect();
+  const offer = () => f.sockets[0]!.message({ type: "signal", signal: { type: "offer", sdp: "offer" } });
+  offer(); await flush(); offer(); await flush();
+  assert.equal(f.requests.filter(r => r.path.endsWith("/ice")).length, 1);
+  await f.tick(1000); offer(); await flush();
+  assert.equal(f.requests.filter(r => r.path.endsWith("/ice")).length, 2);
+  assert.equal(f.peers.length, 1); assert.equal(f.sockets[0]!.sent.length, 3);
+});
+
+test("wall clock jumps cannot keep server-expired credentials alive before the monotonic deadline", async t => {
+  const f = credentialFixture(t);
+  t.mock.method(performance, "now", () => 0);
+  await f.credentials.get("account-a");
+  t.mock.timers.setTime(3601_000);
+  await f.credentials.get("account-a"); assert.equal(f.requests.length, 2);
 });
