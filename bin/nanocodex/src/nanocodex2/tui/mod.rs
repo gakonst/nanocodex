@@ -24,8 +24,8 @@ mod shell;
 mod spinner;
 mod terminal;
 mod theme;
-mod transcript;
 mod tmux;
+mod transcript;
 mod vault;
 mod voice_clone;
 
@@ -2193,9 +2193,10 @@ async fn run_inner(
                             || !runtime.managed_active_turns.ids.is_empty() { "running" }
                         else { "idle" };
                     let prompt = runtime.recent_prompts.iter()
-                        .find(|prompt| prompt.session_id == runtime.agent_id)
-                        .map_or("", |prompt| prompt.text.as_str());
-                    publisher.publish(&runtime.agent_id, status, prompt).await;
+                        .find(|prompt| prompt.session_id == runtime.agent_id);
+                    publisher.publish(&runtime.agent_id, status,
+                        prompt.map_or("", |prompt| prompt.text.as_str()),
+                        prompt.map_or(0, |prompt| prompt.recorded_at_unix_ms)).await;
                 }
             }
             result = reload_setup.join_next(), if !reload_setup.is_empty() => {

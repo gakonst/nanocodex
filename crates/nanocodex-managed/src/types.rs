@@ -1358,9 +1358,14 @@ mod presentation_contract_tests {
                 "activity":"I am checking tests","lastUserPrompt":"Verify the change"}
         }}});
         let list: super::AgentList = serde_json::from_value(value.clone()).unwrap();
-        assert_eq!(serde_json::to_value(list).unwrap()["summaries"]["synthetic"]["presentation"],
-                   value["summaries"]["synthetic"]["presentation"]);
-        value["summaries"]["synthetic"].as_object_mut().unwrap().remove("presentation");
+        assert_eq!(
+            serde_json::to_value(list).unwrap()["summaries"]["synthetic"]["presentation"],
+            value["summaries"]["synthetic"]["presentation"]
+        );
+        value["summaries"]["synthetic"]
+            .as_object_mut()
+            .unwrap()
+            .remove("presentation");
         let list: super::AgentList = serde_json::from_value(value).unwrap();
         assert!(list.summaries["synthetic"].presentation.is_none());
     }

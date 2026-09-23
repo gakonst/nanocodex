@@ -42,8 +42,8 @@ final class InboxUITests: XCTestCase {
             toolbar.tap()
             let inbox = app.buttons["conversation-row:inbox"]
             XCTAssertTrue(inbox.waitForExistence(timeout: 5))
-            XCTAssertTrue(inbox.label.contains("I'm checking inbox state"))
-            XCTAssertTrue(inbox.label.contains("You:"))
+            XCTAssertTrue((inbox.value as? String ?? "").contains("I'm checking inbox state"))
+            XCTAssertTrue((inbox.value as? String ?? "").contains("You:"))
             XCTAssertTrue(app.buttons["conversation-row:data"].exists)
             XCTAssertFalse(app.buttons["conversation-row:hands"].exists)
             capture(app, "agent-overview-running-" + appearance)

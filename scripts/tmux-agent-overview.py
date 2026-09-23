@@ -73,7 +73,13 @@ def describe(row, summaries):
         status = presentation['status']
     if activity and status == 'running':
         status += ' · ' + clean(activity)
-    prompt = clean(metadata.get('prompt') or presentation.get('lastUserPrompt') or '')
+    local_prompt = metadata.get('prompt') or ''
+    remote_prompt = presentation.get('lastUserPrompt') or ''
+    try:
+        remote_newer = float(presentation.get('lastUserMessageAt', 0)) > float(metadata.get('prompt_at', 0))
+    except (TypeError, ValueError):
+        remote_newer = False
+    prompt = clean(remote_prompt if remote_prompt and remote_newer else local_prompt or remote_prompt)
     return status, title, prompt
 
 

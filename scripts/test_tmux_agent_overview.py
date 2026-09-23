@@ -26,6 +26,11 @@ class OverviewTests(unittest.TestCase):
         row['metadata']['status'] = 'idle'
         self.assertNotIn('checking', m.describe(row, {'demo': {'presentation': {'activity': 'checking'}}})[0])
 
+    def test_newer_remote_prompt_supersedes_local_history(self):
+        row = m.parse_panes(self.row({'version': 1, 'updated_at': 19000, 'agent_id': 'demo', 'status': 'running', 'prompt': 'Local request', 'prompt_at': 100}), 20000)[0]
+        self.assertEqual(m.describe(row, {'demo': {'presentation': {'lastUserPrompt': 'Phone request', 'lastUserMessageAt': 200}}})[2], 'Phone request')
+        self.assertEqual(m.describe(row, {'demo': {'presentation': {'lastUserPrompt': 'Old request', 'lastUserMessageAt': 50}}})[2], 'Local request')
+
     def test_sanitizes_control_sequences_and_bounds_text(self):
         self.assertNotIn('\x1b', m.clean('\x1b[31m\ntext'))
         self.assertEqual(len(m.clean('x' * 1000)), 512)
