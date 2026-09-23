@@ -45,7 +45,6 @@ export function createPdfTextCommand(filesystem: () => Workspace) {
         context.signal?.throwIfAborted();
         const { getDocumentProxy } = await import("unpdf");
         document = await getDocumentProxy(data.slice(), {
-          isEvalSupported: false,
           useSystemFonts: false,
           disableFontFace: true,
           useWorkerFetch: false,
@@ -71,7 +70,7 @@ export function createPdfTextCommand(filesystem: () => Workspace) {
       } catch (error) {
         return { stdout: "", stderr: `pdftotext: ${error instanceof Error ? error.message : String(error)}\n`,
           exitCode: context.signal?.aborted ? 130 : 1 };
-      } finally { await document?.destroy(); }
+      } finally { await document?.loadingTask.destroy(); }
     },
   };
 }
