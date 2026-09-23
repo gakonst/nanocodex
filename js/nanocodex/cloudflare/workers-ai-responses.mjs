@@ -316,9 +316,12 @@ function normalizeResponse(result, registry, model, toolChoice) {
     try { args = JSON.parse(argumentsText); } catch {
       const trimmed = typeof argumentsText === "string" ? argumentsText.trimStart() : "";
       if (entry.type === "custom" && trimmed && !["{", "[", '\"'].includes(trimmed[0])) {
-        fail("model returned unwrapped custom tool input");
-      }
-      fail("model returned invalid tool JSON");
+        // Custom tools natively accept freeform strings. Some Chat providers
+        // return that input without the advertised JSON wrapper. Preserve it
+        // exactly through the existing custom-call path; malformed JSON-looking
+        // wrappers and every non-custom tool still fail closed.
+        args = { input: argumentsText };
+      } else fail("model returned invalid tool JSON");
     }
     if (call.id !== undefined && (typeof call.id !== "string" || !call.id)) fail("invalid tool call ID");
     if (!args || typeof args !== "object" || Array.isArray(args)) fail("tool arguments must be a JSON object");

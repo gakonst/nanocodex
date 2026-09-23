@@ -12,9 +12,9 @@ function feed() {
   return { body, send(value) { controller.enqueue(encoder.encode(wire(value))); }, raw(value) { controller.enqueue(value); },
     close() { controller.close(); }, get cancelled() { return cancelled; } };
 }
-function setup(provider, upstream, signal) {
+function setup(provider, upstream, signal, model = "gpt-6-sol") {
   const observed = [], requests = [];
-  const options = { provider, model: "gpt-6-sol", reasoningEffort: provider === "cloudflare" ? "high" : "none", apiKey: "synthetic-secret",
+  const options = { provider, model, reasoningEffort: provider === "cloudflare" || model === "mimo-v2.6-pro" ? "high" : "none", apiKey: "synthetic-secret",
     ...(provider === "cloudflare" ? { accountId: "a".repeat(32) } : {}),
     fetch: async (_url, init) => { requests.push(JSON.parse(init.body)); return new Response(upstream.body, { headers: { "content-type": "text/event-stream" } }); },
     onRequest: () => ({ headers(status) { observed.push(status); }, firstToken() { observed.push("first"); }, finish(outcome) { observed.push(outcome); } }) };
@@ -631,9 +631,8 @@ test("normalizer diagnostics reject unknown or forged exception details", async 
   }
 });
 
-for (const provider of ["openrouter", "vercel"]) test(`${provider}: raw custom input diagnostics stay distinct, redacted and fail closed`, async () => {
+for (const provider of ["openrouter", "vercel"]) test(`${provider}: malformed custom wrappers and non-custom JSON stay redacted and fail closed`, async () => {
   const scenarios = [
-    ["custom", " \ntext('synthetic-secret')", "normalize_custom_raw_input"],
     ["custom", '{"input":"synthetic-secret', "normalize_tool_json"],
     ["custom", '["synthetic-secret"', "normalize_tool_json"],
     ["custom", '"synthetic-secret', "normalize_tool_json"],
@@ -655,4 +654,37 @@ for (const provider of ["openrouter", "vercel"]) test(`${provider}: raw custom i
     assert.deepEqual(fixture.observed, [200, "protocol_error"]);
     assert.equal(upstream.cancelled, 1);
   }
+});
+
+for (const provider of ["openrouter", "vercel"]) test(`${provider}: fragmented raw custom input preserves bytes, IDs and replay after terminal validation`, async () => {
+  const upstream = feed(), fixture = setup(provider, upstream, undefined, "mimo-v2.6-pro");
+  const tools = [{ type: "namespace", name: "functions", tools: [{ type: "custom", name: "exec" }] }];
+  const input = " \ntext('synthetic-secret')\r\n// π 🐈 \t\n";
+  const response = await fixture.invoke({ tools, tool_choice: { type: "custom", namespace: "functions", name: "exec" } });
+  const seen = [];
+  const pending = (async () => { const reader = response.body.getReader(); for (let event; (event = await next(reader));) seen.push(event); return seen; })();
+  upstream.send(chunk({ tool_calls: [{ index: 0, id: "raw-call", type: "function", function: { name: "tool_", arguments: input.slice(0, 2) } }] }));
+  upstream.send(chunk({ tool_calls: [{ index: 0, function: { name: "0", arguments: input.slice(2, 17) } }] }));
+  upstream.send(chunk({ tool_calls: [{ index: 0, function: { arguments: input.slice(17) } }] }));
+  // Let the stream consume fragments; no executable call may escape before the
+  // terminal completion validates identity, arguments and the forced choice.
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(seen.some(event => event.type === "response.output_item.added"), false);
+  upstream.send(chunk({}, "tool_calls")); upstream.send("[DONE]");
+  const emitted = await pending, result = emitted.at(-1).response;
+  assert.equal(result.output.length, 1);
+  const call = result.output[0];
+  assert.deepEqual({ type: call.type, call_id: call.call_id, name: call.name, namespace: call.namespace, input: call.input },
+    { type: "custom_tool_call", call_id: "raw-call", name: "exec", namespace: "functions", input });
+  assert.equal(emitted.find(event => event.type === "response.custom_tool_call_input.delta").delta, input);
+  assert.deepEqual(fixture.observed, [200, "first", "success"]);
+  assert.equal(upstream.cancelled, 1);
+  const replayUpstream = feed(), replay = setup(provider, replayUpstream, undefined, "mimo-v2.6-pro");
+  const replayPending = all(await replay.invoke({ tools, input: [{ role: "user", content: "run" }, ...result.output,
+    { type: "custom_tool_call_output", call_id: call.call_id, output: "ok" }] }));
+  assert.deepEqual(replay.requests[0].messages[1].tool_calls, [{ id: "raw-call", type: "function",
+    function: { name: "tool_0", arguments: JSON.stringify({ input }) } }]);
+  assert.equal(replay.requests[0].messages[2].tool_call_id, "raw-call");
+  replayUpstream.send(chunk({ content: "done" }, "stop")); replayUpstream.send("[DONE]");
+  assert.equal((await replayPending).at(-1).response.end_turn, true);
 });
