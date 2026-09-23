@@ -27,6 +27,7 @@ on:
       - "pnpm-workspace.yaml"
       - "turbo.json"
       - ".github/workflows/cloudflare.yml"
+      - ".github/actions/**"
   workflow_dispatch:
     inputs:
       target:
@@ -42,15 +43,14 @@ env:
   MANAGED_IMAGE_CACHE_EPOCH: ${{ vars.MANAGED_IMAGE_CACHE_EPOCH || '1' }}
 
 jobs:
-  # Reuse exact-input WASM and image outputs; compile only cache misses.
+  # Preview builds stay unprivileged. Production builds selected Workers once on its deployment runner.
   worker-build:
     name: build Cloudflare Worker artifacts
     if: >-
       vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
       ((github.event_name == 'pull_request' &&
         github.event.pull_request.head.repo.full_name == github.repository) ||
-       (github.event_name == 'push' && github.ref == 'refs/heads/master') ||
-       github.event_name == 'workflow_dispatch')
+       (github.event_name == 'workflow_dispatch' && inputs.target == 'preview'))
     runs-on: ubuntu-latest
     timeout-minutes: 30
     concurrency:
@@ -214,7 +214,7 @@ jobs:
         run: npx wrangler deploy --dry-run --env="" --outdir dist
       - name: Validate Chief of Staff Worker
         working-directory: js/chief-of-staff
-        run: npm run check
+        run: npm run typecheck && npm run build
       - name: Validate account Worker
         working-directory: js/account
         run: npx wrangler deploy --dry-run --config dist/nanocodex/wrangler.json
@@ -338,16 +338,15 @@ jobs:
           retention-days: 3
 
   production:
-    needs: [image-plan, managed-images, worker-build]
+    needs: [image-plan, managed-images]
     if: >-
       always() && !cancelled() &&
-      needs.worker-build.result == 'success' &&
       needs.image-plan.result == 'success' &&
       (needs.managed-images.result == 'success' || needs.managed-images.result == 'skipped') &&
       vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
       (github.event_name == 'workflow_dispatch' && inputs.target == 'production'))
-    name: deploy Cloudflare production
+    name: build and deploy changed Cloudflare Workers
     runs-on: ubuntu-latest
     timeout-minutes: 45
     environment: cloudflare-production
@@ -356,6 +355,7 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
+      deployments: write
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
@@ -378,89 +378,41 @@ jobs:
       - name: Select immutable managed images
         if: steps.current-release.outputs.active == 'true'
         run: node scripts/cloudflare/managed-images.mjs config
+      - name: Select Workers changed since their successful deployments
+        id: plan
+        if: steps.current-release.outputs.active == 'true'
+        run: node scripts/cloudflare/release-plan.mjs plan
+      - name: Reuse unchanged WASM outputs
+        id: wasm
+        if: steps.plan.outputs.wasm == 'true'
+        uses: ./.github/actions/wasm-outputs
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
-        if: steps.current-release.outputs.active == 'true'
+        if: steps.plan.outputs.workspace == 'true'
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        if: steps.current-release.outputs.active == 'true'
+        if: steps.plan.outputs.any == 'true'
         with:
           node-version: 24
-          cache: pnpm
+          cache: ${{ steps.plan.outputs.workspace == 'true' && 'pnpm' || '' }}
           cache-dependency-path: pnpm-lock.yaml
-      - name: Test Wrangler image cache boundary
-        if: false
-        run: node --test scripts/cloudflare/*.test.mjs
-      - name: Install deployment packages
-        if: steps.current-release.outputs.active == 'true'
-        run: pnpm install --frozen-lockfile
-      - name: Install Astra trial package
-        if: steps.current-release.outputs.active == 'true'
-        run: npm ci --prefix examples/astra-mpp-trial
-      - name: Prepare managed evaluator asset
-        if: steps.current-release.outputs.active == 'true'
-        working-directory: js/managed
-        run: npm run prepare:code-evaluator
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        if: steps.current-release.outputs.active == 'true'
+      - name: Install only selected application dependencies
+        if: steps.plan.outputs.any == 'true'
+        run: node scripts/cloudflare/release-plan.mjs install
+      - name: Build only selected applications and their dependencies
+        if: steps.plan.outputs.any == 'true'
+        run: node scripts/cloudflare/release-plan.mjs build
+      - name: Save verified WASM outputs
+        if: steps.plan.outputs.wasm == 'true' && steps.wasm.outputs.hit != 'true' && github.ref == 'refs/heads/master'
+        uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
-          name: cloudflare-worker-build
-          path: .ci-worker-build
-      - name: Restore same-revision Worker outputs
-        if: steps.current-release.outputs.active == 'true'
-        run: node scripts/cloudflare/worker-build.mjs restore
-      - name: Deploy egress and X Workers
-        if: steps.current-release.outputs.active == 'true'
-        run: node scripts/cloudflare/deploy-workers.mjs infrastructure
-      - name: Deploy managed agent service
-        if: steps.current-release.outputs.active == 'true'
-        working-directory: js/managed
-        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config wrangler.ci.jsonc --containers-rollout immediate --message "$DEPLOY_MESSAGE"
-      - name: Deploy independent consumer Workers
-        if: steps.current-release.outputs.active == 'true'
-        run: node scripts/cloudflare/deploy-workers.mjs consumers
-      - name: Configure Astra trial secrets
-        if: steps.current-release.outputs.active == 'true'
-        working-directory: examples/astra-mpp-trial
+          key: ${{ steps.wasm.outputs.key }}
+          path: |
+            js/nanocodex/pkg-web
+            js/nanocodex/pkg-node
+            .ci-wasm-cache
+      - name: Deploy selected Workers and record successful releases
+        if: steps.plan.outputs.any == 'true'
         env:
           ASTRA_MANAGED_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
           ASTRA_MPP_SECRET: ${{ secrets.NANOCODEX_ASTRA_MPP_SECRET }}
           TEMPO_API_KEY: ${{ secrets.TEMPO_MPP_API_KEY }}
-        run: |
-          missing=()
-          [ -n "$ASTRA_MANAGED_API_KEY" ] || missing+=(NANOCODEX_ASTRA_MANAGED_API_KEY)
-          [ -n "$ASTRA_MPP_SECRET" ] || missing+=(NANOCODEX_ASTRA_MPP_SECRET)
-          [ -n "$TEMPO_API_KEY" ] || missing+=(TEMPO_MPP_API_KEY)
-          if [ "${#missing[@]}" -gt 0 ]; then
-            echo "::notice::Astra trial remains fail-closed; missing repository secrets: ${missing[*]}"
-          fi
-          if [ "${#missing[@]}" -lt 3 ]; then
-            node --input-type=module -e '
-              const entries = [
-                ["NANOCODEX_ASTRA_MANAGED_API_KEY", process.env.ASTRA_MANAGED_API_KEY],
-                ["NANOCODEX_ASTRA_MPP_SECRET", process.env.ASTRA_MPP_SECRET],
-                ["TEMPO_MPP_API_KEY", process.env.TEMPO_API_KEY],
-              ].filter(([, value]) => value);
-              process.stdout.write(JSON.stringify(Object.fromEntries(entries)));
-            ' | node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler secret bulk --env=""
-          fi
-      - name: Deploy account application
-        id: account-release
-        if: steps.current-release.outputs.active == 'true'
-        working-directory: js/account
-        run: node "$GITHUB_WORKSPACE/scripts/cloudflare/current-production-release.mjs" -- npx wrangler deploy --config dist/nanocodex/wrangler.json --message "$DEPLOY_MESSAGE"
-
-      - name: Verify deployed account Worker health
-        if: steps.account-release.outputs.active == 'true'
-        timeout-minutes: 1
-        run: |
-          node --input-type=module <<'JS'
-          import assert from 'node:assert/strict';
-          const response = await fetch('https://nanocodex.gakonst.workers.dev/api/health', {
-            signal: AbortSignal.timeout(20_000),
-          });
-          assert.equal(response.status, 200, 'account Worker health HTTP status');
-          const health = await response.json();
-          assert.equal(health.service, 'nanocodex');
-          assert.equal(health.runtime, 'cloudflare-workers');
-          assert.equal(health.status, 'ok');
-          console.log('Account Worker health passed');
-          JS
+        run: node scripts/cloudflare/release-workers.mjs

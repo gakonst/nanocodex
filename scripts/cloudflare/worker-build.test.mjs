@@ -53,17 +53,22 @@ test('wrong revision, run, output list, and archive corruption fail closed', () 
   assert.throws(() => readFileSync(join(destination, files[0])), { code: 'ENOENT' });
 }));
 
-test('deployment waits for matching image and Worker jobs; build job has no deployment credentials', () => {
+test('production builds selected Workers on its runner while preview retains unprivileged artifacts', () => {
   const workflow = readFileSync(new URL('../../.github/workflows/cloudflare.yml', import.meta.url), 'utf8');
   const job = name => workflow.split(`\n  ${name}:\n`)[1].split(/\n  [\w-]+:\n/)[0];
-  assert.match(job('production'), /needs: \[image-plan, managed-images, worker-build\]/);
-  assert.match(job('production'), /needs\.image-plan\.result == 'success'/);
-  assert.match(job('production'), /needs\.managed-images\.result == 'success' \|\| needs\.managed-images\.result == 'skipped'/);
+  const production = job('production');
+  assert.match(production, /needs: \[image-plan, managed-images\]/);
+  assert.match(production, /needs\.image-plan\.result == 'success'/);
+  assert.match(production, /needs\.managed-images\.result == 'success' \|\| needs\.managed-images\.result == 'skipped'/);
   assert.match(job('preview'), /needs: worker-build/);
-  assert.doesNotMatch(job('worker-build'), /\n    needs:|secrets\.|CLOUDFLARE_API_TOKEN|environment:/);
-  for (const name of ['preview', 'production']) {
-    assert.match(job(name), /node scripts\/cloudflare\/worker-build\.mjs restore/);
-    assert.doesNotMatch(job(name), /turbo run build/);
-  }
-  assert.match(job('production'), /node scripts\/cloudflare\/managed-images\.mjs config/);
+  assert.doesNotMatch(job('worker-build'), /\n    needs:|secrets\.|CLOUDFLARE_API_TOKEN|environment:|github.event_name == 'push'/);
+  assert.match(job('preview'), /node scripts\/cloudflare\/worker-build\.mjs restore/);
+  assert.doesNotMatch(production, /worker-build\.mjs|cloudflare-worker-build/);
+  const commands = ['plan', 'install', 'build'].map(command => `node scripts/cloudflare/release-plan.mjs ${command}`);
+  for (const command of commands) assert.ok(production.includes(command));
+  assert.ok(production.indexOf(commands[0]) < production.indexOf(commands[1]));
+  assert.ok(production.indexOf(commands[1]) < production.indexOf(commands[2]));
+  assert.ok(production.indexOf(commands[2]) < production.indexOf('node scripts/cloudflare/release-workers.mjs'));
+  assert.match(production, /if: steps\.plan\.outputs\.wasm == 'true'/);
+  assert.match(production, /node scripts\/cloudflare\/managed-images\.mjs config/);
 });
