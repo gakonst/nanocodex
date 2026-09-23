@@ -97,7 +97,7 @@ test("native Responses tools map aliases and reject mismatched streamed argument
   }
 });
 
-for (const scenario of ["early-close", "missing-done", "malformed", "provider-error", "unknown-tool", "duplicate-tool", "incomplete-tool", "parallel-tool", "truncated-frame", "invalid-utf8"]) {
+for (const scenario of ["early-close", "missing-done", "malformed", "provider-error", "unknown-tool", "duplicate-tool", "incomplete-tool", "truncated-frame", "invalid-utf8"]) {
   test(`stream fails closed and redacts ${scenario}`, async () => {
     const upstream = feed(), fixture = setup("openrouter", upstream);
     const response = await fixture.invoke({ tools: [{ type: "function", name: "read" }], parallel_tool_calls: false });
@@ -106,8 +106,8 @@ for (const scenario of ["early-close", "missing-done", "malformed", "provider-er
     else if (scenario === "provider-error") upstream.send({ error: { message: "synthetic-secret" } });
     else if (scenario === "truncated-frame") upstream.raw(encoder.encode('data: {"synthetic-secret":'));
     else if (scenario === "invalid-utf8") upstream.raw(new Uint8Array([255, 10, 10]));
-    else if (["unknown-tool", "duplicate-tool", "incomplete-tool", "parallel-tool"].includes(scenario)) {
-      const count = ["duplicate-tool", "parallel-tool"].includes(scenario) ? 2 : 1;
+    else if (["unknown-tool", "duplicate-tool", "incomplete-tool"].includes(scenario)) {
+      const count = scenario === "duplicate-tool" ? 2 : 1;
       for (let index = 0; index < count; index++) upstream.send(chunk({ tool_calls: [{ index,
         id: scenario === "duplicate-tool" ? "same" : `call-${index}`, type: "function",
         function: { name: scenario === "unknown-tool" ? "synthetic-secret" : "tool_0", arguments: '{"x":1}' } }] }));

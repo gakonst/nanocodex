@@ -41,13 +41,10 @@ export function createWorkersAiResponses(ai, options = {}) {
         const source = result instanceof ReadableStream ? providerStream(result, "workers_ai_chat") : result;
         if (source?.providerStream) {
           return streamResponse(source, (value, prologue = false) => normalizeResponse(value, registry, model, prologue ? undefined : body.tool_choice), responseEvents,
-            request.signal, input.parallel_tool_calls);
+            request.signal);
         }
         // Some bindings return a completed object despite stream:true. Validate
         // normally and label this honestly; HTTP gateways never take this path.
-      }
-      if (input.parallel_tool_calls === false && result?.choices?.[0]?.message?.tool_calls?.length > 1) {
-        fail("provider returned parallel tool calls despite a single-call contract");
       }
       return toResponse(result, registry, model, body.tool_choice);
     },

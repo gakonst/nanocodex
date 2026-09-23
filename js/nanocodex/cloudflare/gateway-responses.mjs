@@ -62,7 +62,7 @@ export function createGatewayResponses(options) {
           attempt.streaming = true;
           return providerStream(value, "responses", attempt.hooks);
         }
-        return fromBindingResponsesResult(value, input.parallel_tool_calls);
+        return fromBindingResponsesResult(value);
       }
       // Vercel documents reasoning_effort as the Chat Completions alias:
       // https://vercel.com/docs/ai-gateway/sdks-and-apis/openai-chat-completions/reasoning
@@ -85,8 +85,8 @@ export function createGatewayResponses(options) {
         payload.reasoning = { effort: reasoningEffort };
         payload.provider = { require_parameters: true };
         // OpenRouter filters on parameter presence, including false. Its catalog
-        // omits parallel_tool_calls for otherwise tool-capable endpoints. Enforce
-        // the requested single-call contract on the buffered response instead.
+        // omits parallel_tool_calls for otherwise tool-capable endpoints. The host
+        // scheduler controls concurrency for all validated returned calls.
         if (input.parallel_tool_calls === false) delete payload.parallel_tool_calls;
       }
       let response;
@@ -139,11 +139,7 @@ export function createGatewayResponses(options) {
         attempt.outcome = error instanceof SyntaxError ? "protocol_error" : "network_error";
         fail("invalid provider response");
       }
-      if (provider === "openrouter" && input.parallel_tool_calls === false
-        && (value.choices ?? []).some(choice => (choice.message?.tool_calls?.length ?? 0) > 1)) {
-        fail("provider returned parallel tool calls despite a single-call contract");
-      }
-      return cloudflareHttp ? fromBindingResponsesResult(value, input.parallel_tool_calls) : value;
+      return cloudflareHttp ? fromBindingResponsesResult(value) : value;
     },
   }, { model, apiBaseUrl });
   return Object.freeze({ apiBaseUrl, stateless: true,
