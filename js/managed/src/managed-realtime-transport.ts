@@ -1,3 +1,4 @@
+import { durablePlacementOptions, placementRegion } from "nanocodex/cloudflare/durable-placement";
 import {
   authenticate,
   forwardPrincipalAssertions,
@@ -27,7 +28,7 @@ type ManagedRealtimeTransportEnv = AccountAuthEnv & {
     }>;
   };
   NANOCODEX_SESSIONS: {
-    get(id: DurableObjectId): Fetcher & {
+    get(id: DurableObjectId, options?: DurableObjectNamespaceGetDurableObjectOptions): Fetcher & {
       resolveCredentialSubject?(assertions: Record<string, string>, traceId?: string): Promise<unknown>;
     };
     idFromName(name: string): DurableObjectId;
@@ -80,7 +81,7 @@ export async function routeManagedRealtimeTransport(
   forwardPrincipalAssertions(ownershipHeaders, principal);
   let owned: Awaited<ReturnType<typeof readSessionCredentialSubject>>;
   try {
-    const stub = env.NANOCODEX_SESSIONS.get(durableId);
+    const stub = env.NANOCODEX_SESSIONS.get(durableId, durablePlacementOptions(env.trustedClientIngressColo));
     owned = typeof stub.resolveCredentialSubject === "function"
       ? await withHardDeadline("managed Realtime ownership assertion", ownershipTimeoutMs,
         async () => validateSessionCredentialSubject(
@@ -105,10 +106,10 @@ export async function routeManagedRealtimeTransport(
   }
 
   try {
-    // Private call egress uses the Session's just-verified owner for either
-    // retained strategy. Legacy sidebands and older deployments still repair
-    // their directory mapping before the generic broker resolves it.
-    if (!direct && (resource !== "calls" || !env.NANOCODEX_REALTIME)) {
+    // Private realtime egress uses the Session's just-verified owner for either
+    // retained strategy. Without that binding, repair legacy directory state
+    // before the generic broker independently resolves it.
+    if (!direct && !env.NANOCODEX_REALTIME) {
       await bindAgentCredential(env.NANOCODEX, subject, principal.userId, ownershipTimeoutMs);
     }
   } catch {
@@ -116,7 +117,7 @@ export async function routeManagedRealtimeTransport(
   }
 
   if (resource === "calls") {
-    const response = await realtimeCall(callBody!, env, agentId, voiceSessionId, subject, voiceRelayRegion(request), principal.userId, owned.accountId);
+    const response = await realtimeCall(callBody!, env, agentId, voiceSessionId, subject, voiceRelayRegion(request, env.trustedClientIngressColo), principal.userId, owned.accountId);
     response.headers.append("server-timing", [
       `voice_auth;dur=${(authenticated - began).toFixed(1)}`,
       `voice_validate;dur=${(validatedAt - authenticated).toFixed(1)}`,
@@ -125,7 +126,7 @@ export async function routeManagedRealtimeTransport(
     ].join(", "));
     return response;
   }
-  return realtimeSideband(callId!, env, agentId, voiceSessionId, subject, owned.accountId);
+  return realtimeSideband(callId!, env, agentId, voiceSessionId, subject, principal.userId, owned.accountId);
 }
 
 async function validatedCallBody(request: Request, url: URL): Promise<string | Response> {
@@ -215,13 +216,16 @@ function realtimeSideband(
   agentId: string,
   voiceSessionId: string,
   subject: string,
+  verifiedOwner: string,
   accountId?: string,
 ): Promise<Response> {
   const headers = internalHeaders(agentId, voiceSessionId, subject, true, callId);
   if (accountId) headers.set("x-nanocodex-chatgpt-account-id", accountId);
+  const binding = env.NANOCODEX_REALTIME ?? env.NANOCODEX;
+  if (binding === env.NANOCODEX_REALTIME) headers.set("x-nanocodex-realtime-owner", verifiedOwner);
   // Return the binding response itself: reconstructing a 101 Response severs
   // Cloudflare's upgraded WebSocket from its provider peer.
-  return env.NANOCODEX.fetch(new Request(
+  return binding.fetch(new Request(
     "https://nanocodex.internal/v1/realtime/sideband",
     { headers },
   ));
@@ -304,7 +308,11 @@ function json(body: unknown, status: number): Response {
 }
 
 /** Derive placement only from Cloudflare metadata, never caller headers. */
-export function voiceRelayRegion(request: Request): string | undefined {
+export function voiceRelayRegion(request: Request, trustedClientIngressColo?: string | null): string | undefined {
+  // The frontdoor may cross a service binding before reaching this Worker.
+  // Prefer its authenticated ingress assertion to this hop's request metadata.
+  // Unknown ingress must not silently select this Worker's different region.
+  if (trustedClientIngressColo != null) return placementRegion(trustedClientIngressColo);
   const cf = request.cf;
   const longitude = typeof cf?.longitude === "string" && cf.longitude.trim()
     ? Number(cf.longitude) : NaN;

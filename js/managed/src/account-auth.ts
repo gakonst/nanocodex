@@ -1,3 +1,4 @@
+import { durablePlacementOptions, placementHeaders, TRUSTED_INGRESS_HEADER, type IngressPlacement } from "nanocodex/cloudflare/durable-placement";
 import type { AgentPresentation } from "./agent-presentation";
 import { retireAccountProjects } from "./retired-projects";
 import { recordHandTiming } from "./hand-timing";
@@ -68,7 +69,7 @@ export function isUserId(value: unknown): value is string {
 
 export const NonceStorage = Kv.NonceStorage;
 
-export interface AccountAuthEnv {
+export interface AccountAuthEnv extends IngressPlacement {
   NANOCODEX_PERFORMANCE_TRACE?: string;
   NANOCODEX_ACCESS_SECRET?: string;
   ENVIRONMENT?: string;
@@ -436,7 +437,7 @@ export async function routeAccountRequest(
     if (principal.kind !== "account_session") {
       return json({ error: "forbidden" }, { status: 403 });
     }
-    const organization = env.NANOCODEX_ORGANIZATIONS.getByName(principal.organizationId);
+    const organization = env.NANOCODEX_ORGANIZATIONS.getByName(principal.organizationId, durablePlacementOptions(env.trustedClientIngressColo));
     if (request.method === "GET") {
       if (!principal.capabilities.includes("organization:read")) {
         return json({ error: "forbidden" }, { status: 403 });
@@ -750,7 +751,7 @@ async function authenticateLive(request: Request, env: AccountAuthEnv, url: URL)
   const token = authorization.slice("Bearer ".length);
   if (!API_KEY.test(token)) return undefined;
   const digest = await sha256(token);
-  const stub = env.NANOCODEX_API_KEYS.getByName(digest);
+  const stub = env.NANOCODEX_API_KEYS.getByName(digest, durablePlacementOptions(env.trustedClientIngressColo));
   // RPC returns the small record in one reply. A fetch Response transports its
   // headers and JSON stream separately across Durable Object locations.
   let record: StoredApiKey | undefined;
@@ -804,7 +805,7 @@ async function resolveUserPrincipal(
 ): Promise<Principal | undefined> {
   // Resolve live membership beside the account record, avoiding a second
   // edge-to-Durable-Object round trip for browser/passkey sessions.
-  const response = await env.NANOCODEX_USERS.getByName(userId).fetch("https://user.internal/authorization");
+  const response = await env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)).fetch("https://user.internal/authorization");
   if (!response.ok) {
     await response.body?.cancel();
     return undefined;
@@ -914,7 +915,7 @@ export function requireSameOriginMutation(
 }
 
 export async function listAgents(env: AccountAuthEnv, userId: string): Promise<AgentSummary[]> {
-  const response = await env.NANOCODEX_USERS.getByName(userId).fetch("https://user.internal/agents");
+  const response = await env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)).fetch("https://user.internal/agents");
   if (!response.ok) throw new Error("agent listing failed");
   return response.json<AgentSummary[]>();
 }
@@ -927,7 +928,7 @@ export async function attachAgent(
   hasCronTriggers?: boolean,
 ): Promise<void> {
   await fetchResponseWithDeadline(
-    env.NANOCODEX_USERS.getByName(userId),
+    env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)),
     "https://user.internal/agents",
     {
       method: "POST",
@@ -950,7 +951,7 @@ export async function recordAgentCronPresence(
   present: boolean,
 ): Promise<void> {
   await fetchResponseWithDeadline(
-    env.NANOCODEX_USERS.getByName(userId),
+    env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)),
     `https://user.internal/agents/${agentId}/cron-presence`,
     { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ present }) },
     DEFAULT_OWNERSHIP_IO_TIMEOUT_MS,
@@ -970,7 +971,7 @@ export async function recordAgentActivity(
   let failure: unknown;
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
-      const response = await env.NANOCODEX_USERS.getByName(userId).fetch(
+      const response = await env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)).fetch(
         `https://user.internal/agents/${agentId}/activity`,
         {
           method: "POST",
@@ -996,7 +997,7 @@ export async function detachAgent(
   timeoutMs = DEFAULT_OWNERSHIP_IO_TIMEOUT_MS,
 ): Promise<void> {
   await fetchResponseWithDeadline(
-    env.NANOCODEX_USERS.getByName(userId),
+    env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)),
     `https://user.internal/agents/${agentId}`,
     { method: "DELETE" },
     timeoutMs,
@@ -1337,13 +1338,13 @@ export async function ensureAccount(
   if (!isUserId(userId)) {
     throw new Error("invalid account identity");
   }
-  const accountStub = env.NANOCODEX_USERS.getByName(userId);
+  const accountStub = env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo));
   const status = await fetchResponseWithDeadline(
     accountStub,
     "https://user.internal/account",
     {
       method: "PUT",
-      headers: { "content-type": "application/json" },
+      headers: placementHeaders({ "content-type": "application/json" }, env.trustedClientIngressColo),
       body: JSON.stringify({ id: userId, persistent }),
     },
     timeoutMs,
@@ -1436,7 +1437,7 @@ async function proxyAccountWalletRequest(
 }
 
 async function readAccount(env: AccountAuthEnv, userId: string): Promise<UserRecord | undefined> {
-  const response = await env.NANOCODEX_USERS.getByName(userId).fetch("https://user.internal/account");
+  const response = await env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)).fetch("https://user.internal/account");
   if (!response.ok) {
     await response.body?.cancel();
     return undefined;
@@ -1453,7 +1454,7 @@ async function resolveOrganizationGrant(
   env: AccountAuthEnv,
   account: Pick<UserRecord, "id" | "organizationId">,
 ): Promise<OrganizationGrant | undefined> {
-  const response = await env.NANOCODEX_ORGANIZATIONS.getByName(account.organizationId).fetch(
+  const response = await env.NANOCODEX_ORGANIZATIONS.getByName(account.organizationId, durablePlacementOptions(env.trustedClientIngressColo)).fetch(
     `https://organization.internal/resolve?userId=${encodeURIComponent(account.id)}`,
   );
   if (!response.ok) {
@@ -1612,7 +1613,7 @@ function requireBrowserOrigin(request: Request, url: URL): Response | undefined 
 }
 
 async function listApiKeys(env: AccountAuthEnv, userId: string): Promise<ApiKeyMetadata[]> {
-  const response = await env.NANOCODEX_USERS.getByName(userId).fetch("https://user.internal/api-keys");
+  const response = await env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)).fetch("https://user.internal/api-keys");
   if (!response.ok) throw new Error("API key listing failed");
   return response.json<ApiKeyMetadata[]>();
 }
@@ -1639,7 +1640,7 @@ export async function createApiKey(
     prefix: `ncx_live_${id}`,
     createdAt,
   };
-  const key = env.NANOCODEX_API_KEYS.getByName(digest);
+  const key = env.NANOCODEX_API_KEYS.getByName(digest, durablePlacementOptions(env.trustedClientIngressColo));
   const record = {
     ...metadata,
     digest,
@@ -1668,7 +1669,7 @@ export async function createApiKey(
   } else {
     await initialized.body?.cancel();
   }
-  const attached = await env.NANOCODEX_USERS.getByName(principal.userId).fetch(
+  const attached = await env.NANOCODEX_USERS.getByName(principal.userId, durablePlacementOptions(env.trustedClientIngressColo)).fetch(
     "https://user.internal/api-keys",
     {
       method: "POST",
@@ -1690,7 +1691,7 @@ export async function revokeApiKey(
   id: string,
   token?: string,
 ): Promise<boolean> {
-  const account = env.NANOCODEX_USERS.getByName(userId);
+  const account = env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo));
   let digest: string;
   if (token !== undefined) {
     if (token.match(API_KEY)?.[1] !== id) throw new Error("invalid API key material");
@@ -1703,7 +1704,7 @@ export async function revokeApiKey(
     }
     digest = (await found.json<ApiKeyMetadata & { digest: string }>()).digest;
   }
-  const deleted = await env.NANOCODEX_API_KEYS.getByName(digest).fetch(
+  const deleted = await env.NANOCODEX_API_KEYS.getByName(digest, durablePlacementOptions(env.trustedClientIngressColo)).fetch(
     "https://api-key.internal/record",
     { method: "DELETE" },
   );
@@ -1786,7 +1787,7 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
         };
         await this.ctx.storage.put("account", record);
         const rootTeamId = crypto.randomUUID();
-        const initialized = await this.env.NANOCODEX_ORGANIZATIONS.getByName(record.organizationId).fetch(
+        const initialized = await this.env.NANOCODEX_ORGANIZATIONS.getByName(record.organizationId, durablePlacementOptions(request.headers.get(TRUSTED_INGRESS_HEADER))).fetch(
           "https://organization.internal/initialize",
           {
             method: "PUT",

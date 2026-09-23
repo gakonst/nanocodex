@@ -8,6 +8,8 @@ const transientSpotifyIdentities = new Set<string>();
 const spotifyRateTestCalls = new Map<string, number>();
 
 const TEST_KEY = "MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY";
+const REGIONAL_RELAY_CLASSES = ["ChatGptEgressWnam","ChatGptEgressEnam","ChatGptEgressWeur","ChatGptEgressEeur","ChatGptEgressApac","ChatGptEgressSam","ChatGptEgressOc"];
+
 const TEST_CHATGPT_EGRESS = `
 export class ChatGptEgress {
   fetch(request) {
@@ -105,8 +107,9 @@ export default defineConfig({
         workers: [{
           name: "nanocodex",
           modules: true,
-          script: TEST_CHATGPT_EGRESS,
-          durableObjects: { CHATGPT_EGRESS: "ChatGptEgress" },
+          script: TEST_CHATGPT_EGRESS + REGIONAL_RELAY_CLASSES.map(name => `export class ${name} extends ChatGptEgress {}`).join("\n"),
+          durableObjects: { CHATGPT_EGRESS: "ChatGptEgress",
+            ...Object.fromEntries(REGIONAL_RELAY_CLASSES.map(name => [name, name])) },
         }],
         outboundService: async (request) => {
           const gitResponse = await gitProvider(request);

@@ -1,3 +1,4 @@
+import { durablePlacementOptions } from "nanocodex/cloudflare/durable-placement";
 import { authenticate, requireSameOriginMutation, type AccountAuthEnv, type Principal } from "./account-auth";
 import { authorizeInferenceKey, routeInferenceKeys, type InferenceKeysEnv } from "./inference-keys";
 import { executeStatelessInferenceResponse, inferenceOrigin, INFERENCE_INGRESS_HEADER, type InferenceSessionEnv, type InferenceExecutionContext } from "./inference-session";
@@ -118,7 +119,7 @@ async function routeInferenceApiInternal(request: Request, env: InferenceApiEnv,
     }
     headers.set("x-inference-session-id", id);
     // The caller cannot choose a DO identity, credential, account context, or internal header.
-    return await env.NANOCODEX_INFERENCE_SESSIONS.getByName(id).fetch(new Request("https://inference.internal" + path,
+    return await env.NANOCODEX_INFERENCE_SESSIONS.getByName(id, durablePlacementOptions(origin.clientIngressColo)).fetch(new Request("https://inference.internal" + path,
       { method, headers, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: request.signal }));
   } catch (error) {
     if (request.signal.aborted) return json({ error: "request_cancelled" }, 499);

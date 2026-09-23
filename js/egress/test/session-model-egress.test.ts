@@ -30,7 +30,7 @@ describe("Session-only model egress", () => {
     const env = { USER_CREDENTIALS: { getByName }, MANAGED_AGENT_OWNERSHIP: { fetch: callback } } as unknown as EgressEnv;
     const entrypoint = new SessionModelEgress(createExecutionContext(), env);
     for (let i = 0; i < 2; i++) expect((await entrypoint.fetch(request())).status).toBe(200);
-    expect(getByName).toHaveBeenCalledWith(owner);
+    expect(getByName).toHaveBeenCalledWith(owner, undefined);
     expect(lookup).toHaveBeenCalledTimes(2);
     expect(callback).not.toHaveBeenCalled();
     expect(upstream).toHaveBeenCalledTimes(2);
