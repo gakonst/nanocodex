@@ -1112,6 +1112,7 @@ mod tests {
             &json!({
                 "workspace":"/omarchy-desktop",
                 "prepared_personalization":"Prefers Rust.",
+                "markdown_memory":"USER.md: Prefers concise spoken answers.",
                 "history":[
                     {"role":"user","content":[{"text":"Help me test voice."}]},
                     {"role":"developer","content":[{"text":"Private host state."}]}
@@ -1122,6 +1123,7 @@ mod tests {
         let instructions = settings["instructions"].as_str().unwrap();
         assert!(instructions.contains("/omarchy-desktop"));
         assert!(instructions.contains("Prefers Rust."));
+        assert!(instructions.contains("USER.md: Prefers concise spoken answers."));
         assert!(instructions.contains("Help me test voice."));
         assert!(!instructions.contains("Private host state."));
         assert_eq!(instructions.matches("Speak briefly.").count(), 1);

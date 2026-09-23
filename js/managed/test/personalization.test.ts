@@ -4,7 +4,7 @@ import type { DurableAgentSession } from "../src/index";
 import { ManagedStartupContext } from "../src/startup-context";
 import type { MemoryScope } from "../src/memory-scope";
 import { storeMemoryContent } from "../src/durable-memory-storage";
-import { PreparedPersonalizationCache, PreparedPersonalizationStore, PERSONALIZATION_REFRESH_MS, personalizedVoiceContext,
+import { PreparedPersonalizationCache, PreparedPersonalizationStore, PERSONALIZATION_REFRESH_MS, personalizedVoiceContext, personalizationText,
   type PersonalizationSnapshot } from "../src/personalization";
 
 const scope = { organization_id: "org", team_id: "team", user_id: "user" };
@@ -164,9 +164,23 @@ describe("MemoryScope to Session invalidation", () => {
 
 
 it("reprojects voice replay context so a durable receipt cannot resurrect a forgotten profile", () => {
-  const receipt = { history: [], prepared_personalization: "forgotten canary" };
+  const receipt = { history: [], prepared_personalization: "forgotten canary", markdown_memory: "deleted USER.md" };
   expect(personalizedVoiceContext(receipt)).toEqual({ history: [] });
-  const refreshed = personalizedVoiceContext(receipt, profile(2));
+  const refreshed = personalizedVoiceContext(receipt, profile(2), "current USER.md");
   expect(refreshed.prepared_personalization).toContain("concise answers");
   expect(refreshed.prepared_personalization).not.toContain("forgotten canary");
+  expect(refreshed.markdown_memory).toBe("current USER.md");
+  expect(receipt.markdown_memory).toBe("deleted USER.md");
+});
+
+it("normal and voice retain both prepared scopes within the rendered budget after escaping", () => {
+  const value = { ...profile(), team_facts: [{ id: 1, version: 1, content: `team ${"<&🦊".repeat(1_200)}` }],
+    user_facts: [{ id: 2, version: 1, content: `personal ${"<&🦊".repeat(1_200)}` }], user_generation: 1, user_version: "2:1" };
+  const text = personalizationText(value);
+  expect(personalizedVoiceContext({}, value).prepared_personalization).toBe(text);
+  expect(new TextEncoder().encode(text).byteLength).toBeLessThan(20_000);
+  expect(text).toContain('"content":"personal');
+  expect(text).toContain('"content":"team');
+  expect(text).toContain('"truncated":true');
+  expect(text).not.toContain("\ufffd");
 });

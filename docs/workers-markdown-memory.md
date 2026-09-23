@@ -16,32 +16,34 @@ Worker restart does not lose files or an acknowledged append receipt.
 
 ## Tools and API
 
-`memory_search` returns bounded hybrid lexical/semantic excerpts with paths, line
-ranges and revisions, plus explicit retrieval availability. `memory_get` reads a bounded range; continue using the returned cursor
-and revision rather than assuming an excerpt is the whole file. `memory_write`
-accepts `put`, `append`, and `delete`. Every write requires `expected_revision`
-(use zero only for a never-created file). Read the current file after a conflict
-and reconcile the intended edit. Deletion retains a monotonically increasing
-revision, so a stale create cannot resurrect a removed file.
+All memory tools use the `memories__*` namespace. The four pinned Codex tools
+(`list`, `read`, `search`, `add_ad_hoc_note`) keep their input/output schemas.
+Markdown adds `memories__get`, `memories__search_markdown`, `memories__write`, and
+`memories__status`. Hybrid search has a distinct member because Codex's
+`memories__search` accepts substring queries and matching modes.
 
-Daily-note appends require a stable `operation_id`. Retry the exact same request
-with the same ID after an uncertain response. Reusing an ID with changed input
-fails; replaying an acknowledged append does not duplicate it. Explicit puts and
-deletes use revision checks; do not retry them with a freshly guessed revision.
+`memories__search_markdown` returns bounded hybrid lexical/semantic excerpts with
+paths and line ranges. `memories__get` reads a bounded range; use `next_line` to
+continue. To save a note, provide the operation, path, and content:
 
-The same handlers are available over authenticated POST endpoints:
+```json
+{ "operation": "put", "path": "MEMORY.md", "content": "Use UTC for scheduled exports." }
+```
 
-- `/v1/markdown-memory/get`
-- `/v1/markdown-memory/search`
-- `/v1/markdown-memory/write`
-- `/v1/markdown-memory/status`
+Use `append` for daily notes and `delete` to remove a note. Read existing content
+before replacing it. The model does not supply revisions or retry identifiers;
+the host supplies delivery identity and storage commits each write atomically.
+Internal consolidation still uses revision fences, and repeated delivery of the
+same tool call reuses its stored result.
 
-For example, read `{ "path": "MEMORY.md" }`, then write
-`{ "operation": "put", "path": "MEMORY.md", "expected_revision": 0,
-"content": "# Decisions\n\nUse UTC for scheduled exports.\n" }` if the read
-reported a missing, never-created file. Responses carry the resulting revision.
-The configuration alias `memory` enables these tools alongside the existing
-`memories__*` compatibility tools. An empty tool configuration stays empty.
+Authenticated POST endpoints are `/v1/memories/get`,
+`/v1/memories/search_markdown`, `/v1/memories/write`, and `/v1/memories/status`.
+Existing `/v1/markdown-memory/{get,search,write,status}` endpoints remain available
+for older clients, including their optional explicit revision and delivery fields.
+
+The configuration alias `memory` enables the complete namespace. Old `memory_*`
+configuration entries resolve to the corresponding namespaced tools without
+advertising duplicate tools. An empty tool configuration stays empty.
 
 ## Ownership and context
 
@@ -54,16 +56,19 @@ an intent declaration, not a new source of authority. Every call still checks
 live read/write capabilities. Subagents cannot mutate memory. Internal calls
 carry the existing organization, team, subject, and private-owner assertions.
 
-At managed prompt startup the host fetches bounded curated and recent daily
-excerpts from authorized scopes (UTC today and yesterday). Each scope contributes
-at most 12 KiB of content, with at most 4 KiB per file. Files are capped at 64 KiB
+Normal and voice startup share the same loader for bounded curated and recent
+daily excerpts from authorized scopes (UTC today and yesterday). Prepared profile
+facts are also rendered through the same function in both modes. Each Markdown
+scope contributes at most 12 KiB after serialization, with at most 4 KiB per file. Files are capped at 64 KiB
 and lines at 8 KiB; a ranged read returns at most 16 KiB and 200 lines.
 Unchanged snapshots are not appended again to the same live agent session.
 The two scoped requests run concurrently with a five-second timeout; a retrieval
 failure withdraws the previous snapshot instead of blocking the prompt. Saved prose is wrapped as untrusted data,
 never instructions or permission. Current user corrections take precedence.
 Fresh reads prevent an old local snapshot from being reused after a correction
-or deletion. Already delivered conversation content cannot be erased.
+or deletion. Voice lifecycle replay refreshes these excerpts instead of reusing
+saved personalization, and rechecks the active session and authorization after
+loading. Already delivered conversation content cannot be erased.
 
 Existing versioned records, prepared personalization, and append-only ad-hoc
 notes remain intact and available through their existing APIs. Canonical Markdown
@@ -83,7 +88,7 @@ that fallback rather than claiming semantic retrieval worked.
 Hybrid search uses reciprocal rank fusion, recency decay for dated notes and
 MMR diversity. Evergreen curated files do not decay. Index retry state survives
 eviction. Deletion is immediately effective in canonical reads and recall,
-while remote index cleanup is asynchronous and visible in `memory_status`.
+while remote index cleanup is asynchronous and visible in `memories__status`.
 Index operations have durable 30-second leases and a 16-attempt budget; deletion
 reconciliation stops after a 15-minute horizon. Exhausted/expired receipts remain
 visible instead of keeping an alarm alive forever. A new canonical revision
@@ -118,7 +123,7 @@ permits three attempts per owner per UTC day, selects at most eight sources and
 12 KiB per batch, and retains 32 audit receipts with their preimages. Both passes
 limit model output to 2,048 tokens. These are ceilings, not usage targets.
 
-`memory_status` (and its authenticated HTTP endpoint) exposes semantic backlog,
+`memories__status` (and its authenticated HTTP endpoint) exposes semantic backlog,
 consolidation work and receipts, and extraction receipts without invoking a
 model. `NANOCODEX_MEMORY_AUTOMATION=false` disables automatic extraction and
 consolidation while retaining authored Markdown and search. The configured

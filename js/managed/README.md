@@ -150,14 +150,14 @@ storage ownership.
 
 ## Markdown memory
 
-Managed agents use `memory_get`, `memory_search`, and `memory_write` for editable
+Managed agents use `memories__get`, `memories__search_markdown`, and `memories__write` for editable
 curated Markdown and daily notes stored in Durable Object SQLite. Hybrid semantic
 retrieval, daily consolidation and awaited pre-compaction saves use the existing
-AI Search and Workers AI bindings. `memory_status` reports availability and
+AI Search and Workers AI bindings. `memories__status` reports availability and
 durable job receipts. Set `NANOCODEX_MEMORY_AUTOMATION=false` to disable automatic
 saves and consolidation. See the
-[design and API](../../docs/workers-markdown-memory.md) for ownership, revision
-checks, startup excerpts, and implementation boundaries. Existing memory APIs
+[design and API](../../docs/workers-markdown-memory.md) for ownership, simple writes,
+startup excerpts, and implementation boundaries. Existing memory APIs
 and prepared personalization remain compatible.
 
 ## Prepared personalization

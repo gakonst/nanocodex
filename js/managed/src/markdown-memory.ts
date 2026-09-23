@@ -158,16 +158,17 @@ export class MarkdownMemoryStore {
     const path = validateMarkdownMemoryPath(value.path);
     const operation = value.operation;
     if (operation !== 'put' && operation !== 'delete' && operation !== 'append') throw new MarkdownMemoryError('invalid memory operation');
-    if (value.expected_revision === undefined) throw new MarkdownMemoryError('expected_revision is required (0 for new documents)');
-    const expected = integer(value.expected_revision, 0, 0, Number.MAX_SAFE_INTEGER - 1);
+    // Model-facing writes omit concurrency tokens; internal curation can still fence edits.
+    const expected = value.expected_revision === undefined ? undefined
+      : integer(value.expected_revision, 0, 0, Number.MAX_SAFE_INTEGER - 1);
     const content = operation === 'delete' ? '' : text(value.content, MAX_BYTES);
     if (operation === 'delete' && value.content !== undefined) throw new MarkdownMemoryError('delete does not accept content');
-    let operationId: string | undefined;
+    const operationId = value.operation_id === undefined ? undefined : text(value.operation_id, 128);
+    if (operationId !== undefined && !/^[A-Za-z0-9_-]{1,128}$/.test(operationId)) throw new MarkdownMemoryError('invalid operation_id');
     if (operation === 'append') {
       if (!path.startsWith('memory/')) throw new MarkdownMemoryError('append requires a daily memory path');
-      operationId = text(value.operation_id, 128);
-      if (!/^[A-Za-z0-9_-]{1,128}$/.test(operationId) || !content) throw new MarkdownMemoryError('append requires operation_id and nonempty content');
-    } else if (value.operation_id !== undefined) throw new MarkdownMemoryError('operation_id is only supported for append');
+      if (!content) throw new MarkdownMemoryError('append requires nonempty content');
+    }
     const request = createHash("sha256").update(JSON.stringify([operation, path, expected, content])).digest("hex");
     return this.storage.transactionSync(() => {
       if (operationId) {
@@ -179,7 +180,7 @@ export class MarkdownMemoryStore {
         }
       }
       const row = this.row(owner, path);
-      if (row.revision !== expected) return { ok: false as const, error: 'revision_conflict' as const, path, revision: row.revision };
+      if (expected !== undefined && row.revision !== expected) return { ok: false as const, error: 'revision_conflict' as const, path, revision: row.revision };
       const body = operation === 'append' && !row.deleted && row.content
         ? row.content + (row.content.endsWith('\n') ? '' : '\n') + content : content;
       text(body, MAX_BYTES);
