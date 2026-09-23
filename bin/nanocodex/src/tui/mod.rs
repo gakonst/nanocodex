@@ -811,12 +811,9 @@ pub(crate) async fn run_observed(
     let (math_update_tx, mut math_update_rx) = mpsc::channel(1);
     let mut display = startup::Task::spawn(async move {
         let profile = terminal_profile::detect().await;
-        Ratatex::builder(profile)
-            .on_update(move || {
-                let _ = math_update_tx.try_send(());
-            })
-            .build()
-            .wrap_err("failed to initialize the display-math renderer")
+        startup::display_renderer(profile, move || {
+            let _ = math_update_tx.try_send(());
+        })
     });
     let mut math_renderer: Option<Ratatex> = None;
     let mut pending = startup::Commands::default();
@@ -845,11 +842,12 @@ pub(crate) async fn run_observed(
                     } else if apply_update(update, &mut scheduler) { break Ok(None); }
                 }
                 ready = backend.finish() => { break ready.wrap_err("TUI initialization task failed")?.map(Some); }
-                ready = display.finish(), if math_renderer.is_none() => {
-                    let renderer = ready.wrap_err("TUI display initialization task failed")??;
-                    ui.app.set_math_renderer(renderer.clone());
-                    math_renderer = Some(renderer);
-                    scheduler.request_immediate(Instant::now());
+                ready = display.finish(), if display.is_pending() => {
+                    if let Some(renderer) = ready.wrap_err("TUI display initialization task failed")?? {
+                        ui.app.set_math_renderer(renderer.clone());
+                        math_renderer = Some(renderer);
+                        scheduler.request_immediate(Instant::now());
+                    }
                 }
                 () = async { if let Some(deadline) = deadline { sleep_until(deadline.into()).await; } }, if deadline.is_some() => {}
                 _ = ticker.tick(), if ui.app.mouse_selection_needs_redraw() => {
@@ -1029,11 +1027,12 @@ pub(crate) async fn run_observed(
                     break Ok(());
                 }
             }
-            ready = display.finish(), if math_renderer.is_none() => {
-                let renderer = ready.wrap_err("TUI display initialization task failed")??;
-                ui.app.set_math_renderer(renderer.clone());
-                math_renderer = Some(renderer);
-                scheduler.request_immediate(Instant::now());
+            ready = display.finish(), if display.is_pending() => {
+                if let Some(renderer) = ready.wrap_err("TUI display initialization task failed")?? {
+                    ui.app.set_math_renderer(renderer.clone());
+                    math_renderer = Some(renderer);
+                    scheduler.request_immediate(Instant::now());
+                }
             }
             _ = math_update_rx.recv(), if math_renderer.is_some() => {
                 ui.app.invalidate_math_layouts();

@@ -14,6 +14,10 @@ impl<T: Send + 'static> Task<T> {
         }
     }
 
+    pub(super) fn is_pending(&self) -> bool {
+        self.task.is_some()
+    }
+
     pub(super) async fn finish(&mut self) -> Result<T, tokio::task::JoinError> {
         let result = self.task.as_mut().expect("initialization is pending").await;
         self.task = None;
@@ -190,8 +194,24 @@ pub(super) async fn stop_backend(task: &mut Task<Result<Backend>>) -> Result<()>
     Ok(())
 }
 
-pub(super) async fn stop_display(task: &mut Task<Result<Ratatex>>) -> Result<()> {
-    if let Some(Ok(renderer)) = task
+pub(super) fn display_renderer(
+    profile: ratatex::TerminalProfile,
+    on_update: impl Fn() + Send + Sync + 'static,
+) -> Result<Option<Ratatex>> {
+    // Unsupported terminals always use the source-text fallback. Starting the
+    // renderer there only creates idle workers that must be joined on quit.
+    if profile.graphics != ratatex::GraphicsSupport::Kitty {
+        return Ok(None);
+    }
+    Ratatex::builder(profile)
+        .on_update(on_update)
+        .build()
+        .map(Some)
+        .wrap_err("failed to initialize the display-math renderer")
+}
+
+pub(super) async fn stop_display(task: &mut Task<Result<Option<Ratatex>>>) -> Result<()> {
+    if let Some(Ok(Some(renderer))) = task
         .cancel()
         .await
         .wrap_err("TUI display initialization task failed")?
@@ -206,6 +226,40 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::time::{Duration, timeout};
+
+    #[tokio::test]
+    async fn unsupported_display_finishes_once_without_retaining_workers_or_callback() {
+        let (tx, mut rx) = mpsc::channel(1);
+        let mut task = Task::spawn(async move {
+            display_renderer(
+                ratatex::TerminalProfile::unsupported(Default::default()),
+                move || {
+                    let _ = tx.try_send(());
+                },
+            )
+        });
+        assert!(task.is_pending());
+        assert!(task.finish().await.unwrap().unwrap().is_none());
+        assert!(!task.is_pending());
+        // With no graphics work possible, no worker owns the update callback.
+        assert_eq!(rx.recv().await, None);
+        stop_display(&mut task).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn quit_accepts_a_completed_unsupported_display() {
+        let mut task = Task::spawn(async {
+            display_renderer(
+                ratatex::TerminalProfile::unsupported(Default::default()),
+                || {},
+            )
+        });
+        while !task.task.as_ref().unwrap().is_finished() {
+            tokio::task::yield_now().await;
+        }
+        stop_display(&mut task).await.unwrap();
+        assert!(!task.is_pending());
+    }
 
     #[tokio::test]
     async fn quit_drops_a_never_ready_initializer() {

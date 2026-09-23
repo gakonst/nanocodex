@@ -76,10 +76,9 @@ fn render_agent_markdown_inner(
     previous: &[StreamingFormulaFrame],
     math_fallback: MathFallback,
 ) -> RenderedAgentMarkdown {
-    let (prepared, formulas) = renderer.map_or_else(
-        || (Cow::Borrowed(source), Vec::new()),
-        |_| prepare_math(source),
-    );
+    // Preserve formula delimiters even when the terminal cannot render images.
+    // Sending raw TeX through Markdown first would consume its escape syntax.
+    let (prepared, formulas) = prepare_math(source);
     let mut writer = MarkdownWriter::new(width, &formulas, renderer, previous, math_fallback);
     let mut options = Options::empty();
     options.insert(Options::ENABLE_STRIKETHROUGH);
@@ -1698,7 +1697,7 @@ mod tests {
 
     use super::{
         code_line_count, heal_streaming_markdown, highlighted_code_lines, render_agent_markdown,
-        render_agent_markdown_with_math, restore_markdown_links,
+        render_agent_markdown_layout, render_agent_markdown_with_math, restore_markdown_links,
     };
 
     fn render(markdown: &str, width: u16, height: u16) -> String {
@@ -1751,6 +1750,11 @@ mod tests {
         assert!(text.contains(r"$$\nabla\cdot\mathbf{u}=0$$"));
         assert!(rendered.formulas.is_empty());
         assert!(rendered.math_generation.is_some());
+        assert_eq!(
+            rendered.text,
+            render_agent_markdown_layout("Before\n\n$$\\nabla\\cdot\\mathbf{u}=0$$\n\nAfter", 60)
+                .text,
+        );
         renderer.shutdown();
     }
 
@@ -1774,6 +1778,10 @@ mod tests {
 
         assert!(text.contains(r"The bound \(d\le P(n)^2\) is sufficient."));
         assert!(rendered.formulas.is_empty());
+        assert_eq!(
+            rendered.text,
+            render_agent_markdown_layout(r"The bound \(d\le P(n)^2\) is sufficient.", 60).text,
+        );
         renderer.shutdown();
     }
 
