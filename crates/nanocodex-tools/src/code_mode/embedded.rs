@@ -24,6 +24,9 @@ use tokio::sync::mpsc;
 use super::RuntimeEvent;
 
 const BOOTSTRAP: &str = include_str!("bootstrap.js");
+// Generated from js/nanocodex-tools/runtime/code-tools.mjs for crate packaging.
+const CODE_TOOLS: &str = include_str!("code-tools.mjs");
+const CODE_VALUES: &str = include_str!("code-values.mjs");
 
 type SavedFunction = Persistent<Function<'static>>;
 
@@ -256,10 +259,34 @@ fn run_execution_in_context<'js>(
         next_timeout_id: 1,
     }));
     install_native_functions(ctx, &state)?;
-    let run_cell = ctx
+    // Reuse exactly the same tool facade as the JS runtimes. Strip only the
+    // module export so QuickJS can evaluate the factory as an expression.
+    let factory_source = format!(
+        "({})",
+        CODE_TOOLS.replacen("export function", "function", 1)
+    );
+    let create_tools = ctx
+        .eval::<Function<'js>, _>(factory_source)
+        .catch(ctx)
+        .map_err(|error| format!("failed to evaluate shared tool facade: {error}"))?;
+    let values_factory = CODE_VALUES
+        .split_once("export const")
+        .ok_or_else(|| "shared value helper export marker is missing".to_owned())?
+        .0;
+    let value_helpers = ctx
+        .eval::<rquickjs::Object<'js>, _>(format!(
+            "(() => {{{values_factory}\nreturn createValueHelpers();}})()"
+        ))
+        .catch(ctx)
+        .map_err(|error| format!("failed to evaluate shared value helpers: {error}"))?;
+    let bootstrap = ctx
         .eval::<Function<'js>, _>(BOOTSTRAP)
         .catch(ctx)
         .map_err(|error| format!("failed to evaluate embedded QuickJS bootstrap: {error}"))?;
+    let run_cell = bootstrap
+        .call::<_, Function<'js>>((create_tools, value_helpers))
+        .catch(ctx)
+        .map_err(|error| format!("failed to initialize embedded QuickJS bootstrap: {error}"))?;
     remove_native_globals(ctx)?;
 
     let tools = serde_json::to_string(&start.tools)
@@ -358,6 +385,8 @@ fn install_native_functions<'js>(
                     let content: crate::ToolOutputContent = serde_json::from_str(&content_json).map_err(|error| {
                         Exception::throw_type(&ctx, &format!("invalid output content: {error}"))
                     })?;
+                    // Shared guest helpers normalize values and omit short PCM WAV.
+                    // Retain native audio validation at this host boundary too.
                     let content = match content {
                         crate::ToolOutputContent::InputAudio { ref audio_url }
                             if super::audio::wav_duration_seconds(audio_url)
@@ -661,5 +690,102 @@ fn throw_message(ctx: &Ctx<'_>, message: &str) -> rquickjs::Error {
     match rquickjs::String::from_str(ctx.clone(), message) {
         Ok(message) => ctx.throw(message.into_value()),
         Err(error) => error,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn all_native_oracle_helper_cases_match_embedded_evaluation() {
+        let fixture: Value = serde_json::from_str(include_str!("native-behavior.json")).unwrap();
+        let cases = fixture["helpers"].as_array().unwrap();
+        assert_eq!(cases.len(), 21);
+        let mut host = EmbeddedHost::spawn().unwrap();
+        for (index, case) in cases.iter().enumerate() {
+            let kind = case["kind"].as_str().unwrap();
+            let expression = case["expression"].as_str().unwrap();
+            let source = format!(
+                "try {{ {kind}({expression}); }} catch (error) {{ text({{error: String(error)}}); }}"
+            );
+            host.start_cell(index as u64, &source, HashMap::new(), vec![])
+                .unwrap();
+            let event = tokio::time::timeout(Duration::from_secs(2), host.read_event())
+                .await
+                .unwrap()
+                .unwrap();
+            let RuntimeEvent::Content { content, .. } = event else {
+                panic!("missing content for {kind}({expression})");
+            };
+            let observed = if case["result"].get("error").is_some() {
+                let crate::ToolOutputContent::InputText { text } = content else {
+                    panic!("missing error text");
+                };
+                serde_json::from_str::<Value>(&text).unwrap()
+            } else {
+                serde_json::json!({"item": content})
+            };
+            assert_eq!(observed, case["result"], "{kind}({expression})");
+            let event = tokio::time::timeout(Duration::from_secs(2), host.read_event())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(event, RuntimeEvent::Done { .. }),
+                "{kind}({expression})"
+            );
+        }
+        host.terminate().await;
+    }
+
+    #[tokio::test]
+    async fn root_terminal_discards_unawaited_callbacks_and_stale_results() {
+        let mut host = EmbeddedHost::spawn().unwrap();
+        for (execution_id, ending) in [(1, "return;"), (2, "throw new Error('root failed');")] {
+            host.start_cell(
+                execution_id,
+                &format!("tools.pending({{}}); setTimeout(() => text('late'), 60000); {ending}"),
+                HashMap::new(),
+                vec![
+                    serde_json::json!({"name":"pending", "tool_name":"pending", "kind":"function"}),
+                ],
+            )
+            .unwrap();
+            let event = tokio::time::timeout(Duration::from_secs(2), host.read_event())
+                .await
+                .unwrap()
+                .unwrap();
+            assert!(
+                matches!(event, RuntimeEvent::ToolCall { cell_id, id: 1, .. } if cell_id == execution_id)
+            );
+            // Neither the unresolved tool nor the timer keeps the root alive.
+            let event = tokio::time::timeout(Duration::from_secs(2), host.read_event())
+                .await
+                .unwrap()
+                .unwrap();
+            if execution_id == 1 {
+                assert!(matches!(event, RuntimeEvent::Done { cell_id: 1, .. }));
+            } else {
+                assert!(
+                    matches!(event, RuntimeEvent::Error { cell_id: 2, message, .. } if message.contains("root failed"))
+                );
+            }
+            host.send_tool_result(execution_id, 1, Value::Null, true)
+                .unwrap();
+        }
+        host.start_cell(3, "text('fresh');", HashMap::new(), vec![])
+            .unwrap();
+        let event = tokio::time::timeout(Duration::from_secs(2), host.read_event())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, RuntimeEvent::Content { cell_id: 3, .. }));
+        let event = tokio::time::timeout(Duration::from_secs(2), host.read_event())
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(matches!(event, RuntimeEvent::Done { cell_id: 3, .. }));
+        host.terminate().await;
     }
 }

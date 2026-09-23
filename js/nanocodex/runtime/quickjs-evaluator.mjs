@@ -1,3 +1,4 @@
+import { createCodeTools } from "nanocodex-tools/runtime/code-tools";
 import { guestValueHelpers } from "nanocodex-tools/runtime/code-values";
 const DEFAULT_MEMORY_LIMIT_BYTES = 64 * 1024 * 1024;
 const DEFAULT_STACK_LIMIT_BYTES = 512 * 1024;
@@ -173,6 +174,7 @@ const __nanocodex_decode = (encoded) => {
   const result = JSON.parse(encoded);
   if (!result.ok) {
     const failure = result.error;
+    if (result.errorKind !== "Error") throw failure;
     const structured = failure !== null && typeof failure === "object";
     const error = new Error(structured && typeof failure.message === "string"
       ? failure.message
@@ -186,10 +188,10 @@ const __nanocodex_decode = (encoded) => {
   }
   return result.value;
 };
-const tools = Object.freeze(Object.fromEntries(
-  ${JSON.stringify(toolNames)}.map((name) => [name, (input) =>
-    __nanocodex_call_tool(name, JSON.stringify(input ?? null)).then(__nanocodex_decode)])
-));
+const tools = (${createCodeTools.toString()})(
+  ${JSON.stringify(toolNames)},
+  (name, input) => __nanocodex_call_tool(name, JSON.stringify(input ?? null)).then(__nanocodex_decode),
+);
 const ALL_TOOLS = Object.freeze(${JSON.stringify(toolDefinitions)});
 const text = (value) => __nanocodex_emit("text", JSON.stringify(__nanocodex_stringify(value)));
 const image = (value, detail) => {
@@ -266,7 +268,11 @@ async function invokeTool(environment, name, encodedInput) {
     return JSON.stringify({ ok: true, value });
   } catch (error) {
     const ancestors = [];
-    return JSON.stringify({ ok: false, error: serializeToolError(error) }, function (_key, value) {
+    return JSON.stringify({
+      ok: false,
+      errorKind: error instanceof Error ? "Error" : "raw",
+      error: error instanceof Error ? serializeToolError(error) : error,
+    }, function (_key, value) {
       if (typeof value === "bigint") return String(value);
       if (value === null || typeof value !== "object") return value;
       while (ancestors.length && ancestors.at(-1) !== this) ancestors.pop();

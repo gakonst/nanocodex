@@ -1,3 +1,4 @@
+import { createCodeTools } from "./code-tools.mjs";
 import { stringify, storeSnapshot, normalizeImage, normalizeAudio, generatedImageItems } from "./code-values.mjs";
 import { limitCodeOutput } from "./code-output.mjs";
 import {
@@ -115,7 +116,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         nested_calls: nestedCalls,
       });
     }
-    const tools = Object.create(null);
+    const declaredTools = Object.create(null);
     const availableTools = [...admission.tools.values()];
     const availableDefinitions = admission.definitions.map((definition) => definition.type === "tool_search"
       ? deepFreeze({
@@ -126,7 +127,21 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
           parameters: jsonSnapshot(definition.parameters, "tool_search parameters"),
         })
       : definition);
-    const nestedInvocations = [];
+    const pendingCalls = new Map();
+    function closePendingCalls() {
+      // Guest completion still ends the cell immediately, as in Codex. Host
+      // receipts outlive guest promises: every observed start needs a terminal
+      // result even when an invocation ignores cancellation or settles later.
+      for (const finish of pendingCalls.values()) finish({
+        output: "Code Mode cell ended before the tool returned; execution outcome unknown",
+        structured_result: {
+          error: "Code Mode cell ended before the tool returned; execution outcome unknown",
+          code: "CODE_MODE_CALL_INTERRUPTED",
+          outcome: "unknown",
+        },
+        success: false,
+      });
+    }
     const normalized = availableTools.map(({ name }) => normalizeIdentifier(name));
     if (new Set(normalized).size !== normalized.length) {
       admission.release();
@@ -135,19 +150,23 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     }
     for (const { name } of availableTools) {
       const normalizedName = normalizeIdentifier(name);
-      tools[normalizedName] = (input) => {
+      declaredTools[normalizedName] = (input) => {
         const invocation = executeNestedTool(input);
         // Attach a rejection handler immediately so a discarded guest Promise
         // cannot become an unhandled rejection before the cell reaches its
         // quiescence boundary.
-        nestedInvocations.push(invocation.then(() => undefined, () => undefined));
+        void invocation.catch(() => undefined);
         return invocation;
       };
       // Preserve existing SDK bracket access while advertising Codex's
       // normalized identifiers to newly generated cells.
-      if (name !== normalizedName) tools[name] = tools[normalizedName];
+      if (name !== normalizedName) declaredTools[name] = declaredTools[normalizedName];
 
       async function executeNestedTool(input) {
+        // A native guest continuation can survive its cell if a host promise
+        // ignores abort. Reject before creating telemetry for a closed cell.
+        controller.signal.throwIfAborted();
+        if (finished) throw new Error(CANCELLATION_MESSAGE);
         const callId = `${parentCallId}/code-${nextCallId++}`;
         const toolStartedAt = performance.now();
         const startedAfterNs = Math.max(
@@ -169,6 +188,12 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         // Rust records nested calls in invocation order even when parallel
         // siblings finish out of order. Reserve the slot before dispatch.
         nestedCalls.push(recordedCall);
+        function complete(fields) {
+          if (!pendingCalls.delete(callId)) return;
+          Object.assign(recordedCall, fields, { duration_ns: elapsedNs(toolStartedAt) });
+          observer?.({ type: "nested_call_completed", call: recordedCall });
+        }
+        pendingCalls.set(callId, complete);
         if (!finished) observer?.({
           type: "nested_call_started",
           call_id: callId,
@@ -194,13 +219,12 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
             throw error;
           }
           const message = errorMessage(error);
-          Object.assign(recordedCall, {
+          complete({
             output: message,
             structured_result: message,
             success: false,
             duration_ns: elapsedNs(toolStartedAt),
           });
-          if (!finished) observer?.({ type: "nested_call_completed", call: recordedCall });
           throw error;
         }
         let structured;
@@ -214,28 +238,26 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
           success = toolSucceeded(result);
         } catch (error) {
           const message = errorMessage(error);
-          Object.assign(recordedCall, {
+          complete({
             output: message,
             structured_result: message,
             success: false,
             duration_ns: elapsedNs(toolStartedAt),
           });
-          if (!finished) observer?.({ type: "nested_call_completed", call: recordedCall });
           throw error;
         }
-        Object.assign(recordedCall, {
+        complete({
           output,
           structured_result: structured,
           success,
           duration_ns: elapsedNs(toolStartedAt),
           metadata,
         });
-        if (!finished) observer?.({ type: "nested_call_completed", call: recordedCall });
         if (!success) throw toolValue(result);
         return toolValue(result);
       }
     }
-    Object.freeze(tools);
+    const tools = createCodeTools(Object.keys(declaredTools), (name, input) => declaredTools[name](input));
     const EXIT = Symbol("exit");
 
     function text(value) {
@@ -333,6 +355,7 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
         if (error !== EXIT) throw error;
       }
       if (execution.interruption) throw execution.interruption;
+      closePendingCalls();
       return JSON.stringify({
         output: withStatus("Script completed", startedAt, content),
         success: true,
@@ -342,12 +365,14 @@ export function createCodeRuntime(toolConfiguration = {}, extras = {}) {
     } catch (error) {
       if (execution.interruption) throw execution.interruption;
       if (error?.code === "host_interrupted") throw error;
+      closePendingCalls();
       return JSON.stringify({
         output: `Script failed\nWall time ${wallTime(startedAt)} seconds\nOutput:\n${errorMessage(error)}`,
         success: false,
         nested_calls: nestedCalls,
       });
     } finally {
+      closePendingCalls();
       finished = true;
       if (!controller.signal.aborted) {
         // Failed scripts are completed results too. Merge only the write set;

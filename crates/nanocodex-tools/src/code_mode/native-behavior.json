@@ -293,7 +293,7 @@
       "tokens": 100
     }
   ],
-  "upstream": "36430b36881cf5c289cb48e671cfc9e8b542ae7b",
+  "upstream": "506a328dab110591d3c1449a15217596e7e9cd61",
   "waits": [
     {
       "input": "{\"cell_id\":\"1\"}",

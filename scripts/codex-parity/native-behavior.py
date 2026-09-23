@@ -7,11 +7,12 @@ Usage: python3 scripts/codex-parity/native-behavior.py UPSTREAM [--write]
 import argparse, json, os, subprocess
 from pathlib import Path
 
-PIN = '36430b36881cf5c289cb48e671cfc9e8b542ae7b'
+PIN = '506a328dab110591d3c1449a15217596e7e9cd61'
 ROOT = Path(__file__).resolve().parents[2]
 p = argparse.ArgumentParser(description=__doc__)
 p.add_argument('upstream', type=Path)
 p.add_argument('--write', action='store_true')
+p.add_argument('--target-dir', type=Path, help='Reuse a Cargo compilation cache (defaults to CARGO_TARGET_DIR when set)')
 a = p.parse_args()
 u = a.upstream.resolve()
 assert subprocess.check_output(['git','-C',str(u),'rev-parse','HEAD'], text=True).strip() == PIN
@@ -103,12 +104,13 @@ source+=r'''fn main() {
  for text in ["abcdefghi","🦀🦀🦀🦀🦀","é中🙂abc\nlast"] { for tokens in [0,1,2,3,100] {
   truncations.push(json!({"text":text,"tokens":tokens,"result":truncate::truncate_middle_with_token_budget(text,tokens).0}));
  }}
- println!("{}",json!({"upstream":"36430b36881cf5c289cb48e671cfc9e8b542ae7b","helpers":helpers,"waits":waits,"truncations":truncations}));
+ println!("{}",json!({"upstream":"__PIN__","helpers":helpers,"waits":waits,"truncations":truncations}));
 }
 '''
+source=source.replace('__PIN__', PIN)
 (build/'src/main.rs').write_text(source)
 env=os.environ.copy()
-env['CARGO_TARGET_DIR']=str(build/'target')
+env['CARGO_TARGET_DIR']=str(a.target_dir.resolve()) if a.target_dir else env.get('CARGO_TARGET_DIR', str(build/'target'))
 output=subprocess.check_output(['cargo','run','--quiet','--manifest-path',str(build/'Cargo.toml')],env=env,text=True)
 value=json.loads(output)
 fixture=ROOT/'crates/nanocodex-tools/src/code_mode/native-behavior.json'
