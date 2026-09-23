@@ -19,11 +19,11 @@ function fixture() {
 it("routes private reads with owner assertions and live authority, and isolates Connect", async () => {
   const f = fixture();
   await markdownMemoryRequest(f.options, "get", { path: "MEMORY.md" }, f.context);
-  expect(f.getByName).toHaveBeenLastCalledWith(JSON.stringify(["personal-memory", "org", "alice"]));
+  expect(f.getByName).toHaveBeenLastCalledWith(JSON.stringify(["personal-memory", "org", "alice"]), undefined);
   expect(f.fetch.mock.calls[0]).toEqual(["https://memory.internal/markdown-memory/get", expect.objectContaining({ headers: expect.objectContaining({ "x-nanocodex-private-memory-owner": "alice", "x-nanocodex-team-id": "personal:alice" }) })]);
   f.connect();
   await markdownMemoryRequest(f.options, "search", { query: "saved" }, f.context);
-  expect(f.getByName).toHaveBeenLastCalledWith("org");
+  expect(f.getByName).toHaveBeenLastCalledWith("org", undefined);
   await expect(markdownMemoryRequest(f.options, "get", { path: "MEMORY.md", scope: "personal" }, f.context)).rejects.toThrow("direct account");
   f.authorize.mockImplementation(() => { throw new Error("revoked"); });
   await expect(markdownMemoryRequest(f.options, "get", { path: "MEMORY.md" }, f.context)).rejects.toThrow("revoked");
@@ -70,13 +70,13 @@ it("protects Markdown API methods and capabilities before forwarding to storage"
   expect((await call("write", { operation: "put", path: "MEMORY.md", expected_revision: 0, content: "private" })).status).toBe(403);
   expect(f.fetch).not.toHaveBeenCalled();
   expect((await call("get", { path: "MEMORY.md" })).status).toBe(200);
-  expect(f.getByName).toHaveBeenLastCalledWith(JSON.stringify(["personal-memory", record.organizationId, record.userId]));
+  expect(f.getByName).toHaveBeenLastCalledWith(JSON.stringify(["personal-memory", record.organizationId, record.userId]), undefined);
   expect((await call("status", {})).status).toBe(200);
   expect(f.fetch).toHaveBeenLastCalledWith("https://memory.internal/markdown-memory/status", expect.objectContaining({
     headers: expect.objectContaining({ "x-nanocodex-private-memory-owner": record.userId }), body: "{}",
   }));
   expect((await call("status", { scope: "team" })).status).toBe(200);
-  expect(f.getByName).toHaveBeenLastCalledWith(record.organizationId);
+  expect(f.getByName).toHaveBeenLastCalledWith(record.organizationId, undefined);
   record.capabilities = ["memory:write"];
   expect((await call("get", { path: "MEMORY.md" })).status).toBe(403);
   const requestsBeforeDeniedStatus = f.fetch.mock.calls.length;
@@ -120,7 +120,7 @@ it("keeps Connect status in its authorized team and blocks private status reads"
   f.connect();
   const status = markdownMemoryTools(f.options).find(tool => tool.name === "memories__status")!;
   expect(await status.handler({}, f.context)).toMatchObject({ scope: "team" });
-  expect(f.getByName).toHaveBeenLastCalledWith("org");
+  expect(f.getByName).toHaveBeenLastCalledWith("org", undefined);
   expect(new Headers(f.fetch.mock.calls[0]![1]!.headers).has("x-nanocodex-private-memory-owner")).toBe(false);
   await expect(status.handler({ scope: "personal" }, f.context)).rejects.toThrow("direct account authority");
   expect(f.fetch).toHaveBeenCalledTimes(1);

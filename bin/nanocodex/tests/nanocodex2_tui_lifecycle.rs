@@ -155,6 +155,76 @@ async fn terminal_control_discovers_preserves_draft_and_deduplicates_prompt() {
     fixture.terminal.wait_text("unfinished local draft").await;
 }
 
+#[cfg(unix)]
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn stalled_tmux_hint_keeps_terminal_usable_and_reaps_helper() {
+    use std::os::unix::fs::PermissionsExt;
+    let helper = tempfile::tempdir().unwrap();
+    let executable = helper.path().join("tmux");
+    let pid_file = helper.path().join("tmux.pid");
+    std::fs::write(
+        &executable,
+        "#!/bin/sh\nprintf '%s' \"$$\" > \"$NANOCODEX_TEST_TMUX_PID\"\nexec /bin/sleep 30\n",
+    )
+    .unwrap();
+    std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+    let inherited_path = std::env::var_os("PATH").unwrap_or_default();
+    let path = std::env::join_paths(
+        std::iter::once(helper.path().to_path_buf()).chain(std::env::split_paths(&inherited_path)),
+    )
+    .unwrap();
+    let started = std::time::Instant::now();
+    let mut terminal = Terminal::start_with_command("http://127.0.0.1:9", false, None, |command| {
+        command.env("TMUX", "nanocodex-test-stalled-tmux");
+        command.env("PATH", path);
+        command.env("NANOCODEX_TEST_TMUX_PID", &pid_file);
+    });
+    tokio::time::timeout(Duration::from_secs(3), terminal.wait_text("actions"))
+        .await
+        .expect("stalled tmux must not block the first frame");
+    let first_frame = started.elapsed();
+    terminal.input("TMUX_STARTUP_DRAFT");
+    terminal.wait_text("TMUX_STARTUP_DRAFT").await;
+    let pid = std::fs::read_to_string(&pid_file).expect("tmux helper was invoked");
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let running = std::process::Command::new("/bin/kill")
+                .args(["-0", pid.trim()])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .unwrap()
+                .success();
+            if !running {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("timed-out tmux helper must be killed and reaped");
+    terminal.input("\x03");
+    terminal.wait_no_text("TMUX_STARTUP_DRAFT").await;
+    let closing = std::time::Instant::now();
+    terminal.input("\x03\x03");
+    let status = tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if let Some(status) = terminal.child.try_wait().unwrap() {
+                break status;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("terminal must close without a lingering tmux helper");
+    assert!(status.success());
+    terminal.wait_output("\x1b[?1049l").await;
+    eprintln!(
+        "stalled tmux: first frame={first_frame:?}, close={:?}",
+        closing.elapsed()
+    );
+}
+
 fn prompt_text(input: &Value) -> String {
     match input {
         Value::String(text) => text.clone(),
@@ -182,6 +252,15 @@ impl Terminal {
     }
 
     fn start_with_reload_dir(origin: &str, attach: bool, reload_dir: Option<&Path>) -> Self {
+        Self::start_with_command(origin, attach, reload_dir, |_| {})
+    }
+
+    fn start_with_command(
+        origin: &str,
+        attach: bool,
+        reload_dir: Option<&Path>,
+        configure: impl FnOnce(&mut CommandBuilder),
+    ) -> Self {
         let workspace = tempfile::tempdir().unwrap();
         let pair = native_pty_system()
             .openpty(PtySize {
@@ -223,6 +302,7 @@ impl Terminal {
             "NANOCODEX_API_KEY",
             format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43)),
         );
+        configure(&mut command);
         let child = pair.slave.spawn_command(command).unwrap();
         drop(pair.slave);
         let mut reader = pair.master.try_clone_reader().unwrap();

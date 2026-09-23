@@ -1,5 +1,8 @@
 # syntax=docker/dockerfile:1
 FROM rust:1.97.0-bookworm AS voice
+# Explicit upstream refresh without disabling normal source-layer reuse.
+ARG NANOCODEX_IMAGE_CACHE_EPOCH=1
+RUN test -n "$NANOCODEX_IMAGE_CACHE_EPOCH"
 RUN apt-get update && apt-get install -y --no-install-recommends cmake pkg-config libssl-dev clang && rm -rf /var/lib/apt/lists/*
 WORKDIR /source
 COPY Cargo.toml Cargo.lock ./
@@ -12,6 +15,9 @@ COPY third_party ./third_party
 RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/usr/local/cargo/git --mount=type=cache,target=/source/target CARGO_BUILD_JOBS=2 cargo build --release --locked -p nanocodex-phone && cp target/release/phone-voice-cloud /phone-voice-cloud
 
 FROM node:24.19.0-bookworm-slim
+# Explicit upstream refresh without disabling normal source-layer reuse.
+ARG NANOCODEX_IMAGE_CACHE_EPOCH=1
+RUN test -n "$NANOCODEX_IMAGE_CACHE_EPOCH"
 RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 RUN npm install --omit=dev --ignore-scripts --no-audit --no-fund ws@8.18.3

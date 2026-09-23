@@ -22,12 +22,19 @@ interface __BaseEnv_Env {
 	THREAD_GIT_REPOSITORY: DurableObjectNamespace<import("./worker/entry").ThreadGitRepository>;
 	EVAL_COORDINATOR: DurableObjectNamespace<import("./worker/entry").EvalCoordinator>;
 	CHATGPT_EGRESS: DurableObjectNamespace<import("./worker/entry").ChatGptEgress>;
+	CHATGPT_EGRESS_WNAM?: DurableObjectNamespace<import("./worker/entry").ChatGptEgressWnam>;
+	CHATGPT_EGRESS_ENAM?: DurableObjectNamespace<import("./worker/entry").ChatGptEgressEnam>;
+	CHATGPT_EGRESS_WEUR?: DurableObjectNamespace<import("./worker/entry").ChatGptEgressWeur>;
+	CHATGPT_EGRESS_EEUR?: DurableObjectNamespace<import("./worker/entry").ChatGptEgressEeur>;
+	CHATGPT_EGRESS_APAC?: DurableObjectNamespace<import("./worker/entry").ChatGptEgressApac>;
+	CHATGPT_EGRESS_SAM?: DurableObjectNamespace<import("./worker/entry").ChatGptEgressSam>;
+	CHATGPT_EGRESS_OC?: DurableObjectNamespace<import("./worker/entry").ChatGptEgressOc>;
 	NANOCODEX_BACKEND: Fetcher /* nanocodex-durable-agent */;
 }
 declare namespace Cloudflare {
 	interface GlobalProps {
 		mainModule: typeof import("./worker/entry");
-		durableNamespaces: "ByokSession" | "ChatGptSession" | "GitRepository" | "EvalCoordinator" | "ChatGptEgress" | "ThreadGitRepository";
+		durableNamespaces: "ByokSession" | "ChatGptSession" | "GitRepository" | "EvalCoordinator" | "ChatGptEgress" | "ThreadGitRepository" | "ChatGptEgressWnam" | "ChatGptEgressEnam" | "ChatGptEgressWeur" | "ChatGptEgressEeur" | "ChatGptEgressApac" | "ChatGptEgressSam" | "ChatGptEgressOc";
 	}
 	interface DevelopmentEnv {
 		GIT_OBJECTS: R2Bucket;

@@ -14,6 +14,7 @@ mod simplify;
 mod split;
 mod telemetry;
 mod terminal;
+mod terminal_profile;
 mod transcript;
 mod view;
 pub(crate) mod voice;
@@ -23,7 +24,7 @@ use std::{
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Arc,
-    time::{Duration, Instant},
+    time::Instant,
 };
 
 use crossterm::event::{
@@ -43,7 +44,7 @@ use nanocodex_voice::{
     CHATGPT_REALTIME_VOICES, PLATFORM_REALTIME_VOICES, RealtimeVoice, VoiceAgentControl,
     VoiceEvent, VoiceEvents, VoiceSession, VoiceSessionBuilder, VoiceSpeaker,
 };
-use ratatex::{Ratatex, TerminalProfile};
+use ratatex::Ratatex;
 use tokio::{
     sync::mpsc,
     time::{MissedTickBehavior, interval, sleep_until},
@@ -759,11 +760,17 @@ pub(crate) async fn run(
         .as_ref()
         .map(|session| PathBuf::from(session.workspace()))
         .unwrap_or(resolve_cwd(&config)?);
-    let configured = if let Some(session) = resume {
-        config.build_resumed_tui(session, vm).await?
-    } else {
-        config.build_tui(vm).await?
-    };
+    let (configured, terminal_profile) = tokio::join!(
+        async {
+            if let Some(session) = resume {
+                config.build_resumed_tui(session, vm).await
+            } else {
+                config.build_tui(vm).await
+            }
+        },
+        terminal_profile::detect(),
+    );
+    let configured = configured?;
     let initial_model = resumed_model.unwrap_or(configured.model);
     let agent = configured.handle;
     let mut agent_events = configured.events;
@@ -787,7 +794,6 @@ pub(crate) async fn run(
     );
 
     let mut terminal = TerminalSession::enter().wrap_err("failed to initialize the terminal")?;
-    let terminal_profile = TerminalProfile::query(Duration::from_millis(750));
     let (math_update_tx, mut math_update_rx) = mpsc::channel(1);
     let math_renderer = Ratatex::builder(terminal_profile)
         .on_update(move || {

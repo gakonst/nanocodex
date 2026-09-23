@@ -1,0 +1,65 @@
+import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, mkdir, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join, dirname } from 'node:path';
+import test from 'node:test';
+import { workerSpecs, fingerprintWorkers } from './worker-inputs.mjs';
+
+test('Worker inputs isolate services and follow dependencies, assets, config and WASM', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'worker-inputs-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  execFileSync('git', ['init', '-q', root]);
+  const put = async (path, text) => { await mkdir(dirname(join(root, path)), { recursive: true }); await writeFile(join(root, path), text); };
+  for (const spec of Object.values(workerSpecs)) {
+    await put(`${spec.directory}/package.json`, JSON.stringify({ name: spec.package, dependencies: spec.needsWasm ? { nanocodex: 'workspace:*' } : {} }));
+    await put(`${spec.directory}/src/index.ts`, 'export const value = 1;');
+  }
+  await put('js/x-api/package.json', JSON.stringify({ name: workerSpecs.x.package, dependencies: { 'fixture-tools': 'workspace:*' } }));
+  await put('js/fixture-tools/package.json', JSON.stringify({ name: 'fixture-tools', dependencies: { 'fixture-protocol': 'workspace:*' } }));
+  await put('js/fixture-protocol/package.json', JSON.stringify({ name: 'fixture-protocol' }));
+  await put('js/fixture-protocol/index.ts', 'export const version = 1;');
+  await put('js/nanocodex/package.json', JSON.stringify({ name: 'nanocodex', devDependencies: { binaryen: '132' } }));
+  await put('js/nanocodex/index.mjs', 'export const value = 1;');
+  await put('js/nanocodex/Cargo.toml', '[package]\nname="nanocodex"\nversion="0.1.0"\n');
+  await put('js/nanocodex/src/lib.rs', 'pub fn example() {}');
+  await put('Cargo.toml', '[workspace]\nmembers=["js/nanocodex"]\n');
+  await put('Cargo.lock', '# lock');
+  for (const path of ['js/nanocodex-vite/scripts/build-js-package.sh', 'js/nanocodex-vite/scripts/wasm-output-cache.mjs', 'js/nanocodex-vite/scripts/wasm-memory-views.mjs', 'js/nanocodex/scripts/deduplicate-wasm.mjs', 'js/nanocodex/scripts/write-package-types.mjs', 'js/nanocodex/scripts/write-wasm-attestation.mjs', 'js/nanocodex/scripts/check-managed-wasm.mjs']) await put(path, '// fixture');
+  await put('js/egress/src/shared.ts', 'export { value } from "../../shared.mjs";');
+  await put('js/shared.mjs', 'export { value } from "./shared-inner.mjs";');
+  await put('js/shared-inner.mjs', 'export const value = 1;');
+  await put('js/account/vite.config.ts', 'const config = { configPath: "../managed/wrangler.jsonc", devOnly: true };');
+  await put('js/managed/wrangler.jsonc', '{ "main": "src/index.ts" }');
+  await put('js/email/build.mjs', 'const asset = new URL("../../assets/", import.meta.url);');
+  await put('assets/template.html', 'hello');
+  let previous = await fingerprintWorkers(root);
+  assert.equal(Object.keys(previous).length, 10);
+  assert.deepEqual(await fingerprintWorkers(root), previous);
+  const change = async (path, text, expected) => {
+    await put(path, text);
+    const next = await fingerprintWorkers(root);
+    assert.deepEqual(Object.keys(next).filter(name => next[name] !== previous[name]).sort(), expected.sort(), path);
+    previous = next;
+  };
+  await change('js/managed/src/index.ts', 'export const value = 2;', ['managed']);
+  await change('js/fixture-protocol/index.ts', 'export const version = 2;', ['x']);
+  await change('js/shared-inner.mjs', 'export const value = 2;', ['egress']);
+  await change('assets/template.html', 'changed', ['email']);
+  await change('js/account/public/icon.svg', '<svg/>', ['account']);
+  await change('js/account/wrangler.jsonc', '{}', ['account']);
+  await change('js/nanocodex/src/lib.rs', 'pub fn changed() {}', Object.keys(workerSpecs).filter(name => workerSpecs[name].needsWasm));
+  await change('pnpm-lock.yaml', 'lockfileVersion: 9', Object.keys(workerSpecs));
+  await change('js/managed/dist/index.js', 'generated', []);
+  await change('js/managed/src/index.test.ts', 'test', []);
+  await change('unrelated.txt', 'unrelated', []);
+  await change('js/nanocodex/scripts/live-code-mode-stress.mjs', 'import "../../managed/scripts/codex-auth-file.mjs";', []);
+  await change('js/managed/scripts/codex-auth-file.mjs', 'export const value = "development-only";', []);
+  await change('js/managed/scripts/prepare-hand-image.mjs', 'const source = new URL("../../../hands/remote/", import.meta.url);', []);
+  await change('hands/remote/host_test.go', 'package fixture', []);
+
+  await rm(join(root, 'js/account/public/icon.svg'));
+  const deleted = await fingerprintWorkers(root);
+  assert.notEqual(deleted.account, previous.account);
+  assert.equal(deleted.managed, previous.managed);
+});

@@ -35,6 +35,12 @@ describe("ChatGPT subscription voice call boundary", () => {
 
 
 describe("voice relay geography", () => {
+  it("prefers the trusted frontdoor ingress over service-hop geography", () => {
+    const request = { cf: { continent: "EU", longitude: "2.3" } } as Request;
+    expect(voiceRelayRegion(request, "SJC")).toBe("wnam");
+    expect(voiceRelayRegion(request, "NRT")).toBe("apac");
+    expect(voiceRelayRegion(request, "ZZZ")).toBeUndefined();
+  });
   it.each([
     ["NA", "-122.4", "wnam"], ["NA", "-74", "enam"],
     ["EU", "2.3", "weur"], ["EU", "23.7", "eeur"],
@@ -51,7 +57,7 @@ describe("voice relay geography", () => {
 });
 
 describe("private voice egress admission", () => {
-  async function fixture(owned: boolean, privateBinding = true, direct = true, sideband = false, rpc = false, callRpc = false, accountId?: string) {
+  async function fixture(owned: boolean, privateBinding = true, direct = true, sideband = false, rpc = false, callRpc = false, accountId?: string, trustedClientIngressColo?: string) {
     const owner = "11111111-1111-4111-8111-111111111111";
     const id = "a".repeat(64);
     const token = `ncx_live_${"k".repeat(12)}_${"s".repeat(43)}`;
@@ -71,14 +77,16 @@ describe("private voice egress admission", () => {
       expect(assertions["x-nanocodex-session-organization-id"]).toBe("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
       return owned ? { subject: direct ? `managed-session-v1_${id}` : id, strategy: direct ? "session_v1" : "directory_v1", ...(accountId ? { chatgpt_account_id: accountId } : {}) } : undefined;
     });
+    const getSession = vi.fn((_id: DurableObjectId, _options?: DurableObjectNamespaceGetDurableObjectOptions) => ({ fetch: ownership, ...(rpc ? { resolveCredentialSubject } : {}) }));
     const env = {
+      trustedClientIngressColo,
       NANOCODEX_API_KEYS: { getByName: () => ({ fetch: async () => Response.json({
         id: "k".repeat(12), prefix: `ncx_live_${"k".repeat(12)}`, label: "voice", digest,
         createdAt: 1, userId: owner, organizationId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
         teamId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc", role: "writer",
         authorizationEpoch: 1, capabilities: ["agents:write"],
       }, { headers: { "x-nanocodex-api-key-authorized": "1" } }) }) },
-      NANOCODEX_SESSIONS: { idFromName: () => ({ toString: () => id }), get: () => ({ fetch: ownership, ...(rpc ? { resolveCredentialSubject } : {}) }) },
+      NANOCODEX_SESSIONS: { idFromName: () => ({ toString: () => id }), get: getSession },
       NANOCODEX: { fetch: generic },
       ...(privateBinding ? { NANOCODEX_REALTIME: { fetch: relay, ...(callRpc ? { createCall } : {}) } } : {}),
     } as unknown as Parameters<typeof routeManagedRealtimeTransport>[1];
@@ -96,8 +104,28 @@ describe("private voice egress admission", () => {
       }, ...(sideband ? {} : { body: JSON.stringify({ sdp: "v=0", session: session() }) }),
     });
     const response = await routeManagedRealtimeTransport(request, env, url, 1000);
-    return { response, relay, generic, ownership, owner, resolveCredentialSubject, createCall };
+    return { response, relay, generic, ownership, owner, resolveCredentialSubject, createCall, getSession, request, env, url };
   }
+  it.each([false, true])("hints Session first touch using trusted ingress for calls and sideband (sideband=%s)", async (sideband) => {
+    const f = await fixture(true, true, true, sideband, true, false, undefined, "SJC");
+    expect(f.response?.status).toBe(201);
+    expect(f.getSession.mock.calls[0]).toHaveLength(2);
+    expect(f.getSession.mock.calls[0]?.[1]).toEqual({ locationHint: "wnam" });
+    expect(f.resolveCredentialSubject).toHaveBeenCalledTimes(1);
+    if (sideband) {
+      expect(f.generic).not.toHaveBeenCalled();
+      const request = f.relay.mock.calls[0]![0];
+      expect(request.headers.get("x-nanocodex-realtime-call-id")).toBe("rtc_fixture");
+      expect(request.headers.has("x-nanocodex-voice-region")).toBe(false);
+    } else {
+      expect(f.relay.mock.calls[0]![0].headers.get("x-nanocodex-voice-region")).toBe("wnam");
+    }
+  });
+  it("does not invent a region for an unmapped trusted ingress", async () => {
+    const f = await fixture(true, true, true, false, false, false, undefined, "ZZZ");
+    expect(f.getSession.mock.calls[0]?.[1]).toBeUndefined();
+    expect(f.relay.mock.calls[0]![0].headers.has("x-nanocodex-voice-region")).toBe(false);
+  });
   it("transports SDP with headers through private RPC and still sanitizes the reply", async () => {
     const f = await fixture(true, true, true, false, true, true);
     expect(f.response?.status).toBe(201);
@@ -138,13 +166,58 @@ describe("private voice egress admission", () => {
     expect(f.relay).not.toHaveBeenCalled();
     expect(f.generic).not.toHaveBeenCalled();
   });
+  it.each([true, false])("uses live ownership and private sideband without rebinding (direct=%s)", async (direct) => {
+    const f = await fixture(true, true, direct, true, true, false, "account-a");
+    expect(f.response?.status).toBe(201);
+    expect(f.resolveCredentialSubject).toHaveBeenCalledTimes(1);
+    expect(f.generic).not.toHaveBeenCalled();
+    const request = f.relay.mock.calls[0]![0];
+    expect(request.url).toBe("https://nanocodex.internal/v1/realtime/sideband");
+    expect(request.headers.get("x-nanocodex-realtime-owner")).toBe(f.owner);
+    expect(request.headers.get("x-nanocodex-chatgpt-account-id")).toBe("account-a");
+    expect(request.headers.get("x-nanocodex-realtime-call-id")).toBe("rtc_fixture");
+  });
+  it.each([true, false])("denied sideband ownership never reaches private or generic egress (direct=%s)", async (direct) => {
+    const f = await fixture(false, true, direct, true, true);
+    expect(f.response?.status).toBe(404);
+    expect(f.resolveCredentialSubject).toHaveBeenCalledTimes(1);
+    expect(f.relay).not.toHaveBeenCalled();
+    expect(f.generic).not.toHaveBeenCalled();
+  });
+  it("sideband always uses fetch even when the private createCall RPC exists", async () => {
+    const f = await fixture(true, true, true, true, true, true);
+    expect(f.response?.status).toBe(201);
+    expect(f.relay).toHaveBeenCalledTimes(1);
+    expect(f.createCall).not.toHaveBeenCalled();
+    expect(f.generic).not.toHaveBeenCalled();
+  });
+  it("preserves the private sideband upgrade and rechecks ownership on reconnect", async () => {
+    const f = await fixture(true, true, true, true, true);
+    const [client, server] = Object.values(new WebSocketPair());
+    server.accept();
+    const upgrade = new Response(null, { status: 101, webSocket: client });
+    f.relay.mockResolvedValueOnce(upgrade);
+    expect(await routeManagedRealtimeTransport(f.request, f.env, f.url, 1000)).toBe(upgrade);
+    expect(f.resolveCredentialSubject).toHaveBeenCalledTimes(2);
+    f.resolveCredentialSubject.mockResolvedValueOnce(undefined);
+    expect((await routeManagedRealtimeTransport(f.request, f.env, f.url, 1000))?.status).toBe(404);
+    expect(f.relay).toHaveBeenCalledTimes(2);
+    expect(f.generic).not.toHaveBeenCalled();
+    client.accept(); client.close(); server.close();
+  });
+  it("never falls back to generic egress after private sideband failure", async () => {
+    const f = await fixture(true, true, true, true, true);
+    f.relay.mockRejectedValueOnce(new Error("private sideband interrupted"));
+    await expect(routeManagedRealtimeTransport(f.request, f.env, f.url, 1000)).rejects.toThrow("private sideband interrupted");
+    expect(f.generic).not.toHaveBeenCalled();
+  });
   it("retains the generic broker's ownership check while the binding is absent", async () => {
     const f = await fixture(true, false);
     expect(f.response?.status).toBe(201);
     expect((f.generic.mock.calls[0]![0] as Request).headers.has("x-nanocodex-realtime-owner")).toBe(false);
   });
   it.each([true, false])("repairs legacy directory state when private call egress cannot be used (sideband=%s)", async (sideband) => {
-    const f = await fixture(true, sideband, false, sideband);
+    const f = await fixture(true, false, false, sideband);
     expect(f.response?.status).toBe(201);
     expect(f.relay).not.toHaveBeenCalled();
     expect(f.generic).toHaveBeenCalledTimes(2);

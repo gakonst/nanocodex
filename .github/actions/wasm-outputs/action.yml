@@ -1,0 +1,47 @@
+name: Reuse WASM outputs
+description: Restore exact-input bindings before installing Rust build tools
+outputs:
+  key:
+    description: Exact WASM output cache key
+    value: ${{ steps.inputs.outputs.key }}
+  hit:
+    description: Whether the restored outputs passed integrity checks
+    value: ${{ steps.verify.outputs.hit }}
+runs:
+  using: composite
+  steps:
+    - name: Fingerprint WASM inputs
+      id: inputs
+      shell: bash
+      run: echo "key=wasm-outputs-v1-${{ runner.os }}-${{ runner.arch }}-$(node js/nanocodex-vite/scripts/wasm-output-cache.mjs key release)" >> "$GITHUB_OUTPUT"
+    - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      id: restore
+      with:
+        key: ${{ steps.inputs.outputs.key }}
+        path: |
+          js/nanocodex/pkg-web
+          js/nanocodex/pkg-node
+          .ci-wasm-cache
+    - name: Verify restored WASM outputs
+      id: verify
+      shell: bash
+      run: |
+        if node js/nanocodex-vite/scripts/wasm-output-cache.mjs check release; then
+          echo "hit=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "hit=false" >> "$GITHUB_OUTPUT"
+        fi
+    - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+      if: steps.verify.outputs.hit != 'true'
+      with:
+        toolchain: '1.97'
+        targets: wasm32-unknown-unknown
+    - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+      if: steps.verify.outputs.hit != 'true'
+      with:
+        cache-on-failure: true
+        save-if: ${{ github.ref == 'refs/heads/master' }}
+    - uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
+      if: steps.verify.outputs.hit != 'true'
+      with:
+        tool: wasm-bindgen-cli@0.2.126

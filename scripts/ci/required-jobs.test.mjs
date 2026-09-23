@@ -7,10 +7,12 @@ import { spawnSync } from 'node:child_process';
 const workflow = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
 const gate = workflow.split('      - name: Require every applicable CI job\n')[1]
   .split('        run: |\n')[1].split('\n').map(line => line.replace(/^          /, '')).join('\n');
-const always = ['CHANGES', 'TEST', 'QUALITY', 'POLICY', 'WASM_BUILD', 'BINDINGS', 'APPS', 'CODEQL'];
-const selected = { NATIVE_REQUIRED: ['SHARED_HANDS', 'WINDOWS_HAND', 'VM_GUEST'], VOICE_REQUIRED: ['VOICE_NATIVE'], PYTHON_REQUIRED: ['PYTHON'] };
+const always = ['CHANGES'];
+const selected = { NATIVE_REQUIRED: ['SHARED_HANDS', 'WINDOWS_HAND', 'VM_GUEST'], VOICE_REQUIRED: ['VOICE_NATIVE'], PYTHON_REQUIRED: ['PYTHON'],
+  RUST_REQUIRED: ['QUALITY'], WASM_REQUIRED: ['WASM_BUILD'], BINDINGS_REQUIRED: ['BINDINGS'],
+  APPS_REQUIRED: ['APPS'], PREVIEW_REQUIRED: ['PREVIEW'], POLICY_REQUIRED: ['POLICY'], CODEQL_REQUIRED: ['CODEQL'] };
 function environment(required) {
-  return { ...Object.fromEntries(always.map(key => [key, 'success'])),
+  return { TEST: 'skipped', ...Object.fromEntries(always.map(key => [key, 'success'])),
     ...Object.fromEntries(Object.entries(selected).flatMap(([key, jobs]) => [[key, String(required)], ...jobs.map(job => [job, required ? 'success' : 'skipped'])])) };
 }
 const passes = env => spawnSync('bash', ['-e', '-c', gate], { env: { ...process.env, ...env } }).status === 0;
@@ -42,14 +44,45 @@ test('missing selection and unplanned execution fail closed', () => {
   for (const job of Object.values(selected).flat()) assert.equal(passes({ ...environment(false), [job]: 'success' }), false);
 });
 
-test('CUA native selection retains macOS bridge and lifecycle test coverage', () => {
+test('CUA native selection retains disabled macOS bridge and lifecycle test definitions', () => {
   const sharedHands = workflow.split('  shared-hands:\n')[1].split('  voice-native:\n')[0];
   assert.match(sharedHands, /if: needs\.changes\.outputs\.native == 'true'/);
   assert.match(sharedHands, /os: \[ubuntu-latest, windows-latest, macos-15\]/);
   const bridgeStep = sharedHands.split('      - name: Check CUA bridge and native host lifecycle\n')[1]
     .split('      - name:')[0];
-  assert.match(bridgeStep, /if: runner\.os == 'macOS'/);
+  assert.match(bridgeStep, /if: \$\{\{ false && runner\.os == 'macOS' \}\}/);
   for (const name of ['app-server', 'native-host', 'gui-readiness']) {
     assert.ok(bridgeStep.includes(`scripts/tests/openai-cua-${name}.test.mjs`));
+  }
+});
+
+test('paused Rust test job must be explicitly skipped', () => {
+  for (const result of ['success', 'failure', 'cancelled', '']) {
+    assert.equal(passes({ ...environment(true), TEST: result }), false, `TEST: ${result}`);
+  }
+});
+
+test('affected-family outputs gate producers, consumers and every final prerequisite', () => {
+  const jobs = Object.fromEntries([...workflow.matchAll(/^  ([a-z-]+):\n([\s\S]*?)(?=^  [a-z-]+:|$(?![\s\S]))/gm)]
+    .map(([, name, body]) => [name, body]));
+  for (const [job, family] of Object.entries({ quality: 'rust', policy: 'policy', 'wasm-build': 'wasm',
+    bindings: 'bindings', apps: 'apps', 'js-preview': 'preview', codeql: 'codeql' })) {
+    assert.ok(jobs[job].includes(`needs.changes.outputs.${family} == 'true'`), job);
+    assert.match(jobs.changes, new RegExp(`      ${family}:`));
+    assert.ok(jobs['ci-success'].includes(job), `gate dependency ${job}`);
+  }
+  for (const job of ['bindings', 'apps', 'js-preview']) {
+    assert.match(jobs[job], /needs: \[changes, wasm-build\]/);
+  }
+  const bindingSteps = jobs.bindings.split('      - ');
+  for (const step of bindingSteps.filter(step => /rust-toolchain@|rust-cache@|cargo clippy/.test(step))) {
+    assert.ok(step.includes("if: needs.changes.outputs.rust == 'true'"), step);
+  }
+  const install = bindingSteps.find(step => step.includes('name: Install JS consumer dependencies'));
+  assert.ok(install.includes('pnpm install --frozen-lockfile'));
+  assert.ok(!install.includes('outputs.rust'));
+  const policySteps = jobs.policy.split('      - ');
+  for (const step of policySteps.filter(step => /cargo-deny|cargo deny|check-(?:experimental|crate|rustls)/.test(step))) {
+    assert.ok(step.includes("if: needs.changes.outputs.rust == 'true'"), step);
   }
 });
