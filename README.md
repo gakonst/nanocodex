@@ -290,8 +290,8 @@ snapshots, see [`examples/lifecycle.rs`](examples/lifecycle.rs),
 [`examples/resume.rs`](examples/resume.rs).
 
 Nanocodex supports OpenAI `gpt-6-sol`, `gpt-6-luna`, and
-`gpt-6-astra`. New SDK, native CLI, managed `nanocodex2`, and account-app
-conversations default to Astra. Sponsored homepage sessions use Luna. Astra
+`gpt-6-astra`. New native CLI and managed `nanocodex2` conversations default to Sol with
+xhigh reasoning and fast mode enabled. SDK and account-app conversations default to Astra. Sponsored homepage sessions use Luna. Astra
 requires at least low reasoning. Nanocodex owns the typed Responses WebSocket behavior for this closed
 model family. An API-key gateway may prefix the on-wire model identifier with
 `NANOCODEX_MODEL_ID_PREFIX`, but that does not create an alternate-provider or

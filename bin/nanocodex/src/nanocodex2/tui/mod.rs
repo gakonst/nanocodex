@@ -3379,12 +3379,7 @@ fn fresh_thread_settings(was_routed: bool, settings: AgentSettings) -> AgentSett
 }
 
 fn new_agent_settings() -> AgentSettings {
-    AgentSettings {
-        model: Model::Astra,
-        thinking: Thinking::Low,
-        reasoning_mode: ManagedReasoningMode::Standard,
-        fast_mode: false,
-    }
+    super::control::InitialSettings::default().resolve()
 }
 
 async fn apply_update(
@@ -4506,14 +4501,14 @@ mod tests {
     }
 
     #[test]
-    fn new_agents_select_astra_without_an_entitlement_probe() {
+    fn new_agents_select_sol_xhigh_fast_without_an_entitlement_probe() {
         assert_eq!(
             new_agent_settings(),
             AgentSettings {
-                model: Model::Astra,
-                thinking: Thinking::Low,
+                model: Model::Sol,
+                thinking: Thinking::Xhigh,
                 reasoning_mode: ManagedReasoningMode::Standard,
-                fast_mode: false,
+                fast_mode: true,
             }
         );
     }

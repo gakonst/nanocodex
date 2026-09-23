@@ -153,7 +153,7 @@ pub(crate) struct AgentArgs {
     #[arg(
         long,
         env = "NANOCODEX_FAST_MODE",
-        default_value_t = false,
+        default_value_t = true,
         action = ArgAction::Set
     )]
     fast_mode: bool,
@@ -295,9 +295,7 @@ impl AgentArgs {
     }
 
     pub(crate) fn thinking(&self) -> Thinking {
-        self.model_policy
-            .thinking
-            .unwrap_or_else(|| self.model.unwrap_or_default().default_thinking())
+        self.model_policy.thinking.unwrap_or(Thinking::Xhigh)
     }
 
     pub(crate) fn web_search(&self) -> bool {
@@ -718,8 +716,8 @@ fn direct_websocket_url(explicit: Option<String>, auth_mode: OpenAiAuthMode) -> 
 
 const fn connected_account_default_model(auth_mode: OpenAiAuthMode) -> Model {
     match auth_mode {
-        OpenAiAuthMode::ChatGpt => Model::Astra,
-        OpenAiAuthMode::ApiKey => Model::Astra,
+        OpenAiAuthMode::ChatGpt => Model::Sol,
+        OpenAiAuthMode::ApiKey => Model::Sol,
     }
 }
 
@@ -869,14 +867,14 @@ mod tests {
     use nanocodex::{Model, oai::auth::OpenAiAuthMode};
 
     #[test]
-    fn default_model_is_astra_for_every_auth_mode() {
+    fn default_model_is_sol_for_every_auth_mode() {
         assert_eq!(
             connected_account_default_model(OpenAiAuthMode::ChatGpt),
-            Model::Astra
+            Model::Sol
         );
         assert_eq!(
             connected_account_default_model(OpenAiAuthMode::ApiKey),
-            Model::Astra
+            Model::Sol
         );
     }
 
@@ -1021,14 +1019,25 @@ mod tests {
     }
 
     #[test]
-    fn fast_mode_is_opt_in() {
+    fn reasoning_defaults_to_xhigh_and_preserves_overrides() {
+        let cli = crate::Cli::try_parse_from(["nanocodex"]).unwrap();
+        assert_eq!(cli.agent.thinking(), nanocodex::Thinking::Xhigh);
+        let cli =
+            crate::Cli::try_parse_from(["nanocodex", "--thinking", "high", "--fast-mode", "false"])
+                .unwrap();
+        assert_eq!(cli.agent.thinking(), nanocodex::Thinking::High);
+        assert!(!cli.agent.fast_mode());
+    }
+
+    #[test]
+    fn fast_mode_is_enabled_by_default() {
         let command = crate::Cli::command();
         let fast_mode = command
             .get_arguments()
             .find(|argument| argument.get_id() == "fast_mode")
             .expect("the CLI should expose the fast-mode argument");
 
-        assert_eq!(fast_mode.get_default_values(), ["false"]);
+        assert_eq!(fast_mode.get_default_values(), ["true"]);
     }
 
     #[test]

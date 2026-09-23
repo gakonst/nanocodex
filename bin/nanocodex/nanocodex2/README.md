@@ -255,7 +255,7 @@ available without reopening the menu.
 ## Headless controls
 
 ```bash
-# Create with explicit initial settings; defaults are Astra, low, standard.
+# Create with explicit initial settings; defaults are Sol, xhigh, standard, fast mode enabled.
 nanocodex2 new --model astra --thinking high
 nanocodex2 run "Inspect this repository" --model sol --thinking high
 nanocodex2 run "Continue the review" --agent AGENT_ID

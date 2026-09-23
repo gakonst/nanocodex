@@ -1,10 +1,11 @@
 # GPT-6 Astra readiness
 
 Nanocodex recognizes the provider model ID `gpt-6-astra`. Callers can explicitly
-create Astra agents. New native ChatGPT, `nanocodex2`, and account-app conversations
-select Astra directly and treat an explicit provider rejection as the availability
-signal. Existing managed agents keep their retained settings, native API-key and
-generic SDK defaults now select Astra, and sponsored homepage sessions remain Luna.
+create Astra agents. New account-app and generic SDK conversations select Astra
+directly and treat an explicit provider rejection as the availability signal.
+The native CLI and `nanocodex2` default to Sol with xhigh reasoning and fast mode.
+Existing managed agents keep their retained settings, and sponsored homepage
+sessions remain Luna.
 
 This support is based on OpenAI's current contracts:
 
@@ -207,9 +208,9 @@ provider steering protocol.
 
 ## Rollout and live evidence
 
-The native CLI with ChatGPT authentication, managed `nanocodex2` terminal, and
-account app select Astra directly for new conversations; an explicit provider
-rejection is the availability signal. The selector is available only before the
+The account app selects Astra directly for new conversations; an explicit provider
+rejection is the availability signal. The native CLI and managed `nanocodex2`
+terminal default to Sol with xhigh reasoning and fast mode. The selector is available only before the
 first accepted turn, while thinking and Fast remain live settings.
 
 Both native terminal clients expose the complete Sol, Luna, and Astra

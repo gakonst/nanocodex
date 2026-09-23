@@ -1086,7 +1086,7 @@ async fn open_workspace_agent_from(
         client,
         agent_id,
         state,
-        AgentSettings::default(),
+        control::InitialSettings::default().resolve(),
         event_observer,
     )
     .await

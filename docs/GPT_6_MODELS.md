@@ -21,8 +21,9 @@ and hashes. Astra and the permission, voice, and goal prompts remain pinned to
 `36430b36881cf5c289cb48e671cfc9e8b542ae7b`; only Sol and Luna use the launch pin.
 Caller-supplied replacement and additive instructions remain supported.
 
-Astra defaults to low effort; Sol and Luna default to medium. Explicit caller
-effort wins. The public effort range ends at `max`; Codex's Sol `ultra` mode
+The SDK model defaults are low effort for Astra and medium for Sol and Luna.
+The `nanocodex` and `nanocodex2` CLIs default to Sol with xhigh effort and fast
+mode enabled. Explicit caller effort wins. The public effort range ends at `max`; Codex's Sol `ultra` mode
 requires orchestration beyond this model integration. Sol and Luna also retain
 `none`, supported by the official [Sol](https://developers.openai.com/api/docs/models/gpt-6-sol)
 and [Luna](https://developers.openai.com/api/docs/models/gpt-6-luna) API contracts.

@@ -17,9 +17,9 @@ pub(crate) struct InitialSettings {
     /// Initial reasoning mode (standard or pro).
     #[arg(long)]
     reasoning_mode: Option<ReasoningMode>,
-    /// Enable fast processing for the new agent.
-    #[arg(long)]
-    fast_mode: bool,
+    /// Enable fast processing for the new agent (defaults to true).
+    #[arg(long, num_args = 0..=1, default_missing_value = "true", action = clap::ArgAction::Set)]
+    fast_mode: Option<bool>,
     /// Pin the new session to this connected ChatGPT account (disables failover).
     #[arg(long)]
     pub(crate) chatgpt_account: Option<String>,
@@ -29,10 +29,10 @@ impl InitialSettings {
     pub(crate) fn resolve(self) -> AgentSettings {
         let defaults = AgentSettings::default();
         AgentSettings {
-            model: self.model.unwrap_or(defaults.model),
-            thinking: self.thinking.unwrap_or(defaults.thinking),
+            model: self.model.unwrap_or(Model::Sol),
+            thinking: self.thinking.unwrap_or(Thinking::Xhigh),
             reasoning_mode: self.reasoning_mode.unwrap_or(defaults.reasoning_mode),
-            fast_mode: self.fast_mode,
+            fast_mode: self.fast_mode.unwrap_or(true),
         }
     }
 }
@@ -160,5 +160,54 @@ impl Cron {
                 super::write_json(&client.put_trigger(&agent_id, &trigger_id, &config).await?)
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct Cli {
+        #[command(flatten)]
+        settings: InitialSettings,
+    }
+
+    #[test]
+    fn initial_settings_default_to_sol_xhigh_fast() {
+        for settings in [
+            InitialSettings::default(),
+            Cli::parse_from(["test"]).settings,
+        ] {
+            let settings = settings.resolve();
+            assert_eq!(settings.model, Model::Sol);
+            assert_eq!(settings.thinking, Thinking::Xhigh);
+            assert!(settings.fast_mode);
+        }
+    }
+
+    #[test]
+    fn initial_settings_preserve_overrides() {
+        let settings = Cli::parse_from([
+            "test",
+            "--model",
+            "astra",
+            "--thinking",
+            "high",
+            "--fast-mode",
+            "false",
+        ])
+        .settings
+        .resolve();
+        assert_eq!(settings.model, Model::Astra);
+        assert_eq!(settings.thinking, Thinking::High);
+        assert!(!settings.fast_mode);
+        assert!(
+            Cli::parse_from(["test", "--fast-mode"])
+                .settings
+                .resolve()
+                .fast_mode
+        );
     }
 }
