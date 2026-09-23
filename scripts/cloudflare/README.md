@@ -1,10 +1,9 @@
 # API release path
 
-The production preflight selects Workers before scheduling image jobs. Workers are
-independent releases: a managed-only edit builds/deploys managed; an X/email-only
-release does not require phone or sandbox receipts. Production rechecks the plan
-inside its serialized deployment job, then installs and builds selected packages
-on that same runner. No second production install or Worker artifact handoff.
+The API production job starts directly on a master push, without `needs` on image
+planning, Docker publication, native/phone builds or CI tests. It selects changed
+Workers inside its serialized deployment job, then installs/builds only their
+packages. There is no Docker builder or image recovery build in this path.
 
 Only managed, account and playground require WASM. Egress, X, email, Connect API,
 Connect dialog, Astra and Chief of Staff use JavaScript. Explicit build tiers avoid
@@ -28,19 +27,20 @@ Python 3.11+ is required for deterministic release planning. Standalone WASM bui
 can still compile without cache reuse if input discovery is unavailable; releases
 fail early at planning rather than generating an unstable release identity.
 
-Managed fingerprints include the audited phone/sandbox input keys and Cloudflare
-account. Selected managed releases require matching immutable registry receipts.
-Actions cache is the fast lookup; successful publications also retain receipts in
-GitHub Deployments (`nanocodex-image-phone` / `nanocodex-image-sandbox`). Up to 100
-recent receipts per image are searched when a cache entry is missing. Only genuinely
-missing receipts schedule builders. Push publishers with the same image input key
-share a concurrency slot and recheck cache plus durable history after waiting, so
-a second push cannot rebuild an image the first push just published. Superseded
-pending pushes coalesce; explicit manual dispatches remain independent. Production
-rechecks durable history and exact Actions cache keys if live state changed after
-preflight, and can publish a genuinely missing image under the lock.
-Every managed release retains both verified receipts, including ordinary cache hits,
-before certifying its deployment. This closes the preflight-to-deploy race.
+Managed releases use already-published immutable phone/sandbox images. Selection
+prefers a successful receipt for the current image inputs, falling back to the
+latest successful published image while a new image builds independently. The
+selected digests are pinned for the job and included in the Worker identity.
+New Rust/image source alone never makes the API wait for publication. If no image
+has ever been published, bootstrap publication is an explicit prerequisite; CI
+never silently starts a native build inside an API release.
+
+Image preflight and publishers run independently. Same-input publishers coalesce
+and recheck durable GitHub Deployment receipts after acquiring their slot. Once
+publication and the API release finish, a separate serialized rollout updates only
+the relevant Workers. Its managed images must match current source inputs. If a
+newer master supersedes that rollout, published digest changes are detected by the
+next API release. Image failure cannot block the API production job.
 
 Publication rejects dirty relevant source because image keys hash committed HEAD.
 `MANAGED_IMAGE_CACHE_EPOCH` changes image identity, pulls bases and invalidates each
@@ -50,12 +50,12 @@ new Docker COPY/build-script reads and external generated inputs in the input he
 Preview container decisions compare these same committed keys, so SDK JavaScript
 alone cannot trigger native image builds.
 
-The account Worker uses one immutable relay image across all regional controllers.
-Its separate key follows the audited Docker COPY inputs and build policy, so UI or
-Worker-only edits do not rebuild it. The serialized production job restores its
-receipt or publishes once, then replaces every regional image path with that digest
-in a generated config beside Vite's output. Account releases explicitly stamp the
-revision, and health must report that revision before the release is certified.
+The account relay image also publishes independently, once for all regions, from
+its audited Docker inputs. API releases consume a published receipt; before the
+first such receipt, they preserve each existing Cloudflare application's image.
+Account image selection is pinned during planning. Vite's config is rewritten
+beside its output, preserving relative paths. Account releases explicitly stamp
+the revision, and health must report it before the release is certified.
 
 Worker release identity combines source/dependency/config keys with account scope.
 The ledger records intent before mutation. Success requires command completion,

@@ -33,7 +33,7 @@ for (const [name, targets] of Object.entries(buildTargets)) workerSpecs[name].bu
 const digest = bytes => createHash('sha256').update(bytes).digest('hex');
 const generated = /(?:^|\/)(?:node_modules|dist|target|pkg-web|pkg-node|\.wrangler|\.turbo|\.git)(?:\/|$)/;
 const tests = /(?:^|\/)(?:test|tests|benchmark|benches)(?:\/|$)|\.(?:test|spec)\.[^/]+$/;
-const common = /^(?:package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|turbo\.json|\.npmrc|\.node-version|\.nvmrc|tsconfig[^/]*\.json|patches\/.*|scripts\/cloudflare\/(?:worker-inputs|release-plan|release-workers)\.mjs|\.github\/workflows\/cloudflare\.yml|\.github\/actions\/wasm-outputs\/action\.yml)$/;
+const common = /^(?:package\.json|pnpm-lock\.yaml|pnpm-workspace\.yaml|turbo\.json|\.npmrc|\.node-version|\.nvmrc|tsconfig[^/]*\.json|patches\/.*|scripts\/cloudflare\/(?:worker-inputs|release-plan|release-workers)\.mjs|\.github\/workflows\/cloudflare\.yml|\.github\/actions\/(?:wasm-outputs|deploy-workers)\/action\.yml)$/;
 
 export async function fingerprintWorkers(cwd = process.cwd()) {
   // Include new source files but never ignored/generated local build products.
@@ -60,7 +60,9 @@ export async function fingerprintWorkers(cwd = process.cwd()) {
       for (const path of contents.keys()) {
         if (!path.startsWith(`${directory}/`) || tests.test(path)) continue;
         const relative = path.slice(directory.length + 1);
-        if (packageSource && (/^(?:scripts|\.github)\//.test(relative)
+        if (packageSource && ((directory === 'js/account' && relative.startsWith('container/'))
+          || /^(?:Dockerfile(?:\..*)?|\.dockerignore)$/.test(relative)
+          || /^(?:scripts|\.github)\//.test(relative)
           || /^(?:README|CHANGELOG|AGENTS)\.md$/.test(relative)
           || (directory === 'js/nanocodex' && /^(?:src\/|Cargo\.toml$)/.test(relative)))) continue;
         files.add(path);
@@ -96,7 +98,8 @@ export async function fingerprintWorkers(cwd = process.cwd()) {
     }
     visit(spec.package);
     if (name === 'managed') files.add('js/managed/scripts/prepare-code-evaluator.mjs');
-    if (name === 'account') files.add('scripts/cloudflare/account-relay-image.mjs');
+    if (name === 'account') files.add('scripts/cloudflare/released-account-image.mjs');
+    if (name === 'managed') files.add('scripts/cloudflare/released-images.mjs');
     for (const path of files) if (!contents.has(path)) files.delete(path);
     // Follow relative imports/re-exports and literal build asset URLs without
     // treating a development-only Wrangler service binding as a dependency.

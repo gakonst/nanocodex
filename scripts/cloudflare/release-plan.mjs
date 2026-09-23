@@ -6,18 +6,18 @@ import { createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { workerSpecs, fingerprintWorkers } from './worker-inputs.mjs';
+import { resolveReleasedImages } from './released-images.mjs';
+import { releasedAccountIdentity } from './released-account-image.mjs';
 import { createDeploymentLedger } from './deployment-ledger.mjs';
-import { fingerprint } from './managed-images.mjs';
-import { fingerprint as relayFingerprint } from './account-relay-image.mjs';
 
 export const planPath = '.ci-release-plan.json';
 export async function releaseFingerprints({cwd=process.cwd(),account=process.env.CLOUDFLARE_ACCOUNT_ID,epoch=process.env.MANAGED_IMAGE_CACHE_EPOCH || '1'}={}) {
   const result = await fingerprintWorkers(cwd);
-  // Image identity is the audited source key, available before any builder runs.
-  // Validate immutable digest receipts only if managed is actually selected.
-  const images = ['phone','sandbox'].map(image => fingerprint(image, account, epoch, cwd));
-  result.managed = createHash('sha256').update(JSON.stringify([result.managed,...images])).digest('hex');
-  result.account = createHash('sha256').update(JSON.stringify([result.account,relayFingerprint(account,epoch,cwd)])).digest('hex');
+  // Only already-published images affect an API release; source changes cannot
+  // schedule a native build here. Freeze the selection for this job.
+  const [images, relay] = await Promise.all([resolveReleasedImages({account,cwd,epoch}), releasedAccountIdentity({account,cwd})]);
+  result.managed=createHash('sha256').update(JSON.stringify([result.managed,images.phone.ref,images.sandbox.ref])).digest('hex');
+  result.account=createHash('sha256').update(JSON.stringify([result.account,relay])).digest('hex');
   for (const name of Object.keys(result)) result[name] = createHash('sha256')
     .update(JSON.stringify([account, result[name]])).digest('hex');
   return result;
@@ -64,7 +64,11 @@ export function buildSelected(plan, run=execFileSync) {
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   const command=process.argv[2];
   if(command==='plan'){
-    const plan=await selectRelease(await releaseFingerprints(),{force:process.env.GITHUB_EVENT_NAME==='workflow_dispatch'});
+    const only=process.env.RELEASE_ONLY;
+    const components=only?only.split(','):[];
+    assert.ok(components.every(name=>['managed','account'].includes(name)));
+    const plan=await selectRelease(await releaseFingerprints(),{force:Boolean(only)||process.env.GITHUB_EVENT_NAME==='workflow_dispatch'});
+    if(only)plan.selected=plan.selected.filter(name=>components.includes(name));
     writeFileSync(planPath,JSON.stringify(plan,null,2)+'\n');
     const needs=releaseNeeds(plan);
     if(process.env.GITHUB_OUTPUT)appendFileSync(process.env.GITHUB_OUTPUT,Object.entries(needs).map(([key,value])=>`${key}=${value}\n`).join(''));
