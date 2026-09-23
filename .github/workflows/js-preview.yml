@@ -12,8 +12,10 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: js-preview-${{ github.event.pull_request.number || github.ref }}
-  cancel-in-progress: true
+  # Reusable workflows inherit their caller's context. Only supersede previews
+  # for the same PR and caller; full/manual runs each need their own slot.
+  group: js-preview-${{ github.workflow }}-${{ github.event_name }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   publish:
@@ -27,12 +29,13 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - if: github.event_name == 'workflow_dispatch'
+      # A manually dispatched parent CI still supplies its shared artifact.
+      - if: inputs.wasm-artifact == ''
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: "1.97"
           targets: wasm32-unknown-unknown
-      - if: github.event_name == 'workflow_dispatch'
+      - if: inputs.wasm-artifact == ''
         uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
         with:
           cache-on-failure: true
@@ -43,19 +46,19 @@ jobs:
           node-version: 24
           cache: pnpm
           cache-dependency-path: pnpm-lock.yaml
-      - if: github.event_name == 'workflow_dispatch'
+      - if: inputs.wasm-artifact == ''
         uses: taiki-e/install-action@3522286d40783523f9c7880e33f785905b4c20d0 # v2
         with:
           tool: wasm-bindgen-cli@0.2.126
       - run: pnpm install --frozen-lockfile
       - name: Download the shared WASM package
-        if: github.event_name != 'workflow_dispatch'
+        if: inputs.wasm-artifact != ''
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: ${{ inputs.wasm-artifact }}
           path: js/nanocodex
       - name: Build package for a standalone manual preview
-        if: github.event_name == 'workflow_dispatch'
+        if: inputs.wasm-artifact == ''
         run: ./js/nanocodex-vite/scripts/build-js-package.sh --release
       - name: Publish immutable commit previews
         working-directory: js/nanocodex

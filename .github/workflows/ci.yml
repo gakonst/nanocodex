@@ -84,7 +84,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-15]
+        os: [ubuntu-latest, macos-15]
     env:
       NANOCODEX_COMPUTER: "off"
     steps:
@@ -185,7 +185,9 @@ jobs:
   windows-hand:
     needs: changes
     if: needs.changes.outputs.native == 'true'
-    name: Windows Hand and installer
+    name: shared Windows Hand and installer
+    env:
+      NANOCODEX_COMPUTER: "off"
     runs-on: windows-2025
     timeout-minutes: 45
     permissions:
@@ -215,20 +217,6 @@ jobs:
         if: ${{ false }}
         shell: powershell
         run: powershell.exe -NoLogo -NoProfile -NonInteractive -File ./windows/hand/test-cua-provision.ps1
-      - name: Validate the one-click installer definition
-        shell: pwsh
-        run: |
-          $placeholder = Join-Path $env:RUNNER_TEMP "nanocodex-installer-placeholder.exe"
-          [IO.File]::WriteAllBytes($placeholder, [byte[]]@(0))
-          try {
-            ./windows/hand/build.ps1 `
-              -Nanocodex2 $placeholder `
-              -Version 0.0.0-ci `
-              -NumericVersion 0.0.0.0
-          } finally {
-            Remove-Item -LiteralPath $placeholder -Force -ErrorAction SilentlyContinue
-            Remove-Item -LiteralPath ./dist/windows-hand -Recurse -Force -ErrorAction SilentlyContinue
-          }
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: "1.97"
@@ -246,6 +234,20 @@ jobs:
           cache-on-failure: true
       - name: Cache Rust compilation
         uses: ./.github/actions/rust-compiler-cache
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Check media transport and IPC boundaries on every host OS
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
+        run: cargo test --locked -p nanocodex-remote -p nanocodex-tui-control
+      - name: Check shared native capture policy and platform adapters
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
+        run: cargo test --locked -p nanocodex-hand
       - name: Test the account Hand
         if: ${{ false }}
         shell: pwsh
@@ -259,6 +261,14 @@ jobs:
         run: |
           cargo build --locked --package nanocodex2-bin --bin nanocodex2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Run real CLI/app sharing against a local account server
+        # Temporarily disabled: CI tests are paused.
+        if: ${{ false }}
+        shell: bash
+        run: |
+          NANOCODEX_DEVICE_TEST_BINARY="$(node -p 'require("node:path").resolve("target/debug/nanocodex2" + (process.platform === "win32" ? ".exe" : ""))')"
+          export NANOCODEX_DEVICE_TEST_BINARY
+          node --test js/desktop-runtime/test/device-hand.integration.test.mjs js/desktop-runtime/test/device-hand-shutdown.test.mjs
       - name: Validate the per-user startup plan
         # Temporarily disabled: CI tests are paused.
         if: ${{ false }}
@@ -511,6 +521,38 @@ jobs:
     with:
       wasm-artifact: nanocodex-wasm
 
+  wasm-quality:
+    name: Rust WASM quality
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.bindings == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: "1.97"
+          targets: wasm32-unknown-unknown
+          components: clippy
+      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
+        with:
+          save-if: ${{ github.ref == 'refs/heads/master' }}
+          shared-key: bindings
+          cache-on-failure: true
+      - name: Check Rust WASM consumers
+        run: |
+          cargo clippy --locked --target wasm32-unknown-unknown \
+            --package nanocodex-oai-api \
+            --package nanocodex-tools \
+            --package nanocodex-agent \
+            --package nanocodex \
+            --package nanocodex-wasm \
+            -- -D warnings -A clippy::missing_const_for_fn
+
   bindings:
     name: Node and browser bindings
     needs: [changes, wasm-build]
@@ -523,17 +565,6 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
-        if: needs.changes.outputs.rust == 'true'
-        with:
-          toolchain: "1.97"
-          targets: wasm32-unknown-unknown
-          components: clippy
-      - uses: Swatinem/rust-cache@779680da715d629ac1d338a641029a2f4372abb5 # v2
-        if: needs.changes.outputs.rust == 'true'
-        with:
-          save-if: ${{ github.ref == 'refs/heads/master' }}
-          cache-on-failure: true
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
@@ -544,16 +575,6 @@ jobs:
         with:
           name: nanocodex-wasm
           path: js/nanocodex
-      - name: Check Rust WASM consumers
-        if: needs.changes.outputs.rust == 'true'
-        run: |
-          cargo clippy --locked --target wasm32-unknown-unknown \
-            --package nanocodex-oai-api \
-            --package nanocodex-tools \
-            --package nanocodex-agent \
-            --package nanocodex \
-            --package nanocodex-wasm \
-            -- -D warnings -A clippy::missing_const_for_fn
       - name: Install JS consumer dependencies
         run: |
           pnpm install --frozen-lockfile
@@ -758,7 +779,7 @@ jobs:
     # Report failed prerequisites, but do not keep a cancelled workflow holding
     # its concurrency slot while this final job waits for a runner.
     if: always() && !cancelled()
-    needs: [changes, test, shared-hands, voice-native, windows-hand, quality, vm-guest, policy, wasm-build, bindings, python, apps, js-preview, codeql]
+    needs: [changes, test, shared-hands, voice-native, windows-hand, quality, vm-guest, policy, wasm-build, wasm-quality, bindings, python, apps, js-preview, codeql]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
@@ -783,6 +804,7 @@ jobs:
           VM_GUEST: ${{ needs.vm-guest.result }}
           POLICY: ${{ needs.policy.result }}
           WASM_BUILD: ${{ needs.wasm-build.result }}
+          WASM_QUALITY: ${{ needs.wasm-quality.result }}
           BINDINGS: ${{ needs.bindings.result }}
           PYTHON: ${{ needs.python.result }}
           APPS: ${{ needs.apps.result }}
@@ -806,6 +828,11 @@ jobs:
           require_selected "$NATIVE_REQUIRED" "$VM_GUEST"
           require_selected "$POLICY_REQUIRED" "$POLICY"
           require_selected "$WASM_REQUIRED" "$WASM_BUILD"
+          if [ "$RUST_REQUIRED" = true ] && [ "$BINDINGS_REQUIRED" = true ]; then
+            require_selected true "$WASM_QUALITY"
+          else
+            require_selected false "$WASM_QUALITY"
+          fi
           require_selected "$BINDINGS_REQUIRED" "$BINDINGS"
           require_selected "$PYTHON_REQUIRED" "$PYTHON"
           require_selected "$APPS_REQUIRED" "$APPS"

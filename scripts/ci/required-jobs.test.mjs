@@ -12,7 +12,7 @@ const selected = { NATIVE_REQUIRED: ['SHARED_HANDS', 'WINDOWS_HAND', 'VM_GUEST']
   RUST_REQUIRED: ['QUALITY'], WASM_REQUIRED: ['WASM_BUILD'], BINDINGS_REQUIRED: ['BINDINGS'],
   APPS_REQUIRED: ['APPS'], PREVIEW_REQUIRED: ['PREVIEW'], POLICY_REQUIRED: ['POLICY'], CODEQL_REQUIRED: ['CODEQL'] };
 function environment(required) {
-  return { TEST: 'skipped', ...Object.fromEntries(always.map(key => [key, 'success'])),
+  return { TEST: 'skipped', WASM_QUALITY: required ? 'success' : 'skipped', ...Object.fromEntries(always.map(key => [key, 'success'])),
     ...Object.fromEntries(Object.entries(selected).flatMap(([key, jobs]) => [[key, String(required)], ...jobs.map(job => [job, required ? 'success' : 'skipped'])])) };
 }
 const passes = env => spawnSync('bash', ['-e', '-c', gate], { env: { ...process.env, ...env } }).status === 0;
@@ -31,7 +31,7 @@ test('full and intentionally reduced matrices pass the real gate', () => {
   }
 });
 test('every required check rejects failure, cancellation, and unexpected skips', () => {
-  for (const job of [...always, ...Object.values(selected).flat()]) {
+  for (const job of [...always, 'WASM_QUALITY', ...Object.values(selected).flat()]) {
     for (const result of ['failure', 'cancelled', 'skipped', '']) {
       assert.equal(passes({ ...environment(true), [job]: result }), false, `${job}: ${result}`);
     }
@@ -47,7 +47,7 @@ test('missing selection and unplanned execution fail closed', () => {
 test('CUA native selection retains disabled macOS bridge and lifecycle test definitions', () => {
   const sharedHands = workflow.split('  shared-hands:\n')[1].split('  voice-native:\n')[0];
   assert.match(sharedHands, /if: needs\.changes\.outputs\.native == 'true'/);
-  assert.match(sharedHands, /os: \[ubuntu-latest, windows-latest, macos-15\]/);
+  assert.match(sharedHands, /os: \[ubuntu-latest, macos-15\]/);
   const bridgeStep = sharedHands.split('      - name: Check CUA bridge and native host lifecycle\n')[1]
     .split('      - name:')[0];
   assert.match(bridgeStep, /if: \$\{\{ false && runner\.os == 'macOS' \}\}/);
@@ -74,10 +74,12 @@ test('affected-family outputs gate producers, consumers and every final prerequi
   for (const job of ['bindings', 'apps', 'js-preview']) {
     assert.match(jobs[job], /needs: \[changes, wasm-build\]/);
   }
+  assert.match(jobs['wasm-quality'], /needs: changes/);
+  assert.ok(jobs['wasm-quality'].includes("if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.bindings == 'true'"));
+  assert.match(jobs['wasm-quality'], /cargo clippy --locked --target wasm32-unknown-unknown/);
+  assert.ok(!jobs.bindings.includes('cargo clippy'));
+  assert.ok(jobs['ci-success'].includes('needs.wasm-quality.result'));
   const bindingSteps = jobs.bindings.split('      - ');
-  for (const step of bindingSteps.filter(step => /rust-toolchain@|rust-cache@|cargo clippy/.test(step))) {
-    assert.ok(step.includes("if: needs.changes.outputs.rust == 'true'"), step);
-  }
   const install = bindingSteps.find(step => step.includes('name: Install JS consumer dependencies'));
   assert.ok(install.includes('pnpm install --frozen-lockfile'));
   assert.ok(!install.includes('outputs.rust'));
@@ -107,4 +109,33 @@ test('Rust quality lanes retain all target and isolated feature checks', () => {
   for (const result of ['failure', 'cancelled', 'skipped']) {
     assert.equal(passes({ ...environment(true), QUALITY: result }), false);
   }
+});
+
+
+test('WASM quality is required only for Rust changes with WASM consumers', () => {
+  for (const rust of [false, true]) for (const bindings of [false, true]) {
+    const env = { ...environment(false), RUST_REQUIRED: String(rust),
+      BINDINGS_REQUIRED: String(bindings), QUALITY: rust ? 'success' : 'skipped',
+      BINDINGS: bindings ? 'success' : 'skipped', WASM_QUALITY: rust && bindings ? 'success' : 'skipped' };
+    assert.ok(passes(env));
+    for (const result of ['failure', 'cancelled', '', rust && bindings ? 'skipped' : 'success']) {
+      assert.equal(passes({ ...env, WASM_QUALITY: result }), false);
+    }
+  }
+});
+
+test('one Windows runner retains shared native, JS lifecycle, and installer coverage', () => {
+  const shared = workflow.split('  shared-hands:\n')[1].split('  voice-native:\n')[0];
+  const windows = workflow.split('  windows-hand:\n')[1].split('  quality:\n')[0];
+  assert.ok(!shared.includes('windows-latest'));
+  assert.match(windows, /runs-on: windows-2025/);
+  for (const command of ['-p nanocodex-remote -p nanocodex-tui-control', '-p nanocodex-hand',
+    'cargo test --locked --package nanocodex2-bin --bin nanocodex2',
+    'device-hand.integration.test.mjs', 'device-hand-shutdown.test.mjs',
+    'test-service-build.ps1', 'test-cua-provision.ps1', 'test-setup.ps1',
+    'pnpm install --frozen-lockfile', '-Nanocodex2 ./target/debug/nanocodex2.exe']) {
+    assert.ok(windows.includes(command), command);
+  }
+  assert.equal((windows.match(/cargo build --locked/g) ?? []).length, 1);
+  assert.ok(!windows.includes('nanocodex-installer-placeholder.exe'));
 });
