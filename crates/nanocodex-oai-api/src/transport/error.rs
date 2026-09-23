@@ -760,6 +760,8 @@ mod tests {
         for detail in [
             "Responses: invalid provider stream",
             "Error: Responses: invalid provider stream\n    at Object.pull (index.js:1:1)",
+            "Responses: invalid provider stream\nProtocol invariant: normalize_tool_json",
+            "Error: Responses: invalid provider stream\nProtocol invariant: tool_fragment_id\n    at Object.pull (index.js:1:1)",
         ] {
             let error = ResponsesError::HttpRequest {
                 detail: detail.to_owned(),

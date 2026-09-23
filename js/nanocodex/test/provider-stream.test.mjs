@@ -228,7 +228,7 @@ for (const scenario of ["early-close", "failed", "mismatched-final", "unknown-it
     if (scenario === "mismatched-final") upstream.send(nativeFinal("different"));
   }
   upstream.close();
-  await assert.rejects(pending, error => /^Responses: invalid provider stream \[[a-z_]+\]$/.test(error.message));
+  await assert.rejects(pending, error => /^Responses: invalid provider stream\nProtocol invariant: [a-z_]+$/.test(error.message));
   assert.equal(fixture.observed.at(-1), "protocol_error");
 });
 
@@ -271,7 +271,7 @@ for (const scenario of ["unterminated-frame", "aggregate-text", "aggregate-tools
     else if (scenario === "aggregate-text") for (let index = 0; index < 9; index++) upstream.send(chunk({ content: block }));
     else if (scenario === "aggregate-tools") for (let index = 0; index < 5; index++) upstream.send(chunk({ tool_calls: [{ index: 0, function: { arguments: block } }] }));
     else upstream.send(chunk({ tool_calls: [{ index: 1024, function: { name: "tool_0" } }] }));
-    await assert.rejects(pending, { message: /^Responses: invalid provider stream \[[a-z_]+\]$/ });
+    await assert.rejects(pending, { message: /^Responses: invalid provider stream\nProtocol invariant: [a-z_]+$/ });
     assert.equal(fixture.observed.at(-1), "protocol_error");
     assert.equal(upstream.cancelled, 1);
   });
@@ -305,7 +305,7 @@ test("native Responses reject changes to declared tool identity", async () => {
     upstream.send({ type: "response.output_item.added", output_index: 0, item });
     upstream.send({ type: "response.function_call_arguments.delta", output_index: 0, item_id: item.id, delta: "{}" });
     upstream.send({ type: "response.completed", response: { object: "response", status: "completed", output: [{ ...item, status: "completed", arguments: "{}", [field]: field === "name" ? "tool_1" : "call-2" }] } });
-    await assert.rejects(pending, { message: /^Responses: invalid provider stream \[[a-z_]+\]$/ });
+    await assert.rejects(pending, { message: /^Responses: invalid provider stream\nProtocol invariant: [a-z_]+$/ });
     assert.deepEqual(fixture.observed, [200, "protocol_error"]);
   }
 });
@@ -348,7 +348,7 @@ for (const scenario of ["aggregate-distinct-tools", "total-wire-keepalives"]) {
     } else {
       for (let index = 0; index < 33; index++) upstream.raw(encoder.encode(`: ${block}\n\n`));
     }
-    await assert.rejects(pending, { message: /^Responses: invalid provider stream \[[a-z_]+\]$/ });
+    await assert.rejects(pending, { message: /^Responses: invalid provider stream\nProtocol invariant: [a-z_]+$/ });
     assert.deepEqual(fixture.observed, [200, "protocol_error"]);
     assert.equal(upstream.cancelled, 1);
   });
@@ -428,7 +428,7 @@ for (const scenario of ["no-usage", "changed-finish", "new-text", "new-reasoning
     upstream.send(trailer);
     if (scenario !== "missing-DONE") upstream.send("[DONE]");
     upstream.close();
-    await assert.rejects(pending, { message: /^Responses: invalid provider stream \[[a-z_]+\]$/ });
+    await assert.rejects(pending, { message: /^Responses: invalid provider stream\nProtocol invariant: [a-z_]+$/ });
     assert.deepEqual(fixture.observed, [200, "first", "protocol_error"]);
   });
 }
@@ -513,7 +513,7 @@ for (const scenario of ["before-finish", "nonempty-response", "missing-usage", "
     if (scenario === "output-after-trailer") upstream.send(chunk({ content: "unexpected" }));
     if (scenario !== "missing-DONE") upstream.send("[DONE]");
     upstream.close();
-    await assert.rejects(pending, { message: /^Responses: invalid provider stream \[[a-z_]+\]$/ });
+    await assert.rejects(pending, { message: /^Responses: invalid provider stream\nProtocol invariant: [a-z_]+$/ });
   });
 }
 
@@ -570,7 +570,7 @@ for (const detail of [{ type: "reasoning.text", text: { private: "fixture" } }, 
     const upstream = feed(), fixture = setup("openrouter", upstream), pending = all(await fixture.invoke());
     upstream.send(chunk({ reasoning_details: [detail] }));
     upstream.send(chunk({}, "stop")); upstream.send("[DONE]");
-    await assert.rejects(pending, { message: /^Responses: invalid provider stream \[[a-z_]+\]$/ });
+    await assert.rejects(pending, { message: /^Responses: invalid provider stream\nProtocol invariant: [a-z_]+$/ });
   });
 }
 
@@ -605,7 +605,11 @@ test("stream diagnostics distinguish parser, tool identity, terminal and normali
     const upstream = feed(), fixture = setup("openrouter", upstream);
     const pending = all(await fixture.invoke({ tools: [{ type: "function", name: "read" }] }));
     send(upstream);
-    await assert.rejects(pending, { message: `Responses: invalid provider stream [${code}]` });
+    await assert.rejects(pending, error => {
+      assert.equal(error.message.split("\n")[0], "Responses: invalid provider stream", "the native transport classifies the first line as non-retryable");
+      assert.equal(error.message, `Responses: invalid provider stream\nProtocol invariant: ${code}`);
+      return true;
+    });
     assert.deepEqual(fixture.observed, [200, "protocol_error"]);
     assert.equal(upstream.cancelled, 1);
   }
@@ -622,7 +626,7 @@ test("normalizer diagnostics reject unknown or forged exception details", async 
     }, () => []);
     const pending = response.text();
     upstream.send(chunk({}, "stop")); upstream.send("[DONE]");
-    await assert.rejects(pending, { message: "Responses: invalid provider stream [normalize_unknown]" });
+    await assert.rejects(pending, { message: "Responses: invalid provider stream\nProtocol invariant: normalize_unknown" });
     assert.equal(upstream.cancelled, 1);
   }
 });

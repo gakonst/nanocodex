@@ -3,7 +3,7 @@ import { fromBindingResponsesResult } from "./gateway-binding-responses.mjs";
 
 // Codes are local constants only. Never surface an upstream exception/message.
 class StreamProtocolError extends Error {
-  constructor(code) { super(`Responses: invalid provider stream [${code}]`); this.code = code; }
+  constructor(code) { super(`Responses: invalid provider stream\nProtocol invariant: ${code}`); this.code = code; }
 }
 const invalid = code => { throw new StreamProtocolError(code); };
 // The portable normalizer has static failures but can also throw arbitrary
@@ -333,7 +333,7 @@ export function streamResponse(source, normalize, responseEvents, signal, parall
         cancelReader();
         controller.error(new Error(error instanceof StreamReadError
           ? "Responses: provider stream read failed"
-          : `Responses: invalid provider stream [${error instanceof StreamProtocolError ? error.code : "unknown"}]`));
+          : `Responses: invalid provider stream\nProtocol invariant: ${error instanceof StreamProtocolError ? error.code : "unknown"}`));
         await finish(error instanceof StreamReadError ? "network_error" : "protocol_error");
       }
     },
