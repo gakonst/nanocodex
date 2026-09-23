@@ -203,6 +203,45 @@ async fn catalog_call_result_and_drain_use_exact_frames() {
     server.await.unwrap();
 }
 
+#[tokio::test]
+async fn websocket_pongs_preserve_readiness_and_tool_execution() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("ws://{}/tools", listener.local_addr().unwrap());
+    let (completed_tx, completed_rx) = tokio::sync::oneshot::channel();
+    let server = tokio::spawn(async move {
+        let mut socket = accept(&listener).await;
+        assert_eq!(recv_json(&mut socket).await["type"], "catalog");
+        socket.send(Message::Pong(vec![1].into())).await.unwrap();
+        send_json(&mut socket, json!({"type":"ready"})).await;
+        socket.send(Message::Pong(vec![2].into())).await.unwrap();
+        send_json(&mut socket, call("call-pong", "echo")).await;
+        let result = recv_json(&mut socket).await;
+        assert_eq!(result["call_id"], "call-pong");
+        assert_eq!(result["outcome"]["status"], "completed");
+        send_json(&mut socket, json!({"type":"ack","call_id":"call-pong"})).await;
+        let _ = completed_tx.send(());
+        assert_eq!(recv_json(&mut socket).await, json!({"type":"drain"}));
+        send_json(&mut socket, json!({"type":"draining"})).await;
+    });
+    let tools = Tools::builder()
+        .without_defaults()
+        .tool(EchoTool)
+        .build()
+        .unwrap();
+    let (attachment, _) = tools
+        .attach(AttachmentTarget::new(endpoint, "bearer").unwrap())
+        .connect()
+        .await
+        .unwrap();
+    tokio::time::timeout(Duration::from_secs(2), completed_rx)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(attachment.status(), AttachmentStatus::Ready);
+    attachment.detach().await.unwrap();
+    server.await.unwrap();
+}
+
 #[test]
 fn attachment_metadata_enforces_the_machine_wire_contract() {
     let metadata = machine_metadata("machine.valid:1", "/workspace/project");

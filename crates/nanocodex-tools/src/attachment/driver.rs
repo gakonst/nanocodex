@@ -723,6 +723,9 @@ where
             })?;
             Ok(None)
         }
+        // WebSocket control pongs may be unsolicited. They are independent of
+        // the JSON heartbeat and must not fence a healthy attachment.
+        Some(Ok(Message::Pong(_))) => Ok(None),
         Some(Ok(Message::Close(Some(frame)))) if frame.code == CloseCode::Policy => {
             Err(ConnectionEnd::Rejected(if frame.reason.is_empty() {
                 "endpoint rejected the attachment".into()
