@@ -34,3 +34,20 @@ or browser applications.
 Native Node Hands retain unread command output in private temporary files. Reply
 budgets control each poll, without discarding older output. Files are removed
 when fully consumed or when their owning session or Hand is closed.
+
+### Local PDF text extraction
+
+`createComputerRuntime` includes `pdftotext`, powered by the serverless PDF.js
+build in `unpdf`. It reads the mounted workspace directly; no container, native
+binary, browser, or external PDF service is required.
+
+```sh
+pdftotext -layout document.pdf -
+pdftotext -f 2 -l 4 -nopgbrk document.pdf excerpt.txt
+```
+
+The output argument defaults to `document.txt`; `-` writes UTF-8 to stdout for
+pipes/redirection. Supported options are `-f`, `-l`, `-layout`, `-raw`,
+`-nopgbrk`, and `-enc UTF-8`. Unsupported flags fail explicitly. Layout uses
+text coordinates and is approximate, not byte-for-byte Poppler output. Scanned
+pages require a separate OCR tool. The command never executes document scripts.
