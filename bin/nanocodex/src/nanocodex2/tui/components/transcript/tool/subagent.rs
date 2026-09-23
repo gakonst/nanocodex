@@ -44,13 +44,11 @@ pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: boo
                 sections.push(("Result".to_owned(), output.clone()));
             }
         }
-        "wait_agent" => {
-            if tool.result.is_none() {
-                sections.push((
-                    "Waiting for".into(),
-                    Value::String(agent_targets(&tool.arguments)),
-                ));
-            }
+        "wait_agent" if tool.result.is_none() => {
+            sections.push((
+                "Waiting for".into(),
+                Value::String(agent_targets(&tool.arguments)),
+            ));
         }
         _ => {}
     }
@@ -88,10 +86,11 @@ pub(super) fn present(tool: &ToolEntry, width: u16, theme: &Theme, expanded: boo
                 ));
             }
         }
-        if result.get("agents").is_none() && tool.family() != "submit_result" {
-            if let Some(status) = state(result) {
-                sections.push(("Status".into(), Value::String(status.replace('_', " "))));
-            }
+        if result.get("agents").is_none()
+            && tool.family() != "submit_result"
+            && let Some(status) = state(result)
+        {
+            sections.push(("Status".into(), Value::String(status.replace('_', " "))));
         }
         for key in ["error", "message", "reason"] {
             if let Some(value) = result.get(key) {
