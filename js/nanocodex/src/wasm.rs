@@ -2787,12 +2787,6 @@ fn managed_voice_session_id(value: &str) -> Result<String, JsValue> {
         .map_err(|error| js_error(format!("invalid managed session ID: {error}")))
 }
 
-/// Returns the shared bounded first-prompt retrieval plan for a managed host.
-#[wasm_bindgen(js_name = managedBootstrapPlan)]
-pub fn managed_bootstrap_plan(input: &str) -> String {
-    nanocodex_voice_protocol::bootstrap_plan(input).to_string()
-}
-
 fn encode_managed_voice_update(
     effects: BrowserVoiceEffects,
     delegation: Option<String>,

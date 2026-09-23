@@ -13,7 +13,7 @@ const context = {
   signal: new AbortController().signal,
 } satisfies ToolContext;
 
-describe("managed memory and session tool boundary", () => {
+describe("managed session history tool boundary", () => {
   it("exposes only the intended closed agent tools and sanitizes citations", async () => {
     const requireCapability = vi.fn();
     const recordCitations = vi.fn();
@@ -34,9 +34,7 @@ describe("managed memory and session tool boundary", () => {
     const tools = memorySessionTools({
       findSessions,
       readSession: vi.fn(),
-      memory: vi.fn(),
       requireCapability,
-      requireRootMemoryMutation: vi.fn(),
       recordCitations,
     });
 
@@ -44,16 +42,10 @@ describe("managed memory and session tool boundary", () => {
       "find_session",
       "find_sessions",
       "read_session",
-      "memory",
     ]);
-    for (const tool of tools.slice(0, 3)) expect(tool.parameters).toMatchObject({
+    for (const tool of tools) expect(tool.parameters).toMatchObject({
       additionalProperties: false,
     });
-    expect((tools[3]!.parameters?.oneOf as { additionalProperties: boolean }[])
-      .map((operation) => operation.additionalProperties)).toEqual([
-      false, false, false, false,
-    ]);
-
     await expect(tools[0]!.handler({ query: " deploy ", limit: 1 }, context)).resolves.toEqual({
       sessions: [{
         session_id: sessionId,
@@ -76,50 +68,19 @@ describe("managed memory and session tool boundary", () => {
     );
   });
 
-  it("fences reads and root-only mutations through active-turn authorization", async () => {
+  it("projects read-session results and citations without exposing storage fields", async () => {
     const requireCapability = vi.fn();
-    const requireRootMemoryMutation = vi.fn((toolContext: ToolContext) => {
-      if (toolContext.subagent !== undefined) throw new Error("memory_root_only");
-    });
-    const memory = vi.fn(async (operation: { operation: string }) => operation.operation === "scan"
-      ? { operation: "scan" as const, abstained: true, candidates: [] }
-      : { operation: "delete" as const, key: { id: 1, version: 1 } });
-    const tools = memorySessionTools({
-      findSessions: vi.fn(),
-      readSession: vi.fn(),
-      memory,
-      requireCapability,
-      requireRootMemoryMutation,
-      recordCitations: vi.fn(),
-    });
-    const memoryTool = tools.find((tool) => tool.name === "memory")!;
-
-    await expect(memoryTool.handler({ operation: "scan", query: "scope" }, context))
-      .resolves.toMatchObject({ operation: "scan", abstained: true });
-    expect(requireCapability).toHaveBeenLastCalledWith("memory:read", context);
-    expect(requireRootMemoryMutation).not.toHaveBeenCalled();
-
-    const subagent = {
-      ...context,
-      subagent: {
-        agentId: "2",
-        parentAgentId: "1",
-        sessionId,
-        role: "worker",
-        task: "mutate",
-      },
-    } satisfies ToolContext;
-    await expect(memoryTool.handler({
-      operation: "delete",
-      key: { id: 1, version: 1 },
-    }, subagent)).rejects.toThrow("memory_root_only");
-    expect(memory).toHaveBeenCalledTimes(1);
-
-    await expect(memoryTool.handler({
-      operation: "delete",
-      key: { id: 1, version: 1 },
-    }, context)).resolves.toMatchObject({ operation: "delete" });
-    expect(requireCapability).toHaveBeenLastCalledWith("memory:write", context);
+    const recordCitations = vi.fn();
+    const readSession = vi.fn(async () => ({ turns: [{ thread_id: sessionId, title: "Deploy", turn_id: "turn-1", cursor: "1",
+      user: "Deploy this", assistant: "Deployed", provider_secret: "hidden" }], citations: [] }));
+    const tools = memorySessionTools({ findSessions: vi.fn(), readSession, requireCapability, recordCitations });
+    const read = tools.find(tool => tool.name === "read_session")!;
+    expect(await read.handler({ session_id: sessionId, turn_ids: ["turn-1"] }, context)).toEqual({ turns: [{
+      session_id: sessionId, title: "Deploy", turn_id: "turn-1", cursor: "1", user: "Deploy this", assistant: "Deployed",
+    }] });
+    expect(requireCapability).toHaveBeenCalledExactlyOnceWith("history:read", context);
+    expect(readSession).toHaveBeenCalledExactlyOnceWith({ session_id: sessionId, turn_ids: ["turn-1"] });
+    expect(recordCitations).toHaveBeenCalledExactlyOnceWith([{ thread_id: sessionId, title: "Deploy", sources: [{ turn_id: "turn-1", cursor: "1" }] }]);
   });
 
   it("checks each history call's own context before accessing persistence", async () => {
@@ -127,14 +88,13 @@ describe("managed memory and session tool boundary", () => {
     const readSession = vi.fn();
     const denied = { ...context, sessionId: crypto.randomUUID() };
     const tools = memorySessionTools({
-      findSessions, readSession, memory: vi.fn(), recordCitations: vi.fn(),
-      requireRootMemoryMutation: vi.fn(),
+      findSessions, readSession, recordCitations: vi.fn(),
       requireCapability: (_capability, caller) => {
         expect(caller).toBe(denied);
         throw new Error("forbidden");
       },
     });
-    for (const tool of tools.filter((tool) => tool.name !== "memory")) {
+    for (const tool of tools) {
       await expect(tool.handler(tool.name === "read_session"
         ? { session_id: sessionId } : { query: "deploy" }, denied)).rejects.toThrow("forbidden");
     }

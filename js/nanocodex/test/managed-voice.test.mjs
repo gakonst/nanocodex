@@ -165,11 +165,25 @@ test("real WASM accepts late prepared context only for its bound session and a f
       const changed = effects(envelope("9007199254740996", { ...context, markdown_memory: "USER.md changed preference" }));
       assert.ok(changed.frames.map(JSON.parse).map(frame => frame.content[0].text).join("").includes("changed preference"));
       voice.framesSent(changed.frames.length);
-      const legacy = effects({ cursor: "9007199254740997", event: { type: "managed.voice.context", payload: {
-        voice_session_id: sessionId, result: { operation: "delete", key: { id: 5, version: 1 } },
-      } } });
-      assert.equal(legacy.frames.length, 1, "legacy saved-memory updates still share the cursor and queue");
-      voice.framesSent(legacy.frames.length);
+      for (const result of [
+        { operation: "delete", key: { id: 5, version: 1 } },
+        { operation: "put", memory: { key: { id: 5, version: 2 }, content: "retired fact canary" } },
+      ]) {
+        const legacy = { cursor: "9007199254740999", event: { type: "managed.voice.context", payload: {
+          voice_session_id: sessionId, result,
+        } } };
+        for (let replay = 0; replay < 2; replay++) {
+          assert.deepEqual(effects(legacy).frames, [], "retired memory results cannot restore facts");
+        }
+      }
+      const latest = envelope("9007199254740997", { markdown_memory: "USER.md current snapshot" });
+      latest.event.payload.result = { operation: "put", memory: { key: { id: 5, version: 2 }, content: "retired fact canary" } };
+      const current = effects(latest);
+      const currentText = current.frames.map(JSON.parse).map(frame => frame.content[0].text).join("");
+      assert.match(currentText, /USER.md current snapshot/, "legacy results cannot advance the cursor past current Markdown");
+      assert.doesNotMatch(currentText, /retired fact canary|Saved-memory update/);
+      assert.notEqual(current.playback_enabled, true);
+      voice.framesSent(current.frames.length);
       assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, []);
       assert.equal(requests.length, 1, "background context never admits agent work or reads memory");
     } finally { voice.free(); }
@@ -301,7 +315,7 @@ test("managed browser voice gives a UUIDv8 durable Agent a distinct UUIDv7 realt
   assert.equal(sideband.searchParams.get("thread_id"), call.session_id);
 
   const context = { cursor: "9007199254740993", event: { type: "managed.voice.context", payload: {
-    voice_session_id: call.session_id, result: { operation: "delete", key: { id: 5, version: 1 } },
+    voice_session_id: call.session_id, context: { markdown_memory: "USER.md: current preference" },
   } } };
   const effects = (event) => JSON.parse(voice.agentEvent(event));
   assert.deepEqual(effects({ ...context, event: { ...context.event, payload: { ...context.event.payload, voice_session_id: "other-call" } } }).frames, []);
@@ -309,7 +323,7 @@ test("managed browser voice gives a UUIDv8 durable Agent a distinct UUIDv7 realt
   const frame = JSON.parse(update.frames[0]);
   assert.equal(frame.type, "session.context.append");
   assert.equal(frame.channel, "commentary");
-  assert.match(frame.content[0].text, /delete/);
+  assert.match(frame.content[0].text, /USER.md: current preference/);
   assert.equal(update.acknowledge_frames, true);
   assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, update.frames);
   voice.framesSent(1);

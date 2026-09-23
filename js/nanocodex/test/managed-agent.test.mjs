@@ -8,100 +8,7 @@ const origin = "https://managed.example";
 const agentId = "0198d3f0-8844-7000-8000-000000000001";
 const apiKey = `ncx_live_${"a".repeat(12)}_${"b".repeat(43)}`;
 
-test("managed memory sends account-level operations with API-key auth and freezes typed results", async () => {
-  const key = { id: 7, version: 2 };
-  const record = {
-    key,
-    content: "Deploy on Tuesdays".repeat(100),
-    created_at_ms: 10,
-    updated_at_ms: 20,
-    last_scanned_at_ms: 21,
-    scan_count: 2,
-    last_used_at_ms: null,
-    use_count: 0,
-    probation_until_ms: 30,
-  };
-  const query = "deploy ".repeat(100);
-  const operations = [];
-  const fetch = async (input, init) => {
-    const request = new Request(input, init);
-    assert.equal(new URL(request.url).pathname, "/v1/memory");
-    assert.equal(request.method, "POST");
-    assert.equal(request.credentials, "omit");
-    assert.equal(request.headers.get("authorization"), `Bearer ${apiKey}`);
-    const operation = await request.json();
-    operations.push(operation);
-    if (operation.operation === "scan") {
-      return Response.json({
-        operation: "scan",
-        abstained: false,
-        candidates: [{ key, preview: "Deploy on Tuesdays", score: 1.25 }],
-      });
-    }
-    if (operation.operation === "read") {
-      return Response.json({ operation: "read", memories: [record] });
-    }
-    if (operation.operation === "put") {
-      return Response.json({ operation: "put", memory: record, replaced: true });
-    }
-    return Response.json({ operation: "delete", key });
-  };
-  const options = { baseUrl: origin, apiKey, fetch };
 
-  const scanned = await Agent.memory({ operation: "scan", query, limit: 1 }, options);
-  const read = await Agent.memory({ operation: "read", keys: [key] }, options);
-  const put = await Agent.memory({
-    operation: "put",
-    content: record.content,
-    replace: key,
-  }, options);
-  const deleted = await Agent.memory({ operation: "delete", key }, options);
-
-  assert.deepEqual(operations, [
-    { operation: "scan", query, limit: 1 },
-    { operation: "read", keys: [key] },
-    { operation: "put", content: record.content, replace: key },
-    { operation: "delete", key },
-  ]);
-  assert.equal(scanned.candidates[0].key.version, 2);
-  assert.equal(read.memories[0].content, record.content);
-  assert.equal(put.replaced, true);
-  assert.deepEqual(deleted.key, key);
-  for (const value of [scanned, scanned.candidates, scanned.candidates[0], scanned.candidates[0].key,
-    read, read.memories, read.memories[0], read.memories[0].key, put, put.memory, deleted, deleted.key]) {
-    assert.equal(Object.isFrozen(value), true);
-  }
-});
-
-test("managed memory validates operations and rejects malformed server records", async () => {
-  const options = {
-    baseUrl: origin,
-    apiKey,
-    fetch: async () => Response.json({
-      operation: "read",
-      memories: [{ key: { id: 1, version: 1 }, content: "incomplete" }],
-    }),
-  };
-  await assert.rejects(
-    Agent.memory({ operation: "scan", query: " ", limit: 1 }, options),
-    /query must be a nonempty string/,
-  );
-  await assert.rejects(
-    Agent.memory({ operation: "delete", key: { id: 0, version: 1 } }, options),
-    /positive safe integers/,
-  );
-  await assert.rejects(
-    Agent.memory({
-      operation: "read",
-      keys: [],
-    }, options),
-    /at least one key/,
-  );
-  await assert.rejects(
-    Agent.memory({ operation: "read", keys: [{ id: 1, version: 1 }] }, options),
-    (error) => error instanceof ManagedError && error.code === "invalid_response",
-  );
-});
 
 test("managed organization reads and updates frozen metadata without client-side auth policy", async () => {
   const organizationId = "11111111-1111-4111-8111-111111111111";
@@ -221,47 +128,6 @@ test("managed account clients expose findSessions and readSession over the same 
   }
 });
 
-test("managed account clients list and optimistic-delete hosted memory without provider credentials", async () => {
-  const requests = [];
-  const fetch = async (input, init) => {
-    const request = new Request(input, init);
-    requests.push(request);
-    const url = new URL(request.url);
-    if (request.method === "GET" && url.pathname === "/v1/memory") {
-      return Response.json({
-        memories: [{
-          key: { id: 7, version: 2 },
-          content: "Prefer invariant-first reviews.",
-          created_at_ms: 1,
-          updated_at_ms: 2,
-          last_scanned_at_ms: null,
-          scan_count: 0,
-          last_used_at_ms: 3,
-          use_count: 1,
-          probation_until_ms: null,
-        }],
-      });
-    }
-    if (request.method === "DELETE" && url.pathname === "/v1/memory/7") {
-      assert.equal(url.searchParams.get("version"), "2");
-      return new Response(null, { status: 204 });
-    }
-    return Response.json({ error: "not_found" }, { status: 404 });
-  };
-  const options = { baseUrl: origin, apiKey, fetch };
-  const memories = await Agent.listMemories(options);
-  assert.equal(memories[0].key.id, 7);
-  assert.equal(memories[0].content, "Prefer invariant-first reviews.");
-  await Agent.deleteMemory(memories[0].key, options);
-  for (const request of requests) {
-    assert.equal(request.headers.get("authorization"), `Bearer ${apiKey}`);
-    assert.equal(request.headers.has("openai-api-key"), false);
-  }
-  await assert.rejects(
-    () => Agent.deleteMemory({ id: 7, version: 0 }, options),
-    /positive safe integer/,
-  );
-});
 
 test("managed Agent covers account-scoped create, list, get, and delete", async () => {
   const calls = [];
@@ -2215,28 +2081,6 @@ test("identified steer withdrawal waits for admission and preserves the receipt"
 });
 
 
-test("managed memory preserves requested scan/read batches above former maxima", async () => {
-  const records = Array.from({ length: 30 }, (_, index) => ({
-    key: { id: index + 1, version: 1 }, content: "Complete record", created_at_ms: 1,
-    updated_at_ms: 1, last_scanned_at_ms: null, scan_count: 0,
-    last_used_at_ms: null, use_count: 0, probation_until_ms: null,
-  }));
-  const options = { baseUrl: origin, apiKey, fetch: async (input, init) => {
-    const body = await new Request(input, init).json();
-    if (body.operation === "scan") {
-      assert.equal(body.limit, 30);
-      return Response.json({ operation: "scan", abstained: false,
-        candidates: records.map(({ key }) => ({ key, preview: "Complete record", score: 1 })) });
-    }
-    assert.equal(body.keys.length, 30);
-    return Response.json({ operation: "read", memories: records });
-  } };
-  const scanned = await Agent.memory({ operation: "scan", query: "complete", limit: 30 }, options);
-  assert.equal(scanned.candidates.length, 30);
-  const read = await Agent.memory({ operation: "read", keys: scanned.candidates.map(({ key }) => key) }, options);
-  assert.equal(read.memories.length, 30);
-  assert.equal(read.memories[29].key.id, 30);
-});
 
 test("conversation preparation is explicit, bodyless, and resolves on acceptance", async () => {
   const requests = [];
@@ -2255,23 +2099,6 @@ test("conversation preparation is explicit, bodyless, and resolves on acceptance
 });
 
 
-test("personal memory sends explicit scope without accepting caller-selected user identities", async () => {
-  const seen = [];
-  const options = { baseUrl: origin, apiKey, scope: "personal", fetch: async (url, init) => {
-    seen.push({ url: String(url), body: init.body && JSON.parse(init.body) });
-    if (init.method === "DELETE") return new Response(null, { status: 204 });
-    if (init.method === "POST") return Response.json({ operation: "read", memories: [] });
-    return Response.json({ memories: [] });
-  } };
-  await Agent.listMemories(options);
-  await Agent.memory({ operation: "read", keys: [{ id: 1, version: 1 }] }, options);
-  await Agent.deleteMemory({ id: 1, version: 1 }, options);
-  assert.equal(seen[0].url, origin + "/v1/memory?scope=personal");
-  assert.equal(seen[1].body.scope, "personal");
-  assert.equal(seen[2].url, origin + "/v1/memory/1?version=1&scope=personal");
-  await assert.rejects(Agent.listMemories({ ...options, scope: "other-user" }), /scope/);
-  await assert.rejects(Agent.listMemories({ ...options, userId: "other-user" }), /do not accept userId/);
-});
 
 test("managed clients freeze and send explicit Hand attribution separately from authentication", async () => {
   const reported = { client: "desktop", hand: "user:laptop", cwd: "/laptop/repo", timezone: "America/Los_Angeles" };

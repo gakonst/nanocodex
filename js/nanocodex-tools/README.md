@@ -2,7 +2,7 @@
 
 Reusable, platform-neutral JavaScript tools for Nanocodex agents: the common
 tool router and Code Mode runtime, attachment and hosted-tool protocols,
-durable-memory parsing and ranking, artifact and dataset tools, persistent
+artifact and dataset tools, persistent
 workspace adaptation, a bounded Just Bash runtime, Git/GitHub compatibility
 commands, repository materialization, and workspace-backed SSH composition.
 Session-search parsing, retrieval policy, and bounded model-visible projections

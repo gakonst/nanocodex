@@ -58,7 +58,7 @@ live read/write capabilities. Subagents cannot mutate memory. Internal calls
 carry the existing organization, team, subject, and private-owner assertions.
 
 Normal and voice use the same already-prepared, scoped personalization snapshot.
-The existing background refresh loads saved facts and bounded curated/recent daily
+The existing background refresh loads bounded curated/recent daily
 Markdown excerpts (UTC today and yesterday). Admission does not await a
 memory read, timeout, extraction, indexing pass, or consolidation job. A cache
 miss starts the turn or voice session without memory; a background refresh can
@@ -79,10 +79,10 @@ background context channel, including after media connects. Large snapshots stay
 out of the bounded SDP call request. Already delivered conversation content cannot
 be erased.
 
-Existing versioned records, prepared personalization, and append-only ad-hoc
-notes remain intact and available through their existing APIs. Canonical Markdown
-files are also visible through the existing memories list/read/search adapter. There is no
-silent migration or reclassification of personal facts as team knowledge.
+Versioned legacy facts and their CRUD endpoints are retired. Activation removes
+only legacy fact/scan tables and invalidates old fact-bearing prepared bodies.
+Canonical Markdown, append-only Codex notes, history, and prepared Markdown
+context remain. Private notes are never reclassified as team knowledge.
 
 ## Semantic retrieval
 
@@ -132,9 +132,9 @@ preserving the other lines in the same daily file. Provenance supports audit, an
 preimages. Explicit recall markers and consolidation reports are excluded from
 automatic promotion, and identical evidence is deduplicated.
 
-Legacy canonical reads and background consolidation proceed independently of
-remote personalization-cache invalidation failures. Explicit legacy changes and
-deletions still fence prepared copies before acknowledging success.
+Canonical reads and background consolidation proceed independently of remote
+personalization-cache invalidation failures. Markdown changes invalidate prepared
+copies in the background.
 `DREAMS.md` records bounded outcomes without being fed back into retrieval.
 Model attempts and retry leases are bounded and persist across eviction.
 Extraction permits 48 inference attempts per owner per UTC day. Consolidation

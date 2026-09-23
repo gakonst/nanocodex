@@ -2,10 +2,8 @@ import { MarkdownMemoryStore } from './markdown-memory';
 import { fileMemoriesBackend, type MemoryFileStore } from 'nanocodex-tools/extensions';
 import { initializeTurnInputs, readTurnInput, storeTurnInput } from './managed-turn-input';
 
-type LegacyMemory = { key: { id: number; version: number }; content: string };
-export type LegacyMemories = { list(): Promise<LegacyMemory[]>; read(id: number, version: number): string | undefined };
 /** One already-authorized MemoryScope partition. Existing records remain in place. */
-export function scopeMemoryFiles(storage: DurableObjectStorage, owner: string, legacy: LegacyMemories): MemoryFileStore {
+export function scopeMemoryFiles(storage: DurableObjectStorage, owner: string): MemoryFileStore {
   storage.sql.exec(`CREATE TABLE IF NOT EXISTS extension_memory_files (
     owner TEXT NOT NULL, path TEXT NOT NULL, content_json TEXT NOT NULL, PRIMARY KEY(owner,path)
   )`);
@@ -17,16 +15,9 @@ export function scopeMemoryFiles(storage: DurableObjectStorage, owner: string, l
     listFiles: async () => [
       ...markdown.list(owner),
       ...storage.sql.exec<{ path: string }>('SELECT path FROM extension_memory_files WHERE owner=? ORDER BY path', owner).toArray().map(row => row.path),
-      ...(await legacy.list()).map(memory => `legacy/${memory.key.id}-v${memory.key.version}.md`),
     ],
     readFile: async path => {
       if (path === 'MEMORY.md' || path === 'USER.md' || path === 'DREAMS.md' || path.startsWith('memory/')) return markdown.readFile(owner, path);
-      const match = /^legacy\/(\d+)-v(\d+)\.md$/.exec(path);
-      if (match) {
-        const content = legacy.read(Number(match[1]), Number(match[2]));
-        if (content === undefined) throw new Error('memory file was not found');
-        return content;
-      }
       const row = storage.sql.exec<{ content_json: string }>(
         'SELECT content_json FROM extension_memory_files WHERE owner=? AND path=?', owner, path,
       ).toArray()[0];
@@ -41,8 +32,8 @@ export function scopeMemoryFiles(storage: DurableObjectStorage, owner: string, l
     }),
   };
 }
-export function scopeFileMemories(storage: DurableObjectStorage, owner: string, legacy: LegacyMemories): ReturnType<typeof fileMemoriesBackend> {
-  const files = scopeMemoryFiles(storage, owner, legacy);
+export function scopeFileMemories(storage: DurableObjectStorage, owner: string): ReturnType<typeof fileMemoriesBackend> {
+  const files = scopeMemoryFiles(storage, owner);
   const backend = fileMemoriesBackend(files);
   // The audit remains explicitly readable/listable, but never becomes recall evidence.
   const recall = fileMemoriesBackend({ ...files,

@@ -159,32 +159,28 @@ their work. `memories__status` reports availability and
 durable job receipts. Set `NANOCODEX_MEMORY_AUTOMATION=false` to disable background
 consolidation. See the
 [design and API](../../docs/workers-markdown-memory.md) for ownership, simple writes,
-startup excerpts, and implementation boundaries. Existing memory APIs
-and prepared personalization remain compatible.
+startup excerpts, and implementation boundaries. The four baseline Codex memory
+APIs are preserved; versioned legacy CRUD is retired.
 
 ## Prepared personalization
 
-Managed admission no longer runs prompt-derived history search or memory scan.
-The MemoryScope prepares snapshots of saved personal/team facts and Markdown notes; Sessions
-warm a disposable copy on create, open, or activity without awaiting it. Each turn
-pins the eligible local copy or a cache miss. A miss proceeds without retrieval.
-Explicit `find_session`, `read_session`, and memory tools remain available.
+Managed admission does not run prompt-derived history search or memory scan.
+MemoryScope prepares bounded snapshots of canonical personal/team Markdown;
+sessions warm a disposable copy on create, open, or activity without awaiting it.
+Each turn pins an eligible local copy or a cache miss. A miss proceeds without
+retrieval. Explicit `find_session`, `read_session`, and memory tools remain available.
 
 Snapshots carry organization/team/user scope, source versions, and a five-minute
-lease. New facts coalesce until refresh. Legacy fact replacements and deletions
-fence issued copies before the mutation succeeds; Markdown changes invalidate
-prepared copies in the background. Failed invalidations retain retry debt. Expiry is checked again before model injection. Previously delivered
-conversation history cannot be erased; later prepared blocks replace or withdraw
-prior prepared context. Existing team facts remain shared; personal facts are
-stored separately for the authenticated user within their organization.
-No conversation summarizer or inferred personal profile is added here.
+lease. Markdown changes invalidate prepared copies in the background; failed
+notifications remain retryable without failing canonical note writes or reads.
+Expiry is checked before injection. Later prepared blocks replace or withdraw
+prior prepared context; already delivered conversation text cannot be erased.
+Private notes remain separate from shared team knowledge.
 
-Each source selection is indexed, limited to 32 facts and 8 KB of fact content,
-and does not write scan/use counters. A team snapshot serves multiple agents;
-active subscriber leases are bounded to 256 per memory store. Additional agents
-proceed with a cache miss. Refresh is activity-driven, so idle users incur no
-periodic job. Identical content is not appended again on later turns, and pinned
-context is pruned when the associated turn receipts are archived.
+Each scope receives at most 12 KiB of serialized Markdown excerpts. Subscriber
+leases are bounded; extra agents proceed with a cache miss. Refresh is driven by
+activity, so idle users incur no periodic job. Identical context is not appended
+again, and prepared rows are pruned with archived turn receipts.
 
 Voice startup consumes already-prepared context without waiting for memory.
 A background refresh can also send prepared context to an active voice session.
@@ -194,21 +190,17 @@ Account/environment discovery remains a separate first-turn dependency.
 
 ### Personal memories and request attribution
 
-The legacy `/v1/memory` management API accepts `scope: "personal" | "team"`
-(default `team`). Use personal for
-private user preferences and facts, and team for shared knowledge. A scan receipt
-and every memory key belong to their scope; keep it unchanged across scan, read,
-put, and delete. Both scopes use the existing root-only write policy, capability
-checks, secret filtering, version checks, and forget/correction invalidation.
-Personal memory is isolated by authenticated user and organization and follows
-that user across teams in that organization. Connected-app grants cannot access
-personal memories or receive them in prepared context. Team memories are never
-relabelled or copied into personal storage.
+The canonical `/v1/memories/{list,read,search,add_ad_hoc_note,write,status}` API
+uses the authenticated user's private root for direct account calls. Shared
+notes are available through `team/` paths; writes to shared Markdown require
+`scope: "team"` and the user's request. Connected-app grants have only their
+authorized team root. Personal memory follows its user across teams in the same
+organization; request arguments cannot name another user.
 
-`GET /v1/memory?scope=personal`, POST operations with `scope: "personal"`, and
-`DELETE /v1/memory/:id?version=:version&scope=personal` use the authenticated user;
-a request cannot supply another user ID. The JavaScript managed SDK accepts
-`{ scope: "personal" }` on `listMemories`, `memory`, and `deleteMemory`.
+The former `/v1/memory` versioned CRUD API and SDK methods are removed. Legacy
+fact/scan tables and old fact-bearing context are retired on activation while
+canonical notes, append-only Codex notes, conversation history, and the original
+startup environment remain.
 
 Clients may send bounded `x-nanocodex-client-context` JSON (`client`, `hand`,
 logical `cwd`, `timezone`, optional `location`). Location contains numeric `latitude`,
