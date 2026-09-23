@@ -1,0 +1,72 @@
+name: Deploy selected API Workers without image builds
+description: Release API source using immutable images already published independently
+inputs:
+  component:
+    description: Force only this Worker for an independent image rollout
+    default: ''
+  astra-api-key:
+    description: Existing Astra managed API credential
+    default: ''
+  astra-mpp-secret:
+    description: Existing Astra MPP credential
+    default: ''
+  tempo-api-key:
+    description: Existing Tempo API credential
+    default: ''
+runs:
+  using: composite
+  steps:
+    - name: Skip superseded push
+      id: current-release
+      shell: bash
+      run: node scripts/cloudflare/current-production-release.mjs
+    - name: Select Workers changed since their successful deployments
+      id: plan
+      if: steps.current-release.outputs.active == 'true'
+      shell: bash
+      env:
+        RELEASE_ONLY: ${{ inputs.component }}
+      run: node scripts/cloudflare/release-plan.mjs plan
+    - name: Reuse unchanged WASM outputs
+      id: wasm
+      if: steps.plan.outputs.wasm == 'true'
+      uses: ./.github/actions/wasm-outputs
+    - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
+      if: steps.plan.outputs.workspace == 'true'
+    - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      if: steps.plan.outputs.any == 'true'
+      with:
+        node-version: 24
+        cache: pnpm
+        cache-dependency-path: pnpm-lock.yaml
+    - name: Install only selected application dependencies
+      if: steps.plan.outputs.any == 'true'
+      shell: bash
+      run: node scripts/cloudflare/release-plan.mjs install
+    - name: Build only selected applications and their dependencies
+      if: steps.plan.outputs.any == 'true'
+      shell: bash
+      run: node scripts/cloudflare/release-plan.mjs build
+    - name: Use published phone and sandbox images
+      if: steps.plan.outputs.managed == 'true'
+      shell: bash
+      run: node scripts/cloudflare/released-images.mjs ${{ contains(inputs.component, 'managed') && '--current' || '' }}
+    - name: Preserve published account relay images
+      if: steps.plan.outputs.account == 'true'
+      shell: bash
+      run: node scripts/cloudflare/released-account-image.mjs
+    - name: Retain verified WASM outputs
+      if: steps.plan.outputs.wasm == 'true' && github.ref == 'refs/heads/master'
+      uses: ./.github/actions/save-wasm-outputs
+      with:
+        key: ${{ steps.wasm.outputs.key }}
+        cache-hit: ${{ steps.wasm.outputs.cache-hit }}
+        rejected-artifact-id: ${{ steps.wasm.outputs.rejected-artifact-id }}
+    - name: Deploy selected Workers and record successful releases
+      if: steps.plan.outputs.any == 'true'
+      shell: bash
+      env:
+        ASTRA_MANAGED_API_KEY: ${{ inputs.astra-api-key }}
+        ASTRA_MPP_SECRET: ${{ inputs.astra-mpp-secret }}
+        TEMPO_API_KEY: ${{ inputs.tempo-api-key }}
+      run: node scripts/cloudflare/release-workers.mjs

@@ -259,7 +259,6 @@ jobs:
     outputs:
       matrix: ${{ steps.plan.outputs.matrix || '{"image":[]}' }}
       build: ${{ steps.plan.outputs.build || 'false' }}
-      managed: ${{ steps.release.outputs.managed }}
       phone-input: ${{ steps.phone.outputs.input }}
       sandbox-input: ${{ steps.sandbox.outputs.input }}
     env:
@@ -274,34 +273,30 @@ jobs:
       - name: Skip superseded push
         id: current-release
         run: node scripts/cloudflare/current-production-release.mjs
-      - name: Select changed Workers before scheduling images
-        id: release
-        if: steps.current-release.outputs.active == 'true'
-        run: node scripts/cloudflare/release-plan.mjs plan
       - name: Fingerprint phone image
-        if: steps.release.outputs.managed == 'true'
+        if: steps.current-release.outputs.active == 'true'
         id: phone
         run: node scripts/cloudflare/managed-images.mjs fingerprint phone
       - name: Fingerprint sandbox image
-        if: steps.release.outputs.managed == 'true'
+        if: steps.current-release.outputs.active == 'true'
         id: sandbox
         run: node scripts/cloudflare/managed-images.mjs fingerprint sandbox
       - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: steps.release.outputs.managed == 'true'
+        if: steps.current-release.outputs.active == 'true'
         with:
           path: .ci-images/phone.json
           key: managed-image-v1-${{ steps.phone.outputs.input }}
       - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: steps.release.outputs.managed == 'true'
+        if: steps.current-release.outputs.active == 'true'
         with:
           path: .ci-images/sandbox.json
           key: managed-image-v1-${{ steps.sandbox.outputs.input }}
       - name: Select missing images and verify reusable receipts
-        if: steps.release.outputs.managed == 'true'
+        if: steps.current-release.outputs.active == 'true'
         id: plan
         run: node scripts/cloudflare/plan-images.mjs
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        if: steps.release.outputs.managed == 'true'
+        if: steps.current-release.outputs.active == 'true'
         with:
           name: managed-image-reused
           path: .ci-images/*.json
@@ -403,21 +398,17 @@ jobs:
           retention-days: 3
 
   production:
-    needs: [image-plan, managed-images]
     if: >-
-      always() && !cancelled() &&
-      needs.image-plan.result == 'success' &&
-      (needs.managed-images.result == 'success' || needs.managed-images.result == 'skipped') &&
       vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
       ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
-      (github.event_name == 'workflow_dispatch' && inputs.target == 'production'))
+       (github.event_name == 'workflow_dispatch' && inputs.target == 'production'))
     name: build and deploy changed Cloudflare Workers
     runs-on: ubuntu-latest
-    timeout-minutes: 60
-    environment: cloudflare-production
+    timeout-minutes: 15
     concurrency:
       group: cloudflare-production
       cancel-in-progress: false
+    environment: cloudflare-production
     permissions:
       contents: read
       deployments: write
@@ -433,106 +424,92 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - name: Skip a push superseded while its images were building
-        id: current-release
+      - uses: ./.github/actions/deploy-workers
+        with:
+          astra-api-key: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
+          astra-mpp-secret: ${{ secrets.NANOCODEX_ASTRA_MPP_SECRET }}
+          tempo-api-key: ${{ secrets.TEMPO_MPP_API_KEY }}
+
+  account-image:
+    if: >-
+      vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
+      ((github.event_name == 'push' && github.ref == 'refs/heads/master') ||
+       (github.event_name == 'workflow_dispatch' && inputs.target == 'production'))
+    name: publish account relay image independently
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    concurrency:
+      group: cloudflare-account-relay-publication
+      cancel-in-progress: false
+    outputs:
+      built: ${{ steps.image.outputs.build }}
+    environment: cloudflare-production
+    permissions:
+      contents: read
+      deployments: write
+      actions: read
+    env:
+      CI_TESTS_ENABLED: "false"
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      DEPLOY_MESSAGE: GitHub Actions production ${{ github.sha }}
+      GH_TOKEN: ${{ github.token }}
+      DEPLOY_TARGET: ${{ inputs.target }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
+        with:
+          persist-credentials: false
+      - name: Skip superseded push
+        id: current
         run: node scripts/cloudflare/current-production-release.mjs
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        if: steps.current-release.outputs.active == 'true' && needs.image-plan.outputs.managed == 'true'
-        with:
-          pattern: managed-image-*
-          merge-multiple: true
-          path: .ci-images
-      - name: Select Workers changed since their successful deployments
-        id: plan
-        if: steps.current-release.outputs.active == 'true'
-        run: node scripts/cloudflare/release-plan.mjs plan
-      - name: Fingerprint the shared account relay image
-        id: account-image
-        if: steps.plan.outputs.account == 'true'
-        run: echo "input=$(node scripts/cloudflare/account-relay-image.mjs key)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        id: account-image-cache
-        if: steps.plan.outputs.account == 'true'
-        with:
-          path: .ci-images/account-relay.json
-          key: account-relay-image-v1-${{ steps.account-image.outputs.input }}
-      - name: Reconcile image receipts after the locked release plan
-        id: image-state
-        if: steps.plan.outputs.managed == 'true'
-        run: node scripts/cloudflare/plan-images.mjs
-      - name: Compute missing receipt cache keys
-        id: missing-images
-        if: steps.image-state.outputs.build == 'true'
-        run: |
-          echo "phone=$(node scripts/cloudflare/image-key.mjs phone)" >> "$GITHUB_OUTPUT"
-          echo "sandbox=$(node scripts/cloudflare/image-key.mjs sandbox)" >> "$GITHUB_OUTPUT"
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: steps.image-state.outputs.phone == 'true'
-        with:
-          path: .ci-images/phone.json
-          key: managed-image-v1-${{ steps.missing-images.outputs.phone }}
-      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: steps.image-state.outputs.sandbox == 'true'
-        with:
-          path: .ci-images/sandbox.json
-          key: managed-image-v1-${{ steps.missing-images.outputs.sandbox }}
-      - name: Check for missing images after recovery
-        id: recovered-images
-        if: steps.image-state.outputs.build == 'true'
-        run: node scripts/cloudflare/plan-images.mjs
-      - name: Reuse unchanged WASM outputs
-        id: wasm
-        if: steps.plan.outputs.wasm == 'true'
-        uses: ./.github/actions/wasm-outputs
+      - name: Check for the published relay image
+        id: image
+        if: steps.current.outputs.active == 'true'
+        run: node scripts/cloudflare/account-relay-image.mjs restore
       - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320 # v4.4.0
-        if: steps.plan.outputs.workspace == 'true'
+        if: steps.image.outputs.build == 'true'
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
-        if: steps.plan.outputs.any == 'true'
+        if: steps.image.outputs.build == 'true'
         with:
           node-version: 24
-          cache: ${{ steps.plan.outputs.workspace == 'true' && 'pnpm' || '' }}
-          cache-dependency-path: pnpm-lock.yaml
-      - name: Install only selected application dependencies
-        if: steps.plan.outputs.any == 'true'
-        run: node scripts/cloudflare/release-plan.mjs install
-      - name: Reuse or publish one image for all account relay regions
-        if: steps.plan.outputs.account == 'true'
+      - name: Install relay publication tools
+        if: steps.image.outputs.build == 'true'
+        run: pnpm install --frozen-lockfile --filter nanocodex-monorepo --filter nanocodex-web...
+      - name: Publish one shared relay image
+        if: steps.image.outputs.build == 'true'
         run: node scripts/cloudflare/account-relay-image.mjs ensure
-      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-        if: steps.plan.outputs.account == 'true' && steps.account-image-cache.outputs.cache-hit != 'true'
-        continue-on-error: true
+
+  image-rollout:
+    needs: [image-plan, managed-images, account-image, production]
+    if: >-
+      always() && !cancelled() && needs.production.result == 'success' &&
+      ((needs.image-plan.outputs.build == 'true' && needs.managed-images.result == 'success') ||
+       (needs.account-image.outputs.built == 'true' && needs.account-image.result == 'success'))
+    name: roll out published images independently
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    concurrency:
+      group: cloudflare-production
+      cancel-in-progress: false
+    environment: cloudflare-production
+    permissions:
+      contents: read
+      deployments: write
+      actions: read
+    env:
+      CI_TESTS_ENABLED: "false"
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      DEPLOY_MESSAGE: GitHub Actions production ${{ github.sha }}
+      GH_TOKEN: ${{ github.token }}
+      DEPLOY_TARGET: ${{ inputs.target }}
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
-          path: .ci-images/account-relay.json
-          key: account-relay-image-v1-${{ steps.account-image.outputs.input }}
-      - name: Prepare a builder only for an image missing after locked replan
-        if: steps.recovered-images.outputs.build == 'true'
-        id: recovery-builder
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-      - name: Expose recovery build cache runtime
-        if: steps.recovered-images.outputs.build == 'true'
-        uses: crazy-max/ghaction-github-runtime@3cb05d89e1f492524af3d41a1c98c83bc3025124 # v3
-      - name: Recover missing images and retain all selected receipts
-        if: steps.plan.outputs.managed == 'true'
-        env:
-          BUILDX_BUILDER: ${{ steps.recovery-builder.outputs.name }}
-        run: node scripts/cloudflare/recover-images.mjs
-      - name: Build only selected applications and their dependencies
-        if: steps.plan.outputs.any == 'true'
-        run: node scripts/cloudflare/release-plan.mjs build
-      - name: Configure the shared immutable account relay image
-        if: steps.plan.outputs.account == 'true'
-        run: node scripts/cloudflare/account-relay-image.mjs config
-      - name: Retain verified WASM outputs
-        if: steps.plan.outputs.wasm == 'true' && github.ref == 'refs/heads/master'
-        uses: ./.github/actions/save-wasm-outputs
+          persist-credentials: false
+      - uses: ./.github/actions/deploy-workers
         with:
-          key: ${{ steps.wasm.outputs.key }}
-          cache-hit: ${{ steps.wasm.outputs.cache-hit }}
-          rejected-artifact-id: ${{ steps.wasm.outputs.rejected-artifact-id }}
-      - name: Deploy selected Workers and record successful releases
-        if: steps.plan.outputs.any == 'true'
-        env:
-          ASTRA_MANAGED_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
-          ASTRA_MPP_SECRET: ${{ secrets.NANOCODEX_ASTRA_MPP_SECRET }}
-          TEMPO_API_KEY: ${{ secrets.TEMPO_MPP_API_KEY }}
-        run: node scripts/cloudflare/release-workers.mjs
+          astra-api-key: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
+          astra-mpp-secret: ${{ secrets.NANOCODEX_ASTRA_MPP_SECRET }}
+          tempo-api-key: ${{ secrets.TEMPO_MPP_API_KEY }}
+          component: ${{ (needs.image-plan.outputs.build == 'true' && needs.managed-images.result == 'success') && ((needs.account-image.outputs.built == 'true' && needs.account-image.result == 'success') && 'managed,account' || 'managed') || 'account' }}
