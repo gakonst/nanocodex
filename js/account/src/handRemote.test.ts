@@ -142,6 +142,12 @@ function fixture(t: TestContext, hand: RemoteHand = screen) {
   t.after(() => session.close());
   return {
     peers, sockets, requests, session, video, canvas, drawn, decoded, captures, frames,
+    // Long-lived control/auth tests need actual advancing video, independently
+    // of the presentation callback tests and optional diagnostics.
+    playVideo() {
+      peers.at(-1)!.ontrack?.({ track: { kind: "video", id: "playing-picture", stop() {} } });
+      Object.assign(video, { getVideoPlaybackQuality: () => ({ totalVideoFrames: Date.now(), droppedVideoFrames: 0 }) });
+    },
     setChanged(value: typeof changed) { changed = value; },
     setCapture(value: typeof capture) { capture = value; },
     setDecode(value: typeof decode) { decode = value; },
@@ -353,7 +359,7 @@ test("malformed screen catalogs stop recovery instead of selecting an invalid pu
 
 test("signaling pongs do not extend the authorization lease", async t => {
   const f = fixture(t);
-  await f.session.connect(); f.peers[0]!.open();
+  await f.session.connect(); f.peers[0]!.open(); f.playVideo();
   await f.tick(20_000);
   f.sockets[0]!.onmessage!({ data: JSON.stringify({ type: "pong" }) }); await flush();
   assert.equal(f.session.state.connected, true);
@@ -681,7 +687,7 @@ test("windowed frames reject an unsolicited seventh image while decoding is bloc
 
 test("a background viewer retains its connection across a long tab switch while renewing", async t => {
   const f = fixture(t);
-  await f.session.connect(); f.peers[0]!.open();
+  await f.session.connect(); f.peers[0]!.open(); f.playVideo();
   f.session.takeControl(); f.peers[0]!.reliable.message({ type: "granted", generation: "lease" });
   f.session.releaseControl();
   assert.equal(f.session.state.controlling, false);
@@ -700,7 +706,7 @@ test("a background viewer retains its connection across a long tab switch while 
 
 test("foregrounding an expired background viewer cannot renew its authorization", async t => {
   const f = fixture(t);
-  await f.session.connect(); f.peers[0]!.open();
+  await f.session.connect(); f.peers[0]!.open(); f.playVideo();
   f.session.releaseControl();
   await f.tick(25_000);
   assert.equal(f.session.state.connected, false);
@@ -713,7 +719,7 @@ test("foregrounding an expired background viewer cannot renew its authorization"
 
 test("a brief background switch releases control and resumes the existing connection", async t => {
   const f = fixture(t);
-  await f.session.connect(); f.peers[0]!.open();
+  await f.session.connect(); f.peers[0]!.open(); f.playVideo();
   f.session.takeControl(); f.peers[0]!.reliable.message({ type: "granted", generation: "lease" });
   f.session.suspend(15_000);
   assert.equal(f.session.state.controlling, false);
@@ -761,7 +767,7 @@ test("a sustained WebRTC disconnect still replaces the peer after a bounded grac
 
 test("a transient renewal failure retries inside the original lease without disconnecting", async t => {
   const f = fixture(t);
-  await f.session.connect(); f.peers[0]!.open();
+  await f.session.connect(); f.peers[0]!.open(); f.playVideo();
   f.sockets[0]!.message({ type: "ready", connection_id: "viewer" }); await flush();
   f.setStatus(503); await f.tick(10_000);
   assert.equal(f.session.state.connected, true);
@@ -775,7 +781,7 @@ test("a transient renewal failure retries inside the original lease without disc
 
 test("renewal retries never extend authorization without a fresh authenticated renewal", async t => {
   const f = fixture(t);
-  await f.session.connect(); f.peers[0]!.open();
+  await f.session.connect(); f.peers[0]!.open(); f.playVideo();
   f.sockets[0]!.message({ type: "ready", connection_id: "viewer" }); await flush();
   f.setStatus(503); await f.tick(10_000); await f.tick(500); await f.tick(14_500);
   assert.equal(f.session.state.connected, false);
@@ -882,7 +888,7 @@ test("broadcast validation keeps endpoint secrets out of state and refuses crede
 
 test("broadcast polling times out, recovers status and never replays start on reconnect", async t => {
   const f = fixture(t, { ...screen, broadcast: true });
-  await f.session.connect(); f.peers[0]!.open();
+  await f.session.connect(); f.peers[0]!.open(); f.playVideo();
   f.sockets[0]!.message({ type: "ready", connection_id: "viewer" }); await flush();
   const initial = f.sockets[0]!.sent.find(m => m.action === "status");
   assert.ok(initial);
@@ -920,7 +926,7 @@ test("stream start UI waits for status and disables active, pending and disconne
 
 
 test("authenticated renewal bypasses a pending ICE restart without extending a stale session", async t => {
-  const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.open(); f.playVideo();
   f.sockets[0]!.message({ type: "ready", connection_id: "viewer" });
   f.sockets[0]!.message({ type: "signal", signal: { type: "offer", sdp: "initial" } }); await flush();
   // An earlier renewal was delayed; the next one arrives during ICE refresh.
@@ -1188,6 +1194,7 @@ test("microphone permission and sender errors stop tracks, disable host input an
 
 test("microphone pending permission times out and its eventual stream is stopped", async t => {
   const f = await microphoneFixture(t), permission = deferred<MediaStream>();
+  f.playVideo();
   f.setCapture(() => permission.promise); f.ack(f.request());
   await f.tick(20_000); f.sockets[0]!.message({ type: "renewed" }); await flush();
   await f.tick(10_000);
@@ -1406,7 +1413,7 @@ test("first frame is measured on presentation, retained until stats open, and re
   first.ontrack?.({ track: { kind: "video", id: "picture", stop() {} } });
   const presented = [...f.frames.values()][0]!;
   assert.equal(Boolean(f.session.state.stats), false);
-  await f.tick(175); presented(); assert.equal(f.frames.size, 0);
+  await f.tick(175); presented(); assert.equal(f.frames.size, 1, "keep watching after the first frame");
   f.session.setStatsEnabled(true); await flush();
   assert.equal(f.session.state.stats?.firstFrameMs, 175);
   const pending = deferred<RTCStatsReport>(); first.stats = () => pending.promise; await f.tick(1000);
@@ -1503,4 +1510,267 @@ test("video becomes ready before input channels without enabling premature contr
   peer.open(); assert.equal(f.session.state.connected, true); assert.equal(f.session.state.status, "Watching");
   f.session.takeControl(); assert.deepEqual(peer.reliable.sent.at(-1), { type: "acquire" });
   f.session.close(); assert.equal(f.session.state.mediaReady, false);
+});
+
+
+const turnServers = [{ urls: ["stun:ice.example", "turns:ice.example:443?transport=tcp"], username: "viewer", credential: "ephemeral" }];
+function videoReport(framesDecoded: number, trackIdentifier = "picture"): RTCStatsReport {
+  return new Map([["video", { id: "video", type: "inbound-rtp", kind: "video", trackIdentifier, framesDecoded }]]) as RTCStatsReport;
+}
+
+test("a connected direct path with no video retries via TURN with Stats off and releases control", async t => {
+  const f = fixture(t);
+  f.setIceResponse(async () => Response.json({ iceServers: turnServers }));
+  await f.session.connect(); const first = f.peers[0]!; first.open();
+  assert.equal(first.config.iceTransportPolicy, "all");
+  first.ontrack?.({ track: { kind: "video", id: "picture", stop() {} } });
+  const staleFrame = [...f.frames.values()][0]!;
+  // Metadata, an active audio clock and received bytes do not prove decoding.
+  f.video.readyState = 4; f.video.videoWidth = 3840; f.video.videoHeight = 2160;
+  first.stats = async () => new Map([
+    ["video", { id: "video", type: "inbound-rtp", kind: "video", framesDecoded: 0, bytesReceived: Date.now() }],
+    ["audio", { id: "audio", type: "inbound-rtp", kind: "audio", framesDecoded: Date.now() }],
+  ]) as RTCStatsReport;
+  f.session.takeControl(); first.reliable.message({ type: "granted", generation: "direct-lease" });
+  for (let i = 0; i < 14; i++) { Object.assign(f.video, { currentTime: i }); await f.tick(1000); }
+  assert.equal(f.session.state.connected, true); assert.equal(f.session.state.mediaReady, false);
+  await f.tick(1000);
+  assert.equal(first.connectionState, "closed"); assert.equal(f.session.state.controlling, false);
+  assert.deepEqual(first.reliable.sent.at(-1), { type: "release", generation: "direct-lease" });
+  await f.tick(1000); const second = f.peers[1]!; second.open();
+  assert.equal(second.config.iceTransportPolicy, "relay"); assert.deepEqual(second.reliable.sent, []);
+  staleFrame(); assert.equal(f.session.state.mediaReady, false);
+  assert.equal(f.session.state.stats, undefined); assert.ok(first.statsCalls > 0);
+});
+
+for (const iceServers of [[], [{ urls: "stun:ice.example" }], [{ urls: "turn:ice.example" }], [{ urls: "turn:ice.example", username: "viewer", credential: "" }]]) {
+  test(`missing TURN credentials leave retry candidates available: ${JSON.stringify(iceServers)}`, async t => {
+    const f = fixture(t); f.setIceResponse(async () => Response.json({ iceServers }));
+    await f.session.connect(); f.peers[0]!.fail(); await f.tick(1000);
+    const retry = f.peers[1]!; assert.equal(retry.config.iceTransportPolicy, "all");
+    retry.open(); assert.equal(f.session.state.connected, true);
+    f.setIceResponse(async () => Response.json({ iceServers: turnServers }));
+    retry.fail(); await f.tick(2000);
+    assert.equal(f.peers[2]!.config.iceTransportPolicy, "relay", "fresh TURN availability uses the retained preference");
+  });
+}
+
+test("relay preference survives healthy media, reconnect, resume and refreshed ICE credentials", async t => {
+  const f = fixture(t); f.setIceResponse(async () => Response.json({ iceServers: turnServers }));
+  await f.session.connect(); f.peers[0]!.fail(); await f.tick(1000);
+  const relay = f.peers[1]!; relay.open(); f.playVideo();
+  for (let i = 0; i < 12; i++) await f.tick(1000);
+  f.session.reconnect(); await flush(); const next = f.peers[2]!; next.open();
+  assert.equal(next.config.iceTransportPolicy, "relay");
+  f.sockets[2]!.message({ type: "signal", signal: { type: "offer", sdp: "initial" } }); await flush();
+  f.setIceResponse(async () => Response.json({ iceServers: [{ urls: "stun:ice.example" }] }));
+  f.sockets[2]!.message({ type: "signal", signal: { type: "offer", sdp: "restart-no-turn" } }); await flush();
+  assert.equal(next.config.iceTransportPolicy, "all", "expired/missing TURN must not strand a restart");
+  f.setIceResponse(async () => Response.json({ iceServers: turnServers }));
+  f.sockets[2]!.message({ type: "signal", signal: { type: "offer", sdp: "restart-with-turn" } }); await flush();
+  assert.equal(next.config.iceTransportPolicy, "relay");
+  f.session.suspend(); f.session.resume(); await flush();
+  assert.equal(f.peers[3]!.config.iceTransportPolicy, "relay");
+});
+
+for (const singleFrame of [false, true]) {
+  test(`transport readiness${singleFrame ? " and a single frame" : " without media"} cannot extend the 90-second recovery deadline`, async t => {
+    const f = fixture(t); f.setIceResponse(async () => Response.json({ iceServers: turnServers }));
+    await f.session.connect(); f.peers[0]!.open(); f.peers[0]!.fail();
+    for (let i = 0; i < 90; i++) {
+      await f.tick(1000);
+      const peer = f.peers.at(-1)!;
+      if (peer.connectionState === "new") {
+        peer.open();
+        if (singleFrame) {
+          peer.ontrack?.({ track: { kind: "video", id: "picture", stop() {} } });
+          [...f.frames.values()][0]!();
+        }
+      }
+      f.sockets.at(-1)!.message({ type: "renewed" });
+    }
+    assert.ok(f.peers.length > 3);
+    assert.equal(f.session.state.connected, false); assert.equal(f.session.state.connecting, false);
+    const attempts = f.peers.length; await f.tick(30_000); assert.equal(f.peers.length, attempts);
+  });
+}
+
+test("sustained real video earns a new recovery budget and resets backoff without resetting relay", async t => {
+  const f = fixture(t); f.setIceResponse(async () => Response.json({ iceServers: turnServers }));
+  await f.session.connect(); f.peers[0]!.fail(); f.setCatalog([]);
+  for (let i = 0; i < 50; i++) await f.tick(1000);
+  f.setCatalog([screen]);
+  while (f.peers.length === 1) await f.tick(1000);
+  const relay = f.peers[1]!; relay.open(); f.playVideo();
+  for (let i = 0; i < 12; i++) await f.tick(1000);
+  relay.fail(); await f.tick(999); assert.equal(f.peers.length, 2);
+  await f.tick(1); assert.equal(f.peers.length, 3, "healthy media resets exponential backoff");
+  f.peers[2]!.open(); f.setCatalog([]);
+  // The old budget expired at 90s; this later outage still has its own budget.
+  for (let i = 0; i < 35; i++) await f.tick(1000);
+  assert.equal(f.session.state.connecting, true);
+  assert.equal(f.peers[2]!.config.iceTransportPolicy, "relay");
+  for (let i = 0; i < 55; i++) await f.tick(1000);
+  assert.equal(f.session.state.connecting, false);
+});
+
+test("stale presented video recovers even while the control and authorization leases stay healthy", async t => {
+  const f = fixture(t); await f.session.connect(); const peer = f.peers[0]!; peer.open();
+  peer.ontrack?.({ track: { kind: "video", id: "picture", stop() {} } });
+  for (let i = 0; i < 12; i++) { [...f.frames.values()][0]!(); await f.tick(1000); }
+  [...f.frames.values()][0]!(); f.sockets[0]!.message({ type: "renewed" });
+  await f.tick(9000); assert.equal(f.session.state.connected, true);
+  await f.tick(1000); assert.equal(f.session.state.connected, false);
+  assert.equal(f.session.state.mediaReady, false); assert.equal(f.session.state.connecting, true);
+});
+
+test("decoded frames keep background video healthy without presentation callbacks or the Stats UI", async t => {
+  const f = fixture(t); await f.session.connect(); const peer = f.peers[0]!; peer.open();
+  peer.ontrack?.({ track: { kind: "video", id: "picture", stop() {} } });
+  let decoded = 0; peer.stats = async () => videoReport(decoded);
+  for (let i = 0; i < 35; i++) {
+    decoded += 60; await f.tick(1000); f.sockets[0]!.message({ type: "renewed" });
+  }
+  assert.equal(f.peers.length, 1); assert.equal(f.session.state.connected, true);
+  assert.equal(f.session.state.mediaReady, true); assert.equal(f.session.state.stats, undefined);
+  for (let i = 0; i < 11; i++) { await f.tick(1000); f.sockets.at(-1)!.message({ type: "renewed" }); }
+  assert.equal(peer.connectionState, "closed", "an unchanged decoded count must eventually expire");
+});
+
+for (const retire of ["suspend", "close", "reconnect"] as const) {
+  test(`a pending health sample cannot escape ${retire}, and slow stats cannot disable the media deadline`, async t => {
+    const f = fixture(t); await f.session.connect(); const peer = f.peers[0]!; peer.open();
+    peer.ontrack?.({ track: { kind: "video", id: "picture", stop() {} } });
+    const pending = deferred<RTCStatsReport>(); peer.stats = () => pending.promise;
+    await f.tick(3000); assert.equal(peer.statsCalls, 1);
+    f.session.setStatsEnabled(true); f.session.setStatsEnabled(false);
+    await f.tick(10_000); assert.equal(peer.statsCalls, 1, "health and diagnostics share the slow request");
+    if (retire === "reconnect") {
+      await f.tick(2000); assert.equal(peer.connectionState, "closed", "the unresolved request cannot hold the watchdog");
+      await f.tick(1000); f.peers[1]!.open();
+    } else f.session[retire]();
+    pending.resolve(videoReport(600)); await flush();
+    assert.equal(f.session.state.mediaReady, false); assert.equal(f.session.state.stats, undefined);
+    if (retire !== "reconnect") {
+      await f.tick(30_000); assert.equal(f.peers.length, 1);
+      assert.equal(f.session.state.status, retire === "close" ? "Disconnected" : "Paused");
+    }
+  });
+}
+
+test("a replaced video track ignores late callbacks and stats for its predecessor", async t => {
+  const f = fixture(t); await f.session.connect(); const peer = f.peers[0]!; peer.open();
+  peer.ontrack?.({ track: { kind: "video", id: "old", stop() {} } });
+  const callback = [...f.frames.values()][0]!, pending = deferred<RTCStatsReport>();
+  peer.stats = () => pending.promise; await f.tick(3000);
+  peer.ontrack?.({ track: { kind: "video", id: "new", stop() {} } });
+  callback(); pending.resolve(videoReport(90, "old")); await flush();
+  assert.equal(f.session.state.mediaReady, false);
+  peer.stats = async () => videoReport(180, "old"); await f.tick(3000);
+  assert.equal(f.session.state.mediaReady, false);
+  peer.stats = async () => videoReport(60, "new"); await f.tick(1000);
+  assert.equal(f.session.state.mediaReady, true);
+});
+
+for (const source of ["presentation", "counter", "decoder"] as const) {
+  test(`closing synchronously from ${source} readiness retires the media watchdog`, async t => {
+    const f = fixture(t); await f.session.connect(); const peer = f.peers[0]!; peer.open();
+    peer.ontrack?.({ track: { kind: "video", id: "picture", stop() {} } });
+    f.setChanged(state => { if (state.mediaReady) f.session.close(); });
+    if (source === "presentation") [...f.frames.values()][0]!();
+    else if (source === "counter") {
+      Object.assign(f.video, { getVideoPlaybackQuality: () => ({ totalVideoFrames: 60, droppedVideoFrames: 0 }) });
+      await f.tick(1000);
+    } else { peer.stats = async () => videoReport(60); await f.tick(3000); }
+    assert.equal(f.session.state.status, "Disconnected"); assert.equal(f.session.state.mediaReady, false);
+    assert.equal(f.frames.size, 0); const calls = peer.statsCalls;
+    await f.tick(100_000); assert.equal(f.peers.length, 1); assert.equal(peer.statsCalls, calls);
+  });
+}
+
+test("historical decoder totals cannot turn a short burst of pictures into stable recovery", async t => {
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.fail();
+  const deadline = Date.now() + 90_000;
+  await f.tick(1000); const peer = f.peers[1]!; peer.open();
+  peer.ontrack?.({ track: { kind: "video", id: "picture", stop() {} } });
+  peer.stats = async () => videoReport(9);
+  for (let i = 0; i < 9; i++) { [...f.frames.values()][0]!(); await f.tick(1000); }
+  await f.tick(2000); assert.equal(peer.statsCalls, 1);
+  peer.fail(); f.setCatalog([]);
+  while (Date.now() < deadline) await f.tick(Math.min(1000, deadline - Date.now()));
+  assert.equal(f.session.state.connecting, false, "the cumulative baseline must not erase the original budget");
+});
+
+for (const [quietPolls, delay] of [[0, 11_000], [2, 8000]] as const) {
+  test(`a background timer delayed ${delay}ms checks decoder health with bounded grace for stuck stats`, async t => {
+    const f = fixture(t); await f.session.connect(); const peer = f.peers[0]!; peer.open();
+    peer.ontrack?.({ track: { kind: "video", id: "picture", stop() {} } });
+    let decoded = 0; peer.stats = async () => videoReport(decoded);
+    for (let i = 0; i < 6; i++) { decoded += 60; await f.tick(1000); }
+    for (let i = 0; i < quietPolls; i++) await f.tick(1000);
+    f.sockets[0]!.message({ type: "renewed" });
+    decoded += 660; await f.tick(delay);
+    assert.equal(f.session.state.connected, true); assert.equal(f.peers.length, 1);
+    f.sockets[0]!.message({ type: "renewed" });
+    peer.stats = () => new Promise(() => {});
+    await f.tick(11_000); assert.equal(f.session.state.connected, true, "allow a delayed decoder check to settle");
+    await f.tick(1000); assert.equal(f.session.state.connected, true);
+    await f.tick(1000); assert.equal(peer.connectionState, "closed", "a stuck sample gets only two seconds of grace");
+  });
+}
+
+test("a late video heartbeat cannot clear a recovery deadline that already expired", async t => {
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.fail(); f.setCatalog([]);
+  for (let i = 0; i < 76; i++) await f.tick(1000);
+  f.setCatalog([screen]);
+  while (f.peers.length === 1) await f.tick(1000);
+  f.peers[1]!.open(); f.playVideo();
+  for (let i = 0; i < 9; i++) await f.tick(1000);
+  assert.equal(f.session.state.connected, true);
+  await f.tick(3000);
+  assert.equal(f.session.state.connected, false); assert.equal(f.session.state.connecting, false);
+  assert.equal(f.peers[1]!.connectionState, "closed");
+});
+
+test("returning to decoder sampling after local frames requires a fresh baseline", async t => {
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.fail();
+  const deadline = Date.now() + 90_000;
+  await f.tick(1000); const peer = f.peers[1]!; peer.open();
+  peer.ontrack?.({ track: { kind: "video", id: "picture", stop() {} } });
+  let decoded = 1; peer.stats = async () => videoReport(decoded);
+  await f.tick(3000);
+  for (let i = 0; i < 8; i++) { decoded++; await f.tick(1000); [...f.frames.values()][0]!(); }
+  for (let i = 0; i < 3; i++) await f.tick(1000);
+  assert.equal(peer.statsCalls, 2);
+  peer.fail(); f.setCatalog([]);
+  while (Date.now() < deadline) await f.tick(Math.min(1000, deadline - Date.now()));
+  assert.equal(f.session.state.connecting, false, "a stale pre-presentation baseline cannot earn stability");
+});
+
+
+test("a late switch from presentation to decoder health can baseline and then measure a new frame", async t => {
+  const f = fixture(t); await f.session.connect(); const peer = f.peers[0]!; peer.open();
+  peer.ontrack?.({ track: { kind: "video", id: "picture", stop() {} } });
+  [...f.frames.values()][0]!();
+  let decoded = 660; peer.stats = async () => videoReport(decoded);
+  await f.tick(11_000); assert.equal(f.session.state.connected, true);
+  decoded += 60; await f.tick(1000);
+  assert.equal(peer.connectionState, "connected", "baseline plus fresh delta fits within the bounded grace");
+  for (let i = 0; i < 3; i++) { decoded += 60; await f.tick(1000); }
+  assert.equal(f.peers.length, 1);
+});
+
+test("a decoder report captured before local frames cannot seed their later fallback baseline", async t => {
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.fail();
+  const deadline = Date.now() + 90_000;
+  await f.tick(1000); const peer = f.peers[1]!; peer.open();
+  peer.ontrack?.({ track: { kind: "video", id: "picture", stop() {} } });
+  const pending = deferred<RTCStatsReport>(); peer.stats = () => pending.promise;
+  await f.tick(3000);
+  for (let i = 0; i < 9; i++) { await f.tick(1000); [...f.frames.values()][0]!(); }
+  await f.tick(2000); pending.resolve(videoReport(0)); await flush();
+  peer.stats = async () => videoReport(9); await f.tick(1000);
+  peer.fail(); f.setCatalog([]);
+  while (Date.now() < deadline) await f.tick(Math.min(1000, deadline - Date.now()));
+  assert.equal(f.session.state.connecting, false, "the old pending sample cannot credit already-presented frames");
 });
