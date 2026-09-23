@@ -662,8 +662,10 @@ fn dropping_unreaped_command_stops_descendants_even_after_leader_exits() {
     let parent = child.child.id() as libc::pid_t;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
     let descendant = loop {
-        if let Ok(text) = fs::read_to_string(&pid_file) {
-            if let Ok(pid) = text.trim().parse::<libc::pid_t>() { break pid; }
+        if let Ok(text) = fs::read_to_string(&pid_file)
+            && let Ok(pid) = text.trim().parse::<libc::pid_t>()
+        {
+            break pid;
         }
         assert!(std::time::Instant::now() < deadline);
         std::thread::sleep(std::time::Duration::from_millis(1));
