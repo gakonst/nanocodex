@@ -3,17 +3,23 @@ import CoreGraphics
 import Combine
 import WebRTC
 
-// Capture one decoded frame on WebRTC's renderer thread; never dispatch or
-// publish work for every video frame. Removed from the track after the callback.
+// Observe decoded progress on WebRTC's renderer thread. Only the first frame
+// dispatches a callback; the watchdog reads a locked timestamp once per second.
 final class RemoteFirstFrameProbe: NSObject, RTCVideoRenderer, @unchecked Sendable {
     private let lock = NSLock()
     private var receive: (@Sendable (TimeInterval, Int, Int) -> Void)?
+    private var latestFrame: TimeInterval?
+    var latestFrameTime: TimeInterval? { lock.withLock { latestFrame } }
     init(receive: @escaping @Sendable (TimeInterval, Int, Int) -> Void) { self.receive = receive }
     func setSize(_ size: CGSize) {}
     func renderFrame(_ frame: RTCVideoFrame?) {
         guard let frame, frame.width > 0, frame.height > 0 else { return }
-        let callback = lock.withLock { let callback = receive; receive = nil; return callback }
-        callback?(ProcessInfo.processInfo.systemUptime, Int(frame.width), Int(frame.height))
+        let time = ProcessInfo.processInfo.systemUptime
+        let callback = lock.withLock {
+            latestFrame = time
+            let callback = receive; receive = nil; return callback
+        }
+        callback?(time, Int(frame.width), Int(frame.height))
     }
 }
 
@@ -126,6 +132,10 @@ public final class RemoteViewer: ObservableObject {
     public var relativePointer: Bool { supportsRelativePointer }
     @Published public private(set) var performance = RemotePerformance()
     private var performanceTask: Task<Void, Never>?
+    private var videoProgressTask: Task<Void, Never>?
+    private let videoStartTimeout: TimeInterval
+    private let videoStallTimeout: TimeInterval
+    private let videoPollInterval: Duration
     private var attemptStarted: TimeInterval = 0
     @Published public private(set) var connected = false
     @Published public private(set) var hand: RemoteHand?
@@ -206,8 +216,14 @@ public final class RemoteViewer: ObservableObject {
         broadcastWaiting = false; scheduleBroadcastPoll()
     }
 
-    public init() { recoveryWindow = .seconds(90) }
-    init(recoveryWindow: Duration) { self.recoveryWindow = recoveryWindow }
+    public convenience init() { self.init(recoveryWindow: .seconds(90)) }
+    init(recoveryWindow: Duration, videoStartTimeout: TimeInterval = 15,
+         videoStallTimeout: TimeInterval = 10, videoPollInterval: Duration = .seconds(1)) {
+        self.recoveryWindow = recoveryWindow
+        self.videoStartTimeout = videoStartTimeout
+        self.videoStallTimeout = videoStallTimeout
+        self.videoPollInterval = videoPollInterval
+    }
     var diagnosticState: String { peer?.diagnosticState ?? "no peer" }
     var diagnosticRecovery: String { "\(diagnosticState) ready=\(transportReady)/\(channelsReady) retries=\(retries) last=\(lastFailure)" }
     var connectionEvent: (String) -> Void = { _ in }
@@ -328,8 +344,7 @@ public final class RemoteViewer: ObservableObject {
                     Task { @MainActor [weak self, weak track] in
                         guard let self, let track, epoch == attempt, self.track === track else { return }
                         recordFirstFrame(time: time, width: width, height: height)
-                        if let frameProbe { track.remove(frameProbe) }
-                        frameProbe = nil
+                        updateReady()
                     }
                 }
                 frameProbe = probe; track.add(probe)
@@ -337,7 +352,10 @@ public final class RemoteViewer: ObservableObject {
             peer.onState = { [weak self] state in
                 guard let self, epoch == attempt else { return }
                 recordConnectionEvent("peer state \(state.rawValue)")
-                if state == .connected { transportReady = true; startPerformance(attempt: attempt); updateReady() }
+                if state == .connected {
+                    transportReady = true
+                    startPerformance(attempt: attempt); startVideoProgress(attempt: attempt); updateReady()
+                }
                 if [.failed, .closed, .disconnected].contains(state) { fail(RemoteError.unavailable) }
             }
             peer.onChannelsReady = { [weak self] in
@@ -582,6 +600,7 @@ public final class RemoteViewer: ObservableObject {
         let peer = self.peer, signaling = self.signaling
         if let frameProbe { track?.remove(frameProbe) }
         frameProbe = nil; diagnosticFirstFrame = nil
+        videoProgressTask?.cancel(); videoProgressTask = nil
         performanceTask?.cancel(); performanceTask = nil; performance = RemotePerformance()
         self.peer = nil; self.signaling = nil; track = nil; connected = false; connecting = false
         transportReady = false; channelsReady = false
@@ -649,11 +668,37 @@ public final class RemoteViewer: ObservableObject {
         }
     }
 
+    // Independent of the stats request: a hung stats callback must not disable
+    // recovery. Incoming packets/audio and open channels are not video progress.
+    private func startVideoProgress(attempt: UUID) {
+        guard videoProgressTask == nil else { return }
+        let started = ProcessInfo.processInfo.systemUptime
+        videoProgressTask = Task { [weak self] in
+            var lastFrame: TimeInterval?
+            while !Task.isCancelled {
+                guard let self, self.epoch == attempt else { return }
+                if let time = self.frameProbe?.latestFrameTime { lastFrame = max(lastFrame ?? time, time) }
+                let now = ProcessInfo.processInfo.systemUptime
+                let expired = lastFrame.map { now - $0 >= self.videoStallTimeout }
+                    ?? (now - started >= self.videoStartTimeout)
+                if expired {
+                    self.recordConnectionEvent(lastFrame == nil ? "video start deadline" : "video stalled")
+                    self.fail(RemoteError.unavailable)
+                    return
+                }
+                do { try await Task.sleep(for: self.videoPollInterval) } catch { return }
+            }
+        }
+    }
+
     private func updateReady() {
-        if !connected && transportReady && channelsReady {
+        guard transportReady && channelsReady else { return }
+        if performance.connectionMilliseconds == nil {
+            performance.connectionMilliseconds = max(0, (ProcessInfo.processInfo.systemUptime - attemptStarted) * 1000)
+        }
+        if !connected && performance.firstDecodedFrameMilliseconds != nil {
             connectionDeadline?.cancel(); retries = 0; recoveryDeadline = nil
             connecting = false; connected = true; status = "Watching"
-            performance.connectionMilliseconds = max(0, (ProcessInfo.processInfo.systemUptime - attemptStarted) * 1000)
         }
     }
     private func sendControl(_ message: RemoteControlMessage) {

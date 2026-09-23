@@ -32,6 +32,49 @@ private final class RemoteHTTPFixture: URLProtocol {
     func close(error: Error?) { closed = true; onClose(error) }
 }
 
+// Real local WebRTC transport and decoder, with synthetic pixels and credentials.
+@MainActor private final class ViewerLoopback {
+    let socket = ViewerSocket()
+    let publisher: RemotePeer
+    private var signaling: Task<Void, Never>?
+    private var frames: Task<Void, Never>?
+
+    init(viewer: RemoteViewer) throws {
+        publisher = try RemotePeer(publishing: true, ice: [])
+        viewer.makeSignaling = { [socket] _ in socket }
+        publisher.onSignal = { [socket] in socket.onMessage(.init(type: "signal", signal: $0)) }
+        socket.onSend = { [weak self] message in
+            guard let self, let signal = message.signal else { return }
+            let previous = signaling
+            signaling = Task { [publisher] in
+                await previous?.value
+                do { try await publisher.receive(signal) } catch { XCTFail("Loopback signaling: \(error)") }
+            }
+        }
+    }
+
+    func startFrames() throws {
+        var pixelBuffer: CVPixelBuffer?
+        XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 320, 240, kCVPixelFormatType_32BGRA,
+            [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &pixelBuffer), kCVReturnSuccess)
+        let buffer = try XCTUnwrap(pixelBuffer)
+        CVPixelBufferLockBaseAddress(buffer, [])
+        memset(CVPixelBufferGetBaseAddress(buffer), 96, CVPixelBufferGetDataSize(buffer))
+        CVPixelBufferUnlockBaseAddress(buffer, [])
+        let capturer = RTCVideoCapturer(delegate: publisher.videoSource)
+        frames = Task { [publisher] in
+            while !Task.isCancelled {
+                let timestamp = Int64(ProcessInfo.processInfo.systemUptime * 1_000_000_000)
+                publisher.videoSource.capturer(capturer, didCapture: RTCVideoFrame(
+                    buffer: RTCCVPixelBuffer(pixelBuffer: buffer), rotation: ._0, timeStampNs: timestamp))
+                do { try await Task.sleep(for: .milliseconds(33)) } catch { return }
+            }
+        }
+    }
+    func stopFrames() { frames?.cancel(); frames = nil }
+    func close() { stopFrames(); signaling?.cancel(); publisher.close() }
+}
+
 private final class FrameDecodeGate: @unchecked Sendable {
     let entered: XCTestExpectation
     let release = DispatchSemaphore(value: 0)
@@ -951,6 +994,8 @@ final class RemoteViewerTests: XCTestCase {
         try await publisher.offer()
         await fulfillment(of: [ready], timeout: 5)
         XCTAssertNil(viewer.performance.firstDecodedFrameMilliseconds, "A video track is not evidence of a decoded frame")
+        XCTAssertFalse(viewer.connected, "Transport and channels alone must not report Watching")
+        XCTAssertTrue(viewer.connecting)
         var pixelBuffer: CVPixelBuffer?
         XCTAssertEqual(CVPixelBufferCreate(kCFAllocatorDefault, 320, 240, kCVPixelFormatType_32BGRA,
             [kCVPixelBufferIOSurfacePropertiesKey: [:]] as CFDictionary, &pixelBuffer), kCVReturnSuccess)
@@ -1361,5 +1406,122 @@ extension RemoteViewerTests {
         XCTAssertTrue(viewer.diagnosticState.contains("policy=all"),
                       "Explicit selection starts a new viewer scope")
         XCTAssertFalse(viewer.controlling)
+    }
+}
+
+
+extension RemoteViewerTests {
+    @MainActor func testWebRTCWithoutDecodedVideoExpiresAndNeverEnablesControl() async throws {
+        let service = try service { $0.respond(200, ["iceServers": []]) }
+        let viewer = RemoteViewer(recoveryWindow: .zero, videoStartTimeout: 0.5,
+                                  videoPollInterval: .milliseconds(25))
+        let loopback = try ViewerLoopback(viewer: viewer)
+        defer { viewer.close(); loopback.close(); service.close() }
+        let ready = expectation(description: "Real transport and channels connected")
+        let expired = expectation(description: "Video start deadline fired")
+        let observer = viewer.$performance.sink { if $0.connectionMilliseconds != nil { ready.fulfill() } }
+        viewer.connectionEvent = { if $0 == "video start deadline" { expired.fulfill() } }
+        await viewer.connect(service: service, hand: try hand("no-video"))
+        try await loopback.publisher.offer()
+        await fulfillment(of: [ready], timeout: 5)
+        observer.cancel()
+        XCTAssertNotNil(viewer.track)
+        XCTAssertFalse(viewer.connected)
+        XCTAssertTrue(viewer.connecting)
+        XCTAssertNil(viewer.performance.firstDecodedFrameMilliseconds)
+        viewer.takeControl(); viewer.setMicrophoneEnabled(true)
+        XCTAssertFalse(viewer.controlling); XCTAssertFalse(viewer.microphonePending)
+        await fulfillment(of: [expired], timeout: 2)
+        XCTAssertTrue(loopback.socket.closed)
+        XCTAssertFalse(viewer.connected); XCTAssertFalse(viewer.connecting)
+        XCTAssertEqual(viewer.status, RemoteError.unavailable.localizedDescription)
+        XCTAssertEqual(viewer.diagnosticState, "no peer")
+    }
+
+    @MainActor func testWebRTCDecodedVideoStallRevokesControlAndPendingMicrophone() async throws {
+        let service = try service { $0.respond(200, ["iceServers": []]) }
+        let viewer = RemoteViewer(recoveryWindow: .zero, videoStallTimeout: 0.5,
+                                  videoPollInterval: .milliseconds(25))
+        let loopback = try ViewerLoopback(viewer: viewer)
+        defer { viewer.close(); loopback.close(); service.close() }
+        let ready = expectation(description: "Decoded video enables Watching")
+        let granted = expectation(description: "Control granted through real data channel")
+        let microphone = expectation(description: "Microphone request reaches host")
+        let stalled = expectation(description: "Decoded progress stopped")
+        let observer = viewer.$connected.sink { if $0 { ready.fulfill() } }
+        defer { observer.cancel() }
+        viewer.connectionEvent = { if $0 == "video stalled" { stalled.fulfill() } }
+        loopback.publisher.onData = { [publisher = loopback.publisher] data, motion in
+            guard !motion, let message = try? JSONDecoder().decode(RemoteControlMessage.self, from: data) else { return }
+            if message.type == .acquire {
+                _ = try? publisher.send(JSONEncoder().encode(RemoteControlMessage(type: .granted,
+                    generation: "fixture-lease", relativePointer: true, microphone: true)))
+            }
+            if message.type == .microphone && message.enabled == true { microphone.fulfill() }
+        }
+        let control = viewer.$controlling.sink { if $0 { granted.fulfill() } }
+        defer { control.cancel() }
+        await viewer.connect(service: service, hand: try hand("stall"))
+        try await loopback.publisher.offer()
+        try loopback.startFrames()
+        await fulfillment(of: [ready], timeout: 5)
+        // Repeated decoded progress survives multiple stall intervals.
+        try await Task.sleep(for: .milliseconds(1100))
+        XCTAssertTrue(viewer.connected)
+        viewer.takeControl()
+        await fulfillment(of: [granted], timeout: 2)
+        viewer.setMicrophoneEnabled(true)
+        await fulfillment(of: [microphone], timeout: 2)
+        XCTAssertTrue(viewer.microphonePending)
+        loopback.stopFrames()
+        await fulfillment(of: [stalled], timeout: 3)
+        XCTAssertTrue(loopback.socket.closed)
+        XCTAssertFalse(viewer.connected); XCTAssertFalse(viewer.controlling)
+        XCTAssertFalse(viewer.microphonePending); XCTAssertFalse(viewer.microphoneEnabled)
+        XCTAssertFalse(viewer.supportsMicrophone); XCTAssertFalse(viewer.supportsRelativePointer)
+        XCTAssertNil(viewer.track)
+        XCTAssertEqual(viewer.performance, RemotePerformance())
+    }
+
+    @MainActor func testWebRTCVideoDeadlineCannotOutliveSuspendOrNewSelection() async throws {
+        let service = try service { $0.respond(200, ["iceServers": []]) }
+        let viewer = RemoteViewer(recoveryWindow: .zero, videoStartTimeout: 0.5,
+                                  videoStallTimeout: 0.5, videoPollInterval: .milliseconds(25))
+        let loopback = try ViewerLoopback(viewer: viewer)
+        defer { viewer.close(); loopback.close(); service.close() }
+        let ready = expectation(description: "Transport connected without video")
+        let observer = viewer.$performance.sink { if $0.connectionMilliseconds != nil { ready.fulfill() } }
+        await viewer.connect(service: service, hand: try hand("old"))
+        try await loopback.publisher.offer()
+        await fulfillment(of: [ready], timeout: 5)
+        observer.cancel()
+        let oldMessage = loopback.socket.onMessage, oldClose = loopback.socket.onClose
+        viewer.suspend()
+        try loopback.startFrames()
+        try await Task.sleep(for: .milliseconds(650))
+        XCTAssertEqual(viewer.status, "Paused")
+        XCTAssertNil(viewer.track); XCTAssertEqual(viewer.performance, RemotePerformance())
+
+        // Switch account/selection scope to a new frame viewer. Late old media,
+        // socket callbacks and timers cannot reconnect or tear down this scope.
+        let replacement = ViewerSocket()
+        viewer.makeSignaling = { _ in replacement }
+        var catalog = surface("new"); catalog["transport"] = "frames-v1"
+        let selected = try JSONDecoder().decode(RemoteHand.self, from: JSONSerialization.data(withJSONObject: catalog))
+        await viewer.connect(service: service, hand: selected)
+        let decoded = expectation(description: "Replacement frame viewer is ready")
+        let connected = viewer.$connected.sink { if $0 { decoded.fulfill() } }
+        defer { connected.cancel() }
+        replacement.onMessage(.init(type: "ready")); replacement.onMessage(try jpegFrame())
+        await fulfillment(of: [decoded], timeout: 3)
+        oldClose(RemoteError.unavailable)
+        oldMessage(.init(type: "signal", signal: .init(type: .offer, sdp: "stale")))
+        try await Task.sleep(for: .milliseconds(650))
+        XCTAssertTrue(viewer.connected, "Old WebRTC watchdog must not apply to frames-v1")
+        XCTAssertFalse(replacement.closed)
+        XCTAssertEqual(viewer.hand?.generation, "new")
+        viewer.close()
+        try await Task.sleep(for: .milliseconds(650))
+        XCTAssertNil(viewer.hand); XCTAssertEqual(viewer.status, "Disconnected")
     }
 }
