@@ -76,6 +76,14 @@ impl ManagedVoiceProtocol {
         self.protocol.context(&text)
     }
 
+    /// Deliver current managed memories independently of media startup. The
+    /// retained control queue also handles admission before the channel opens.
+    pub fn personalization(&mut self, context: &Value) -> BrowserVoiceEffects {
+        managed_personalization_context(context)
+            .map(|text| self.protocol.context(&text))
+            .unwrap_or_default()
+    }
+
     /// JSON is just the binding ABI; all protocol decisions remain in this crate.
     pub fn dispatch(&mut self, command: &Value) -> Result<Value, String> {
         let effects = match command["op"].as_str().unwrap_or_default() {
@@ -121,6 +129,7 @@ impl ManagedVoiceProtocol {
                     json!({ "id": delegation.id, "formatted_input": format_delegation(&delegation) })) }),
                 );
             }
+            "personalization" => self.personalization(&command["context"]),
             "typed_input" => self.note_typed_input(),
             "agent" => self.agent_event(&command["event"].to_string()),
             "managed" => self.managed_event(&command["envelope"]),
@@ -257,11 +266,17 @@ pub fn managed_startup_context(context: &Value) -> Option<String> {
         context["workspace"].as_str().unwrap_or_default(),
         &[],
     );
+    let mut sections = history_context.into_iter().collect::<Vec<_>>();
+    sections.extend(managed_personalization_context(context));
+    (!sections.is_empty()).then(|| sections.join("\n\n"))
+}
+
+fn managed_personalization_context(context: &Value) -> Option<String> {
     // Supplied by the managed host after live scope/policy checks. Never collect
     // arbitrary developer messages from history: they can retain stale/private state.
     // Budgets accommodate both personal and team snapshots (8 KB prepared facts
     // and 12 KB Markdown excerpts per scope, plus framing).
-    let mut sections = history_context.into_iter().collect::<Vec<_>>();
+    let mut sections = Vec::new();
     for (key, label, limit) in [
         (
             "prepared_personalization",
@@ -396,6 +411,47 @@ mod tests {
             managed_startup_context(&json!({"markdown_memory":"current USER.md preference"}))
                 .unwrap();
         assert!(text.contains("current USER.md preference"));
+    }
+
+    #[test]
+    fn live_personalization_queues_only_current_memories_without_requesting_speech() {
+        let context = json!({
+            "workspace": "/private/workspace",
+            "history": [{"role":"developer", "content":[{"text":"stale developer facts"}]},
+                {"role":"user", "content":[{"text":"old conversation"}]}],
+            "prepared_personalization": "current prepared preference",
+            "markdown_memory": format!("USER.md current preference {}", "🦊".repeat(300))
+        });
+        let mut voice = ManagedVoiceProtocol::new("cove").unwrap();
+        let effects = voice
+            .dispatch(&json!({"op":"personalization", "context":context}))
+            .unwrap();
+        let frames = effects["frames"].as_array().unwrap();
+        assert!(frames.len() > 1);
+        let mut text = String::new();
+        for encoded in frames {
+            let frame: Value = serde_json::from_str(encoded.as_str().unwrap()).unwrap();
+            assert_eq!(frame["type"], "session.context.append");
+            assert_eq!(frame["channel"], "commentary");
+            let chunk = frame["content"][0]["text"].as_str().unwrap();
+            assert!(chunk.len() <= 500);
+            text.push_str(chunk);
+        }
+        assert!(text.contains("current prepared preference"));
+        assert!(text.contains("USER.md current preference"));
+        assert!(!text.contains("old conversation"));
+        assert!(!text.contains("stale developer facts"));
+        assert!(!text.contains("/private/workspace"));
+        assert_ne!(effects["playback_enabled"], true);
+        assert_eq!(voice.sideband_opened().frames.len(), frames.len());
+        voice.frames_sent(frames.len());
+        assert!(voice.sideband_opened().frames.is_empty());
+        assert!(
+            voice
+                .personalization(&json!({"history": context["history"]}))
+                .frames
+                .is_empty()
+        );
     }
 
     #[test]

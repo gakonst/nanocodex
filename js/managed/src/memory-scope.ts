@@ -277,7 +277,7 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
           if (!this.#markdownAutomationEnabled())
             return json({ error: "memory_automation_unavailable" }, { status: 503 });
           try { return json(await services.flush.flush(assertedTeam, input, request.signal)); }
-          finally { await this.#scheduleNextAlarm(); }
+          finally { await this.#scheduleOptionalMemoryAlarm(); }
         }
         if (isRecord(input) && typeof input.content === "string" && containsLikelySecret(input.content))
           return json({ error: "memory_secret_rejected", message: "memory content was rejected as a likely secret" }, { status: 422 });
@@ -286,7 +286,7 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
           if (result.ok) services.consolidation.noteChange(assertedTeam, result.path, result.revision);
           return result;
         });
-        await this.#scheduleNextAlarm();
+        await this.#scheduleOptionalMemoryAlarm();
         return json(result);
       }
       if (request.method === "POST" && url.pathname.startsWith("/extension-memories/")) {
@@ -376,9 +376,11 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
         const subjectId = request.headers.get(SUBJECT_ASSERTION);
         if (subjectId === null) return json({ error: "not_found" }, { status: 404 });
         const result = this.#memory(operation, assertedTeam, subjectId);
-        // Includes expired memories removed by a scan/read. Do not acknowledge a
-        // mutation until outstanding prepared copies have been fenced.
-        await this.#invalidatePersonalization();
+        // Explicit mutations still fence outstanding prepared copies before success.
+        // Canonical reads use local ownership/version checks; remote cache delivery
+        // (including debt from pruning expired facts) must not make them unavailable.
+        if (mutating) await this.#invalidatePersonalization();
+        else await this.#scheduleOptionalMemoryAlarm();
         return json(result);
       }
       return json({ error: "not_found" }, { status: 404 });
@@ -403,16 +405,21 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
   }
 
   async alarm(): Promise<void> {
-    await this.#invalidatePersonalization();
-    if (this.#aiTask) await this.#aiTask.catch(() => {});
-    else await this.#drainAiOutbox();
+    const invalidation = this.#invalidatePersonalization().catch(error => {
+      console.error({ type: "memory_scope.personalization_invalidation_failed", error_kind: errorKind(error) });
+    });
     try {
+      if (this.#aiTask) await this.#aiTask.catch(() => {});
+      else await this.#drainAiOutbox();
       if (this.#organizationId()) {
         const services = this.#markdownServices();
         if (this.#markdownAutomationEnabled()) await services.consolidation.runDue();
         await services.semantic.drain();
       }
-    } finally { await this.#scheduleNextAlarm(); }
+    } finally {
+      await invalidation;
+      await this.#scheduleNextAlarm();
+    }
   }
 
   async #invalidatePersonalization(): Promise<void> {
@@ -1168,6 +1175,13 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
       Date.now() + retryDelayMs(attempt),
       row.operation_id,
     );
+  }
+
+  async #scheduleOptionalMemoryAlarm(): Promise<void> {
+    try { await this.#scheduleNextAlarm(); }
+    catch (error) {
+      console.error({ type: "memory_scope.memory_alarm_failed", error_kind: errorKind(error) });
+    }
   }
 
   async #scheduleNextAlarm(): Promise<void> {

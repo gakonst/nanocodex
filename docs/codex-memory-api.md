@@ -49,8 +49,20 @@ bash scripts/codex-parity/memory-eval.sh /path/to/codex-at-pinned-revision
 ```
 
 This compiles the pinned upstream schema constructors, checks the JavaScript file
-adapter, runs the native managed-memory proxy tests, and exercises managed
-Markdown memory in the Worker/SQLite runtime. Regression cases cover Unicode
+adapter, runs the native managed-memory proxy and voice context tests, rebuilds
+the browser WASM for voice transport checks, and exercises managed Markdown
+memory and text/voice personalization in the Worker/SQLite runtime. Regression cases cover Unicode
 normalization and ordering, line endings, result projection, and exclusion of
 consolidation reports from search. This evaluates tool compatibility and storage
 correctness; it does not measure a model's long-term recall quality.
+
+On macOS, also verify the native Apple consumer against a freshly built Rust core:
+
+```sh
+pnpm build:voice-core
+swift test --package-path apple/NanocodexVoice
+```
+
+Voice regressions check both memory sources before and after the control channel
+opens, stop/replacement boundaries, background-only delivery, and large escaped
+snapshots. Live provider tests remain separate from these deterministic checks.

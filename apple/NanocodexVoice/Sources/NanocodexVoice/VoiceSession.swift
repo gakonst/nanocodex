@@ -336,8 +336,11 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         try await waitForCleanup(priorCleanups)
         try check(token)
         voiceTiming("lifecycle.start.begin")
-        _ = try await transport.start(sessionID: sessionID, operationID: UUID().uuidString.lowercased())
+        let context = try await transport.start(sessionID: sessionID, operationID: UUID().uuidString.lowercased())
         try check(token)
+        // The shared protocol selects only authorized memory fields and queues
+        // background frames until the independently started control channel opens.
+        if let effects = try protocolState?.personalization(context) { apply(effects, token: token) }
         voiceTiming("lifecycle.start.end")
     }
 
@@ -624,7 +627,12 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
         if controlConnected, let peer {
             do {
                 for frame in effects.frames {
+                    #if DEBUG
+                    if let controlFrameSinkForTesting { try controlFrameSinkForTesting(frame) }
+                    else { try peer.send(frame) }
+                    #else
                     try peer.send(frame)
+                    #endif
                     if effects.acknowledgeFrames { protocolState?.framesSent(1) }
                 }
                 if effects.playbackEnabled == true { peer.setPlaybackEnabled(elevenLabs == nil) }
@@ -777,6 +785,8 @@ public struct VoiceTranscript: Identifiable, Equatable, Sendable {
     func applyEffectsForTesting(_ effects: ManagedVoiceEffects) { apply(effects, token: generation) }
     func receiveManagedEventForTesting(_ event: AgentEvent) throws { try receiveAgentEvent(event, token: generation) }
     func finishRoutingForTesting() async { await routing?.value }
+    func finishAdmissionForTesting() async { await admission?.value }
+    var controlFrameSinkForTesting: ((JSON) throws -> Void)?
     func receiveRealtimeForTesting(_ event: JSON) throws { try realtime(event, token: generation) }
 
     /// Hosted service evidence can negotiate real receive-only WebRTC without

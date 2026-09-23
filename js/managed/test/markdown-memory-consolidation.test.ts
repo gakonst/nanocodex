@@ -129,6 +129,142 @@ describe('durable daily markdown consolidation', () => {
     });
   });
 
+  it.each(['append', 'put'])('retains exact evidence and refreshes citations after an unrelated daily %s', async operation => {
+    await fixture(async ({ create, change, advance, store, storage }) => {
+      const service = create();
+      change(service, PATH, 'I prefer concise answers.\nOld unrelated detail.');
+      advance(START + DAY);
+      await service.runDue();
+      storage.transactionSync(() => {
+        const result = store.write('alice', { operation, path: PATH, expected_revision: 1,
+          content: operation === 'append' ? 'New daily detail.' : 'I prefer concise answers.\nCorrected unrelated detail.' });
+        expect(result).toMatchObject({ ok: true, revision: 2 });
+        create().noteChange('alice', PATH, result.revision);
+      });
+      expect(store.readFile('alice', 'USER.md')).toContain('> I prefer concise answers.');
+      expect(store.search('alice', { query: 'concise' }).results.map(row => row.path)).toContain('USER.md');
+      const entry = storage.sql.exec<{ sources: string; rendered: string }>('SELECT sources,rendered FROM markdown_consolidation_entries').one();
+      expect(JSON.parse(entry.sources)).toEqual([{ path: PATH, revision: 2, from_line: 1, to_line: 1 }]);
+      expect(store.readFile('alice', 'USER.md')).toContain(entry.rendered);
+      expect(entry.rendered).toContain('"revision":2');
+      expect(create().status('alice').pending).toMatchObject([{ path: PATH, revision: 2 }]);
+    });
+  });
+
+  it('retracts only managed facts whose exact source spans changed', async () => {
+    await fixture(async ({ create, change, advance, store, storage }) => {
+      const service = create(async request => {
+        const first = selected(request);
+        return { candidates: [first, { ...first, target: 'MEMORY.md', quote: 'The launch month is June.',
+          sources: [{ ...first.sources[0]!, from_line: 2, to_line: 2 }] }] };
+      });
+      change(service, PATH, 'I prefer concise answers.\nThe launch month is June.');
+      advance(START + DAY);
+      expect(await service.runDue()).toMatchObject({ additions: 2 });
+      change(service, PATH, 'I prefer concise answers.\nThe launch month is July.');
+      expect(store.readFile('alice', 'USER.md')).toContain('I prefer concise answers.');
+      expect(store.readFile('alice', 'MEMORY.md')).not.toContain('June');
+      expect(store.search('alice', { query: 'June' }).results).toEqual([]);
+      expect(storage.sql.exec('SELECT * FROM markdown_consolidation_entries').toArray()).toHaveLength(1);
+    });
+  });
+
+  it('retracts a multi-source fact when any cited span is corrected', async () => {
+    await fixture(async ({ create, change, advance, store }) => {
+      const other = 'memory/2026-09-23.md';
+      const service = create(async request => {
+        const a = selected(request), b = selected(request, 'USER.md', 1);
+        return { candidates: [{ ...a, quote: a.quote + '\n' + b.quote, sources: [...a.sources, ...b.sources] }] };
+      });
+      change(service, PATH, 'The launch month is June.');
+      change(service, other, 'The release branch is amber.');
+      advance(START + DAY);
+      expect(await service.runDue()).toMatchObject({ additions: 1 });
+      change(service, PATH, 'The launch month is June.\nUnrelated new line.');
+      expect(store.readFile('alice', 'USER.md')).toContain('June');
+      change(service, other, 'The release branch is jade.');
+      expect(store.readFile('alice', 'USER.md')).not.toContain('June');
+      expect(store.readFile('alice', 'USER.md')).not.toContain('amber');
+    });
+  });
+
+  it.each(['USER.md', 'MEMORY.md', 'DREAMS.md'])('editing %s preserves unclaimed daily work across reconstruction', async target => {
+    await fixture(async ({ create, change, advance, store }) => {
+      const service = create();
+      change(service, PATH, 'Unrelated durable preference.');
+      const before = service.status('alice');
+      change(service, target, 'Manual curated note.');
+      const restored = create();
+      expect(restored.status('alice')).toEqual(before);
+      advance(START + DAY);
+      expect(await restored.runDue()).toMatchObject({ status: 'committed', additions: 1 });
+      expect(store.readFile('alice', 'USER.md')).toContain('Unrelated durable preference.');
+      expect(store.readFile('alice', target)).toContain('Manual curated note.');
+    });
+  });
+
+  it('manual curation fences a late completion while retaining its inputs and unrelated pending notes', async () => {
+    await fixture(async ({ create, change, advance, store }) => {
+      const entered = deferred<MarkdownMemoryCompletionRequest>();
+      const reply = deferred<unknown>();
+      const service = create(async request => { entered.resolve(request); return reply.promise; });
+      change(service, PATH, 'Pending preference.');
+      advance(START + DAY);
+      const running = service.runDue();
+      const request = await entered.promise;
+      const fresh = 'memory/2026-09-23.md';
+      change(create(), fresh, 'Fresh independent fact.');
+      change(create(), 'USER.md', 'Manual preference.');
+      reply.resolve({ candidates: [selected(request)] });
+      expect(await running).toMatchObject({ status: 'stale', reason: 'claim_replaced' });
+      expect(store.readFile('alice', 'USER.md')).toBe('Manual preference.');
+      expect(create().status('alice').pending.map(event => event.path)).toEqual([PATH, fresh]);
+      advance(START + 2 * DAY);
+      const complete = vi.fn<MarkdownMemoryCompletion>(async request => ({ candidates: [selected(request, 'MEMORY.md', 1)] }));
+      expect(await create(complete).runDue()).toMatchObject({ status: 'committed', additions: 1 });
+      expect((complete.mock.calls[0]![0].input as Input).curated['USER.md']).toBe('Manual preference.');
+      expect(store.readFile('alice', 'MEMORY.md')).toContain('Fresh independent fact.');
+    });
+  });
+
+  it('removing a managed fact cancels its pending source while retaining other work', async () => {
+    await fixture(async ({ create, change, advance, store }) => {
+      const service = create();
+      change(service, PATH, 'Deliberately removed fact.');
+      advance(START + DAY);
+      await service.runDue();
+      // The next revision still contains the original fact and is queued again.
+      change(service, PATH, 'Deliberately removed fact.\nAdditional source detail.');
+      const other = 'memory/2026-09-23.md';
+      change(service, other, 'Unrelated retained fact.');
+      change(service, 'USER.md', null);
+      expect(create().status('alice').pending.map(event => event.path)).toEqual([other]);
+      advance(START + 2 * DAY);
+      expect(await create().runDue()).toMatchObject({ status: 'committed' });
+      expect(store.readFile('alice', 'USER.md')).toContain('Unrelated retained fact.');
+      expect(store.readFile('alice', 'USER.md')).not.toContain('Deliberately removed fact.');
+    });
+  });
+
+  it('manual edits preserve the daily inference budget', async () => {
+    await fixture(async ({ create, change, advance, storage }) => {
+      change(create(), PATH, 'Retained source.');
+      advance(START + DAY);
+      const complete = vi.fn<MarkdownMemoryCompletion>(async () => { throw new Error('transient completion failure'); });
+      const service = create(complete);
+      for (let attempt = 0; attempt < 3; attempt++) {
+        expect(await service.runDue()).toMatchObject({ status: 'failed' });
+        change(create(), 'USER.md', `Manual edit ${attempt}.`);
+        // Make the retained work due on the same day, without changing budget fields.
+        storage.sql.exec('UPDATE markdown_consolidation_jobs SET due=?,attempts=0 WHERE owner=?', START + DAY, 'alice');
+      }
+      expect(await service.runDue()).toBeNull();
+      expect(complete).toHaveBeenCalledTimes(3);
+      expect(storage.sql.exec('SELECT calls,budget_day FROM markdown_consolidation_jobs').one())
+        .toEqual({ calls: 3, budget_day: Math.floor((START + DAY) / DAY) });
+    });
+  });
+
   it('source corrections immediately remove old derived recall and preserve manually edited blocks', async () => {
     await fixture(async ({ create, change, advance, store, storage }) => {
       const service = create();
@@ -150,13 +286,13 @@ describe('durable daily markdown consolidation', () => {
     });
   });
 
-  it.each(['USER.md', 'MEMORY.md', 'DREAMS.md'])('manual deletion of %s fences in-flight and restarted old promotions', async target => {
+  it.each(['USER.md', 'MEMORY.md', 'DREAMS.md'])('manual deletion of %s fences in-flight output and lets a new job see edited targets', async target => {
     await fixture(async ({ create, change, advance, store }) => {
       const entered = deferred<MarkdownMemoryCompletionRequest>();
       const reply = deferred<unknown>();
       const service = create(async request => { entered.resolve(request); return reply.promise; });
       change(service, target, 'Curated content.');
-      const revision = change(service, PATH, 'Never resurrect this old fact.');
+      const revision = change(service, PATH, 'Pending source for fresh evaluation.');
       advance(START + DAY);
       const running = service.runDue();
       const request = await entered.promise;
@@ -166,13 +302,16 @@ describe('durable daily markdown consolidation', () => {
       const restored = create();
       restored.noteChange('alice', PATH, revision);
       advance(START + 2 * DAY);
-      expect(await restored.runDue()).toBeNull();
+      expect(restored.status('alice').pending).toMatchObject([{ path: PATH, revision }]);
       expect(store.get('alice', { path: target }).deleted).toBe(true);
-      expect(store.get('alice', { path: 'USER.md' }).content).not.toContain('Never resurrect');
+      const complete = vi.fn<MarkdownMemoryCompletion>(async () => ({ candidates: [] }));
+      expect(await create(complete).runDue()).toMatchObject({ status: 'empty' });
+      if (target !== 'DREAMS.md') expect((complete.mock.calls[0]![0].input as Input).curated[target]).toBe('');
+      expect(store.get('alice', { path: 'USER.md' }).content).not.toContain('Pending source');
     });
   });
 
-  it('manual edits fence in-flight work, including all unprocessed continuation lines', async () => {
+  it('manual edits fence in-flight work without losing unprocessed continuation lines', async () => {
     await fixture(async ({ create, change, advance, store }) => {
       const entered = deferred<MarkdownMemoryCompletionRequest>();
       const reply = deferred<unknown>();
@@ -184,7 +323,7 @@ describe('durable daily markdown consolidation', () => {
       change(create(), 'USER.md', 'Only the manual preference remains.');
       reply.resolve({ candidates: [selected(request)] });
       expect(await running).toMatchObject({ status: 'stale' });
-      expect(create().status('alice').pending).toEqual([]);
+      expect(create().status('alice').pending).toMatchObject([{ path: PATH, revision: 1, next_line: 1 }]);
       expect(store.readFile('alice', 'USER.md')).toBe('Only the manual preference remains.');
     });
   });

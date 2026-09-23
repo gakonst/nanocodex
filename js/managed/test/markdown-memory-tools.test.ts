@@ -3,7 +3,7 @@ import { expect, it, vi } from "vitest";
 import type { ToolContext } from "nanocodex";
 import worker from "../src/index";
 import { extensionSpecs } from "nanocodex-tools/extensions";
-import { injectMarkdownMemoryBootstrap, markdownMemoryEnabled, markdownMemoryWriteEnabled, configuredMemoryToolNames, markdownMemoryRequest, markdownMemoryTools } from "../src/markdown-memory-tools";
+import { MARKDOWN_MEMORY_BOOTSTRAP_TIMEOUT_MS, injectMarkdownMemoryBootstrap, markdownMemoryEnabled, configuredMemoryToolNames, markdownMemoryRequest, markdownMemoryTools } from "../src/markdown-memory-tools";
 import { managedExtensionTools, type ManagedExtensionOptions } from "../src/extension-tools";
 
 function fixture() {
@@ -132,6 +132,94 @@ it("withdraws stale bootstrap on a failed read and republishes the same snapshot
   expect(session.appendDeveloperMessage.mock.calls[2]![0]).toBe(session.appendDeveloperMessage.mock.calls[0]![0]);
 });
 
+it.each([false, true])("bounds never-resolving bootstrap reads and withdraws stale facts (Connect=%s)", async connect => {
+  vi.useFakeTimers();
+  try {
+    const f = fixture();
+    if (connect) f.connect();
+    f.fetch.mockImplementation(async () => Response.json({ documents: [{ path: "USER.md", content: "old saved preference" }] }));
+    const session = { appendDeveloperMessage: vi.fn(async (_text: string) => {}) };
+    const inject = () => injectMarkdownMemoryBootstrap(f.options, f.context, session, () => {});
+    await inject();
+    const scopeCount = connect ? 1 : 2;
+    // This binding deliberately ignores AbortSignal and never settles.
+    f.fetch.mockImplementation(() => new Promise<Response>(() => {}));
+    const completed = vi.fn();
+    const pending = inject().then(completed);
+    await vi.advanceTimersByTimeAsync(MARKDOWN_MEMORY_BOOTSTRAP_TIMEOUT_MS - 1);
+    expect(completed).not.toHaveBeenCalled();
+    expect(session.appendDeveloperMessage).toHaveBeenCalledTimes(1);
+    const signals = f.fetch.mock.calls.slice(scopeCount).map(([, init]) => init!.signal!);
+    expect(signals).toHaveLength(scopeCount);
+    expect(signals.every(signal => !signal.aborted)).toBe(true);
+    await vi.advanceTimersByTimeAsync(1);
+    await pending;
+    expect(session.appendDeveloperMessage).toHaveBeenCalledTimes(2);
+    const fallback = session.appendDeveloperMessage.mock.calls[1]![0];
+    expect(fallback).toContain("Older snapshots may be stale");
+    expect(fallback).not.toContain("old saved preference");
+    expect(signals.every(signal => signal.aborted)).toBe(true);
+    expect(f.context.signal.aborted).toBe(false);
+    expect(f.fetch).toHaveBeenCalledTimes(scopeCount * 2);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it.each(["fetch", "body"])("ignores a late bootstrap %s completion after publishing a newer prompt", async stage => {
+  vi.useFakeTimers();
+  try {
+    const f = fixture();
+    f.connect();
+    const late = Promise.withResolvers<Record<string, unknown>>();
+    f.fetch.mockImplementation(() => stage === "fetch"
+      ? late.promise.then(body => Response.json(body))
+      : Promise.resolve({ ok: true, json: () => late.promise } as unknown as Response));
+    const session = { appendDeveloperMessage: vi.fn(async (_text: string) => {}) };
+    const inject = () => injectMarkdownMemoryBootstrap(f.options, f.context, session, () => {});
+    const pending = inject();
+    await vi.advanceTimersByTimeAsync(MARKDOWN_MEMORY_BOOTSTRAP_TIMEOUT_MS);
+    await pending;
+    expect(session.appendDeveloperMessage.mock.calls[0]![0]).toContain("Older snapshots may be stale");
+    f.fetch.mockImplementation(async () => Response.json({ documents: [{ path: "USER.md", content: "current preference" }] }));
+    await inject();
+    expect(session.appendDeveloperMessage.mock.calls[1]![0]).toContain("current preference");
+    late.resolve({ documents: [{ path: "USER.md", content: "obsolete late preference" }] });
+    await vi.advanceTimersByTimeAsync(0);
+    // Late reads must neither append facts nor replace the publication signature.
+    await inject();
+    expect(session.appendDeveloperMessage).toHaveBeenCalledTimes(2);
+    expect(JSON.stringify(session.appendDeveloperMessage.mock.calls)).not.toContain("obsolete late preference");
+    expect(f.fetch).toHaveBeenCalledTimes(3);
+    expect(vi.getTimerCount()).toBe(0);
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
+it("rechecks startup ownership before publishing a timeout fallback", async () => {
+  vi.useFakeTimers();
+  try {
+    const f = fixture();
+    f.connect();
+    let active = true;
+    const assertActive = () => { if (!active) throw new Error("ownership changed"); };
+    f.authorize.mockImplementation(assertActive);
+    f.fetch.mockImplementation(() => new Promise<Response>(() => {}));
+    const session = { appendDeveloperMessage: vi.fn(async (_text: string) => {}) };
+    const pending = expect(injectMarkdownMemoryBootstrap(f.options, f.context, session, assertActive)).rejects.toThrow("ownership changed");
+    active = false;
+    await vi.advanceTimersByTimeAsync(MARKDOWN_MEMORY_BOOTSTRAP_TIMEOUT_MS);
+    await pending;
+    expect(f.authorize).toHaveBeenCalledOnce();
+    expect(f.fetch).toHaveBeenCalledOnce();
+    expect(session.appendDeveloperMessage).not.toHaveBeenCalled();
+  } finally {
+    vi.useRealTimers();
+  }
+});
+
 it("requires live read authority for status and never exposes flush as a model tool", async () => {
   const f = fixture();
   const tools = markdownMemoryTools(f.options);
@@ -183,9 +271,6 @@ it("normalizes legacy configuration without registering duplicate tools", () => 
   expect(configuredMemoryToolNames(["memory"])).toHaveLength(8);
   for (const name of ["memory_get", "memory_search", "memories__get", "memories__search_markdown", "memories__read", "memories__search"])
     expect(markdownMemoryEnabled([name])).toBe(true);
-  for (const names of [undefined, ["memory"], ["memory_write"], ["memories__write"]]) expect(markdownMemoryWriteEnabled(names)).toBe(true);
-  expect(markdownMemoryWriteEnabled([])).toBe(false);
-  expect(markdownMemoryWriteEnabled(["memories__add_ad_hoc_note"])).toBe(false);
 });
 it("accepts plain writes and owns delivery identity without exposing storage bookkeeping", async () => {
   const f = fixture();

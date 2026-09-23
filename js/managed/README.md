@@ -152,10 +152,11 @@ storage ownership.
 
 Managed agents use `memories__get`, `memories__search_markdown`, and `memories__write` for editable
 curated Markdown and daily notes stored in Durable Object SQLite. Hybrid semantic
-retrieval, daily consolidation and awaited pre-compaction saves use the existing
-AI Search and Workers AI bindings. `memories__status` reports availability and
-durable job receipts. Set `NANOCODEX_MEMORY_AUTOMATION=false` to disable automatic
-saves and consolidation. See the
+retrieval and daily consolidation use the existing AI Search and Workers AI
+bindings. Compaction is independent of memory; agents save useful context during
+their work. `memories__status` reports availability and
+durable job receipts. Set `NANOCODEX_MEMORY_AUTOMATION=false` to disable background
+consolidation. See the
 [design and API](../../docs/workers-markdown-memory.md) for ownership, simple writes,
 startup excerpts, and implementation boundaries. Existing memory APIs
 and prepared personalization remain compatible.

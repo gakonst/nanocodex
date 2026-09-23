@@ -28,11 +28,6 @@ export function markdownMemoryEnabled(tools?: readonly string[]): boolean {
   return names === undefined || names.some(name => ["memories__get", "memories__search_markdown", "memories__read", "memories__search"].includes(name));
 }
 
-export function markdownMemoryWriteEnabled(tools?: readonly string[]): boolean {
-  const names = configuredMemoryToolNames(tools);
-  return names === undefined || names.includes("memories__write");
-}
-
 export async function markdownMemoryRequest(options: ManagedExtensionOptions, operation: "get" | "search" | "write" | "bootstrap" | "status", input: unknown, context: ToolContext): Promise<unknown> {
   context.signal.throwIfAborted();
   options.authorize(canonicalMemoryToolName(`memory_${operation === "bootstrap" ? "get" : operation}`), context);
@@ -65,7 +60,7 @@ export async function markdownMemoryRequest(options: ManagedExtensionOptions, op
 export function markdownMemoryTools(options: ManagedExtensionOptions): NamedTool[] {
   const scope = { type: "string", enum: ["personal", "team"], description: "Defaults to personal for direct accounts, team for Connect." };
   return ([
-    { name: "memories__status", operation: "status", description: "Inspect memory automation availability, semantic indexing backlog, consolidation progress and durable save receipts.", required: [], properties: { scope } },
+    { name: "memories__status", operation: "status", description: "Inspect memory availability, search indexing status, and background consolidation progress.", required: [], properties: { scope } },
     { name: "memories__get", operation: "get", description: "Read a Markdown memory file or bounded line range. Read existing notes before changing them.", required: ["path"], properties: { path: { type: "string" }, from_line: { type: "integer", minimum: 1 }, max_lines: { type: "integer", minimum: 1, maximum: 200 }, scope } },
     { name: "memories__search_markdown", operation: "search", description: "Search Markdown memory and return bounded excerpts with file paths and line citations.", required: ["query"], properties: { query: { type: "string" }, limit: { type: "integer", minimum: 1, maximum: 20 }, scope } },
     { name: "memories__write", operation: "write", description: "Put, append, or delete a Markdown memory note. Read existing content before changing it. Append ongoing work to memory/YYYY-MM-DD.md; keep MEMORY.md and USER.md curated. Shared writes require the user's request. Available to the root agent.", required: ["operation", "path"], properties: { operation: { type: "string", enum: ["put", "append", "delete"] }, path: { type: "string" }, content: { type: "string" }, user_requested: { type: "boolean", description: "True only when the user requested writing shared team memory." }, scope } },
@@ -117,15 +112,31 @@ function boundedBootstrapSnapshot(snapshot: unknown): unknown {
   return result;
 }
 
+export const MARKDOWN_MEMORY_BOOTSTRAP_TIMEOUT_MS = 100;
+
 /** Read current authorized scopes for both normal and voice startup. Never cache reads. */
 export async function loadMarkdownMemoryBootstrap(options: ManagedExtensionOptions, context: ToolContext,
   assertActive: () => void): Promise<string> {
   const scopes = options.personal(context) ? ["personal", "team"] : ["team"];
+  const controller = new AbortController();
+  const readContext = { ...context, signal: AbortSignal.any([context.signal, controller.signal]) };
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   let snapshots: unknown[] | undefined;
   try {
-    snapshots = (await Promise.all(scopes.map(scope => markdownMemoryRequest(options, "bootstrap", { scope }, context)))).map(boundedBootstrapSnapshot);
+    // A binding may ignore AbortSignal. Race the entire read, including its body,
+    // so optional memory cannot hold either startup past this shared budget.
+    const deadline = new Promise<undefined>(resolve => {
+      timeout = setTimeout(() => {
+        resolve(undefined);
+        controller.abort();
+      }, MARKDOWN_MEMORY_BOOTSTRAP_TIMEOUT_MS);
+    });
+    const reads = Promise.all(scopes.map(scope => markdownMemoryRequest(options, "bootstrap", { scope }, readContext)));
+    snapshots = (await Promise.race([reads, deadline]))?.map(boundedBootstrapSnapshot);
   } catch {
     // Failed reads must not imply the previously loaded facts are current.
+  } finally {
+    clearTimeout(timeout);
   }
   assertActive();
   return snapshots === undefined

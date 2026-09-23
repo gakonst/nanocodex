@@ -45,7 +45,7 @@ async function fixture(session: DurableAgentSession, state: DurableObjectState, 
   const save = (scope: "personal" | "team", path: string, content: string) => markdownMemoryRequest({ ...options, personal: () => true }, "write",
     { scope, path, content, operation: "put", expected_revision: 0, user_requested: true }, context);
   const configure = (value: unknown) => state.storage.sql.exec("INSERT OR REPLACE INTO managed_configuration VALUES(1,?)", JSON.stringify(value));
-  return { options, context, save, request, state, configure, retained, voice };
+  return { options, context, save, request, state, configure, retained, voice, session };
 }
 
 it.each([false, true])("normal and voice startup load identical current scopes (Connect=%s)", async (connect) => {
@@ -63,6 +63,39 @@ it.each([false, true])("normal and voice startup load identical current scopes (
     expect(JSON.stringify(result)).not.toContain("obsolete");
     expect(f.state.storage.sql.exec<{ response_json: string }>("SELECT response_json FROM managed_realtime_operations").one().response_json)
       .toBe(JSON.stringify(f.retained));
+  }, connect);
+});
+
+it.each([false, true])("normal and voice withdraw stale facts identically when bootstrap ignores cancellation (Connect=%s)", async connect => {
+  await withVoice(async f => {
+    const runtime = f.session as unknown as { env: Record<string, unknown> };
+    const original = runtime.env;
+    const reads: AbortSignal[] = [];
+    const memories = { getByName: () => ({ fetch: async (url: string, init: RequestInit) => {
+      if (url.endsWith("/personalization")) return Response.json({ snapshot: null });
+      expect(url).toBe("https://memory.internal/markdown-memory/bootstrap");
+      reads.push(init.signal!);
+      return new Promise<Response>(() => {});
+    } }) } as unknown as ManagedExtensionOptions["memories"];
+    Object.defineProperty(f.session, "env", { value: { ...original, NANOCODEX_MEMORY: memories }, configurable: true });
+    try {
+      const normal = { appendDeveloperMessage: vi.fn(async (_text: string) => {}) };
+      const [, response] = await Promise.all([
+        injectMarkdownMemoryBootstrap({ ...f.options, memories }, f.context, normal, () => {}),
+        f.request(),
+      ]);
+      expect(response.status).toBe(200);
+      const result = await response.json<{ context: { markdown_memory: string } }>();
+      expect(result.context.markdown_memory).toBe(normal.appendDeveloperMessage.mock.calls[0]![0]);
+      expect(result.context.markdown_memory).toContain("Older snapshots may be stale");
+      expect(JSON.stringify(result)).not.toContain("obsolete");
+      expect(reads).toHaveLength(connect ? 2 : 4);
+      expect(reads.every(signal => signal.aborted)).toBe(true);
+      expect(f.state.storage.sql.exec<{ response_json: string }>("SELECT response_json FROM managed_realtime_operations").one().response_json)
+        .toBe(JSON.stringify(f.retained));
+    } finally {
+      Object.defineProperty(f.session, "env", { value: original, configurable: true });
+    }
   }, connect);
 });
 

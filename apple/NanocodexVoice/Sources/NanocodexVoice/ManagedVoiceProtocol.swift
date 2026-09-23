@@ -62,6 +62,9 @@ public final class ManagedVoiceProtocol: @unchecked Sendable {
     public func appendContext(_ text: String) throws -> ManagedVoiceEffects {
         try effects(command(["op": .string("append_context"), "text": .string(text)]))
     }
+    public func personalization(_ context: JSON) throws -> ManagedVoiceEffects {
+        try effects(command(["op": .string("personalization"), "context": context]))
+    }
     public func appendText(_ text: String, role: String = "user") throws -> ManagedVoiceEffects {
         try effects(command(["op": .string("text"), "role": .string(role), "text": .string(text)]))
     }

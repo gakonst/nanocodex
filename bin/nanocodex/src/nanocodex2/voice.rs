@@ -458,9 +458,9 @@ impl Actor {
             self.timing("native.offer");
             Ok::<_, ManagedError>(started)
         };
-        // Match the desktop app: context belongs in call creation, before
-        // speech starts. Appending startup fragments to a running conversation
-        // can provoke unsolicited responses while the user begins speaking.
+        // Selected conversation context belongs in call creation. Current
+        // memories use the shared background channel, keeping large serialized
+        // snapshots out of the bounded SDP request without requesting speech.
         let ((state, admitted), started) =
             tokio::try_join!(connection_step("agent admission", start), prepare_media)?;
         self.timing("agent.ready");
@@ -754,8 +754,17 @@ fn initial_call_settings(
     protocol: &mut ManagedVoiceProtocol,
     context: &serde_json::Value,
 ) -> Result<serde_json::Value, ManagedError> {
+    let mut conversation = context.clone();
+    if let Some(fields) = conversation.as_object_mut() {
+        fields.remove("prepared_personalization");
+        fields.remove("markdown_memory");
+    }
+    let effects = protocol.personalization(context);
+    if let Some(reason) = effects.terminate {
+        return Err(error(reason));
+    }
     let mut instructions = nanocodex_voice_protocol::chatgpt_realtime_instructions("there");
-    if let Some(context) = nanocodex_voice_protocol::managed_startup_context(context) {
+    if let Some(context) = nanocodex_voice_protocol::managed_startup_context(&conversation) {
         instructions.push_str("\n\n");
         instructions.push_str(&context);
     }
@@ -1100,7 +1109,7 @@ mod tests {
         server.abort();
     }
     #[test]
-    fn startup_context_is_in_call_instructions_without_live_context_frames() {
+    fn history_uses_call_instructions_and_memories_use_background_context() {
         let mut protocol = ManagedVoiceProtocol::new("cove").unwrap();
         protocol
             .dispatch(&json!({"op":"configure","settings":{
@@ -1122,13 +1131,52 @@ mod tests {
         .unwrap();
         let instructions = settings["instructions"].as_str().unwrap();
         assert!(instructions.contains("/omarchy-desktop"));
-        assert!(instructions.contains("Prefers Rust."));
-        assert!(instructions.contains("USER.md: Prefers concise spoken answers."));
+        assert!(!instructions.contains("Prefers Rust."));
+        assert!(!instructions.contains("USER.md: Prefers concise spoken answers."));
         assert!(instructions.contains("Help me test voice."));
         assert!(!instructions.contains("Private host state."));
         assert_eq!(instructions.matches("Speak briefly.").count(), 1);
         assert_eq!(settings["audio"]["output"]["voice"], "maple");
+        let frames = protocol.sideband_opened().frames;
+        let text = frames
+            .iter()
+            .map(|frame| {
+                let frame: serde_json::Value = serde_json::from_str(frame).unwrap();
+                assert_eq!(frame["channel"], "commentary");
+                frame["content"][0]["text"].as_str().unwrap().to_owned()
+            })
+            .collect::<String>();
+        assert!(text.contains("Prefers Rust."));
+        assert!(text.contains("USER.md: Prefers concise spoken answers."));
+        assert!(!text.contains("Help me test voice."));
+        assert!(!text.contains("Private host state."));
+        protocol.frames_sent(frames.len());
         assert!(protocol.sideband_opened().frames.is_empty());
+    }
+
+    #[test]
+    fn large_memory_snapshots_do_not_overflow_the_serialized_call_request() {
+        let context = json!({
+            "prepared_personalization": format!("prepared {}", "\"".repeat(15_000)),
+            "markdown_memory": format!("Markdown {}", "\"".repeat(24_000))
+        });
+        let mut protocol = ManagedVoiceProtocol::new("cove").unwrap();
+        let settings = initial_call_settings(&mut protocol, &context).unwrap();
+        let body =
+            serde_json::to_vec(&json!({"sdp":"s".repeat(32_768),"session":settings})).unwrap();
+        assert!(body.len() <= 65_536);
+        let frames = protocol.sideband_opened().frames;
+        assert!(frames.len() > 1);
+        assert!(frames.len() <= 128);
+        let text = frames
+            .iter()
+            .map(|frame| {
+                let frame: serde_json::Value = serde_json::from_str(frame).unwrap();
+                frame["content"][0]["text"].as_str().unwrap().to_owned()
+            })
+            .collect::<String>();
+        assert!(text.contains(context["prepared_personalization"].as_str().unwrap()));
+        assert!(text.contains(context["markdown_memory"].as_str().unwrap()));
     }
 
     #[test]

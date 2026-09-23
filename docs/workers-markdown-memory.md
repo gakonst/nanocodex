@@ -62,13 +62,17 @@ facts are also rendered through the same function in both modes. Each Markdown
 scope contributes at most 12 KiB after serialization, with at most 4 KiB per file. Files are capped at 64 KiB
 and lines at 8 KiB; a ranged read returns at most 16 KiB and 200 lines.
 Unchanged snapshots are not appended again to the same live agent session.
-The two scoped requests run concurrently with a five-second timeout; a retrieval
-failure withdraws the previous snapshot instead of blocking the prompt. Saved prose is wrapped as untrusted data,
+The two scoped requests run concurrently within a shared 100 ms startup budget.
+A timeout or retrieval failure withdraws the previous snapshot and lets startup
+continue, even when a binding ignores cancellation. Saved prose is wrapped as untrusted data,
 never instructions or permission. Current user corrections take precedence.
 Fresh reads prevent an old local snapshot from being reused after a correction
 or deletion. Voice lifecycle replay refreshes these excerpts instead of reusing
 saved personalization, and rechecks the active session and authorization after
-loading. Already delivered conversation content cannot be erased.
+loading. Voice clients deliver these fields through the existing background context
+channel when admission finishes, including after media connects. Large snapshots
+stay out of the bounded SDP call request. Already delivered conversation content
+cannot be erased.
 
 Existing versioned records, prepared personalization, and append-only ad-hoc
 notes remain intact and available through their existing APIs. Canonical Markdown
@@ -101,21 +105,28 @@ physical removal from the remote index is not claimed until cleanup succeeds.
 Managed sessions do not invoke memory extraction before compaction and do not
 require a memory receipt to continue. Memory inference failures cannot block
 compaction or fail a conversation. Agents save useful context explicitly with
-`memory_write` during their work.
+`memories__write` during their work.
 
 ## Background consolidation
 
-Successful daily writes queue durable work for the next UTC day. Alarms process
-bounded source batches using a tool-free Workers AI completion. Every selected
+Daily writes queue optional consolidation for the next UTC day. A queue or alarm
+scheduling failure does not reject the saved note. Alarms process bounded source batches using a tool-free Workers AI completion. Every selected
 candidate must match exact source lines and revisions; generated prose cannot
 invent a new fact. The pass may add, merge or supersede its own attributed
 entries in `MEMORY.md` and `USER.md`, preserving unrelated manual curation.
 
-Revision checks and durable source/curation fences reject stale proposals after
-concurrent edits or deletion. Provenance and preimages support audit; deleting a
-source invalidates dependent generated entries and retained preimages. Explicit
-recall markers and consolidation reports are excluded from automatic promotion,
-and identical evidence is deduplicated.
+Revision checks reject stale proposals after concurrent edits or deletion. Appends
+and edits outside cited lines preserve entries whose evidence is unchanged;
+corrections and deletions retract affected generated entries. Manual curation
+fences in-flight proposals while preserving unrelated pending sources and the
+daily model budget. Removing an attributed entry also removes pending work for
+that evidence. Provenance supports audit, and source edits clear retained
+preimages. Explicit recall markers and consolidation reports are excluded from
+automatic promotion, and identical evidence is deduplicated.
+
+Legacy canonical reads and background consolidation proceed independently of
+remote personalization-cache invalidation failures. Explicit legacy changes and
+deletions still fence prepared copies before acknowledging success.
 `DREAMS.md` records bounded outcomes without being fed back into retrieval.
 Model attempts and retry leases are bounded and persist across eviction.
 Extraction permits 48 inference attempts per owner per UTC day. Consolidation

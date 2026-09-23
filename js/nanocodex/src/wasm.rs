@@ -2581,14 +2581,17 @@ impl WasmManagedBrowserVoice {
     /// # Errors
     ///
     /// Rejects malformed `AgentSessionContext` JSON.
-    pub fn start(&self, context_json: &str) -> Result<(), JsValue> {
+    pub fn start(&self, context_json: &str) -> Result<String, JsValue> {
         if self.started.get() {
-            return Ok(());
+            return encode_voice_effects(&BrowserVoiceEffects::default());
         }
-        let _context = serde_json::from_str::<WasmOwnedAgentSessionContext>(context_json)
+        let context: serde_json::Value = serde_json::from_str(context_json)
             .map_err(|error| js_error(format!("invalid AgentSessionContext: {error}")))?;
+        serde_json::from_value::<WasmOwnedAgentSessionContext>(context.clone())
+            .map_err(|error| js_error(format!("invalid AgentSessionContext: {error}")))?;
+        let effects = self.protocol.borrow_mut().personalization(&context);
         self.started.set(true);
-        Ok(())
+        encode_voice_effects(&effects)
     }
 
     /// Encodes the managed same-origin call request after the browser creates its SDP offer.

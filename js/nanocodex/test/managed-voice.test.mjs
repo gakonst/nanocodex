@@ -74,6 +74,36 @@ test("managed Rust omits startup context even when admission arrives after SDP",
   }
 });
 
+test("managed browser voice delivers both memory sources before or after media starts", async () => {
+  const module = await WebAssembly.compile(await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url)));
+  for (const late of [false, true]) {
+    const agent = Agent.open(AGENT_ID, { baseUrl: "https://managed.example", fetch: async () => Response.json({ context: {
+      workspace: "/private/workspace",
+      history: [{ role: "developer", content: [{ text: "stale developer context" }] },
+        { role: "user", content: [{ text: "unselected prior conversation" }] }],
+      prepared_personalization: "Current prepared preference.",
+      markdown_memory: "USER.md: Current Markdown preference. " + "🦊".repeat(300),
+    } }) });
+    const voice = await createManagedBrowserVoice(agent, "cove", { module });
+    try {
+      if (late) { voice.callBody("v=offer"); voice.sidebandOpened(); }
+      const effects = JSON.parse(await voice.start());
+      assert.ok(effects.frames.length > 1);
+      const frames = effects.frames.map(JSON.parse);
+      assert.ok(frames.every(frame => frame.type === "session.context.append" && frame.channel === "commentary"));
+      const text = frames.map(frame => frame.content[0].text).join("");
+      assert.match(text, /Current prepared preference/);
+      assert.match(text, /Current Markdown preference/);
+      assert.doesNotMatch(text, /stale developer context|unselected prior conversation|private\/workspace/);
+      assert.notEqual(effects.playback_enabled, true);
+      assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, effects.frames);
+      voice.framesSent(effects.frames.length);
+      assert.deepEqual(JSON.parse(voice.sidebandOpened()).frames, []);
+      assert.deepEqual(JSON.parse(await voice.start()).frames, []);
+    } finally { voice.free(); }
+  }
+});
+
 test("managed browser voice gives a UUIDv8 durable Agent a distinct UUIDv7 realtime session", async () => {
   const wasm = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
   const module = await WebAssembly.compile(wasm);

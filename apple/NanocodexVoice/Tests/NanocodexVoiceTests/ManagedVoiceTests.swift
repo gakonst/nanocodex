@@ -444,13 +444,38 @@ final class ManagedVoiceTests: XCTestCase {
         XCTAssertTrue(voice.takeTranscriptTail()?.contains("<source>transcript_tail_flush</source>") == true)
     }
 
-    func testPreparedPersonalizationIsAvailableWithoutConversationHistory() throws {
-        let context: JSON = .object(["prepared_personalization": .string("Saved team fact: prefers concise answers.")])
-        let frames = ManagedVoiceProtocol.startupContextFrames(context)
-        let text = frames.map { $0["content"].array[0]["text"].string }.joined()
+    func testPersonalizationQueuesBothMemorySourcesWithoutHistoryOrSpeech() throws {
+        let voice = try ManagedVoiceProtocol()
+        let context: JSON = .object([
+            "prepared_personalization": .string("Saved team fact: prefers concise answers."),
+            "markdown_memory": .string("USER.md: use metric units <saved>."),
+            "workspace": .string("/private-workspace-canary"),
+            "history": .array([
+                .object(["role": .string("developer"), "content": .array([.object(["text": .string("private-developer-canary")])])]),
+                .object(["role": .string("user"), "content": .array([.object(["text": .string("old-history-canary")])])])
+            ])
+        ])
+        let effects = try voice.personalization(context)
+        XCTAssertFalse(effects.frames.isEmpty)
+        XCTAssertTrue(effects.acknowledgeFrames)
+        XCTAssertTrue(effects.transcripts.isEmpty)
+        XCTAssertNil(effects.playbackEnabled)
+        let text = effects.frames.flatMap { $0["content"].array }.map { $0["text"].string }.joined()
         XCTAssertTrue(text.contains("Saved team fact: prefers concise answers."))
+        XCTAssertTrue(text.contains("USER.md: use metric units"))
         XCTAssertTrue(text.contains("background data"))
-        XCTAssertTrue(ManagedVoiceProtocol.startupContextFrames(.object([:])).isEmpty)
+        XCTAssertFalse(text.contains("<saved>"))
+        for excluded in ["private-workspace-canary", "private-developer-canary", "old-history-canary"] {
+            XCTAssertFalse(text.contains(excluded))
+        }
+        XCTAssertTrue(effects.frames.allSatisfy {
+            $0["type"].string == "session.context.append" && $0["channel"].string == "commentary"
+        })
+        XCTAssertEqual(voice.sidebandOpened().frames, effects.frames)
+        voice.framesSent(effects.frames.count)
+        XCTAssertTrue(voice.sidebandOpened().frames.isEmpty)
+        XCTAssertTrue(try voice.personalization(.object(["workspace": .string("/workspace"), "history": context["history"]])).frames.isEmpty)
+        XCTAssertTrue(try voice.personalization(.null).frames.isEmpty)
     }
 
     func testUTF8ChunksHeadTailBoundsAndReconnectReplay() throws {

@@ -8577,8 +8577,8 @@ export class DurableAgentSession extends DurableComputerSession {
     if (session.runtime_profile !== "managed" || !authorization.capabilities.includes("memory:read")
       || !markdownMemoryEnabled(this.#configuration().tools)
       || restrictedEnvironment(this.#configuration())) return;
-    // Fresh reads can add up to five seconds to admission; unavailable reads do not block the turn.
-    const context = { sessionId: session.session_id, callId: "markdown-bootstrap", parentCallId: "", model: "unknown", signal: AbortSignal.timeout(5_000) };
+    // The shared normal/voice loader bounds optional reads with its startup budget.
+    const context = { sessionId: session.session_id, callId: "markdown-bootstrap", parentCallId: "", model: "unknown", signal: new AbortController().signal };
     const options = {
       organizationId: session.organization_id, teamId: session.team_id, ownerId: session.owner_id,
       sessionId: session.session_id, memories: this.env.NANOCODEX_MEMORY,

@@ -146,6 +146,29 @@ test("managed SDP and sideband negotiation overlap admission without admitting e
   }
 });
 
+test("late managed personalization reaches an already connected voice channel", async () => {
+  const fixture = installBrowserVoiceFixture();
+  const calls = [];
+  let admit;
+  const admission = new Promise(resolve => { admit = resolve; });
+  const frame = JSON.stringify({ type: "session.context.append", channel: "commentary",
+    content: [{ type: "input_text", text: "Current prepared and Markdown preferences" }] });
+  const core = fakeVoiceCore(calls, {
+    parallelStartup: true, dataChannelControl: true,
+    async start() { await admission; return JSON.stringify({ frames: [frame], acknowledge_frames: true }); },
+  });
+  const session = new BrowserVoiceSession({ core, voice: "cove",
+    captureMicrophone: async () => fakeMicrophone(calls), onStatus() {}, onTranscript() {}, onTerminated() {} });
+  const starting = session.start();
+  try {
+    await waitFor(() => calls.some(([kind]) => kind === "sidebandOpened"));
+    admit();
+    await starting;
+    assert.ok(fixture.channel.sent.includes(frame));
+    assert.ok(calls.some(([kind, count]) => kind === "framesSent" && count === 1));
+  } finally { admit(); await session.close(); fixture.restore(); }
+});
+
 test("failed parallel admission closes negotiated media without publishing ready", async () => {
   const fixture = installBrowserVoiceFixture();
   const calls = [];
@@ -358,7 +381,9 @@ test("the public managed voice forwards memory updates and durable admission fai
       const path = new URL(input).pathname;
       if (path.endsWith("/realtime/start")) {
         voiceSessionId = JSON.parse(init.body).voice_session_id;
-        return Response.json({ context: { workspace: "/brain", history: [] } });
+        return Response.json({ context: { workspace: "/brain", history: [],
+          prepared_personalization: "Current prepared voice preference.",
+          markdown_memory: "USER.md: Current Markdown voice preference." } });
       }
       if (path.endsWith("/realtime/calls")) return globalThis.fetch(input, init);
       if (path.endsWith("/realtime/delegate")) {
@@ -385,6 +410,9 @@ test("the public managed voice forwards memory updates and durable admission fai
     await voice.appendText("Selected README.md", { role: "developer" });
     await voice.appendContext("The editor selection changed.");
     const frames = fixture.channel.sent.map((frame) => JSON.parse(frame));
+    const background = frames.filter(frame => frame.channel === "commentary").map(frame => frame.content[0].text).join("");
+    assert.match(background, /Current prepared voice preference/);
+    assert.match(background, /Current Markdown voice preference/);
     assert.ok(frames.some((frame) => frame.channel === "speakable" && frame.content[0].text === "Read this aloud."));
     assert.ok(frames.some((frame) => frame.type === "session.context.append" && frame.content[0].text === "Selected README.md" && !("channel" in frame)));
     await assert.rejects(voice.speak(" "), /voice text/);
