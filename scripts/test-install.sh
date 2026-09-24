@@ -112,4 +112,5 @@ grep -Fq 'checksum mismatch' "$rejected/output"
 [[ ! -e "$rejected/record" ]]
 
 sh -n "$workspace_root/install"
+cmp "$workspace_root/install.ps1" "$workspace_root/js/account/public/install.ps1"
 echo "installer downloads one verified Rust bootstrap and delegates the product setup"

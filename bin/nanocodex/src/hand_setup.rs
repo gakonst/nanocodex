@@ -24,7 +24,7 @@ enum HandCommand {
         /// SSH port for --target; otherwise use normal SSH configuration.
         #[arg(short, long, requires = "target")]
         port: Option<u16>,
-        /// macOS nanocodex2 executable override for local development.
+        /// nanocodex2 executable override for local macOS or Windows development.
         #[arg(long, conflicts_with = "target")]
         executable: Option<PathBuf>,
         /// macOS account file override for local development.
@@ -82,8 +82,20 @@ async fn install_with(
         let _lock = crate::update::lock_service_operation()?;
         return crate::hand_service::ensure(executable, account_file).await;
     }
+    if target.is_none() && cfg!(target_os = "windows") {
+        if artifacts.is_some() {
+            bail!("--artifacts is only for a Linux Hand");
+        }
+        if account_file.is_some() {
+            bail!("--account-file is only for a local macOS Hand");
+        }
+        let _lock = crate::update::lock_service_operation()?;
+        return crate::windows_hand::ensure(executable).await;
+    }
     if executable.is_some() || account_file.is_some() {
-        bail!("--executable and --account-file apply only to a local macOS Hand");
+        bail!(
+            "--executable applies only to a local macOS or Windows Hand; --account-file applies only to macOS"
+        );
     }
     if target.is_none() && !cfg!(target_os = "linux") {
         bail!(
@@ -337,6 +349,9 @@ impl Hand {
                 if cfg!(target_os = "linux") {
                     return linux_service_status().await;
                 }
+                if cfg!(target_os = "windows") {
+                    return crate::windows_hand::print_status().await;
+                }
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&crate::hand_service::status().await?)?
@@ -353,6 +368,8 @@ impl Hand {
             HandCommand::Stop => {
                 if cfg!(target_os = "linux") {
                     linux_service_action("stop").await
+                } else if cfg!(target_os = "windows") {
+                    crate::windows_hand::stop().await
                 } else {
                     crate::hand_service::stop().await
                 }

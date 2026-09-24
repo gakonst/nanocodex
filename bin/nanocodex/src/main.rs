@@ -46,6 +46,7 @@ mod vm;
 )))]
 #[path = "vm_unsupported.rs"]
 mod vm;
+mod windows_hand;
 
 use std::process::ExitCode;
 

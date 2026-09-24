@@ -34,6 +34,7 @@ const TAGGED_RELEASE_API: &str = "https://api.github.com/repos/gakonst/nanocodex
 const CHECKSUMS_ASSET: &str = "SHA256SUMS";
 const NANOCODEX2_LINUX_ASSET: &str = "nanocodex2-x86_64-unknown-linux-gnu";
 const NANOCODEX2_MACOS_ASSET: &str = "nanocodex2-aarch64-apple-darwin";
+const NANOCODEX2_WINDOWS_ASSET: &str = "nanocodex2-x86_64-pc-windows-msvc.exe";
 const VM_GUEST_ASSET: &str = "nanocodex-vm-guest-x86_64-unknown-linux-musl";
 const DOWNLOAD_ATTEMPTS: usize = 5;
 const DOWNLOAD_RETRY_DELAY: Duration = Duration::from_millis(250);
@@ -113,9 +114,6 @@ pub(crate) fn prepare_legacy_nightly_bootstrap() -> Result<()> {
 
 /// Repair missing default scheduling only for an installed, managed CLI.
 pub(crate) fn ensure_default_automatic_updates() -> Result<()> {
-    if !cfg!(target_os = "macos") {
-        return Ok(());
-    }
     let store = VersionStore::discover()?;
     let executable = std::env::current_exe()?.canonicalize()?;
     let Ok(root) = store.root().canonicalize() else {
@@ -123,6 +121,7 @@ pub(crate) fn ensure_default_automatic_updates() -> Result<()> {
     };
     if !executable.starts_with(root.join("versions"))
         && !executable.starts_with(root.join("updater"))
+        && !(cfg!(windows) && executable.starts_with(root.join("bin")))
     {
         return Ok(());
     }
@@ -268,7 +267,7 @@ impl Update {
         // The same hourly job keeps upstream Computer Use components current.
         // It checks the small signed appcast first and range-downloads only
         // changed CUA/browser payloads; CLI updates remain independent.
-        if self.background && cfg!(target_os = "macos") {
+        if self.background && cfg!(any(target_os = "macos", target_os = "windows")) {
             match nanocodex_computer::provision::provision_upstream(true).await {
                 Ok(receipt) if receipt["status"] == "installed" => {
                     if let Err(error) =
@@ -468,11 +467,34 @@ pub(crate) async fn install_latest() -> Result<PathBuf> {
     }
     .run()
     .await?;
-    Ok(VersionStore::discover()?.root().to_path_buf())
+    let store = VersionStore::discover()?;
+    if cfg!(windows) {
+        let active = store
+            .active()?
+            .ok_or_else(|| eyre!("Windows installation did not activate a release"))?;
+        store.sync_windows_entrypoints(&active)?;
+    }
+    Ok(store.root().to_path_buf())
 }
 
 pub(crate) fn lock_service_operation() -> Result<fs::File> {
     VersionStore::discover()?.update_lock()
+}
+
+/// Prefer the verified companion from the active Windows update bundle. A
+/// freshly installed CLI has no managed bundle yet and uses its signed sibling.
+pub(crate) fn active_windows_hand_binary() -> Result<Option<PathBuf>> {
+    if !cfg!(target_os = "windows") {
+        return Ok(None);
+    }
+    let store = VersionStore::discover()?;
+    let Some(key) = store.active()? else {
+        return Ok(None);
+    };
+    if !store.is_cached_bundle(&key, false)? {
+        return Ok(None);
+    }
+    Ok(Some(store.version_dir(&key).join("nanocodex2.exe")))
 }
 
 #[derive(Debug, PartialEq)]
@@ -517,21 +539,29 @@ pub(crate) async fn recover_hand_update() -> Result<()> {
         if let RecoveryPlan::Finalize { candidate, service } = &plan {
             store.validate_activation(candidate)?;
             if *service {
-                let executable = store.version_dir(candidate).join("nanocodex2");
-                let state = crate::hand_service::status().await?;
-                if state.loaded {
-                    crate::hand_service::verify_connected(
-                        &executable,
-                        std::time::SystemTime::UNIX_EPOCH,
-                        Duration::from_secs(60),
-                    )
-                    .await?;
-                } else if state.executable.as_deref() != Some(executable.as_path()) {
-                    bail!(
-                        "Committed Hand executable no longer matches the update; inspect before recovery"
-                    );
+                let executable = store.version_dir(candidate).join(if cfg!(windows) {
+                    "nanocodex2.exe"
+                } else {
+                    "nanocodex2"
+                });
+                if cfg!(target_os = "windows") {
+                    crate::windows_hand::ensure(Some(executable)).await?;
+                } else {
+                    let state = crate::hand_service::status().await?;
+                    if state.loaded {
+                        crate::hand_service::verify_connected(
+                            &executable,
+                            std::time::SystemTime::UNIX_EPOCH,
+                            Duration::from_secs(60),
+                        )
+                        .await?;
+                    } else if state.executable.as_deref() != Some(executable.as_path()) {
+                        bail!(
+                            "Committed Hand executable no longer matches the update; inspect before recovery"
+                        );
+                    }
+                    crate::hand_service::finish_recovery().await?;
                 }
-                crate::hand_service::finish_recovery().await?;
             }
             fs::remove_file(&journal)?;
             println!("Finalized the verified Nanocodex update {candidate}");
@@ -545,11 +575,23 @@ pub(crate) async fn recover_hand_update() -> Result<()> {
     } else {
         None
     };
-    crate::hand_service::recover().await?;
-    if let Some(previous) = previous {
-        store.activate(&previous)?;
-        fs::remove_file(&journal)?;
-        println!("Restored Nanocodex {previous} and its Hand service");
+    if cfg!(target_os = "windows") {
+        if let Some(previous) = previous {
+            crate::windows_hand::ensure(Some(store.version_dir(&previous).join("nanocodex2.exe")))
+                .await?;
+            store.activate(&previous)?;
+            fs::remove_file(&journal)?;
+            println!("Restored Nanocodex {previous} and its Hand service");
+        } else {
+            crate::windows_hand::ensure(None).await?;
+        }
+    } else {
+        crate::hand_service::recover().await?;
+        if let Some(previous) = previous {
+            store.activate(&previous)?;
+            fs::remove_file(&journal)?;
+            println!("Restored Nanocodex {previous} and its Hand service");
+        }
     }
     Ok(())
 }
@@ -573,13 +615,20 @@ fn stage_update(store: &VersionStore, key: &str) -> Result<bool> {
 
 pub(crate) async fn start_hand() -> Result<()> {
     let store = VersionStore::discover()?;
-    if !crate::hand_service::status().await?.loaded
-        && let Some(key) = store.pending()?
-    {
+    let loaded = if cfg!(target_os = "windows") {
+        crate::windows_hand::status().await?.loaded
+    } else {
+        crate::hand_service::status().await?.loaded
+    };
+    if !loaded && let Some(key) = store.pending()? {
         activate_coordinated(&store, &key, false, true).await?;
         store.promote_manager(&key)?;
     }
-    crate::hand_service::start().await
+    if cfg!(target_os = "windows") {
+        crate::windows_hand::start_and_wait().await
+    } else {
+        crate::hand_service::start().await
+    }
 }
 
 pub(crate) async fn restart_hand() -> Result<()> {
@@ -587,9 +636,17 @@ pub(crate) async fn restart_hand() -> Result<()> {
     if let Some(key) = store.pending()? {
         activate_coordinated(&store, &key, false, true).await?;
         store.promote_manager(&key)?;
-        return crate::hand_service::start().await;
+        return if cfg!(target_os = "windows") {
+            crate::windows_hand::start_and_wait().await
+        } else {
+            crate::hand_service::start().await
+        };
     }
-    crate::hand_service::restart().await
+    if cfg!(target_os = "windows") {
+        crate::windows_hand::restart().await
+    } else {
+        crate::hand_service::restart().await
+    }
 }
 
 /// Background updates defer any installed Hand until an explicit start/restart.
@@ -602,17 +659,22 @@ async fn activate_coordinated(
     restart_hand: bool,
 ) -> Result<bool> {
     store.validate_activation(key)?;
-    if cfg!(target_os = "macos") {
-        let companion = store.version_dir(key).join("nanocodex2");
-        if companion.exists() {
-            if !store.is_cached_bundle(key, false)? {
-                bail!("update Hand binary failed checksum verification");
-            }
-            crate::hand_service::validate_candidate(&companion).await?;
+    let companion = store.version_dir(key).join(if cfg!(windows) {
+        "nanocodex2.exe"
+    } else {
+        "nanocodex2"
+    });
+    if cfg!(target_os = "macos") && companion.exists() {
+        if !store.is_cached_bundle(key, false)? {
+            bail!("update Hand binary failed checksum verification");
         }
+        crate::hand_service::validate_candidate(&companion).await?;
     }
     let installed = if cfg!(target_os = "macos") {
         let state = crate::hand_service::status().await?;
+        state.installed || state.loaded
+    } else if cfg!(target_os = "windows") {
+        let state = crate::windows_hand::status().await?;
         state.installed || state.loaded
     } else {
         false
@@ -625,11 +687,6 @@ async fn activate_coordinated(
         return Ok(false);
     }
     store.validate_activation(key)?;
-    let companion = store.version_dir(key).join(if cfg!(windows) {
-        "nanocodex2.exe"
-    } else {
-        "nanocodex2"
-    });
     if companion.exists() && !store.is_cached_bundle(key, false)? {
         bail!("update Hand binary failed checksum verification");
     }
@@ -646,7 +703,16 @@ async fn activate_coordinated(
         &serde_json::to_vec(&serde_json::json!({"previous":previous,"candidate":key}))?,
         false,
     )?;
-    let mut service = match crate::hand_service::prepare_update(&companion, restart_hand).await {
+    let service = if cfg!(target_os = "windows") {
+        crate::windows_hand::prepare_update(&companion, restart_hand)
+            .await
+            .map(|service| service.map(PlatformServiceUpdate::Windows))
+    } else {
+        crate::hand_service::prepare_update(&companion, restart_hand)
+            .await
+            .map(|service| service.map(PlatformServiceUpdate::Mac))
+    };
+    let mut service = match service {
         Ok(service) => service,
         Err(error) => {
             fs::remove_file(&journal)?;
@@ -675,13 +741,34 @@ trait ServiceTransaction: Send {
     async fn apply(&mut self) -> Result<()>;
     async fn rollback(&mut self) -> Result<()>;
 }
+
+enum PlatformServiceUpdate {
+    Mac(crate::hand_service::ServiceUpdate),
+    Windows(crate::windows_hand::ServiceUpdate),
+}
+
+impl PlatformServiceUpdate {
+    async fn commit(&mut self) -> Result<()> {
+        match self {
+            Self::Mac(service) => service.commit().await,
+            Self::Windows(service) => service.commit().await,
+        }
+    }
+}
+
 #[async_trait::async_trait]
-impl ServiceTransaction for crate::hand_service::ServiceUpdate {
+impl ServiceTransaction for PlatformServiceUpdate {
     async fn apply(&mut self) -> Result<()> {
-        self.apply().await
+        match self {
+            Self::Mac(service) => service.apply().await,
+            Self::Windows(service) => service.apply().await,
+        }
     }
     async fn rollback(&mut self) -> Result<()> {
-        self.rollback().await
+        match self {
+            Self::Mac(service) => service.rollback().await,
+            Self::Windows(service) => service.rollback().await,
+        }
     }
 }
 
@@ -704,10 +791,16 @@ async fn activate_transaction<S: ServiceTransaction>(
             );
         }
     }
-    if let Err(error) = store.activate(key) {
+    if let Err(error) = store
+        .activate(key)
+        .and_then(|()| store.sync_windows_entrypoints(key))
+    {
         let cli_rollback = previous
             .as_deref()
-            .map(|key| store.activate(key))
+            .map(|key| {
+                store.activate(key)?;
+                store.sync_windows_entrypoints(key)
+            })
             .transpose();
         let service_rollback = match service.as_mut() {
             Some(service) => service.rollback().await,
@@ -1163,7 +1256,12 @@ fn checksum_for(manifest: &[u8], asset_name: &str) -> Result<String> {
 
 #[cfg(test)]
 fn release_asset_name_for(os: &str, arch: &str) -> Result<String> {
-    Ok(format!("{}.gz", binary_asset_name_for(os, arch)?))
+    let name = binary_asset_name_for(os, arch)?;
+    Ok(if os == "windows" {
+        name.to_owned()
+    } else {
+        format!("{name}.gz")
+    })
 }
 
 fn binary_asset_name() -> Result<&'static str> {
@@ -1178,6 +1276,7 @@ fn nanocodex2_binary_asset_name_for(os: &str, arch: &str) -> Result<&'static str
     match (os, arch) {
         ("linux", "x86_64") => Ok(NANOCODEX2_LINUX_ASSET),
         ("macos", "aarch64") => Ok(NANOCODEX2_MACOS_ASSET),
+        ("windows", "x86_64") => Ok(NANOCODEX2_WINDOWS_ASSET),
         _ => Err(eyre!("self-update is not supported on {os} {arch}")),
     }
 }
@@ -1194,6 +1293,7 @@ fn binary_asset_name_for(os: &str, arch: &str) -> Result<&'static str> {
     match (os, arch) {
         ("linux", "x86_64") => Ok("nanocodex-x86_64-unknown-linux-gnu"),
         ("macos", "aarch64") => Ok("nanocodex-aarch64-apple-darwin"),
+        ("windows", "x86_64") => Ok("nanocodex-x86_64-pc-windows-msvc.exe"),
         _ => Err(eyre!("self-update is not supported on {os} {arch}")),
     }
 }
@@ -1262,7 +1362,7 @@ mod tests {
     }
 
     #[test]
-    fn publishes_both_binaries_only_for_linux_x86_64_and_apple_silicon() {
+    fn publishes_matching_bundles_for_supported_desktop_platforms() {
         assert_eq!(
             release_asset_name_for("linux", "x86_64").unwrap(),
             "nanocodex-x86_64-unknown-linux-gnu.gz"
@@ -1279,12 +1379,18 @@ mod tests {
             nanocodex2_binary_asset_name_for("macos", "aarch64").unwrap(),
             "nanocodex2-aarch64-apple-darwin"
         );
+        assert_eq!(
+            release_asset_name_for("windows", "x86_64").unwrap(),
+            "nanocodex-x86_64-pc-windows-msvc.exe"
+        );
+        assert_eq!(
+            nanocodex2_binary_asset_name_for("windows", "x86_64").unwrap(),
+            "nanocodex2-x86_64-pc-windows-msvc.exe"
+        );
         assert!(release_asset_name_for("linux", "aarch64").is_err());
         assert!(release_asset_name_for("macos", "x86_64").is_err());
-        assert!(release_asset_name_for("windows", "x86_64").is_err());
         assert!(nanocodex2_binary_asset_name_for("linux", "aarch64").is_err());
         assert!(nanocodex2_binary_asset_name_for("macos", "x86_64").is_err());
-        assert!(nanocodex2_binary_asset_name_for("windows", "x86_64").is_err());
     }
 
     #[test]

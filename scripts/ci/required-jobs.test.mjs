@@ -132,10 +132,11 @@ test('one Windows runner retains shared native, JS lifecycle, and installer cove
   for (const command of ['-p nanocodex-remote -p nanocodex-tui-control', '-p nanocodex-hand',
     'cargo test --locked --package nanocodex2-bin --bin nanocodex2',
     'device-hand.integration.test.mjs', 'device-hand-shutdown.test.mjs',
-    'test-service-build.ps1', 'test-cua-provision.ps1', 'test-setup.ps1',
-    'pnpm install --frozen-lockfile', '-Nanocodex2 ./target/debug/nanocodex2.exe']) {
+    'test-cua-provision.ps1', 'nanocodex windows_hand', 'windows_schedule',
+    'pnpm install --frozen-lockfile', '-Nanocodex ./target/debug/nanocodex.exe',
+    '-Nanocodex2 ./target/debug/nanocodex2.exe']) {
     assert.ok(windows.includes(command), command);
   }
-  assert.equal((windows.match(/cargo build --locked/g) ?? []).length, 1);
+  assert.equal((windows.match(/cargo build --locked/g) ?? []).length, 2);
   assert.ok(!windows.includes('nanocodex-installer-placeholder.exe'));
 });

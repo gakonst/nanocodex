@@ -115,15 +115,25 @@ curl -fsSL https://nanocodex.paradigm.xyz | bash
 nanocodex
 ```
 
+On x86-64 Windows 10 or 11, the equivalent checksum-verified bootstrap is:
+
+```powershell
+irm https://nanocodex.paradigm.xyz/install.ps1 | iex
+nanocodex
+```
+
 With an interactive terminal, the installer immediately runs `nanocodex setup`:
 account SMS login, platform CUA setup, the persistent Hand on that machine, and
 the official browser-extension prompt where applicable. The flow is idempotent
 and resumable.
 
-The curl script only selects and checksum-verifies one platform bootstrap.
+The POSIX or PowerShell script only selects and checksum-verifies one platform
+bootstrap.
 Native Rust then installs the matching CLI, Hand, and voice bundle, updates the
-shell PATH, configures supported native automatic updates, and owns every setup
-step.
+shell PATH, configures an hourly per-user updater through launchd, systemd, or
+Task Scheduler, and owns every setup step. Background activation is
+transactional with the macOS and Windows Hand; a running Hand is never silently
+restarted.
 
 Release bundles include the native voice helper, libraries, and plugins.
 Installation and updates verify and install them with the matching CLI version;
@@ -233,22 +243,26 @@ Re-running setup reuses the identity and private workspace under
 `/srv/nanocodex`; an installation enrolled to another account or origin is
 rejected.
 
-The same lifecycle commands work for the local launchd or systemd service:
+The same lifecycle commands work for the local LaunchAgent, systemd service, or
+Windows scheduled task:
 `nanocodex hand status`, `start`, `stop`, and `restart`.
 
 ### Windows Hand
 
-Download `nanocodex-hand-setup-x86_64.exe` from the latest release and
-double-click it on an x86-64 Windows 10 or 11 computer. Keep **Sign in and
-connect this computer now** selected, then enter the account phone number and
-the six-digit SMS code. No terminal setup or administrator access is required.
+Run the PowerShell bootstrap above, or download
+`nanocodex-hand-setup-x86_64.exe` from the latest release and double-click it on
+an x86-64 Windows 10 or 11 computer. Keep **Sign in and connect this computer
+now** selected, then enter the account phone number and six-digit SMS code.
+The current per-user installer and subsequent updates do not require
+administrator access.
 
-The installer bundles the account Hand and provisions OpenAI’s official computer-use
-runtime. It verifies the runtime before use, uses a dedicated per-user account
-credential, and registers a hidden interactive startup task with failure
-recovery. Running in the signed-in session is deliberate: Windows Graphics
-Capture, UI Automation, and input cannot control that desktop from a Session 0
-service. Start-menu shortcuts stop, repair, inspect, or uninstall the Hand.
+The installer ships the same `nanocodex` and `nanocodex2` Rust binaries as the
+other platforms. The shared guided setup provisions OpenAI’s official
+computer-use runtime, uses the shared per-user account login, and has Rust
+register a hidden interactive startup task with failure recovery. Running in
+the signed-in session is deliberate: capture, UI Automation, and input cannot
+control that desktop from a Session 0 service. The same `nanocodex hand
+install/status/start/stop/restart` commands work from a new terminal.
 See [`windows/hand`](windows/hand) for behavior, security boundaries, build
 instructions, and the real Notepad control smoke test.
 

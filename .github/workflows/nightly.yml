@@ -239,18 +239,23 @@ jobs:
         env:
           TAG_NAME: ${{ inputs.pr && format('pr-{0}', inputs.pr) || 'nightly' }}
         run: |
+          cargo build --locked --profile nightly --timings --package nanocodex-bin --bin nanocodex --features tempo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo build --locked --profile nightly --timings --package nanocodex2-bin --bin nanocodex2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Sign payload when Authenticode is configured
         shell: pwsh
         run: >-
-          ./windows/hand/sign.ps1 -Path
-          ./target/nightly/nanocodex2.exe
+          ./windows/hand/sign.ps1 -Path @(
+            "./target/nightly/nanocodex.exe",
+            "./target/nightly/nanocodex2.exe"
+          )
       - name: Build and sign one-click installer
         shell: pwsh
         run: |
           $displayVersion = "nightly-$($env:BUILD_SHA.Substring(0, 10))"
           ./windows/hand/build.ps1 `
+            -Nanocodex ./target/nightly/nanocodex.exe `
             -Nanocodex2 ./target/nightly/nanocodex2.exe `
             -Version $displayVersion `
             -NumericVersion 0.0.0.0
@@ -260,6 +265,7 @@ jobs:
         env:
           PR_NUMBER: ${{ inputs.pr }}
         run: |
+          Copy-Item target/nightly/nanocodex.exe dist/windows-hand/nanocodex-x86_64-pc-windows-msvc.exe
           Copy-Item target/nightly/nanocodex2.exe dist/windows-hand/nanocodex2-x86_64-pc-windows-msvc.exe
           if (-not [string]::IsNullOrWhiteSpace($env:PR_NUMBER)) {
             [pscustomobject]@{
@@ -418,7 +424,7 @@ jobs:
                 nanocodex-x86_64-unknown-linux-gnu|nanocodex-x86_64-unknown-linux-gnu.gz|\
                 nanocodex2-aarch64-apple-darwin|nanocodex2-aarch64-apple-darwin.gz|\
                 nanocodex2-x86_64-unknown-linux-gnu|nanocodex2-x86_64-unknown-linux-gnu.gz|\
-                nanocodex2-x86_64-pc-windows-msvc.exe|nanocodex-hand-setup-x86_64.exe|\
+                nanocodex-x86_64-pc-windows-msvc.exe|nanocodex2-x86_64-pc-windows-msvc.exe|nanocodex-hand-setup-x86_64.exe|\
                 nanocodex-voice-aarch64-apple-darwin.tar.gz|nanocodex-voice-x86_64-unknown-linux-gnu.tar.gz|\
                 nanocodex-vm-guest-x86_64-unknown-linux-musl|nanocodex-vm-guest-x86_64-unknown-linux-musl.gz)
                   ;;

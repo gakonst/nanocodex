@@ -208,6 +208,7 @@ function commitSearchScore(commit: HarnessCommit, tokens: readonly string[]) {
 
 const installCommand = "curl -fsSL https://nanocodex.paradigm.xyz | bash";
 const installOptions = [
+  { id: "windows", label: "Windows", command: "irm https://nanocodex.paradigm.xyz/install.ps1 | iex" },
   { id: "rust", label: "Rust", command: "cargo add nanocodex" },
   { id: "javascript", label: "JavaScript", command: "npm install nanocodex" },
 ] as const;
