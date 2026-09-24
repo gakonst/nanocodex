@@ -8,7 +8,11 @@ Running `nanocodex2` opens a new interactive session;
 tools.
 The local tool runtime also includes Mercator discovery through
 `https://mercator.sh/mcp` by default. Use `tool_search` to find its free
-read-only discovery tools; paid jobs still require separate authorization.
+read-only discovery tools. For paid jobs, add the protected
+`https://mercator.sh/mcp/auth` connection in **Account → Connections**,
+select **Authorize**, and approve the Tempo Wallet capability with explicit
+limits and expiry. Check `get_connection_status` for payment readiness; a
+connected OAuth account or the public default alone is not proof of funding.
 
 Image rendering uses terminal geometry and known terminal hints without reading
 keyboard input for capability probes. Recognized Kitty, Ghostty, iTerm2, and

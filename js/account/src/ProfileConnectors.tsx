@@ -32,6 +32,7 @@ import {
   type CallbackCompletion,
 } from "nanocodex-connect-protocol";
 import { mcpOauthAttemptMode } from "./mcpOauthAttempt";
+import { MERCATOR_OAUTH_MCP_URL, needsMercatorOnboarding } from "./mercatorOnboarding";
 
 type AccountConnectorCapability = Exclude<ConnectorCapability, "chatgpt">;
 type AccountConnectorProvider = Exclude<ConnectorProvider, "chatgpt">;
@@ -642,6 +643,14 @@ export function ProfileConnectors({
             onClick={() => void loadMcpConnections()}
             title="MCP connections"
           /> : null}
+          {mcpConnections && needsMercatorOnboarding(mcpConnections) ? <AccountConnectionCard
+            action="Add"
+            detail="Add Mercator, then authorize with Tempo Wallet to choose payment limits. Free discovery is already available."
+            disabled={operation !== null}
+            logo={<ConnectionLogo id="mcp" />}
+            onClick={() => void createMcp(MERCATOR_OAUTH_MCP_URL)}
+            title="Mercator"
+          /> : null}
           {mcpConnections ? <McpConnectionAddCard
             disabled={operation !== null}
             error={mcpError ?? undefined}
@@ -727,6 +736,19 @@ export function ProfileConnectors({
           </button>)}
         </Fragment>);
       }) : null}
+      {mcpConnections && needsMercatorOnboarding(mcpConnections) ? <button
+        className="connection-card connector-row mcp-connector-row"
+        disabled={operation !== null}
+        onClick={() => void createMcp(MERCATOR_OAUTH_MCP_URL)}
+        type="button"
+      >
+        <ConnectionLogo id="mcp" />
+        <span className="connection-card-copy">
+          <strong>Mercator</strong>
+          <span>Add, then authorize with Tempo Wallet to choose payment limits. Free discovery is already available.</span>
+        </span>
+        <span className="connection-card-action">Add</span>
+      </button> : null}
       {mcpConnections ? <McpConnectionAddCard
         disabled={operation !== null}
         error={mcpError ?? undefined}
