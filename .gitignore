@@ -69,3 +69,6 @@ __pycache__/
 # Per-run production release inputs.
 .ci-release-plan.json
 /js/managed/wrangler.ci.jsonc
+
+# Local measurements and review evidence; publish shared runs as CI artifacts.
+/output/

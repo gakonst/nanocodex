@@ -1,6 +1,6 @@
-# Native thread client validation — 2026-09-20
+# Native thread client
 
-This change extends the existing addon and bridge. The updated addon has not been installed or reloaded in the running game. Desktop permissions are unchanged, and visible in-game delivery is not yet verified.
+The native addon and external companion provide thread browsing, history, sending, streaming, stop and reconnect. Local integration fixtures exercise these paths with mocked game APIs and account responses. They do not establish delivery or rendering in a running WoW client.
 
 ## Implementation
 
@@ -32,7 +32,7 @@ The roster includes open and locally closed threads, within 4,096 combined proje
 
 The native integration fixture in `tests/test_addon_bridge_integration.py` runs a Lua peer loading real Context/Projects/Bridge/Client/Transport modules. It traverses the actual painter, chord receiver, message assembler, Python raster decoder/desktop adapter, carrier pump, bridge journal and dispatcher. Only game/desktop APIs and account responses are mocked.
 
-The new journey covers:
+The integration journey covers:
 
 1. Multi-page project/thread roster refresh and a separate account-status receipt.
 2. Multi-page UTF-8 history from one immutable backend read, and an earlier-history cursor.
@@ -52,19 +52,10 @@ python3 -m unittest discover -s transport -p 'test_*.py' -v
 bash addon/tests/runall.sh
 ```
 
-Final local verification on macOS used a private Python 3.14 environment (Pillow 12.3.0, websockets 17.1) and Lua 5.1.5:
+## Live validation and limits
 
-- `python -m unittest discover -s tests -v`: 157 tests, OK with no skips, including Bun validation against this monorepo’s `js/managed/src/agent-settings.ts`. Both native addon/bridge integration journeys and the Python-generated NC1-to-Lua streaming test passed.
-- `python -m unittest discover -s transport -p 'test_*.py' -v`: 77 tests, OK; two checks requiring the Linux native carrier binary skipped on macOS.
-- All five addon Lua test files and five standalone transport Lua test files passed. The stdin-driven streaming pipeline runs through the Python suite with generated frames, not as an empty-stdin standalone test.
-- A 40-page Lua catalog exceeding the old 256 KiB ceiling assembled atomically with all 600 synthetic chats. Backend tests cover 600 projects with immutable continuation beyond 32 pages, and verify exactly one authenticated upstream read.
-- The final application run used an isolated ignored `build/test-tmp` via `TMPDIR` after the default temporary directory became unavailable on a full host data volume. A focused subprocess-lock test and the entire 157-test suite passed with this placement.
-- `git diff --check -- examples/wow` passed. No game installation, reload, service restart or commit was performed.
+A live check must establish installation of the current addon, texture capture and calibration, guarded keyboard input reaching the addon, authenticated request arrival at the backend, and visible incremental then final text in the in-game panel. Local fixture success does not establish those results.
 
-## Live gate and limits
+Reconnect restores missing companion subscriptions and rechecks account access. Existing blocked durable clients remain blocked until their underlying condition is resolved and the companion is restarted. Carrier sessions are not reset automatically. Stop requires a turn receipt seen by this addon session; other-client active turns remain a companion workflow. Account connection status reflects the last explicit check, separate from carrier liveness and stream state.
 
-A read-only live check of the existing companion reports `connected=true` through the CLI account store and an existing connected durable subscription. This verifies current companion authentication and stream connectivity, not installation or delivery through the new addon panel. A fresh read-only Omarchy check found the existing WoW, companion and autoconnect processes running. Shell access is available as the service user, but the supported desktop inventory still fails with X11 `PermissionDenied` (`DISPLAY=:0`, no `XAUTHORITY`). No permission bypass, game input, reload or service restart was attempted. The remaining live gate is installing/reloading the updated addon and verifying visible carrier/keyboard delivery and rendering through a supported gaming-user desktop session. Current companion authentication is already verified.
-
-Reconnect restores missing companion subscriptions and rechecks account access. Existing blocked durable clients remain blocked until their underlying condition is resolved and the companion is restarted. Carrier sessions are not reset automatically. Stop currently requires a turn receipt seen by this addon session; other-client active turns remain a companion workflow. Account connection status is evidence from the last explicit check, separate from carrier liveness and stream state.
-
-This is a native Lua client plus external companion. WoW cannot host the browser client or its HTTP/WebSocket networking. Attachments, approval cards, realtime voice and complete mobile feature parity are not claimed.
+This is a native Lua client plus external companion. WoW cannot host the browser client or its HTTP/WebSocket networking. Attachments, approval cards, realtime voice and complete mobile feature parity are not implemented by this integration.

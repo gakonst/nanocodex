@@ -102,39 +102,3 @@ and retained disks; GPU execution state itself does not survive a VM restart.
   geometry shaders, logical operations, `VK_KHR_swapchain`, and
   `VK_EXT_provoking_vertex`; the graphics launcher does not override those
   checks or advertise unsupported capabilities.
-
-## Hardware evidence (2026-09-11)
-
-Tests use real `nanocodex2` binaries and the managed service:
-
-- The clean graphics bundle (pinned MoltenVK/SPIRV-Cross and patched Zink)
-  passed five compute and five graphics checks in each of two separate
-  factory VMs. Each graphics run checked GPU readback and actual X11
-  presentation at 256×256, 127×91, 381×219, and 32×32. The launcher found
-  each VM's authenticated desktop without manually supplied display settings.
-  Both retained VMs then passed compute and all four presentation sizes again
-  after a complete factory stop/restart, with their original marker files intact.
-- A visible `glxgears` window displayed colored gears through Zink/Venus on
-  the M1 Max; before the presentation fix the same window remained black.
-- `vulkaninfo`: `Virtio-GPU Venus (Apple M1 Max)`, integrated GPU, vendor
-  `0x106b`, Vulkan 1.2, Mesa Venus 26.1.6.
-- Compute shader `out[i] = i * 3 + 7`: 65,536 values, zero mismatches.
-- Two clean factory allocations each completed five checked compute runs,
-  then 15 overlapping runs each (16:18:14–16:18:30 UTC), all successful.
-- After stopping and restarting the factory with the final Vulkan-only
-  bundle, both existing mounts preserved their markers and passed compute
-  again; no replacement mounts were created.
-- A broken image missing its Vulkan loader was rejected during factory
-  preflight, before the host connected or advertised allocation capacity.
-- Without a GPU, the packaged probe exits unsuccessfully rather than
-  accepting a software renderer.
-- The rebuilt, developer-signed Mac app created `gpu-smoke-final` through
-  its native Hand's `start_vm` tool using the installed GPU recipe. Startup
-  passed the Rust compute/readback gate; `stop_vm` returned stopped and
-  retained its private disk. A separate command invocation in that test
-  session was blocked by VM tool discovery, so repeated command execution
-  evidence comes from the factory tests above.
-
-The existing Ubuntu box was not used as accelerated capacity: its inspected
-AMD device had no bound graphics driver or render node. No host driver
-rebind, kernel change, or GPU rental was needed for the Mac path.

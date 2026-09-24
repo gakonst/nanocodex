@@ -133,9 +133,6 @@ replay. Once you have persisted the session ID, resume with `Agent.open(id, clie
 instead of recreating it. A deleted session is not resurrected by reusing its key.
 There is no claim of exactly-once model execution or external tool side effects.
 
-The [first-turn API design](MANAGED_AGENT_START_DESIGN.md) records the alternatives,
-failure cases, and rationale for the combined operation.
-
 ## Environment execution and limits
 
 The initial implementation targets the durable `/brain` workspace and its

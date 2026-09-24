@@ -167,27 +167,6 @@ during serialization. Repairs, truncation, and compaction allocate only on
 their explicit rewrite paths. Buffer pools, SIMD JSON, and small-vector changes
 require a representative retained-trace win before entering production.
 
-The 2026-07-18 M1 Max snapshot established the useful orders of magnitude:
-
-| Workload | Result |
-| --- | ---: |
-| Direct async dispatch | 9.64 ns |
-| Generic Tower dispatch | 10.54 ns |
-| Concurrency-limit + timeout stack | 76.95 ns |
-| 128 KiB serde request encoding | 71.5 us |
-| 128 KiB typed history decode | 240 us |
-| 128 KiB `Value` history decode | 305 us |
-| 128 KiB typed history clone | 30.8 us |
-| 128 KiB `Value` history clone | 169.6 us |
-| Attempt history `Arc` clone | 10.2 ns |
-| 622 KiB raw-payload JSONL decode | 0.67 ms |
-| 622 KiB `Value`-payload JSONL decode | 1.70 ms |
-
-Tower overhead is negligible beside serialization and model/network latency.
-Typed history materially improves clone cost, and raw retained event payloads
-avoid unnecessary DOM parsing. Sonic and simd-json remain benchmark-only
-because neither won the complete immutable-input request path.
-
 Run the portable benchmarks with:
 
 ```sh

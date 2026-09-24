@@ -1,7 +1,0 @@
-{
-  "source_commit": "470ea709f4bda8e186b38be5e713d7820e9db4b4",
-  "sha256": "23bb1bcf5271a1d8475cdcd93f106f50042354b4822898e79229a2c4928f3547",
-  "build": "cargo build --release --locked -p nanocodex2-bin --bin nanocodex2",
-  "profile": "release",
-  "binary": "/Users/georgios/github/gakonst/nanocodex-master/output/nanocodex2-cold-master-20260916/nanocodex2"
-}

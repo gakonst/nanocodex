@@ -207,9 +207,7 @@ its panes cannot fit at a usable minimum size.
 
 The hosted native tests cover mixed splits, resizing with retained editors,
 layout switching, group reordering/closing/reopening, persistence, keyboard
-navigation, queue ownership, and review behavior. See
-[`DESKTOP_BROWSER_DOGFOOD_2026_09_09.md`](../docs/DESKTOP_BROWSER_DOGFOOD_2026_09_09.md)
-for measured comparisons and installed-app evidence.
+navigation, queue ownership, and review behavior.
 
 ## Compute and conversation controls
 
@@ -261,60 +259,8 @@ for measured comparisons and installed-app evidence.
 
 ## Verification
 
-The [September 12 native design pass](../docs/DESKTOP_LIQUID_GLASS_2026_09_12.md)
-records the Apple guidance, SwiftUI skills, native control changes, performance
-measurements, and validation limits. The UI-test target has a Debug-only fixture
-that exercises the real window toolbar without starting account services.
-
-
-The [September 12 cleanup loop](../docs/DESKTOP_CLEANUP_2026_09_12.md) measured
-120 open tabs before and after simplification. Median edit/layout work fell from
-99.5 to 24.6 ms and tab selection work from 206.2 to 93.0 ms in the native Debug
-fixture. All 48 local native checks passed; the live account journey was skipped.
-
-September 12 desktop parity validation: 47 native tests passed; the live account
-journey was skipped. The local screen fixture verified decoded frames, wide and
-narrow pane resizing, retained editors/drafts, and the same viewer after tab
-switches. Browser history preserved split layouts and review state; rapid
-Escape → `v` → `h` and immediate typing passed. All 11 shared remote viewer
-tests and the iOS simulator build passed. Screenshots are in
-`build/evidence/native-screen-pane.png`, `native-screen-pane-narrow.png`, and
-`native-tab-overview.png`.
-
-Current evidence (2026-09-06):
-
-- **23 native protocol, policy, and rendering checks pass**, including two
-  visible AppKit editors, the single-agent default, native page transitions,
-  explicit pane selection, pane-specific Send routing, keyboard focus transfer,
-  repeated Escape, Tab/Shift-Tab and arrow navigation, Enter to write, and typing
-  immediately after a page switch,
-  stable live order, Seen/Later, Inbox Zero and restoration, retained drafts,
-  reordering, focus mode, and wide/narrow light/dark rendering. The existing
-  transcript check preserves manual scroll position while output streams and
-  reuses the actual viewport after a distant thread switch. Acceptance and final
-  message checks verify stable row identity, text, and title continuity. Rapid
-  selection checks verify the requested pane is visible on the next sampled frame.
-  Failed thread loads stay within their pane, and a failed Hand connection stops
-  the working indicator while retaining the message for retry or cancellation.
-- **30 shared-runtime tests pass**, including automatic default Hand creation and
-  reconnection, exact review cursor persistence,
-  bounded pane widths, compatibility with legacy layouts, account isolation,
-  managed event replay, and the native JSONL credential boundary.
-- **The real native Hand journey passes both durable turns across restart**:
-  the account-wide Hand connects automatically on launch and reconnects with
-  the same identity after restart;
-  the first turn writes and reads a file, the second reads it after reconnect,
-  and the test explicitly stops its Hand and removes its own managed thread.
-  This journey also queues a follow-up, stops its captured predecessor, and
-  verifies a single durable acceptance and completion.
-- Manual native dogfooding runs two real agents in separate panes, edits independent
-  drafts, shares a temporary folder, writes and reads a real file, queues two
-  follow-ups, cancels one, steers the other, and stops the scoped Hand. Service
-  evidence is retained in `build/evidence/native-dogfood-live.json`.
-  The final UI pass verifies keyboard search, mouse header dragging, focus/resume,
-  pane reordering, Seen/Later, close/reopen, and retained reading positions and drafts.
-- In the native preview, a real long conversation retained its reading position
-  and expanded tool result after jumping to a distant thread and back.
+The UI-test target has a Debug-only fixture that exercises the real window
+toolbar without starting account services.
 
 Native screenshots are under `macos/build/evidence`, including
 `native-inbox-default.png`, `native-inbox-tiles-light.png`, `native-inbox-tiles-narrow.png`,
@@ -326,31 +272,14 @@ The isolated native rendering benchmark captures before/after chat, Hands,
 Settings, and narrow-window screenshots, plus editor and tab timings in
 `native-performance-before.json` and `native-performance-after.json`. It measures
 actual AppKit editing and SwiftUI layout in a Debug test host, not process launch
-or network latency. The thread-continuity changes reduced median switch work
-from 35.8 ms to 15.0 ms, with p95 moving from 38.0 ms to 23.2 ms, in the local
-before/after runs (`native-thread-continuity-before.json` and
-`native-thread-continuity-after.json`). Typed event decoding and unchanged-event replay suppression
-cut the 800-event JSONL snapshot benchmark from 111 ms to about 47 ms. Draft
-serialization is deferred until the save debounce expires. Streaming preserves
+or network latency. Draft serialization is deferred until the save debounce expires. Streaming preserves
 the reading position; a **Latest** button jumps down explicitly. Queued messages
 are persisted before network submission, independently of the draft debounce.
 
-The September 7 performance audit records fresh-process fixture results in
-`native-performance-perf-audit-before.json` and
-`native-performance-perf-audit-after-isolated.json`. Across 80 completed turns,
-live snapshot processing fell from 115.5 ms to 45.6 ms median (118.7 ms to
-47.5 ms p95); unchanged 800-event snapshots fell from 51.5 ms to 19.5 ms.
 JSONL framing and decoding now run on a serial background queue with ordered
 main-actor delivery. Unchanged account snapshots do not republish UI state, and
 unchanged turns retain their projected messages. Corrected events, replay,
 history prepends and account resets retain the canonical reducer's behavior.
-All 33 native protocol tests pass, including main-queue responsiveness during
-large fragmented-frame decoding, final-response delivery before child exit,
-cursor-only snapshot updates, and the existing AppKit editor, tab, and
-retained-scroll journeys. The isolated test bundle and mocked runtime leave
-running user sessions and account credentials untouched. These measurements
-cover local native processing and layout, not service latency or end-to-end
-process startup.
 
 Earlier messages load automatically when a user scrolls within 240 points of
 the transcript's top. Initial layout and streamed output never fetch pages.

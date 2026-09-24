@@ -35,3 +35,18 @@ For a custom login, pass `--managed-url https://your-server` and `--account-file
 Use `sudo systemctl stop/start nanocodex-hand` on Linux. On macOS, use `sudo launchctl bootout system/com.nanocodex.hand` to stop and `sudo launchctl bootstrap system /Library/LaunchDaemons/com.nanocodex.hand.plist` to start. Remove/disable the OS service to prevent future boot startup. Windows service installation is not provided by this helper.
 
 The Linux SSH bootstrap installs the same single daemon with its VM recipe. Older separate factory services must be removed explicitly before installing it. There is one current wire contract: publishers must send `capabilities: ["turn_metadata"]`. This fixed field preserves the existing publisher format without capability negotiation or legacy metadata fallback. There is no new process recovery API or persistence across daemon crashes.
+
+## Execution mounts
+
+`environment` lists authorized Hand roots; `workdir` selects where each command
+runs. A mount already represents its advertised workspace: `/laptop/src` means
+`src` beneath that workspace. `mount` provisions a named sandbox when native
+builds, tests, or process sessions require one. `/brain` provides durable shared
+scratch and the embedded shell without a native Hand.
+
+Cloudflare sandbox processes can write their own workspace and `/brain`, and
+read peer sandbox workspaces through native mounts. Connected user Hands provide
+execution placement; peer filesystem access requires a conforming native adapter.
+Each call captures its Hand connection. Retained process sessions remain pinned
+to that Hand; reconnecting never retargets admitted work. Subagents share this
+mount policy while keeping model state private. Coordinate concurrent file writes.

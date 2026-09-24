@@ -37,10 +37,23 @@ Changes in telemetry inform new threads and new children. They do not silently a
 
 Public listings establish availability in a catalog, not access granted to our deployment. Authenticated live OpenRouter/Vercel inference requires configured keys and credits. Do not describe mocked transport checks or Mac-side timing as live global Worker measurements.
 
-Authenticated GLM-low CLI execution and gateway compatibility fixes are recorded in [the 2026-09-21 live verification report](THREAD_ROUTING_GATEWAYS_2026_09_21.md).
-
 ## Scheduled TTFT selection
 
-The Worker exposes opt-in routing and includes a half-hourly streaming probe schedule, disabled by default. Explicitly enable probes independently of each new agent’s routing policy. One deployment-wide Durable Object deduplicates schedule slots and limits requests. Three successful fresh samples qualify a candidate's p50/EWMA TTFT for Jev; failure counts remain separate evidence. The complete audit is retained, while compact candidate fields avoid overloading Jev's input. Existing roots and children remain pinned.
+The Worker exposes opt-in routing and supports a half-hourly streaming probe schedule, disabled by default. Explicitly enable probes independently of each new agent’s routing policy. One deployment-wide Durable Object deduplicates schedule slots and limits requests. Three successful fresh samples qualify a candidate's p50/EWMA TTFT for Jev; failure counts remain separate evidence. The complete audit is retained, while compact candidate fields avoid overloading Jev's input. Existing roots and children remain pinned.
 
-See [schedule, controls, measurement definition and live verification](THREAD_ROUTING_TTFT_2026_09_21.md). Shared probes cover Workers AI, OpenRouter and Vercel; ChatGPT subscriptions do not inherit gateway TTFT. The API is opt-in through `configuration.model_routing`; deployment alone never enrolls clients. Background probes ship disabled and require an explicit `NANOCODEX_PROVIDER_PROBES=true` deployment setting.
+To enable probes, add `*/30 * * * *` UTC to the Worker's `triggers.crons`, retain
+the `NANOCODEX_PROVIDER_PROBE_COORDINATOR` binding, and set
+`NANOCODEX_PROVIDER_PROBES=true` with a positive
+`NANOCODEX_PROVIDER_PROBE_DAILY_LIMIT` (1–4,096). The checked-in configuration
+has no cron triggers, disables probes, and sets the limit to zero. With no limit override,
+the runtime default is 1,600 requests per day. Each slot rotates a bounded slice
+of available candidates; failures consume reserved budget and are not retried.
+Request limits do not impose a dollar cap.
+
+Probes request at most 128 output tokens by default and use a ten-second timeout.
+TTFT means the first nonempty generated text or plaintext reasoning event, not
+headers or buffered-response delivery. Three successful samples within two hours
+are required; sparse, stale, or failed measurements remain unknown. ChatGPT
+subscription routes have no deployment-owned probe credential and do not inherit
+gateway timings. See the [telemetry contract](../js/managed/docs/provider-telemetry.md)
+for measurement, storage, cohort selection, and verification commands.

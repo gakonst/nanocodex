@@ -47,34 +47,14 @@ text(result.observation);
 
 The context selector is available only on `observe`, not input actions. Optional provider failures leave the screenshot available. The initial implementation uses bounded subprocess collection rather than a persistent accessibility cache and is not a 10-Hz control loop.
 
-## Design reference: the TypeSafe Doom demonstration
+## Publisher integration
 
-The September 15, 2026 [demo](https://x.com/CompleteSkeptic/status/2099925687465570372) shows separate fire, goal and movement decisions and a control graph. TypeSafe's [technical explanation](https://typesafe.ai/blog/introducing-system-one-models-and-jev) explicitly says the model consumes structured state rather than images and reports approximately ten queries per second. We inspected sampled video frames and that primary explanation, not unpublished implementation code.
+The Go `hands/remote` publisher uses the same provider contract and embedded
+Python collector on the agent completion path. Viewer video and frame captures
+do not collect semantic data. `nanocodex-remote observe-local` exercises the
+read-only screenshot/provider path without a broker using local configuration.
 
-The transferable architecture is structured observations feeding typed decisions, followed by deterministic execution. This change implements the observation boundary and leaves model selection, decision policy, and fast control scheduling separate. It does not introduce Jev or claim equivalent reaction latency.
-
-## Validation for this change
-
-Focused validation passed: 7 native provider tests, 6 screen-publisher tests, 10 managed observation/transport tests, 10 Python helper tests, 8 example-producer tests, and the Lua addon mock assertions with JSON parsing. The native tests include helper cancellation, bounded output, timestamp checks, host/guest isolation, and a stalled provider preserving a successful screenshot.
-
-On Omarchy, the Python provider consumed an archived real addon export through the new generic envelope: 36 prioritized elements included `Warming Up` and `Ready for turn-in`. A different app/window selector returned `context_mismatch`. The archived timestamp was deliberately preserved. The current Hand user has no desktop session bus, so its AT-SPI probe correctly returned `session_bus_unavailable`; a fresh live desktop-user AT-SPI tree is not claimed by these tests.
-
-Top-level `observation.capturedAt` is the observation-request start anchor. Per-provider `capturedAt` describes that source's acquisition time. Neither field is an atomic screenshot timestamp. Current native VM publishers report provider unavailability rather than reading host context.
-
-The code is developed in an isolated checkout. The existing main checkout has separate uncommitted computer-tool work; the shared screen schema/result functions are its integration point. This change has not been deployed or validated as a merged live computer-tool release.
-
-## Wayland desktop publisher integration
-
-The Go `hands/remote` publisher now uses the same provider contract and embedded Python collector on the agent completion path. Viewer video and frame captures do not collect semantic data. `nanocodex-remote observe-local` exercises that same read-only screenshot/provider path without a broker, using local environment configuration. The helper copies have a parity test.
-
-Live Wayland validation found that AT-SPI `CoordType.SCREEN` may return window-local/logical bounds even on a scaled desktop. Results therefore label these `coordinateSpace: atspi_reported_screen` and `boundsVerified: false`. Consumers must reconcile bounds with compositor metadata or the screenshot before using them for input.
-
-On September 17, the Go publisher was deployed to Omarchy's desktop-user session, and the managed tool transport was deployed from a current-base checkout. The live `computer.observe` response returned both a screenshot and attributed provider outcomes. WoW's login screen correctly returned `matching_window_unavailable`; this is not proof of an in-game addon capture. The publisher is a user service replacing the older publisher through the existing host-replacement protocol; the older system publisher remains idle as a fallback.
-
-### Live in-game validation
-
-After the user completed login, an explicit `/ncobserve` export was copied and published on Omarchy. The deployed `computer.observe` call with `{app: "WoW", window: "World of Warcraft"}` returned the actual game screenshot and a fresh external-provider result, age 1,229 ms, with 35 bounded elements. Labels included `Gakthara`, `Warming Up`, and `Ready for turn-in`, matching the visible game UI. BlindSlash narration was also present. Truncation was marked `partial: true`; later observations correctly marked the same capture stale. Native AT-SPI remained unavailable for the game itself.
-
-The export operation is explicit. Passive observation does not type commands, read the clipboard, or imply that a previous addon snapshot is still current.
-
-Omarchy also opts into `NANOCODEX_WAYLAND_TEXT_X11=1` with its desktop `DISPLAY`, while retaining `NANOCODEX_WAYLAND_TEXT_WTYPE=1` for native Wayland applications. The text backend checks real X11 keyboard focus/PID before selecting XTEST; it never selects by game name, pins a target window, or retries a different backend after typing fails. This was validated by opening `/ncobserve` entirely through `computer` key/type actions. Key taps now have a bounded 50-ms dwell before release. The container packaging paths explicitly include the embedded Python helper; the generated Hand build was compiled independently to verify the resource is present.
+Top-level `observation.capturedAt` anchors the request; each provider's
+`capturedAt` describes acquisition. Neither is an atomic screenshot timestamp.
+AT-SPI bounds are labeled `coordinateSpace: atspi_reported_screen` and
+`boundsVerified: false`; reconcile them with the screenshot before input.

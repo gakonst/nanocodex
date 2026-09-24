@@ -259,31 +259,3 @@ has been validated, `/v1/connections` receives `chatgpt_credential_import` with
 exactly `access_token`, `refresh_token`, `account_id`, `expires_at`, and
 `fedramp`. These credentials are ephemeral request material and are never
 written to `connect.json` or returned in CLI diagnostics.
-
-## Implementation slices
-
-Implement this as complete vertical slices rather than extending the old
-ChatGPT-specific `auth login` path:
-
-1. Host the Accounts/Wata device-code handler and authenticated approval route
-   in Nanocodex Connect, backed by durable Cloudflare storage.
-2. Make the existing Connect UI render and settle device-code
-   `wallet_connect` requests through the same account, connector, and consent
-   components used by browser Connect.
-3. Add the Rust device-code consumer and Accounts-store bootstrap needed by the
-   native CLI. Keep product-specific grant exchange and storage under
-   `bin/nanocodex`.
-4. Add top-level `nanocodex login`, `nanocodex connect`, `nanocodex status`, and
-   `nanocodex logout` commands over that contract; remove or deliberately
-   migrate the old meaning of `nanocodex auth login`.
-5. Exercise the complete flow in the real browser, including registration,
-   returning login, missing ChatGPT, already-connected ChatGPT, denial,
-   expiration, and absence of provider credentials in browser storage and
-   network responses.
-
-At the time this design was recorded, the JavaScript Accounts device-code
-transport existed, while the native Rust path still needed an equivalent Wata
-consumer/bootstrap integration. `tempo-alloy` could consume an Accounts store
-but did not itself perform this device-code `wallet_connect` ceremony. Recheck
-upstream before implementing rather than preserving that observation as a
-compatibility constraint.

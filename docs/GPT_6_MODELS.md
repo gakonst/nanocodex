@@ -42,6 +42,17 @@ Nanocodex owns its execution tools, subagent lifecycle, and static model policy.
 Upstream's dynamic catalog, Node REPL approval system, and model migration UI
 are outside these contracts.
 
+## Astra protocol boundaries
+
+Astra accepts `low` through `max` effort, but rejects `none` and Pro mode;
+requests omit `reasoning.mode`. `ToolDefinition::with_async_execution()` marks
+application-owned async tools, whose jobs and original `call_id` remain the
+application's responsibility. Managed tools do not enable this automatically.
+Steering is applied at model-call boundaries, not through `response.steer`.
+`configuration_update` is a low-level wire item; changing thinking does not
+automatically append one. `misalignment_policy_violation` is terminal and does
+not retry or roll back earlier external actions.
+
 ## Gateway transports
 
 The SDK gateway adapter accepts all six Sol/Luna reasoning efforts. Cloudflare

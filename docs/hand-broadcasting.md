@@ -91,26 +91,3 @@ For Rust fixtures, `NANOCODEX_RTMP_TEST_SIZE=3840x2160` tests source quality,
 capture is opt-in via `screen_native::broadcast_live_tests::local_rtmp_native`.
 Go's `TestBroadcastRTMP` uses the production supervisor with synthetic media;
 `NANOCODEX_RTMP_TEST_DESKTOP=1` switches it to real Wayland/Pulse capture.
-
-Recorded private-ingest results on 2026-09-17:
-
-| Path | Received output | End A/V skew | Result |
-| --- | --- | --- | --- |
-| Rust Mac actual display + system audio | 3840×1600, 60 fps | 9 ms | Full decode |
-| Rust maximum-quality fixture | 3840×2160, 60 fps | 2 ms | Full decode |
-| Rust X preset | 1920×1080, 30 fps, 3-second GOP | 4 ms | Full decode |
-| Rust encoded VM-source fixture | 640×360, 60 fps | 12 ms | Full decode |
-| Rust RTMPS with trusted test CA | 640×360, 60 fps | 17 ms | Full decode |
-| Swift actual display + system audio | 1920×800, 60 fps | 12 ms | Full decode |
-| Swift maximum-quality fixture | 3840×2160, 60 fps | 22 ms | Full decode |
-| Go publisher on Linux | 1920×1080, 60 fps | 5 ms | Full decode |
-| Go Linux after ingest outage | 1920×1080, 60 fps | 13 ms | Full decode |
-
-Rust, Swift and Go recovery tests passed. Rust native preview also decoded 60
-H.264 frames in isolated headless Chromium. Protocol/client tests, package type
-checks, focused Rust tests, the Swift package suite, and the full Linux Go race
-suite passed. The actual Windows capture, physical paired phone, and live
-Wayland capture were not exercised in this run. No public Twitch/X broadcast or
-production deployment was performed; platform ingest still requires the user's
-stream endpoint and account eligibility. Private native recordings stay local
-and are not part of the published test report.

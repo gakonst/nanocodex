@@ -26,6 +26,14 @@
   checks for static contracts; test authorization and recovery by exercising
   the boundary and observing the result.
 
+- Keep documentation focused on current APIs, architecture, setup, and operations.
+  Remove superseded designs, implementation plans, checklists, and review notes
+  when the work lands; Git retains their history. Update links and consumers
+  when removing documents or support files.
+- Publish per-run screenshots, videos, logs, traces, and benchmark results as CI
+  artifacts or keep them in ignored `output/`. Do not commit generated evidence;
+  retain only intentional fixtures consumed by tests or current documentation.
+
 - `macos/` owns the desktop app and native tiled workspace; `js/desktop-runtime`
   owns its runtime. `apple/NanocodexInbox` targets iPhone and iPad.
 - `js/nanocodex` and `js/nanocodex-react` are public contracts. Cover changes

@@ -43,5 +43,3 @@ The pinned-reference tests cover the raw/usable budget boundary, client provenan
 The automatic and manual compaction regressions exercise a real PNG tool output, inject provider image rejection during compaction, verify the failed-turn checkpoint retains the tool call/output identity with repaired content, reload the session, and complete a subsequent request and compaction. Additional tests cover malformed stored history, raw hosted tool-output bypass, base64 padding, policy-stop precedence, legacy diagnostic projection, and failure-receipt compatibility.
 
 Related investigation integration also preserves the CLI's compaction phase across connection updates and refreshes an explicitly rejected stale Hand route once while retaining the same effect identity. Ambiguous transport/server failures are not automatically redispatched.
-
-The original session's compaction succeeded at 23:15:03 UTC after earlier masked HTTPS failures. The original upstream rejection body was discarded, so these fixes do not establish that the historical HTTPS failures were caused by an image rejection.

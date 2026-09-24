@@ -26,7 +26,7 @@ Routing is opt-in per new agent; omitting `configuration.model_routing` preserve
 
 Numeric preferences are relative importance weights from 0 to 100, not probabilities or percentages of traffic. Higher completion weight favors successful task completion; higher cost weight favors economy; higher duration weight favors shorter elapsed task time. Omitted preferences can be inferred by Jev from the opening prompt or optional preference text. Explicit numeric settings take precedence over conflicting text. The router does not use keyword matching to infer preferences.
 
-Cost and duration targets are soft planning targets. They do not impose a spending cap or runtime deadline, and the PoC does not guarantee them. Missing cost/time observations remain unknown. Subscription API-equivalent cost is not cash billed to the subscription. Successful completion means independently verified task success, not merely reaching an agent terminal state.
+Cost and duration targets are soft planning targets. They do not impose a spending cap or runtime deadline, and routing does not guarantee them. Missing cost/time observations remain unknown. Subscription API-equivalent cost is not cash billed to the subscription. Successful completion means independently verified task success, not merely reaching an agent terminal state.
 
 The native choices are GLM-5.3 and the Astra, Sol, and Luna ChatGPT models, each at low, medium, and high thinking. Configured gateways add supported provider/model/effort combinations, including the existing Kimi and MiMo routes; unavailable providers are excluded before Jev. Candidate availability follows each provider catalog. This is not the entire Cloudflare catalog. To restrict the choices, pass `candidates` containing exact IDs, for example:
 
@@ -52,7 +52,7 @@ Published eval scores are priors from different harnesses, not comparable Nanoco
 
 The route's audit record retains the parsed policy, preferences, eligible IDs, proposed and chosen candidates, raw confidence, `confidence_status` and `fallback_basis`. `fallback_basis: valid_proposal` distinguishes retaining an uncertain valid proposal from `eligible_frontier` replacement; `none` identifies an accepted-confidence selection. The settings and route are committed atomically. Restart and concurrent admission reuse that record. A restart before the initial commit may repeat classification.
 
-`strategy: "legacy"` retains the earlier task-family policy and its measured cost/success and duration/success scoring. Earlier reports describe that strategy, not the new default. `oss_thinking` and `frontier_thinking` do not constrain the direct catalog; use `candidates` to constrain effort. The frontier pair still selects the preferred fallback.
+`strategy: "legacy"` retains the earlier task-family policy and its measured cost/success and duration/success scoring. `oss_thinking` and `frontier_thinking` do not constrain the direct catalog; use `candidates` to constrain effort. The frontier pair still selects the preferred fallback.
 
 ## Design references
 
@@ -61,13 +61,13 @@ The route's audit record retains the parsed policy, preferences, eligible IDs, p
 - [RouteLLM](https://github.com/lm-sys/RouteLLM): calibrating cost/quality tradeoffs on representative queries.
 - [Jev routing experiment](https://github.com/TokenTrim/jev-routing-experiment): retrieval evidence and an evidence-only ablation; Jev's incremental benefit must be tested.
 
-The feature requires `NANOCODEX_THREAD_ROUTING=true` and the AI binding. The Worker enables the API but never injects a routing policy: opt in with `{"configuration":{"model_routing":{}}}` when creating a new agent (or explicitly choose a saved definition containing that policy). Existing `nanocodex` and `nanocodex2` requests remain unchanged. Background probes separately require `NANOCODEX_PROVIDER_PROBES=true` and ship disabled. Existing routes remain pinned. This PR has not been deployed. See [scheduled TTFT routing](THREAD_ROUTING_TTFT_2026_09_21.md).
+The feature requires `NANOCODEX_THREAD_ROUTING=true` and the AI binding. The Worker enables the API but never injects a routing policy: opt in with `{"configuration":{"model_routing":{}}}` when creating a new agent (or explicitly choose a saved definition containing that policy). Existing `nanocodex` and `nanocodex2` requests remain unchanged. Background probes separately require `NANOCODEX_PROVIDER_PROBES=true` and ship disabled. Existing routes remain pinned. See [scheduled probe controls](AGGREGATOR_ROUTING.md#scheduled-ttft-selection).
 
 ## Child threads and provider transport
 
-If `multi_agent.enabled` is true, a new child is routed independently with the same policy and current provider availability. Its role/task and any explicit model/thinking overrides determine its eligible choices. The child decision is saved before inference, reused on continuation/reconstruction, and authorized against the retained spawning-turn context. The root decision stays unchanged. Missing authorization or route metadata fails closed.
+If `multi_agent.enabled` is true, a new child is routed independently with the same policy and current provider availability. Its role/task and any explicit model/thinking overrides determine its eligible choices. The child decision is saved before inference, reused during continuation and in-memory idle rehydration, and authorized against the retained spawning-turn context. Children and their route pins are ephemeral and disappear when the parent runtime restarts. The root decision stays unchanged. Missing authorization or route metadata fails closed.
 
-See [provider configuration](AGGREGATOR_ROUTING.md) and [completion/validation report](THREAD_ROUTING_FINISH_2026_09_21.md). Mixed-provider trees use stateless HTTP and full history replay; OpenRouter/Vercel routes need their deployment-owned secrets. Transport telemetry records outcomes, but unknown execution locations do not become regional performance evidence.
+See [provider configuration](AGGREGATOR_ROUTING.md). Mixed-provider trees use stateless HTTP and full history replay; OpenRouter/Vercel routes need their deployment-owned secrets. Transport telemetry records outcomes, but unknown execution locations do not become regional performance evidence.
 
 ## Before-first-message command
 
@@ -77,7 +77,7 @@ For an already-created empty managed agent, `POST /v1/agents/{id}/routing` with 
 
 Native `nanocodex` does not yet have production integration for the managed provider router. Its `/autoroute` command explicitly reports that limitation and never claims to enable routing or submits the command as a prompt. The earlier native routing verification used an external adapter; it was not native terminal integration.
 
-The model footer shows `Auto · choosing…` before selection, then the retained model, provider and effort. Child choices never replace the main-thread label. Read-only route metadata restores it on reconnect; a new manual thread returns to normal model defaults. See [terminal and subagent verification](THREAD_ROUTING_UX_2026_09_21.md).
+The model footer shows `Auto · choosing…` before selection, then the retained model, provider and effort. Child choices never replace the main-thread label. Read-only route metadata restores it on reconnect; a new manual thread returns to normal model defaults.
 
 
 ### Cloudflare frontier routes

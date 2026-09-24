@@ -32,3 +32,6 @@ js/account/public/data
 **/*.log
 **/target
 **/build
+
+# Local measurements and review evidence.
+output

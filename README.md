@@ -440,8 +440,7 @@ Branching is a lifecycle primitive, not cloned mutable state:
 Forked drivers get their own socket, prompt queue, tools, and cancellation
 domain. Shared immutable history makes local fork-and-append constant-time, and
 the retained provider checkpoint keeps healthy branch requests delta-sized.
-See the runnable [`fork-conversations`](examples/fork_conversations.rs) example
-and the [stored-checkpoint measurements](benchmarks/fork_results.md).
+See the runnable [`fork-conversations`](examples/fork_conversations.rs) example.
 
 [`nanocodex-subagents`](crates/nanocodex-subagents/README.md) is an optional
 extension above the core. It installs a shared task-tree registry and seven
@@ -848,7 +847,7 @@ py/                             native Python binding
 bin/nanocodex/                  CLI and Ratatui product consumer
 examples/                       native, language, browser, actor, sandbox proofs
 evals/ and tasks/               deterministic evaluation inputs
-benchmarks/                     retained measurements and regression gates
+benchmarks/                     workloads and executable regression gates
 ```
 
 Further reading:
@@ -856,7 +855,6 @@ Further reading:
 - [Facade API documentation](https://docs.rs/nanocodex)
 - [Examples and runnable commands](examples/README.md)
 - [Rust 0.5 → 0.6 API changelog and migration guide](docs/MIGRATING_0_6.md)
-- [Older migration guide (0.2.x)](docs/MIGRATING.md)
 - [Responses + Tower design](docs/RESPONSES_TOWER.md)
 - [Observability contract](docs/OBSERVABILITY.md)
 - [Subagent design](docs/SUBAGENTS.md)

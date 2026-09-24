@@ -1,1 +1,0 @@
-{"image":"sha256:a826a3f59aee9902faa24cc4002a53162fd84a8742d532b589d26d60d04dea14","nanocpus":2000000000,"memory":4294967296,"ports":{"8769/tcp":[{"HostIp":"127.0.0.1","HostPort":"18769"}]}}
