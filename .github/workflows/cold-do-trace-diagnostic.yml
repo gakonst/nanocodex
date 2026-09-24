@@ -11,40 +11,34 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
-      - name: Aggregate bounded production Durable Object trace colos
+      - name: Correlate synthetic admin activation traces with target DO colos
         shell: bash
         run: |
-          python3 - <<'PY' > "$RUNNER_TEMP/cold-colo-summary.txt"
+          python3 - <<'PY' > "$RUNNER_TEMP/cold-probe-traces.txt"
           import json,os,urllib.request,collections
-          a=os.environ['CLOUDFLARE_ACCOUNT_ID']; t=os.environ['CLOUDFLARE_API_TOKEN']
-          u=f'https://api.cloudflare.com/client/v4/accounts/{a}/workers/observability/telemetry/query'
-          for service in ['nanocodex-cold-slim-probe','nanocodex-durable-agent']:
-            body={'queryId':'cold-colo-20260924','timeframe':{'from':1790275680000,'to':1790275920000},'view':'events','dry':True,'limit':1000,'parameters':{'datasets':['otel'],'filters':[{'key':'$metadata.service','operation':'eq','type':'string','value':service},{'key':'$metadata.spanName','operation':'eq','type':'string','value':'jsrpc'}]}}
+          a=os.environ['CLOUDFLARE_ACCOUNT_ID']; t=os.environ['CLOUDFLARE_API_TOKEN'];u=f'https://api.cloudflare.com/client/v4/accounts/{a}/workers/observability/telemetry/query'
+          def query(view,params,limit=200):
+            body={'queryId':'cold-probe-20260924','timeframe':{'from':1790275680000,'to':1790275920000},'view':view,'dry':True,'limit':limit,'parameters':params}
             req=urllib.request.Request(u,data=json.dumps(body).encode(),headers={'Authorization':'Bearer '+t,'Content-Type':'application/json'},method='POST')
-            with urllib.request.urlopen(req,timeout=35) as r: response=json.load(r)
-            assert response.get('success'),[e.get('code') for e in response.get('errors',[])]
-            events=(response.get('result') or {}).get('events',{}).get('events') or []
-            print('service',service,'otel count',len(events))
-            counts=collections.Counter()
-            samples=[]
-            for e in events:
-              s=e.get('source') or {}; cf=s.get('cloudflare') or {}
-              if not isinstance(cf,dict): continue
-              kind='do' if cf.get('durable_object') else 'worker'
-              counts[(kind,str(s.get('name')),str(cf.get('colo')))] += 1
-              if kind=='do' and s.get('name') in ('POST','jsrpc','jsRpcCall','jsRpcSession'):
-                samples.append((str(cf.get('colo')),str(s.get('name')),s.get('durationMS')))
-            print('spans',counts.most_common(40))
-            print('DO representative',samples[:20])
+            with urllib.request.urlopen(req,timeout=35) as r: resp=json.load(r)
+            assert resp.get('success'),[e.get('code') for e in resp.get('errors',[])]
+            return resp.get('result') or {}
+          params={'datasets':['cloudflare-workers'],'filters':[{'key':'$metadata.service','operation':'eq','type':'string','value':'nanocodex-durable-agent'}],'needle':{'value':'activation-probe'}}
+          traces=query('traces',params).get('traces') or []
+          print('matching trace count',len(traces),'summary',[(t.get('rootSpanName'),t.get('traceDurationMs'),t.get('spans')) for t in traces[:10]])
+          for i,t in enumerate(traces[:16]):
+            tid=t.get('traceId'); result=query('events',{'datasets':['otel'],'filters':[{'key':'$metadata.traceId','operation':'eq','type':'string','value':tid}]})
+            spans=[e.get('source') or {} for e in (result.get('events') or {}).get('events') or []]
+            key=[s for s in spans if s.get('name')=='jsrpc' and (s.get('cloudflare') or {}).get('durable_object')]
+            print('trace',i,'duration',t.get('traceDurationMs'),'rpc DO',[( (s.get('cloudflare') or {}).get('colo'),s.get('durationMS')) for s in key[:10]],'nspans',len(spans))
           PY
-      - name: Surface bounded sanitized summary as one annotation
+      - name: Surface sanitized summary
         if: always()
         shell: bash
         run: |
           python3 - <<'PYCODE'
           import os
-          p=os.path.join(os.environ['RUNNER_TEMP'],'cold-colo-summary.txt')
+          p=os.path.join(os.environ['RUNNER_TEMP'],'cold-probe-traces.txt')
           content=open(p).read()[:16000] if os.path.exists(p) else 'No diagnostic output'
-          content=content.replace('%','%25').replace('\r','%0D').replace('\n','%0A')
-          print('::notice file=.github/workflows/cold-do-trace-diagnostic.yml,line=1,title=Cold DO colo summary::'+content)
+          print('::notice file=.github/workflows/cold-do-trace-diagnostic.yml,line=1,title=Cold probe trace::'+content.replace('%','%25').replace('\r','%0D').replace('\n','%0A'))
           PYCODE
