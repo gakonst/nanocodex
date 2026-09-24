@@ -74,7 +74,7 @@ pub(crate) struct McpArgs {
     #[arg(skip)]
     disabled: bool,
 
-    /// Load the public MCP catalog (Mercator is opt-in in the native interactive TUI). Paid calls require separate authority.
+    /// Load the public MCP catalog, including Mercator discovery. Paid calls require separate authority.
     #[arg(
         long,
         env = "NANOCODEX_MCP_DEFAULTS",
@@ -230,22 +230,11 @@ impl McpArgs {
         self.header_env.clear();
     }
 
-    #[cfg(test)]
     pub(crate) fn build(
         self,
         codex_home: &Path,
         tempo: Option<&crate::mpp::MppAdapter>,
         managed: Option<&ScopedManagedCredential>,
-    ) -> Result<Option<ConfiguredMcp>> {
-        self.build_for_tui(codex_home, tempo, managed, false)
-    }
-
-    pub(crate) fn build_for_tui(
-        self,
-        codex_home: &Path,
-        tempo: Option<&crate::mpp::MppAdapter>,
-        managed: Option<&ScopedManagedCredential>,
-        native_tui: bool,
     ) -> Result<Option<ConfiguredMcp>> {
         if self.mcp_startup_timeout == 0 || self.mcp_tool_timeout == 0 {
             bail!("MCP timeouts must be greater than zero");
@@ -273,14 +262,10 @@ impl McpArgs {
                 }
             }
         }
-        let mut opt_in_mercator = false;
         if self.mcp_defaults {
             for (name, url, description) in DEFAULT_MCP_SERVERS {
                 if codex_server_names.contains(name) {
                     continue;
-                }
-                if native_tui && name == "mercator" && !servers.contains_key(name) {
-                    opt_in_mercator = true;
                 }
                 servers
                     .entry(name.to_owned())
@@ -352,7 +337,6 @@ impl McpArgs {
             tool_timeout,
             oauth_store,
             tempo,
-            opt_in_mercator,
         )?))
     }
 }
@@ -452,12 +436,8 @@ fn build_mcp(
     tool_timeout: Duration,
     oauth_store: Option<Arc<CodexOAuthStore>>,
     tempo: Option<&crate::mpp::MppAdapter>,
-    opt_in_mercator: bool,
 ) -> Result<ConfiguredMcp> {
     let mut builder = Mcp::builder();
-    if opt_in_mercator {
-        builder = builder.initially_hidden("mercator");
-    }
     if let Some(store) = oauth_store {
         builder = builder.oauth_store(store);
     }
@@ -963,60 +943,6 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn native_tui_gates_only_default_mercator_not_explicit_overrides() {
-        let codex_home = tempfile::tempdir().unwrap();
-        let mcp = args()
-            .build_for_tui(codex_home.path(), None, None, true)
-            .unwrap()
-            .unwrap();
-        assert!(
-            mcp.handle
-                .set_opt_in_enabled("mercator", false)
-                .await
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            mcp.handle
-                .set_opt_in_enabled("tempo", false)
-                .await
-                .unwrap()
-                .is_none()
-        );
-
-        let mut explicit = args();
-        explicit.http.push(NamedValue {
-            name: "mercator".to_owned(),
-            value: "https://example.test/mercator".to_owned(),
-        });
-        let configured = explicit
-            .build_for_tui(codex_home.path(), None, None, true)
-            .unwrap()
-            .unwrap();
-        assert!(
-            configured
-                .handle
-                .set_opt_in_enabled("mercator", false)
-                .await
-                .unwrap()
-                .is_none()
-        );
-
-        let ordinary = args()
-            .build(codex_home.path(), None, None)
-            .unwrap()
-            .unwrap();
-        assert!(
-            ordinary
-                .handle
-                .set_opt_in_enabled("mercator", false)
-                .await
-                .unwrap()
-                .is_none()
-        );
-    }
-
     #[test]
     fn managed_mcp_config_uses_exact_proxy_url_and_scoped_headers() {
         let origin = reqwest::Url::parse("https://connect.example/").unwrap();
@@ -1298,7 +1224,6 @@ tool_timeout_sec = 9.5
             Duration::from_mins(5),
             Some(Arc::new(CodexOAuthStore::new(codex_home))),
             None,
-            false,
         )
         .unwrap();
 
@@ -1346,7 +1271,6 @@ tool_timeout_sec = 9.5
             Duration::from_mins(5),
             Some(Arc::new(CodexOAuthStore::new(codex_home))),
             None,
-            false,
         )
         .unwrap();
 

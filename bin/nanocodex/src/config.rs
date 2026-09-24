@@ -431,9 +431,9 @@ impl AgentArgs {
         } else {
             None
         };
-        let mcp =
-            self.mcp
-                .build_for_tui(&codex_home, mpp_adapter.as_ref(), managed_mcp.as_ref(), tui)?;
+        let mcp = self
+            .mcp
+            .build(&codex_home, mpp_adapter.as_ref(), managed_mcp.as_ref())?;
         let mcp_handle = mcp.as_ref().map(|mcp| mcp.handle.clone());
         if let Some(ConfiguredMcp { provider, .. }) = mcp {
             tools = tools.provider(provider);

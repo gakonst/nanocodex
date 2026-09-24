@@ -9,7 +9,7 @@ payment behavior.
 
 The Tempo provider pays Responses with estimated, up-front `tempo/charge` over
 HTTPS. It deliberately does not configure an MPP WebSocket transport for the
-model. In Tempo provider mode, Nanocodex also enables its built-in Mercator MCP;
+model. The public Mercator MCP is in the default catalog even without Tempo provider mode;
 that protocol-level client supports both `tempo/charge` and `tempo/session`
 challenges from Mercator and services composed behind it.
 
@@ -100,8 +100,11 @@ default to its persistent Responses WebSocket.
 
 ## Built-in Mercator MCP
 
-`--provider.tempo` adds `https://mercator.tempo.xyz/mcp` to the standard MCP
-defaults. Direct OpenAI mode does not add it. `--mcp-defaults=false` is the
+`https://mercator.sh/mcp` is in the standard MCP defaults in both direct OpenAI
+and Tempo provider modes. It offers free anonymous discovery and quotes.
+For hosted OAuth and Tempo Wallet approval instead, connect
+`https://mercator.sh/mcp/auth` through the Account MCP connector and authorize
+in the browser. Do not conflate an OAuth connection with the native MPP wallet. `--mcp-defaults=false` is the
 explicit opt-out, while a named `mercator` entry in Codex config or `--mcp`
 overrides the built-in endpoint.
 

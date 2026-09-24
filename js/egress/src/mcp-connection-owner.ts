@@ -838,7 +838,10 @@ function selectedScopes(connection: StoredConnection, supported: string[]): stri
     }
     return [...connection.requestedScopes];
   }
-  return new URL(connection.endpoint).hostname === "mcp.linear.app" && supported.includes("read")
+  const endpoint = new URL(connection.endpoint);
+  if (endpoint.hostname === "mercator.sh" && endpoint.pathname === "/mcp/auth"
+    && supported.includes("mercator:tools")) return ["mercator:tools"];
+  return endpoint.hostname === "mcp.linear.app" && supported.includes("read")
     ? ["read"]
     : [];
 }
