@@ -39,6 +39,7 @@ function fixtureEnvironment(createStatus = 200) {
           const value = (JSON.parse(body) as { first_turn: { id: string; key: string; input: unknown } }).first_turn;
           const receiptResponse = (receipt: Record<string, unknown>, status: number) =>
             Response.json({ prepare_ms: 1, initialize_ms: 1, commit_ms: 1,
+              first_turn_admit_ms: 3, commit_attach_ms: 4,
               first_turn: receipt, first_turn_status: status });
           const retained = turns.get(value.id);
           if (retained) {
@@ -189,6 +190,9 @@ describe("combined managed agent creation", () => {
     const replay = await run(runtime, body, "run:job-42");
     expect(first.status).toBe(201);
     expect(replay.status).toBe(200);
+    expect(first.headers.get("server-timing")).toContain("managed_first_turn_admit;dur=3");
+    expect(first.headers.get("server-timing")).toContain("managed_session_attach;dur=4");
+    expect(first.headers.get("server-timing")).toContain("managed_session_create;dur=");
     const firstReceipt = await first.json<Record<string, unknown>>();
     const replayReceipt = await replay.json<Record<string, unknown>>();
     expect(replayReceipt).toEqual(firstReceipt);

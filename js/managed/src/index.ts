@@ -1903,7 +1903,10 @@ async function managedFetchRoute(
         || !/^[1-9][0-9]*$/.test(receipt.accepted_cursor)) {
         return json({ error: "turn_admission_invalid_response" }, { status: 502 });
       }
-      return json(receipt, { status: created.status });
+      const combined = json(receipt, { status: created.status });
+      const timing = created.headers.get("server-timing");
+      if (timing) combined.headers.set("server-timing", timing);
+      return combined;
     }
     if (request.method === "POST" && url.pathname === "/v1/agents") {
       if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
@@ -2084,6 +2087,7 @@ async function managedFetchRoute(
           session_commit_alarm_ms: phases.commit_alarm_ms,
           create_ms: createMs,
         });
+        let response: Response;
         if (firstTurn) {
           if (!phases.first_turn || ![200, 202].includes(phases.first_turn_status ?? 0)) {
             return json({ error: "turn_admission_invalid_response" }, { status: 502 });
@@ -2099,12 +2103,12 @@ async function managedFetchRoute(
               }
             }
           }
-          return json({ agent_id: agentId, session_id: agentId,
+          response = json({ agent_id: agentId, session_id: agentId,
             turn_idempotency_key: firstTurn.key, ...phases.first_turn },
           { status: phases.first_turn_status === 202 ? 201 : 200 });
-        }
-        const response = agentCreationResponse(url, agentId, creationSettings, true);
+        } else response = agentCreationResponse(url, agentId, creationSettings, true);
         response.headers.append("server-timing", `managed_create;dur=${createMs}, managed_session_create;dur=${sessionCreateMs}`);
+        if (firstTurn && Number.isFinite(phases.first_turn_admit_ms)) response.headers.append("server-timing", `managed_first_turn_admit;dur=${phases.first_turn_admit_ms}`);
         if (preHandlerMs !== undefined) response.headers.append("server-timing", `managed_session_pre_handler;dur=${preHandlerMs}`);
         if (beforeConstructorMs !== undefined) response.headers.append("server-timing", `managed_session_before_constructor;dur=${beforeConstructorMs}`);
         if (Number.isFinite(phases.constructor_ms)) response.headers.append("server-timing", `managed_session_constructor;dur=${phases.constructor_ms}`);
@@ -4683,6 +4687,7 @@ export class DurableAgentSession extends DurableComputerObject {
       return json({ error: "not_found" }, { status: 404 });
     const headers = new Headers(request.headers);
     headers.set("idempotency-key", turn.key);
+    const admitStartedAt = performance.now();
     const admitted = await this.#submitHttpTurn(new Request("https://session.internal/turns", {
       method: "POST", headers, body: JSON.stringify({ id: turn.id, input: turn.input }),
     }), asserted.authorization);
@@ -4692,6 +4697,7 @@ export class DurableAgentSession extends DurableComputerObject {
     try { summary = JSON.parse(admitted.headers.get("x-nanocodex-turn-summary") ?? "null"); }
     catch { /* Best effort summary, never part of turn admission. */ }
     return json({ ...phases, first_turn: turnReceipt, first_turn_status: admitted.status,
+      first_turn_admit_ms: roundMilliseconds(performance.now() - admitStartedAt),
       ...(admitted.headers.get("x-nanocodex-turn-created") === "1" ? { first_turn_summary: summary } : {}),
     });
   }
