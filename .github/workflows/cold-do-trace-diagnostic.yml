@@ -6,12 +6,12 @@ permissions:
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 6
     env:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
-      - name: Summarize one bounded production trace without raw telemetry
+      - name: Summarize bounded production span chains without raw telemetry
         shell: bash
         run: |
           python3 - <<'PY' > "$RUNNER_TEMP/cold-trace-summary.txt"
@@ -20,33 +20,34 @@ jobs:
           endpoint=f'https://api.cloudflare.com/client/v4/accounts/{account}/workers/observability/telemetry/query'
           timeframe={'from':1790273220000,'to':1790273760000}
           def query(view, parameters):
-              body={'queryId':'cold-do-focus-20260924','timeframe':timeframe,'view':view,'dry':True,'limit':200,'parameters':parameters}
+              body={'queryId':'cold-do-chains-20260924','timeframe':timeframe,'view':view,'dry':True,'limit':200,'parameters':parameters}
               req=urllib.request.Request(endpoint,data=json.dumps(body).encode(),headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'},method='POST')
               with urllib.request.urlopen(req,timeout=35) as r: response=json.load(r)
               assert response.get('success'), [x.get('code') for x in response.get('errors',[])]
               return response.get('result') or {}
           params={'datasets':['cloudflare-workers'],'filters':[{'key':'$metadata.service','operation':'eq','type':'string','value':'nanocodex-durable-agent'}], 'needle':{'value':'managed.session.constructor'}}
           summaries=query('traces',params).get('traces') or []
-          selected=next(t for t in summaries if t.get('rootSpanName')=='POST' and 3000<(t.get('traceDurationMs') or 0)<4000)
-          tid=selected['traceId']; found=query('events',{'datasets':[],'filters':[{'key':'$metadata.traceId','operation':'eq','type':'string','value':tid}]})
-          events=(found.get('events') or {}).get('events') or []
-          otel=[e.get('source') or {} for e in events if e.get('dataset')=='otel']
-          byid={s.get('spanId'):s for s in otel if s.get('spanId')}
-          root=min((s.get('startTime') or 0) for s in otel)
-          print('selected duration',selected.get('traceDurationMs'),'otel spans',len(otel),'root ms',root)
-          print('relative start/end; duration; script/colo; span <- parent; subrequest metadata')
-          focus=[s for s in otel if s.get('name') in ('POST','fetch','durable_object_subrequest','jsRpcCall','jsrpc','jsRpcSession')]
-          focus.sort(key=lambda s:(s.get('startTime') or 0,s.get('endTime') or 0))
-          for s in focus:
-              cf=s.get('cloudflare') or {}; dobj=cf.get('durable_object') or {}
-              parent=byid.get(s.get('parentSpanId')) or {}
-              kind=str(cf.get('handler_type') or cf.get('invocation',{}).get('type') if isinstance(cf.get('invocation'),dict) else '')[:30]
-              print('%5s..%5s %5s %-9s %-4s %-26s <- %-26s [%s] dobj=%s' % ((s.get('startTime') or 0)-root,(s.get('endTime') or 0)-root,s.get('durationMS'),str(cf.get('script_name') or '')[:9],str(cf.get('colo') or '')[:4],s.get('name'),parent.get('name'),kind,str(dobj)[:140]))
-          print('constructor events in trace:')
-          for e in events:
-              src=e.get('source') or {}
-              if isinstance(src,dict) and src.get('type')=='managed.session.constructor':
-                  print('constructor log relative',e.get('timestamp',0)-root,'base',src.get('constructor_base_ms'),'sync',src.get('constructor_sync_ms'),'sql',src.get('constructor_sql_ms'))
+          print('trace duration | root worker/colo | caller dispatch start+duration | callee handler start+duration | residual | constructor log offset; all milliseconds')
+          for index,trace in enumerate([t for t in summaries if t.get('rootSpanName')=='POST'][:8]):
+              tid=trace['traceId']; found=query('events',{'datasets':[],'filters':[{'key':'$metadata.traceId','operation':'eq','type':'string','value':tid}]})
+              events=(found.get('events') or {}).get('events') or []
+              spans=[e.get('source') or {} for e in events if e.get('dataset')=='otel']
+              byid={s.get('spanId'):s for s in spans if s.get('spanId')}
+              root=min((s.get('startTime') or 0) for s in spans)
+              constructors=[e for e in events if isinstance(e.get('source'),dict) and e['source'].get('type')=='managed.session.constructor']
+              print('TRACE',index,'summary',trace.get('traceDurationMs'),'spans',len(spans),'constructors',len(constructors))
+              candidates=[]
+              for handler in spans:
+                  cf=handler.get('cloudflare') or {}
+                  if handler.get('name')!='POST' or not cf.get('durable_object'): continue
+                  fetch=byid.get(handler.get('parentSpanId')) or {}
+                  caller=byid.get(fetch.get('parentSpanId')) or {}
+                  if caller.get('name')!='durable_object_subrequest': continue
+                  hstart=handler.get('startTime') or 0; cstart=caller.get('startTime') or 0
+                  candidates.append((handler,fetch,caller))
+              for h,f,c in candidates[:3]:
+                  hc=h.get('cloudflare') or {}; cc=c.get('cloudflare') or {}
+                  print('  root=%s/%s caller=%s/%s %s+%s callee=%s/%s %s+%s residual=%s fetch=%s constructor_logs=%s' % (next((str((s.get('cloudflare') or {}).get('script_name'))+'/'+str((s.get('cloudflare') or {}).get('colo')) for s in spans if s.get('name')=='POST' and not (s.get('cloudflare') or {}).get('durable_object')),'none'),str((byid.get(c.get('parentSpanId')) or {}).get('name')),cc.get('script_name'),cc.get('colo'),(c.get('startTime') or 0)-root,c.get('durationMS'),hc.get('script_name'),hc.get('colo'),(h.get('startTime') or 0)-root,h.get('durationMS'),(c.get('durationMS') or 0)-(h.get('durationMS') or 0),f.get('durationMS'),[(e.get('timestamp',0)-(h.get('startTime') or 0), (e.get('source') or {}).get('constructor_ms')) for e in constructors]))
           PY
       - name: Surface bounded sanitized summary as one annotation
         if: always()
