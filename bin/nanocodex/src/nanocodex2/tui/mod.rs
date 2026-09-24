@@ -2196,7 +2196,7 @@ async fn run_inner(
                         .find(|prompt| prompt.session_id == runtime.agent_id);
                     publisher.publish(&runtime.agent_id, status,
                         prompt.map_or("", |prompt| prompt.text.as_str()),
-                        prompt.map_or(0, |prompt| prompt.recorded_at_unix_ms)).await;
+                        prompt.map_or(0, |prompt| prompt.recorded_at_unix_ms));
                 }
             }
             result = reload_setup.join_next(), if !reload_setup.is_empty() => {

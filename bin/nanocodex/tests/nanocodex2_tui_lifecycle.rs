@@ -185,10 +185,10 @@ async fn stalled_tmux_hint_keeps_terminal_usable_and_reaps_helper() {
     use std::os::unix::fs::PermissionsExt;
     let helper = tempfile::tempdir().unwrap();
     let executable = helper.path().join("tmux");
-    let pid_file = helper.path().join("tmux.pid");
+    let pid_file = helper.path().join("tmux.pids");
     std::fs::write(
         &executable,
-        "#!/bin/sh\nprintf '%s' \"$$\" > \"$NANOCODEX_TEST_TMUX_PID\"\nexec /bin/sleep 30\n",
+        "#!/bin/sh\nprintf '%s %s\\n' \"$$\" \"$1\" >> \"$NANOCODEX_TEST_TMUX_PID\"\nexec /bin/sleep 30\n",
     )
     .unwrap();
     std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
@@ -200,6 +200,7 @@ async fn stalled_tmux_hint_keeps_terminal_usable_and_reaps_helper() {
     let started = std::time::Instant::now();
     let mut terminal = Terminal::start_with_command("http://127.0.0.1:9", false, None, |command| {
         command.env("TMUX", "nanocodex-test-stalled-tmux");
+        command.env("TMUX_PANE", "%0");
         command.env("PATH", path);
         command.env("NANOCODEX_TEST_TMUX_PID", &pid_file);
     });
@@ -207,26 +208,38 @@ async fn stalled_tmux_hint_keeps_terminal_usable_and_reaps_helper() {
         .await
         .expect("stalled tmux must not block the first frame");
     let first_frame = started.elapsed();
-    terminal.input("TMUX_STARTUP_DRAFT");
-    terminal.wait_text("TMUX_STARTUP_DRAFT").await;
-    let pid = std::fs::read_to_string(&pid_file).expect("tmux helper was invoked");
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let running = std::process::Command::new("/bin/kill")
-                .args(["-0", pid.trim()])
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .unwrap()
-                .success();
-            if !running {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-    })
-    .await
-    .expect("timed-out tmux helper must be killed and reaped");
+    let helpers = || {
+        std::fs::read_to_string(&pid_file)
+            .unwrap_or_default()
+            .lines()
+            .filter_map(|line| {
+                let (pid, command) = line.split_once(' ')?;
+                Some((pid.to_owned(), command.to_owned()))
+            })
+            .collect::<Vec<_>>()
+    };
+    // Keep editing through the initial and subsequent two-second publication
+    // ticks. Slow process launch can consume the publisher's 250ms budget before
+    // the shell writes its PID, so that log cannot be a publication barrier.
+    let editing = std::time::Instant::now();
+    let mut sample = 0;
+    let mut max_input_echo = Duration::ZERO;
+    while editing.elapsed() < Duration::from_millis(2500) {
+        let draft = format!("TMUX_STARTUP_DRAFT_{sample:03}");
+        let input = std::time::Instant::now();
+        terminal.input(&format!("\x15{draft}"));
+        tokio::time::timeout(Duration::from_millis(150), terminal.wait_text(&draft))
+            .await
+            .unwrap_or_else(|_| {
+                panic!(
+                    "stalled tmux publication delayed editable input on sample {sample} after {:?}",
+                    editing.elapsed()
+                )
+            });
+        max_input_echo = max_input_echo.max(input.elapsed());
+        sample += 1;
+        tokio::time::sleep(Duration::from_millis(25)).await;
+    }
     terminal.input("\x03");
     terminal.wait_no_text("TMUX_STARTUP_DRAFT").await;
     let closing = std::time::Instant::now();
@@ -243,9 +256,34 @@ async fn stalled_tmux_hint_keeps_terminal_usable_and_reaps_helper() {
     .expect("terminal must close without a lingering tmux helper");
     assert!(status.success());
     terminal.wait_output("\x1b[?1049l").await;
+    let close = closing.elapsed();
+    let helpers = helpers();
+    assert!(
+        helpers
+            .iter()
+            .any(|(_, command)| command == "display-message")
+    );
+    tokio::time::timeout(Duration::from_secs(2), async {
+        loop {
+            let all_reaped = helpers.iter().all(|(pid, _)| {
+                !std::process::Command::new("/bin/kill")
+                    .args(["-0", pid])
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .unwrap()
+                    .success()
+            });
+            if all_reaped {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("every timed-out or cancelled tmux helper must be killed and reaped");
     eprintln!(
-        "stalled tmux: first frame={first_frame:?}, close={:?}",
-        closing.elapsed()
+        "stalled tmux: first frame={first_frame:?}, max input echo={max_input_echo:?} ({sample} samples), close={close:?}"
     );
 }
 
