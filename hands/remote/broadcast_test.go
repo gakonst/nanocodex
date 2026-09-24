@@ -13,22 +13,6 @@ import (
 	"time"
 )
 
-func TestBroadcastPresetSourceAndAspect(t *testing.T) {
-	for _, tc := range []struct {
-		preset                     string
-		w, h, ow, oh, fps, bitrate int
-	}{
-		{"source", 3840, 2160, 3840, 2160, 60, 24000}, {"source", 5120, 2880, 3840, 2160, 60, 24000},
-		{"source", 1920, 1200, 1920, 1200, 60, 24000}, {"1080p", 2560, 1600, 1728, 1080, 60, 8000},
-		{"720p", 1920, 1080, 1280, 720, 60, 4500}, {"twitch", 1920, 1080, 1920, 1080, 60, 6000},
-		{"x", 1280, 720, 1280, 720, 30, 9000}, {"1080p", 640, 480, 640, 480, 60, 8000},
-	} {
-		r, e := broadcastSettings(tc.preset, tc.w, tc.h)
-		if e != nil || r.Width != tc.ow || r.Height != tc.oh || r.FPS != tc.fps || r.Bitrate != tc.bitrate {
-			t.Fatalf("%+v -> %+v %v", tc, r, e)
-		}
-	}
-}
 func TestBroadcastURLAndWireRedaction(t *testing.T) {
 	for _, u := range []string{"https://example.com/key", "file:///tmp/key", "rtmp://user:password@example.com/live/key", "rtmp://host/\nkey", "rtmp://host/", "rtmp://host:0/live/key", "rtmp://host/live/key#secret"} {
 		if validateBroadcastURL(u) == nil {

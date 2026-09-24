@@ -2,7 +2,7 @@
 
 A native WoW side panel backed by the existing desktop companion. Browse account threads, select a conversation, load its history, create a chat, send a message and read incremental replies without leaving the addon panel. The companion owns authentication and the connection to Nanocodex. No account key belongs in Lua, SavedVariables, or game chat.
 
-The native client and bridge are covered by local integration tests. These tests do **not** establish delivery or rendering in a running WoW client. See [current validation](docs/native-client-20260920.md) for evidence and the live access gate, and [earlier bridge validation](docs/bridge-integration-20260919.md) for the previous baseline.
+The native client and bridge are covered by local integration tests. These tests do **not** establish delivery or rendering in a running WoW client. See [current validation](docs/native-client.md) for the reproducible checks and live validation requirements.
 
 ## Native side view
 
@@ -54,4 +54,4 @@ python3 -m unittest discover -s transport -p 'test_*.py' -v
 bash addon/tests/runall.sh
 ```
 
-The Lua/Python integration fixture traverses the actual addon request encoder, client state, carrier, assembler, bridge journals and dispatcher with mocked game/desktop APIs and synthetic backend responses. [Addon controls](docs/addon.md) and [protocol/validation details](docs/native-client-20260920.md) describe the limits. Local tests do not prove live account connectivity, in-game compatibility or microphone quality.
+The Lua/Python integration fixture traverses the actual addon request encoder, client state, carrier, assembler, bridge journals and dispatcher with mocked game/desktop APIs and synthetic backend responses. [Addon controls](docs/addon.md) and [protocol/validation details](docs/native-client.md) describe the limits. Local tests do not prove live account connectivity, in-game compatibility or microphone quality.

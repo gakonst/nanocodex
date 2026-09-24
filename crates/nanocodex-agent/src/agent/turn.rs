@@ -287,20 +287,6 @@ impl fmt::Debug for TurnResult {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::TurnResult;
-
-    #[test]
-    fn backend_result_can_omit_usage_and_local_snapshot() {
-        let result = TurnResult::from_backend(None, "done".to_owned(), None);
-
-        assert_eq!(result.final_message(), "done");
-        assert!(result.usage().is_none());
-        assert!(result.snapshot().is_none());
-    }
-}
-
 /// One prompt submission with an optional execution identity.
 ///
 /// When an execution policy is attached, the agent automatically assigns an

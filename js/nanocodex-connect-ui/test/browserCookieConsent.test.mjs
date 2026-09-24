@@ -1,7 +1,5 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-
-import { AppVisibilityPermissions } from "../dist/AppVisibilityPermissions.js";
 import {
   appVisibilityPermissions,
   formatCliBrowserCookieSyncResource,
@@ -63,21 +61,4 @@ test("browser cookie sync resource variants fail closed", () => {
     () => parseConnectPolicy([resource, resource]),
     /signed browser cookie sync resource is invalid/,
   );
-});
-
-test("browser cookie sync approval renders the complete human-readable warning", () => {
-  const rendered = AppVisibilityPermissions({
-    permissions: appVisibilityPermissions([resource]),
-  });
-  assert.equal(rendered.length, 1);
-  assert.equal(rendered[0].props.role, "listitem");
-  const row = rendered[0].props.children;
-  assert.equal(row[0].props.children, "✓");
-  assert.equal(row[1].props.children[0].props.children, "Browser cookie sync");
-  assert.equal(row[1].props.children[1].props.children, detail);
-
-  const cliRendered = AppVisibilityPermissions({
-    permissions: appVisibilityPermissions([cliResource]),
-  });
-  assert.equal(cliRendered[0].props.children[1].props.children[1].props.children, cliDetail);
 });

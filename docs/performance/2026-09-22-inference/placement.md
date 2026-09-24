@@ -1,9 +1,0 @@
-# Regional text relay placement
-
-Managed Sessions can now select a separate regional text relay from their retained initial ingress colo. The mapping is deliberately bounded to 35 city/IATA pairs verified against the [Cloudflare status API](https://www.cloudflarestatus.com/api/v2/components.json). Unknown or malformed colos use the existing per-user relay. The Session's initial ingress is neither its execution location nor a claim about the user's current location.
-
-The private model wrapper overwrites runtime-supplied placement headers, derives the region from its trusted callback after checking live session ownership, and passes it only to SessionModelEgress. That entrypoint validates and removes the header. Generic egress cannot select a regional text relay with a caller header. ChatGPT Responses uses `text-v1:<region>:<user>` and a best-effort location hint, keeping the same identity through credential recovery and account failover. Voice identities and other providers remain unchanged.
-
-This adds no network request or storage migration. Current credential lookup, revocation, per-user isolation, session deletion/export fencing and reconnect ownership checks remain intact. It creates a new regional relay identity; it does not move existing Durable Objects. Container/controller colocation is not guaranteed, and the first regional container request can pay startup cost. The measured comparison must distinguish that start from subsequent requests. No global Worker placement setting changed.
-
-Validation: 65 egress tests pass (new placement, existing private model authority, voice, Responses observability); 22 new managed placement tests pass; egress and managed typechecks pass. The combined managed placement/ownership run reported all 41 tests passing but stalled during teardown and was interrupted with exit 130. The isolated 22-test suite exited cleanly in 944 ms. No live placement or latency improvement is claimed by these tests.

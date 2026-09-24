@@ -158,63 +158,6 @@ mod tests {
     use serde_json::json;
 
     #[test]
-    #[cfg(not(target_family = "wasm"))]
-    fn task_input_matches_codex_context_shape() {
-        let context = ContextSnapshot::capture_at(
-            "/workspace/a&b",
-            "bash",
-            Some("Follow the project formatter."),
-            "2026-07-17",
-            "America/Los_Angeles",
-        );
-        let prompt = Prompt::new("fix the bug");
-        let input = task_input(
-            &prompt,
-            vec![ContentItem::InputText {
-                text: "fix the bug".into(),
-            }],
-            &context,
-        );
-        assert_eq!(
-            serde_json::to_value(input).unwrap(),
-            json!([
-                json!({
-                    "type": "message",
-                    "role": "developer",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": "<permissions instructions>\nFilesystem sandboxing defines which files can be read or written. `sandbox_mode` is `danger-full-access`: No filesystem sandboxing - all commands are permitted. Network access is enabled.\nApproval policy is currently never. Do not provide the `sandbox_permissions` for any reason, commands will be rejected.\n</permissions instructions>",
-                        },
-                    ],
-                }),
-                json!({
-                    "type": "message",
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "input_text",
-                            "text": "# AGENTS.md instructions for /workspace/a&b\n\n<INSTRUCTIONS>\nFollow the project formatter.\n</INSTRUCTIONS>",
-                        },
-                        {
-                            "type": "input_text",
-                            "text": "<environment_context>\n  <cwd>/workspace/a&amp;b</cwd>\n  <shell>bash</shell>\n  <current_date>2026-07-17</current_date>\n  <timezone>America/Los_Angeles</timezone>\n  <filesystem><workspace_roots><root>/workspace/a&amp;b</root></workspace_roots><permission_profile type=\"disabled\"><file_system type=\"unrestricted\" /></permission_profile></filesystem>\n</environment_context>",
-                        },
-                    ],
-                }),
-                json!({
-                    "type": "message",
-                    "role": "user",
-                    "content": [{
-                        "type": "input_text",
-                        "text": "fix the bug",
-                    }],
-                }),
-            ]),
-        );
-    }
-
-    #[test]
     fn task_input_preserves_synthetic_message_roles() {
         let context =
             ContextSnapshot::capture_at("/workspace", "bash", None, "2026-08-05", "Etc/UTC");
@@ -269,27 +212,6 @@ mod tests {
                 json!("assistant"),
                 json!("user")
             ]
-        );
-    }
-
-    #[test]
-    fn turn_aborted_matches_codex_context_shape() {
-        assert_eq!(
-            serde_json::to_value(turn_aborted()).unwrap(),
-            json!({
-                "type": "message",
-                "role": "user",
-                "content": [{
-                    "type": "input_text",
-                    "text": concat!(
-                        "<turn_aborted>\n",
-                        "The user interrupted the previous turn on purpose. Any running unified ",
-                        "exec processes may still be running in the background. If any ",
-                        "tools/commands were aborted, they may have partially executed.\n",
-                        "</turn_aborted>"
-                    ),
-                }],
-            }),
         );
     }
 

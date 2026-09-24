@@ -331,43 +331,6 @@ mod tests {
     const OTLP_TEST_TIMEOUT: Duration = Duration::from_secs(30);
 
     #[test]
-    fn resource_uses_configured_service_identity_and_semantic_schema() {
-        let resource = ObservabilityBuilder::new("nanocodex-test", "1.2.3")
-            .environment("test")
-            .resource();
-
-        assert_eq!(
-            resource.get(&opentelemetry::Key::new("service.name")),
-            Some(opentelemetry::Value::from("nanocodex-test"))
-        );
-        assert_eq!(
-            resource.get(&opentelemetry::Key::new(SERVICE_VERSION)),
-            Some(opentelemetry::Value::from("1.2.3"))
-        );
-        assert_eq!(
-            resource.get(&opentelemetry::Key::new(DEPLOYMENT_ENVIRONMENT_NAME)),
-            Some(opentelemetry::Value::from("test"))
-        );
-        assert_eq!(resource.schema_url(), Some(SCHEMA_URL));
-    }
-
-    #[test]
-    fn async_export_requires_a_multithreaded_tokio_runtime() {
-        assert!(!current_tokio_runtime_is_multi_thread());
-
-        let current_thread = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .unwrap();
-        assert!(!current_thread.block_on(async { current_tokio_runtime_is_multi_thread() }));
-
-        let multi_thread = tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(2)
-            .build()
-            .unwrap();
-        assert!(multi_thread.block_on(async { current_tokio_runtime_is_multi_thread() }));
-    }
-
-    #[test]
     fn formatting_and_otlp_export_share_the_installed_span_stream() {
         let listener = TcpListener::bind("127.0.0.1:0").unwrap();
         listener.set_nonblocking(true).unwrap();

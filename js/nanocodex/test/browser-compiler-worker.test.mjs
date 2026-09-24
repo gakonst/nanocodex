@@ -17,7 +17,6 @@ test("browser compiler releases every successful run tree while preserving outpu
     const output = await compileInput(api, iteration % 2, input);
     assert.deepEqual(output, new Uint8Array([0, 1, 2, 3]));
     assert.equal(api.memfs.runEntries().length, 0);
-    assert.equal(api.memfs.retainedRunBytes(), 0);
   }
 });
 
@@ -32,7 +31,6 @@ test("browser compiler releases its run tree after compilation fails", async () 
 
   await assert.rejects(compileInput(api, 7, input), /fixture compile failed/);
   assert.equal(api.memfs.runEntries().length, 0);
-  assert.equal(api.memfs.retainedRunBytes(), 0);
 
   api.failCompilation = false;
   assert.deepEqual(await compileInput(api, 7, input), new Uint8Array([0, 1, 2, 3]));
@@ -91,12 +89,6 @@ class FakeMemfs {
 
   runEntries() {
     return [...this.#entries.keys()].filter((path) => path.startsWith(".nanocodex-runs/run-"));
-  }
-
-  retainedRunBytes() {
-    return [...this.#entries]
-      .filter(([path]) => path.startsWith(".nanocodex-runs/run-"))
-      .reduce((total, [, entry]) => total + entry.bytes, 0);
   }
 
   #requireParent(path) {

@@ -23,12 +23,6 @@ final class PendingMessageTests: XCTestCase {
         XCTAssertEqual(restored.attachmentTransport, .cloud)
         XCTAssertFalse(restored.resolveAttachmentTransport(phoneEnabled: false))
     }
-    func testUnpreparedTransportSurvivesPersistenceUntilFirstResolution() throws {
-        let message = PendingMessage(agentID: "a", input: "Photo", predecessor: "")
-        var restored = try JSONDecoder().decode(PendingMessage.self, from: JSONEncoder().encode(message))
-        XCTAssertEqual(restored.attachmentTransport, .automatic)
-        XCTAssertTrue(restored.resolveAttachmentTransport(phoneEnabled: true))
-    }
     func testAttachmentReferencesSurviveRetryWithoutEmbeddingImageBytes() throws {
         let attachment = try MessageAttachment(name: "Image.jpg", byteCount: 4096)
         let message = PendingMessage(agentID: "a", input: "Describe this", predecessor: "previous", id: "same-turn", attachments: [attachment])

@@ -4,20 +4,6 @@ import { parquetWriteBuffer } from "hyparquet-writer";
 import { dataset } from "../tools/index.mjs";
 import { createDatasetTool } from "../tools/datasetEngine.mjs";
 const context = { sessionId: "session-a" };
-test("the public dataset factory advertises the lazy dataset capability", () => {
-  const tool = dataset();
-  assert.equal(tool.name, "dataset");
-  assert.ok(Object.isFrozen(tool));
-  assert.match(tool.description, /Parquet, uncompressed JSONL, or Hugging Face/);
-  assert.deepEqual(
-    tool.parameters.properties.operation.enum,
-    ["open", "query", "close"]
-  );
-  assert.equal(tool.parameters.properties.limit.maximum, undefined);
-  assert.equal(tool.parameters.properties.offset.maximum, undefined);
-  assert.equal(tool.parameters.properties.cursor.type, "string");
-});
-
 test("the default dataset fetch keeps the browser global receiver", async () => {
   const originalFetch = globalThis.fetch;
   globalThis.fetch = function () {

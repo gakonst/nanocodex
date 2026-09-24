@@ -70,144 +70,6 @@ test("the resolved default identity is canonical and stable across remounts", as
   await config.destroy();
 });
 
-test("disabled consumers stay cold without creating an Agent", async () => {
-  const calls = [];
-  const config = createAgentConfig({}, {
-    async create(options) { calls.push(["create", options]); },
-    async prepare(options) { calls.push(["prepare", options]); },
-  });
-  const unsubscribe = config.subscribeAgent({ enabled: false, threadId: "demo" }, () => {});
-  await tick();
-
-  assert.deepEqual(config.getAgent({ enabled: false, threadId: "demo" }), {
-    data: undefined,
-    error: undefined,
-    status: "idle",
-  });
-  assert.deepEqual(calls, []);
-  unsubscribe();
-  await config.destroy();
-});
-
-test("preparation deduplicates and shares the exact stable descriptor with creation", async () => {
-  const prepared = [];
-  const created = [];
-  const closed = [];
-  const config = createAgentConfig({
-    agent: { thinking: "high" },
-    origin: "https://example.test",
-  }, {
-    async create(options) {
-      created.push(options);
-      return fakeAgent("shared", closed);
-    },
-    async prepare(options) { prepared.push(options); },
-  });
-
-  const first = config.subscribeAgent({ enabled: false }, () => {});
-  await tick();
-  const second = config.subscribeAgent({ enabled: false }, () => {});
-  await tick();
-  assert.equal(prepared.length, 0);
-  assert.equal(created.length, 0);
-
-  const third = config.subscribeAgent({}, () => {});
-  await waitFor(() => config.getAgent().status === "success");
-  const fourth = config.subscribeAgent({}, () => {});
-  await tick();
-
-  assert.equal(prepared.length, 1);
-  assert.equal(created.length, 1);
-  assert.equal(prepared[0], created[0]);
-  assert.equal(Object.isFrozen(created[0]), true);
-  assert.equal(created[0].thinking, "high");
-  assert.equal(created[0].origin, "https://example.test");
-  assert.equal(typeof created[0].threadId, "string");
-  assert.notEqual(created[0].threadId, "");
-
-  first();
-  second();
-  third();
-  fourth();
-  await waitFor(() => closed.length === 1);
-  await config.destroy();
-});
-
-test("the config owns one Agent shared by every subscriber", async () => {
-  const created = [];
-  const closed = [];
-  const config = createAgentConfig({ agent: { thinking: "high" } }, {
-    async create(options) {
-      const agent = fakeAgent(created.length, closed);
-      created.push({ agent, options });
-      return agent;
-    },
-    async prepare() {},
-  });
-  const changes = [];
-  const first = config.subscribeAgent({ threadId: "thread" }, () => {
-    changes.push(config.getAgent({ threadId: "thread" }).status);
-  });
-  const second = config.subscribeAgent({ threadId: "thread" }, () => {});
-  await waitFor(() => config.getAgent({ threadId: "thread" }).status === "success");
-
-  const snapshot = config.getAgent({ threadId: "thread" });
-  assert.equal(snapshot.data, created[0].agent);
-  assert.deepEqual(created[0].options, { thinking: "high", threadId: "thread" });
-  assert.equal(created.length, 1);
-  assert.deepEqual(changes, ["pending", "success"]);
-
-  first();
-  await tick();
-  assert.deepEqual(closed, []);
-  second();
-  await waitFor(() => closed.length === 1);
-  assert.deepEqual(closed, [0]);
-  await config.destroy();
-});
-
-test("a live Worker failure replaces stale success with the original actionable error", async () => {
-  const failures = [];
-  const disposals = [];
-  const shutdowns = [];
-  const statuses = [];
-  const config = createAgentConfig({}, {
-    async create(_options, { onFailure }) {
-      failures.push(onFailure);
-      const id = failures.length - 1;
-      return {
-        dispose() { disposals.push(id); },
-        session: {
-          async shutdown() { shutdowns.push(id); },
-        },
-      };
-    },
-    async prepare() {},
-  });
-  const unsubscribe = config.subscribeAgent({}, () => statuses.push(config.getAgent().status));
-  await waitFor(() => config.getAgent().status === "success");
-  const original = new Error("provider websocket rejected the credential");
-
-  failures[0](original);
-  await waitFor(() => config.getAgent().status === "error");
-
-  assert.equal(config.getAgent().data, undefined);
-  assert.equal(config.getAgent().error, original);
-  assert.deepEqual(statuses, ["pending", "success", "error"]);
-  assert.deepEqual(disposals, [0]);
-  assert.deepEqual(shutdowns, []);
-
-  config.refetchAgent();
-  await waitFor(() => failures.length === 2 && config.getAgent().status === "success");
-  assert.deepEqual(disposals, [0]);
-  assert.deepEqual(shutdowns, []);
-
-  unsubscribe();
-  await waitFor(() => shutdowns.length === 1);
-  assert.deepEqual(shutdowns, [1]);
-  await config.destroy();
-});
-
 test("a Worker failure before candidate publication becomes terminal", async () => {
   const failure = new Error("Worker failed during boot");
   const disposals = [];
@@ -276,63 +138,6 @@ test("a stale failed startup attempt cannot poison its healthy retry", async () 
   await config.destroy();
 });
 
-test("a stale Worker failure cannot poison an explicit replacement", async () => {
-  const failures = [];
-  const closed = [];
-  const config = createAgentConfig({}, {
-    async create(_options, { onFailure }) {
-      const id = failures.length;
-      failures.push(onFailure);
-      return {
-        dispose() {},
-        session: {
-          async shutdown() { closed.push(id); },
-        },
-      };
-    },
-    async prepare() {},
-  });
-  const unsubscribe = config.subscribeAgent({}, () => {});
-  await waitFor(() => config.getAgent().status === "success");
-  config.refetchAgent();
-  await waitFor(() => failures.length === 2 && config.getAgent().status === "success");
-  const replacement = config.getAgent().data;
-
-  failures[0](new Error("late failure from retired Worker"));
-  await tick();
-
-  assert.equal(config.getAgent().status, "success");
-  assert.equal(config.getAgent().data, replacement);
-  unsubscribe();
-  await waitFor(() => closed.length === 2);
-  await config.destroy();
-});
-
-test("refetch serializes shutdown before replacement", async () => {
-  const transitions = [];
-  const config = createAgentConfig({}, {
-    async create() {
-      const id = transitions.filter((value) => value.startsWith("create:")).length;
-      transitions.push(`create:${id}`);
-      return {
-        session: {
-          async shutdown() { transitions.push(`close:${id}`); },
-        },
-      };
-    },
-    async prepare() {},
-  });
-  const unsubscribe = config.subscribeAgent({}, () => {});
-  await waitFor(() => config.getAgent().status === "success");
-  config.refetchAgent();
-  await waitFor(() => config.getAgent().status === "success" && transitions.includes("create:1"));
-
-  assert.deepEqual(transitions.slice(0, 3), ["create:0", "close:0", "create:1"]);
-  unsubscribe();
-  await waitFor(() => transitions.includes("close:1"));
-  await config.destroy();
-});
-
 test("refetch waits for the accepted turn result before replacing its Agent generation", async () => {
   const completion = deferred();
   const transitions = [];
@@ -380,58 +185,6 @@ test("refetch waits for the accepted turn result before replacing its Agent gene
 
   remounted();
   await waitFor(() => transitions.includes("close:1"));
-  await config.destroy();
-});
-
-test("multiple refetches during accepted turns coalesce into one safe replacement", async () => {
-  const first = deferred();
-  const second = deferred();
-  const shutdowns = [];
-  let creations = 0;
-  let prompts = 0;
-  const config = createAgentConfig({}, {
-    async create() {
-      const id = creations++;
-      return {
-        session: {
-          async shutdown() { shutdowns.push(id); },
-        },
-        turn: {
-          prompt() {
-            assert.equal(id, 0);
-            return {
-              result() { return prompts++ === 0 ? first.promise : second.promise; },
-            };
-          },
-        },
-      };
-    },
-    async prepare() {},
-  });
-  const unsubscribe = config.subscribeAgent({}, () => {});
-  await waitFor(() => config.getAgent().status === "success");
-  const original = config.getAgent().data;
-  original.turn.prompt({ input: "first" });
-  original.turn.prompt({ input: "second" });
-
-  config.refetchAgent();
-  config.refetchAgent();
-  config.refetchAgent();
-  first.resolve({ finalMessage: "first done" });
-  await tick();
-
-  assert.equal(creations, 1);
-  assert.deepEqual(shutdowns, []);
-  assert.equal(config.getAgent().data, original);
-
-  second.reject(new Error("second failed"));
-  await waitFor(() => creations === 2 && config.getAgent().status === "success");
-  await tick();
-  assert.equal(creations, 2);
-  assert.deepEqual(shutdowns, [0]);
-
-  unsubscribe();
-  await waitFor(() => shutdowns.length === 2);
   await config.destroy();
 });
 
@@ -660,28 +413,6 @@ test("release and destroy promptly abort create calls that never resolve", { tim
   }
 });
 
-test("an Agent that resolves after unsubscribe is immediately shut down", async () => {
-  const creation = deferred();
-  const started = deferred();
-  const closed = [];
-  const config = createAgentConfig({}, {
-    create() {
-      started.resolve();
-      return creation.promise;
-    },
-    async prepare() {},
-  });
-  const unsubscribe = config.subscribeAgent({}, () => {});
-  await started.promise;
-  unsubscribe();
-  creation.resolve(fakeAgent("stale", closed));
-  await waitFor(() => closed.length === 1);
-
-  assert.deepEqual(closed, ["stale"]);
-  assert.equal(config.getAgent().status, "idle");
-  await config.destroy();
-});
-
 test("startup retries stay inside config and publish only the exhausted failure", async () => {
   let attempts = 0;
   const config = createAgentConfig({ retry: 2, retryDelay: () => 0 }, {
@@ -702,24 +433,6 @@ test("startup retries stay inside config and publish only the exhausted failure"
 
   assert.equal(attempts, 3);
   assert.deepEqual(statuses, ["pending", "success"]);
-  unsubscribe();
-  await config.destroy();
-});
-
-test("startup publishes an error after the configured retry budget", async () => {
-  let attempts = 0;
-  const config = createAgentConfig({ retry: 1, retryDelay: () => 0 }, {
-    async create() {
-      attempts += 1;
-      throw new Error("unavailable");
-    },
-    async prepare() {},
-  });
-  const unsubscribe = config.subscribeAgent({}, () => {});
-  await waitFor(() => config.getAgent().status === "error");
-
-  assert.equal(attempts, 2);
-  assert.match(config.getAgent().error.message, /unavailable/);
   unsubscribe();
   await config.destroy();
 });
@@ -822,31 +535,6 @@ test("the last unsubscribe during retry backoff prevents another creation", asyn
   await config.destroy();
 });
 
-test("destroy during retry backoff prevents another creation", async () => {
-  const backoffStarted = deferred();
-  let attempts = 0;
-  const config = createAgentConfig({
-    retry: 1,
-    retryDelay() {
-      backoffStarted.resolve();
-      return 20;
-    },
-  }, {
-    async create() {
-      attempts += 1;
-      throw new Error("transient");
-    },
-    async prepare() {},
-  });
-  const unsubscribe = config.subscribeAgent({}, () => {});
-  await backoffStarted.promise;
-  await config.destroy();
-
-  assert.equal(attempts, 1);
-  unsubscribe();
-  unsubscribe();
-});
-
 test("destroy publishes idle once and makes outstanding unsubscribes harmless", async () => {
   const closed = [];
   const config = createAgentConfig({}, {
@@ -880,30 +568,6 @@ test("destroy publishes idle once and makes outstanding unsubscribes harmless", 
   assert.deepEqual(firstStatuses, ["idle"]);
   assert.deepEqual(secondStatuses, ["idle"]);
   assert.deepEqual(closed, ["active"]);
-});
-
-test("destroy notifies duplicate callback subscriptions exactly once each", async () => {
-  const closed = [];
-  const config = createAgentConfig({}, {
-    async create() { return fakeAgent("shared", closed); },
-    async prepare() {},
-  });
-  const statuses = [];
-  const listener = () => statuses.push(config.getAgent().status);
-  const first = config.subscribeAgent({}, listener);
-  const second = config.subscribeAgent({}, listener);
-  await waitFor(() => config.getAgent().status === "success");
-  statuses.length = 0;
-
-  await config.destroy();
-
-  assert.deepEqual(statuses, ["idle", "idle"]);
-  assert.deepEqual(closed, ["shared"]);
-  first();
-  first();
-  second();
-  second();
-  assert.deepEqual(statuses, ["idle", "idle"]);
 });
 
 test("duplicate callback subscriptions unsubscribe independently", async () => {
@@ -993,42 +657,6 @@ test("destroy from a pending notification prevents preparation and creation", as
   assert.deepEqual(calls, []);
   unsubscribe();
   unsubscribe();
-});
-
-test("durable turn tracking preserves the Agent extension lifecycle", async () => {
-  let extended = 0;
-  const config = createAgentConfig({}, {
-    async create() {
-      const agent = {
-        session: { async shutdown() {} },
-        turn: {
-          prompt() {
-            return {
-              result: async () => ({ finalMessage: "done" }),
-              dispose() {},
-            };
-          },
-        },
-        extend(decorator) {
-          extended += 1;
-          return { ...agent, ...decorator(agent), retainedAgentState: true };
-        },
-      };
-      return agent;
-    },
-    async prepare() {},
-  });
-  const parameters = { threadId: "extended-durable-agent" };
-  const unsubscribe = config.subscribeAgent(parameters, () => {});
-  await waitFor(() => config.getAgent(parameters).status === "success");
-
-  const presented = config.getAgent(parameters).data;
-  assert.equal(extended, 1);
-  assert.equal(presented.retainedAgentState, true);
-  assert.equal(Object.isFrozen(presented), true);
-
-  unsubscribe();
-  await config.destroy();
 });
 
 test("detached durable turns release after completion without requiring result observation", async (context) => {

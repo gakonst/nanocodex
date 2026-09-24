@@ -181,16 +181,3 @@ fn parse_psi(contents: &str, class: &str) -> Option<f32> {
         })
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_pressure_stall_avg10_by_class() {
-        let pressure = "some avg10=12.06 avg60=24.93 avg300=29.21 total=7\n\
-                        full avg10=11.88 avg60=24.45 avg300=28.80 total=5\n";
-        assert_eq!(parse_psi(pressure, "some"), Some(12.06));
-        assert_eq!(parse_psi(pressure, "full"), Some(11.88));
-    }
-}

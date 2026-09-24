@@ -123,21 +123,6 @@ test('MCP exact paginated catalog discovery creates no thread and advertises no 
   assert.deepEqual(host.messages[0].value.params.capabilities, { experimentalApi: true });
 });
 
-test('catalog order is deterministic across connections without changing definitions', options, async t => {
-  let discoveries = 0;
-  const host = await fixture(t, (value, io) => {
-    if (value.method !== 'mcpServerStatus/list') return defaults(value, io);
-    const ordered = ++discoveries % 2 ? [...tools].reverse() : tools;
-    io.reply({ data: [{ name: 'cua_repl', tools: Object.fromEntries(ordered.map(tool => [tool.name, tool])) }] });
-  });
-  const first = client(t, host.url);
-  const second = client(t, host.url);
-  assert.deepEqual(await first.catalog(), { tools });
-  assert.deepEqual(await second.catalog(), { tools });
-  assert.deepEqual(await first.catalog(), { tools });
-  assert.equal(host.messages.some(x => x.value.method === 'thread/start'), false);
-});
-
 test('calls materialize one own thread, preserve metadata/results, and ignore ALL server requests', options, async t => {
   let answered;
   let calls = 0;

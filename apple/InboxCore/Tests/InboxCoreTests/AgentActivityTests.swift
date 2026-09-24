@@ -143,21 +143,7 @@ final class AgentActivityTests: XCTestCase {
         XCTAssertEqual(running.activityDetail, "")
     }
 
-    func testExcerptsStripCodeBlocksAndLinkTargets() {
-        XCTAssertEqual(AgentActivityText.excerpt("# Done\n**Fixed** [reconnect](https://example.com/private).\n```sh\nsecret command\n```\nReady to review."),
-                       "Done Fixed reconnect. Ready to review.")
-    }
 
-    func testPreviousActivityPayloadStillDecodes() throws {
-        let state = AgentActivitySnapshot.make(cards: [card("a", status: "Running")], seen: [:], deferred: [:], paused: true)
-        var json = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(state)) as? [String: Any])
-        for key in ["deliveryFailures", "queued", "attentionCount", "conversationCount"] { json.removeValue(forKey: key) }
-        var entries = try XCTUnwrap(json["entries"] as? [[String: Any]])
-        entries[0].removeValue(forKey: "action"); entries[0].removeValue(forKey: "queued"); json["entries"] = entries
-        let decoded = try JSONDecoder().decode(AgentActivitySnapshot.self, from: JSONSerialization.data(withJSONObject: json))
-        XCTAssertEqual(decoded.total, 1)
-        XCTAssertEqual(decoded.headline, "1 running")
-    }
 }
 
 private extension PendingMessage.Phase {

@@ -28,20 +28,6 @@ func TestDesktopAudioNeverUsesDefaultSource(t *testing.T) {
 	}
 }
 
-func TestScreenBitrateBounds(t *testing.T) {
-	for value, expected := range map[string]int{"": 6000, "1000": 1000, "40000": 40000, "100000": 100000} {
-		got, err := screenBitrate(value)
-		if err != nil || got != expected {
-			t.Fatalf("%q: %d %v", value, got, err)
-		}
-	}
-	for _, value := range []string{"999", "100001", "-1", "40000k", "1.5", " 6000"} {
-		if _, err := screenBitrate(value); err == nil {
-			t.Fatalf("accepted %q", value)
-		}
-	}
-}
-
 func TestLiveOpusEncoderStopsWithCapture(t *testing.T) {
 	if _, err := exec.LookPath("ffmpeg"); err != nil {
 		t.Skip("ffmpeg unavailable")

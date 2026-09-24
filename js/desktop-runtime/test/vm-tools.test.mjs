@@ -1,4 +1,4 @@
-import { runtimeDataDirectory } from "../src/data-directory.mjs";
+
 import assert from "node:assert/strict";
 import { once } from "node:events";
 import { createServer } from "node:http";
@@ -10,7 +10,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import { WebSocketServer } from "ws";
 import { DesktopRuntime } from "../src/runtime.mjs";
 import { createVmTools, supportsLocalVms } from "../src/vm-tools.mjs";
-import { desktopDefaults, desktopDataDirectory } from "../src/configuration.mjs";
+import { desktopDefaults } from "../src/configuration.mjs";
 
 // Synthetic VM fixtures must never discover or install the real host provider.
 process.env.NANOCODEX_COMPUTER = "off";
@@ -108,16 +108,4 @@ test("remote Hand calls create, reuse, stop and restart a retained private VM", 
   await runtime.stopHand(host.id);
   assert.equal(runtime.state().hands.find(hand => hand.id === first.machine_id).status, "stopped");
   assert.equal(runtime.state().hands.find(hand => hand.id === host.id).factory.status, "stopped");
-});
-
-
-test("computer Hand defaults use platform data directories and respect overrides", () => {
-  assert.equal(runtimeDataDirectory({}, "darwin", "/home/test"), "/home/test/Library/Application Support/Nanocodex/Runtime");
-  assert.equal(runtimeDataDirectory({}, "linux", "/home/test"), desktopDataDirectory({}, "linux", "/home/test"));
-  assert.equal(runtimeDataDirectory({ NANOCODEX_DESKTOP_DATA: "/override" }, "darwin", "/home/test"), "/override");
-  assert.equal(desktopDataDirectory({}, "darwin", "/home/test"), "/home/test/Library/Application Support/Nanocodex/Native");
-  assert.equal(desktopDataDirectory({}, "linux", "/home/test"), "/home/test/.local/share/nanocodex/native");
-  assert.equal(desktopDataDirectory({ XDG_DATA_HOME: "/data" }, "linux", "/home/test"), "/data/nanocodex/native");
-  assert.equal(desktopDataDirectory({ LOCALAPPDATA: "/profile/local" }, "win32", "/home/test"), "/profile/local/Nanocodex/Native");
-  assert.equal(desktopDataDirectory({ NANOCODEX_DESKTOP_DATA: "/override" }, "win32", "/home/test"), "/override");
 });

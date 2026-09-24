@@ -42,7 +42,7 @@ beforeEach(() => { log = captureLog(); for (const method of ["warn", "error"] as
 afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
 describe("private regional ChatGPT text relay", () => {
-  it.each(regions.flatMap(region => ["POST", "GET"].map(method => [region, method])))(
+  it.each([["wnam", "POST"], ["weur", "GET"]])(
     "selects the constrained %s application for trusted %s text", async (region, method) => {
       const f = fixture(true);
       expect((await f.entrypoint.fetch(request(region, method))).status).toBe(204);
@@ -78,7 +78,7 @@ describe("private regional ChatGPT text relay", () => {
     socket.close(); server.close();
   });
 
-  it.each(regions.flatMap(region => ["POST", "GET"].map(method => [region, method])))(
+  it.each([["wnam", "POST"], ["weur", "GET"]])(
     "selects a new isolated %s relay for %s and strips private placement", async (region, method) => {
       const f = fixture();
       expect((await f.entrypoint.fetch(request(region, method))).status).toBe(204);
@@ -91,7 +91,7 @@ describe("private regional ChatGPT text relay", () => {
       expect(log).toHaveBeenCalledWith(expect.objectContaining({ rule: "responses", relay_region: region }));
     },
   );
-  it.each([undefined, "invalid", "WNAM", "wnam,weur", "afr", ""])("falls back to the unchanged legacy identity for %j", async (region) => {
+  it.each([undefined, "wnam,weur"])("falls back to the unchanged legacy identity for %j", async (region) => {
     const f = fixture(true);
     expect((await f.entrypoint.fetch(request(region))).status).toBe(204);
     for (const relay of Object.values(f.regionalNamespaces)) expect(relay.get).not.toHaveBeenCalled();

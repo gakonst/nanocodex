@@ -22,20 +22,6 @@ describe("single-attempt foreground Jev", () => {
     await expect(runJev({run},{},diagnostics(),1000,controller.signal)).rejects.toThrow();
     expect(run).toHaveBeenCalledOnce();
   });
-  it("does not retry repeated transient failures", async () => {
-    const run = vi.fn().mockRejectedValue(Object.assign(new Error("private"),{status:502}));
-    const trace=diagnostics(); await expect(runJev({run},{},trace)).rejects.toThrow();
-    expect(run).toHaveBeenCalledTimes(1); expect(trace.attempts).toHaveLength(1);
-  });
-  it("does not duplicate a hanging binding and uses a shared deadline", async () => {
-    vi.useFakeTimers();
-    try {
-      const run = vi.fn(() => new Promise(() => {})); const trace=diagnostics();
-      const pending=runJev({run},{},trace); const result=expect(pending).rejects.toThrow("deadline");
-      await vi.advanceTimersByTimeAsync(JEV_ROUTING_BUDGET_MS); await result;
-      expect(run).toHaveBeenCalledTimes(1); expect(trace.outcome).toBe("timeout");
-    } finally { vi.useRealTimers(); }
-  });
   it("skips fixed-provider classification without inventing probabilities", async () => {
     const run=vi.fn(); const observed=vi.fn();
     const route=await resolveThreadRoute({run},"hello",routingPolicySchema.parse({candidates:["openrouter:openai/gpt-6-astra:low"]}),

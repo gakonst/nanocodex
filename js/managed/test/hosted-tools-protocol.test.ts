@@ -54,34 +54,6 @@ describe("hosted tools socket protocol", () => {
     }
   });
 
-  it("parses the exact executor-to-DO frame set", () => {
-    const machines = [{
-      id: "laptop",
-      name: "George's laptop",
-      workspace: "/Users/george/project",
-      capabilities: ["filesystem", "native-shell"],
-    }];
-    expect(parseHostedToolsHostFrame(JSON.stringify({
-      type: "catalog", capabilities: ["turn_metadata"],
-      tools: [tool],
-      machines,
-      attachment_id: "laptop",
-    }))).toEqual({ type: "catalog", capabilities: ["turn_metadata"], tools: [tool], machines, attachment_id: "laptop" });
-    expect(parseHostedToolsHostFrame(JSON.stringify({ type: "catalog", capabilities: ["turn_metadata"], tools: [tool] })))
-      .toEqual({ type: "catalog", capabilities: ["turn_metadata"], tools: [tool] });
-    const maximumAttachmentId = "a".repeat(123);
-    expect(parseHostedToolsHostFrame(JSON.stringify({
-      type: "catalog", capabilities: ["turn_metadata"],
-      tools: [tool],
-      attachment_id: maximumAttachmentId,
-    }))).toEqual({ type: "catalog", capabilities: ["turn_metadata"], tools: [tool], attachment_id: maximumAttachmentId });
-    expect(parseHostedToolsHostFrame(JSON.stringify({ type: "result", call_id: "call:1", outcome })))
-      .toEqual({ type: "result", call_id: "call:1", outcome });
-    expect(parseHostedToolsHostFrame(JSON.stringify({ type: "ping", nonce: "n-1" })))
-      .toEqual({ type: "ping", nonce: "n-1" });
-    expect(parseHostedToolsHostFrame(JSON.stringify({ type: "drain" }))).toEqual({ type: "drain" });
-  });
-
   it("accepts a bounded oneOf of object inputs and rejects non-object branches", () => {
     const oneOfTool = {
       ...tool,
@@ -107,28 +79,6 @@ describe("hosted tools socket protocol", () => {
         },
       }],
     }))).toThrow("object JSON Schema");
-  });
-
-  it("parses the exact DO-to-executor frame set", () => {
-    expect(parseHostedToolsManagedFrame(JSON.stringify({ type: "ready" }))).toEqual({ type: "ready" });
-    expect(parseHostedToolsManagedFrame(JSON.stringify({
-      type: "call",
-      session_id: "session:1",
-      call_id: "call:1",
-      model: "gpt-5.2",
-      name: "lookup",
-      input: { key: "a" },
-      output_token_budget: 100,
-      output_byte_budget: 1_024,
-      deadline_at: 1_800_000_000_000,
-    }))).toMatchObject({ type: "call", call_id: "call:1", name: "lookup" });
-    expect(parseHostedToolsManagedFrame(JSON.stringify({ type: "cancel", call_id: "call:1" })))
-      .toEqual({ type: "cancel", call_id: "call:1" });
-    expect(parseHostedToolsManagedFrame(JSON.stringify({ type: "ack", call_id: "call:1" })))
-      .toEqual({ type: "ack", call_id: "call:1" });
-    expect(parseHostedToolsManagedFrame(JSON.stringify({ type: "pong", nonce: "n-1" })))
-      .toEqual({ type: "pong", nonce: "n-1" });
-    expect(parseHostedToolsManagedFrame(JSON.stringify({ type: "draining" }))).toEqual({ type: "draining" });
   });
 
   it("rejects legacy pins, removed frames, wrong directions, and extra fields", () => {

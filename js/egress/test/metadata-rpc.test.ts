@@ -30,9 +30,7 @@ describe("private account metadata RPC", () => {
       endpoint: "https://mcp.linear.app/mcp", name: "Synthetic workspace",
     })).status).toBe(200);
 
-    const read = service.readAccountCatalog;
-    expect(typeof read).toBe("function");
-    const result = await Reflect.apply(read, service, [user]);
+    const result = await service.readAccountCatalog(user);
     expect(result.status).toBe(200);
     expect(result.catalog).toEqual(await (await control(`/users/${user}/catalog`)).json());
     expect(result).toEqual(await runtime.USER_CONNECTORS.getByName(user).readCatalog());
@@ -58,9 +56,7 @@ describe("private account metadata RPC", () => {
     ] as const) {
       expect((await control(`/users/${user}/credentials/vault/${kind}`, "POST", body)).status).toBe(201);
     }
-    const read = service.readAccountVault;
-    expect(typeof read).toBe("function");
-    const result = await Reflect.apply(read, service, [user]);
+    const result = await service.readAccountVault(user);
     expect(result).toEqual({ status: 200, ...(await (await control(`/users/${user}/credentials/vault`)).json<object>()) });
     expect(result).toEqual(await runtime.USER_CREDENTIALS.getByName(user).readVaultMetadata());
     expect(result.vault).toEqual(expect.arrayContaining([

@@ -6,7 +6,7 @@ Viewers are the native Apple clients and the account browser. A connected shell
 Hand and a published screen are separate capabilities; verify both before
 claiming that a machine supports files, processes, and desktop control.
 
-## Architecture checklist
+## Connections
 
 The product diagram uses illustrative mount names. `environment` returns the
 actual mounts available to the current agent; `workdir` selects the execution
@@ -124,6 +124,12 @@ exclude listening on guest UDP sockets. The original loopback RTP hop produced
 a connected control channel but no video in a real VM; the pipe fixes that. The current desktop profile is 1600×900,
 60 fps, 6 Mbps. Those are configuration targets, not measured latency guarantees.
 
+The Mac viewer uses Control–Command–F for fullscreen and Command–Shift–Escape
+to release input. Linux microphone return audio exposes
+**Nanocodex_Remote_Microphone**; select it in the remote application's voice-input
+settings. Muting preserves that selection. Unsupported hosts do not advertise
+microphone input.
+
 ## Apple setup
 
 Build the Apple projects normally. The Mac app's build phase builds and signs
@@ -196,29 +202,13 @@ The existing video tracks and control channels survive renewal. Hosts send new
 ICE candidates after their corresponding offers, and unanswered host offers
 expire after twenty-five seconds.
 
-Cloudflare Realtime was activated with explicit approval. The initial relay
-evidence below used an isolated managed Worker. It does not establish a
-production-duration relay soak or connectivity from a second physical network.
-
-The real authenticated development Worker now issues Cloudflare credentials.
-Live testing caught a Workers compatibility issue: its fetch implementation
-requires `redirect: "manual"`; redirects and other non-success responses are
-rejected without forwarding the provider credential. Provider errors return 503.
-
-A native WebRTC test forced Cloudflare relay candidates, decoded video, exchanged
-reliable input and disposable motion, and switched to newly minted credentials
-and a new TURN allocation. Video and input continued after ICE restart. The test
-passed in 1.696 seconds (`/tmp/nanocodex-cloudflare-relay-test.log`); this is test
-runtime, not an end-to-end latency measurement. The earlier local Coturn renewal
-test also passed.
-
 ## VM setup and lifecycle
 
-`hands/remote/image/Dockerfile` builds a pinned labwc/Waymote desktop and the Go
-companion. Build it from `hands/remote` with:
+`hands/remote/image/Dockerfile` builds a pinned labwc/Waymote desktop and the Rust
+publisher. Build it from the repository root with:
 
 ```sh
-docker build -t nanocodex-remote-desktop:development -f image/Dockerfile .
+docker build -t nanocodex-remote-desktop:development -f hands/remote/image/Dockerfile .
 ```
 
 For a factory, materialize the image as a raw ext4 root using the existing
@@ -244,66 +234,7 @@ For local Portless testing only, the guest needs the public Portless CA and an
 resolution on macOS is not inherited by Linux. Under TSI that entry points to
 `127.0.0.1`. These development settings do not belong in production images.
 
-The image and authenticated desktop backend work in a real Wayland container.
-Factory-spawned `nanocodex-vm` Hands now launch the companion when it is present
-in their image; shell-only and explicitly offline images keep their existing behavior.
-The real factory mounted the desktop in 1.345 seconds on the test Mac,
-published it with its allocation credential, and retained its workspace across
-agent turns and a host restart. This is one local startup sample.
-
-The integration lives in the existing VM launch/lifetime owners, including
-`vm_hand.rs` and `vm_host.rs`. It preserves each VM's private
-root, workspace mounts, two-turn retention, and shutdown contract. The guest must
-receive an allocation-scoped host credential, never a full account/provider key.
-The current standalone `--credential-file` path was tested using an isolated
-local development account; it must not be copied into factory guests as-is.
-
-The user explicitly approved the scoped Rust launch/shutdown changes. Factory
-startup now detects the desktop companion in the image and publishes with the
-allocation credential. The guest retains labwc across signaling reconnects,
-rotates its credential when the host lease changes, and exits before VM shutdown.
-A real factory VM has now streamed decoded 1600×900 video to both the browser
-and native Mac viewer. Browser text and raw key input created/read workspace
-files, and pointer dragging moved its terminal window. Host shutdown disconnected
-the old viewer; restarting retained the private root and its files. Network
-publication retries independently of compositor readiness, so a signaling outage
-does not block the shell attachment.
-
-## Evidence and outstanding work (2026-09-08)
-
-Fresh wrap-up evidence is retained in `/tmp/nanocodex-remote-wrapup-20260908/`.
-The cloud agent executed on the actual Mac Hand, verified Darwin and its native
-workspace, and wrote/read/removed an isolated marker. The native app's real
-Hand journey passed across runtime restart, including a completed turn while
-its window was closed. The native VM viewer decoded video, exercised input and
-control reacquisition, and recovered after a 12-second factory outage with the
-same machine identity and new publication generation. The desktop runtime's 33
-tests also passed.
-
-The updated identity-signed `/Applications/Nanocodex.app` registered successfully
-with macOS Login Items. Its login, laptop Hand, automatic screen-sharing, and
-keep-awake settings are enabled. Closing the window left both the native Hand
-and controllable screen published; the browser decoded the live Mac afterward.
-This verifies registration and background availability, not a computer reboot.
-After the final app update while the Mac was locked, unlocking restored its
-screen publication automatically without restarting the app. The production
-browser reached Watching and rendered the live 1920×1080 display.
-
-The deployed browser discovered Mac, VM, and Cloudflare screens. It rendered a
-fresh Cloudflare desktop, created a marker through text/key input, recovered its
-selected viewer after publisher restart, and created a second marker. Both
-markers were independently read back; the disposable cloud agent and screen
-were removed. `/tmp/nanocodex-web-wrapup-20260908.json` records the checks and
-automation limits.
-
-Read-only broker requests returned HTTP 200 for GitHub, Gmail, Drive, and X.
-Calendar, Tasks, Contacts, Docs, Sheets, and Slides have retained connections but
-their Google APIs returned `SERVICE_DISABLED`; the Google Cloud project needs
-those APIs enabled. Slack is not connected. Provider inventory alone is not
-proof that every provider API is usable. Sanitized receipts are under
-`/tmp/nanocodex-live-connectors-20260908/`.
-
-### Linux servers and vault SSH setup
+## Linux servers and vault SSH setup
 
 For native access without inbound SSH or a VM, configure the CLI with the same
 account credential, then run on the machine itself:
@@ -320,17 +251,6 @@ prevents two processes from publishing the same identity. A different workspace
 requires its own `--state-dir`. Credentials are excluded from native command
 environments. This command provides native files/processes; desktop capture and
 VM factories remain separate capabilities.
-
-Real CLI checks passed on macOS and Linux with an isolated local account
-service: file/process requests, forced socket reconnect, process restart with
-the same catalog/UUID, credential filtering, and graceful shutdown. A separate
-disposable Linux container also joined the production account: a real cloud
-agent executed in its explicit native workdir, verified Linux, and wrote/read
-a marker. Restarting the process retained its identity and workspace; a fresh
-turn read the same marker. The agent, containers, volume, and publication were
-removed afterward. The receipt is under
-`/tmp/nanocodex-production-native-hand/f585d4b5-bff7-4210-8c00-dbf45fef1ff6/`.
-This does not establish connectivity to an external SSH server.
 
 `nanocodex-remote server-host` starts a headless labwc desktop directly on Linux,
 without a nested VM. It accepts `--url`, `--credential-file`, `--machine-id`,
@@ -377,24 +297,7 @@ view other Hands or read account data, and are rechecked during HTTP renewal.
 Account, publication generation, control-lease, and input-sequence fencing apply
 to both Linux and VM desktops.
 
-Local evidence: both server and frame transports passed three consecutive real
-Linux desktop lifecycle runs, including decoded JPEGs, terminal file creation,
-credential rotation, signaling reconnect with the same compositor, subsequent
-input, and revocation cleanup. Vault key generation/encrypted storage, actual SSH
-stdin transport, setup failure cleanup, and account browser onboarding also pass
-their focused tests. The release image is now published for Linux arm64 and
-amd64, and production reports installation available. The vault currently has
-no SSH targets, so external server installation remains unverified.
-
-Both local desktop images were rebuilt with the updated Go daemon:
-`nanocodex-server-hand:evidence` for Linux arm64 and
-`nanocodex-cloudflare-hand:evidence` for Linux amd64. The managed preparation
-script's generated Hand sources matched the daemon sources, and the daemon's
-`server-host --help` startup check passed inside each rebuilt image. Build logs
-are `/tmp/nanocodex-server-hand-image-build.log` and
-`/tmp/nanocodex-cloudflare-hand-image-build.log`.
-
-### Viewer recovery
+## Viewer recovery
 
 The shared viewer now retains selection during iOS backgrounding, releases
 control and discards unsent text, and refreshes the publication generation when
@@ -417,7 +320,7 @@ the retained desktop republish during that independent handshake. Cancellation,
 allocation identity, and server-side lease checks remain in force. Transport
 diagnostics report reset categories without peer text or credentials.
 
-### Cloudflare sandbox desktops
+## Cloudflare sandbox desktops
 
 The managed sandbox image and lifecycle now include the Linux desktop publisher.
 `NANOCODEX_SANDBOX_DESKTOPS=true` enables it after the retained workspace and peer
@@ -444,296 +347,9 @@ allocation and clear stale images and control on disconnect. Input uses the same
 exclusive host lease, generation and sequence checks as WebRTC. These are paced
 screen updates, not the VM's 60 fps video transport.
 
-The real local Worker tests cover sandbox enrollment, intercepted publication,
-transport isolation, bounded frames/input, and revocation. The production
-Cloudflare journey passed on September 7: a fresh sandbox mounted its workspace,
-rendered native frames, accepted input that created a file, resumed after viewer
-suspension with control released, and returned an agent screenshot. Deleting the
-test agent removed its screen. The receipt is retained under
-`/tmp/nanocodex-production-cloudflare-evidence/c32e6837-542d-4a2a-8301-0313f422e455/`.
-
-### Additional viewer evidence
-
-The account browser now retains selection, clears stale video/input, and retries
-within a 90-second recovery window. Chrome decoded and controlled a real VM,
-then recovered about 18 seconds after its host was stopped and restarted. Separate
-Chrome fixtures validated `frames-v1` JPEG rendering/input, tab hide/show, and a
-12-second outage without creating ICE or WebRTC peers. The shared native package
-also passes frame bounds/decoding and viewer recovery tests on macOS.
-
-A fresh Mac-hosted factory VM also passed the native Swift viewer journey against
-the live account. The test decoded video, changed the focused terminal through
-remote input, stopped its factory for 12.8 seconds, and automatically recovered
-in 17.6 seconds with the same selected screen and a new publication generation.
-It verified that disconnect cleared the old track and control, then acquired a
-new control lease and verified fresh input. Input to the first substantial
-decoded frame transition measured 55–71 ms in these samples. The factory was
-left running for the installed Mac app's check; evidence is retained in
-`/tmp/nanocodex-mac-vm-evidence/native-swift.log`.
-
-On September 8, the updated signed Release app passed a physical iPhone 17 Pro
-screen-menu regression against the Mac host: four open/select/back/dismiss
-cycles and a background/foreground recovery, with decoded Mac video and no new
-crash reports. The earlier crash came from publishing viewer state while SwiftUI
-was dismantling its UIKit canvas. Canvas detach now only releases renderer
-references; the dashboard owns session closure. Screen rows also accept taps
-across their full width. This check did not send input or restart the VM; the
-physical-phone-to-VM chat/restart journey remains unverified. Evidence is in
-`/tmp/nanocodex-iphone-screens-20260908/receipt.json`.
-
-The installed Mac app includes the rebuilt command runtime, which retains remote
-process sessions after uncertain polling failures and cancels completed poll
-timers. Both initial and incremental signed builds pass bundle verification.
-After relaunch, the app reconnected and shared its screen automatically with
-login startup and the host Hand still enabled.
-
-- A real managed agent discovered the factory VM's `screen_*` tool, received
-  decodable screenshots through Code Mode, clicked its visible terminal, typed
-  a command, and pressed Return. A later screen-only turn visibly listed the
-  resulting `/workspace/agent-screen-control-evidence` file and the retained
-  file created by the iOS viewer. No shell tool was used for these screen
-  journeys. Native video continued while the agent worked.
-- The native Mac viewer took human control of that VM. Agent observation still
-  succeeded, but its one attempted text action returned `busy`; the marker was
-  absent afterward. After release, agent input worked again. In a second live
-  check, human takeover interrupted the third drag of a bounded four-drag
-  sequence. The result was `cancelled`, and the agent never sent the fourth
-  drag (`/tmp/nanocodex-remote-vm-agent-interrupt2.log`).
-- Local VM screen-tool observations took 67–85 ms and click/text/Return actions
-  with a resulting screenshot took 174–180 ms in the first successful journey
-  (`/tmp/nanocodex-remote-vm-agent-screen-live2.log`). These are tool response
-  samples, excluding model reasoning, not internet latency claims. The Linux
-  gesture scheduler now keeps the requested gesture clock instead of rounding
-  every step's delay up to a host tick; input delayed over 500 ms is cancelled.
-- Eight Worker protocol tests pass across signaling and agent screen routing,
-  including host replacement, cross-account rejection, result ownership, stale
-  routes, image results, and unknown outcomes without replay. Five Swift
-  protocol tests pass, including real JPEG encoding, image bounds, and clearing
-  retained frames. Go race tests pass after the capture and scheduling fixes.
-- Native Mac and iOS Simulator app builds pass. The Swift package's protocol tests
-  and real WebRTC video/data-channel test pass.
-- The Mac app's real Screens UI published its 2560×1440 display, and the account
-  browser decoded the ScreenCaptureKit stream at 1920×1080. Sharing remained
-  visible after closing the picker. The main toolbar stop action disconnected
-  the browser and removed the Mac from the account catalog. This used the
-  isolated app bundle with `NANOCODEX_DESKTOP_DATA` and `NANOCODEX_ENV_FILE`,
-  leaving the normal app's runtime and saved account untouched.
-- The current Mac test build uses a stable Apple Development signing identity.
-  Ad-hoc signatures can change the identity macOS associates with permissions
-  on every rebuild; use your team's development certificate for repeated TCC
-  testing. Earlier enabled Settings entries retained an old ad-hoc code hash
-  and did not authorize the signed build. After OS authentication, removing and
-  re-adding the exact installed app in Accessibility and restarting Nanocodex
-  applied the current grant. Future builds using the same signing identity
-  retain a stable requirement.
-  The UI now exposes Enable control for a shared display lacking input access,
-  retains permission guidance across catalog refreshes, and remembers the host's
-  selected display when reopening the picker.
-- The normal `/Applications/Nanocodex.app` was rebuilt and installed with its
-  existing development team/signing identity, preserving its saved account and
-  workspace. Its native Screens UI decoded the owned VM, typed a terminal
-  command, sent Return, and maximized the terminal with a remote double-click.
-  The normal app also published its own Mac display with control enabled after
-  the grant refresh. An account-authenticated native WebRTC viewer decoded that
-  display, acquired control, typed into an empty native app composer, sent
-  Backspace, and released control. UI inspection confirmed the exact resulting
-  text; the unsent marker was then cleared. This passed on 2026-09-07 in 2.938
-  seconds (`/tmp/nanocodex-native-mac-input-live.log`). VM viewing and control do
-  not require this local Mac-host permission.
-- Live native VM testing exposed a release/reacquire race: the old host release
-  acknowledgement cancelled a new control request. Native viewers now serialize
-  these exchanges, including cancellation before the original grant arrives.
-  Six focused protocol regressions pass, and both immediate-retake cases passed
-  against the running VM with subsequent decoded input transitions at 64–68 ms.
-- Five signaling tests pass in the real local Durable Object runtime, including
-  host replacement, stale generation, authorization expiry, and ownership of
-  viewer closure. Managed and account TypeScript checks pass. Six account proxy
-  tests previously passed. Two TURN endpoint contract tests pass, covering the
-  documented request, credential cache expiry, and provider failure. These use a
-  stubbed provider and do not constitute Cloudflare relay connectivity evidence.
-  Nine VM pool tests also pass, including the public allocation-authenticated
-  screen publication/renewal route and rejection after allocation release.
-  Twenty-three Rust VM host lifecycle tests pass.
-- A native account-authenticated VM viewer changed the focused test terminal
-  through the WebRTC data channel and detected the resulting decoded-pixel
-  transitions at 84 and 77 ms locally. The measurement excludes signaling setup
-  and reports the first substantial visual change, not completion of an arbitrary
-  application operation (`/tmp/nanocodex-remote-vm-latency-test.log`).
-  The final packaged companion also passed this journey, with local samples of
-  61 and 63 ms (`/tmp/nanocodex-remote-vm-latency-test-v6.log`). Its agent drag
-  journey moved the visible terminal and released control; a requested 1500 ms
-  drag returned its screenshot in 2.533 seconds, so that duration setting is
-  best effort, not an end-to-end response deadline.
-- The browser decoded the real 1600×900 Wayland stream, submitted text and raw
-  keyboard input, created files in the desktop's workspace, released control,
-  and reconnected after page reload. The retained files remained visible. The
-  latest packaged companion also reconnects, decodes video, and accepts keyboard input. Browser Escape
-  shortcut delivery remains unverified in the current automation environment;
-  the visible Release control button works.
-- The native iPhone Simulator UI signed into the real local account over HTTPS,
-  decoded the Wayland desktop, took control, sent a shell command that created
-  `/workspace/ios-native-control-evidence`, released control, relaunched, and
-  reconnected. The test passed and its retained screenshots show decoded video
-  before and after reconnect. Simulator tests require normal Xcode signing:
-  disabling signing omits the app identity needed for Keychain storage. This
-  validates the iOS viewer UI. The same journey also passed against the rebuilt
-  companion that fetches credentials per viewer and renews ICE. A physical iPhone
-  viewer on another network still needs evidence.
-- The same iOS UI journey passed against the actual factory VM in 56.565 seconds
-  (`apple/build-remote-evidence/RemoteVM-3.xcresult`), including the terminal
-  command, keyboard visibility, release, app relaunch, and reconnection. An
-  earlier attempt stalled while opening the Simulator keyboard and lost the
-  session; the repeat completed without changing the input implementation.
-- The physical iPhone 17 Pro (iOS 26.6) produced decoded WebRTC frames and accepted
-  Home through a viewer data channel. Account-authenticated tests have passed
-  discovery, control exclusivity, touch input opening Calculator's mode menu,
-  Home input, handoff, and stop/disconnect using
-  the owned bridge. Intermittent native ICE failures on this Mac's virtual/VPN
-  interfaces were resolved for same-Mac viewers by enabling loopback candidates.
-  Three consecutive full account/phone runs then passed, including two viewers
-  and control handoff (19.99 s, 19.73 s, 18.44 s total test duration). Those
-  durations are not input latency measurements. A separate decoded-video check
-  measured Home input to the first substantial visible transition at 295, 296,
-  and 305 ms in three local runs. It sampled frame luminance after Calculator
-  settled and separately verified SpringBoard became active; it retained no
-  screenshots. This is a small local sample, not an internet performance claim.
-- The physical-phone account test exercises renewal accelerated to three
-  seconds. Both native viewers retain video and the control lease across repeated
-  renewals, followed by control handoff. A browser joined the same phone host,
-  decoded 602×1310 video across three observed ICE renewals, and received the
-  correct control-exclusivity response after renewal. Extended runs exposed a
-  test fixture issue: Calculator restores its open mode menu after Home. The
-  test now dismisses that existing menu through remote input and waits for the
-  mode button to become hittable before opening it again. Two consecutive full
-  runs passed after this correction, with Home-to-visible-transition samples of
-  272 and 280 ms. These remain local measurements, not internet latency claims.
-- The owned phone bridge starts against the physical device and releases its
-  localhost listeners on stop. The signed runner configuration is copied
-  privately; source artifacts remain unchanged.
-- A real managed agent also controlled the physical iPhone through its published
-  screen tool. It observed Calculator, tapped the mode button, and returned
-  decodable 589×1280 screenshots. A native viewer took control; the agent's one
-  Home attempt returned `busy`, and Calculator remained active. After release,
-  agent Home input succeeded and an independent device query confirmed
-  SpringBoard. Stopping sharing disconnected the viewer and closed both bridge
-  listeners. `AccountPhoneAgentTests` passed in 105.340 seconds; that includes
-  model reasoning and is not a latency sample. The evidence is private under
-  `/tmp/nanocodex-phone-agent-evidence`, with the test log at
-  `/tmp/nanocodex-phone-agent-test2.log`.
-- Go race tests cover control fencing, input sequencing, runner configuration,
-  and bounded H.264 pipe framing/packetization. The gated Wayland integration test exercised the
-  real compositor, encoded video, and injected input. The full account/Wayland test also
-  publishes a real host, observes changed ICE credentials, and creates a terminal
-  file through the existing data channel after renewal while video continues.
-  Run these tests with exclusive access to the desktop: two Waymote instances
-  compete for the compositor input method. The application uses one capture per
-  host and shares it across viewers.
-
-The normal signed Mac app now passes real WebRTC video, text entry, and raw
-Backspace input after its Accessibility grant was refreshed through System
-Settings. The user also confirmed the phone viewer works. Mac-host pointer and
-agent screen-tool checks, a physical iPhone viewer on a different network, an
-external SSH server installation, and a production-duration Cloudflare relay
-soak remain follow-ups; the local tests do not establish those results.
-No latency numbers should be inferred from test duration or configured FPS.
-
-For the gated Mac viewer test, first start sharing through the isolated Mac app,
-focus its empty composer, and provide its published machine ID:
-
-```sh
-NANOCODEX_TEST_REMOTE_ENV=/path/to/local-account.env \
-NANOCODEX_TEST_MAC_MACHINE_ID=the-published-machine-id \
-swift test --package-path apple/NanocodexRemote --filter AccountMacTests
-```
-
-The environment file contains `NANOCODEX_MANAGED_URL` for the localhost service
-and its local `NANOCODEX_API_KEY`. The input guard requires the app bundle ID
-`xyz.paradigm.nanocodex.macos.remote-evidence`. After a non-skipped run, inspect
-the composer for `WebRTC Mac input verified`: text entry plus a raw Backspace
-must remove the trailing test character. The test does not inspect another
-application's UI or count a skipped input step as completed input evidence.
+Device inventory is available at `GET /v1/account/hands`; screen viewers use
+`GET /v1/account/hands/screens`. These remain separate inventories.
 
 References: [Cloudflare Realtime](https://developers.cloudflare.com/realtime/),
 [Waymote](https://github.com/rockorager/waymote),
-[Appium WebDriverAgent](https://github.com/appium/WebDriverAgent),
-[WebRTC network defaults](https://webrtc.googlesource.com/src/%2B/5a7e6f8ed1c1313300fb6bb48d70e056202011ed/rtc_base/network.h),
-[iPhone Mirroring requirements](https://support.apple.com/en-gb/120421).
-
-Device inventory remains available at `GET /v1/account/hands`. Screen viewers
-use `GET /v1/account/hands/screens`; the separate responses preserve the native
-Hands inventory while screens are published, disconnected, or replaced.
-
-## 2026-09-09 verification pass
-
-Source fix `a510836f` repairs the public account proxy's server enrollment and
-scoped publisher routes. Without those routes, the real installer returned 404
-before a server could join. Replaced native and Linux publishers now release
-capture/input and retire instead of evicting their replacement repeatedly.
-Viewers still reconnect to the replacement; ordinary transport failures retry.
-Linux daemons remain idle after replacement so a container restart policy cannot
-immediately reclaim the screen. Explicitly restarting sharing enables it again.
-
-The web viewer now requests initial ICE credentials alongside signaling and
-reuses them for the first offer. Later offers refresh credentials. This removes
-one ICE request per attempt; the small live samples do not establish an overall
-speedup or eliminate the observed baseline long-tail delay.
-
-| Runtime | Evidence from this pass | Qualification |
-| --- | --- | --- |
-| macOS host | Signed Release app installed; cloud-agent command and file round trip through the native Hand | Mac locked before the final visible screen-input check; no reboot performed |
-| Native macOS viewer to Mac-hosted Linux VM | Decoded video, pending-control cancellation, release/reacquire, real input with 86/61 ms visible transitions | VM and workspace retained; this is a Linux guest, not a macOS guest |
-| iPhone viewer to that VM | One decoded 1600×900 frame in 744 ms; current signed app installed; no new app crash report | Two XCTest runners were killed before input; full physical input/recovery remains incomplete |
-| iOS shared runtime | Real WebRTC and UIKit teardown tests passed | Simulator app journey stopped at SMS sign-in |
-| Web viewer | Real Chrome VM video; browser fixture with encoded video/input, pause/resume, 12-second outage and new-generation recovery | Real VM first-frame samples 2404/1757/3129 ms; these are not a general latency bound |
-| Linux native Hand | Managed commands and file read/write before/after restart, same machine/workspace; catalog recovery 887 ms | Fresh isolated Linux container on the local VM; existing external SSH servers were unreachable |
-| Linux desktop | Locally built image: real compositor/capture/input at UID 12345, credential rotation, reconnect, revocation and publisher replacement cleanup | JPEG 142–149 ms, input-to-file 25–26 ms, signaling recovery about 1 second; initial CI-built ARM64 image failed portability testing below |
-| Cloudflare Sandbox | Fresh production desktop automatically published; native decoded frames, actual input/file readback, suspend/resume and agent observation passed | Owned agent deleted (204), exact lookup 404, screen removed |
-| SSH-installed Linux desktop | Exact managed installer through real pinned OpenSSH: publication in 4.157 s; browser decoded video in 1.335 s and real input; same identity/workspace after reconnect | Loopback-only SSH fixture with production enrollment/signaling; actual publisher outage 30.538 s and Watching observed 2.593 s after republication |
-
-Native VM first-frame samples were 1284/699/1828 ms. The first-frame diagnostic
-probe is opt-in and reports once per track, without per-frame UI publication.
-Focused checks passed: 28 shared native tests, 39 web/proxy tests, account
-TypeScript, the Go race suite and repeated replacement tests, and signed app
-builds. Both native image architectures passed JPEG and H.264 capture/decoding
-smokes before publication; anonymous pulls and exact source revision labels
-were then verified.
-
-The first SSH image candidate, `sha256:f2f5175d52134f08344c457c01dd5bb3ecfe07bc6be7f38fa8894120638a1ee5`,
-passed native CI smoke but was rejected before the production pin changed:
-its ARM64 Waymote binary exited 132 (illegal instruction) on Apple Silicon
-Linux. The server image needs a baseline CPU target, matching the Cloudflare
-image, and an actual released-image check on another ARM64 CPU. Source fix `e3a99c1e`
-adds that baseline target and a bounded pre-publication QEMU startup check; the
-rejected binary fails the same check that the local portable candidate passes.
-The candidate also passes real local JPEG/H.264 smoke. One initial cold
-agent-input marker was missed; 43 subsequent startup/input/reconnect/revocation
-runs passed. That first failure had no retained frame and remains unclassified;
-no input fix or arbitrary startup delay is claimed.
-
-The verified portable release is
-`ghcr.io/gakonst/nanocodex-hand@sha256:0cdd809e526c7e88827b9f46be5a665d9e3ca94a78a66d42f2a6a7110400e3c3`.
-Both native architecture codec smokes and baseline CPU guards passed. Its exact
-published ARM64 image also passed startup and non-root JPEG/H.264 capture on
-this Mac's Linux VM before the installer test. The browser test used the actual
-RemoteScreens component with a loopback authentication proxy restricted to the
-owned server, rather than a logged-in deployed-page session. Both input markers
-were independently verified byte-for-byte through the pinned SSH broker. Final
-disconnect revoked enrollment and stopped the desktop; separate account reads
-confirmed enrollment and screen absence. All fixture containers, state, workspace
-markers and generated private keys were removed.
-
-Existing SSH containers require explicit reconnection to use a new image. The
-retained VM's running publisher was not replaced: its current lifecycle also
-owns the compositor, so restarting it would disrupt desktop applications.
-
-No Windows or macOS guest was available for this pass. Windows native hosting
-remains planned; no Windows media was installed. External-server and encrypted
-vault-to-public-server installation remain unverified until a reachable owned
-SSH target is provided. A local SSH fixture does not establish those results.
-
-Private evidence is under `/tmp/nanocodex-remote-pass-20260909`,
-`/tmp/nanocodex-native-vm-pass-20260909`, `/tmp/nanocodex-phone-pass-20260909`,
-`/tmp/nanocodex-web-latency-20260909`, `/tmp/nanocodex-linux-ssh-20260909`,
-`/tmp/nanocodex-cloudflare-pass-20260909`, `/tmp/nanocodex-web-ssh-20260909`,
-`/tmp/nanocodex-hand-release-34287642764` (rejected image), and
-`/tmp/nanocodex-hand-release-34289137727` (portable release).
+[Appium WebDriverAgent](https://github.com/appium/WebDriverAgent).

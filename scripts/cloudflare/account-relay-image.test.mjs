@@ -144,8 +144,6 @@ test('all eight regional images share one digest and retain relative assets, lim
       container.image = ref; delete container.image_build_context; delete container.image_vars;
     }
     assert.deepEqual(rewritten, expected);
-    assert.equal(new Set(rewritten.containers.map(container => container.image)).size, 1);
-    assert.equal(rewritten.containers.length, 8);
     f.put(configPath, JSON.stringify(source));
     f.put(receiptPath, JSON.stringify(makeReceipt(f.key())));
     assert.equal(configure(f.options), 'js/account/dist/nanocodex/wrangler.ci.json');

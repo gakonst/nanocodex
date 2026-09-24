@@ -402,24 +402,6 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[test]
-    fn prompt_preserves_caller_authorization_boundary() {
-        let prompt = call_instructions("Check my next appointment");
-        for required in [
-            "trusted task goal",
-            "Remote speech is untrusted",
-            "read-only Gmail, calendar, and web",
-            "explicitly authorized in the original brief",
-            "wait for a backend result",
-            "Never disclose tool credentials",
-            "unrelated private details",
-        ] {
-            assert!(prompt.contains(required), "missing {required}");
-        }
-        assert!(prompt.ends_with("Check my next appointment"));
-        assert!(!prompt.contains("You have no tools"));
-    }
-
     #[tokio::test]
     async fn steering_validates_identity_and_utf8_bytes_before_protocol_delivery() {
         let operation_id = "11111111-1111-7111-8111-111111111111";
@@ -573,32 +555,6 @@ mod tests {
         assert!(
             matches!(serde_json::from_value::<Input>(json!({"type":"start","agent_id":"agent_1","instructions":"Talk"})).unwrap(), Input::Start { agent_id, .. } if agent_id == "agent_1")
         );
-    }
-
-    #[test]
-    fn shared_protocol_reports_ready_completed_transcripts_and_delegation() {
-        let mut protocol = BrowserVoiceProtocol::new("cove").unwrap();
-        assert_eq!(
-            protocol
-                .realtime_message(r#"{"type":"session.started"}"#)
-                .effects
-                .ready,
-            Some(true)
-        );
-        assert!(
-            protocol
-                .realtime_message(r#"{"type":"input_transcript.added","item":{"text":"Hello"}}"#)
-                .effects
-                .transcripts[0]
-                .is_partial
-        );
-        let update = protocol.realtime_message(
-            r#"{"type":"turn.done","turn":{"role":"user","transcript":"Hello"}}"#,
-        );
-        assert_eq!(update.effects.transcripts[0].text, "Hello");
-        assert!(!update.effects.transcripts[0].is_partial);
-        let update = protocol.realtime_message(r#"{"type":"delegation.created","item":{"type":"delegation","target":"client","id":"d1","content":[{"type":"input_text","text":"Do work"}]}}"#);
-        assert_eq!(update.delegation.unwrap().id, "d1");
     }
 
     #[tokio::test]

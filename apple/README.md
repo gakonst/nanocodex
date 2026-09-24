@@ -456,25 +456,12 @@ the Hand. Its keep-awake setting prevents idle system sleep without
 keeping the display on. Its setting persists; keeping awake uses more battery.
 Quitting, lid-close, or explicit system sleep can still interrupt availability.
 
-The opt-in `testLiveHandDisableSurvivesRelaunchAndBackground` UI journey verifies
-the disable preference through a cold launch, re-enabling against the real
-service, and reconnection after 30 seconds in the background. It passed on a
-physical iPhone on 2026-09-06. This is not evidence of an OS-scheduled wake or
-tool dispatch while the screen is locked; those journeys remain unverified.
-
-`testLiveHandContinuesUserTaskWhileBackgrounded` passed on a physical iPhone
-running iOS 26.6 on 2026-09-06. The service recorded 12 successful phone file
-operations after the old 25-second cutoff, up to 104 seconds after backgrounding.
-The test captured the system task activity on the lock screen and verified the
-final file contents after foregrounding. It does not establish indefinite
-availability or wake-on-call for an idle phone.
-A later repeat stalled at the model connection and was cancelled before any
-tool calls; that run did not pass the final-result assertion.
-
-`testLiveRunAgentShortcutOffersAccountAgents` also passed on the same phone. It
-verifies action discovery and the real account's agent picker, not execution of
-the SDK 27 branch. Local validation used Xcode 26; the Xcode 27 CI job has not
-been run for these changes.
+The opt-in UI journeys cover the Hand disable preference across relaunches
+(`testLiveHandDisableSurvivesRelaunchAndBackground`), continued user-task
+execution (`testLiveHandContinuesUserTaskWhileBackgrounded`), and Shortcut agent
+selection (`testLiveRunAgentShortcutOffersAccountAgents`). Run them on the target
+physical device; they do not establish OS-scheduled wake, indefinite idle
+availability, or SDK 27 behavior when built with SDK 26.
 
 `swift test --package-path apple/NanocodexHand` checks workspace and protocol
 boundaries. With `NANOCODEX_HAND_LIVE=1` and `NC_API_KEY`, its live journey writes
@@ -483,14 +470,6 @@ again in a second turn. The opt-in UI journey
 `testLiveHandConnectsAutomaticallyAndRunsFiles` exercises normal app launch,
 automatic connection, file operations, and cold-launch restoration on a signed-in
 device (`NANOCODEX_INBOX_LIVE=1` in the test runner).
-
-Verified on 2026-09-06: all three Hand boundary checks, the two-turn real service
-journey, and the iPhone simulator UI journey passed. The UI journey wrote and
-read a file on the phone, relaunched the app, and read the same file again. Its
-actual workspace file was checked independently. UI screenshots are attached to
-the Xcode test result as `automatic-hand-connected`,
-`automatic-hand-real-file-roundtrip`, and
-`automatic-hand-restored-file-after-cold-launch`.
 
 ## Read photos through the phone Hand
 
@@ -580,9 +559,8 @@ the shared container.
 
 `ContextUITests.testSafariShareReachesContextInbox` exercises Safari's iOS 26
 share sheet, the extension preview/save, and the imported page text appearing when
-the app resumes. It has been verified on a signed physical iPhone with a demo
-account, including the shared App Group container. The test skips older system
-share-sheet layouts.
+the app resumes. It requires a signed device with a demo account and the shared
+App Group container. The test skips older system share-sheet layouts.
 
 Incoming Message automation execution and capture while locked still require
 device validation. Automatic capture of WhatsApp, Instagram and Signal is not
@@ -595,15 +573,6 @@ codes beyond the search excerpts. It then reconnects the Hand, adds fresh
 Signal context through a separate store writer, and queries it in another turn.
 Local boundary tests cover all four sources, account/capture fences, malformed
 queries, source aliases and Unicode pagination.
-
-Verified on 2026-09-06: the four-source live Hand journey and reconnect passed.
-On a signed physical iPhone, `testLiveShortcutsMessageCanBeQueriedThroughHand`
-ran Capture Context in Shortcuts with the app terminated, reopened the account,
-and asked an agent to find the newly captured text through the actual phone
-Hand. The agent returned the synthetic text without it being attached to the
-prompt. The four messaging setup screens also passed native UI checks. These
-tests do not send messages to other people or establish incoming notification
-automation behavior.
 
 ```sh
 NANOCODEX_HAND_CONTEXT_LIVE=1 swift test --package-path apple/NanocodexHand --filter HandIntegrationTests/testRealAgentQueriesCapturedMessagesThroughHand
@@ -680,10 +649,7 @@ sample agents, or mocked service responses.
 `testPerformanceCurrentSessionDrawerAndSheets` measures the currently selected saved
 conversation while opening/dismissing the sidebar, attachments, and settings. It
 preserves the selected identity and draft, sends no messages, and records three
-CPU/memory/hitch iterations after XCTest's warm-up. The final Muse-inspired UI
-passed this check on iPhone 17 Pro with zero hitches in all three iterations; this
-is a narrow navigation result with no Muse or pre-change baseline. See
-[the reference study and validation notes](../docs/ux/2026-09-16-muse-dogfood.md).
+CPU/memory/hitch iterations after XCTest's warm-up.
 
 `testPerformanceSavedAccountResponsiveColdLaunch` measures process-cold launch
 until the app responds and separately records saved-account restoration through
@@ -712,22 +678,11 @@ The focused media journey is `InboxUITests/testNativeMediaPreviewZoomPlaybackAnd
 
 New conversations open synchronously as local drafts. Creation runs in the background using a persisted idempotency key; Send and voice share that request. Draft text, pending messages, attachments (including imports still in progress), context selections, and keyboard focus survive the server identity arriving. A late response never changes the selected conversation. Failed creation can be retried from the composer, and unfinished drafts survive relaunch.
 
-Verified on 2026-09-06: seven native UI checks passed, including creation delayed by 10–20 seconds, immediate send, cancellation before admission, draft and keyboard preservation, retry, navigation, and relaunch. The signed-in iPhone journey also passed against the real backend: opening, two turns, history after relaunch, and voice connect/mute/minimize/end.
-
 Conversation scroll targets retain the visible message across prepended history and new output, and new conversations open at the latest messages. Returning to the foreground resumes the existing cursor and transcript rather than clearing the screen. Conversation scrolling preserves the selected agent; navigation uses the searchable sidebar.
 
 The conversation keeps the same agent composer fixed above the keyboard while you read older messages. Sending dismisses the iPhone/iPad keyboard. Sending to an idle conversation immediately displays the message and local attachment previews in the transcript, even while conversation creation or admission is pending. The bubble retains its identity through acknowledgement and execution; unconfirmed delivery shows Retry and Cancel beside that message. Follow-ups waiting behind another turn appear once in the queue above the composer; execution evidence promotes them into the conversation. API-accepted steering appears with an explicit steering label. The queue follows server order across devices and relaunch; messages whose content has not loaded retain a placeholder and queue position. Cancelling and retrying keep the same identity. “Steer now” injects the input through the active turn’s steering API without stopping that turn. With an empty draft and a running turn, the send button becomes Stop; adding text or an image restores Send in the same position. Drafts, queued follow-ups, steering, and stop controls belong to the selected agent. Switching conversations or opening the drawer preserves that work.
 
-Verified on 2026-09-17: eight focused compact-UI simulator journeys passed across
-runs, plus 24 shared rendering tests. The Release iPhone 17 Pro test preserved the
-conversation and draft through three measured drawer-left-swipe, attachment, and
-settings rounds, with zero reported hitches. The drawer uses tap recognition that
-fails during a drag, preventing swipe release from selecting a row. See the UX
-notes and compact-device metrics above for scope, recordings, and limitations.
-
-Verified on 2026-09-12: focused simulator checks cover immediate first-send rendering during delayed creation, stable bubbles through delayed failure and Retry, cached tabs without reload, startup restoration, and reading position during streaming. Transcript grouping is computed with the conversation revision rather than each scroll update. Row geometry does not publish per-pixel view updates, and history navigation follows native scroll events without an additional drag recognizer. The phone uses a fully measured native stack for its bounded history window, avoiding feedback between estimated lazy heights and scroll restoration. Native visibility events load and release generated image thumbnails as they enter and leave the viewport. Native size-change anchoring follows streamed output. Image previews apply media validation directly without encoding the complete image into JSON first. Desktop thread loading uses the system progress indicator, and first-send failures remain beside their original bubble. These fixture checks do not measure physical-device network latency.
-
-Verified on 2026-09-08: focused iPhone/iPad checks cover browser tabs, searchable live previews, the All/Running filter, app-menu navigation, independent drafts, keyboard placement, point-based reading restoration, slow creation, cancellation, and retry. The signed-in iPhone 17 Pro completed a real reply, relaunched, and retained both messages through three round trips to other tabs. InboxCore passed 68 tests with three skips. The top tab strip, bottom Back/+/overview/screens/menu bar, Back draft restoration, and activity-sorted overview were checked in iPhone and iPad simulators. These tab checks do not establish voice latency or microphone performance.
+Transcript grouping is computed with the conversation revision rather than each scroll update. Row geometry does not publish per-pixel view updates, and history navigation follows native scroll events without an additional drag recognizer. The phone uses a fully measured native stack for its bounded history window, avoiding feedback between estimated lazy heights and scroll restoration. Native visibility events load and release generated image thumbnails as they enter and leave the viewport. Native size-change anchoring follows streamed output. Image previews apply media validation directly without encoding the complete image into JSON first. Desktop thread loading uses the system progress indicator, and first-send failures remain beside their original bubble.
 
 The native Debug demo suite additionally exercises long-thread reading during new output and foregrounding, older-history pagination, conversation scrolling without swipe navigation, tab switching and draft isolation, live overview updates, plus-button creation and immediate stopping from the send button, the empty inbox, inferred phone country codes, a multi-message queue with the keyboard open, and voice sign-in/draft preservation. Demo agents and injected failures are fixtures; this does not validate an authenticated service or physical microphone.
 

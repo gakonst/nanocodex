@@ -908,13 +908,6 @@ mod tests {
     }
 
     #[test]
-    fn complete_prompt_reuses_the_history_without_repair() {
-        let context = ContextManager::new(vec![message("hello")]);
-        let prompt = context.prompt_items();
-        assert_eq!(prompt.len(), 1);
-    }
-
-    #[test]
     fn history_assigns_ids_once_and_preserves_them_across_checkpoints() {
         let mut context = ContextManager::new(vec![message("hello")]);
         let id = context

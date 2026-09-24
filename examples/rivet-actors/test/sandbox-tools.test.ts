@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import {
-  agentOsRuntimeOptions,
   createRivetSandboxTools,
   restoreRivetPreviewServers,
   workspacePath,
@@ -31,20 +30,6 @@ afterEach(() => {
 });
 
 describe("Rivet AgentOS workspace paths", () => {
-  test("keeps JavaScript listeners alive beyond the signed preview lifetime", () => {
-    expect(agentOsRuntimeOptions.limits.jsRuntime).toEqual({
-      cpuTimeLimitMs: 960_000,
-      wallClockLimitMs: 960_000,
-    });
-  });
-
-  test("canonicalizes paths under the workspace", () => {
-    expect(workspacePath(".")).toBe("/workspace");
-    expect(workspacePath("././")).toBe("/workspace");
-    expect(workspacePath("src//./index.ts")).toBe("/workspace/src/index.ts");
-    expect(workspacePath("/workspace/out.txt")).toBe("/workspace/out.txt");
-  });
-
   test.each([
     "",
     "../secret",

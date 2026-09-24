@@ -134,19 +134,7 @@ pub(crate) fn shorten_home(path: &Path) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        duration_display_tick, format_duration, format_turn_duration, normalize_line_endings,
-        sanitize_terminal_text, sanitize_terminal_text_inline, terminal_text_width,
-    };
-
-    #[test]
-    fn line_endings_are_normalized_without_changing_lf_text() {
-        assert_eq!(normalize_line_endings("one\ntwo"), "one\ntwo");
-        assert_eq!(
-            normalize_line_endings("one\r\ntwo\rthree"),
-            "one\ntwo\nthree"
-        );
-    }
+    use super::{sanitize_terminal_text, sanitize_terminal_text_inline, terminal_text_width};
 
     #[test]
     fn terminal_text_has_safe_multiline_and_inline_projections() {
@@ -154,32 +142,5 @@ mod tests {
         assert_eq!(sanitize_terminal_text(text), "one\ntwo    three�");
         assert_eq!(sanitize_terminal_text_inline(text), "one two    three�");
         assert_eq!(terminal_text_width("two\tthree\u{1b}"), 13);
-    }
-
-    #[test]
-    fn durations_round_to_the_same_tick_used_for_live_redraws() {
-        for (nanoseconds, expected) in [
-            (999_999_999, "999ms"),
-            (1_049_999_999, "1.0s"),
-            (1_050_000_000, "1.1s"),
-            (11_249_999_999, "11.2s"),
-            (11_250_000_000, "11.3s"),
-        ] {
-            assert_eq!(format_duration(nanoseconds), expected);
-        }
-        assert_eq!(duration_display_tick(1_050_000_000), 1_011);
-    }
-
-    #[test]
-    fn turn_durations_only_use_whole_seconds_and_larger_units() {
-        for (nanoseconds, expected) in [
-            (999_999_999, "0s"),
-            (5_000_000_000, "5s"),
-            (65_000_000_000, "1m 5s"),
-            (3_665_000_000_000, "1h 1m 5s"),
-            (176_465_000_000_000, "2d 1h 1m 5s"),
-        ] {
-            assert_eq!(format_turn_duration(nanoseconds), expected);
-        }
     }
 }

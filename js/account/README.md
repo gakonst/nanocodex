@@ -41,21 +41,6 @@ discards unsent input; resuming requires taking control again. Disconnected
 video is cleared and hidden. Screen availability still depends on the host
 publisher; this viewer does not provision a Cloudflare desktop.
 
-The viewer tests cover recovery deadlines, server publication changes, stale
-callbacks, control release, and authorization expiry. Chromium checks exercised
-real video/data channels, actual tab hide/show, discarded drafts, a 12-second
-publisher outage, and reopening the viewer. That lifecycle test uses a synthetic
-publisher. Separate live VM checks received 1600×900 video, renewed the viewer
-lease for three minutes, and used browser pointer/text/keyboard input to create
-and list a marker file in the VM terminal. A live factory restart with a
-12-second shutdown gap cleared the old frame and resumed decoded video with
-the new publication in about 18 seconds, retaining selection without acquiring
-control.
-The frame-transport Chromium fixture also exercised real JPEG decoding,
-pointer/text/keyboard input, actual tab hide/show, and a 12-second publisher
-outage with zero WebRTC peers or ICE requests. The host and broker remain
-responsible for provisioning and publishing Cloudflare desktops.
-
 ## Boundaries
 
 The Vite application has one React root and owns browser presentation, routing,
@@ -116,7 +101,8 @@ history expires after ten minutes; account changes remove it. Live turn events
 invalidate the list and selected thread state. Streaming transport and
 OAuth/device lifecycles retain their existing protocol ownership.
 
-Use the checkout-level operator interface in [AGENTS.md](../../AGENTS.md) for
-local development, checks, deployment, and verification. This package exposes
+Use the root [README.md](../../README.md) for checkout setup and the root
+[package scripts](../../package.json) for repository commands. Follow
+[AGENTS.md](../../AGENTS.md) for deployment order and verification guidance. This package exposes
 the supporting `dev`, `build`, `test`, `typecheck`, `check:docs`, and `deploy`
 scripts, but the repository instructions own how they are run.

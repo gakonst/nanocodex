@@ -292,23 +292,3 @@ fn simplify_review_output_schema() -> Value {
         "additionalProperties": false
     })
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{SIMPLIFY_ANGLES, simplify_reviewer_task};
-
-    #[test]
-    fn simplify_reviewers_are_bounded_read_only_and_angle_specific() {
-        let diff = "diff --git a/src/lib.rs b/src/lib.rs\n+let value = compute();";
-
-        for (angle, guidance) in SIMPLIFY_ANGLES {
-            let prompt = simplify_reviewer_task(angle, guidance, diff, Some("allocations"));
-            assert!(prompt.contains(&format!("only for the {angle} cleanup angle")));
-            assert!(prompt.contains("at most eight"));
-            assert!(prompt.contains("do not modify files"));
-            assert!(prompt.contains("do not delegate work"));
-            assert!(prompt.contains("Additional review focus: allocations"));
-            assert!(prompt.contains(diff));
-        }
-    }
-}

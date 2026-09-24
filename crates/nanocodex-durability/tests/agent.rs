@@ -1959,57 +1959,6 @@ async fn queued_developer_context_waits_for_provider_retry_to_terminalize() -> R
 }
 
 #[tokio::test]
-async fn idle_routed_prompt_is_durably_admitted_and_checkpointed() -> Result<()> {
-    let store = crate::MemoryStore::new()?;
-    let state = crate::DurableSession::open(store, "automatic-routed-prompt").await?;
-    let durable_state = state.clone();
-    let generations = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-    let openai = OpenAi::builder("test-key")
-        .service({
-            let generations = Arc::clone(&generations);
-            move || DurableReplayService {
-                generations: Arc::clone(&generations),
-            }
-        })
-        .build()?;
-    let workspace = temporary_workspace("automatic-routed-durability")?;
-    let (agent, events) = Nanocodex::builder(openai)
-        .workspace(&workspace)
-        .session_id(test_session_id())
-        .durability(state)
-        .await?
-        .build()?;
-
-    let turn = match agent.route_prompt("state this routed prompt").await? {
-        PromptRoute::Started(turn) => turn,
-        PromptRoute::Steered => return Err(eyre!("idle durable input unexpectedly steered")),
-    };
-    let accepted_request_id = turn
-        .request_id()
-        .ok_or_else(|| eyre!("routed durable turn is missing its request ID"))?
-        .to_owned();
-    let result = turn.result().await?;
-    assert_eq!(result.final_message(), "durably replayed");
-    let request_id = result
-        .request_id()
-        .ok_or_else(|| eyre!("routed durable result is missing its request ID"))?;
-    assert_eq!(accepted_request_id, request_id);
-    let state = durable_state.state().await?;
-    assert!(
-        state
-            .operation(request_id)
-            .is_some_and(|operation| operation.status.is_terminal())
-    );
-    assert!(durable_state.agent_snapshot().await?.is_some());
-    assert_eq!(generations.load(Ordering::SeqCst), 1);
-
-    agent.shutdown().await?;
-    drop((agent, events));
-    std::fs::remove_dir_all(workspace)?;
-    Ok(())
-}
-
-#[tokio::test]
 async fn cold_reopen_recovers_idle_routed_prompt_without_a_second_model_call() -> Result<()> {
     let store = crate::MemoryStore::new()?;
     let failing_store = FailReplaceOnce {

@@ -341,6 +341,15 @@ the durable cursor is authoritative.
 | After terminal commit | Terminal operation | Replay terminal; no execution |
 | After managed terminal transaction, before SSE send | Terminal row/event | Cursor replay delivers it |
 
+For the live native/managed journey, run
+`node --test js/managed/test/live-binary-durability.test.mjs` with explicit
+`NANOCODEX_DURABILITY_TEST_BINARY`, `NANOCODEX_MANAGED_URL`, and
+`NANOCODEX_DURABILITY_TEST_API_KEY`. Optional
+`NANOCODEX_DURABILITY_TEST_REDEPLOY_CONFIG` triggers a Worker redeploy during
+the turn. The gate creates temporary native receipts and agents; failed runs
+retain evidence for diagnosis. `live-durability.test.mjs` covers long-history
+archival and cold recovery.
+
 ## Invariants
 
 1. Persist before dispatch.

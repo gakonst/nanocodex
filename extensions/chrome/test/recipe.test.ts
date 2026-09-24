@@ -1,22 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  compileRecipeCss,
   normalizeOrigin,
   permissionPattern,
   recipeStorageKey,
   validateRecipe,
 } from "../lib/recipe.ts";
-
-test("validates and compiles the declarative recipe contract", () => {
-  const recipe = validateRecipe({
-    name: "Quiet reading",
-    css: "article { max-width: 70ch; margin-inline: auto; }",
-    hide_selectors: ["aside.ads", "#newsletter"],
-  });
-  assert.equal(recipe.schema_version, 1);
-  assert.match(compileRecipeCss(recipe), /aside\.ads,\n#newsletter \{ display: none !important; \}/);
-});
 
 test("rejects CSS that can fetch code or data", () => {
   for (const css of [

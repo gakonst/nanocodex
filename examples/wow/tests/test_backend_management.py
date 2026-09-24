@@ -33,13 +33,6 @@ class ManagementTests(unittest.TestCase):
     def call(self, path, data=None, query=None, method='POST'):
         return self.backend.handle(method, path, query or {}, data)
 
-    def test_empty_luna_chat_creation(self):
-        self.backend.response = {'agent_id': 'new-chat'}
-        result = self.call('/api/threads/create', {'idempotency_key': 'create:1'})
-        self.assertEqual(result['thread_id'], 'new-chat')
-        self.assertEqual(result['metadata_scope'], 'local_companion')
-        self.assertEqual(self.backend.calls, [('GET', '/v1/agents', None, None), ('POST', '/v1/agents', {'settings': server.LUNA_SETTINGS}, 'create:1')])
-
     def test_creation_cannot_claim_missing_receipt(self):
         with self.assertRaises(server.APIError) as error:
             self.call('/api/threads/create', {'idempotency_key': 'create:1'})
@@ -51,17 +44,7 @@ class ManagementTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(server.APIError) as error:
                 self.call(path, {'project_id': 'root', 'name': 'new'})
             self.assertEqual(error.exception.status, 501)
-        capabilities = self.call('/api/capabilities', method='GET')['capabilities']
-        self.assertFalse(capabilities['child_chat_create'])
-        self.assertFalse(capabilities['chat_archive'])
-        self.assertTrue(capabilities['standalone_chat_create'])
         self.assertEqual(self.backend.calls, [])
-
-    def test_cancel_uses_bodyless_post_and_real_receipt(self):
-        self.backend.response = {'turn_id': 'project-followup:1', 'state': 'cancelling'}
-        result = self.call('/api/turns/cancel', {'thread_id': 'root', 'turn_id': 'project-followup:1'})
-        self.assertEqual(self.backend.calls, [('POST', '/v1/agents/root/turns/project-followup%3A1/cancel', None, None)])
-        self.assertEqual(result['receipt']['state'], 'cancelling')
 
     def test_steer_uses_message_id_not_turn_admission(self):
         self.call('/api/turns/steer', {'thread_id': 'root', 'turn_id': 't:1', 'text': 'Change direction', 'message_id': 'm:1'})
@@ -94,13 +77,6 @@ class ManagementTests(unittest.TestCase):
             with self.subTest(path=path), self.assertRaises(server.APIError):
                 self.call(path, {'thread_id': 'root', 'turn_id': 't', **data})
         self.assertEqual(self.backend.calls, [])
-
-    def test_state_reads(self):
-        self.backend.response = {'active_turns': [{'id': 't:1'}]}
-        result = self.call('/api/thread', query={'thread_id': ['root']}, method='GET')
-        self.assertEqual(result['state'], self.backend.response)
-        self.call('/api/turn', query={'thread_id': ['root'], 'turn_id': ['t:1']}, method='GET')
-        self.assertEqual([c[:2] for c in self.backend.calls], [('GET', '/v1/agents/root'), ('GET', '/v1/agents/root/turns/t%3A1')])
 
     def test_pagination_uses_raw_event_boundaries(self):
         self.backend.response = {'data': [

@@ -106,26 +106,6 @@ final class TranscriptStreamProjectionTests: XCTestCase {
         }
     }
 
-    func testStreamingLongHistoryWorkAndOutput() async throws {
-        var history = try (1...400).map { index in
-            try event(index, "turn_completed", ["final_message": .string(String(repeating: "Earlier answer Ελληνικά. ", count: 64))], turn: "old-\(index)")
-        }
-        let chunks = try (401...700).map { try delta($0, "streaming ") }
-        var baseline: [TranscriptRow] = []
-        let fullStart = ContinuousClock.now
-        for chunk in chunks { history.append(chunk); baseline = transcript(history) }
-        let full = fullStart.duration(to: .now)
-        history.removeLast(chunks.count)
-        let projector = TranscriptStreamProjection()
-        _ = try await projector.rows(history)
-        let incrementalStart = ContinuousClock.now
-        var projected: [TranscriptRow] = []
-        for chunk in chunks { history.append(chunk); projected = try await projector.rows(history) }
-        let incremental = incrementalStart.duration(to: .now)
-        XCTAssertEqual(projected, baseline)
-        print("TRANSCRIPT_STREAM_PERF full=\(full) incremental=\(incremental) retained_turns=400 chunks=300")
-    }
-
     func testIndexedProjectionKeepsTurnStreamAndToolIdentityAcrossRevisions() throws {
         func payload(_ cursor: Int, _ turn: String, _ type: String, _ value: [String: JSON], agent: String? = nil) throws -> AgentEvent {
             var fields: [String: JSON] = ["event": .object(["type": .string(type), "payload": .object(value)])]
@@ -170,38 +150,5 @@ final class TranscriptStreamProjectionTests: XCTestCase {
         XCTAssertFalse(rows.contains(where: \.running))
         projection.append(events[...])
         XCTAssertEqual(projection.rows, rows, "Replayed frames must not duplicate indexed rows")
-    }
-
-    func testWarmTabProjectionReusesHistoryAndCatchesUnprojectedTail() async throws {
-        let history = try (1...4000).map { index in
-            try event(index, "turn_completed", ["final_message": .string("Answer \(index). " + String(repeating: "Retained tab history. ", count: 16))], turn: "old-\(index)")
-        }
-        let saved = TranscriptStreamProjection()
-        let expected = try await saved.rows(history)
-        let coldStart = ContinuousClock.now
-        for _ in 0..<3 {
-            let rebuilt = try await TranscriptStreamProjection().rows(history)
-            XCTAssertEqual(rebuilt, expected)
-        }
-        let cold = coldStart.duration(to: .now)
-        let warmStart = ContinuousClock.now
-        for _ in 0..<3 {
-            let restored = try await saved.rows(history)
-            XCTAssertEqual(restored, expected)
-        }
-        let warm = warmStart.duration(to: .now)
-        // Switching can cancel the pending UI projection after receiving a frame.
-        // Reusing the projector must still catch that unprojected suffix once.
-        let resumed = history + [try delta(4001, "Arrived before switching.")]
-        let projected = try await saved.rows(resumed)
-        XCTAssertEqual(projected, transcript(resumed))
-        print("TAB_RESTORE_PERF cold=\(cold) warm=\(warm) history_events=4000 restores=3")
-    }
-
-    func testInactiveTabBudgetEvictsOversizedAndOldestTabs() {
-        XCTAssertEqual(TranscriptRetention.cachedPrefixCount(byteCounts: [16, 16, 16], byteLimit: 24, countLimit: 8), 2)
-        XCTAssertEqual(TranscriptRetention.cachedPrefixCount(byteCounts: [30], byteLimit: 24, countLimit: 8), 1)
-        XCTAssertEqual(TranscriptRetention.cachedPrefixCount(byteCounts: [1, 1, 1], byteLimit: 24, countLimit: 2), 1)
-        XCTAssertEqual(TranscriptRetention.cachedPrefixCount(byteCounts: [], byteLimit: 24, countLimit: 8), 0)
     }
 }

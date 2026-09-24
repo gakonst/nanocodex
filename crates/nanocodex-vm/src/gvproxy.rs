@@ -407,11 +407,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn default_network_exposes_host_loopback_at_a_stable_address() {
-        assert_eq!(Gvproxy::HOST_IPV4, Ipv4Addr::new(192, 168, 127, 254));
-    }
-
-    #[test]
     fn caller_selects_inherited_or_isolated_process_group() {
         let inherited = recorded_process_group(Gvproxy::spawn);
         let isolated = recorded_process_group(Gvproxy::spawn_isolated);

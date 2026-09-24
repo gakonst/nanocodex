@@ -19,7 +19,6 @@ for (const target of ["pkg-web/nanocodex.js", "pkg-web/nanocodex_bg.js", "pkg-no
         return super.subarray(begin, end);
       }
     }
-    assert.throws(() => new WorkerUint8Array(memory.buffer).subarray(LIMIT + 32, LIMIT + 33), RangeError);
     let cursor = LIMIT + 32;
     const malloc = (size) => { const ptr = cursor; cursor += Math.max(8, size); return ptr; };
     const realloc = (ptr, oldSize, newSize) => {

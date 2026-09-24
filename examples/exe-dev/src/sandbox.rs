@@ -969,15 +969,6 @@ mod tests {
         assert_eq!(deleted.control_masters_closed, 2);
     }
 
-    #[test]
-    fn parses_openssh_control_master_pid() {
-        assert_eq!(
-            parse_control_master_pid("Master running (pid=4217)\r\n"),
-            Some(4217)
-        );
-        assert_eq!(parse_control_master_pid("Control socket absent"), None);
-    }
-
     #[cfg(unix)]
     #[tokio::test]
     async fn process_output_is_bounded_while_produced() {

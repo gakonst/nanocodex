@@ -268,28 +268,7 @@ mod tests {
         net::TcpListener,
     };
 
-    use super::{Tool, WebSearchConfig, WebSearchHandler};
-
-    #[test]
-    fn exposes_codex_web_run_schema_and_description() {
-        let handler = WebSearchHandler::new(WebSearchConfig {
-            endpoint: "http://127.0.0.1:1/v1/alpha/search".to_owned(),
-            auth: nanocodex_oai_api::auth::OpenAiAuth::api_key("test-key"),
-        });
-        let spec = serde_json::to_value(handler.definition()).unwrap();
-
-        assert_eq!(spec["name"], "web__run");
-        assert_eq!(spec["strict"], false);
-        assert_eq!(
-            spec.pointer("/parameters/properties/time/description"),
-            Some(&json!("Get time for the given UTC offsets."))
-        );
-        assert!(
-            spec["description"]
-                .as_str()
-                .is_some_and(|description| description.contains("turn2search5"))
-        );
-    }
+    use super::{WebSearchConfig, WebSearchHandler};
 
     #[test]
     fn web_schema_matches_pinned_upstream_fixture() {

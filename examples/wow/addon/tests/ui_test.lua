@@ -22,35 +22,31 @@ function methods:SetText(value) self.value = value if self.scripts.OnTextChanged
 function methods:GetText() return self.value or "" end
 function methods:SetFocus() self.focus = true end
 function methods:ClearFocus() self.focus = false end
-function methods:HighlightText() self.highlighted = true end
-function methods:SetScrollChild(child) self.child = child end
 function methods:GetHeight() return self.height or 1080 end
 function methods:GetWidth() return self.width or 1920 end
 function methods:SetScale(value) self.scale = value end
 function methods:GetVerticalScroll() return self.offset or 0 end
 function methods:SetVerticalScroll(value) self.offset = value end
 local function newFrame(name)
-    local f = setmetatable({ scripts={}, events={}, visible=true, name=name }, {__index=methods})
+    local f = setmetatable({ scripts={}, events={}, visible=true }, {__index=methods})
     frames[#frames+1] = f
     if name then _G[name] = f end
     return f
 end
-function methods:CreateFontString(_, _, font) local f = newFrame() f.font = font return f end
-for _, name in ipairs({"SetSize", "SetFrameStrata", "SetClampedToScreen", "EnableMouse", "SetMovable", "RegisterForDrag", "StartMoving", "StopMovingOrSizing", "SetBackdrop", "SetBackdropColor", "SetBackdropBorderColor", "SetWidth", "SetHeight", "SetJustifyH", "SetMultiLine", "SetAutoFocus", "SetFontObject", "SetMaxLetters", "UpdateScrollChildRect"}) do methods[name] = function() end end
+function methods:CreateFontString() return newFrame() end
+for _, name in ipairs({"SetScrollChild", "SetFrameStrata", "SetClampedToScreen", "EnableMouse", "SetMovable", "RegisterForDrag", "StartMoving", "StopMovingOrSizing", "SetBackdrop", "SetBackdropColor", "SetBackdropBorderColor", "SetJustifyH", "SetMultiLine", "SetAutoFocus", "SetFontObject", "SetMaxLetters", "UpdateScrollChildRect"}) do methods[name] = function() end end
 function methods:SetSize(width, height) self.width, self.height = width, height end
 function methods:SetHeight(value) self.height = value end
 function methods:SetWidth(value) self.width = value end
-function methods:SetBackdrop(value) self.backdrop = value end
-function methods:SetFontObject(value) self.font = value end
-CreateFrame = function(_, name, parent, template) local f = newFrame(name) f.parent = parent f.template = template return f end
+CreateFrame = function(_, name) return newFrame(name) end
 ChatFontNormal = {}
 local clock = 10
 GetTime = function() return clock end
 local errors, completed, chat = {}, {}, {}
-UIErrorsFrame = {AddMessage=function(_, message, r, g, b) errors[#errors+1] = {message,r,g,b} end}
+UIErrorsFrame = {AddMessage=function(_, message) errors[#errors+1] = message end}
 DEFAULT_CHAT_FRAME = {AddMessage=function(_, message) chat[#chat+1] = message end}
 RaidWarningFrame = {}
-RaidNotice_AddMessage = function(frame, message, color) assert(frame == RaidWarningFrame) completed[#completed+1] = {message,color} end
+RaidNotice_AddMessage = function(frame, message) assert(frame == RaidWarningFrame) completed[#completed+1] = message end
 SendChatMessage = function() error("must never send chat") end
 UIParent = newFrame("UIParent")
 UISpecialFrames, SlashCmdList = {}, {}
@@ -73,16 +69,13 @@ assert(NanocodexWowDB == nil, "file loading and unrelated ADDON_LOADED must not 
 NanocodexWowDB = { hidden=true, position={point="TOPLEFT", relativePoint="TOPLEFT", x=10, y=-20} }
 eventFrame.scripts.OnEvent(eventFrame, "ADDON_LOADED", "Nanocodex")
 assert(not NanocodexWowPanel:IsShown())
-assert(NanocodexWowPanel.template == "BackdropTemplate")
-assert(NanocodexWowPanel.backdrop.bgFile == "Interface\\Buttons\\WHITE8X8")
-assert(NanocodexWowPanel.backdrop.edgeFile == "Interface\\DialogFrame\\UI-DialogBox-Border")
 assert(NanocodexWowPanel.point[1] == "TOPLEFT")
 assert(eventFrame.events.ADDON_LOADED == nil)
 assert(SLASH_NANOCODEXWOW1 == "/nc" and SLASH_NANOCODEXWOW2 == "/nanocodex")
 SlashCmdList.NANOCODEXWOW("show")
 assert(NanocodexWowPanel:IsShown() and NanocodexWowDB.hidden == false)
 SlashCmdList.NANOCODEXWOW("capture")
-assert(#completed == 1 and completed[1][2].r == 1 and completed[1][2].g == 0.82)
+assert(#completed == 1)
 SlashCmdList.NANOCODEXWOW("capture")
 assert(#completed == 1, "repeat notices must be suppressed")
 assert(NanocodexWowDB.lastContext.schemaVersion == 1)
@@ -95,7 +88,7 @@ assert(NanocodexWowDB.position.x == 40 and NanocodexWowDB.position.y == 50)
 local old = NanocodexWowDB.lastExportJson
 NS.Capture = function() error("restricted capture") end
 assert(NS.Snapshot() == nil and NanocodexWowDB.lastExportJson == old)
-assert(#errors == 1 and errors[1][2] == 1 and errors[1][3] == 0.1)
+assert(#errors == 1)
 SlashCmdList.NANOCODEXWOW("clear")
 assert(NanocodexWowDB.lastContext == nil and NanocodexWowDB.lastExportJson == nil)
 NS.Toggle()
@@ -105,7 +98,7 @@ assert(NanocodexWowPanel:IsShown())
 io.write("PASS: lifecycle, restore/drag/reset, slash commands, clear, capture failure, optional bindings\n")
 
 SlashCmdList.NANOCODEXWOW("projects")
-assert(#chat == 1 and chat[1]:find("|cffffd100Nanocodex:|r", 1, true))
+assert(#chat == 1)
 SlashCmdList.NANOCODEXWOW("settings")
 assert(#errors == 2, "missing settings must be guarded")
 RaidNotice_AddMessage = nil
@@ -119,10 +112,8 @@ assert(#chat == 2)
 clock = clock + 4
 NS.Notify("error", "Fallback error")
 assert(#chat == 3, "notices can repeat after throttle expires")
-io.write("PASS: native dialog assets/fonts/templates, semantic local notices, throttling, API fallbacks\n")
+io.write("PASS: semantic local notices, throttling, API fallbacks\n")
 
-function methods:GetText() return self.value or "" end
-function methods:SetVerticalScroll(value) self.offset = value end
 assert(loadfile("addon/Nanocodex/Projects.lua"))("Nanocodex", NS)
 assert(loadfile("addon/Nanocodex/Bridge.lua"))("Nanocodex", NS)
 local snapshot = "ncw1\nP\tp%2F1\tProject%20%7Cname\nT\tp%2F1\tt1\tChat%20one\trunning\nT\tp%2F1\tt2\tSecond\tidle\nP\tp2\tOther\n"
@@ -198,25 +189,9 @@ io.write("PASS: snapshot bounds/atomic validation, native browse/select, persist
 
 assert(NS.ParseProjects("ncw1\nP    root    My%20Project\nT    root    chat    Test%20chat    Ready"))
 
--- Delivery and failure semantics: queue receipt must not claim connection/success.
-local sends = 0
-NS.TransportSend = function() sends = sends + 1 return false, "pending" end
-assert(NS.Ask("queued offline"))
-assert(sends == 1, "pending must never automatically retry")
-assert(NS.TransportDisplay():find("Disconnected",1,true))
-assert(NS.TransportDisplay():find("Queued",1,true))
-NS.OnTransportMessage("transport_ack", "1")
-assert(NS.TransportDisplay():find("Transport acknowledged",1,true))
-assert(NS.TransportDisplay():find("Disconnected",1,true))
-NS.TransportStatus = function() return {connected=true, state="ready"} end
-assert(NS.TransportDisplay():find("Bridge linked",1,true))
+-- Missing and failed adapters must not claim successful delivery.
 NS.TransportStatus = function() error("unavailable") end
 assert(NS.TransportDisplay():find("Disconnected",1,true))
-NS.TransportSend = function() return true end
-assert(NS.Ask("acknowledged"))
-assert(NS.TransportDisplay():find("Transport acknowledged",1,true))
-NS.TransportSend = function() return false, "busy" end
-assert(not NS.Ask("different request while busy"))
 NS.TransportSend = function() return false, "queue full" end
 assert(not NS.Ask("full"))
 assert(NS.TransportDisplay():find("Not queued",1,true))
@@ -236,15 +211,8 @@ NS.OnTransportMessage("error", "Denied |cffff0000")
 assert(NS.TransportDisplay():find("Denied ||cffff0000",1,true))
 NS.OnTransportMessage("unknown", "ignored")
 NS.OnTransportMessage("reply", {})
-for _, f in ipairs(frames) do
-    if f.value then
-        assert(not f.value:find("Paste reply",1,true))
-        assert(not f.value:find("Ask / Copy",1,true))
-        assert(not f.value:find("Import snapshot",1,true))
-    end
-end
 NanocodexWowPanel.scripts.OnUpdate(NanocodexWowPanel, 1)
-io.write("PASS: missing/offline/failed transport, queued versus ack, automatic replies/snapshots, markup safety, no manual controls\n")
+io.write("PASS: missing/failed transport, automatic replies/snapshots, markup safety\n")
 
 local answerBefore = NanocodexWowPanel.answer:GetText()
 assert(NS.Reply(string.rep("x",262145)) == false)

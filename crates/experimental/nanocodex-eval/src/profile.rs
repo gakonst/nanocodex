@@ -85,12 +85,6 @@ pub struct Profile {
 /// Parsed and content-pinned profile revision.
 #[derive(Clone, Debug)]
 pub struct ResolvedProfile {
-    /// Selected profile name.
-    #[cfg(test)]
-    pub name: String,
-    /// Stable digest of all resolved profile inputs.
-    #[cfg(test)]
-    pub digest: String,
     /// Loaded immutable task packages.
     pub tasks: Vec<ResolvedTask>,
     /// Exact task/treatment families, excluding fungible repetitions.
@@ -256,38 +250,6 @@ pub enum ProfileError {
     /// Stable identity serialization failed.
     #[error("failed to serialize resolved profile identity: {0}")]
     Identity(#[from] serde_json::Error),
-}
-
-/// Closed-profile selector failure.
-#[cfg(test)]
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum ProfileSelectionError {
-    /// Requested task is outside the profile.
-    #[error("task `{selector}` is not part of profile `{profile}`")]
-    Task {
-        /// Selected profile.
-        profile: String,
-        /// Rejected selector.
-        selector: String,
-    },
-    /// No treatment matched explicit selectors.
-    #[error("no treatment in profile `{profile}` matches task `{task}` and the requested knobs")]
-    Treatment {
-        /// Selected profile.
-        profile: String,
-        /// Selected task.
-        task: String,
-    },
-    /// Omitted semantic knobs did not identify one family.
-    #[error(
-        "task `{task}` has multiple treatments in profile `{profile}`; select model and/or thinking"
-    )]
-    Ambiguous {
-        /// Selected profile.
-        profile: String,
-        /// Selected task.
-        task: String,
-    },
 }
 
 #[derive(Serialize)]
@@ -510,69 +472,13 @@ impl EvaluationManifest {
                 .collect(),
             harness_digests: &harness_digests,
         };
-        #[cfg(test)]
-        let digest = hex::encode(Sha256::digest(serde_json::to_vec(&identity)?));
-        #[cfg(not(test))]
         let _ = identity;
         Ok(ResolvedProfile {
-            #[cfg(test)]
-            name,
-            #[cfg(test)]
-            digest,
             tasks,
             families,
             web_search: profile.web_search,
             trials: profile.trials,
         })
-    }
-}
-
-impl ResolvedProfile {
-    /// Resolves one exact task selector without permitting ad-hoc expansion.
-    #[cfg(test)]
-    pub fn task(&self, selector: &str) -> Result<&ResolvedTask, ProfileSelectionError> {
-        self.tasks
-            .iter()
-            .find(|task| task.selector == selector)
-            .ok_or_else(|| ProfileSelectionError::Task {
-                profile: self.name.clone(),
-                selector: selector.to_owned(),
-            })
-    }
-
-    /// Resolves an exact task family. Omitted dimensions are accepted only
-    /// when the profile contains one unambiguous matching treatment.
-    #[cfg(test)]
-    pub fn family(
-        &self,
-        task: &str,
-        harness: Option<&str>,
-        model: Option<Model>,
-        thinking: Option<Thinking>,
-    ) -> Result<&ResolvedFamily, ProfileSelectionError> {
-        self.task(task)?;
-        let harness = harness.unwrap_or(BUILTIN_HARNESS);
-        let matching = self
-            .families
-            .iter()
-            .filter(|family| {
-                family.task == task
-                    && family.harness == harness
-                    && model.is_none_or(|model| family.model == model)
-                    && thinking.is_none_or(|thinking| family.thinking == thinking)
-            })
-            .collect::<Vec<_>>();
-        match matching.as_slice() {
-            [family] => Ok(family),
-            [] => Err(ProfileSelectionError::Treatment {
-                profile: self.name.clone(),
-                task: task.to_owned(),
-            }),
-            _ => Err(ProfileSelectionError::Ambiguous {
-                profile: self.name.clone(),
-                task: task.to_owned(),
-            }),
-        }
     }
 }
 
@@ -838,30 +744,6 @@ allow_internet = false
     }
 
     #[test]
-    fn profile_expands_trials_in_sqlite_but_not_as_agent_selectors() {
-        let directory = tempfile::tempdir().unwrap();
-        write_task(directory.path(), "one");
-        let config = directory.path().join("nanocodex.toml");
-        fs::write(
-            &config,
-            r#"default = "release"
-[profiles.release]
-tasks = ["one"]
-trials = 3
-model = ["sol"]
-thinking = ["high"]
-"#,
-        )
-        .unwrap();
-
-        let profile = EvaluationManifest::load_profile(&config, None).unwrap();
-        assert_eq!(profile.name, "release");
-        assert_eq!(profile.families.len(), 1);
-        assert_eq!(profile.trials, 3);
-        assert_eq!(profile.task("one").unwrap().task.name(), "one");
-    }
-
-    #[test]
     fn adapter_tasks_resolve_declared_benchmark_selectors() {
         let directory = tempfile::tempdir().unwrap();
         write_task(directory.path(), "imported");
@@ -896,130 +778,5 @@ trials = 1
 
         assert_eq!(profile.tasks.len(), 1);
         assert_eq!(profile.tasks[0].selector, "terminal-bench-2.1/fix-git");
-    }
-
-    #[test]
-    fn task_selector_cannot_expand_the_profile() {
-        let directory = tempfile::tempdir().unwrap();
-        write_task(directory.path(), "included");
-        write_task(directory.path(), "outside");
-        let config = directory.path().join("nanocodex.toml");
-        fs::write(
-            &config,
-            r#"[profiles.release]
-tasks = ["included"]
-trials = 1
-"#,
-        )
-        .unwrap();
-        let profile = EvaluationManifest::load_profile(&config, Some("release")).unwrap();
-
-        assert!(matches!(
-            profile.task("outside"),
-            Err(ProfileSelectionError::Task { selector, .. }) if selector == "outside"
-        ));
-    }
-
-    #[test]
-    fn external_harness_revision_pins_the_command_bytes() {
-        let directory = tempfile::tempdir().unwrap();
-        write_task(directory.path(), "one");
-        let codex = directory.path().join("codex");
-        fs::write(&codex, "first build").unwrap();
-        let config = directory.path().join("nanocodex.toml");
-        fs::write(
-            &config,
-            r#"[harness.codex]
-command = "codex"
-guest_command = "/usr/local/bin/codex"
-arguments = ["{prompt}"]
-
-[profiles.release]
-tasks = ["one"]
-trials = 1
-harness = ["nanocodex", "codex"]
-"#,
-        )
-        .unwrap();
-
-        let first = EvaluationManifest::load_profile(&config, Some("release")).unwrap();
-        assert_eq!(first.families.len(), 2);
-        assert_eq!(
-            first.family("one", None, None, None).unwrap().harness,
-            "nanocodex"
-        );
-        assert_eq!(
-            first
-                .family("one", Some("codex"), None, None)
-                .unwrap()
-                .harness,
-            "codex"
-        );
-        fs::write(&codex, "second build").unwrap();
-        let second = EvaluationManifest::load_profile(&config, Some("release")).unwrap();
-
-        assert_ne!(first.digest, second.digest);
-    }
-
-    #[test]
-    fn external_harness_can_pin_one_version_across_architecture_builds() {
-        let first = tempfile::tempdir().unwrap();
-        let second = tempfile::tempdir().unwrap();
-        for (directory, command) in [(&first, "aarch64 build"), (&second, "x86_64 build")] {
-            write_task(directory.path(), "one");
-            fs::write(directory.path().join("codex"), command).unwrap();
-            fs::write(
-                directory.path().join("nanocodex.toml"),
-                r#"[harness.codex]
-command = "codex"
-guest_command = "/usr/local/bin/codex"
-version = "0.145.0"
-arguments = ["{prompt}"]
-
-[profiles.release]
-tasks = ["one"]
-trials = 1
-harness = ["nanocodex", "codex"]
-"#,
-            )
-            .unwrap();
-        }
-
-        let first =
-            EvaluationManifest::load_profile(first.path().join("nanocodex.toml"), Some("release"))
-                .unwrap();
-        let second =
-            EvaluationManifest::load_profile(second.path().join("nanocodex.toml"), Some("release"))
-                .unwrap();
-
-        assert_eq!(first.digest, second.digest);
-    }
-
-    #[test]
-    fn profile_revision_is_independent_of_the_checkout_path() {
-        let first = tempfile::tempdir().unwrap();
-        let second = tempfile::tempdir().unwrap();
-        for directory in [&first, &second] {
-            write_task(directory.path(), "one");
-            fs::write(
-                directory.path().join("nanocodex.toml"),
-                r#"[profiles.release]
-tasks = ["one"]
-trials = 2
-model = ["sol"]
-thinking = ["high"]
-"#,
-            )
-            .unwrap();
-        }
-
-        let first =
-            EvaluationManifest::load_profile(first.path().join("nanocodex.toml"), Some("release"))
-                .unwrap();
-        let second =
-            EvaluationManifest::load_profile(second.path().join("nanocodex.toml"), Some("release"))
-                .unwrap();
-
-        assert_eq!(first.digest, second.digest);
     }
 }

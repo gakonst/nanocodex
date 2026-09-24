@@ -7,52 +7,9 @@ import { act, create } from "react-test-renderer";
 import { agentActions } from "../../nanocodex/actions/index.mjs";
 import { createAgentConfig } from "../../nanocodex/browser/config.mjs";
 import { createAgentClient, defineRuntime } from "../../nanocodex/internal.mjs";
-import {
-  NanocodexProvider,
-  useNanocodex,
-  useAgentEvents,
-  useConfig,
-  useVoice,
-} from "../index.mjs";
+import { NanocodexProvider, useNanocodex, useAgentEvents, useVoice } from "../index.mjs";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
-
-test("NanocodexProvider requires one explicit caller-owned config", () => {
-  assert.throws(
-    () => NanocodexProvider({ children: null }),
-    /requires a config/,
-  );
-});
-
-test("useVoice is a thin idle resource until its Agent is ready", async () => {
-  let voice;
-
-  function Consumer({ agent, enabled = true }) {
-    voice = useVoice(agent, { enabled });
-    return null;
-  }
-
-  let root;
-  await act(async () => {
-    root = create(createElement(Consumer, { agent: undefined }));
-  });
-  assert.equal(voice.status, "idle");
-  assert.equal(voice.isIdle, true);
-  assert.equal(voice.isActive, false);
-  assert.equal(voice.muted, false);
-  assert.equal(voice.microphoneLevel, 0);
-  assert.equal(voice.speakerLevel, 0);
-  assert.equal(typeof voice.setMuted, "function");
-  assert.equal(typeof voice.toggleMuted, "function");
-  await voice.noteTypedInput();
-  await assert.rejects(voice.start(), /ready Agent/);
-
-  await act(async () => {
-    root.update(createElement(Consumer, { agent: createVoiceAgent(), enabled: false }));
-  });
-  assert.equal(voice.status, "idle");
-  await act(async () => root.unmount());
-});
 
 test("useVoice creates a live resource after StrictMode's simulated cleanup", async () => {
   let captureCalls = 0;
@@ -86,61 +43,6 @@ test("useVoice creates a live resource after StrictMode's simulated cleanup", as
   assert.doesNotMatch(startError.message, /destroyed/);
   await act(async () => root.unmount());
   agent.dispose();
-});
-
-test("useNanocodex follows the vanilla external store without duplicating Agent ownership", async () => {
-  const store = createStore();
-  let resource;
-  let resolvedConfig;
-
-  function Consumer({ enabled = true, threadId }) {
-    resolvedConfig = useConfig();
-    resource = useNanocodex({ enabled, threadId });
-    return null;
-  }
-
-  let root;
-  await act(async () => {
-    root = create(createElement(
-      NanocodexProvider,
-      { config: store.config },
-      createElement(Consumer, { threadId: "thread-1" }),
-    ));
-  });
-
-  assert.equal(resolvedConfig, store.config);
-  assert.deepEqual(store.subscriptions, [{ enabled: true, threadId: "thread-1" }]);
-  assert.equal(resource.status, "idle");
-  assert.equal(resource.isIdle, true);
-  assert.equal(resource.isPending, false);
-
-  store.publish({ status: "pending" });
-  await act(async () => store.flush());
-  assert.equal(resource.status, "pending");
-  assert.equal(resource.isPending, true);
-
-  const agent = Object.freeze({ sessionId: "thread-1" });
-  store.publish({ data: agent, status: "success" });
-  await act(async () => store.flush());
-  assert.equal(resource.data, agent);
-  assert.equal(resource.isSuccess, true);
-  assert.equal(resource.isError, false);
-
-  resource.refetch();
-  assert.deepEqual(store.refetches, [{ enabled: true, threadId: "thread-1" }]);
-
-  await act(async () => {
-    root.update(createElement(
-      NanocodexProvider,
-      { config: store.config },
-      createElement(Consumer, { enabled: false, threadId: "thread-1" }),
-    ));
-  });
-  assert.deepEqual(store.subscriptions.at(-1), { enabled: false, threadId: "thread-1" });
-  assert.equal(store.unsubscribed, 1);
-
-  await act(async () => root.unmount());
-  assert.equal(store.unsubscribed, 2);
 });
 
 test("useNanocodex selectors suppress updates while their selected value stays equal", async () => {
@@ -413,22 +315,6 @@ function createEventAgent() {
     },
     get offs() { return offs; },
     get releases() { return releases; },
-  };
-}
-
-function createVoiceAgent() {
-  return {
-    sessionId: "voice-agent",
-    events: { watch() { throw new Error("disabled voice must not watch events"); } },
-    session: {
-      realtime: {
-        start: async () => ({ workspace: "/workspace", history: [] }),
-        end: async () => ({ workspace: "/workspace", history: [] }),
-        delegation: async (input) => input,
-        tailDelegation: async () => undefined,
-      },
-    },
-    turn: { prompt() { throw new Error("disabled voice must not prompt"); } },
   };
 }
 

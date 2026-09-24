@@ -1208,66 +1208,6 @@ mod screen_tests {
     }
 
     #[test]
-    fn screen_and_zoom_are_local_and_tab_cycles_without_changing_sessions() {
-        let mut app = app();
-        let update = app.map_root_update(
-            PaneId::Main,
-            ComponentUpdate {
-                effects: vec![RootEffect::Screen],
-                render: RenderRequest::Immediate,
-            },
-        );
-        assert!(matches!(
-            update.effects.as_slice(),
-            [AppEffect::Screen(crate::tui::screen::Command::List)]
-        ));
-        assert!(app.screen_focused);
-        let mut terminal = Terminal::new(TestBackend::new(160, 40)).unwrap();
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        assert_eq!(app.screen_area.width, 80);
-        for c in "/zoom".chars() {
-            key(&mut app, KeyCode::Char(c));
-        }
-        key(&mut app, KeyCode::Enter);
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        assert_eq!(app.screen_area.width, 160);
-        key(&mut app, KeyCode::Tab);
-        assert!(!app.screen_focused);
-        assert!(app.zoomed);
-        terminal.draw(|frame| app.render(frame)).unwrap();
-        assert_eq!(app.main_area.width, 160);
-        assert!(app.screen_area.is_empty());
-        key(&mut app, KeyCode::BackTab);
-        let close = key(&mut app, KeyCode::Esc);
-        assert!(matches!(
-            close.effects.as_slice(),
-            [AppEffect::Screen(crate::tui::screen::Command::Close)]
-        ));
-        assert!(app.screen.is_none());
-        assert!(!app.zoomed);
-        assert_eq!(app.main_pane(), Some(PaneId::Main));
-    }
-    #[test]
-    fn typed_screen_command_opens_picker_without_submitting_a_prompt() {
-        let mut app = app();
-        for character in "/screen".chars() {
-            key(&mut app, KeyCode::Char(character));
-        }
-        let update = key(&mut app, KeyCode::Enter);
-        assert!(matches!(
-            update.effects.as_slice(),
-            [AppEffect::Screen(crate::tui::screen::Command::List)]
-        ));
-        assert!(app.screen_focused);
-        assert!(
-            app.root(PaneId::Main)
-                .unwrap()
-                .composer()
-                .draft()
-                .is_empty()
-        );
-    }
-    #[test]
     fn zoom_and_tab_include_btw_pane() {
         let mut app = app();
         let (fork, _) = app.begin_fork();

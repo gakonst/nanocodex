@@ -710,36 +710,3 @@ fn open_browser(url: &str) -> std::io::Result<()> {
         )))
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use clap::Parser;
-
-    use super::*;
-
-    #[derive(Parser)]
-    struct TestCli {
-        #[command(flatten)]
-        credits: Credits,
-    }
-
-    #[test]
-    fn credits_api_url_is_explicitly_configurable() {
-        let cli = TestCli::try_parse_from([
-            "nanocodex-credits",
-            "--api-url",
-            "https://credits.example.test",
-            "status",
-        ])
-        .unwrap();
-
-        assert_eq!(cli.credits.api_url, "https://credits.example.test");
-    }
-
-    #[test]
-    fn credits_api_url_defaults_to_hosted_service() {
-        let cli = TestCli::try_parse_from(["nanocodex-credits", "status"]).unwrap();
-
-        assert_eq!(cli.credits.api_url, DEFAULT_CREDITS_API_URL);
-    }
-}

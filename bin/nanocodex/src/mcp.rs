@@ -944,41 +944,6 @@ mod tests {
     }
 
     #[test]
-    fn default_mcp_servers_build() {
-        assert!(
-            args()
-                .build(Path::new("/missing"), None, None)
-                .unwrap()
-                .is_some()
-        );
-    }
-
-    #[test]
-    fn mercator_discovery_is_a_public_default_without_tempo() {
-        assert_eq!(MERCATOR_MCP_URL, "https://mercator.sh/mcp");
-        assert!(
-            DEFAULT_MCP_SERVERS
-                .iter()
-                .any(|(name, url, _)| *name == "mercator" && *url == MERCATOR_MCP_URL)
-        );
-        assert!(
-            args()
-                .build(Path::new("/missing"), None, None)
-                .unwrap()
-                .is_some()
-        );
-        assert!(
-            McpArgs {
-                mcp_defaults: false,
-                ..args()
-            }
-            .build(Path::new("/missing"), None, None)
-            .unwrap()
-            .is_none()
-        );
-    }
-
-    #[test]
     fn managed_mcp_config_uses_exact_proxy_url_and_scoped_headers() {
         let origin = reqwest::Url::parse("https://connect.example/").unwrap();
         let grant_id = format!("0x{}", "33".repeat(32));

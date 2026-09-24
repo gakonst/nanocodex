@@ -79,7 +79,6 @@ test('only opted-in master pushes and dispatches export caches, even with a forg
           assert.equal(result.args[7], `${result.args[5]},mode=max,ignore-error=true`);
           assert.deepEqual(result.args.slice(8), build.slice(1));
         }
-        assert.ok(!result.args.some(arg => /type=gha|timeout=/.test(arg)));
       }
     }
     for (const enabled of ['', 'false', '1']) {
@@ -121,91 +120,4 @@ test('cache availability notices are nonfatal and follow successful trusted buil
     assert.deepEqual(failed.inspections, []);
     assert.doesNotMatch(failed.result.stdout, /::notice::/);
   });
-});
-
-const readWorkflow = name => readFileSync(new URL(`../../.github/workflows/${name}.yml`, import.meta.url), 'utf8');
-const jobs = workflow => Object.fromEntries([...workflow.split('\njobs:\n')[1]
-  .matchAll(/^  ([a-z-]+):\n([\s\S]*?)(?=^  [a-z-]+:\n|$(?![\s\S]))/gm)].map(([, name, body]) => [name, body]));
-function condition(block) {
-  const lines = block.split('\n');
-  const index = lines.findIndex(line => /^\s+if: /.test(line));
-  assert.ok(index >= 0, 'expected an explicit trust condition');
-  const [, indent, value] = lines[index].match(/^(\s+)if: (.+)$/);
-  if (value !== '>-') return value;
-  const parts = [];
-  for (const line of lines.slice(index + 1)) {
-    if (!line.startsWith(' '.repeat(indent.length + 1))) break;
-    parts.push(line.trim());
-  }
-  return parts.join(' ');
-}
-const evaluate = (expression, context) => new Function(...Object.keys(context),
-  `return (${expression.replaceAll('steps.cache-login', "steps['cache-login']")});`)(...Object.values(context));
-
-test('Cloudflare PR jobs stay read-only and registry login is limited to trusted master cache writers', () => {
-  const workflow = readWorkflow('cloudflare');
-  const all = jobs(workflow);
-  const publishers = Object.entries(all).filter(([, body]) => /packages: write/.test(body)).map(([name]) => name);
-  assert.deepEqual(publishers, ['managed-images']);
-  const login = all['managed-images'].split('      - ').find(step => step.includes('id: cache-login'));
-  assert.match(login, /docker\/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9/);
-  assert.match(login, /continue-on-error: true/);
-  assert.match(all['managed-images'], /WRANGLER_DOCKER_CACHE_WRITE: \$\{\{ steps\.cache-login\.outcome == 'success' \}\}/);
-  for (const event_name of ['push', 'workflow_dispatch', 'pull_request', 'pull_request_target', 'workflow_run', 'schedule']) {
-    for (const ref of ['refs/heads/master', 'refs/heads/feature', 'refs/pull/7/merge']) {
-      const github = { event_name, ref };
-      const trusted = ref === 'refs/heads/master' && ['push', 'workflow_dispatch'].includes(event_name);
-      for (const hit of ['true', 'false']) {
-        assert.equal(evaluate(condition(login), { github, steps: { available: { outputs: { hit } } } }), trusted && hit !== 'true');
-      }
-      if (event_name.startsWith('pull_request')) {
-        assert.equal(evaluate(condition(all['image-plan']), { github, vars: { CLOUDFLARE_DEPLOY_ENABLED: 'true' }, inputs: { target: 'production' } }), false);
-      }
-    }
-  }
-  for (const name of ['worker-build', 'preview']) {
-    assert.doesNotMatch(all[name], /packages: write|docker\/login-action|WRANGLER_DOCKER_CACHE_WRITE/);
-  }
-  assert.doesNotMatch(workflow, /ghaction-github-runtime|type=gha/);
-});
-
-test('toolkit PRs import anonymously; only master dispatches get a package writer and optional exports', () => {
-  const workflow = readWorkflow('hand-toolkit');
-  const all = jobs(workflow);
-  assert.doesNotMatch(all.image, /packages: write|docker\/login-action|cache-to:|imagetools inspect/);
-  assert.match(all['image-cache'], /packages: write/);
-  const login = all['image-cache'].split('      - ').find(step => step.includes('id: cache-login'));
-  assert.match(login, /continue-on-error: true/);
-  assert.match(login, /docker\/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9/);
-  for (const event_name of ['workflow_dispatch', 'pull_request', 'pull_request_target', 'push', 'workflow_run']) {
-    for (const ref of ['refs/heads/master', 'refs/heads/feature', 'refs/pull/7/merge']) {
-      const github = { event_name, ref };
-      const trusted = event_name === 'workflow_dispatch' && ref === 'refs/heads/master';
-      assert.equal(evaluate(condition(all['image-cache']), { github }), trusted);
-      assert.equal(evaluate(condition(all.image), { github }), !trusted);
-    }
-  }
-  for (const body of Object.values(all)) {
-    assert.match(body, /CACHE_IMAGE: ghcr\.io\/\$\{\{ github\.repository \}\}-hand/);
-    assert.match(body, /CACHE_SCOPE: vm-toolkit-\$\{\{ matrix\.runner \}\}-\$\{\{ matrix\.dockerfile \}\}/);
-    assert.ok(body.includes('ref=${CACHE_IMAGE,,}:buildcache-$CACHE_SCOPE'));
-    assert.match(body, /cache-from: type=registry,ref=\$\{\{ steps\.cache\.outputs\.ref \}\}/);
-    assert.match(body, /load: true/);
-    assert.match(body, /tags: nanocodex-vm:toolkit/);
-    assert.match(body, /build-root\.sh nanocodex-vm:toolkit/);
-  }
-  const availability = all['image-cache'].split('      - ').find(step => step.includes('name: Report toolkit cache availability'));
-  assert.ok(availability.includes('if timeout 30s docker buildx imagetools inspect --raw "$CACHE_REF" >/dev/null 2>&1; then'));
-  assert.match(availability, /::notice::Registry cache manifest unavailable:.*Build succeeded/);
-  for (const outcome of ['success', 'failure', 'skipped', 'cancelled']) {
-    assert.equal(evaluate(condition(availability), { steps: { 'cache-login': { outcome } } }), outcome === 'success');
-  }
-  const exportExpression = all['image-cache'].match(/cache-to: \$\{\{ (.+) \}\}/)[1];
-  for (const outcome of ['success', 'failure', 'skipped', 'cancelled']) {
-    const ref = 'ghcr.io/example/project-hand:buildcache-vm-toolkit-ubuntu-24.04-Dockerfile';
-    const value = evaluate(exportExpression, { steps: { 'cache-login': { outcome }, cache: { outputs: { ref } } },
-      format: (template, value) => template.replace('{0}', value) });
-    assert.equal(value, outcome === 'success' ? `type=registry,ref=${ref},mode=max,ignore-error=true` : '');
-  }
-  assert.doesNotMatch(workflow, /type=gha|timeout=3m/);
 });

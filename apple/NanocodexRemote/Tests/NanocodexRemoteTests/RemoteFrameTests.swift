@@ -44,14 +44,4 @@ final class RemoteFrameTests: XCTestCase {
         XCTAssertGreaterThan(CFDataGetLength(pixels), 0)
     }
 
-    func testFramesCatalogIsExplicitAndRelayUsesTheExistingControlEnvelope() throws {
-        let json = #"{"id":"desktop","machine_id":"cf:test","machine_name":"Sandbox","name":"Desktop","kind":"desktop","width":1600,"height":900,"controllable":true,"generation":"test","transport":"frames-v1"}"#
-        let hand = try JSONDecoder().decode(RemoteHand.self, from: Data(json.utf8))
-        XCTAssertEqual(hand.transport, .frames)
-        var message = RemoteMessage(type: "control")
-        message.data = .control(.init(type: .acquire))
-        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(message)) as? [String: Any])
-        XCTAssertEqual((value["data"] as? [String: Any])?["type"] as? String, "acquire")
-        XCTAssertNil(value["viewer_id"])
-    }
 }

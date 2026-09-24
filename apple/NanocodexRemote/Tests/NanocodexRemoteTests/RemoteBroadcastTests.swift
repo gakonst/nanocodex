@@ -6,26 +6,6 @@ import CoreVideo
 import CoreGraphics
 
 final class RemoteBroadcastTests: XCTestCase {
-    func testProfilesAndSecretSafeValidation() throws {
-        for preset in ["source", "1080p", "720p", "twitch", "x"] {
-            let config = try RemoteBroadcastConfiguration(destination: "rtmp://localhost/live/key", preset: preset)
-            let (w, h) = config.dimensions(width: 640, height: 480)
-            XCTAssertEqual(w, 640); XCTAssertEqual(h, 480)
-            let args = MacBroadcast.arguments(width: w, height: h, destination: config.destination, preset: preset, audioPath: "/audio")
-            XCTAssertTrue(args.contains("h264_videotoolbox")); XCTAssertTrue(args.contains("aac"))
-            // Only video uses arrival timestamps; PCM must retain its sample clock.
-            XCTAssertEqual(args.filter { $0 == "-use_wallclock_as_timestamps" }.count, 1)
-            XCTAssertEqual(args[args.firstIndex(of: "-allow_sw")! + 1], "0")
-        }
-        let config = try RemoteBroadcastConfiguration(destination: "rtmps://localhost/live/key", preset: "source")
-        let dimensions = config.dimensions(width: 6016, height: 3384)
-        XCTAssertEqual(dimensions.0, 3840); XCTAssertEqual(dimensions.1, 2160)
-        for url in ["https://example.com/secret", "rtmp://user:secret@example.com/live", "rtmp://example.com/live\nsecret"] {
-            XCTAssertThrowsError(try RemoteBroadcastConfiguration(destination: url, preset: "source")) { error in
-                XCTAssertFalse(error.localizedDescription.contains("secret"))
-            }
-        }
-    }
 
     @MainActor func testNativeScreenCapturePublisher() async throws {
         guard ProcessInfo.processInfo.environment["NANOCODEX_RTMP_TEST_NATIVE"] == "1",

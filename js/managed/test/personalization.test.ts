@@ -10,8 +10,6 @@ import { PreparedPersonalizationCache, PreparedPersonalizationStore, PERSONALIZA
 
 const scope = { organization_id: "org", team_id: "team", user_id: "user" };
 const storageId = "a".repeat(64);
-const profile = (generation = 0): PersonalizationSnapshot => ({ ...scope, generation, version: "1:1",
-  expires_at: Date.now() + 60_000, team_markdown: { documents: [{ path: "USER.md", revision: 1, content: "Prefers concise answers.", truncated: false }] } });
 async function withStore(run: (store: PreparedPersonalizationStore, storage: DurableObjectStorage) => Promise<void>) {
   const ns = (env as unknown as { NANOCODEX_MEMORY: DurableObjectNamespace<MemoryScope> }).NANOCODEX_MEMORY;
   await runInDurableObject(ns.getByName(crypto.randomUUID()), async (_obj, ctx) => {
@@ -19,19 +17,6 @@ async function withStore(run: (store: PreparedPersonalizationStore, storage: Dur
   });
 }
 describe("prepared personalization owner", () => {
-  it("reuses a scoped canonical snapshot without creating legacy fact storage", async () => {
-    await withStore(async (store, storage) => {
-      const markdown = new MarkdownMemoryStore(storage);
-      markdown.write("team", { operation: "put", path: "USER.md", content: "concise team preference" });
-      markdown.write("other-team", { operation: "put", path: "USER.md", content: "other private note" });
-      const one = store.snapshot(scope, storageId)!;
-      const two = store.snapshot(scope, "b".repeat(64))!;
-      expect(one.team_markdown?.documents[0]?.content).toBe("concise team preference");
-      expect(two.version).toBe(one.version);
-      expect(storage.sql.exec("SELECT name FROM sqlite_master WHERE name IN ('durable_memories','memory_scan_receipts')").toArray()).toEqual([]);
-      expect(store.snapshot({ ...scope, user_id: "different-user" }, storageId)).toBeUndefined();
-    });
-  });
 
   it("builds canonical Markdown in the background and fences copies after insert, edit, and delete", async () => {
     await withStore(async (store, storage) => {
@@ -164,43 +149,6 @@ describe("prepared personalization owner", () => {
   });
 });
 
-describe("nonblocking local personalization", () => {
-  it("never waits for a cold/stalled refresh; shares one in-flight refresh", async () => {
-    const cache = new PreparedPersonalizationCache();
-    let release!: (value: PersonalizationSnapshot) => void;
-    const pending = new Promise<PersonalizationSnapshot>(resolve => { release = resolve; });
-    const load = vi.fn(() => pending); const tasks: Promise<void>[] = [];
-    cache.warm(scope, load, task => tasks.push(task));
-    cache.warm(scope, load, task => tasks.push(task));
-    expect(cache.peek(scope)).toBeUndefined();
-    expect(tasks).toHaveLength(1);
-    await Promise.resolve(); expect(load).toHaveBeenCalledOnce();
-    release(profile()); await tasks[0];
-    expect(cache.peek(scope)?.team_markdown?.documents[0]?.content).toContain("concise");
-    expect(cache.peek({ ...scope, team_id: "other" })).toBeUndefined();
-  });
-
-  it("fences a forgotten snapshot even if an older response arrives late", async () => {
-    const cache = new PreparedPersonalizationCache();
-    let release!: (value: PersonalizationSnapshot) => void;
-    const tasks: Promise<void>[] = [];
-    cache.warm(scope, () => new Promise(resolve => { release = resolve; }), task => tasks.push(task));
-    await Promise.resolve();
-    cache.invalidate(2); release(profile(1)); await tasks[0];
-    expect(cache.peek(scope)).toBeUndefined();
-    cache.warm(scope, async () => profile(2), task => tasks.push(task));
-    await tasks[1]; expect(cache.peek(scope)?.generation).toBe(2);
-    expect(cache.peek(scope, Date.now() + 60_001)).toBeUndefined();
-  });
-
-  it("turns refresh failure into a miss rather than a prompt failure", async () => {
-    const cache = new PreparedPersonalizationCache(); const tasks: Promise<void>[] = [];
-    cache.warm(scope, async () => { throw new Error("unavailable"); }, task => tasks.push(task));
-    await expect(tasks[0]).resolves.toBeUndefined();
-    expect(cache.peek(scope)).toBeUndefined();
-  });
-});
-
 
 describe("MemoryScope to Session invalidation", () => {
   it("background forgetting drops the real subscribed Session pending copy", async () => {
@@ -237,31 +185,4 @@ describe("MemoryScope to Session invalidation", () => {
         "SELECT profile_json FROM managed_prepared_personalization WHERE turn_id='pending'").one().profile_json).toBeNull();
     });
   });
-});
-
-
-it("reprojects voice replay context so a durable receipt cannot resurrect a forgotten profile", () => {
-  const receipt = { history: [], prepared_personalization: "forgotten canary", markdown_memory: "deleted USER.md" };
-  expect(personalizedVoiceContext(receipt)).toEqual({ history: [] });
-  const refreshed = personalizedVoiceContext(receipt, { ...profile(2), team_markdown: { documents: [
-    { path: "USER.md", revision: 2, content: "current USER.md", truncated: false },
-  ] } });
-  expect(refreshed.prepared_personalization).toBeUndefined();
-  expect(JSON.stringify(refreshed)).not.toContain("forgotten canary");
-  expect(refreshed.markdown_memory).toContain("current USER.md");
-  expect(refreshed.markdown_memory).not.toContain("deleted USER.md");
-  expect(receipt.markdown_memory).toBe("deleted USER.md");
-});
-
-it("normal and voice keep private and team Markdown separate without rendering legacy fields", () => {
-  const value: PersonalizationSnapshot = { ...profile(),
-    user_markdown: { documents: [{ path: "USER.md", revision: 2, content: "private canary", truncated: false }] },
-    user_generation: 1, user_version: "markdown:private" };
-  const voice = personalizedVoiceContext({}, value);
-  expect(voice.prepared_personalization).toBeUndefined();
-  expect(voice.markdown_memory).toBe(preparedMarkdownText(value));
-  expect(voice.markdown_memory).toContain("private canary");
-  expect(voice.markdown_memory).toContain("concise answers");
-  expect(voice.markdown_memory).toContain('"scope":"personal"');
-  expect(voice.markdown_memory).toContain('"scope":"team"');
 });

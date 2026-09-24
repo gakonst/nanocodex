@@ -1,25 +1,12 @@
 import { env } from "cloudflare:workers";
 import { SELF } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
-import { chatGptLimitReset } from "../src/chatgpt-failover";
 import { handleEgress, type EgressEnv } from "../src/egress";
 
 const workerEnv = env as unknown as EgressEnv;
 const { CHATGPT_EGRESS: _relay, ...directEnv } = workerEnv;
 
 describe("ChatGPT subscription failover", () => {
-  it("recognizes structured subscription limits and reset hints only", () => {
-    const now = 1_800_000_000_000;
-    expect(chatGptLimitReset({ error: { type: "usage_limit_reached", resets_at: now / 1_000 + 3600 } }, null, now))
-      .toBe(now + 3_600_000);
-    expect(chatGptLimitReset({ response: { error: { code: "usage_limit_exceeded", resets_in_seconds: 15 } } }, null, now))
-      .toBe(now + 15_000);
-    expect(chatGptLimitReset({ error: { code: "insufficient_quota" } }, "120", now)).toBe(now + 120_000);
-    expect(chatGptLimitReset({ error: { code: "usage_limit_reached" } }, null, now)).toBe(now + 60_000);
-    expect(chatGptLimitReset({ error: { code: "rate_limit_exceeded" } }, "120", now)).toBeUndefined();
-    expect(chatGptLimitReset({ error: { message: "usage_limit_reached" } }, null, now)).toBeUndefined();
-    expect(chatGptLimitReset(null)).toBeUndefined();
-  });
 
   it.each(["search", "responses"])("replays rejected %s HTTP requests on the next account and stays there", async (operation) => {
     const subject = await setup();

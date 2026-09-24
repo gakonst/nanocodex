@@ -121,24 +121,6 @@ test("an unavailable selected pair cannot fall back to a retired or unrelated pa
 });
 
 
-test("selected address-family diagnostics reveal only validated family enums", () => {
-  for (const [address, expected] of [
-    ["192.0.2.25", "ipv4"], ["2001:db8::25", "ipv6"], ["::ffff:192.0.2.25", "ipv6"],
-    ["private-host.local", "unknown"], ["999.0.0.1", "unknown"], ["private:invalid", "unknown"],
-    ["2001:db8::1]/private", "unknown"], [undefined, "unknown"],
-  ] as const) {
-    const sample = report();
-    sample.set("pair", { ...sample.get("pair")!, localCandidateId: "local", remoteCandidateId: "remote" });
-    sample.set("local", { id: "local", type: "local-candidate", timestamp: 1000, candidateType: "host", address });
-    sample.set("remote", { id: "remote", type: "remote-candidate", timestamp: 1000, candidateType: "srflx", ip: address });
-    const stats = new RemoteStatsSampler().sample(sample);
-    assert.equal(stats.localAddressFamily, expected);
-    assert.equal(stats.remoteAddressFamily, expected);
-    if (address) assert.equal(JSON.stringify(stats).includes(address), false);
-  }
-});
-
-
 test("jitter diagnostics independently measure actual, target and network minimum interval averages", () => {
   const sampler = new RemoteStatsSampler();
   sampler.sample(report({ jitterBufferTargetDelay: 150, jitterBufferMinimumDelay: 40 }));

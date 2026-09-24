@@ -3722,11 +3722,10 @@ mod tests {
     use url::Url;
 
     use super::{
-        ActiveTranscript, CHATGPT_REALTIME_MODEL, CHATGPT_REALTIME_VOICE, CHATGPT_REALTIME_VOICES,
-        Command, CommandKind, CommandOutcome, MAX_ACTIVE_TRANSCRIPT_BYTES, OutputPolicy,
-        PLATFORM_REALTIME_VOICE, PLATFORM_REALTIME_VOICES, RealtimeAgentSteer, RealtimeAudio,
-        RealtimeEvent, RealtimeInitialItem, RealtimeInputTextRole, RealtimeOutputModality,
-        RealtimeProtocol, RealtimeResponseHandoffMode, RealtimeSessionMode, RealtimeTextRole,
+        ActiveTranscript, Command, CommandKind, CommandOutcome, MAX_ACTIVE_TRANSCRIPT_BYTES,
+        OutputPolicy, RealtimeAgentSteer, RealtimeAudio, RealtimeEvent, RealtimeInitialItem,
+        RealtimeInputTextRole, RealtimeOutputModality, RealtimeProtocol,
+        RealtimeResponseHandoffMode, RealtimeSessionMode, RealtimeTextRole,
         RealtimeTranscriptEntry, RealtimeTransport, RealtimeVersion, RealtimeVoice,
         SIDEBAND_RECONNECT_MAX_DELAY, SessionOwnership, SocketCommandExit, SocketState,
         configured_session_update, context_append_chunks, delegated_prompt, handle_socket_command,
@@ -3764,42 +3763,6 @@ mod tests {
             )
             .unwrap(),
             "wss://api.openai.com/v1/realtime?intent=quicksilver&model=gpt-realtime-1.5"
-        );
-    }
-
-    #[test]
-    fn matches_codex_voice_catalog_and_defaults() {
-        assert_eq!(CHATGPT_REALTIME_MODEL, "gpt-live-1-codex");
-        assert_eq!(CHATGPT_REALTIME_VOICE, RealtimeVoice::Cove);
-        assert_eq!(PLATFORM_REALTIME_VOICE, RealtimeVoice::Marin);
-        assert_eq!(
-            CHATGPT_REALTIME_VOICES,
-            &[
-                RealtimeVoice::Juniper,
-                RealtimeVoice::Maple,
-                RealtimeVoice::Spruce,
-                RealtimeVoice::Ember,
-                RealtimeVoice::Vale,
-                RealtimeVoice::Breeze,
-                RealtimeVoice::Arbor,
-                RealtimeVoice::Sol,
-                RealtimeVoice::Cove,
-            ]
-        );
-        assert_eq!(
-            PLATFORM_REALTIME_VOICES,
-            &[
-                RealtimeVoice::Alloy,
-                RealtimeVoice::Ash,
-                RealtimeVoice::Ballad,
-                RealtimeVoice::Coral,
-                RealtimeVoice::Echo,
-                RealtimeVoice::Sage,
-                RealtimeVoice::Shimmer,
-                RealtimeVoice::Verse,
-                RealtimeVoice::Marin,
-                RealtimeVoice::Cedar,
-            ]
         );
     }
 

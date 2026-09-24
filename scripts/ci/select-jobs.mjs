@@ -53,7 +53,7 @@ export function selectJobs(paths) {
     } else if (path.endsWith(".rs")) {
       return full();
     } else if (path.startsWith("docs/")
-      || /^(README\.md|CHANGELOG\.md|AGENTS\.md|next-steps\.md|LICENSE-APACHE|LICENSE-MIT)$/.test(path)) {
+      || /^(README\.md|CHANGELOG\.md|AGENTS\.md|LICENSE-APACHE|LICENSE-MIT)$/.test(path)) {
       // Documentation does not require compiled artifacts.
     } else if (/^(apple|macos)\//.test(path)) {
       // Native Apple source/build inputs are checked by the separate Apple workflows.

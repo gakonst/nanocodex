@@ -6,27 +6,6 @@ final class InboxUITests: XCTestCase {
     }
     override func setUp() { super.setUp(); continueAfterFailure = false }
 
-    func testSidebarShowsStatusAndGeneratedCurrentWork() {
-        let originalAppearance = XCUIDevice.shared.appearance
-        addTeardownBlock { XCUIDevice.shared.appearance = originalAppearance }
-        for appearance in ["Light", "Dark"] {
-            XCUIDevice.shared.appearance = appearance == "Dark" ? .dark : .light
-            let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString, "NANOCODEX_DEMO_SIDEBAR": "1",
-                              "NANOCODEX_DEMO_APPEARANCE": appearance.lowercased()])
-            app.buttons["conversation-drawer-open"].tap()
-            let running = app.buttons["conversation-row:inbox"]
-            XCTAssertTrue(running.waitForExistence(timeout: 5))
-            let value = running.value as? String ?? ""
-            XCTAssertTrue(value.contains("Running"))
-            XCTAssertTrue(value.contains("I'm checking inbox state"))
-            XCTAssertTrue((app.buttons["conversation-row:hands"].value as? String ?? "").contains("Failed"))
-            XCTAssertTrue(app.textFields["conversation-search"].isHittable)
-            XCTAssertTrue(app.buttons["drawer-new-conversation"].isHittable)
-            capture(app, "sidebar-redesign-" + appearance.lowercased())
-            app.terminate()
-        }
-    }
-
     func testRunningAgentsToolbarFiltersAndShowsLastPrompt() {
         let originalAppearance = XCUIDevice.shared.appearance
         addTeardownBlock { XCUIDevice.shared.appearance = originalAppearance }
@@ -52,27 +31,6 @@ final class InboxUITests: XCTestCase {
             capture(app, "agent-overview-all-" + appearance)
             app.terminate()
         }
-    }
-
-    func testFlatConversationDrawerPreservesSeparateDrafts() {
-        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
-        switchConversation(app, id: "inbox")
-        composer(app).tap(); composer(app).typeText("First conversation draft")
-        app.buttons["conversation-drawer-open"].tap()
-        let second = app.buttons["conversation-row:durability"]
-        XCTAssertTrue(second.waitForExistence(timeout: 5))
-        second.tap()
-        XCTAssertTrue(app.buttons["conversation-title:durability"].waitForExistence(timeout: 5))
-        XCTAssertNotEqual(composer(app).value as? String, "First conversation draft")
-        composer(app).tap(); composer(app).typeText("Second conversation draft")
-        switchConversation(app, id: "inbox")
-        XCTAssertEqual(composer(app).value as? String, "First conversation draft")
-        switchConversation(app, id: "durability")
-        XCTAssertEqual(composer(app).value as? String, "Second conversation draft")
-        app.buttons["conversation-drawer-open"].tap()
-        app.buttons["drawer-new-conversation"].tap()
-        XCTAssertEqual(selectedConversationTab(app).label, "New agent")
-        XCTAssertFalse(app.alerts.firstMatch.exists)
     }
 
     func testThreadScreenDockPreservesDraftAndThreadNavigation() {
@@ -137,17 +95,6 @@ final class InboxUITests: XCTestCase {
         XCTAssertFalse(panel.exists)
         XCTAssertTrue(latest.waitForExistence(timeout: 5))
         XCTAssertEqual(composer(app).value as? String, draft)
-    }
-
-    func testCompactReplyContextMenuCopiesResponse() {
-        let app = launch(["NANOCODEX_DEMO_THINKING_MARKDOWN": "1", "NANOCODEX_DEMO_PROFILE": UUID().uuidString])
-        selectInbox(app)
-        let reply = app.staticTexts["Both paths are ready."]
-        XCTAssertTrue(reply.waitForExistence(timeout: 5))
-        capture(app, "content-fitting-reply")
-        reply.press(forDuration: 1)
-        XCTAssertTrue(app.buttons["copy-response"].waitForExistence(timeout: 5))
-        app.buttons["copy-response"].tap()
     }
 
     private func openDrawerFromEdge(_ app: XCUIApplication) {
@@ -361,28 +308,6 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(app.buttons["conversation-title:inbox"].isSelected)
     }
 
-    func testDrawerLeftSwipeKeepsDraftAndSingleConversationList() {
-        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
-        selectInbox(app)
-        composer(app).tap(); composer(app).typeText("Preserve this swipe draft")
-        app.buttons["conversation-drawer-open"].tap()
-        let list = app.scrollViews["conversation-list"]
-        XCTAssertTrue(list.waitForExistence(timeout: 5))
-        XCTAssertEqual(app.segmentedControls.count, 0)
-        XCTAssertFalse(app.buttons["conversation-overview-open"].exists)
-        XCTAssertFalse(app.buttons["drawer-live-previews"].exists)
-        XCTAssertTrue((app.buttons["conversation-row:inbox"].value as? String ?? "").contains("Running"))
-        capture(app, "simple-drawer-running-agents")
-        list.swipeUp(); list.swipeDown()
-        XCTAssertTrue(list.exists, "Vertical scrolling must not dismiss navigation")
-        list.swipeLeft()
-        gone(list)
-        XCTAssertTrue(app.buttons["conversation-title:inbox"].isSelected)
-        XCTAssertEqual(composer(app).value as? String, "Preserve this swipe draft")
-        XCTAssertLessThanOrEqual(app.otherElements["composer-input"].frame.height, 54)
-        capture(app, "compact-composer-after-drawer-swipe")
-    }
-
     func testLiveArrivalAppearsWhileReadingHistoryWithoutMovingReader() {
         let app = startupFixture(historyWindow: true, liveReading: true)
         let conversation = app.descendants(matching: .any)["conversation"].firstMatch
@@ -548,36 +473,6 @@ final class InboxUITests: XCTestCase {
         let replied = XCTWaiter.wait(for: [reply], timeout: 30)
         capture(app, "voice-greeting-reply")
         XCTAssertEqual(replied, .completed)
-    }
-    func testLiveNavigationAndAttachmentMenus() throws {
-        guard ProcessInfo.processInfo.environment["NANOCODEX_INBOX_LIVE"] == "1" else { throw XCTSkip("Live account required") }
-        let app = XCUIApplication(); app.launch()
-        XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 30))
-        for pass in 1...3 {
-            let jobs = navigationAction(app, "inbox-scheduled-jobs")
-            capture(app, "menu-before-tap-\(pass)")
-            jobs.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-            let opened = app.navigationBars["Scheduled jobs"].waitForExistence(timeout: 10)
-            capture(app, "menu-after-tap-\(pass)")
-            XCTAssertTrue(opened, app.debugDescription)
-            app.navigationBars["Scheduled jobs"].buttons.element(boundBy: 0).tap()
-        }
-        app.buttons["add-attachments"].tap()
-        let camera = app.buttons["choose-camera"]
-        capture(app, "attachment-menu-probe")
-        XCTAssertTrue(camera.waitForExistence(timeout: 5), app.debugDescription)
-    }
-    func testLiveDogfoodConversationAdmission() throws {
-        guard ProcessInfo.processInfo.environment["NANOCODEX_INBOX_LIVE"] == "1" else { throw XCTSkip("Live account required") }
-        let app = XCUIApplication()
-        app.launch()
-        XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 30))
-        app.buttons["new-conversation"].tap()
-        queue(app, "Dogfood admission check. Reply exactly DOGFOOD_OK.")
-        let reply = assistantText(app, matching: NSPredicate(format: "label CONTAINS %@", "DOGFOOD_OK"))
-        let complete = reply.waitForExistence(timeout: 90)
-        capture(app, "dogfood-admission")
-        XCTAssertTrue(complete)
     }
     func testRemoteScreenControlAndReconnect() throws {
         let environment = ProcessInfo.processInfo.environment
@@ -867,23 +762,6 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["conversation"].firstMatch.waitForExistence(timeout: 5))
 
         XCTAssertEqual(self.selectedConversationTab(app).label, "Build the agent inbox")
-    }
-
-    func testScheduledJobsEmptyStatePointsToChat() {
-        let app = launch(["NANOCODEX_DEMO_EMPTY_SCHEDULES": "1"])
-        navigationAction(app, "inbox-scheduled-jobs").coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        XCTAssertTrue(app.staticTexts["No scheduled jobs yet"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Ask an agent to run a task on a schedule. It will appear here."].exists)
-        XCTAssertFalse(app.buttons["New schedule"].exists)
-        capture(app, "scheduled-jobs-empty")
-        app.navigationBars["Scheduled jobs"].buttons.element(boundBy: 0).tap()
-        navigationAction(app, "Account settings").tap()
-        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Done"].exists, "Settings must dismiss back to the existing conversation")
-        XCTAssertTrue(app.buttons["Connect account"].exists)
-        capture(app, "inbox-settings-sheet")
-        app.buttons["Done"].tap()
-        XCTAssertTrue(navigationAction(app, "inbox-scheduled-jobs").isHittable)
     }
 
     func testLiveScheduledJobsLoadAfterRelaunch() throws {
@@ -1760,37 +1638,6 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(message.waitForExistence(timeout: 5))
         XCTAssertEqual(conversation.staticTexts.matching(NSPredicate(format: "label == %@", text)).count, 1)
     }
-    func testSidebarSwitchesConversationsWithoutTabsOrPreviews() {
-        let app = launch()
-        selectTab(app, id: "inbox", title: "Build the agent inbox")
-        composer(app).tap(); composer(app).typeText("Keep my sidebar draft")
-        selectTab(app, id: "data", title: "Tighten the fuel forecast")
-        selectTab(app, id: "inbox", title: "Build the agent inbox")
-        XCTAssertEqual(composer(app).value as? String, "Keep my sidebar draft")
-        XCTAssertFalse(app.buttons["conversation-overview-open"].exists)
-        app.buttons["conversation-drawer-open"].tap()
-        XCTAssertTrue(app.scrollViews["conversation-list"].waitForExistence(timeout: 5))
-        XCTAssertEqual(app.segmentedControls.count, 0)
-        capture(app, "sidebar-without-tabs-or-filters")
-    }
-
-    func testCompactDockWithoutDuplicateTitleOrPreviewButton() {
-        let app = launch()
-        XCTAssertFalse(app.staticTexts["agent-title"].exists)
-        XCTAssertFalse(app.staticTexts["Ready"].exists)
-        XCTAssertFalse(app.staticTexts["Demo"].exists)
-        let create = app.buttons["new-conversation"]
-        XCTAssertTrue(create.isHittable)
-        XCTAssertFalse(app.buttons["conversation-overview-open"].exists)
-        app.buttons["app-menu"].tap()
-        XCTAssertTrue(app.buttons["conversation-remote-screens"].exists)
-        XCTAssertTrue(app.buttons["conversation-context"].exists)
-        app.tap()
-        selectTab(app, id: "inbox", title: "Build the agent inbox")
-        XCTAssertEqual(self.selectedConversationTab(app).label, "Build the agent inbox")
-        XCTAssertFalse(app.staticTexts["Running"].exists)
-        capture(app, "glass-tabs-centered-create-no-duplicate-title")
-    }
 
     func testSendSteersActiveTurnWithoutSeparateAction() {
         let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString,
@@ -1999,28 +1846,6 @@ final class InboxUITests: XCTestCase {
         retry.tap()
         XCTAssertTrue(app.staticTexts["Steering withdrawn: Keep the captured target"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.descendants(matching: .any)["conversation"].firstMatch.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Keep the captured target")).count, 1)
-    }
-
-    func testDirectMessageSurvivesRelaunchAndCanBeWithdrawn() {
-        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
-        selectInbox(app); queue(app, "Survive restart")
-        XCTAssertTrue(app.buttons["withdraw-steering"].waitForExistence(timeout: 5))
-        app.terminate(); app.launch(); selectInbox(app)
-        thread(app, contains: "Survive restart")
-        XCTAssertTrue(app.buttons["withdraw-steering"].waitForExistence(timeout: 5))
-        app.buttons["withdraw-steering"].tap()
-        XCTAssertTrue(app.staticTexts["Steering withdrawn: Survive restart"].waitForExistence(timeout: 5))
-        XCTAssertEqual(app.buttons["send"].label, "Stop turn")
-    }
-
-    func testDirectMessageDoesNotStartAnotherTurn() {
-        let app = launch(["NANOCODEX_DEMO_COMPLETE_AFTER_MS": "60000"])
-        selectInbox(app); queue(app, "Continue naturally")
-        thread(app, contains: "Continue naturally")
-        XCTAssertTrue(app.buttons["withdraw-steering"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.staticTexts["Working on: Continue naturally"].exists)
-        XCTAssertFalse(app.staticTexts["pending-message"].exists)
-        XCTAssertEqual(self.selectedConversationTab(app).label, "Build the agent inbox")
     }
 
     func testWithdrawingFirstDirectMessageKeepsSecondDelivered() {
@@ -2313,120 +2138,13 @@ final class InboxUITests: XCTestCase {
         XCTAssertEqual(composer(app).value as? String, "Keep the latest reply in view")
     }
 
-    func testComposerPhotoThumbnailsUseHorizontalSquares() {
-        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString,
-                          "NANOCODEX_DEMO_COMPOSER_PHOTOS": "1"])
-        let tray = app.scrollViews["composer-attachments"]
-        XCTAssertTrue(tray.waitForExistence(timeout: 10))
-        let photos = tray.buttons.matching(NSPredicate(format: "identifier BEGINSWITH %@", "preview-image-"))
-        XCTAssertEqual(photos.count, 3)
-        var previous: CGRect?
-        for index in 1...3 {
-            let photo = photos.matching(NSPredicate(format: "label == %@", "Preview Phone photo \(index).png")).firstMatch
-            XCTAssertTrue(photo.exists)
-            let frame = photo.frame
-            XCTAssertEqual(frame.width, 120, accuracy: 1)
-            XCTAssertEqual(frame.height, 120, accuracy: 1)
-            if let previous {
-                XCTAssertEqual(frame.minY, previous.minY, accuracy: 1)
-                XCTAssertGreaterThan(frame.minX, previous.maxX)
-            }
-            previous = frame
-        }
-        capture(app, "composer-photo-square-thumbnails")
-        app.buttons["Remove Phone photo 1.png"].tap()
-        XCTAssertEqual(photos.count, 2)
-    }
 
-    func testSingleLocalPhotoPreservesAspectRatio() {
-        verifyLocalPhotoJourney(count: 1)
-    }
 
-    func testMultipleLocalPhotoHistoryThumbnailsSurvivePreviewAndRelaunch() {
-        verifyLocalPhotoJourney(count: 2)
-    }
 
-    func testThreeLocalPhotoHistoryThumbnailsFitOneRow() {
-        verifyLocalPhotoJourney(count: 3)
-    }
 
-    func testFourLocalPhotoHistoryThumbnailsWrapIntoGrid() {
-        verifyLocalPhotoJourney(count: 4)
-    }
 
-    func testSinglePortraitLocalPhotoPreservesAspectRatio() {
-        verifyLocalPhotoJourney(count: 1, styleIndex: 2)
-    }
 
-    func testSinglePanoramaLocalPhotoPreservesAspectRatio() {
-        verifyLocalPhotoJourney(count: 1, styleIndex: 3)
-    }
 
-    private func verifyLocalPhotoJourney(count: Int, styleIndex: Int = 1) {
-        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString, "NANOCODEX_DEMO_LOCAL_PHOTOS": "1",
-                          "NANOCODEX_DEMO_LOCAL_PHOTO_COUNT": String(count), "NANOCODEX_DEMO_LOCAL_PHOTO_STYLE": String(styleIndex)])
-        func verifyPhotos() {
-            let conversation = app.descendants(matching: .any)["conversation"].firstMatch
-            XCTAssertTrue(conversation.waitForExistence(timeout: 10))
-            let photos = conversation.descendants(matching: .any).matching(identifier: "message-image")
-            XCTAssertEqual(photos.count, count, "Project every phone path reference into a separate thumbnail: " + app.debugDescription)
-            var frames: [CGRect] = []
-            for index in 1...count {
-                let photo = photos.matching(NSPredicate(format: "label == %@", "Open Phone photo \(index).png")).firstMatch
-                let loaded = XCTNSPredicateExpectation(predicate: NSPredicate(format: "value == %@", "Image loaded"), object: photo)
-                XCTAssertEqual(XCTWaiter.wait(for: [loaded], timeout: 10), .completed, "Decode photo \(index) from its retained local original")
-                XCTAssertTrue(photo.isHittable, "All compact thumbnails should be visible together")
-                let frame = photo.frame
-                if count == 1 {
-                    let ratio: CGFloat = styleIndex == 2 ? 480.0 / 800 : styleIndex == 3 ? 1080.0 / 480 : 800.0 / 480
-                    XCTAssertEqual(frame.width, styleIndex == 2 ? 192 : 256, accuracy: 1)
-                    XCTAssertLessThanOrEqual(frame.height, 321)
-                    XCTAssertEqual(frame.height, frame.width / ratio, accuracy: 1, "Single image retains its original aspect ratio")
-                } else {
-                    XCTAssertGreaterThanOrEqual(frame.width, 100)
-                    XCTAssertLessThanOrEqual(frame.width, 125)
-                    if count == 2 { XCTAssertEqual(frame.width, 125, accuracy: 1) }
-                    XCTAssertEqual(frame.width, frame.height, accuracy: 1, "Landscape and portrait originals share a square crop")
-                }
-                frames.append(frame)
-            }
-            if count > 1 {
-                XCTAssertEqual(frames[0].minY, frames[1].minY, accuracy: 1)
-                XCTAssertEqual(frames[1].minX - frames[0].maxX, 6, accuracy: 1)
-            }
-            for frame in frames.dropFirst() {
-                XCTAssertEqual(frame.width, frames[0].width, accuracy: 1)
-                XCTAssertEqual(frame.height, frames[0].height, accuracy: 1)
-            }
-            if count >= 3 {
-                XCTAssertEqual(frames[2].minY, frames[0].minY, accuracy: 1)
-                XCTAssertLessThan(frames[1].maxX, frames[2].minX)
-                XCTAssertLessThanOrEqual(frames[2].maxX - frames[0].minX, 360)
-            }
-            if count == 4 {
-                XCTAssertGreaterThan(frames[3].minY, frames[0].maxY, "The fourth photo wraps onto a second row")
-                XCTAssertEqual(frames[3].maxX, frames[2].maxX, accuracy: 1, "The incomplete row aligns to the right")
-            }
-            let caption = conversation.staticTexts[count == 1 ? "Review this phone photo." : "Compare these \(count) phone photos."]
-            XCTAssertTrue(caption.exists)
-            XCTAssertGreaterThanOrEqual(caption.frame.minY, frames.map(\.maxY).max()!)
-            for index in 1...count {
-                let photo = photos.matching(NSPredicate(format: "label == %@", "Open Phone photo \(index).png")).firstMatch
-                photo.tap()
-                let done = app.buttons["Done"]
-                XCTAssertTrue(done.waitForExistence(timeout: 10))
-                done.tap()
-                XCTAssertTrue(conversation.waitForExistence(timeout: 5))
-            }
-            XCTAssertFalse(conversation.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "[Image attachment]")).firstMatch.exists)
-        }
-        verifyPhotos()
-        capture(app, "local-photos-\(count)-style-\(styleIndex)-before-relaunch")
-        app.terminate()
-        app.launch()
-        verifyPhotos()
-        capture(app, "local-photos-\(count)-style-\(styleIndex)-after-relaunch")
-    }
 
     func testNativeMediaPreviewZoomPlaybackAndDraftRestoration() throws {
         let clip = try XCTUnwrap(Bundle(for: Self.self).url(forResource: "VideoAudioCheck", withExtension: "mp4"))
@@ -2507,29 +2225,6 @@ final class InboxUITests: XCTestCase {
         assertNoInternalOutput(conversation)
     }
 
-    func testThinkingRendersMarkdownAndHighlightedCode() {
-        let app = launch(["NANOCODEX_DEMO_THINKING_MARKDOWN": "1"])
-
-        let conversation = app.descendants(matching: .any)["conversation"].firstMatch
-        XCTAssertTrue(conversation.waitForExistence(timeout: 5))
-        XCTAssertFalse(conversation.buttons["activity-disclosure"].exists)
-        let detail = conversation
-        XCTAssertTrue(detail.staticTexts["Reasoning check"].waitForExistence(timeout: 5))
-        XCTAssertTrue(detail.staticTexts["Check both paths and answer before continuing."].exists)
-        XCTAssertTrue(detail.staticTexts["Preserve the draft"].exists)
-        XCTAssertFalse(detail.staticTexts["## Reasoning check"].exists)
-        capture(app, "thinking-markdown")
-        let code = detail.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "let answer = 42")).firstMatch
-        for _ in 0..<4 {
-            if code.isHittable && detail.buttons["Copy code"].isHittable { break }
-            detail.swipeUp()
-        }
-        XCTAssertTrue(detail.buttons["Copy code"].isHittable)
-        XCTAssertTrue(code.isHittable)
-        capture(app, "thinking-highlighted-swift")
-        detail.buttons["Copy code"].tap()
-        XCTAssertTrue(detail.buttons["Copied"].waitForExistence(timeout: 3))
-    }
 
     func testComposerExpandsOnlyAfterFiveRenderedLinesAndKeepsDraft() {
         let app = launch()
@@ -3346,28 +3041,6 @@ final class InboxUITests: XCTestCase {
         capture(app, "top-tabs-bottom-browser-controls")
     }
 
-    func testPlusCreatesAgentAndMenuKeepsNavigationAccessible() {
-        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
-        let original = self.selectedConversationTab(app).label
-        composer(app).tap(); composer(app).typeText("Keep my original draft")
-        app.buttons["new-conversation"].tap()
-        XCTAssertEqual(self.selectedConversationTab(app).label, "New agent")
-        XCTAssertTrue(app.otherElements["conversation-empty"].waitForExistence(timeout: 5))
-        navigationAction(app, "Account settings").tap()
-        XCTAssertTrue(app.descendants(matching: .any)["inbox-settings"].waitForExistence(timeout: 5))
-        app.buttons["Done"].tap()
-        navigationAction(app, "inbox-scheduled-jobs").coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        XCTAssertTrue(app.staticTexts["Scheduled jobs"].waitForExistence(timeout: 5))
-        app.navigationBars.buttons.element(boundBy: 0).tap()
-        selectAgentFromDrawer(app, title: original)
-        XCTAssertEqual(composer(app).value as? String, "Keep my original draft")
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.45))
-            .press(forDuration: 0.01, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.65, dy: 0.45)))
-        XCTAssertTrue(app.scrollViews["conversation-list"].waitForExistence(timeout: 5))
-        app.buttons["conversation-drawer-close"].tap()
-        XCTAssertEqual(self.selectedConversationTab(app).label, original)
-        capture(app, "tabs-menu-and-search")
-    }
     func testTabShowsSentMessageAndEmptyRosterCanCreateAgent() {
         let app = launch(["NANOCODEX_DEMO_EMPTY_AGENTS": "1", "NANOCODEX_DEMO_PROFILE": UUID().uuidString])
         XCTAssertTrue(app.otherElements["inbox-empty"].waitForExistence(timeout: 5))

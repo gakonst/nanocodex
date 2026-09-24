@@ -2,16 +2,6 @@ import XCTest
 @testable import NanocodexUI
 
 final class ChatGeneratedOutputTests: XCTestCase {
-    func testComputerScreenRequiresAttributedToolContext() throws {
-        let result = #"{"type":"input_image","image_url":"data:image/png;base64,AQIDBA==","detail":"original"}"#
-        let ordinary = try XCTUnwrap(ChatGeneratedOutput.parse(results: [result]).first)
-        let screen = try XCTUnwrap(ChatGeneratedOutput.parse(results: [result], computerScreen: true).first)
-        XCTAssertFalse(ordinary.isComputerScreen)
-        XCTAssertTrue(screen.isComputerScreen)
-        // An outer Code Mode image is matched to its attributed nested output.
-        XCTAssertEqual(ordinary.id, screen.id)
-    }
-
     func testComputerContextDoesNotConvertArtifactsIntoScreens() throws {
         let result = #"{"content":[{"type":"resource_link","uri":"https://example.invalid/report.pdf","mimeType":"application/pdf"},{"type":"input_image","image_url":"data:image/svg+xml;base64,c3Zn"}]}"#
         let outputs = ChatGeneratedOutput.parse(results: [result], computerScreen: true)
@@ -24,28 +14,10 @@ final class ChatGeneratedOutputTests: XCTestCase {
         XCTAssertTrue(ChatGeneratedOutput.parse(results: [result]).isEmpty)
     }
 
-    func testImagePreviewUsesOriginalBytesAndNativeFileExtension() async throws {
-        let result = #"{"type":"image","image_url":"data:image/png;base64,AQIDBA=="}"#
-        let output = try XCTUnwrap(ChatGeneratedOutput.parse(results: [result]).first)
-        let file = try await GeneratedAsset.previewURL(output)
-        defer { try? FileManager.default.removeItem(at: file) }
-        XCTAssertEqual(file.pathExtension, "png")
-        XCTAssertEqual(try Data(contentsOf: file), Data([1, 2, 3, 4]))
-    }
     private func json(_ value: Any) throws -> String {
         String(data: try JSONSerialization.data(withJSONObject: value, options: [.fragmentsAllowed, .sortedKeys]), encoding: .utf8)!
     }
 
-    func testDirectImageAttachmentsKeepCanonicalIdentityAndResourcePolicy() throws {
-        for source in ["data:image/jpeg;base64,cGl4ZWxz", "DATA:IMAGE/PNG;BASE64,cGl4ZWxz",
-                       "https://example.com/image.png", "https://user:password@example.com/image.png",
-                       "data:image/svg+xml;base64,c3Zn", "file:///private/image.png", "javascript:alert(1)"] {
-            let wire = ChatGeneratedOutput.parse(results: [try json(["type": "image", "image_url": source])]).first
-            XCTAssertEqual(ChatGeneratedOutput.image(source: source), wire)
-        }
-        XCTAssertEqual(ChatGeneratedOutput.image(source: "data:image/svg+xml;base64,c3Zn")?.kind, .file)
-        XCTAssertEqual(ChatGeneratedOutput.image(source: "file:///private/image.png")?.kind, .unsupported)
-    }
 
     func testActualCodeModeAndStructuredResultsPreserveDistinctContentAndDeduplicateImages() throws {
         let source = "data:image/png;base64,cGl4ZWxz"

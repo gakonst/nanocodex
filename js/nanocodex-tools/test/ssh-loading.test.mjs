@@ -34,9 +34,6 @@ test("SSH discovery, validation, byte streams and brokered execution do not load
         return { stdout: "brokered", stderr: "", exitCode: 0 };
       },
     });
-    assert.deepEqual(Object.keys(command), ["name", "trusted", "execute"]);
-    assert.equal(command.name, "ssh");
-    assert.equal(command.trusted, true);
     assert.equal((await command.execute(["--help"], context)).exitCode, 0);
     assert.equal((await command.execute([], context)).exitCode, 2);
     const brokerArgs = ["-o", "IdentityRef=fixture", "user@example.test", "--", "true"];

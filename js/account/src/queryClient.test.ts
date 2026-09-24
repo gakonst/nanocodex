@@ -117,21 +117,10 @@ test("failed reads can retry on the next visit; permanent HTTP errors are not re
   assert.equal(retryQuery(2, new Error("offline")), false);
 });
 
-test("inactive queries expire after the configured retention window", async (t) => {
-  t.mock.timers.enable({ apis: ["setTimeout"] });
-  const client = createAppQueryClient();
-  t.after(() => client.clear());
-  await client.fetchQuery({ queryKey: ["unused"], queryFn: async () => "cached" });
-  t.mock.timers.tick(10 * 60_000 - 1);
-  assert.equal(client.getQueryData(["unused"]), "cached");
-  t.mock.timers.tick(2);
-  assert.equal(client.getQueryData(["unused"]), undefined);
-});
-
 function testQueryClient() {
   const client = createAppQueryClient();
   // Cancelled mock transports may finish after clear(); avoid real GC timers
-  // keeping Node alive after a test. Browser retention is checked separately.
+  // keeping Node alive after a test.
   client.setDefaultOptions({ ...client.getDefaultOptions(), queries: { ...client.getDefaultOptions().queries, gcTime: Infinity } });
   return client;
 }

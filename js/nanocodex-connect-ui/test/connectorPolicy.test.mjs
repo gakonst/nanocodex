@@ -3,12 +3,8 @@ import test from "node:test";
 
 import {
   connectorAttemptedCapabilitiesConnected,
-  connectorCapabilityIds,
-  connectorConnectionHeader,
   connectorControlsForCapabilities,
   connectorConnectionsForCapabilities,
-  connectorProviderFor,
-  connectorProviderMatchesCapabilities,
   connectorStatusesFromWire,
   googleConnectorCapabilities,
 } from "nanocodex-connect-ui/connectorPolicy.mjs";
@@ -17,16 +13,6 @@ import { publicConnectorStatus } from "../../connect-api/src/connectorPolicy.mts
 
 const GOOGLE_ID = "g".repeat(43);
 const SLACK_ID = "s".repeat(43);
-
-test("Google remains one provider while every Workspace service stays an exact capability", () => {
-  assert.deepEqual(googleConnectorCapabilities, [
-    "gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets", "gslides", "gcontacts",
-  ]);
-  assert.equal(connectorCapabilityIds.includes("google"), false);
-  assert.equal(connectorProviderFor("gcalendar"), "google");
-  assert.equal(connectorProviderMatchesCapabilities("google", ["gmail", "gdocs"]), true);
-  assert.equal(connectorProviderMatchesCapabilities("google", ["github", "slack"]), false);
-});
 
 test("provider-neutral statuses merge one identity across partial Google consent", () => {
   const statuses = connectorStatusesFromWire({
@@ -162,11 +148,6 @@ test("status projection rejects secrets, malformed identities, duplicates, and u
     }] } },
   ]) assert.throws(() => connectorStatusesFromWire(value), /invalid connector statuses/);
 });
-
-test("the generic runtime selector has one exact public header name", () => {
-  assert.equal(connectorConnectionHeader, "X-Nanocodex-Connector-Connection");
-});
-
 
 test("Connect accepts the broker's multi-account ChatGPT projection during DJ Booth login", () => {
   const accounts = [

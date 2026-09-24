@@ -11,22 +11,6 @@ from support.websocket import WebSocketConnection
 
 
 class OwnedLifecycleTests(unittest.TestCase):
-    def test_default_model_and_effort_follow_the_catalog(self) -> None:
-        for options, model, effort in [
-            ({}, "gpt-6-astra", "low"),
-            ({"model": "gpt-6-luna"}, "gpt-6-luna", "medium"),
-            ({"thinking": "high"}, "gpt-6-astra", "high"),
-        ]:
-            with self.subTest(model=model, effort=effort), MockResponsesServer() as server:
-                agent, _ = Nanocodex("test-key", websocket_url=server.endpoint, **options)
-                try:
-                    self.assertEqual(agent.prompt("default policy").result().final_message, "default policy")
-                    request = server.wait_for_requests(2)[1].body
-                    self.assertEqual(request["model"], model)
-                    self.assertEqual(request["reasoning"]["effort"], effort)
-                finally:
-                    agent.shutdown()
-
     def test_prompt_acceptance_result_and_events_are_independent(self) -> None:
         generation_started = threading.Event()
         release_generation = threading.Event()

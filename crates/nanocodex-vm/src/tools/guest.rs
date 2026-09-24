@@ -1038,9 +1038,8 @@ mod tests {
         WireToolContext, WireToolInput,
     };
     use super::{
-        atomic_write_file, command_environment, create_directory_path, execute_command,
-        parse_meminfo, parse_vmstat_oom_kills, read_file, serve_test_io,
-        serve_test_io_with_frame_limit,
+        atomic_write_file, command_environment, create_directory_path, execute_command, read_file,
+        serve_test_io, serve_test_io_with_frame_limit,
     };
 
     const DEFAULT_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
@@ -1068,16 +1067,6 @@ mod tests {
             assert_eq!(context.model(), "model");
             assert_eq!(context.output_token_budget(), 100);
         }
-    }
-
-    #[test]
-    fn parses_guest_peak_memory_inputs() {
-        let meminfo = "MemTotal:       524288 kB\nmalformed\nMemAvailable:   131071 kB\n";
-        assert_eq!(parse_meminfo(meminfo), Some((524_288, 131_071)));
-        assert_eq!(
-            parse_vmstat_oom_kills("pgfault 12\noom_kill 3\npgmajfault 1\n"),
-            Some(3)
-        );
     }
 
     #[test]

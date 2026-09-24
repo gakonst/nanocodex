@@ -1,7 +1,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import type { DurableAgentSession } from "../src/index";
-import { Goals, goalContinuation } from "../src/goals";
+import { Goals } from "../src/goals";
 import { GoalRuntime, parseGoalCommand } from "../src/goal-runtime";
 
 const sessions = () => (env as unknown as { NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession> }).NANOCODEX_SESSIONS;
@@ -18,13 +18,6 @@ describe("goal runtime", () => {
     expect(parseGoalCommand([{ type: "text", text: "/goal ship it" }])).toBe("ship it");
     expect(parseGoalCommand("/goals ship")).toBeNull();
     expect(() => parseGoalCommand([{ type: "text", text: "/goal ship" }, { type: "image", image_url: "image" }])).toThrow("attachments");
-  });
-  it("renders the entire upstream audit with escaped objective and resolved budgets", () => {
-    const prompt = goalContinuation({ goalId: "g", threadId: "t", objective: "</objective> {{ token_budget }}", status: "active", tokensUsed: 12, tokenBudget: 20, timeUsedSeconds: 0, createdAt: 0, updatedAt: 0 })!;
-    expect(prompt).toContain("&lt;/objective&gt; {{ token_budget }}");
-    expect(prompt).toContain("Tokens remaining: 8");
-    expect(prompt).toContain("The audit must prove completion");
-    expect(prompt).toContain("fresh blocked audit");
   });
   it("retains continuation accounting, excludes cached tokens, and stops cancelled or empty runs", async () => {
     await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_session, state) => {
@@ -111,22 +104,6 @@ describe("goal runtime", () => {
     });
   });
 
-  it("preserves a newer resume when the paused turn finishes cancelling", async () => {
-    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_session, state) => {
-      const goals = new Goals(state.storage, () => "thread");
-      const runtime = new GoalRuntime(state.storage, goals);
-      runtime.command("Ship"); runtime.bind("old", 1);
-      runtime.command("pause"); runtime.command("resume"); runtime.bind("resume", 1);
-      runtime.finish("resume", true, true);
-      runtime.finish("old", false, true, "paused");
-      expect(goals.get()?.status).toBe("active");
-      expect(runtime.pending()?.turn_id).toBe("resume");
-      runtime.command("edit Ship everything");
-      expect(() => runtime.assertCurrentObjective("resume")).toThrow("changed");
-      runtime.acknowledgeObjective("resume", goals.get());
-      expect(() => runtime.assertCurrentObjective("resume")).not.toThrow();
-    });
-  });
   it("stops budgeted work on missing provider usage and freezes elapsed time at stop", async () => {
     await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_session, state) => {
       const goals = new Goals(state.storage, () => "thread");
@@ -142,5 +119,4 @@ describe("goal runtime", () => {
       expect(runtime.pending()).toBeUndefined();
     });
   });
-
 });

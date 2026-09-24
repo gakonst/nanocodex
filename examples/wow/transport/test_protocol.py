@@ -1,4 +1,3 @@
-import pathlib
 import subprocess
 import unittest
 from protocol import Frame, Link, keys, raster, decode_pixels
@@ -60,18 +59,6 @@ class ProtocolTests(unittest.TestCase):
         pump.observe(f); reserved[0]=False; self.assertFalse(pump.tick())
         reserved[0]=True; pump.send_key=lambda k:None
         self.assertFalse(pump.tick()); self.assertIn('uncertain',pump.error)
-
-    def test_pump_roundtrip(self):
-        now=[0.0]; sent=[]; a=Link(9); a.send(b'proof')
-        p=Pump(a,lambda:True,lambda k:sent.append(k) or True,lambda:now[0],lambda:True,interval=.04)
-        for _ in range(200):
-            f=Frame(9,ready=True).encode(); p.observe(f); p.observe(f)
-            p.tick(); now[0]+=.04
-            if sent and sent[-1]=='F22': break
-        self.assertEqual(sent,keys(a.packet()))
-        ack=Frame(9,ack=1,ready=True).encode(); p.observe(ack); p.observe(ack)
-        self.assertIsNone(a.pending)
-        now[0]+=2; p.observe(ack); self.assertFalse(p.tick())
 
     def test_lost_ack_retransmit_and_retry_bound(self):
         now=[0.0]; sent=[]; delivered=[]

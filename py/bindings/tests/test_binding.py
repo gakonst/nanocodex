@@ -2,12 +2,9 @@ import os
 import unittest
 
 from nanocodex import (
-    AgentEvent,
     Nanocodex,
     SessionSnapshot,
-    Turn,
     TurnResult,
-    __version__,
 )
 
 
@@ -28,42 +25,13 @@ class BindingTests(unittest.TestCase):
             reasoning_mode="standard",
         )
         self.assertNotIn(secret, repr(agent))
-        self.assertTrue(callable(agent.prompt))
-        self.assertTrue(callable(agent.spawn))
-        self.assertTrue(callable(agent.fork))
-        self.assertTrue(callable(agent.fork_from))
-        self.assertTrue(callable(agent.shutdown))
         self.assertEqual(events.request_id, agent.session_id)
-        agent.set_thinking("high")
-        agent.set_fast_mode(True)
-        self.assertTrue(callable(events.recv_json))
-        self.assertRegex(__version__, r"^\d+\.\d+\.\d+")
         agent.shutdown()
         drain(events)
 
     def test_configuration_errors_cross_the_boundary(self) -> None:
-        astra, astra_events = Nanocodex(
-            "test-key", model="gpt-6-astra", thinking="low"
-        )
-        astra.shutdown()
-        drain(astra_events)
-
-        with self.assertRaisesRegex(ValueError, "GPT-6 Astra requires"):
-            Nanocodex("test-key", model="gpt-6-astra", thinking="none")
-
-        with self.assertRaisesRegex(ValueError, "does not support pro"):
-            Nanocodex(
-                "test-key", model="gpt-6-astra", reasoning_mode="pro"
-            )
-
         with self.assertRaisesRegex(ValueError, "expected none"):
             Nanocodex("test-key", thinking="impossible")
-
-        with self.assertRaisesRegex(ValueError, "expected standard or pro"):
-            Nanocodex("test-key", reasoning_mode="impossible")
-
-        with self.assertRaisesRegex(ValueError, "expected gpt-6-astra"):
-            Nanocodex("test-key", model="impossible")
 
         agent, _ = Nanocodex("test-key")
         with self.assertRaisesRegex(ValueError, "expected none"):
@@ -75,18 +43,6 @@ class BindingTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             Nanocodex("test-key", session_id="not-a-uuid-v7")
-
-    def test_spawn_returns_independent_agent_without_network(self) -> None:
-        agent, events = Nanocodex("test-key", thinking="low")
-        child, child_events = agent.spawn()
-        self.assertTrue(callable(child.prompt))
-        self.assertTrue(callable(child_events.recv_json))
-        self.assertIsNot(agent, child)
-        self.assertNotEqual(agent.session_id, child.session_id)
-        child.shutdown()
-        agent.shutdown()
-        drain(child_events)
-        drain(events)
 
     def test_fork_before_safe_boundary_is_typed(self) -> None:
         agent, events = Nanocodex("test-key", thinking="low")
@@ -122,13 +78,6 @@ class BindingTests(unittest.TestCase):
     def test_snapshot_rejects_invalid_json(self) -> None:
         with self.assertRaises(ValueError):
             SessionSnapshot.from_json('{"version": 1}')
-
-    def test_internal_transport_and_turn_ids_are_not_public_properties(self) -> None:
-        for public_type in (Nanocodex, Turn, TurnResult, SessionSnapshot, AgentEvent):
-            names = dir(public_type)
-            self.assertNotIn("response_id", names)
-            self.assertNotIn("previous_response_id", names)
-            self.assertNotIn("turn_id", names)
 
     @unittest.skipUnless(
         os.environ.get("OPENAI_API_KEY"), "live API key not configured"

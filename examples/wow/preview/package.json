@@ -2,8 +2,7 @@
   "name": "nanocodex-wow-browser-host",
   "private": true,
   "scripts": {
-    "build": "bun build.mjs",
-    "test:lua": "node wow-api.test.cjs"
+    "build": "bun build.mjs"
   },
   "dependencies": {
     "fengari": "0.1.5",

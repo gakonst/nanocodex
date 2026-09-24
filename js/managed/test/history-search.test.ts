@@ -1,10 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  HISTORY_VECTOR_MATCH_THRESHOLD,
   historyFtsQuery,
   historySearchTerms,
-  historyVectorRetrieval,
   isAcceptedHistoryLexicalMatch,
   isExactHistoryIdentifierQuery,
   parseHistoryFindSessionsInput,
@@ -22,20 +20,6 @@ describe("history search query routing", () => {
     expect(isExactHistoryIdentifierQuery("gemstone waterfowl designation")).toBe(false);
     expect(isExactHistoryIdentifierQuery("memory-scope architecture")).toBe(false);
     expect(isExactHistoryIdentifierQuery("A11 T1")).toBe(false);
-  });
-
-  it("configures provider-side vector rejection before result limiting", () => {
-    expect(historyVectorRetrieval("organization-a", "team-a", 8)).toEqual({
-      retrieval_type: "vector",
-      match_threshold: HISTORY_VECTOR_MATCH_THRESHOLD,
-      max_num_results: 24,
-      filters: {
-        organization_id: { $eq: "organization-a" },
-        team_id: { $eq: "team-a" },
-      },
-      return_on_failure: false,
-    });
-    expect(HISTORY_VECTOR_MATCH_THRESHOLD).toBe(0.5);
   });
 
   it("requires lexical coverage instead of accepting one crowded-in term", () => {

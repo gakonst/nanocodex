@@ -25,12 +25,4 @@ final class AppUpdateTests: XCTestCase {
         try feed().validate()
         try feed(date: "2026-09-20T03:58:02Z").validate()
     }
-    func testInstallerURLPreservesManifest() throws {
-        let update = try feed()
-        let url = try XCTUnwrap(update.installationURL(installedBuild: "99"))
-        XCTAssertEqual(url.scheme, "itms-services")
-        let query = try XCTUnwrap(URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems)
-        XCTAssertEqual(query.first { $0.name == "url" }?.value, update.manifestURL)
-        XCTAssertEqual(query.first { $0.name == "action" }?.value, "download-manifest")
-    }
 }

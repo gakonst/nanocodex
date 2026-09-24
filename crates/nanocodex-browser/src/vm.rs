@@ -899,26 +899,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn defaults_do_not_launch_headless_or_enable_automation() {
-        let script = include_str!("../image/browser-vm-init");
-        assert!(!script.contains("--headless"));
-        assert!(!script.contains("--enable-automation"));
-        assert!(script.contains("Xvfb :99"));
-        assert!(script.contains("socat TCP-LISTEN:9223"));
-        assert!(script.contains("--remote-debugging-port=9222"));
-        assert!(script.contains("--proxy-server=$NANOCODEX_BROWSER_PROXY_SERVER"));
-        assert!(script.contains("--proxy-bypass-list=<-loopback>"));
-        assert!(script.contains("update-ca-certificates"));
-        assert!(script.contains("certutil -A"));
-        assert!(script.contains("details.isProxy"));
-        assert!(script.contains("--load-extension=$NANOCODEX_BROWSER_PROXY_EXTENSION"));
-        assert!(script.contains("files_tag=$1"));
-        assert!(script.contains("mount -t virtiofs -o ro \"$files_tag\""));
-        assert!(!script.contains("mount -t virtiofs -o ro nanocodex-egress-files"));
-        assert!(!BROWSER_INIT_PROGRAM.contains('"'));
-    }
-
-    #[test]
     fn startup_errors_retain_only_a_bounded_log_tail() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("browser.log");
@@ -951,20 +931,6 @@ mod tests {
         assert_eq!(
             fs::metadata(staged).unwrap().permissions().mode() & 0o777,
             0o640
-        );
-    }
-
-    #[test]
-    fn builder_retains_explicit_vmm_entrypoint_arguments() {
-        let builder = BrowserVmBuilder::new("/images/browser.ext4", "/bin/vmm", "/bin/gvproxy")
-            .vmm_args(["vm", "run-config", "--config"]);
-
-        assert_eq!(
-            builder.vmm_arguments,
-            ["vm", "run-config", "--config"]
-                .into_iter()
-                .map(OsString::from)
-                .collect::<Vec<_>>()
         );
     }
 

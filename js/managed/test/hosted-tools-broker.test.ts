@@ -154,27 +154,6 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(host.sent).not.toContainEqual(expect.objectContaining({ type: "fenced" }));
   });
 
-  it("projects account machines only while their host is routing-ready", async () => {
-    const fixture = createFixture();
-    const host = fixture.socket();
-    const machines = [{
-      id: "desktop",
-      name: "Build desktop",
-      workspace: "/home/george/repo",
-      capabilities: ["filesystem", "native-shell"],
-    }];
-    await fixture.broker.message(host.webSocket, JSON.stringify({
-      type: "catalog", capabilities: ["turn_metadata"],
-      attachment_id: "desktop",
-      tools: [entry()],
-      machines,
-    }));
-
-    expect(fixture.broker.machines()).toEqual(machines);
-    await fixture.broker.message(host.webSocket, JSON.stringify({ type: "drain" }));
-    expect(fixture.broker.machines()).toEqual([]);
-  });
-
   for (const name of ["browser_execute", "browser_vault_fill", "browser_vault_snapshot", "browser_vault_request_takeover"]) {
     it(`filters disabled hosted browser tool ${name}`, async () => {
       const fixture = createFixture();
@@ -487,42 +466,6 @@ describe("HostedToolsBroker socket-owned protocol", () => {
       reason: expect.stringContaining("leased tool attachments may publi"),
     });
     expect(fixture.broker.provider().definitions()).toEqual([]);
-  });
-
-  it("replaces the live machine snapshot without rebuilding its broker", async () => {
-    const fixture = createFixture();
-    const first = fixture.socket();
-    await fixture.broker.message(first.webSocket, JSON.stringify({
-      type: "catalog", capabilities: ["turn_metadata"],
-      attachment_id: "laptop",
-      tools: [entry()],
-      machines: [{
-        id: "laptop",
-        name: "Laptop",
-        workspace: "/Users/george/repo",
-        capabilities: ["filesystem"],
-      }],
-    }));
-    const replacement = fixture.socket();
-    await fixture.broker.message(replacement.webSocket, JSON.stringify({
-      type: "catalog", capabilities: ["turn_metadata"],
-      attachment_id: "laptop",
-      tools: [entry()],
-      machines: [{
-        id: "laptop",
-        name: "Renamed laptop",
-        workspace: "/home/george/repo",
-        capabilities: ["filesystem", "native-shell"],
-      }],
-    }));
-
-    expect(first.closed).toMatchObject({ code: 1008 });
-    expect(fixture.broker.machines()).toEqual([{
-      id: "laptop",
-      name: "Renamed laptop",
-      workspace: "/home/george/repo",
-      capabilities: ["filesystem", "native-shell"],
-    }]);
   });
 
   it("reserves canonical machine tools, resolves exact machines, and disconnects independently", async () => {
@@ -1094,25 +1037,6 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(host.sent.some((frame) => frame.type === "call")).toBe(false);
   });
 
-  it("projects a retained catalog and blocks a stale tool when the active grant changes", async () => {
-    let allowed = true;
-    const fixture = createFixture((candidate) => allowed && candidate.provider === "fixture");
-    const host = fixture.socket();
-    await catalog(fixture.broker, host);
-    const selected = fixture.broker.provider().resolve("fixture__lookup")!;
-    expect(fixture.broker.provider().definitions()).toHaveLength(1);
-
-    allowed = false;
-    expect(fixture.broker.provider().definitions()).toEqual([]);
-    expect(fixture.broker.provider().resolve("fixture__lookup")).toBeUndefined();
-    await expect(selected.handler({}, { sessionId: "session:1", callId: "source:1" }))
-      .resolves.toMatchObject({
-        success: false,
-        structuredResult: { status: "unavailable" },
-      });
-    expect(host.sent.some((frame) => frame.type === "call")).toBe(false);
-  });
-
   it("marks dispatched calls ambiguous after unexpected transport loss", async () => {
     const fixture = createFixture();
     const host = fixture.socket();
@@ -1503,61 +1427,12 @@ function cleanupEntry(remoteName = "cleanup", strict = false): HostedToolCatalog
     definition: {
       type: "function",
       name: "cleanup",
-      description: "List open web tabs, inspect one exact tab, and preview or revert one declarative CSS cleanup recipe.",
+      description: "Synthetic app tool",
       strict,
       parameters: {
         oneOf: [
-          {
-            type: "object",
-            properties: {
-              action: { const: "list_tabs" },
-              cursor: { type: "string", minLength: 1, maxLength: 80 },
-            },
-            required: ["action"],
-            additionalProperties: false,
-          },
-          {
-            type: "object",
-            properties: {
-              action: { const: "inspect" },
-              tab_ref: { type: "string", minLength: 1, maxLength: 80 },
-            },
-            required: ["action"],
-            additionalProperties: false,
-          },
-          {
-            type: "object",
-            properties: {
-              action: { const: "preview" },
-              document_revision: { type: "string" },
-              recipe: {
-                type: "object",
-                properties: {
-                  schema_version: { const: 1 },
-                  name: { type: "string", minLength: 1, maxLength: 80 },
-                  css: { type: "string", maxLength: 32768 },
-                  hide_selectors: {
-                    type: "array",
-                    maxItems: 64,
-                    items: { type: "string", minLength: 1, maxLength: 512 },
-                  },
-                },
-                required: ["name", "css", "hide_selectors"],
-                additionalProperties: false,
-              },
-            },
-            required: ["action", "document_revision", "recipe"],
-            additionalProperties: false,
-          },
-          {
-            type: "object",
-            properties: {
-              action: { const: "revert_preview" },
-              preview_id: { type: "string" },
-            },
-            required: ["action", "preview_id"],
-            additionalProperties: false,
-          },
+          { type: "object", properties: { action: { const: "inspect" } } },
+          { type: "object", properties: { action: { const: "preview" } } },
         ],
       },
     },

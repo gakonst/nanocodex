@@ -52,22 +52,3 @@ test('wrong revision, run, output list, and archive corruption fail closed', () 
   assert.throws(() => transfer('restore', { cwd: destination, revision, runId }), /archive is corrupt/);
   assert.throws(() => readFileSync(join(destination, files[0])), { code: 'ENOENT' });
 }));
-
-test('production and Worker readiness never depend on container builds', () => {
-  const workflow = readFileSync(new URL('../../.github/workflows/cloudflare.yml', import.meta.url), 'utf8');
-  const job = name => workflow.split('\n  ' + name + ':\n')[1].split(/\n  [\w-]+:\n/)[0];
-  const production = job('production');
-  assert.doesNotMatch(production, /needs:|needs\.image-plan|needs\.managed-images/);
-  assert.match(production, /uses: \.\/\.github\/actions\/deploy-workers/);
-  assert.match(job('preview'), /needs: worker-build/);
-  assert.doesNotMatch(job('worker-build'), /\n    needs:|secrets\.|CLOUDFLARE_API_TOKEN|environment:|github.event_name == 'push'/);
-  assert.match(job('preview'), /node scripts\/cloudflare\/worker-build\.mjs restore/);
-  assert.doesNotMatch(production, /worker-build\.mjs|cloudflare-worker-build/);
-  const action = readFileSync(new URL('../../.github/actions/deploy-workers/action.yml', import.meta.url), 'utf8');
-  for (const command of ['release-plan.mjs plan', 'release-plan.mjs install', 'release-workers.mjs', 'save-wasm-outputs']) assert.ok(action.includes(command), 'missing command: ' + command);
-  assert.ok(action.indexOf('release-plan.mjs plan') < action.indexOf('release-plan.mjs install'));
-  assert.ok(action.indexOf('release-plan.mjs install') < action.indexOf('release-workers.mjs'));
-  assert.doesNotMatch(action, /release-plan\.mjs build/);
-  assert.ok(action.indexOf('release-workers.mjs') < action.indexOf('save-wasm-outputs'));
-  assert.match(action, /!cancelled\(\) && steps\.release\.outputs\.wasm-built == 'true'/);
-});

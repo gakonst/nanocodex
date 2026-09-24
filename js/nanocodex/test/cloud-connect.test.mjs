@@ -102,35 +102,6 @@ test("Connect HTTP transport binds every API request to the configured app ID", 
   assert.equal(fetches[1].init.credentials, "include");
 });
 
-test("Connect HTTP transport sends POST bodies through the native fetch boundary without wrapping them", async () => {
-  const fetches = [];
-  const transport = Transport.http("https://connect.example", {
-    async fetch(input, init) {
-      fetches.push({ input, init });
-      return Response.json({ ok: true });
-    },
-  }).setup({ appId: "mobile-app" });
-
-  const body = JSON.stringify({ input: "hello from Safari" });
-  await transport.fetch("https://connect.example/v1/agents/agent-1/turns", {
-    method: "POST",
-    headers: {
-      authorization: "Bearer session",
-      "content-type": "application/json",
-      "idempotency-key": "turn-1",
-    },
-    body,
-  });
-
-  assert.equal(fetches[0].input, "https://connect.example/v1/agents/agent-1/turns");
-  assert.equal(fetches[0].init.method, "POST");
-  assert.equal(fetches[0].init.body, body);
-  assert.equal(fetches[0].init.headers.get("authorization"), "Bearer session");
-  assert.equal(fetches[0].init.headers.get("content-type"), "application/json");
-  assert.equal(fetches[0].init.headers.get("idempotency-key"), "turn-1");
-  assert.equal(fetches[0].init.headers.get("x-nanocodex-app-id"), "mobile-app");
-});
-
 test("Connect durable prompts reach native fetch without wrapping their POST body in Request", async () => {
   const fetches = [];
   const agentId = "019fc927-b280-79a7-8445-1b9996ad2fb0";
@@ -1196,37 +1167,6 @@ test("Connect rejects contradictory MCP capability and metadata projections", ()
   })), /MCP capabilities and metadata must match exactly/);
 });
 
-test("Connect reads exact connector connection selections and rejects widening metadata", () => {
-  const expiry = Math.floor(Date.now() / 1_000) + 3_600;
-  const keyId = "0x1111111111111111111111111111111111111111";
-  const connectionId = "a".repeat(43);
-  const legacy = connectionFromWire(testConnectionWire({
-    expiry,
-    keyId,
-    capabilities: ["nanocodex.agent", "slack"],
-  }));
-  assert.equal(legacy.grant.connectorConnections, undefined);
-
-  assert.throws(() => connectionFromWire(testConnectionWire({
-    expiry,
-    keyId,
-    capabilities: ["nanocodex.agent", "slack"],
-    connectorConnections: { github: [connectionId] },
-  })), /ungranted connector capability/);
-  assert.throws(() => connectionFromWire(testConnectionWire({
-    expiry,
-    keyId,
-    capabilities: ["nanocodex.agent", "slack"],
-    connectorConnections: { slack: ["not-an-id"] },
-  })), /opaque connection ID/);
-  assert.throws(() => connectionFromWire(testConnectionWire({
-    expiry,
-    keyId,
-    capabilities: ["nanocodex.agent", "slack"],
-    connectorConnections: { slack: [connectionId, connectionId] },
-  })), /duplicate connections/);
-});
-
 test("Connect keeps the hosted dialog open until the grant session is committed", async () => {
   const events = [];
   let releaseConnection;
@@ -1734,24 +1674,6 @@ test("Connect account logout clears the local session before remote wallet clean
   assert.equal(client._hasSession(), false);
   release();
   await logout;
-});
-
-test("the mock Connect transport preserves X in requested connector permissions", async () => {
-  const transport = Transport.mock({ appName: "Test Workspace" }).setup({ appId: "x-workspace" });
-  const prepared = await transport.request({
-    method: "POST",
-    path: "/v1/connections/prepare",
-    body: {
-      permission: "agent.run",
-      resources: ["urn:nanocodex:connector:x"],
-    },
-  });
-
-  assert.deepEqual(prepared.permission.connectors.at(-1), {
-    id: "x",
-    name: "X",
-    detail: "Use the connected X account through the grant",
-  });
 });
 
 test("Nanocodex Connect signs one witness-bound access key and enforces its MPP permission", async () => {

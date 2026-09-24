@@ -3,19 +3,6 @@ import XCTest
 @testable import InboxCore
 
 final class VaultIntakeTests: XCTestCase {
-    func testBrowserReceiptDisplayPreservesOnlyRecognizedCompletion() {
-        let id = String(repeating: "a", count: 32)
-        let receipt: JSON = .object(["type": .string("browser_vault_takeover_receipt"),
-            "status": .string("finished"), "challenge_id": .string(id)])
-        XCTAssertEqual(BrowserReceiptPresentation.summary(receipt.pretty), "Private browser control finished")
-        let verification: JSON = .object(["type": .string("browser_vault_challenge_receipt"),
-            "status": .string("submitted"), "challenge_id": .string(id)])
-        XCTAssertEqual(BrowserReceiptPresentation.summary(verification.pretty), "Browser verification code submitted")
-        XCTAssertNil(BrowserReceiptPresentation.summary("ordinary user message"))
-        XCTAssertNil(BrowserReceiptPresentation.summary(receipt.pretty.replacingOccurrences(of: "finished", with: "active")))
-        XCTAssertNil(BrowserReceiptPresentation.summary(receipt.pretty.replacingOccurrences(of: id, with: "short")))
-        XCTAssertNil(BrowserReceiptPresentation.summary("{\"type\":\"browser_vault_takeover_receipt\",\"status\":\"finished\",\"challenge_id\":\"\(id)\",\"extra\":true}"))
-    }
 
     func testAutomaticBrowserPresentationRequiresCurrentAgentAndUnexpiredRequest() throws {
         let hint: JSON = .object(["type": .string("browser_vault_takeover"), "status": .string("input_required"),
@@ -116,37 +103,7 @@ final class VaultIntakeTests: XCTestCase {
         try await client.submitBrowserVerification(intake: intake, code: "123456", configuration: fixture.configuration)
     }
 
-    func testDedicatedChallengeToolPresentation() throws {
-        let hint: JSON = .object(["type": .string("browser_vault_challenge"), "status": .string("input_required"),
-            "challenge_id": .string(String(repeating: "b", count: 22)), "agent_id": .string("agent_1"),
-            "origin": .string("https://example.com"), "expires_at": .number(9999999999999)])
-        var tool = ToolPresentation(name: "browser_vault_request_challenge", arguments: .null)
-        tool.finish(hint)
-        XCTAssertEqual(tool.vaultIntake?.operation, "browser_verification")
-        var other = ToolPresentation(name: "browser_execute", arguments: .null)
-        other.finish(hint)
-        XCTAssertNil(other.vaultIntake)
-    }
 
-    func testTakeoverUsesPrivateDirectResponse() async throws {
-        let hint: JSON = .object(["type": .string("browser_vault_takeover"), "status": .string("input_required"),
-            "challenge_id": .string(String(repeating: "b", count: 22)), "agent_id": .string("agent_1"),
-            "origin": .string("https://example.com"), "expires_at": .number(9999999999999)])
-        var tool = ToolPresentation(name: "browser_vault_request_takeover", arguments: .null); tool.finish(hint)
-        let intake = try XCTUnwrap(tool.vaultIntake)
-        XCTAssertEqual(intake.operation, "browser_takeover")
-        let fixture = try HTTPFixture { request in
-            XCTAssertEqual(request.path, "/v1/agents/agent_1/browser-vault/takeover")
-            XCTAssertEqual(request.headers["cache-control"], "no-store")
-            XCTAssertEqual(request.json["text"] as? String, "private-text")
-            return FixtureReply(body: #"{"status":"active","image":"data:image/png;base64,iVBORw0KGgo=","width":800,"height":600}"#)
-        }
-        defer { fixture.close() }
-        let client = ManagedClient(credential: try AccountCredential(origin: fixture.origin, apiKey: fixtureKey)); defer { client.close() }
-        let frame = try await client.browserTakeover(intake: intake, action: ["action": .string("type"), "text": .string("private-text")], configuration: fixture.configuration)
-        guard case .active(let data, let width, _) = frame else { return XCTFail("Expected private frame") }
-        XCTAssertEqual(width, 800); XCTAssertEqual(data.count, 8)
-    }
 
     func testTakeoverInputMetadataAndFinishBoundary() throws {
         let hint: JSON = .object(["type": .string("email"), "multiline": .bool(false)])

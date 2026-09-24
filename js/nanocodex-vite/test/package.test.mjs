@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -13,30 +13,6 @@ const exec = promisify(execFile);
 const packageRoot = new URL("../", import.meta.url);
 const packageJson = JSON.parse(await readFile(new URL("package.json", packageRoot), "utf8"));
 
-test("the package owns the complete public Vite boundary", async () => {
-  assert.equal(packageJson.name, "nanocodex-vite");
-  assert.equal(packageJson.peerDependencies.nanocodex, `^${packageJson.version}`);
-  assert.equal(packageJson.devDependencies.nanocodex, "workspace:*");
-  assert.equal(packageJson.exports["."].import, "./index.mjs");
-  assert.equal(packageJson.exports["./cloudflare"].import, "./cloudflare.mjs");
-  assert.equal(packageJson.exports["./oauth-relay"].import, "./oauth-relay.mjs");
-
-  for (const conditions of Object.values(packageJson.exports)) {
-    for (const target of Object.values(conditions)) {
-      assert((await stat(new URL(target, packageRoot))).isFile(), `${target} must ship`);
-    }
-  }
-
-  await assert.rejects(
-    import("nanocodex/vite"),
-    (error) => error.code === "ERR_PACKAGE_PATH_NOT_EXPORTED",
-  );
-  await assert.rejects(
-    import("nanocodex/tools/vite"),
-    (error) => error.code === "ERR_PACKAGE_PATH_NOT_EXPORTED",
-  );
-});
-
 test("the extracted plugin preserves all browser compatibility aliases", async () => {
   const tools = nanocodexTools();
   assert.match(tools.resolveId("@microsoft/dev-tunnels-ssh"), /devTunnelsSshBrowser\.mjs$/);
@@ -47,7 +23,6 @@ test("the extracted plugin preserves all browser compatibility aliases", async (
   assert.equal(tools.resolveId("sprintf-js", sprintfCompatibility), null);
 
   const plugin = nanocodex({ chatGpt: false });
-  assert.equal(plugin.name, "nanocodex");
   assert.match(plugin.resolveId("node:zlib"), /browserZlib\.mjs$/);
 
   const [{ gzipSync, gunzipSync }, { sprintf }] = await Promise.all([

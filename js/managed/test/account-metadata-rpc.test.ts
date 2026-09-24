@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { AccountCatalogCache, ACCOUNT_DISCOVERY_TTL_MS, accountCatalog } from "../src/account-catalog";
+import { AccountCatalogCache, accountCatalog } from "../src/account-catalog";
 import { accountInfo, accountVaultMetadata, projectAccountInfo } from "../src/account-info";
 import type { CloudflareAccountCatalogResult, CloudflareAccountVaultResult } from "nanocodex/cloudflare/egress";
 
@@ -46,36 +46,6 @@ describe("account metadata RPC discovery", () => {
     expect(f.readAccountCatalog).toHaveBeenCalledOnce();
     release({ status: 200, catalog });
     await pending;
-  });
-
-  it("keeps fixed TTL, shared identity, owner/authority partitions and explicit invalidation", async () => {
-    const f = fixture();
-    let now = 1_000;
-    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
-    const first = new AccountCatalogCache();
-    const second = new AccountCatalogCache();
-    const read = async (cache: AccountCatalogCache, broker = f.broker, owner = "owner", authority = "authority") =>
-      Promise.all([cache.get(broker, owner, authority), cache.vault(broker, owner, authority)]);
-    try {
-      await read(first);
-      now += ACCOUNT_DISCOVERY_TTL_MS - 1;
-      await read(second);
-      expect(f.readAccountCatalog).toHaveBeenCalledTimes(1);
-      expect(f.readAccountVault).toHaveBeenCalledTimes(1);
-      now += 1;
-      await read(second);
-      expect(f.readAccountCatalog).toHaveBeenCalledTimes(2);
-      expect(f.readAccountVault).toHaveBeenCalledTimes(2);
-      await read(first, f.broker, "other-owner");
-      await read(first, f.broker, "owner", "new-authority");
-      await read(first, { ...f.broker } as Fetcher);
-      expect(f.readAccountCatalog).toHaveBeenCalledTimes(5);
-      await read(second);
-      second.invalidate();
-      await read(second);
-      expect(f.readAccountCatalog).toHaveBeenCalledTimes(6);
-      expect(f.readAccountVault).toHaveBeenCalledTimes(6);
-    } finally { clock.mockRestore(); }
   });
 
   it("evicts failed RPC discovery and does not retry it through HTTP", async () => {

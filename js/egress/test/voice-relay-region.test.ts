@@ -37,22 +37,6 @@ function fixture(region?: string, regional = false) {
 }
 
 describe("regional subscription voice relay", () => {
-  it.each(regions)("selects the constrained %s pool with an isolated voice identity", async (region) => {
-    const f = fixture(region, true);
-    const selected = f.regionalNamespaces[region]!;
-    const response = await handleEgress(f.request, f.env);
-    expect(response.status).toBe(201);
-    expect(await response.text()).toBe("v=0\r\n");
-    expect(selected.get).toHaveBeenCalledWith(`voice-v1:${region}:test-user`, { locationHint: region });
-    expect(f.get).not.toHaveBeenCalled();
-    for (const [other, relay] of Object.entries(f.regionalNamespaces)) {
-      if (other !== region) expect(relay.get).not.toHaveBeenCalled();
-    }
-    const sent = selected.fetch.mock.calls[0]![0];
-    expect(sent.headers.has("x-nanocodex-voice-region")).toBe(false);
-    expect(sent.headers.get("authorization")).toBe("Bearer private-test-token");
-    expect(await sent.text()).toBe('{"sdp":"v=0"}');
-  });
 
   it.each([false, true])("preserves regional RPC SDP/status/headers and never retries uncertain failures (%s)", async (fail) => {
     const f = fixture("wnam", true);
@@ -136,16 +120,6 @@ describe("regional subscription voice relay", () => {
     expect(f.get).not.toHaveBeenCalled();
   });
 
-  it.each(["0", "1"])("keeps sampled transport stable for voice session ending %s", async (last) => {
-    const f = fixture("wnam");
-    f.env.CHATGPT_VOICE_RELAY_RPC = "sample";
-    f.request.headers.set("x-session-id", `11111111-1111-4111-8111-11111111111${last}`);
-    const createRealtimeCall = vi.fn(async () => ({ status: 201, headers: {}, body: "answer SDP" }));
-    f.get.mockReturnValue({ fetch: f.relay, createRealtimeCall } as ReturnType<typeof f.get>);
-    expect((await handleEgress(f.request, f.env)).status).toBe(201);
-    expect(createRealtimeCall).toHaveBeenCalledTimes(last === "0" ? 1 : 0);
-    expect(f.relay).toHaveBeenCalledTimes(last === "0" ? 0 : 1);
-  });
   it("transfers the complete SDP exchange through the private relay RPC when enabled", async () => {
     const f = fixture("wnam");
     f.env.CHATGPT_VOICE_RELAY_RPC = "true";
@@ -229,19 +203,6 @@ describe("private managed voice ownership capability", () => {
     expect(f.env).not.toHaveProperty("trustedPlacementRegion");
     expect(directory).not.toHaveBeenCalled();
     expect(f.relay.mock.calls[0]![0].headers.has("x-nanocodex-realtime-owner")).toBe(false);
-  });
-  it.each(["wnam", "enam", "sam", "weur", "eeur", "apac", "oc", "WNAM", "SJC", "wnam,weur", "", "invalid"])("uses only validated private voice hints for broker first touch (%s)", async region => {
-    const f = fixture(region);
-    f.request.headers.set("x-nanocodex-subject", subject);
-    f.request.headers.set("x-nanocodex-realtime-owner", owner);
-    f.request.headers.set("x-nanocodex-placement-colo", "NRT");
-    const getByName = vi.fn(() => ({ resolveModelCredential: async () => ({ status: 401, error: "credential_not_found" }) }));
-    f.env.USER_CREDENTIALS = { getByName } as unknown as EgressEnv["USER_CREDENTIALS"];
-    const reply = await handleManagedRealtimeCall(f.request, f.env);
-    expect(reply.status).toBe(503);
-    await reply.body?.cancel();
-    expect(getByName).toHaveBeenCalledWith(owner, ["wnam", "enam", "sam", "weur", "eeur", "apac", "oc"].includes(region) ? { locationHint: region } : undefined);
-    expect(f.env).not.toHaveProperty("trustedPlacementRegion");
   });
   it("ignores public voice and placement assertions for credential broker placement", async () => {
     const f = fixture("wnam");

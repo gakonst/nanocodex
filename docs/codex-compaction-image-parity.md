@@ -1,8 +1,8 @@
 # Compaction and image recovery parity
 
-Current compaction reference: pinned `openai/codex` commit `36430b36881cf5c289cb48e671cfc9e8b542ae7b`. The earlier image-recovery investigation below used `c775dd3c332de1b69b25a4580f6c5bc44b94e284` and `1427825c40`. This document distinguishes implemented rules from remaining differences; it does not claim complete Codex equivalence.
+Current compaction reference: pinned `openai/codex` commit `36430b36881cf5c289cb48e671cfc9e8b542ae7b`. This document describes the implemented rules and remaining differences; it does not claim complete Codex equivalence.
 
-## Pinned compaction changes
+## Compaction contract
 
 - Developer retention now depends on explicit client provenance, corresponding to Codex `CodexHarnessMetadata.client_authored` (`compact_remote_v2.rs`). Nanocodex records IDs in an internal sidecar at the client-input boundary, carries it through clones, execution continuations, session snapshots, and rollout world-state records, and prunes it after compaction. It never sends the sidecar to the provider. Old snapshots remain readable with an empty sidecar; no text-based or destructive migration guesses old message authorship.
 - A client-authored message shaped like an image-resize notice is retained independently from its preceding source. Generated notices remain attached to their source. Generated developer context is not silently reclassified as client input.
@@ -15,12 +15,18 @@ Current compaction reference: pinned `openai/codex` commit `36430b36881cf5c289cb
 
 Nanocodex enables retained-image budgeting and client-developer retention unconditionally; Codex gates these behaviors behind features. Its response-item schema does not yet represent all Codex metadata (for example per-content classifications, file image references, or optional function-output name/namespace fields). Sidecar provenance only exists for newly captured inputs or snapshots that contain it. Provider capabilities, previous-model compaction fallback, hooks, analytics, and rollout schema compatibility are separate surfaces; these changes do not establish equivalence for them. Existing hosted rejected-image repair deliberately persists repaired history, unlike Codex's reconstruction behavior described below.
 
-## Verified defects
+## Image validation and recovery
 
-- The model egress proxy replaced upstream HTTP errors with `502 upstream_rejected`, losing the real status and recovery classification. It now preserves status, recognized error codes/types, bounded structural selectors, and the fixed legacy image diagnostic, without returning arbitrary provider text.
-- Hosted tool image preparation was a no-op. Malformed MIME/base64 payloads could enter durable history through raw tool outputs as well as Code Mode. The hosted boundary and restored-history repair now share validation, including canonical base64 padding.
-- Compaction converted a typed invalid-image failure into an untyped failure string. Its recorded outcome now carries a backward-compatible recovery discriminator; provider policy stops take precedence.
-- Image repair did not advance the history revision. Repairs of already-committed images could therefore disappear on reload. Repair now resets continuation and advances the revision so persistence writes replacement history.
+The [model egress proxy](../js/egress/src/egress.ts) preserves upstream HTTP status,
+recognized error codes/types, bounded structural selectors, and the fixed legacy
+image diagnostic without returning arbitrary provider text. Hosted tool outputs
+and restored history share MIME/base64 validation, including canonical padding.
+Compaction failure receipts retain a backward-compatible image-recovery
+discriminator; provider policy stops take precedence.
+
+[Image repair](../crates/nanocodex-oai-api/src/session/state.rs) resets continuation
+and advances the history revision so persistence writes repaired history. Call
+identities and non-image content survive; external effects are not rerun.
 
 ## Upstream comparison
 
@@ -36,12 +42,11 @@ Image preparation was additionally compared with local `openai/codex` at `142782
 
 Serialized history, execution continuations, and exact checkpoint forks prepare message and tool images before replay, preserving item order, call identities, and requested detail. Replayed tool-effect receipts are prepared before appending their response items without reexecuting or rewriting the recorded effects. Canonical context is prepared too so compaction cannot reintroduce a failed image. Changes reset provider continuation and advance the durable revision. Unlike the referenced Codex reconstruction (which keeps the recorded rollout unchanged), Nanocodex persists repaired history to prevent future reloads from restoring poisoned content. WASM runs decoding inline; native fresh-input preparation uses its blocking pool. Provider rejection recovery remains necessary for provider-specific image constraints.
 
-## Regression evidence
+## Related runtime boundaries
 
-The pinned-reference tests cover the raw/usable budget boundary, client provenance versus generated context, notice-shaped client input, JSON snapshot and rollout recovery, model-visible text/tool/image/audio costs, agent-message usage, and streamed-summary cardinality. The shared crate is compiled for `wasm32-unknown-unknown`; native protocol regressions exercise the same Rust implementation.
-
-The automatic and manual compaction regressions exercise a real PNG tool output, inject provider image rejection during compaction, verify the failed-turn checkpoint retains the tool call/output identity with repaired content, reload the session, and complete a subsequent request and compaction. Additional tests cover malformed stored history, raw hosted tool-output bypass, base64 padding, policy-stop precedence, legacy diagnostic projection, and failure-receipt compatibility.
-
-Related investigation integration also preserves the CLI's compaction phase across connection updates and refreshes an explicitly rejected stale Hand route once while retaining the same effect identity. Ambiguous transport/server failures are not automatically redispatched.
-
-The original session's compaction succeeded at 23:15:03 UTC after earlier masked HTTPS failures. The original upstream rejection body was discarded, so these fixes do not establish that the historical HTTPS failures were caused by an image rejection.
+The CLI preserves its compaction phase across connection updates. An explicitly
+rejected stale Hand route is refreshed once with the same effect identity;
+ambiguous transport/server failures are not automatically redispatched. These
+boundaries are implemented in the
+[terminal transcript](../bin/nanocodex/src/nanocodex2/tui/transcript/model.rs) and
+[hosted Hand dispatcher](../js/managed/src/account-hosted-tools.ts).

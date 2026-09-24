@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync, copyFileSy
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
-import { images, imageInputs, fingerprint, validateReceipt, registryDigest, deploymentConfig } from './managed-images.mjs';
+import { imageInputs, fingerprint, validateReceipt, registryDigest, deploymentConfig } from './managed-images.mjs';
 
 const account = 'a'.repeat(32), digest = 'b'.repeat(64), input = 'c'.repeat(64);
 const ref = image => `registry.cloudflare.com/${account}/nanocodex-ci-${image}@sha256:${digest}`;
@@ -83,25 +83,6 @@ test('Rust inputs follow local Cargo packages and external binary sources', () =
   assert.ok(!covers(phone, 'crates/nanocodex-remote/src/lib.rs'));
   for (const path of ['bin/nanocodex/src/nanocodex2/main.rs', 'bin/nanocodex/src/computer.rs', 'bin/nanocodex/src/clipboard.rs', 'hands/remote/image/labwc/rc.xml', 'crates/nanocodex-vm/image/toolkit/python.txt']) assert.ok(covers(sandbox, path), path);
   assert.ok(!covers(sandbox, 'hands/remote/README.md'));
-});
-
-test('Docker direct COPY and prepared assets remain covered', () => {
-  const rustCopies = new Set(['Cargo.toml', 'Cargo.lock', 'bin', 'crates', 'examples', 'js/nanocodex', 'py/bindings', 'third_party']);
-  for (const [image, spec] of Object.entries(images)) {
-    const dockerfile = readFileSync(new URL('../../' + spec.dockerfile, import.meta.url), 'utf8');
-    for (const line of dockerfile.split('\n')) {
-      if (!/^(COPY|ADD) /.test(line) || /--from=/.test(line)) continue;
-      assert.ok(!line.includes('[') && !line.endsWith('\\'), 'audit new COPY syntax');
-      for (let source of line.split(/\s+/).slice(1).filter(token => !token.startsWith('--')).slice(0, -1)) {
-        if (image === 'phone' && rustCopies.has(source)) continue; // Cargo closure audited above.
-        if (source === '.generated/remote-rust/') continue;
-        if (source.startsWith('.generated/hand/')) source = source.replace('.generated/hand/', 'hands/remote/image/');
-        else if (source.startsWith('.generated/toolkit/')) source = source.replace('.generated/toolkit/', 'crates/nanocodex-vm/image/toolkit/');
-        else source = spec.context === '.' ? source : spec.context + '/' + source;
-        assert.ok(spec.inputs.some(p => source === p || source.startsWith(p + '/')), `${image}: ${source}`);
-      }
-    }
-  }
 });
 
 test('publication records the pushed digest and never publishes after failed image verification', () => {

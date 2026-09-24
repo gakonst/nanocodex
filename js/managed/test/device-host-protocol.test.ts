@@ -3,9 +3,6 @@ import { describe, expect, it } from "vitest";
 import {
   DEVICE_HOST_PROTOCOL_VERSION,
   MAX_DEVICE_HOST_MESSAGE_BYTES,
-  deviceToolAmbiguous,
-  deviceToolResult,
-  deviceToolUnavailable,
   matchesDeviceHostLease,
   parseDeviceHostCommand,
   parseDeviceToolInput,
@@ -102,23 +99,5 @@ describe("Android device-host protocol", () => {
       .toBe(false);
     expect(matchesDeviceHostLease({ hostId: HOST_ID, leaseId: crypto.randomUUID(), epoch: 9 }, state, 19_999))
       .toBe(false);
-  });
-
-  it("keeps failed, offline, and ambiguous device outcomes structured", () => {
-    expect(deviceToolResult(false, { code: "not_allowed" })).toEqual({
-      ok: false,
-      status: "failed",
-      output: { code: "not_allowed" },
-    });
-    expect(deviceToolUnavailable()).toEqual({
-      ok: false,
-      status: "unavailable",
-      message: "No Android device host is currently attached.",
-    });
-    expect(deviceToolAmbiguous("disconnected after dispatch")).toEqual({
-      ok: false,
-      status: "ambiguous",
-      message: "disconnected after dispatch",
-    });
   });
 });

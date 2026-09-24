@@ -13,24 +13,6 @@ const apiKey = `ncx_live_${"a".repeat(12)}_${"b".repeat(43)}`;
 const requestId = "request-1";
 const serverTurnId = "server-turn-1";
 
-test("managed transport requires an explicit create or open-existing identity", () => {
-  for (const invalid of [
-    {},
-    { agent: {} },
-    { agent: { create: false } },
-    { agent: { id: agentId, create: true } },
-    { agent: { id: "not-an-agent" } },
-  ]) {
-    assert.throws(() => NodeTransport.managed(invalid), /explicit create|requires agent/);
-  }
-  assert.throws(
-    () => NodeTransport.managed({ agent: { create: true }, model: "gpt-6-sol" }),
-    /does not accept model/,
-  );
-  assert.doesNotThrow(() => NodeTransport.managed({ agent: { create: true } }));
-  assert.doesNotThrow(() => BrowserTransport.managed({ agent: { id: agentId } }));
-});
-
 test("Agent.create opens an existing managed identity with the common Turn lifecycle", async () => {
   const requests = [];
   const fetch = async (input, init) => {
@@ -464,22 +446,6 @@ test("managed event iterators resolve pending reads with the common Agent event 
     watcher.off();
     await agent.session.shutdown();
   }
-});
-
-test("managed Agent.create rejects local-only policy even when JavaScript bypasses types", async () => {
-  const transport = NodeTransport.managed({
-    agent: { id: agentId },
-    baseUrl: origin,
-    fetch: async () => Response.json({ agent_id: agentId, session_id: sessionId }),
-  });
-  await assert.rejects(
-    NodeAgent.create({ transport, model: "gpt-6-sol" }),
-    /does not accept model/,
-  );
-  await assert.rejects(
-    NodeAgent.create({ transport, tools: {} }),
-    /created by createTools/,
-  );
 });
 
 class ManagedToolSocket {

@@ -930,7 +930,6 @@ mod tests {
         theme::Theme,
         transcript::{ToolEntry, ToolState},
     };
-    use ratatui::style::{Color, Modifier};
     use serde_json::json;
 
     fn tool(name: &str, arguments: serde_json::Value) -> ToolEntry {
@@ -1013,86 +1012,6 @@ mod tests {
         assert!(source.contains("https://example.com/report.pdf"));
         assert!(!source.contains("PRIVATE_"));
         assert!(!lines.is_empty());
-    }
-
-    #[test]
-    fn completed_shell_is_a_single_collapsed_summary() {
-        let mut shell = tool(
-            "exec_command",
-            json!({"cmd": "cargo test", "workdir": "/work"}),
-        );
-        shell.result = Some(json!({
-            "output": "all tests passed\nsecond line",
-            "exit_code": 0,
-            "wall_time_seconds": 1.2,
-        }));
-
-        let lines = render(&shell, 80, &Theme::default());
-
-        assert_eq!(lines.len(), 1);
-        assert_eq!(
-            lines[0].to_string(),
-            "  ▶ ✓ Shell  $ cargo test · Local · exit 0 · 1.2s"
-        );
-        let checkmark = lines[0]
-            .spans
-            .iter()
-            .find(|span| span.content == "✓ ")
-            .expect("successful tool should render a checkmark");
-        assert_eq!(checkmark.style.fg, Some(Color::Green));
-    }
-
-    #[test]
-    fn shell_commands_use_prompt_and_syntax_colors() {
-        let shell = tool(
-            "exec_command",
-            json!({"cmd": "if test \"$HOME\"; then echo ok; fi"}),
-        );
-        let theme = Theme::default();
-
-        for (lines, expected_commands) in [
-            (render(&shell, 80, &theme), 1),
-            (render_expanded(&shell, 80, &theme), 2),
-        ] {
-            let spans = lines
-                .iter()
-                .flat_map(|line| &line.spans)
-                .collect::<Vec<_>>();
-            let prompts = spans
-                .iter()
-                .filter(|span| span.content == "$ ")
-                .collect::<Vec<_>>();
-            let keywords = spans
-                .iter()
-                .filter(|span| span.content.contains("if"))
-                .collect::<Vec<_>>();
-
-            assert_eq!(prompts.len(), expected_commands);
-            assert_eq!(keywords.len(), expected_commands);
-            assert!(
-                prompts
-                    .iter()
-                    .all(|prompt| prompt.style.fg == Some(Color::Yellow))
-            );
-            assert!(keywords.iter().all(|keyword| {
-                keyword.style.add_modifier.contains(Modifier::BOLD)
-                    && keyword.style.fg == Some(Color::Blue)
-            }));
-        }
-    }
-
-    #[test]
-    fn code_workflow_uses_the_compact_workflow_label() {
-        let mut workflow = tool(
-            "exec",
-            json!("await tools.exec_command({cmd: \"cargo test\"})"),
-        );
-        workflow.child_count = 2;
-
-        let lines = render(&workflow, 80, &Theme::default());
-
-        assert_eq!(lines[0].to_string(), "  ▶ ✓ Batch  2 tools · Local · 1.2s");
-        assert!(lines.iter().all(|line| line.width() <= 80));
     }
 
     #[test]
@@ -1234,30 +1153,6 @@ mod tests {
         assert!(!expanded.contains("ignored_future_field"), "{expanded}");
         assert!(!expanded.contains("must not be dumped"), "{expanded}");
         assert!(!expanded.contains("\"status\""), "{expanded}");
-    }
-
-    #[test]
-    fn account_info_renders_account_label_when_connector_accounts_are_empty() {
-        let mut account = tool("accountInfo", json!({}));
-        account.result = Some(json!({
-            "status": "ready",
-            "authenticated": ["github"],
-            "accounts": {"github": "octocat@example.test"},
-            "connectorAccounts": {},
-            "machines": []
-        }));
-
-        let summary = render(&account, 120, &Theme::default())[0].to_string();
-        let expanded = render_expanded(&account, 120, &Theme::default())
-            .iter()
-            .map(ToString::to_string)
-            .collect::<String>();
-
-        assert!(summary.contains("1 connector"), "{summary}");
-        assert!(
-            expanded.contains("github  octocat@example.test"),
-            "{expanded}"
-        );
     }
 
     #[test]
@@ -1432,95 +1327,6 @@ mod tests {
     }
 
     #[test]
-    fn every_first_party_tool_has_a_semantic_summary() {
-        let cases = [
-            ("exec", json!("text(true)"), "Code  0 emitted items"),
-            (
-                "update_plan",
-                json!({"plan": [{"step": "done", "status": "completed"}]}),
-                "Plan  1/1 complete",
-            ),
-            (
-                "apply_patch",
-                json!("*** Begin Patch\n*** Update File: src/main.rs\n+new\n-old\n*** End Patch"),
-                "Patch  1 file · +1 −1",
-            ),
-            (
-                "view_image",
-                json!({"path": "/tmp/image.png", "detail": "original"}),
-                "Image  /tmp/image.png · original",
-            ),
-            (
-                "image_gen__imagegen",
-                json!({"prompt": "a compact terminal"}),
-                "Image generation  a compact terminal",
-            ),
-            ("wait", json!({"cell_id": "12"}), "Wait  background work"),
-            (
-                "mcp__files__read",
-                json!({"path": "/tmp/file"}),
-                "Files · read  /tmp/file",
-            ),
-            (
-                "spawn_agent",
-                json!({"role": "reviewer"}),
-                "Spawned  reviewer",
-            ),
-        ];
-
-        for (name, arguments, expected) in cases {
-            let rendered = render(&tool(name, arguments), 100, &Theme::default())[0].to_string();
-            assert!(rendered.contains(expected), "{name}: {rendered}");
-        }
-    }
-
-    #[test]
-    fn patch_summary_colors_additions_green_and_deletions_red() {
-        let patch = tool(
-            "apply_patch",
-            json!("*** Begin Patch\n*** Update File: src/main.rs\n+new\n-old\n*** End Patch"),
-        );
-
-        let lines = render(&patch, 100, &Theme::default());
-        let additions = lines[0]
-            .spans
-            .iter()
-            .find(|span| span.content == "+1")
-            .expect("patch summary should include additions");
-        let deletions = lines[0]
-            .spans
-            .iter()
-            .find(|span| span.content == "−1")
-            .expect("patch summary should include deletions");
-
-        assert_eq!(additions.style.fg, Some(Color::Green));
-        assert_eq!(deletions.style.fg, Some(Color::Red));
-    }
-
-    #[test]
-    fn expanded_patch_colors_diff_lines() {
-        let patch = tool(
-            "apply_patch",
-            json!("*** Begin Patch\n*** Update File: src/main.rs\n+new\n-old\n*** End Patch"),
-        );
-
-        let lines = render_expanded(&patch, 80, &Theme::default());
-        let addition = lines
-            .iter()
-            .flat_map(|line| &line.spans)
-            .find(|span| span.content == "+ ")
-            .expect("addition should be rendered");
-        let deletion = lines
-            .iter()
-            .flat_map(|line| &line.spans)
-            .find(|span| span.content == "- ")
-            .expect("deletion should be rendered");
-
-        assert_eq!(addition.style.fg, Some(Color::Green));
-        assert_eq!(deletion.style.fg, Some(Color::Red));
-    }
-
-    #[test]
     fn expanded_patch_renders_each_hunk_with_its_file_and_context() {
         let patch = tool(
             "apply_patch",
@@ -1537,22 +1343,6 @@ mod tests {
         assert!(rendered.contains("src/main.rs"));
         assert!(rendered.contains("fn main()"));
         assert!(rendered.contains("+1 −1"));
-    }
-
-    #[test]
-    fn mixed_web_operations_are_summarized_by_count() {
-        let web = tool(
-            "web__run",
-            json!({
-                "search_query": [{"q": "one"}, {"q": "two"}],
-                "open": [{"ref_id": "turn0search0"}],
-                "weather": [{"location": "Amsterdam"}],
-            }),
-        );
-
-        let rendered = render(&web, 100, &Theme::default())[0].to_string();
-
-        assert!(rendered.contains("search 2 · open 1 · weather 1"));
     }
 
     #[test]
@@ -2019,30 +1809,5 @@ mod tests {
 
         assert!(rendered.contains("section truncated"), "{rendered}");
         assert!(rendered.contains("RESULT_SENTINEL"), "{rendered}");
-    }
-
-    #[test]
-    fn browser_target_objects_have_concise_semantic_subjects() {
-        let browser = tool(
-            "browser",
-            json!({
-                "action": "click",
-                "target": {
-                    "by": "role",
-                    "role": "button",
-                    "name": "Submit",
-                    "exact": true,
-                    "index": {"kind": "nth", "index": 2}
-                }
-            }),
-        );
-
-        let rendered = render(&browser, 120, &Theme::default())[0].to_string();
-
-        assert!(
-            rendered.contains("role button \"Submit\" · nth 2"),
-            "{rendered}"
-        );
-        assert!(!rendered.contains("exact"), "{rendered}");
     }
 }

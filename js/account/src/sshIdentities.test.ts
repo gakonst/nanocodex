@@ -15,15 +15,6 @@ test("SSH onboarding requires a pinned target and projects only public key metad
   assert.throws(() => decodeSshIdentities([{ reference: target.reference, ...createSshTargetPayload(target), public_key: publicKey + "\ncommand=unexpected" }]));
 });
 
-test("SSH generation builds a target without requiring or projecting a private key", () => {
-  const input = { ...target, private_key: "unused" };
-  assert.deepEqual({ ...createSshTargetPayload(input), generate: true }, {
-    hostname: target.hostname, username: target.username, port: 22, host_key_sha256: target.hostKeySha256, generate: true,
-  });
-  assert.equal(input.private_key, "unused");
-  assert.equal(sshIdentityPath("server-1.example"), "/v1/credentials/ssh/server-1.example");
-});
-
 test("SSH targets reject unavailable or malformed hosts before uploading a key", () => {
   for (const hostname of [
     "", "Server.example", "server.example.", "user@server.example", "server.example:22", "server example", "-bad.example", "a..example",

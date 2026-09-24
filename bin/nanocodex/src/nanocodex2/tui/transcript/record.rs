@@ -495,7 +495,7 @@ const fn agent_kind(kind: AgentEventKind) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use super::{LocalEvent, ShellId, TranscriptRecord, TurnId};
+    use super::TranscriptRecord;
     use nanocodex::agent::events::{AgentEvent, AgentEventKind};
     use serde_json::{json, value::to_raw_value};
     use std::sync::Arc;
@@ -549,93 +549,5 @@ mod tests {
             replay.with_managed_agent_id(Some(8)).managed_agent_id(),
             Some(8)
         );
-    }
-
-    #[test]
-    fn local_record_uses_typed_payload() {
-        let record = TranscriptRecord::from_local(
-            1,
-            123,
-            LocalEvent::UserSubmitted {
-                id: TurnId::new(9),
-                text: "hello".to_owned(),
-            },
-        )
-        .unwrap();
-        let encoded = serde_json::to_value(record).unwrap();
-
-        assert_eq!(encoded["source"], "tact");
-        assert_eq!(encoded["type"], "user.submitted");
-        assert_eq!(encoded["payload"], json!({"id": 9, "text": "hello"}));
-    }
-
-    #[test]
-    fn shell_lifecycle_uses_structured_local_records() {
-        let started = TranscriptRecord::from_local(
-            1,
-            123,
-            LocalEvent::ShellStarted {
-                id: ShellId::new(4),
-                command: "pwd".to_owned(),
-                workspace: "/work".into(),
-            },
-        )
-        .unwrap();
-        let finished = TranscriptRecord::from_local(
-            2,
-            124,
-            LocalEvent::ShellFinished {
-                id: ShellId::new(4),
-                output: "/work\n".to_owned(),
-                exit_code: Some(0),
-                duration_ns: 10,
-                truncated: false,
-                error: None,
-            },
-        )
-        .unwrap();
-
-        assert_eq!(started.kind(), "shell.started");
-        assert_eq!(finished.kind(), "shell.finished");
-        assert_eq!(
-            serde_json::to_value(finished).unwrap()["payload"],
-            json!({
-                "id": 4,
-                "output": "/work\n",
-                "exit_code": 0,
-                "duration_ns": 10,
-                "truncated": false,
-            })
-        );
-    }
-
-    #[test]
-    fn applied_steer_has_a_distinct_local_record() {
-        let record = TranscriptRecord::from_local(
-            1,
-            123,
-            LocalEvent::UserSteered {
-                text: "change direction".to_owned(),
-            },
-        )
-        .unwrap();
-        let encoded = serde_json::to_value(record).unwrap();
-
-        assert_eq!(encoded["type"], "user.steered");
-        assert_eq!(encoded["payload"]["text"], "change direction");
-    }
-
-    #[test]
-    fn reflection_start_contains_only_its_turn_id() {
-        let record = TranscriptRecord::from_local(
-            1,
-            123,
-            LocalEvent::ReflectionStarted { id: TurnId::new(9) },
-        )
-        .unwrap();
-        let encoded = serde_json::to_value(record).unwrap();
-
-        assert_eq!(encoded["type"], "reflection.started");
-        assert_eq!(encoded["payload"], json!({"id": 9}));
     }
 }

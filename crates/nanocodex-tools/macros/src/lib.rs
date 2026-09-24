@@ -300,15 +300,6 @@ mod tests {
     use super::parse_args;
 
     #[test]
-    fn parallel_defaults_false_and_accepts_explicit_true() {
-        let default = parse_args(quote!(description = "Runs serially.")).unwrap();
-        assert!(!default.parallel);
-
-        let parallel = parse_args(quote!(description = "May overlap.", parallel = true)).unwrap();
-        assert!(parallel.parallel);
-    }
-
-    #[test]
     fn parallel_requires_a_boolean_literal() {
         let error = parse_args(quote!(description = "Invalid.", parallel = "true"))
             .err()

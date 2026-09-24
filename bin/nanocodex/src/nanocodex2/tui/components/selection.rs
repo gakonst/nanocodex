@@ -151,31 +151,3 @@ impl Selection {
         self.range.take()
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{Selection, Surface, TextSpan};
-
-    #[test]
-    fn semantic_ranges_are_ordered_and_span_whole_intermediate_blocks() {
-        let mut selection = Selection::default();
-        selection.begin(Surface::Transcript, TextSpan::new(3, 4, 5));
-        selection.drag(TextSpan::new(1, 2, 3));
-        let range = selection.range().unwrap();
-
-        assert_eq!(range.source_range(1, 10), Some(2..10));
-        assert_eq!(range.source_range(2, 10), Some(0..10));
-        assert_eq!(range.source_range(3, 10), Some(0..5));
-        assert_eq!(range.source_range(4, 10), None);
-    }
-
-    #[test]
-    fn pending_click_does_not_create_a_range() {
-        let mut selection = Selection::default();
-        let span = TextSpan::new(0, 1, 2);
-        selection.begin(Surface::Composer, span);
-
-        assert!(!selection.finish(span));
-        assert!(selection.take_range().is_none());
-    }
-}

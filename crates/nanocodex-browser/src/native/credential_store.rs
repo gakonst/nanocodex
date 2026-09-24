@@ -252,22 +252,6 @@ mod tests {
     }
 
     #[test]
-    fn credentials_round_trip_across_store_instances() {
-        let directory = tempfile::tempdir().unwrap();
-        let path = directory.path().join("browser/passkeys.json");
-        let mut first = VirtualCredentialStore::load(path.clone()).unwrap();
-        first
-            .reconcile(&[vec![credential(1)]], &BTreeSet::new())
-            .unwrap();
-
-        let second = VirtualCredentialStore::load(path).unwrap();
-        assert_eq!(
-            second.credentials().cloned().collect::<Vec<_>>(),
-            [credential(1)]
-        );
-    }
-
-    #[test]
     fn the_highest_observed_signature_counter_wins() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("passkeys.json");

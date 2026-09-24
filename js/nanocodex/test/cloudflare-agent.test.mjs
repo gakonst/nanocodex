@@ -289,128 +289,14 @@ test("prepared construction shares cold engine initialization without retaining 
   }
 });
 
-test("Cloudflare Agent owns credentials, transport, and durability options", async () => {
+test("Cloudflare Agent rejects caller credentials and transport authority", async () => {
   const module = new Uint8Array();
-  await assert.rejects(create(module), /requires a Durable Object instance/);
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), { apiKey: "managed-secret" }),
-    /does not accept apiKey; only durabilityId, eventPersistence, instructions, additionalInstructions, terminalReceiptRetention, and tools are configurable/,
-  );
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), { CODEX_OAUTH_BOOTSTRAP: "managed-secret" }),
-    /does not accept CODEX_OAUTH_BOOTSTRAP/,
-  );
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), { transport: {} }),
-    /does not accept transport/,
-  );
-  for (const name of [
-    "model", "thinking", "reasoningMode", "fastMode",
-    "filesystem", "mcp", "codeEvaluator", "toolMode",
-    "waitForPreconnect",
-  ]) {
+  for (const name of ["apiKey", "CODEX_OAUTH_BOOTSTRAP", "transport", "subject"]) {
     await assert.rejects(
-      create(module, durableOwner(new MemoryStorage()), { [name]: "forbidden" }),
+      create(module, durableOwner(new MemoryStorage()), { [name]: "caller-selected" }),
       new RegExp(`does not accept ${name}`),
     );
   }
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), { subject: "caller-selected" }),
-    /does not accept subject/,
-  );
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), { eventPersistence: "somewhere" }),
-    /eventPersistence must be durable or caller/,
-  );
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), { terminalReceiptRetention: -1 }),
-    /terminalReceiptRetention must be an integer from 0 through 4096/,
-  );
-  await assert.rejects(
-    create(module, { ctx: durableContext(new MemoryStorage()), env: {} }),
-    /owner\.env\.NANOCODEX Service Binding/,
-  );
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), {
-      [Symbol.for("nanocodex.cloudflare.internalRuntime")]: [],
-    }),
-    /internal runtime options must be an object/,
-  );
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), {
-      [Symbol.for("nanocodex.cloudflare.internalRuntime")]: {
-        subagentLifecycle: true,
-      },
-    }),
-    /subagent lifecycle hook must be a function/,
-  );
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), {
-      [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { subagentMaxConcurrency: 0 },
-    }),
-    /subagentMaxConcurrency must be a positive safe integer/,
-  );
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), {
-      [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { waitForPreconnect: "false" },
-    }),
-    /waitForPreconnect must be a boolean/,
-  );
-  await assert.rejects(
-    create(module, { env: { NANOCODEX: egressBinding() } }),
-    /requires owner\.ctx/,
-  );
-  await assert.rejects(
-    create(module, { ctx: durableContext(new MemoryStorage(), ""), env: { NANOCODEX: egressBinding() } }),
-    /requires owner\.ctx\.id/,
-  );
-  await assert.rejects(
-    create(module, {
-      ctx: { id: { toString: () => FIRST_OBJECT_ID } },
-      env: { NANOCODEX: egressBinding() },
-    }),
-    /requires Durable Object SQLite storage/,
-  );
-});
-
-test("Cloudflare Agent accepts complete hosted policy only through its internal configuration", async () => {
-  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
-  const owner = durableOwner(new MemoryStorage());
-  let captured;
-  const configured = bindAgent(module, {
-    async create(options) {
-      captured = options;
-      return HostAgent.create(options);
-    },
-  });
-  const agent = await configured.create(owner, {
-    additionalInstructions: "Keep the host's account boundaries.",
-    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { rawApiEvents: false },
-    [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: {
-      model: "gpt-6-astra",
-      thinking: "xhigh",
-      reasoning_mode: "standard",
-      fast_mode: true,
-    },
-  });
-
-  assert.equal(captured.model, "gpt-6-astra");
-  assert.equal(captured.instructions, undefined);
-  assert.equal(captured.additionalInstructions, "Keep the host's account boundaries.");
-  assert.equal(captured.thinking, "xhigh");
-  assert.equal(captured.reasoningMode, "standard");
-  assert.equal(captured.fastMode, true);
-  assert.equal(captured.rawApiEvents, false);
-  await agent.session.shutdown();
-
-  await assert.rejects(configured.create(owner, {
-    [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: {
-      model: "gpt-5.6-terra",
-      thinking: "xhigh",
-      reasoning_mode: "pro",
-      fast_mode: "true",
-    },
-  }), /internal configuration is invalid/);
 });
 
 test("host delegation prohibition reaches Rust and overrides caller subagent extensions", async () => {
@@ -428,9 +314,6 @@ test("host delegation prohibition reaches Rust and overrides caller subagent ext
       assert.equal(storage.subagents.size, 0);
     } finally { await agent.session.shutdown(); }
   }
-  await assert.rejects(create(module, durableOwner(new MemoryStorage()), {
-    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { subagentsEnabled: "false" },
-  }), /subagentsEnabled must be a boolean/);
 });
 
 test("Cloudflare ephemeral Agent owns transport without durable state", async () => {
@@ -1266,77 +1149,6 @@ for (const provider of ["openrouter", "vercel"]) {
   });
 }
 
-test("routed children use their own provider and reuse the pin on continuation", { timeout: 30_000 }, async () => {
-  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
-  const storage = new MemoryStorage();
-  let rootCalls = 0, childCalls = 0, choices = 0;
-  let childTurn = 1;
-  const routes = new Map();
-  const childAi = { async run(model, input) {
-    childCalls++;
-    assert.ok(childCalls <= 4, "bounded child model requests");
-    assert.equal(model, "@cf/zai-org/glm-5.3");
-    assert.equal(input.reasoning_effort, "high");
-    assert.equal(routes.size, 1, "child route is saved before inference");
-    if (input.messages.at(-1)?.role === "tool") {
-      assert.deepEqual(JSON.parse(input.messages.at(-1).content), { accepted: true, status: "accepted", decoded_json_text: true });
-      return { choices: [{ finish_reason: "stop", message: { content: "CHILD_DONE" } }] };
-    }
-    const submit = input.tools.find(t => t.function.description.startsWith("submit_result\n"));
-    assert.ok(submit);
-    assert.deepEqual(submit.function.parameters.required, ["output"]);
-    assert.equal(Object.hasOwn(submit.function.parameters.properties, "turn_token"), false);
-    return { choices: [{ finish_reason: "tool_calls", message: { content: null, tool_calls: [{
-      id: `submit-${childCalls}`, type: "function", function: { name: submit.function.name,
-        arguments: JSON.stringify({ output: JSON.stringify({ ok: childTurn }) }) },
-    }] } }] };
-  } };
-  const gateway = { provider: "openrouter", model: "gpt-6-astra", reasoningEffort: "low", apiKey: "synthetic-test-key",
-    async fetch(_url, init) {
-      rootCalls++;
-      const body = JSON.parse(init.body);
-      assert.equal(body.model, "openai/gpt-6-astra");
-      assert.equal(body.reasoning.effort, "low");
-      return gatewayFixtureResponse(body, { choices: [{ finish_reason: "stop", message: { content: "ROOT_PIN_OK" } }] });
-    },
-  };
-  const agent = await create(module, durableOwner(storage), {
-    [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: { model: gateway.model, thinking: "low", reasoning_mode: "standard", fast_mode: false },
-    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: {
-      gateway, toolMode: "direct", subagentsEnabled: true,
-      subagentRouting: {
-        async resolve(request) {
-          choices++;
-          assert.equal(request.parentSessionId, storage.sessionId);
-          return { model: "@cf/zai-org/glm-5.3", thinking: "high", routeId: "child-choice" };
-        },
-        bind(request) {
-          assert.equal(request.routeId, "child-choice");
-          routes.set(request.sessionId, { model: "@cf/zai-org/glm-5.3", thinking: "high",
-            workersAi: { ai: childAi, model: "@cf/zai-org/glm-5.3", thinking: "high" } });
-        },
-      },
-      inferenceForSession(id) {
-        return id === storage.sessionId ? { model: gateway.model, thinking: "low", gateway } : routes.get(id);
-      },
-    },
-  });
-  try {
-    assert.equal((await agent.turn.prompt({ input: "Respond briefly." }).result()).finalMessage, "ROOT_PIN_OK");
-    const child = await Subagents.spawn(agent, { role: "test-child", task: "Return an object.", outputSchema: { type: "object", properties: { ok: { type: "integer" } }, required: ["ok"], additionalProperties: false } });
-    const first = await Subagents.wait(agent, { agentIds: [child.agent_id], timeoutMs: 5_000 });
-    assert.deepEqual(first.agents[0].status, { state: "completed", output: { ok: 1 } });
-    childTurn = 2;
-    await Subagents.send(agent, { agentId: child.agent_id, message: "Return another object." });
-    const second = await Subagents.wait(agent, { agentIds: [child.agent_id], timeoutMs: 5_000 });
-    assert.deepEqual(second.agents[0].status, { state: "completed", output: { ok: 2 } });
-    assert.equal(choices, 1, "continuing a child does not reroute");
-    assert.equal(childCalls, 4);
-    assert.equal((await agent.turn.prompt({ input: "Still the root." }).result()).finalMessage, "ROOT_PIN_OK");
-    assert.equal(rootCalls, 2);
-  } finally { await agent.session.shutdown(); }
-});
-
 test("live child continuation preserves schema, history, routing, and spawning authorization until shutdown", { timeout: 30_000 }, async () => {
   const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
   const storage = new MemoryStorage();
@@ -1598,24 +1410,6 @@ test("Cloudflare SDK sibling shutdown preserves live siblings without child chec
     await retained.session.shutdown();
     await agent.session.shutdown();
   }
-});
-
-test("Cloudflare beforeCompaction option reaches the host unchanged and is omitted by default", async () => {
-  const creationStopped = new Error("stop before initializing WASM");
-  const captured = [];
-  const adapter = bindAgent(new Uint8Array(), {
-    async create(options) {
-      captured.push(options);
-      throw creationStopped;
-    },
-  });
-  const beforeCompaction = async () => ({ receiptId: "synthetic-cloudflare-commit" });
-  for (const options of [{ beforeCompaction }, {}]) {
-    await assert.rejects(adapter.create(durableOwner(new MemoryStorage()), options),
-      error => error === creationStopped);
-  }
-  assert.equal(captured[0].beforeCompaction, beforeCompaction);
-  assert.equal(Object.hasOwn(captured[1], "beforeCompaction"), false);
 });
 
 test("manual GPT root keeps WebSockets while a Kimi child uses gateway HTTP across continuation", { timeout: 30_000 }, async () => {

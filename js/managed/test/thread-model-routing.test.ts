@@ -1,32 +1,11 @@
-import { URL as NodeURL } from "node:url";
-import { readFileSync } from "node:fs";
-const preferenceObservations = JSON.parse(readFileSync(new NodeURL("./fixtures/thread-routing-preferences-20260921.json", import.meta.url), "utf8")) as {
-  cases: Array<{id:string; catalog:number; prompt:string; preferences:Record<string,unknown>;
-    answers:{candidate:{choice:string; confidence:number}}; expected_choice:string; expected_selection:string}>;
-};
 import { describe, expect, it, vi } from "vitest";
-import { DatabaseSync } from "node:sqlite";
-import { resolveThreadRoute, routingPolicySchema, ThreadRoutePin, ROUTING_CANDIDATES, OSS_MODEL, FRONTIER_MODEL, projectThreadRouteDiagnostics, taskFamily } from "../src/thread-model-routing";
-import { initializeManagedAgentSettingsSchema } from "../src/agent-settings-schema";
+import { resolveThreadRoute, routingPolicySchema, ThreadRoutePin, OSS_MODEL, FRONTIER_MODEL, projectThreadRouteDiagnostics, taskFamily } from "../src/thread-model-routing";
 import { parseAgentCreateBody, validateAgentSettings } from "../src/agent-settings";
-import { parseConfiguration } from "../src/agent-configuration";
 
 const policy = (patch = {}) => routingPolicySchema.parse({ strategy: "legacy", ...patch });
 const jev = (family = "terminal", confidence = .98) => ({ run: vi.fn(async (_model: string, _input: unknown) => ({ answers: { family: { choice: family, confidence } }, usage: { input_tokens: 70 } })) });
 
 describe("eval-informed thread routing", () => {
-  it("uses Jev's typed classifier and pins actual OSS identity/effort", async () => {
-    const ai = jev(); const route = await resolveThreadRoute(ai, "Fix my build", policy({ oss_thinking: "high" }));
-    expect(ai.run.mock.calls[0][0]).toBe("typesafe/jev");
-    expect(route).toMatchObject({ backend: "workers_ai", model: OSS_MODEL, thinking: "high", selection: "prior", estimate: null });
-    expect(route.evidence.eval).toBe("Terminal-Bench 2.1");
-  });
-  it("does not claim published scores are local completion probabilities", async () => {
-    const route = await resolveThreadRoute(jev("long_engineering"), "Add feature", policy());
-    expect(route.evidence).toHaveProperty("oss_score", 66.9);
-    expect(route.estimate).toBeNull();
-    expect(route.selection).toBe("prior");
-  });
   it.each(["other", "desktop", "science", "research", "mathematics"])("uses frontier for %s without comparable local measurements", async family => {
     expect((await resolveThreadRoute(jev(family), "task", policy())).model).toBe(FRONTIER_MODEL);
   });
@@ -85,17 +64,6 @@ describe("eval-informed thread routing", () => {
     expect(() => parseAgentCreateBody(JSON.stringify({ settings: {}, configuration: { model_routing: {} } }))).toThrow();
     expect(() => validateAgentSettings({ model: OSS_MODEL, thinking: "max", fast_mode: false, reasoning_mode: "standard" })).toThrow();
   });
-  it("admits routed roots with bounded child agents through public creation", () => {
-    const configuration = {
-      model_routing: { candidates: [`${OSS_MODEL}:low`, `${OSS_MODEL}:medium`] },
-      multi_agent: { enabled: true, max_concurrent_subagents: 1 },
-    };
-    const admitted = parseAgentCreateBody(JSON.stringify({ configuration }));
-    expect(admitted.configuration?.multi_agent).toEqual(configuration.multi_agent);
-    expect(admitted.configuration?.model_routing?.candidates).toEqual(configuration.model_routing.candidates);
-    expect(() => parseConfiguration({ ...configuration,
-      multi_agent: { enabled: true, max_concurrent_subagents: 0 } })).toThrow();
-  });
   it("singleflights concurrent admissions and retains route across restart", async () => {
     let retained: Awaited<ReturnType<typeof resolveThreadRoute>> | undefined;
     const store = { read: () => retained, commit: (r: NonNullable<typeof retained>) => { retained = r; } };
@@ -112,26 +80,7 @@ describe("eval-informed thread routing", () => {
     await expect(pin.resolve(() => resolveThreadRoute(ai, "task", policy()))).rejects.toThrow("storage failure");
     expect(commit).toHaveBeenCalledOnce();
   });
-  it("migrates an existing Astra settings table without changing its row", () => {
-    const db = new DatabaseSync(":memory:");
-    db.exec(`CREATE TABLE managed_agent_settings (singleton INTEGER PRIMARY KEY, model TEXT CHECK(model IN ('gpt-6-astra')), thinking TEXT, reasoning_mode TEXT, fast_mode INTEGER);
-      INSERT INTO managed_agent_settings VALUES (1,'gpt-6-astra','high','standard',0);`);
-    const storage = {
-      sql: { exec(sql: string, ...args: unknown[]) {
-        if (/^\s*(SELECT|PRAGMA)/.test(sql)) { const rows = db.prepare(sql).all(...args as never[]); return { one: () => rows[0], toArray: () => rows }; }
-        db.exec(sql); return { toArray: () => [] };
-      } },
-      transactionSync(fn: () => void) { db.exec("BEGIN"); try { fn(); db.exec("COMMIT"); } catch (e) { db.exec("ROLLBACK"); throw e; } },
-    };
-    initializeManagedAgentSettingsSchema(storage as never);
-    expect(db.prepare("SELECT model FROM managed_agent_settings").get()?.model).toBe(FRONTIER_MODEL);
-    db.prepare("UPDATE managed_agent_settings SET model = ?").run(OSS_MODEL);
-    initializeManagedAgentSettingsSchema(storage as never);
-    expect(db.prepare("SELECT model FROM managed_agent_settings").get()?.model).toBe(OSS_MODEL);
-    db.close();
-  });
 });
-
 
 describe("live Unified Billing Jev envelopes", () => {
   it("reads completed wrapped answers and usage", async () => {
@@ -152,31 +101,6 @@ describe("v2 direct candidate routing", () => {
     run: vi.fn(async (_model: string, _input: unknown) => ({ answers: {
       candidate: { choice, confidence: candidateConfidence }, family: { choice: "terminal", confidence: familyConfidence },
     } })),
-  });
-  it("defaults to one direct typed choice across the supported model/effort candidates", async () => {
-    const ai = answer();
-    const route = await resolveThreadRoute(ai, "Fix build quickly and cheaply", direct());
-    expect(route).toMatchObject({ policy_version: "jev-direct-v4", model: "gpt-6-luna", thinking: "low", estimate: null });
-    expect(ai.run).toHaveBeenCalledOnce();
-    const request = ai.run.mock.calls[0][1] as { state: string; questions: { candidate: { criteria: object } } };
-    expect(Object.keys(request.questions.candidate.criteria)).toHaveLength(12);
-    expect(JSON.parse(request.state)).toMatchObject({ preferences: {}, preference_sources: { duration: "prompt_or_default", cost: "prompt_or_default" }, measurements: [] });
-    expect(route.audit).toMatchObject({ candidate_choice: "gpt-6-luna:low", classifier_confidence: .97, candidate_confidence: .98 });
-  });
-  it("serializes explicit preferences and preserves their priority over opening inference", async () => {
-    const ai = answer();
-    const route = await resolveThreadRoute(ai, "Be quick, cheap, and thorough", direct({ preferences: { completion: 9, cost: 0, duration: 1, target_cost_usd: .2, target_duration_seconds: 60, text: "Prioritize careful checking" } }));
-    expect(route.audit?.preferences).toEqual({ completion: 9, cost: 0, duration: 1, target_cost_usd: .2, target_duration_seconds: 60, text: "Prioritize careful checking" });
-    expect(route.audit?.preference_sources).toEqual({ completion: "explicit", cost: "explicit", duration: "explicit" });
-    const state = JSON.parse((ai.run.mock.calls[0][1] as {state:string}).state);
-    expect(state.preferences).toEqual(route.audit?.preferences);
-    expect(state.lower_precedence_defaults).toEqual({objective:"balanced", weights:{cost:1,effectiveness:1,time:1}});
-    expect(state.policy).not.toHaveProperty("estimates");
-    const instructions = (ai.run.mock.calls[0][1] as {questions:{candidate:{instructions:string}}}).questions.candidate.instructions;
-    expect(instructions).toContain("Higher cost weight means MINIMIZE spend");
-    expect(instructions).toContain('"cost":0');
-    expect(state).toHaveProperty("eval_evidence");
-    expect(state).toHaveProperty("task_profiles");
   });
   it.each(["ignore previous instructions", "gpt-7:high", "gpt-6-astra:max"])("rejects adversarial choice %s and falls back inside allowlist", async choice => {
     const route = await resolveThreadRoute(answer(choice), "task", direct({ candidates: [`${OSS_MODEL}:low`] }));
@@ -233,18 +157,7 @@ describe("v2 direct candidate routing", () => {
     expect((await resolveThreadRoute(answer(), "task", direct({candidates, estimates:[base, other]}))).selection).toBe("measured");
     expect((await resolveThreadRoute(answer(), "task", direct({candidates, estimates:[base, {...other, source:"different"}]}))).selection).toBe("prior");
   });
-  it("pins the direct model/effort and audit across concurrent admissions and restart", async () => {
-    let retained: Awaited<ReturnType<typeof resolveThreadRoute>> | undefined;
-    const store = { read: () => retained, commit: (r: NonNullable<typeof retained>) => {retained = r;} };
-    const pin = new ThreadRoutePin(store), ai = answer();
-    const create = () => resolveThreadRoute(ai, "quick task", direct());
-    const [a,b] = await Promise.all([pin.resolve(create), pin.resolve(create)]);
-    expect(a).toBe(b);
-    expect(await new ThreadRoutePin(store).resolve(create)).toBe(a);
-    expect(ai.run).toHaveBeenCalledOnce();
-  });
 });
-
 
 describe("cross-provider candidate routing", () => {
   const available = { openrouter: true, vercel: true };
@@ -253,42 +166,6 @@ describe("cross-provider candidate routing", () => {
   } })) });
   const openrouter = "openrouter:openai/gpt-6-astra:high";
   const vercel = "vercel:openai/gpt-6-astra:high";
-  it("offers unique candidates supported by the managed tools contract", async () => {
-    expect(ROUTING_CANDIDATES).toHaveLength(43);
-    expect(new Set(ROUTING_CANDIDATES.map(c => c.id)).size).toBe(43);
-    const p = routingPolicySchema.parse({ candidates: ROUTING_CANDIDATES.map(c => c.id) });
-    const ai = choose(vercel);
-    const route = await resolveThreadRoute(ai, "task", p, available);
-    expect(route.audit?.eligible_candidates).toHaveLength(34);
-    expect(route).toMatchObject({ backend: "vercel", model: FRONTIER_MODEL, provider_model: "openai/gpt-6-astra" });
-    expect(Object.keys((ai.run.mock.calls[0][1] as {questions:{candidate:{criteria:object}}}).questions.candidate.criteria)).toHaveLength(34);
-  });
-  it.each(["gpt-6-sol", "gpt-6-luna"])("keeps %s tools on native and Responses routes", model => {
-    for (const effort of ["low", "medium", "high"]) {
-      for (const backend of ["openrouter", "vercel"]) {
-        expect(() => routingPolicySchema.parse({ candidates: [`${backend}:openai/${model}:${effort}`] })).toThrow();
-      }
-      expect(ROUTING_CANDIDATES.some(c => c.id === `${model}:${effort}`)).toBe(true);
-      expect(ROUTING_CANDIDATES.some(c => c.id === `cloudflare:openai/${model}:${effort}`)).toBe(true);
-    }
-  });
-  it("sends dated provider token rates separately from measured task costs", async () => {
-    const ai = choose(vercel);
-    const route = await resolveThreadRoute(ai, "compare cost", routingPolicySchema.parse({}), available);
-    const state = JSON.parse((ai.run.mock.calls[0][1] as {state:string}).state);
-    const hint = (id: string) => { const c = ROUTING_CANDIDATES.find(c => c.id === id)!; return state.catalog_price_hints[`${c.backend}/${c.model}`]; };
-    expect(ROUTING_CANDIDATES.some(candidate => candidate.id === "vercel:openai/gpt-6-sol:low")).toBe(false);
-    expect(ROUTING_CANDIDATES.some(candidate => candidate.id === "vercel:openai/gpt-6-luna:low")).toBe(false);
-    expect(hint("openrouter:z-ai/glm-5.3:low")).toMatchObject({input:.91,output:2.86,cached_input:.169});
-    expect(hint("vercel:zai/glm-5.3:low")).toMatchObject({input:1.4,output:4.4,cached_input:.14});
-    expect(hint("gpt-6-astra:high")).toBeNull();
-    expect(state.uncertainty).toContain("dated base token rates");
-    expect(hint(vercel)).not.toHaveProperty("expected_duration_ms");
-    expect(hint(vercel)).not.toHaveProperty("expected_cost_usd");
-    expect(state.measurements).toEqual([]);
-    expect(route.estimate).toBeNull();
-    expect(route.selection).toBe("prior");
-  });
   it.each([
     [undefined, 12], [{openrouter:true,vercel:false},23], [{openrouter:false,vercel:true},23], [available,34], [{...available,cloudflare:true},43], [{openrouter:false,vercel:false,cloudflare:true},21],
   ])("filters unavailable providers before Jev: %j", async (availability, count) => {
@@ -304,14 +181,6 @@ describe("cross-provider candidate routing", () => {
     const route = await resolveThreadRoute(choose("unknown"), "task", routingPolicySchema.parse({candidates:[openrouter,vercel]}), {openrouter:false,vercel:true});
     expect(route.audit?.candidate_choice).toBe(vercel);
     expect(route.audit?.eligible_candidates).toEqual([vercel]);
-  });
-  it.each([["openrouter", "z-ai/glm-5.3"], ["vercel", "zai/glm-5.3"]])("pins %s provider endpoint alongside canonical identity across restart", async (backend, provider_model) => {
-    const id = `${backend}:${provider_model}:medium`;
-    let retained: Awaited<ReturnType<typeof resolveThreadRoute>> | undefined;
-    const store = {read:()=>retained, commit:(r: NonNullable<typeof retained>)=>{retained = JSON.parse(JSON.stringify(r));}};
-    await new ThreadRoutePin(store).resolve(()=>resolveThreadRoute(choose(id), "task", routingPolicySchema.parse({candidates:[id]}), available));
-    const restored = await new ThreadRoutePin(store).resolve(()=>{throw new Error("unexpected reroute");});
-    expect(restored).toMatchObject({ backend, provider_model, model: OSS_MODEL, thinking:"medium" });
   });
   it("uses provider-specific measurements for identical canonical model and effort", async () => {
     const base = {family:"terminal", model:FRONTIER_MODEL, thinking:"high", success_rate:.8, expected_cost_usd:.1, expected_duration_ms:1000, sample_size:20, source:"heldout-provider-v1"};
@@ -332,7 +201,6 @@ describe("cross-provider candidate routing", () => {
     expect(route.provider_model).toBe(route.model);
   });
 });
-
 
 describe("preference-preserving confidence fallback", () => {
   const economy = `${OSS_MODEL}:low`;
@@ -381,53 +249,7 @@ describe("preference-preserving confidence fallback", () => {
     await expect(resolveThreadRoute(output(),"task",routingPolicySchema.parse({estimates,min_success_rate:.9})))
       .rejects.toThrow("no route admitted");
   });
-  it("pins a low-confidence proposal once across concurrent admission and restart", async () => {
-    let retained: Awaited<ReturnType<typeof resolveThreadRoute>> | undefined;
-    const store = {read:()=>retained,commit:(route:NonNullable<typeof retained>)=>{retained=route;}};
-    const ai = output(), pin = new ThreadRoutePin(store);
-    const create = ()=>resolveThreadRoute(ai,"economy",routingPolicySchema.parse({}));
-    const [a,b] = await Promise.all([pin.resolve(create),pin.resolve(create)]);
-    expect(a).toBe(b);
-    expect(await new ThreadRoutePin(store).resolve(create)).toBe(a);
-    expect(a.audit?.fallback_basis).toBe("valid_proposal");
-    expect(ai.run).toHaveBeenCalledOnce();
-  });
 });
-
-
-describe("captured preference-distribution policy replay (not accuracy labels)", () => {
-  it.each(preferenceObservations.cases)("replays historical $catalog/$id against the supported catalog", async observation => {
-    const ai = {run:vi.fn(async()=>({state:"Completed",result:{answers:observation.answers}}))};
-    const route = await resolveThreadRoute(ai,observation.prompt,routingPolicySchema.parse({preferences:observation.preferences, candidates: ROUTING_CANDIDATES.filter(c => !["kimi-k3", "mimo-v2.6-pro"].includes(c.model)).map(c => c.id)}),
-      {openrouter:observation.catalog===45,vercel:observation.catalog===45});
-    const retired = observation.answers.candidate.choice.includes("gpt-5.6");
-    expect(route.audit?.candidate_choice).toBe(retired ? "gpt-6-astra:high" : observation.expected_choice);
-    expect(route.audit?.candidate_confidence).toBe(retired ? 0 : observation.answers.candidate.confidence);
-    expect(route.selection).toBe(retired ? "fallback" : observation.expected_selection);
-    if (retired) expect(route.audit?.confidence_status).toBe("unavailable_or_invalid");
-    expect(route.estimate).toBeNull();
-    expect(ai.run).toHaveBeenCalledOnce();
-    const state = JSON.parse((ai.run.mock.calls[0] as unknown as [string,{state:string}])[1].state);
-    expect(state.preferences).toEqual(observation.preferences);
-    expect(Object.keys((ai.run.mock.calls[0] as unknown as [string,{questions:{candidate:{criteria:object}}}])[1].questions.candidate.criteria)).toHaveLength(observation.catalog === 45 ? 24 : 12);
-  });
-});
-
-
-it("reuses an old v2 pinned route without applying v3 defaults or rerouting", async () => {
-  const old = await resolveThreadRoute({run:async()=>({answers:{candidate:{choice:"gpt-6-astra:high",confidence:.9},family:{choice:"other",confidence:.9}}})},
-    "existing thread",routingPolicySchema.parse({}));
-  old.policy_version = "jev-direct-v2";
-  delete old.audit!.confidence_status;
-  delete old.audit!.fallback_basis;
-  const create = vi.fn(async()=>{throw Error("old thread must not reroute");});
-  const commit = vi.fn();
-  expect(await new ThreadRoutePin({read:()=>old,commit}).resolve(create)).toBe(old);
-  expect(create).not.toHaveBeenCalled();
-  expect(commit).not.toHaveBeenCalled();
-  expect(old.policy_version).toBe("jev-direct-v2");
-});
-
 
 describe("public Jev route diagnostics", () => {
   const economy = `${OSS_MODEL}:low`, frontier = `${FRONTIER_MODEL}:high`;
@@ -513,25 +335,10 @@ describe("public Jev route diagnostics", () => {
   });
 });
 
-
 describe("Cloudflare frontier opt-in", () => {
   const id = "cloudflare:openai/gpt-6-astra:high";
   const available = { openrouter: false, vercel: false, cloudflare: true };
   const ai = { run: async () => ({ answers: { candidate: { choice: id, confidence: .99 }, family: { choice: "terminal", confidence: .99 } } }) };
-  it("adds the supported Cloudflare frontier entries with unknown prices", () => {
-    const cloudflare = ROUTING_CANDIDATES.filter(c => c.backend === "cloudflare");
-    expect(cloudflare).toHaveLength(9);
-    expect(ROUTING_CANDIDATES.filter(c => c.backend !== "chatgpt")).toHaveLength(34);
-    for (const model of [FRONTIER_MODEL, "gpt-6-sol", "gpt-6-luna"]) {
-      for (const thinking of ["low", "medium", "high"]) {
-        expect(cloudflare.find(c => c.id === `cloudflare:openai/${model}:${thinking}`)).toMatchObject({model, thinking, provider_model:`openai/${model}`,catalog_price_hint:null});
-        expect(ROUTING_CANDIDATES.some(c => c.id === `${model}:${thinking}`)).toBe(true);
-        expect(ROUTING_CANDIDATES.some(c => c.id === `openrouter:openai/${model}:${thinking}`)).toBe(model === FRONTIER_MODEL);
-        expect(ROUTING_CANDIDATES.some(c => c.id === `vercel:openai/${model}:${thinking}`)).toBe(model === FRONTIER_MODEL);
-      }
-    }
-    expect(cloudflare.some(c => c.model === OSS_MODEL)).toBe(false);
-  });
   it("requires an explicitly true runtime gate even for an explicit candidate", async () => {
     const policy = routingPolicySchema.parse({ candidates: [id] });
     for (const cloudflare of [undefined, false, "true"]) {

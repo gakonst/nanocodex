@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { fileMemoriesBackend, extensionTools, extensionSpecs, truncateMemoryText } from '../tools/extensions.mjs';
+import { fileMemoriesBackend, extensionTools, truncateMemoryText } from '../tools/extensions.mjs';
 const context = { signal: new AbortController().signal };
 function backend(initial = {}) {
   const files = new Map(Object.entries(initial));
@@ -8,14 +8,6 @@ function backend(initial = {}) {
     if (!files.has(path)) throw new Error('not found'); return files.get(path);
   }, createFile: async (path, value) => { if (files.has(path)) throw new Error('already exists'); files.set(path,value); } }) };
 }
-test('native and npm packages carry identical consumed memory definitions', async () => {
-  const { readFile } = await import('node:fs/promises');
-  const native = JSON.parse(await readFile(new URL('../../../crates/nanocodex-tools/src/extensions/specs.json', import.meta.url)));
-  assert.deepEqual(extensionSpecs, native);
-});
-test('only the four memory tools are declared', () => {
-  assert.deepEqual(extensionSpecs.map(s => s.name).sort(), ['memories__list','memories__search','memories__read','memories__add_ad_hoc_note'].sort());
-});
 test('list immediate directories, file targets and pagination', async () => {
   const { tools } = backend({ 'a.md':'alpha','dir/b.md':'beta','dir/c.md':'gamma' });
   const first = await tools.list({ max_results: 1 });

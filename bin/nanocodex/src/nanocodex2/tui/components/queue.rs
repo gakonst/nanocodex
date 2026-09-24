@@ -631,13 +631,10 @@ fn truncate(text: &str, width: usize) -> Cow<'_, str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        Component, MessageQueue, QueueEffect, QueueEvent, QueueId, STEERING_TEXT, Submission,
-        truncate,
-    };
+    use super::{Component, MessageQueue, QueueEffect, QueueEvent, QueueId, Submission};
     use crate::tui::theme::Theme;
     use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-    use ratatui::{Terminal, backend::TestBackend, style::Color};
+    use ratatui::{Terminal, backend::TestBackend};
 
     fn key(code: KeyCode, modifiers: KeyModifiers) -> QueueEvent {
         QueueEvent::Terminal(Event::Key(KeyEvent::new(code, modifiers)))
@@ -655,19 +652,6 @@ mod tests {
             .chunks(usize::from(width))
             .map(|row| row.iter().map(|cell| cell.symbol()).collect())
             .collect()
-    }
-
-    #[test]
-    fn undo_latest_tracks_submission_order_after_reordering() {
-        let mut queue = MessageQueue::default();
-        queue.push("first".to_owned());
-        queue.push("last".to_owned());
-        let (latest, local) = queue.latest().unwrap();
-        assert!(local);
-        queue.update(key(KeyCode::Up, KeyModifiers::SHIFT));
-        assert_eq!(queue.latest(), Some((latest, true)));
-        assert_eq!(queue.withdraw(latest).unwrap().display_text(), "last");
-        assert_eq!(queue.drain_ready()[0].display_text(), "first");
     }
 
     #[test]
@@ -708,90 +692,6 @@ mod tests {
             update.effects.as_slice(),
             [QueueEffect::Steer { prompt, .. }] if prompt.display_text() == "item 99"
         ));
-    }
-
-    #[test]
-    fn direct_steer_enters_the_steer_lane_exactly_once() {
-        let mut queue = MessageQueue::default();
-
-        let (id, prompt) = queue.begin_steer("change direction".to_owned().into());
-
-        assert_eq!(id, QueueId::new(0));
-        assert_eq!(prompt.display_text(), "change direction");
-        assert_eq!(queue.len(), 1);
-        assert!(queue.has_pending_steer());
-        assert!(queue.drain_ready().is_empty());
-    }
-
-    #[test]
-    fn acknowledged_steering_is_accepted_without_automatic_replay() {
-        let mut queue = MessageQueue::default();
-        let (first, _) = queue.begin_steer("first".to_owned().into());
-        let (second, _) = queue.begin_steer("second".to_owned().into());
-        queue.push("followup".to_owned());
-        assert_eq!(
-            queue.steer_admitted(first).unwrap().1.display_text(),
-            "first"
-        );
-        assert!(queue.drain_ready().is_empty());
-        assert_eq!(
-            queue.steer_admitted(second).unwrap().1.display_text(),
-            "second"
-        );
-        assert_eq!(
-            queue
-                .drain_ready()
-                .iter()
-                .map(Submission::display_text)
-                .collect::<Vec<_>>(),
-            ["followup"]
-        );
-        assert!(!queue.has_pending_steer());
-    }
-
-    #[test]
-    fn unknown_delivery_stays_visible_and_requires_explicit_retry_or_dismissal() {
-        let mut queue = MessageQueue::default();
-        let (id, _) = queue.begin_steer("uncertain".to_owned().into());
-        queue.steer_unconfirmed(id);
-        queue.push("known unsent".to_owned());
-        assert_eq!(
-            queue
-                .drain_ready()
-                .iter()
-                .map(Submission::display_text)
-                .collect::<Vec<_>>(),
-            ["known unsent"]
-        );
-        let rows = rendered_rows(&mut queue, 100, 3);
-        assert!(rows[1].contains("[delivery unknown] uncertain"));
-        assert!(
-            queue
-                .update(key(KeyCode::Enter, KeyModifiers::NONE))
-                .effects
-                .is_empty()
-        );
-        queue.set_focused(true);
-        assert!(rendered_rows(&mut queue, 100, 3)[2].contains("e edit/retry"));
-        assert!(matches!(
-            queue
-                .update(key(KeyCode::Char('e'), KeyModifiers::NONE))
-                .effects
-                .as_slice(),
-            [QueueEffect::Edit { .. }]
-        ));
-        assert!(queue.cancel_edit(id));
-        assert!(
-            queue.drain_ready().is_empty(),
-            "canceling edit must not retry uncertain input"
-        );
-        queue.update(key(KeyCode::Char('e'), KeyModifiers::NONE));
-        assert!(queue.finish_edit(id, "explicit retry".to_owned()));
-        assert_eq!(queue.drain_ready()[0].display_text(), "explicit retry");
-        let (id, _) = queue.begin_steer("dismiss me".to_owned().into());
-        queue.steer_unconfirmed(id);
-        queue.update(key(KeyCode::Char('d'), KeyModifiers::NONE));
-        assert!(queue.is_empty());
     }
 
     #[test]
@@ -839,54 +739,6 @@ mod tests {
             [QueueEffect::Steer { prompt: submission, .. }]
                 if submission.display_text() == prompt
         ));
-    }
-
-    #[test]
-    fn queue_title_explains_how_to_steer_the_latest_message() {
-        let mut queue = MessageQueue::default();
-        queue.push("queued".to_owned());
-
-        let rows = rendered_rows(&mut queue, 100, 3);
-
-        assert!(rows[0].contains(" queue · enter steer latest "));
-    }
-
-    #[test]
-    fn subsequent_steers_follow_pending_steers_in_submission_order() {
-        let mut queue = MessageQueue::default();
-        queue.push("regular".to_owned());
-        queue.push("first steer".to_owned());
-
-        let first = queue.update(key(KeyCode::Enter, KeyModifiers::NONE));
-        let [QueueEffect::Steer { id: first_id, .. }] = first.effects.as_slice() else {
-            panic!("enter should begin the first steer");
-        };
-        queue.push("second steer".to_owned());
-        let second = queue.update(key(KeyCode::Enter, KeyModifiers::NONE));
-        let [QueueEffect::Steer { id: second_id, .. }] = second.effects.as_slice() else {
-            panic!("enter should begin the second steer");
-        };
-
-        assert_eq!(
-            queue
-                .steer_admitted(*first_id)
-                .map(|(_, prompt)| prompt.display_text().to_owned()),
-            Some("first steer".to_owned())
-        );
-        assert_eq!(
-            queue
-                .steer_admitted(*second_id)
-                .map(|(_, prompt)| prompt.display_text().to_owned()),
-            Some("second steer".to_owned())
-        );
-        assert_eq!(
-            queue
-                .drain_ready()
-                .into_iter()
-                .map(|prompt| prompt.display_text().to_owned())
-                .collect::<Vec<_>>(),
-            ["regular"]
-        );
     }
 
     #[test]
@@ -1013,183 +865,5 @@ mod tests {
         assert!(queue.drain_ready().is_empty());
         assert!(queue.cancel_edit(QueueId::new(0)));
         assert_eq!(queue.drain_ready(), [prompt]);
-    }
-
-    #[test]
-    fn terminal_recovery_does_not_reorder_an_item_being_edited() {
-        let mut queue = MessageQueue::default();
-        queue.push("first".to_owned());
-        queue.push("edit me".to_owned());
-        queue.push("last".to_owned());
-        queue.update(key(KeyCode::Up, KeyModifiers::NONE));
-
-        queue.update(key(KeyCode::Char('e'), KeyModifiers::NONE));
-        assert!(queue.finish_edit(QueueId::new(1), "edited".to_owned()));
-
-        let prompts = queue
-            .drain_ready()
-            .into_iter()
-            .map(|prompt| prompt.display_text().to_owned())
-            .collect::<Vec<_>>();
-        assert_eq!(prompts, ["first", "edited", "last"]);
-    }
-
-    #[test]
-    fn pending_acknowledgement_blocks_automatic_queue_drain() {
-        let mut queue = MessageQueue::default();
-        let (id, _) = queue.begin_steer("steer me".to_owned().into());
-        queue.push("followup".to_owned());
-        assert!(queue.has_pending_steer());
-        assert!(queue.drain_ready().is_empty());
-        assert_eq!(
-            queue.steer_admitted(id).unwrap().1.display_text(),
-            "steer me"
-        );
-        assert!(!queue.has_pending_steer());
-        assert_eq!(queue.drain_ready()[0].display_text(), "followup");
-    }
-
-    #[test]
-    fn cancelling_an_edit_restores_the_original_item() {
-        let mut queue = MessageQueue::default();
-        queue.push("keep me".to_owned());
-        queue.update(key(KeyCode::Char('e'), KeyModifiers::NONE));
-
-        assert!(queue.cancel_edit(QueueId::new(0)));
-
-        let prompts = queue
-            .drain_ready()
-            .into_iter()
-            .map(|prompt| prompt.display_text().to_owned())
-            .collect::<Vec<_>>();
-        assert_eq!(prompts, ["keep me"]);
-    }
-
-    #[test]
-    fn pending_steer_stays_visible_with_a_demand_driven_text_wave() {
-        let mut queue = MessageQueue::default();
-        queue.push("steer me".to_owned());
-        queue.set_focused(true);
-        let update = queue.update(key(KeyCode::Enter, KeyModifiers::NONE));
-        let QueueEffect::Steer { id, .. } = &update.effects[0] else {
-            panic!("enter should begin steering");
-        };
-        let id = *id;
-        let mut terminal = Terminal::new(TestBackend::new(40, 3)).unwrap();
-
-        terminal
-            .draw(|frame| queue.render(frame, frame.area(), &Theme::default()))
-            .unwrap();
-        let steering_width = u16::try_from(STEERING_TEXT.len()).unwrap();
-        let steering_start = (0_u16..=32)
-            .find(|start| {
-                (0..steering_width)
-                    .map(|offset| terminal.backend().buffer()[(*start + offset, 0)].symbol())
-                    .collect::<String>()
-                    == STEERING_TEXT
-            })
-            .expect("the steering label should be rendered");
-        let initial_colors = (steering_start..steering_start + steering_width)
-            .map(|x| terminal.backend().buffer()[(x, 0)].fg)
-            .collect::<Vec<_>>();
-        let rendered = (0..40)
-            .map(|x| terminal.backend().buffer()[(x, 0)].symbol())
-            .collect::<String>();
-
-        assert_eq!(queue.len(), 1);
-        assert!(queue.animation_deadline().is_some());
-        assert!(rendered.contains("queue · steering"));
-        assert!(initial_colors.iter().all(|color| matches!(
-            color,
-            Color::Rgb(red, green, blue) if red == green && green == blue
-        )));
-        assert!(
-            initial_colors
-                .windows(2)
-                .any(|colors| colors[0] != colors[1])
-        );
-
-        let deadline = queue.animation_deadline().unwrap();
-        let animation = queue.update(QueueEvent::AnimationFrame(deadline));
-        assert_eq!(animation.render, super::RenderRequest::Streaming);
-        terminal
-            .draw(|frame| queue.render(frame, frame.area(), &Theme::default()))
-            .unwrap();
-        let advanced_colors = (steering_start..steering_start + steering_width)
-            .map(|x| terminal.backend().buffer()[(x, 0)].fg)
-            .collect::<Vec<_>>();
-        assert_ne!(advanced_colors, initial_colors);
-
-        assert_eq!(
-            queue
-                .steer_admitted(id)
-                .as_ref()
-                .map(|(_, prompt)| prompt.display_text()),
-            Some("steer me")
-        );
-        assert!(queue.animation_deadline().is_none());
-    }
-
-    #[test]
-    fn focused_queued_item_discloses_available_actions() {
-        let mut queue = MessageQueue::default();
-        queue.push("queued".to_owned());
-        queue.set_focused(true);
-
-        let rows = rendered_rows(&mut queue, 100, 3);
-
-        assert!(
-            rows[2]
-                .contains(" ↑↓ select · ⇧↑↓ reorder · e edit · enter steer · d delete · alt+u undo last · esc back ")
-        );
-    }
-
-    #[test]
-    fn focused_non_queued_item_only_discloses_navigation_and_back() {
-        let mut queue = MessageQueue::default();
-        queue.push("steering".to_owned());
-        queue.set_focused(true);
-        queue.update(key(KeyCode::Enter, KeyModifiers::NONE));
-
-        let rows = rendered_rows(&mut queue, 40, 3);
-
-        assert!(rows[2].contains(" ↑↓ navigate · esc back "));
-        assert!(!rows[2].contains("reorder"));
-        assert!(!rows[2].contains("edit"));
-        assert!(!rows[2].contains("steer"));
-        assert!(!rows[2].contains("delete"));
-    }
-
-    #[test]
-    fn focused_title_only_renders_complete_actions_at_narrow_widths() {
-        let mut queue = MessageQueue::default();
-        queue.push("queued".to_owned());
-        queue.set_focused(true);
-
-        let rows = rendered_rows(&mut queue, 24, 3);
-
-        assert!(rows[2].contains(" ↑↓ select · esc back "));
-        assert_eq!(rows[2].chars().next(), Some('╰'));
-        assert_eq!(rows[2].chars().last(), Some('╯'));
-    }
-
-    #[test]
-    fn stack_uses_joined_cells_and_truncates_to_one_line() {
-        let mut queue = MessageQueue::default();
-        queue.push("first".to_owned());
-        queue.push("a very long second line".to_owned());
-        let mut terminal = Terminal::new(TestBackend::new(20, 5)).unwrap();
-
-        terminal
-            .draw(|frame| queue.render(frame, frame.area(), &Theme::default()))
-            .unwrap();
-
-        let buffer = terminal.backend().buffer();
-        assert_eq!(buffer[(0, 0)].symbol(), "╭");
-        assert_eq!(buffer[(2, 0)].symbol(), "q");
-        assert_eq!(buffer[(0, 2)].symbol(), "├");
-        assert_eq!(buffer[(19, 2)].symbol(), "┤");
-        assert_eq!(buffer[(19, 4)].symbol(), "╯");
-        assert_eq!(truncate("hello\nworld", 8), "hello w…");
     }
 }

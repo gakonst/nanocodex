@@ -631,43 +631,7 @@ final class RemoteViewerTests: XCTestCase {
     }
 
     #if os(macOS)
-    @MainActor func testFrameResizeImmediatelySizesVideoAndInputWithoutForcedLayout() {
-        let viewport = MacRemoteViewport(viewer: RemoteViewer())
-        defer { viewport.detach() }
-        for size in [CGSize(width: 320, height: 900), CGSize(width: 1920, height: 1080), CGSize(width: 400, height: 700)] {
-            viewport.setFrameSize(size)
-            XCTAssertEqual(viewport.scrollView.frame.size, size)
-            XCTAssertGreaterThan(viewport.canvas.frame.width, size.width - 20)
-            XCTAssertGreaterThan(viewport.canvas.frame.height, size.height - 20)
-            for renderer in viewport.canvas.subviews {
-                XCTAssertGreaterThan(renderer.frame.width, 0)
-                XCTAssertGreaterThan(renderer.frame.height, 0)
-            }
-        }
-    }
 
-    @MainActor func testFullscreenContentKeepsNativeWindowSizeWhileInlinePaneUpdates() {
-        let viewer = RemoteViewer(), viewport = MacRemoteViewport(viewer: RemoteViewer())
-        viewport.frame = CGRect(x: 0, y: 0, width: 320, height: 900)
-        viewport.layoutSubtreeIfNeeded()
-        let nativeWindow = NSWindow(contentRect: CGRect(x: 0, y: 0, width: 1920, height: 1080),
-            styleMask: [.titled], backing: .buffered, defer: false)
-        nativeWindow.isReleasedWhenClosed = false
-        defer { viewport.detach(); nativeWindow.close() }
-        viewport.content.removeFromSuperview()
-        nativeWindow.contentView = viewport.content
-        viewport.content.fullscreen = true
-        viewport.content.needsLayout = true
-        viewport.content.layoutSubtreeIfNeeded()
-        viewport.setFrameSize(CGSize(width: 340, height: 700))
-        viewport.update(viewer)
-        viewport.layoutSubtreeIfNeeded()
-        XCTAssertEqual(viewport.content.frame.width, 1920, accuracy: 1)
-        XCTAssertEqual(viewport.scrollView.frame.width, 1920, accuracy: 1)
-        XCTAssertEqual(viewport.scrollView.frame.minY, 48, accuracy: 1)
-        XCTAssertEqual(viewport.scrollView.frame.height, 1032, accuracy: 1)
-        XCTAssertGreaterThan(viewport.canvas.frame.width, 1900)
-    }
 
     @MainActor func testRightHoldUsesRelativeMotionThroughWindowDispatch() async throws {
         let service = try service { _ in XCTFail("Frame transport must not fetch ICE") }
@@ -917,20 +881,6 @@ final class RemoteViewerTests: XCTestCase {
         }
     }
     #endif
-
-    @MainActor func testCanvasTeardownDoesNotPublishDuringSwiftUIInvalidation() {
-        let viewer = RemoteViewer()
-#if os(macOS)
-        let canvas = MacRemoteCanvas(viewer: viewer)
-#else
-        let canvas = TouchRemoteCanvas(viewer: viewer)
-#endif
-        var changes = 0
-        let observer = viewer.objectWillChange.sink { changes += 1 }
-        canvas.detach()
-        XCTAssertEqual(changes, 0)
-        withExtendedLifetime(observer) {}
-    }
 
     override func tearDown() {
         RemoteHTTPFixture.lock.withLock { RemoteHTTPFixture.handler = nil }

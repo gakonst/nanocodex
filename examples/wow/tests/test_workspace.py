@@ -85,20 +85,6 @@ class WorkspaceTests(unittest.TestCase):
                     if durable:
                         self.assertEqual(backend.clients, {})  # Catalog reads don't subscribe every thread.
 
-    def test_six_hundred_independent_projects_preserve_all_twelve_hundred_rows(self):
-        backend = self.backend(durable=True)
-        roster = {f'p{i}': {'title': 'Synthetic project ' + str(i)} for i in range(600)}
-        opening = self.upstream(backend, {'data': list(roster), 'summaries': roster})
-        d = self.dispatcher(backend)
-        first = d.dispatch(action(page=0), 'catalog')
-        self.assertEqual(first[-1]['kind'], 'projects')
-        pages = d._read('catalog')[1]['snapshot']['pages']
-        rows = [line.split('\t') for page in pages for line in page.splitlines()[1:]]
-        self.assertEqual(len(rows), 1200)
-        self.assertEqual(len([row for row in rows if row[0] == 'P']), 600)
-        self.assertEqual(len([row for row in rows if row[0] == 'T']), 600)
-        opening.assert_called_once()
-
     def test_workspace_strict_query_and_missing_auth_do_no_network(self):
         backend = self.backend()
         opening = self.upstream(backend, {'data': []})

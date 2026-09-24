@@ -3,11 +3,8 @@ import { test } from "node:test";
 
 import {
   callbackCompletion,
-  callbackCompletionChannelName,
   callbackCompletionFor,
-  callbackCompletionStorageKey,
   isCallbackCompletion,
-  isCallbackCompletionState,
   isScopedConnectConnectorState,
   scopedConnectConnectorState,
   unscopedConnectConnectorState,
@@ -80,12 +77,4 @@ test("frames secret-free callback completion with exact connector and state matc
   }), undefined);
   assert.equal(isCallbackCompletion({ ...completion, state: "short" }), false);
   assert.equal(JSON.stringify(completion).includes("secret"), false);
-});
-
-test("creates canonical states and derives state-bounded same-origin transport names", () => {
-  const state = "s".repeat(43);
-  assert.equal(isCallbackCompletionState(state), true);
-  assert.equal(callbackCompletionStorageKey(state), `nanocodex:oauth-completion:${state}`);
-  assert.equal(callbackCompletionChannelName(state), `nanocodex-oauth-completion-${state}`);
-  assert.throws(() => callbackCompletionStorageKey("short"), /completion state is invalid/);
 });

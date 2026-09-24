@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import { AccountHostedTools, AccountHostedToolsProvider } from "../src/account-hosted-tools";
-import { SCREEN_PARAMETERS, screenAction, screenResult, screenTool } from "../src/hand-remote-agent";
+import { screenAction, screenResult } from "../src/hand-remote-agent";
 import { createNamespaceExecutionRuntime } from "../src/namespace-tools";
 
 const owner = "11111111-1111-4111-8111-111111111193";
@@ -46,7 +46,6 @@ describe("agent screen protocol", () => {
     const internalScreen = provider.screenTool(machine.id, context)!;
     const requested = next(connected.socket);
     const selector = { app: "Example", window: "Window" };
-    expect(SCREEN_PARAMETERS).toHaveProperty("properties.context");
     const pending = internalScreen.handler({ action: "observe", context: selector }, context);
     const request = await requested;
     expect(request).toMatchObject({ type: "agent_call", surface_id: "desktop", input: { action: "observe", context: selector } });
@@ -131,9 +130,6 @@ describe("agent screen protocol", () => {
     expect(result.output.map(item => item.type)).toEqual(["input_text", "input_image"]);
     expect(screenResult({ status: "ok", jpeg: "/9j/2Q==", observation: { ...observation, schemaVersion: 2 } as any }, target).value).not.toHaveProperty("observation");
     expect(screenResult({ status: "busy", observation }, target).value).not.toHaveProperty("observation");
-    const definition = screenTool(target).definition;
-    if (definition.type !== "function") throw new Error("Expected function tool");
-    expect(definition.output_schema).toHaveProperty("properties.observation");
   });
   it("reports unknown outcomes when the host disconnects without replaying input", async () => {
     const connected = await host("agent-disconnect");

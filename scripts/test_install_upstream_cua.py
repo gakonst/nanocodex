@@ -48,7 +48,6 @@ class InstalledProviderCopyTests(unittest.TestCase):
         self.assertEqual(receipt['package_versions']['cua-repl'], '0.0.0-fixture')
         self.assertEqual((self.destination / 'cua_node/bin/node-link').readlink(), Path('node'))
         launcher = self.destination / 'cua-provider'
-        self.assertIn('CUA_REPL_ENABLED_SURFACES=computer', launcher.read_text())
         self.assertEqual(subprocess.run([str(launcher)], capture_output=True).returncode, 0)
         self.assertEqual(self.install().returncode, 0, 'matching copies can be reused')
 

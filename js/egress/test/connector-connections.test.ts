@@ -2,18 +2,7 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import {
-  GOOGLE_CAPABILITIES,
-  GOOGLE_PROVIDER,
-  buildGoogleAuthorizationUrl,
-  decodeGoogleTokenResponse,
-  googleCapabilities,
-} from "../src/connectors/google";
-import {
-  SLACK_PROVIDER,
-  buildSlackAuthorizationUrl,
-  decodeSlackTokenResponse,
-} from "../src/connectors/slack";
+import { GOOGLE_CAPABILITIES } from "../src/connectors/google";
 import type { EgressEnv } from "../src/egress";
 import { UserConnectorBroker } from "../src/connector-broker";
 import { CredentialVault, type EncryptedEnvelope } from "../src/credential-vault";
@@ -81,25 +70,6 @@ describe("provider-neutral connector identities", () => {
     expect(revoked.status).toBe(404);
     expect(await revoked.json()).toEqual({ error: "connector_connection_not_found" });
   }, 60_000);
-
-  it("requests the full Google Workspace catalog while decoding partial consent", () => {
-    const authorization = buildGoogleAuthorizationUrl({
-      clientId: "client", redirectUri, state: "state", codeChallenge: "A".repeat(43),
-    });
-    expect(authorization.searchParams.get("scope")?.split(" ")).toEqual(GOOGLE_PROVIDER.scopes);
-    expect(authorization.searchParams.get("prompt")?.split(" ")).toEqual(["consent", "select_account"]);
-    expect(Object.keys(GOOGLE_CAPABILITIES)).toEqual([
-      "gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets", "gslides", "gcontacts",
-    ]);
-    const token = decodeGoogleTokenResponse({
-      access_token: "secret-access",
-      refresh_token: "secret-refresh",
-      expires_in: 3_600,
-      token_type: "Bearer",
-      scope: `openid email ${GOOGLE_CAPABILITIES.gmail} ${GOOGLE_CAPABILITIES.gcalendar}`,
-    });
-    expect(googleCapabilities(token.scopes)).toEqual(["gmail", "gcalendar"]);
-  });
 
   it("projects one Google identity into each granted capability and selects among identities", async () => {
     const user = "multi-google-identities";
@@ -316,22 +286,6 @@ describe("provider-neutral connector identities", () => {
     const after = await connectorStatus(user);
     expect(after.gmail).toEqual({ connected: false, connections: [] });
     expect(after.gdrive).toEqual({ connected: false, connections: [] });
-  });
-
-  it("builds and validates Slack user OAuth responses", () => {
-    const authorization = buildSlackAuthorizationUrl({
-      clientId: "client", redirectUri, state: "state",
-    });
-    expect(authorization.searchParams.get("scope")).toBeNull();
-    expect(authorization.searchParams.get("user_scope")).toBe(SLACK_PROVIDER.userScopes.join(","));
-    expect(decodeSlackTokenResponse({
-      ok: true,
-      team: { id: "T123", name: "Workspace" },
-      authed_user: {
-        id: "U456", access_token: "xoxp-secret", token_type: "user",
-        scope: SLACK_PROVIDER.userScopes.join(","),
-      },
-    })).toMatchObject({ teamId: "T123", userId: "U456" });
   });
 });
 

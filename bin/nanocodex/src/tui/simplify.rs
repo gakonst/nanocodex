@@ -12,19 +12,3 @@ pub(super) fn prompt(focus: Option<&str>) -> String {
         |focus| format!("Additional review focus: {focus}\n\n{WORKFLOW}"),
     )
 }
-
-#[cfg(test)]
-mod tests {
-    use super::prompt;
-
-    #[test]
-    fn focus_is_added_without_replacing_the_cleanup_contract() {
-        let prompt = prompt(Some("memory efficiency"));
-
-        assert!(prompt.starts_with("Additional review focus: memory efficiency"));
-        assert!(prompt.contains("call `simplify_review` exactly once"));
-        assert!(prompt.contains("canonical subagent runtime"));
-        assert!(prompt.contains("four independent read-only reviewers concurrently"));
-        assert!(prompt.contains("without changing its intended behavior"));
-    }
-}

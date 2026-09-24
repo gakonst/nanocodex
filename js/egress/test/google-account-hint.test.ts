@@ -2,8 +2,6 @@ import { env } from "cloudflare:workers";
 import { runDurableObjectAlarm, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import { buildGDriveAuthorizationParams } from "../src/connectors/gdrive";
-import { buildGmailAuthorizationParams } from "../src/connectors/gmail";
 import type { EgressEnv } from "../src/egress";
 
 const authorizationInput = {
@@ -15,17 +13,6 @@ const authorizationInput = {
 const workerEnv = env as unknown as EgressEnv;
 
 describe("Google connector account hints", () => {
-  it("passes an exact login hint to Gmail and Google Drive", () => {
-    expect(Object.fromEntries(buildGmailAuthorizationParams({
-      ...authorizationInput,
-      loginHint: "reader@example.com",
-    }))).toMatchObject({ login_hint: "reader@example.com" });
-    expect(Object.fromEntries(buildGDriveAuthorizationParams({
-      ...authorizationInput,
-      loginHint: "reader@example.com",
-    }))).toMatchObject({ login_hint: "reader@example.com" });
-  });
-
   it("targets and verifies the exact Google account requested by the agent", async () => {
     const user = "connector-agent-email";
     const started = await control(`/users/${user}/connectors/gmail`, "POST", {

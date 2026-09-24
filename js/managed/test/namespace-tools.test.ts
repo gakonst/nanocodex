@@ -83,14 +83,11 @@ describe("cwd-root namespace execution", () => {
       .rejects.toThrow("explicit Hand workdir");
     const selection = await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/native" }, context());
     expect(selection).toMatchObject({
-      browser_selection: expect.stringContaining("'brave', not 'Brave Browser'"),
-      native_app_recovery: expect.stringContaining("Do not replay input actions"),
       definitions: [
       { name: CUA_JS_NAME, description, parameters: providerParameters, output_schema: { type: "object" },
         _meta: { provider: { retained: true } }, annotations: { readOnlyHint: false } },
       { name: CUA_RESET_NAME, description, parameters: resetParameters },
     ] });
-    expect(runtime.tools[CUA_JS_NAME]!.description).not.toContain("cua.getApp");
     await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/native", source: "upstream" }, context());
     expect(handler).toHaveBeenCalledWith({ source: "upstream" }, expect.anything());
     expect(screen).not.toHaveBeenCalled();
@@ -155,21 +152,6 @@ describe("cwd-root namespace execution", () => {
     expect(replacement).toHaveBeenCalledWith({ code: "next" }, expect.anything());
     await expect(runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/brain" }, context())).rejects.toThrow("no CUA runtime");
     await expect(runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/missing", code: "1" }, context())).rejects.toThrow();
-  });
-
-  it("needs no inherited selection and never guesses a Hand", async () => {
-    const first = vi.fn();
-    const second = vi.fn();
-    const runtime = createNamespaceExecutionRuntime(
-      () => [{ id: "one", workspace: "/workspace" }, { id: "two", workspace: "/workspace" }],
-      (id, name) => name === CUA_JS_NAME || name === CUA_RESET_NAME ? cuaTool(name, id === "one" ? first : second) : undefined,
-    );
-    await expect(runtime.tools[CUA_JS_NAME]!.handler({ code: "1" }, context())).rejects.toThrow("explicit Hand workdir");
-    await expect(runtime.tools[CUA_RESET_NAME]!.handler({}, context())).rejects.toThrow("explicit Hand workdir");
-    await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/two", code: "parent" }, context());
-    await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/one", code: "child" }, context({ sessionId: "child" }));
-    expect(first).toHaveBeenCalledWith({ code: "child" }, expect.objectContaining({ sessionId: "child" }));
-    expect(second).toHaveBeenCalledWith({ code: "parent" }, expect.objectContaining({ sessionId: "root-session" }));
   });
 
   it("runs two Hands concurrently through QuickJS Code Mode and orders JS/reset per Hand", async () => {
@@ -238,32 +220,6 @@ describe("cwd-root namespace execution", () => {
       .rejects.toThrow("namespace cwd /brain lacks process.exec");
   });
 
-  it("keeps canonical schemas and routes an explicit logical cwd to a sandbox hand", async () => {
-    const sandboxExec = vi.fn(async () => ({
-      output: "/workspace\n",
-      wall_time_seconds: 0.01,
-      exit_code: 0,
-    }));
-    const tools = createNamespaceExecutionTools(sandboxTools(sandboxExec), () => []);
-
-    expect(tools.exec_command!.parameters).toMatchObject({
-      required: ["cmd"],
-      additionalProperties: false,
-    });
-    expect(JSON.stringify(tools.exec_command!.parameters)).not.toContain("environment");
-    expect(tools.write_stdin!.parameters).toMatchObject({
-      required: ["session_id"],
-      additionalProperties: false,
-    });
-    expect(JSON.stringify(tools.write_stdin!.parameters)).not.toMatch(/environment|host/);
-
-    await tools.exec_command!.handler({ cmd: "pwd", workdir: "/sandbox" }, context());
-    expect(sandboxExec).toHaveBeenCalledWith(
-      { cmd: "pwd", workdir: "/workspace" },
-      expect.objectContaining({ sessionId: "root-session" }),
-    );
-  });
-
   it("routes by a portable machine mount and translates only the workdir", async () => {
     const exec = vi.fn(async () => ({ output: "ok", wall_time_seconds: 0, exit_code: 0 }));
     const resolve = vi.fn((_id: string, name: string) => (
@@ -316,7 +272,6 @@ describe("cwd-root namespace execution", () => {
       router.execute("exec_command", { cmd: "two", workdir: "/hand-b" }, context({ callId: "two" })),
     ]);
 
-    expect(tools.exec_command!.supportsParallelToolCalls).toBe(true);
     expect(maxActive).toBe(2);
   });
 

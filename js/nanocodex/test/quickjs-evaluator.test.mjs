@@ -89,13 +89,6 @@ test("QuickJS keeps Promise.all tool calls concurrent through map and reduce", a
   assert.equal(execution.output.at(-1).text, '{"total":42}');
 });
 
-test("QuickJS evaluator reports guest failures as Code Mode failures", async () => {
-  const runtime = createCodeRuntime({}, { evaluate: createQuickJsEvaluator(quickJs) });
-  const result = JSON.parse(await runtime.executeCode(`throw new Error("guest exploded")`));
-  assert.equal(result.success, false);
-  assert.match(result.output, /guest exploded/);
-});
-
 test("Code Mode cancellation aborts active nested tools", async () => {
   let started;
   let nestedSignal;

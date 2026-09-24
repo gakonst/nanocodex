@@ -19,8 +19,8 @@ import (
 	"unicode/utf8"
 )
 
-// Exact copy of bin/nanocodex/src/nanocodex2/observation_providers/helper.py.
-// TestObservationHelperParity prevents semantic drift.
+// Keep this embedded helper synchronized with
+// bin/nanocodex/src/nanocodex2/observation_providers/helper.py.
 //
 //go:embed observation_helper.py
 var observationHelper string

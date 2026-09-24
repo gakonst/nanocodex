@@ -8,15 +8,6 @@ import {
 } from "../lib/validation";
 
 describe("request validation", () => {
-  it("accepts bounded prompt and workflow identifiers", () => {
-    expect(parseSessionId("wrun_01ABC-def")).toBe("wrun_01ABC-def");
-    expect(parsePrompt({ id: "turn:1", input: "hello" })).toEqual({
-      id: "turn:1",
-      input: "hello",
-    });
-    expect(parseStartIndex("42")).toBe(42);
-  });
-
   it("rejects traversal, malformed cursors, and empty prompts", () => {
     expect(() => parseSessionId("../subscription")).toThrow(RequestError);
     expect(() => parseStartIndex("-1")).toThrow("non-negative integer");

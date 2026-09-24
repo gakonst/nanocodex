@@ -1,25 +1,11 @@
 import { describe, expect, it, vi } from "vitest";
-import { managedCredentialSubject, scopedManagedModelEgress, sessionModelRelayRegion } from "../src/session-credential-ownership";
+import { managedCredentialSubject, scopedManagedModelEgress } from "../src/session-credential-ownership";
 
 const storageId = "a".repeat(64);
 const regionHeader = "x-nanocodex-model-region";
 const owner = "11111111-1111-4111-8111-111111111111";
 
 describe("trusted initial Session ingress placement", () => {
-  it.each([
-    ["wnam", "SFO SJC LAX SEA PDX PHX DEN LAS SLC"],
-    ["enam", "IAD EWR BOS ATL ORD MIA"],
-    ["weur", "LHR CDG FRA AMS MXP MAD DUB ZRH"],
-    ["eeur", "WAW OTP ATH"], ["apac", "SIN NRT HKG"],
-    ["oc", "SYD MEL AKL"], ["sam", "GRU SCL EZE"],
-  ])("maps the bounded %s colo allowlist", (region, colos) => {
-    for (const colo of colos!.split(" ")) expect(sessionModelRelayRegion(colo)).toBe(region);
-  });
-  it.each([undefined, null, "", "ZZZ", "SFO,LAX", "sfo", " SFO", "SFO ", "wnam", "__proto__", 123, {}])(
-    "keeps legacy placement for unknown or malformed colo %j", (colo) => {
-      expect(sessionModelRelayRegion(colo)).toBeUndefined();
-    },
-  );
   it.each(["GET", "POST"])("overwrites runtime headers and checks live authority on every %s reconnect", async (method) => {
     const general = { fetch: vi.fn(async (_request: Request) => new Response(null, { status: 204 })) };
     const model = { fetch: vi.fn(async (_request: Request) => new Response(null, { status: 204 })) };

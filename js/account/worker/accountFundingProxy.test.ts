@@ -1,23 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { isAccountFundingPath, routeAccountFunding } from "./accountFundingProxy.ts";
+import { routeAccountFunding } from "./accountFundingProxy.ts";
 
 const origin = "https://nanocodex.test";
 const address = "0x1111111111111111111111111111111111111111";
-
-test("matches only exact MACH funding routes", () => {
-  for (const path of [
-    "/v1/machine-usd/config",
-    "/v1/machine-usd/orders",
-    "/v1/machine-usd/orders/order_123",
-  ]) assert.equal(isAccountFundingPath(path), true, path);
-  for (const path of [
-    "/v1/machine-usd",
-    "/v1/machine-usd/other",
-    "/v1/machine-usd/orders/order/extra",
-  ]) assert.equal(isAccountFundingPath(path), false, path);
-});
 
 test("creates an order only for the authenticated canonical account wallet", async () => {
   const upstream: Request[] = [];

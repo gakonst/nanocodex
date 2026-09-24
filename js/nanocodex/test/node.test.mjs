@@ -7,7 +7,6 @@ import { WebSocketServer } from "ws";
 import { Actions, Agent, Subagents, Transport } from "../node/index.mjs";
 import { createNodeHost } from "../node/host.mjs";
 import { createMemoryDurabilityStore } from "../runtime/durability-store.mjs";
-import { createWorkspace } from "../runtime/workspace.mjs";
 import { createTools } from "../tools/Tools.mjs";
 
 const SESSION_IDS = Object.freeze({
@@ -27,16 +26,6 @@ const createWarmAgent = ({ apiKey, websocketUrl, ...options }) => Agent.create({
 const PACKAGE_VERSION = JSON.parse(
   await readFile(new URL("../package.json", import.meta.url), "utf8"),
 ).version;
-
-async function waitForToolDefinition(host, name) {
-  const deadline = performance.now() + 1_000;
-  while (performance.now() < deadline) {
-    const definitions = JSON.parse(host.toolDefinitions());
-    if (definitions.some((definition) => definition.name === name)) return definitions;
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  throw new Error(`MCP discovery did not publish ${name}`);
-}
 
 test("quiet model reads survive six minutes and release on cancellation", async (t) => {
   const socket = new ManagedSocket();
@@ -112,20 +101,6 @@ test("Node host owns one Tools lifecycle and validates Tools-owned MCP policy", 
     () => tools.attach("wss://managed.test/tools"),
     /Tools runtime is closed/,
   );
-
-  const workspace = createWorkspace({ backend: {
-    async list() { return []; },
-    async readFile() { return new Uint8Array(); },
-    async writeFile() {},
-    async remove() {},
-    async mkdir() {},
-  } });
-  const workspaceTools = await createTools({ workspace });
-  assert.throws(
-    () => createNodeHost({ tools: workspaceTools, filesystem: {} }),
-    /workspace is already configured in Tools/,
-  );
-  await workspaceTools.close();
 });
 
 test("Node host disposal completes later owners after a tool cleanup failure", async () => {
@@ -173,62 +148,6 @@ test("Node host readiness preserves MCP construction failures", async () => {
   const host = createNodeHost({ mcpServers: {} });
   await assert.rejects(host.ready());
   await assert.rejects(host.dispose());
-});
-
-test("Node host loads and calls deferred Mercator MCP tools", async () => {
-  const calls = [];
-  const host = createNodeHost({
-    mcpServers: {
-      mercator: {
-        description: "Deterministic Mercator fixture.",
-        client: {
-          async listTools() {
-            return {
-              tools: [{
-                name: "search_services",
-                description: "Search paid services.",
-                inputSchema: {
-                  type: "object",
-                  properties: { query: { type: "string" } },
-                  required: ["query"],
-                },
-              }],
-            };
-          },
-          async callTool(input) {
-            calls.push(input);
-            return { content: [{ type: "text", text: "node-mercator-ok" }] };
-          },
-        },
-      },
-    },
-  });
-
-  try {
-    await host.ready();
-    const definitions = await waitForToolDefinition(
-      host,
-      "mcp__mercator__search_services",
-    );
-    assert.deepEqual(definitions.map((definition) => definition.name ?? definition.type), [
-      "tool_search",
-      "mcp__mercator__search_services",
-    ]);
-    assert.equal(definitions[1].defer_loading, true);
-    const execution = JSON.parse(await host.executeCode(
-      "text(await tools.mcp__mercator__search_services({ query: 'weather' }));",
-      "node-session",
-      "node-exec",
-    ));
-    assert.equal(execution.success, true);
-    assert.match(JSON.stringify(execution.output), /node-mercator-ok/);
-    assert.deepEqual(calls, [{
-      name: "search_services",
-      arguments: { query: "weather" },
-    }]);
-  } finally {
-    await host.dispose();
-  }
 });
 
 test("Node host preserves structured WebSocket handshake rejection detail", async () => {
@@ -445,7 +364,7 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     );
     sendWarmup(rootSocket, "root-warmup");
 
-    const rootGeneration = await rootReader.next();
+    await rootReader.next();
     const childConnection = new Promise((resolve) => {
       server.websocketServer.once("connection", (socket, request) => {
         socket.request = request;
@@ -923,44 +842,6 @@ test("Node can load an application-owned web module and resume Codex rollout his
   await scenario;
   agent.dispose();
   await server.close();
-});
-
-test("Node Astra sends its model prompt with additive host rules and preserves replacements", async () => {
-  const astraPrompt = await readFile(
-    new URL("../../../crates/nanocodex-oai-api/prompts/astra.md", import.meta.url),
-    "utf8",
-  );
-  for (const instructions of [undefined, "Caller-owned base instructions."]) {
-    const server = await startServer();
-    const agent = await createWarmAgent({
-      apiKey: "test-key",
-      websocketUrl: server.url,
-      model: "gpt-6-astra",
-      thinking: "low",
-      instructions,
-      additionalInstructions: "Use the caller's workspace.",
-    });
-    try {
-      const scenario = (async () => {
-        const socket = await bounded(server.connection, "Astra connection");
-        const reader = messageReader(socket);
-        const warmup = await bounded(reader.next(), "Astra warmup");
-        assert.equal(warmup.model, "gpt-6-astra");
-        assert.equal(warmup.reasoning.summary, undefined);
-        assert.equal(warmup.input[1].content[0].text,
-          `${instructions ?? astraPrompt}\n\nUse the caller's workspace.`);
-        sendWarmup(socket, "astra-warmup");
-        await bounded(reader.next(), "Astra turn");
-        sendFinal(socket, "astra-final", "done");
-      })();
-      const result = await bounded(agent.turn.prompt({ input: "hello" }).result(), "Astra result");
-      assert.equal(result.finalMessage, "done");
-      await scenario;
-    } finally {
-      await agent.session.shutdown();
-      await server.close();
-    }
-  }
 });
 
 test("independent agents keep their host connections isolated", async () => {

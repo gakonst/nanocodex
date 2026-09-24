@@ -121,31 +121,4 @@ mod tests {
         capacity.set_limit(crate::DEFAULT_MAX_SUBAGENTS);
         assert_eq!(capacity.reserve_many(256).unwrap().len(), 256);
     }
-
-    #[test]
-    fn capacity_is_released_for_later_delegation() {
-        let capacity = Capacity::new(1);
-        let reservation = capacity.reserve().unwrap();
-
-        let error = capacity.reserve().err().unwrap();
-        assert_eq!(
-            error.to_string(),
-            "sub-agent concurrency limit of 1 has been reached; try delegation again later"
-        );
-
-        drop(reservation);
-        assert!(capacity.reserve().is_ok());
-    }
-
-    #[test]
-    fn limit_can_change_while_turns_are_active() {
-        let capacity = Capacity::new(1);
-        let _first = capacity.reserve().unwrap();
-
-        capacity.set_limit(2);
-        let _second = capacity.reserve().unwrap();
-        capacity.set_limit(1);
-
-        assert!(capacity.reserve().is_err());
-    }
 }

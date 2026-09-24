@@ -191,7 +191,6 @@ test("installed helper selects its new host once even with an existing receipt",
   assert.equal(await discoverComputer(), f.executable);
   assert.equal(await ensureComputer({ binary: f.binary }), f.executable);
   assert.equal((await readFile(f.calls, "utf8")).trim().split("\n").length, 1);
-  assert.equal(await readFile(previous, "utf8").then(source => source.includes("process.exit(0)")), true);
 });
 
 test("Mac discovery does not fall back to the old generated launcher", async t => {

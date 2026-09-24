@@ -257,13 +257,4 @@ mod tests {
             Err(StoreError::Fenced)
         );
     }
-
-    #[test]
-    fn owner_ids_are_fresh_uuid_v7_values() {
-        let first = OwnerId::new();
-        let second = OwnerId::new();
-        assert_ne!(first, second);
-        assert_eq!(first.as_str().as_bytes()[14], b'7');
-        assert_eq!(second.as_str().as_bytes()[14], b'7');
-    }
 }

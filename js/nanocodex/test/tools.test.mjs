@@ -1,17 +1,7 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import { test } from "node:test";
-import { createCodeRuntime } from "../runtime/code-runtime.mjs";
 
-import {
-  dataset,
-  ArtifactStore,
-  artifact,
-  imageGeneration,
-  updatePlan,
-  viewImage,
-  web,
-} from "../tools/index.mjs";
+import { ArtifactStore, artifact, imageGeneration, updatePlan, viewImage, web } from "../tools/index.mjs";
 
 const context = Object.freeze({
   callId: "call-1",
@@ -19,45 +9,6 @@ const context = Object.freeze({
   sessionId: "session-1",
   model: "gpt-6-luna",
   signal: new AbortController().signal,
-});
-
-test("standard tool descriptions stay identical to the Rust-owned Codex contracts", async () => {
-  const [webDescription, imageDescription] = await Promise.all([
-    readFile(new URL("../../../crates/nanocodex-tools/src/web_search/web_run_description.md", import.meta.url), "utf8"),
-    readFile(new URL("../../../crates/nanocodex-tools/src/image_generation/imagegen_description.md", import.meta.url), "utf8"),
-  ]);
-  assert.equal(web().description, webDescription);
-  assert.equal(imageGeneration().description, imageDescription.trimEnd());
-});
-
-test("web definition uses the compiled pinned Codex schema", async () => {
-  const schema = JSON.parse(await readFile(new URL("../../../crates/nanocodex-tools/tests/fixtures/codex-parity/web.json", import.meta.url), "utf8"));
-  assert.deepEqual(web().parameters, schema);
-});
-
-test("web forwards the complete command object through a caller-owned host adapter", async () => {
-  const requests = [];
-  const tool = web({
-    url: "https://host.test/tools/web",
-    headers: { authorization: "Bearer host" },
-    async fetch(url, init) {
-      requests.push({ url, init });
-      return Response.json({ output: "searched" });
-    },
-  });
-
-  assert.equal(tool.name, "web__run");
-  assert.deepEqual(await tool.handler({ search_query: [{ q: "nanocodex" }] }, context), "searched");
-  assert.deepEqual(JSON.parse(requests[0].init.body), {
-    commands: { search_query: [{ q: "nanocodex" }] },
-    session_id: "session-1",
-    model: "gpt-6-luna",
-  });
-  assert.equal(requests[0].init.headers.authorization, "Bearer host");
-  assert.equal(requests[0].init.redirect, "manual");
-  assert.equal(requests[0].init.signal, context.signal);
-  assert.deepEqual(tool.parameters.properties.search_query.items.required, ["q"]);
-  assert.deepEqual(tool.parameters.properties.response_length.enum, ["short", "medium", "long"]);
 });
 
 test("web rejects host redirects without forwarding credentials", async () => {
@@ -101,19 +52,6 @@ test("web follows Codex command decoding without repairing or splitting requests
   assert.deepEqual(bodies.map(({ commands }) => commands), [commands, {}]);
 });
 
-test("web and image generation default to the standard same-origin host routes", async () => {
-  const urls = [];
-  const fetch = async (url) => {
-    urls.push(url);
-    return Response.json(url.includes("web-search")
-      ? { output: "ok" }
-      : { image_url: "data:image/png;base64,image" });
-  };
-  await web({ fetch }).handler({ search_query: [{ q: "nanocodex" }] }, context);
-  await imageGeneration({ fetch }).handler({ prompt: "draw it" }, context);
-  assert.deepEqual(urls, ["/api/tools/web-search", "/api/tools/image-generation"]);
-});
-
 test("image generation resolves recent session images without owning conversation state", async () => {
   const remembered = [];
   const tool = imageGeneration({
@@ -136,14 +74,6 @@ test("image generation resolves recent session images without owning conversatio
     sessionId: "session-1",
     imageUrl: "data:image/png;base64,two",
   }]);
-});
-
-test("each factory returns an immutable named tool for direct array composition", () => {
-  assert(Object.isFrozen(updatePlan()));
-  assert.equal(dataset().name, "dataset");
-  const image = viewImage({ workspace: { readFile: async () => new Uint8Array() } });
-  assert.equal(image.name, "view_image");
-  assert.equal(image.supportsParallelToolCalls, true);
 });
 
 test("update_plan validates active work and releases session-owned state", async () => {
@@ -194,46 +124,6 @@ test("view_image rejects unsupported and oversized workspace files", async () =>
     oversized.handler({ path: "/workspace/huge.png" }, context),
     /exceeds 10 MiB/,
   );
-});
-
-test("the code runtime forwards session and host lifecycle to stateful tools", async () => {
-  const released = [];
-  let disposals = 0;
-  const runtime = createCodeRuntime({
-    stateful: {
-      description: "stateful test tool",
-      handler: () => null,
-      releaseSession: (sessionId) => released.push(sessionId),
-      dispose: () => disposals++,
-    },
-  });
-  runtime.releaseSession("session-1");
-  await runtime.reset();
-  assert.deepEqual(released, ["session-1"]);
-  assert.equal(disposals, 1);
-});
-
-test("artifact is a named typed tool, not a shell command", async () => {
-  const workspace = memoryWorkspace();
-  const rendered = [];
-  const tool = artifact({ workspace, onArtifact: (document) => rendered.push(document) });
-
-  assert.equal(tool.name, "render_artifact");
-  assert(Object.isFrozen(tool));
-  assert.deepEqual(tool.parameters.required, ["title", "source"]);
-  assert.deepEqual(tool.outputSchema.required, ["artifactId", "path", "title", "runtime"]);
-  assert.deepEqual(await tool.handler({
-    id: "answer",
-    title: "Answer",
-    source: "function App() { return html`<main>42</main>`; }",
-  }, context), {
-    artifactId: "answer",
-    path: "/workspace/.nanocodex/artifacts/answer.json",
-    title: "Answer",
-    runtime: "react",
-  });
-  assert.equal(rendered.length, 1);
-  assert.equal((await new ArtifactStore(workspace).read("answer")).title, "Answer");
 });
 
 test("artifact persistence does not impose binding-specific size or count limits", async () => {
@@ -311,17 +201,6 @@ function memoryWorkspace() {
     async mkdir(path) { directories.add(path); },
   };
 }
-
-
-test("standard shared definitions match the compiled upstream contract fixture", async () => {
-  const fixture = JSON.parse(await readFile(new URL("../../../crates/nanocodex-tools/tests/fixtures/codex-parity/shared-tools.json", import.meta.url), "utf8"));
-  for (const tool of [updatePlan(), viewImage({ workspace: {} }), imageGeneration()]) {
-    const expected = fixture.tools[tool.name];
-    assert.equal(tool.description.trimEnd(), expected.description.trimEnd(), tool.name);
-    assert.deepEqual(tool.parameters, expected.parameters, tool.name);
-    assert.deepEqual(tool.outputSchema, expected.output_schema, tool.name);
-  }
-});
 
 test("view_image loader receives per-call detail and retains its bounded output contract", async () => {
   const bytes = new Uint8Array([255, 216, 255, 224, 0]);

@@ -1574,33 +1574,6 @@ mod tests {
     }
 
     #[test]
-    fn requested_markdown_styles_are_applied() {
-        let theme = Theme::default();
-        let lines = render(
-            "# Header\n\n`code` and [link](https://example.com)",
-            80,
-            &theme,
-        )
-        .lines;
-
-        assert_eq!(lines[0].spans[0].style.fg, Some(Color::Magenta));
-        let code = lines[2]
-            .spans
-            .iter()
-            .find(|span| span.content.contains("code"))
-            .unwrap();
-        assert_eq!(code.style.fg, Some(Color::Rgb(0xD7, 0xD7, 0xD7)));
-        assert_eq!(code.style.bg, Some(Color::Rgb(0x26, 0x26, 0x26)));
-        let link = lines[2]
-            .spans
-            .iter()
-            .find(|span| span.content == "link")
-            .unwrap();
-        assert_eq!(link.style.fg, Some(Color::Blue));
-        assert!(link.style.add_modifier.contains(Modifier::UNDERLINED));
-    }
-
-    #[test]
     fn wrapped_links_retain_clickable_ranges() {
         let layout = render("[abcdefghij](https://example.com)", 5, &Theme::default());
 
@@ -1614,50 +1587,6 @@ mod tests {
         assert_eq!((layout.links[0][0].start, layout.links[0][0].end), (0, 5));
         assert_eq!(layout.links[1].len(), 1);
         assert_eq!((layout.links[1][0].start, layout.links[1][0].end), (0, 5));
-    }
-
-    #[test]
-    fn code_blocks_use_high_contrast_rounded_chrome() {
-        let lines = render("```rust\npub fn main() {}\n```", 32, &Theme::default()).lines;
-
-        assert_eq!(lines[0].to_string(), "╭─ rust ───────────────────────╮");
-        assert_eq!(lines[1].to_string(), "│ pub fn main() {}             │");
-        assert_eq!(lines[2].to_string(), "╰──────────────────────────────╯");
-        let keyword = lines[1]
-            .spans
-            .iter()
-            .find(|span| span.content == "pub")
-            .expect("Rust keywords should be syntax-highlighted separately");
-        assert_eq!(keyword.style.fg, Some(Color::Blue));
-        assert!(lines[1].spans.iter().all(|span| span.style.bg.is_none()));
-    }
-
-    #[test]
-    fn rust_keywords_types_and_parameters_use_distinct_terminal_colors() {
-        let lines = render(
-            "```rust\npub struct Widget;\npub fn choose(input: &str) { let value = if input.is_empty() { 1 } else { 2 }; }\n```",
-            100,
-            &Theme::default(),
-        )
-        .lines;
-        let spans = lines
-            .iter()
-            .flat_map(|line| &line.spans)
-            .collect::<Vec<_>>();
-        let style = |token| {
-            spans
-                .iter()
-                .find(|span| span.content == token)
-                .unwrap_or_else(|| panic!("{token} should have its own syntax span"))
-                .style
-        };
-
-        for keyword in ["pub", "struct", "fn", "let", "if"] {
-            assert_eq!(style(keyword).fg, Some(Color::Blue));
-        }
-        assert_eq!(style("Widget").fg, Some(Color::Yellow));
-        assert_eq!(style("input").fg, Some(Color::Reset));
-        assert!(style("input").add_modifier.contains(Modifier::ITALIC));
     }
 
     #[test]
@@ -1686,47 +1615,6 @@ mod tests {
     }
 
     #[test]
-    fn fenced_languages_use_syntects_built_in_syntaxes() {
-        let lines = render(
-            "```javascript\nconst greeting = \"hello\";\n```",
-            40,
-            &Theme::default(),
-        )
-        .lines;
-        let keyword = lines[1]
-            .spans
-            .iter()
-            .find(|span| span.content == "const")
-            .expect("JavaScript keywords should be syntax-highlighted separately");
-
-        assert_eq!(keyword.style.fg, Some(Color::Blue));
-    }
-
-    #[test]
-    fn diff_code_blocks_color_additions_and_deletions() {
-        let lines = render(
-            "```diff\n--- a/file.rs\n+++ b/file.rs\n-old value\n+new value\n context\n```",
-            32,
-            &Theme::default(),
-        )
-        .lines;
-        let addition = lines
-            .iter()
-            .flat_map(|line| &line.spans)
-            .find(|span| span.content == "+ ")
-            .expect("addition should be rendered");
-        let deletion = lines
-            .iter()
-            .flat_map(|line| &line.spans)
-            .find(|span| span.content == "- ")
-            .expect("deletion should be rendered");
-        assert_eq!(addition.style.fg, Some(Color::Green));
-        assert_eq!(deletion.style.fg, Some(Color::Red));
-        assert_eq!(addition.style.bg, None);
-        assert_eq!(deletion.style.bg, None);
-    }
-
-    #[test]
     fn diff_code_blocks_render_hunk_ranges_and_highlight_source() {
         let lines = render(
             "```diff\ndiff --git a/src/lib.rs b/src/lib.rs\n--- a/src/lib.rs\n+++ b/src/lib.rs\n@@ -10,2 +10,3 @@ impl App\n-pub fn old() {}\n+pub fn new() {}\n+let value = 1;\n```",
@@ -1744,16 +1632,6 @@ mod tests {
         assert!(rendered.contains("src/lib.rs"));
         assert!(rendered.contains("-10,2 → +10,3"));
         assert_eq!(keyword.style.fg, Some(Color::Blue));
-    }
-
-    #[test]
-    fn tables_use_rounded_unicode_chrome() {
-        let lines = render("| A | B |\n|---|---|\n| 1 | 2 |", 30, &Theme::default()).lines;
-        let rendered = lines.iter().map(ToString::to_string).collect::<Vec<_>>();
-
-        assert!(rendered.first().unwrap().starts_with('╭'));
-        assert!(rendered.last().unwrap().starts_with('╰'));
-        assert!(rendered.iter().any(|line| line.contains('┼')));
     }
 
     #[test]

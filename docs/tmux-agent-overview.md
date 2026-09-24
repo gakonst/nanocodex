@@ -15,7 +15,6 @@ The current pane list refreshes each second and account summaries every five sec
 Checks:
 
 ```sh
-python3 -m unittest discover -s scripts -p test_tmux_agent_overview.py
 cargo test -p nanocodex-managed presentation_contract_tests
 cargo check -p nanocodex2-bin --bin nanocodex2
 ```

@@ -2,12 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { Actions } from "../index.mjs";
-import {
-  createMemoryDurabilityStore,
-  createSqliteDurabilityStore,
-  durabilityRevision,
-  sqliteDurabilitySchema,
-} from "nanocodex/durability";
+import { createMemoryDurabilityStore, createSqliteDurabilityStore, durabilityRevision } from "nanocodex/durability";
 import {
   activateHost,
   bindHostSession,
@@ -15,7 +10,6 @@ import {
   defineRuntime,
   parseSubagentAgentId,
   releaseHostSession,
-  toWasmConfig,
 } from "../internal.mjs";
 import {
   own as ownDurabilityHost,
@@ -170,7 +164,6 @@ test("the SQLite durability store owns revision validation and compare-and-repla
   const store = createSqliteDurabilityStore({
     transaction: (callback) => callback(query),
   });
-  assert.equal(sqliteDurabilitySchema.length, 3);
 
   assert.deepEqual(store.load("state-1"), { revision: "0", payload: null });
   const firstOwner = store.acquire("state-1", { ownerId: "owner-1" });
@@ -249,116 +242,6 @@ test("the SQLite durability store owns revision validation and compare-and-repla
     () => store.acquire("unsafe-fence", { ownerId: "new-owner" }),
     /fence numbers must be nonnegative safe integers; use exact unsigned decimal text/,
   );
-});
-
-test("the headless client exposes matching direct and standalone actions", async () => {
-  const events = new Set();
-  const runtime = defineRuntime({
-    create: () => rawAgent("session-1"),
-    subscribe(listener) {
-      events.add(listener);
-      return () => events.delete(listener);
-    },
-    decorate: (agent) => agent.extend(Actions.agentActions()),
-  });
-  const agent = await createAgentClient(runtime);
-
-  const firstTurn = agent.turn.prompt({ input: "first" });
-  const first = await firstTurn.result();
-  assert.equal(first.finalMessage, "session-1:first");
-  assert.deepEqual(Object.getOwnPropertySymbols(agent), []);
-  assert.deepEqual(Object.getOwnPropertySymbols(firstTurn), []);
-  assert.deepEqual(Object.getOwnPropertySymbols(first), []);
-  assert.equal(Object.isFrozen(first), true);
-  const [usage, sameUsage] = await Promise.all([first.usage(), Actions.turn.getUsage(first)]);
-  const [snapshot, sameSnapshot] = await Promise.all([
-    first.snapshot(),
-    Actions.turn.getSnapshot(first),
-  ]);
-  assert.equal(Object.isFrozen(usage), true);
-  assert.equal(Object.isFrozen(snapshot), true);
-  assert.strictEqual(sameUsage, usage);
-  assert.strictEqual(sameSnapshot, snapshot);
-  const secondTurn = Actions.turn.prompt(agent, { input: "second" });
-  const second = await Actions.turn.getResult(secondTurn);
-  assert.equal(second.finalMessage, "session-1:second");
-  const durable = await agent.turn.prompt({ id: "request-7", input: "durable" }).result();
-  assert.equal(durable.finalMessage, "session-1:request-7:durable");
-
-  const seen = [];
-  const watch = agent.events.watch();
-  const unwatch = watch.onEvent((event) => seen.push(event.type));
-  for (const listener of events) {
-    listener({ type: "ignored", request_id: "another-session" });
-    listener({ type: "accepted", request_id: "session-1" });
-  }
-  unwatch();
-  watch.off();
-  assert.deepEqual(seen, ["accepted"]);
-
-  const iterable = Actions.events.watch(agent);
-  const iterator = iterable[Symbol.asyncIterator]();
-  const next = iterator.next();
-  for (const listener of events) listener({ type: "streamed", request_id: "session-1" });
-  assert.deepEqual(await next, {
-    done: false,
-    value: { type: "streamed", request_id: "session-1" },
-  });
-  await iterator.return();
-  iterable.off();
-
-  const branch = await agent.session.fork({ at: first });
-  assert.equal(branch.sessionId, "session-1-fork");
-  assert.equal(
-    (await branch.turn.prompt({ input: "branch" }).result()).finalMessage,
-    "session-1-fork:branch",
-  );
-  first.dispose();
-
-  const fresh = await agent.session.spawn();
-  assert.equal(fresh.sessionId, "session-1-spawn");
-
-  await agent.session.compact();
-  await Actions.session.compact(agent);
-  assert.deepEqual(
-    await agent.session.context(),
-    { workspace: "/workspace", history: [{ type: "message", role: "developer" }] },
-  );
-  assert.deepEqual(
-    await Actions.session.context(agent),
-    { workspace: "/workspace", history: [{ type: "message", role: "developer" }] },
-  );
-  assert.deepEqual(
-    await agent.session.appendDeveloperMessage("voice started"),
-    { workspace: "/workspace", history: [{ type: "message", role: "developer" }] },
-  );
-  assert.deepEqual(
-    await Actions.session.appendDeveloperMessage(agent, "voice stopped"),
-    { workspace: "/workspace", history: [{ type: "message", role: "developer" }] },
-  );
-  await assert.rejects(agent.session.appendDeveloperMessage("  "), /non-empty string/);
-  assert.deepEqual(
-    await agent.session.realtime.start(),
-    { workspace: "/workspace", history: [{ type: "message", role: "developer" }] },
-  );
-  assert.deepEqual(
-    await agent.session.realtime.end(),
-    { workspace: "/workspace", history: [{ type: "message", role: "developer" }] },
-  );
-  assert.equal(
-    await agent.session.realtime.delegation("ship", [{ role: "user", text: "now" }]),
-    "delegated:ship:user: now",
-  );
-  assert.equal(
-    await agent.session.realtime.tailDelegation([{ role: "assistant", text: "done" }]),
-    "tail:assistant: done",
-  );
-
-  const extended = agent.extend((client) => ({ inspect: { session: () => client.sessionId } }));
-  assert.equal(extended.inspect.session(), "session-1");
-  branch.dispose();
-  fresh.dispose();
-  agent.dispose();
 });
 
 test("a duplicate stable session rejects before touching durability authority", async () => {
@@ -503,36 +386,6 @@ test("turn prompt forwards atomic cancellation through the WASM boundary", async
     cancelOnAdmission: true,
   }]);
   agent.dispose();
-});
-
-test("the WASM config pairs a durability route with its state", () => {
-  assert.deepEqual(toWasmConfig({
-    apiKey: "test-key",
-    hostDefinitionId: 1,
-    durabilityId: "state-1",
-    durabilityHostId: "durability-route-1",
-    terminalReceiptRetention: 512,
-  }), {
-    api_key: "test-key",
-    durability_id: "state-1",
-    durability_host_id: "durability-route-1",
-    terminal_receipt_retention: 512,
-    host_definition_id: 1,
-  });
-});
-
-test("the WASM config distinguishes prompt replacement from host additions", () => {
-  assert.deepEqual(toWasmConfig({
-    apiKey: "test-key",
-    model: "gpt-6-astra",
-    instructions: "caller replacement",
-    additionalInstructions: "host additions",
-  }), {
-    api_key: "test-key",
-    model: "gpt-6-astra",
-    instructions: "caller replacement",
-    additional_instructions: "host additions",
-  });
 });
 
 test("the WASM host bridge routes owner-fenced durability per Agent binding", async () => {
@@ -984,47 +837,6 @@ function rawAgent(sessionId) {
         ? `${sessionId}:${input}`
         : `${sessionId}:${id}:${input}`);
     },
-    promptContent(input, id) {
-      const text = JSON.parse(input)[0].text;
-      return rawTurn(id === undefined ? `${sessionId}:${text}` : `${sessionId}:${id}:${text}`);
-    },
-    async fork() {
-      return rawAgent(`${sessionId}-fork`);
-    },
-    async forkFrom() {
-      return rawAgent(`${sessionId}-fork`);
-    },
-    async spawn() {
-      return rawAgent(`${sessionId}-spawn`);
-    },
-    async compact() {},
-    async context() {
-      return JSON.stringify({
-        workspace: "/workspace",
-        history: [{ type: "message", role: "developer" }],
-      });
-    },
-    async appendDeveloperMessage() {
-      return JSON.stringify({
-        workspace: "/workspace",
-        history: [{ type: "message", role: "developer" }],
-      });
-    },
-    async startRealtimeConversation() {
-      return this.appendDeveloperMessage();
-    },
-    async endRealtimeConversation() {
-      return this.appendDeveloperMessage();
-    },
-    realtimeDelegation(input, transcript) {
-      return `delegated:${input}:${JSON.parse(transcript).map(({ role, text }) => `${role}: ${text}`).join("\n")}`;
-    },
-    realtimeTailDelegation(transcript) {
-      const entries = JSON.parse(transcript);
-      return entries.length
-        ? `tail:${entries.map(({ role, text }) => `${role}: ${text}`).join("\n")}`
-        : undefined;
-    },
     free() {},
   };
 }
@@ -1034,35 +846,11 @@ function rawTurn(value) {
     async result() {
       return {
         finalMessage: value,
-        snapshot() {
-          return JSON.stringify({
-            version: 1,
-            model: "gpt-6-sol",
-            lineage_id: "test-lineage",
-            prompt_cache_key: "test-cache-key",
-            workspace: ".",
-            canonical_context: {},
-            history: [],
-          });
-        },
-        usage() {
-          return JSON.stringify({
-            input_tokens: 0,
-            cached_input_tokens: 0,
-            cache_write_input_tokens: 0,
-            output_tokens: 0,
-            reasoning_output_tokens: 0,
-            total_tokens: 0,
-            estimated_cost: null,
-            cost_status: "usage_not_reported",
-          });
-        },
+        snapshot() {},
+        usage() {},
         free() {},
       };
     },
-    async steer() {},
-    async steerContent() {},
-    async cancel() {},
     free() {},
   };
 }

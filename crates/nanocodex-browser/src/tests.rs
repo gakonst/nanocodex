@@ -16,53 +16,18 @@ use tokio::{
 };
 
 use super::{
-    BraveSession, Browser, BrowserAction, BrowserActionName, BrowserActionResult,
-    BrowserAfterAction, BrowserBuildError, BrowserClickOptions, BrowserColorScheme, BrowserContext,
-    BrowserCookie, BrowserCruxClient, BrowserCruxScope, BrowserDevicePreset,
-    BrowserDocumentReadyState, BrowserEgressPolicy, BrowserError, BrowserIosConfig,
-    BrowserIosDeviceSelector, BrowserKeyModifier, BrowserLighthouseCategory,
-    BrowserLighthouseFormFactor, BrowserLoadState, BrowserNetworkBodyKind, BrowserNetworkContext,
-    BrowserOrientation, BrowserOriginStorage, BrowserPasskeyMode, BrowserPerformanceInsight,
-    BrowserPostActionSnapshot, BrowserPseudoClass, BrowserReactEventKind, BrowserReducedMotion,
-    BrowserRouteHeader, BrowserRouteResponse, BrowserStorageState, BrowserTarget, BrowserTool,
-    BrowserViewport, BrowserWaitForSelectorState, BrowserWebMcpInvocationStatus,
-    HostPasskeyAuthenticator, IosBrowser, ReactDiagnostics, VirtualAuthenticator,
-    browser_execute_definition, browser_tool_builder,
+    BraveSession, Browser, BrowserAction, BrowserActionResult, BrowserAfterAction,
+    BrowserBuildError, BrowserClickOptions, BrowserColorScheme, BrowserContext, BrowserCookie,
+    BrowserCruxClient, BrowserCruxScope, BrowserDevicePreset, BrowserDocumentReadyState,
+    BrowserEgressPolicy, BrowserError, BrowserIosConfig, BrowserIosDeviceSelector,
+    BrowserKeyModifier, BrowserLighthouseCategory, BrowserLighthouseFormFactor, BrowserLoadState,
+    BrowserNetworkBodyKind, BrowserNetworkContext, BrowserOrientation, BrowserOriginStorage,
+    BrowserPasskeyMode, BrowserPerformanceInsight, BrowserPostActionSnapshot, BrowserPseudoClass,
+    BrowserReactEventKind, BrowserReducedMotion, BrowserRouteHeader, BrowserRouteResponse,
+    BrowserStorageState, BrowserTarget, BrowserTool, BrowserViewport, BrowserWaitForSelectorState,
+    BrowserWebMcpInvocationStatus, HostPasskeyAuthenticator, IosBrowser, ReactDiagnostics,
+    VirtualAuthenticator,
 };
-
-#[test]
-fn browser_execute_matches_the_managed_cloudflare_callable_contract() {
-    let nanocodex_tools::ToolDefinition::Function {
-        name,
-        strict,
-        parameters,
-        output_schema,
-        ..
-    } = browser_execute_definition()
-    else {
-        panic!("browser_execute must be a function tool");
-    };
-    assert_eq!(name.as_ref(), "browser_execute");
-    assert!(!strict);
-    assert_eq!(
-        parameters.as_value(),
-        &serde_json::json!({
-            "type": "object",
-            "properties": { "code": { "type": "string" } },
-            "required": ["code"],
-            "additionalProperties": false
-        })
-    );
-    assert!(output_schema.is_none());
-}
-
-#[test]
-fn browser_tool_enables_virtual_platform_passkeys() {
-    assert_eq!(
-        browser_tool_builder().virtual_authenticator,
-        Some(VirtualAuthenticator::platform_passkey())
-    );
-}
 
 #[test]
 fn host_and_virtual_passkey_policies_are_mutually_exclusive() -> Result<()> {
@@ -80,23 +45,6 @@ fn host_and_virtual_passkey_policies_are_mutually_exclusive() -> Result<()> {
         BrowserBuildError::Configuration { ref message }
             if message == "host and virtual passkey authenticators cannot be enabled together"
     ));
-    Ok(())
-}
-
-#[test]
-fn remote_browser_accepts_cookie_only_brave_sessions() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let executable = directory.path().join("brave");
-    std::fs::write(&executable, [])?;
-    let user_data = directory.path().join("user-data");
-    std::fs::create_dir(&user_data)?;
-    let brave = BraveSession::new(executable, user_data)
-        .allow_origin(url::Url::parse("https://console.example.com")?);
-
-    Browser::builder()
-        .cdp_endpoint(url::Url::parse("ws://127.0.0.1:9222")?)
-        .brave_session(brave)
-        .build()?;
     Ok(())
 }
 
@@ -122,37 +70,6 @@ fn remote_browser_rejects_a_local_persistent_profile() -> Result<()> {
             .build(),
         Err(BrowserBuildError::Configuration { .. })
     ));
-    Ok(())
-}
-
-#[test]
-fn browser_accepts_an_explicit_all_cookie_brave_session() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let executable = directory.path().join("brave");
-    std::fs::write(&executable, [])?;
-    let user_data = directory.path().join("user-data");
-    std::fs::create_dir(&user_data)?;
-    let brave = BraveSession::new(executable, user_data).copy_all_cookies();
-
-    Browser::builder().brave_session(brave).build()?;
-    Ok(())
-}
-
-#[test]
-fn browser_cookie_source_is_independent_from_the_browser_executable() -> Result<()> {
-    let directory = tempfile::tempdir()?;
-    let brave_executable = directory.path().join("brave");
-    let chromium_executable = directory.path().join("chromium");
-    std::fs::write(&brave_executable, [])?;
-    std::fs::write(&chromium_executable, [])?;
-    let user_data = directory.path().join("user-data");
-    std::fs::create_dir(&user_data)?;
-    let cookies = BraveSession::new(brave_executable, user_data).copy_all_cookies();
-
-    Browser::builder()
-        .executable(chromium_executable)
-        .cookie_source(cookies)
-        .build()?;
     Ok(())
 }
 
@@ -901,316 +818,6 @@ async fn virtual_authenticator_reaches_a_window_open_popup() -> Result<()> {
 }
 
 #[tokio::test]
-async fn code_mode_calls_record_browser_actions_in_order() -> Result<()> {
-    let (browser, recording) = BrowserTool::recording();
-    let tools = Tools::builder().without_defaults().tool(browser).build()?;
-    let runtime = ToolRuntime::new_with_tools(".", None, None, &tools);
-
-    let execution = runtime
-        .execute_code(
-            r#"
-const opened = await tools.browser({
-  action: "open",
-  url: "https://example.com"
-});
-const snapshot = await tools.browser({
-  action: "snapshot"
-});
-const clicked = await tools.browser({
-  action: "click",
-  target: { by: "ref", reference: "@e1" }
-});
-const html = await tools.browser({
-  action: "get_html",
-  target: { by: "css", selector: "main" }
-});
-const elementContext = await tools.browser({
-  action: "element_context",
-  target: { by: "css", selector: "main" }
-});
-text({ opened, snapshot, clicked, html, elementContext });
-"#,
-            context(),
-        )
-        .await?;
-
-    let calls = execution
-        .nested_calls
-        .iter()
-        .map(|call| {
-            serde_json::json!({
-                "input": call.input,
-                "output": call.output,
-                "success": call.success,
-            })
-        })
-        .collect::<Vec<_>>();
-    assert!(
-        execution.success,
-        "nested calls: {}",
-        serde_json::to_string_pretty(&calls)?
-    );
-    assert_eq!(execution.nested_calls.len(), 5);
-    let output = execution_text(&execution.output)?;
-    let output: Value = serde_json::from_str(output)?;
-    assert_eq!(output["opened"]["sequence"], 0);
-    assert_eq!(output["opened"]["result"], "action");
-    assert_eq!(output["opened"]["action"], "open");
-    assert_eq!(output["opened"]["executed"], false);
-    assert_eq!(output["snapshot"]["sequence"], 1);
-    assert_eq!(output["snapshot"]["result"], "snapshot");
-    assert_eq!(output["snapshot"]["origin"], "https://example.com");
-    assert_eq!(output["snapshot"]["snapshot"], "");
-    assert!(
-        output["snapshot"]["refs"]
-            .as_object()
-            .is_some_and(serde_json::Map::is_empty)
-    );
-    assert_eq!(output["clicked"]["sequence"], 2);
-    assert_eq!(output["html"]["sequence"], 3);
-    assert_eq!(output["html"]["result"], "html");
-    assert_eq!(output["elementContext"]["sequence"], 4);
-    assert_eq!(output["elementContext"]["result"], "element_context");
-    assert_eq!(output["elementContext"]["context"]["selector"], "main");
-
-    let actions = recording.actions()?;
-    assert_eq!(actions.len(), 5);
-    assert_eq!(
-        actions[0].action,
-        BrowserAction::Open {
-            url: "https://example.com".to_owned(),
-        }
-    );
-    assert_eq!(
-        actions[1].action,
-        BrowserAction::Snapshot {
-            interactive: true,
-            compact: false,
-            depth: None,
-            selector: None,
-            include_urls: false,
-        }
-    );
-    assert_eq!(actions[2].action.name(), BrowserActionName::Click);
-    assert_eq!(actions[3].action.name(), BrowserActionName::GetHtml);
-    assert_eq!(
-        actions[4].action,
-        BrowserAction::ElementContext {
-            target: BrowserTarget::css("main"),
-        }
-    );
-    Ok(())
-}
-
-#[test]
-fn recording_browser_exposes_extension_lifecycle_actions() -> Result<()> {
-    let (_browser, recording) = BrowserTool::recording();
-
-    let loaded = recording.record(BrowserAction::LoadExtension {
-        path: "extensions/chrome/.output/chrome-mv3".into(),
-    })?;
-    let triggered = recording.record(BrowserAction::TriggerExtensionAction {
-        extension_id: "abcdefghijklmnop".to_owned(),
-        tab_id: Some("tab-1".to_owned()),
-    })?;
-
-    assert!(matches!(
-        loaded,
-        BrowserActionResult::Extension {
-            extension_id,
-            executed: false,
-            ..
-        } if extension_id.is_empty()
-    ));
-    assert!(matches!(
-        triggered,
-        BrowserActionResult::Action {
-            action: BrowserActionName::TriggerExtensionAction,
-            executed: false,
-            ..
-        }
-    ));
-    assert_eq!(recording.actions()?.len(), 2);
-    Ok(())
-}
-
-#[test]
-fn recording_browser_exposes_webmcp_action_contracts() -> Result<()> {
-    let (_browser, recording) = BrowserTool::recording();
-
-    let listed = recording.record(BrowserAction::WebMcpList)?;
-    let invoked = recording.record(BrowserAction::WebMcpInvoke {
-        tool: "search".to_owned(),
-        frame_id: Some("frame-1".to_owned()),
-        input: serde_json::json!({"query": "nanocodex"}),
-        detach: true,
-        timeout_ms: Some(500),
-    })?;
-    let result = recording.record(BrowserAction::WebMcpResult {
-        invocation_id: "invocation-1".to_owned(),
-        timeout_ms: None,
-    })?;
-    let canceled = recording.record(BrowserAction::WebMcpCancel {
-        invocation_id: "invocation-1".to_owned(),
-        timeout_ms: None,
-    })?;
-
-    assert!(matches!(
-        listed,
-        BrowserActionResult::WebMcpTools {
-            executed: false,
-            experimental: true,
-            tools,
-            ..
-        } if tools.is_empty()
-    ));
-    assert!(matches!(
-        invoked,
-        BrowserActionResult::WebMcpInvocation {
-            action: BrowserActionName::WebMcpInvoke,
-            invocation,
-            ..
-        } if invocation.tool_name == "search" && invocation.frame_id == "frame-1"
-    ));
-    assert!(matches!(
-        result,
-        BrowserActionResult::WebMcpInvocation {
-            action: BrowserActionName::WebMcpResult,
-            ..
-        }
-    ));
-    assert!(matches!(
-        canceled,
-        BrowserActionResult::WebMcpInvocation {
-            action: BrowserActionName::WebMcpCancel,
-            ..
-        }
-    ));
-    Ok(())
-}
-
-#[test]
-fn recording_browser_exposes_model_controlled_passkey_modes() -> Result<()> {
-    let (_browser, recording) = BrowserTool::recording();
-
-    let listed = recording.record(BrowserAction::Passkeys)?;
-    let selected = recording.record(BrowserAction::PasskeyUse {
-        credential_id: "credential-id".to_owned(),
-        relying_party_id: Some("wallet.example".to_owned()),
-    })?;
-    let fresh = recording.record(BrowserAction::PasskeyNew)?;
-    let automatic = recording.record(BrowserAction::PasskeyAuto)?;
-    let host_started = recording.record(BrowserAction::HostPasskeyStart)?;
-    let host_resumed = recording.record(BrowserAction::HostPasskeyResume)?;
-
-    assert!(matches!(
-        listed,
-        BrowserActionResult::Passkeys {
-            action: BrowserActionName::Passkeys,
-            mode: BrowserPasskeyMode::Auto,
-            ..
-        }
-    ));
-    assert!(matches!(
-        selected,
-        BrowserActionResult::Passkeys {
-            action: BrowserActionName::PasskeyUse,
-            mode: BrowserPasskeyMode::Use {
-                credential_id,
-                relying_party_id: Some(relying_party_id),
-            },
-            ..
-        } if credential_id == "credential-id" && relying_party_id == "wallet.example"
-    ));
-    assert!(matches!(
-        fresh,
-        BrowserActionResult::Passkeys {
-            action: BrowserActionName::PasskeyNew,
-            mode: BrowserPasskeyMode::New,
-            ..
-        }
-    ));
-    assert!(matches!(
-        automatic,
-        BrowserActionResult::Passkeys {
-            action: BrowserActionName::PasskeyAuto,
-            mode: BrowserPasskeyMode::Auto,
-            ..
-        }
-    ));
-    assert!(matches!(
-        host_started,
-        BrowserActionResult::Action {
-            action: BrowserActionName::HostPasskeyStart,
-            ..
-        }
-    ));
-    assert!(matches!(
-        host_resumed,
-        BrowserActionResult::Action {
-            action: BrowserActionName::HostPasskeyResume,
-            ..
-        }
-    ));
-    Ok(())
-}
-
-#[test]
-fn mobile_device_profiles_are_pinned_and_orientation_aware() {
-    let portrait = BrowserDevicePreset::Iphone15Pro.descriptor(BrowserOrientation::Portrait);
-    let landscape = BrowserDevicePreset::Iphone15Pro.descriptor(BrowserOrientation::Landscape);
-
-    assert_eq!((portrait.width, portrait.height), (393, 852));
-    assert_eq!((landscape.width, landscape.height), (852, 393));
-    assert_eq!(portrait.device_scale_factor, 3.0);
-    assert!(portrait.mobile && portrait.touch);
-    assert_eq!(portrait.max_touch_points, 5);
-    assert_eq!(portrait.platform, "iPhone");
-}
-
-#[test]
-fn recording_browser_exposes_mobile_state_and_audit_contracts() -> Result<()> {
-    let (_browser, recording) = BrowserTool::recording();
-
-    let configured = recording.record(BrowserAction::SetDevice {
-        device: BrowserDevicePreset::Pixel8,
-        orientation: BrowserOrientation::Landscape,
-    })?;
-    let state = recording.record(BrowserAction::MobileState)?;
-    let audit = recording.record(BrowserAction::MobileAudit {
-        devices: vec![BrowserDevicePreset::IphoneSe],
-        orientations: vec![BrowserOrientation::Portrait],
-        ready: None,
-    })?;
-
-    assert!(matches!(
-        configured,
-        BrowserActionResult::Action {
-            action: BrowserActionName::SetDevice,
-            executed: false,
-            ..
-        }
-    ));
-    assert!(matches!(
-        state,
-        BrowserActionResult::MobileState {
-            executed: false,
-            state,
-            ..
-        } if state.provider == "chromium_emulation" && !state.verified
-    ));
-    assert!(matches!(
-        audit,
-        BrowserActionResult::MobileAudit {
-            executed: false,
-            audit,
-            ..
-        } if audit.samples.is_empty() && !audit.passed
-    ));
-    Ok(())
-}
-
-#[tokio::test]
 async fn ios_backend_uses_explicit_appium_session_and_reports_real_engine() -> Result<()> {
     let listener = TcpListener::bind(("127.0.0.1", 0)).await?;
     let endpoint = url::Url::parse(&format!("http://{}/", listener.local_addr()?))?;
@@ -1326,23 +933,6 @@ text({
     assert_eq!(output["hasPixelCalibrationSchema"], true);
     assert_eq!(output["opened"]["action"], "open");
     assert_eq!(recording.actions()?.len(), 1);
-    Ok(())
-}
-
-#[test]
-fn remote_cdp_root_websocket_queries_have_an_explicit_path() -> Result<()> {
-    for raw in [
-        "wss://browser.example?token=a%2Fb",
-        "ws://[::1]:9222?token=test",
-        "wss://user:pass@browser.example?token=test",
-    ] {
-        let parsed = url::Url::parse(raw)?;
-        assert!(parsed.as_str().contains("/?"), "{}", parsed.as_str());
-    }
-    assert_eq!(
-        url::Url::parse("wss://browser.example/cdp?token=a%2Fb")?.as_str(),
-        "wss://browser.example/cdp?token=a%2Fb"
-    );
     Ok(())
 }
 

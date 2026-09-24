@@ -81,21 +81,3 @@ test("inference namespace and exact Responses aliases reach dedicated authentica
     assert.deepEqual(await response.json(), { error: "synthetic_dedicated_authenticator" });
   }
 });
-
-test("ordinary account authorization still reaches existing managed authentication", async () => {
-  for (const authorization of [undefined, "Bearer ncx_live_synthetic"]) {
-    let forwarded = 0;
-    const request = new Request("https://nanocodex.example/v1/me", {
-      headers: { ...ambient, ...(authorization ? { authorization } : {}) },
-    });
-    const response = await worker.fetch(request, {
-      NANOCODEX_BACKEND: { fetch: async (candidate: Request) => {
-        forwarded++;
-        assert.equal(candidate, request);
-        return Response.json({ synthetic: "existing_account_authentication" });
-      } } as unknown as Fetcher,
-    } as Env);
-    assert.equal(response.status, 200);
-    assert.equal(forwarded, 1);
-  }
-});

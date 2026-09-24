@@ -12,8 +12,7 @@ JavaScript conformance cases.
 upstream V8 value/audio helpers, Rust wait parser, and Rust truncation code
 **directly from an external clean Codex checkout**. It does not reimplement the
 expected results. `native-behavior.json` is the bounded output corpus consumed
-by both Rust and JavaScript tests. The latest pin reproduces all 43 existing
-oracle cases without changing expected behavior.
+by both Rust and JavaScript tests.
 
 ```sh
 python3 scripts/codex-parity/native-behavior.py /path/to/pinned/codex
@@ -25,11 +24,6 @@ crates. It cannot run as a browser or Cloudflare Worker dependency. We reuse its
 actual helper code as the differential oracle, while retaining portable runtime
 adapters. The full upstream tree is not vendored. Pin changes should regenerate
 and review the oracle rather than silently updating expected outputs.
-
-The upstream changes since the previous pin primarily add tool-description and
-schema override configuration and use shared ownership for stored JSON values.
-Those host configuration APIs are not represented as newly implemented
-Nanocodex features. The inspected helper and wait behavior remains unchanged.
 
 ## Shared contract
 
@@ -57,8 +51,8 @@ The target remains frozen, has no prototype, and enumerates only registered
 names. An absent `then` or Symbol property stays absent to avoid accidental
 thenable/iteration behavior. Explicitly registered names remain callable.
 
-This factory is shared across evaluator implementations; its package-local
-assets are checked for equivalence so Rust and npm releases stay self-contained.
+This factory is shared across evaluator implementations; package-local assets
+keep Rust and npm releases self-contained.
 
 Nanocodex also records terminal receipts for every started nested call. When the
 cell ends before a result arrives, the receipt says `CODE_MODE_CALL_INTERRUPTED`
@@ -83,7 +77,6 @@ storage, multimodal helpers and generated browser bundles.
 ```sh
 node --test js/nanocodex/test/code-{runtime,mode-parity,mode-upstream,tools-conformance,mode-lifecycle-parity}.test.mjs
 node --test js/nanocodex/test/{quickjs-evaluator,worker-evaluator,quickjs-bundle,code-mode-browser-bundle,browser-compiler-worker}.test.mjs
-node --test js/nanocodex-tools/test/code-tools-asset.test.mjs
 cargo test -p nanocodex-tools --lib code_mode
 ```
 

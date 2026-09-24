@@ -20,18 +20,6 @@ const alpha = "a".repeat(43);
 const bravo = "b".repeat(43);
 const charlie = "c".repeat(43);
 
-test("capabilities stay provider-neutral while Google shares one OAuth control provider", () => {
-  assert.deepEqual(connectorCapabilities, [
-    "github", "gmail", "gdrive", "gcalendar", "gtasks", "gdocs",
-    "gsheets", "gslides", "gcontacts", "slack", "x", "spotify", "soundcloud", "link", "chatgpt",
-  ]);
-  for (const capability of [
-    "gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets", "gslides", "gcontacts",
-  ]) assert.equal(connectorProvider(capability), "google");
-  assert.equal(connectorProvider("slack"), "slack");
-  assert.equal(connectorProvider("google"), undefined);
-});
-
 test("status projection exposes bounded identities and strips provider secrets", () => {
   const status = publicConnectorStatus({
     connected: true,

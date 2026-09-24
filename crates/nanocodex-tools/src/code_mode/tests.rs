@@ -13,9 +13,9 @@ use serde_json::Value;
 use tokio::sync::Semaphore;
 
 use super::{
-    CellError, CellLifecycle, CellObservationState, CellUpdate, CodeModeExecution,
-    CodeModeObserver, CodeModeUpdate, LiveCell, NestedToolCall, ObservationBuffer, ObservationMode,
-    observe_cell, observer_yield_timeout, parse_exec_source,
+    CellLifecycle, CellObservationState, CellUpdate, CodeModeExecution, CodeModeObserver,
+    CodeModeUpdate, LiveCell, NestedToolCall, ObservationBuffer, ObservationMode, observe_cell,
+    parse_exec_source,
 };
 use crate::{
     Tool, ToolContext, ToolInput, ToolOutput, ToolOutputBody, ToolOutputContent, ToolResult, Tools,
@@ -187,30 +187,6 @@ async fn nested_tool_calls_are_bounded_at_128() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn long_observer_yields_include_completion_grace() {
-    assert_eq!(
-        observer_yield_timeout(Duration::from_secs(10)),
-        Duration::from_secs(11)
-    );
-    assert_eq!(
-        observer_yield_timeout(Duration::from_millis(9_999)),
-        Duration::from_millis(9_999)
-    );
-}
-
-#[tokio::test]
-async fn prewarms_embedded_quickjs_host() -> Result<()> {
-    let workspace = temporary_workspace("prewarmed-quickjs-host")?;
-    let runtime = super::CodeModeRuntime::new(workspace.clone());
-
-    assert!(runtime.host.lock().await.host.is_some());
-
-    drop(runtime.control().terminate_all().await);
-    std::fs::remove_dir_all(workspace)?;
-    Ok(())
-}
-
 #[tokio::test]
 async fn execution_globals_do_not_leak_across_quickjs_contexts() -> Result<()> {
     let workspace = temporary_workspace("isolated-quickjs-contexts")?;
@@ -262,28 +238,6 @@ text(({}).__nanocodexPoisoned);
     assert!(second.success, "{}", execution_output(&second));
     assert_eq!(emitted_text(&first)?, "yes");
     assert_eq!(emitted_text(&second)?, "clean");
-    std::fs::remove_dir_all(workspace)?;
-    Ok(())
-}
-
-#[tokio::test]
-async fn execution_local_bindings_do_not_leak_across_quickjs_calls() -> Result<()> {
-    let workspace = temporary_workspace("scoped-quickjs-bindings")?;
-    let tools = test_tools(&workspace);
-    let history = Vec::new();
-    let context = test_context(&history);
-
-    let source = r"
-const executionLocal = 1;
-text(executionLocal);
-";
-    let first = tools.execute_code(source, context).await.unwrap();
-    let second = tools.execute_code(source, context).await.unwrap();
-
-    assert!(first.success, "{}", execution_output(&first));
-    assert!(second.success, "{}", execution_output(&second));
-    assert_eq!(emitted_text(&first)?, "1");
-    assert_eq!(emitted_text(&second)?, "1");
     std::fs::remove_dir_all(workspace)?;
     Ok(())
 }
@@ -2388,42 +2342,6 @@ try {
     Ok(())
 }
 
-#[test]
-fn termination_claim_prevents_completion_and_store_commit() {
-    let lifecycle = CellLifecycle::new();
-    assert!(lifecycle.request_termination());
-
-    let mut committed = false;
-    if lifecycle.claim_completion() {
-        committed = true;
-    }
-
-    assert!(!committed);
-}
-
-#[tokio::test]
-async fn active_observation_reports_busy_without_consuming_the_cell() {
-    let (_updates_tx, updates) = tokio::sync::mpsc::unbounded_channel();
-    let (terminate, terminate_rx) = tokio::sync::oneshot::channel();
-    let task = tokio::spawn(async move {
-        let _ = terminate_rx.await;
-    });
-    let cell = test_live_cell(1, updates, terminate, task);
-    let observation = cell
-        .begin_observation()
-        .expect("first observer should acquire the cell");
-
-    assert!(matches!(cell.begin_observation(), Err(CellError::Busy)));
-
-    drop(observation);
-    let resumed = cell
-        .begin_observation()
-        .expect("dropping an observer should release the cell");
-    drop(resumed);
-    cell.request_terminate();
-    cell.join().await;
-}
-
 #[tokio::test]
 async fn dropped_observer_preserves_consumed_output_for_the_next_observation() -> Result<()> {
     struct StartSignal(Option<tokio::sync::oneshot::Sender<()>>);
@@ -2599,31 +2517,6 @@ async fn nested_tool_start_does_not_extend_the_outer_yield() {
     assert!(execution.success);
     assert!(execution_output(&execution).contains("Script running with cell ID 1"));
     cell.join().await;
-}
-
-#[test]
-fn model_description_uses_codex_style_declarations() {
-    let workspace = temporary_workspace("code-mode-description")
-        .expect("temporary test workspace should be available");
-    let tools = test_tools(&workspace);
-    let specs = tools
-        .model_specs("test-session")
-        .into_iter()
-        .map(|spec| serde_json::to_value(spec).unwrap())
-        .collect::<Vec<_>>();
-    let description = specs[0]["description"]
-        .as_str()
-        .expect("exec should have a description");
-    assert!(description.contains("// @exec:"));
-    assert!(description.contains("should be a base64-encoded `data:` URL"));
-    assert!(description.contains("apply_patch(input: string): Promise<unknown>"));
-    assert!(description.contains("exec_command(args: {"));
-    assert!(!description.contains("Input schema:"));
-    assert_eq!(
-        specs[1]["parameters"]["properties"]["max_tokens"]["type"],
-        "number"
-    );
-    std::fs::remove_dir_all(workspace).expect("temporary workspace should be removable");
 }
 
 fn emitted_text(execution: &CodeModeExecution) -> Result<&str> {

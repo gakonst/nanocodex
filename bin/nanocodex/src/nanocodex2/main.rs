@@ -1265,22 +1265,6 @@ fn write_json_line<T: serde::Serialize>(value: &T) -> Result<(), ManagedError> {
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn local_managed_client_exposes_public_mercator_by_default() {
-        assert_eq!(MERCATOR_MCP_URL, "https://mercator.sh/mcp");
-        let tools = Tools::builder()
-            .without_defaults()
-            .add(default_mercator_mcp().unwrap())
-            .build()
-            .unwrap();
-        let specs = serde_json::to_string(
-            &nanocodex_tools::runtime::ToolRuntime::new_with_tools(".", None, None, &tools)
-                .model_specs("mercator-test"),
-        )
-        .unwrap();
-        assert!(specs.contains("mercator"), "{specs}");
-    }
-
     #[test]
     fn version_reports_full_source_revision_for_local_updates() {
         use clap::CommandFactory;

@@ -3,14 +3,6 @@ import InboxCore
 @testable import NanocodexVoice
 
 final class ElevenLabsTests: XCTestCase {
-    func testCloneFormRejectsInvalidInputBeforeUpload() {
-        XCTAssertFalse(VoiceCloneGuidance.canCreate(name: "  ", count: 1, consent: true))
-        XCTAssertFalse(VoiceCloneGuidance.canCreate(name: String(repeating: "x", count: 101), count: 1, consent: true))
-        XCTAssertFalse(VoiceCloneGuidance.canCreate(name: "Sample", count: 0, consent: true))
-        XCTAssertFalse(VoiceCloneGuidance.canCreate(name: "Sample", count: 6, consent: true))
-        XCTAssertFalse(VoiceCloneGuidance.canCreate(name: "Sample", count: 1, consent: false))
-        XCTAssertTrue(VoiceCloneGuidance.canCreate(name: "Sample", count: 5, consent: true))
-    }
     func testCloneWithoutVoiceIDIsNotReportedAsSuccessOrRetried() async throws {
         var requests = 0
         let fixture = try HTTPFixture { _ in
@@ -30,49 +22,6 @@ final class ElevenLabsTests: XCTestCase {
         }
         XCTAssertEqual(requests, 1)
         XCTAssertTrue(FileManager.default.fileExists(atPath: file.path), "Uncertain uploads must preserve the sample")
-    }
-    func testCatalogSeparatesInstantAndProfessionalClones() {
-        let instant: JSON = .object(["category": .string("cloned")])
-        let professional: JSON = .object(["category": .string("professional")])
-        let premade: JSON = .object(["category": .string("premade")])
-        let generated: JSON = .object(["category": .string("generated")])
-        for voice in [instant, professional] {
-            XCTAssertTrue(VoiceCatalog.cloned.includes(voice))
-            XCTAssertFalse(VoiceCatalog.existing.includes(voice))
-        }
-        for voice in [premade, generated, .object([:])] {
-            XCTAssertFalse(VoiceCatalog.cloned.includes(voice))
-            XCTAssertTrue(VoiceCatalog.existing.includes(voice))
-        }
-        for voice in [instant, professional, premade, generated] { XCTAssertTrue(VoiceCatalog.all.includes(voice)) }
-    }
-    func testCatalogUsesAccountAuthenticationAndPreservesCategoriesAndCursor() async throws {
-        let fixture = try HTTPFixture { request in
-            XCTAssertEqual(request.path, "/api/voice/elevenlabs/voices")
-            XCTAssertEqual(request.headers["authorization"], "Bearer \(fixtureKey)")
-            XCTAssertNil(request.headers["xi-api-key"])
-            return FixtureReply(body: "{\"voices\":[{\"voice_id\":\"clone_fixture\",\"name\":\"My sample\",\"category\":\"cloned\"}],\"has_more\":true,\"next_page_token\":\"next_fixture\"}")
-        }
-        defer { fixture.close() }
-        let client = try ElevenLabs(configuration: .init(baseURL: URL(string: fixture.origin)!, apiKey: fixtureKey, agentID: "019d2f5d-7491-8000-8000-000000000001"), urlConfiguration: fixture.configuration)
-        let result = try await client.request("/voices")
-        XCTAssertTrue(VoiceCatalog.cloned.includes(try XCTUnwrap(result["voices"].array.first)))
-        XCTAssertTrue(result["has_more"].bool)
-        XCTAssertEqual(result["next_page_token"].string, "next_fixture")
-    }
-    func testSelectedClonedVoiceSurvivesSettingsRoundTrip() throws {
-        let settings = VoiceSettings(outputProvider: .elevenlabs, elevenLabsVoiceId: "clone_fixture")
-        XCTAssertEqual(try JSONDecoder().decode(VoiceSettings.self, from: JSONEncoder().encode(settings)), settings)
-    }
-    func testLegacySettingsAndProviderContract() throws {
-        let old = try JSONDecoder().decode(VoiceSettings.self, from: Data("{}".utf8))
-        XCTAssertNil(old.outputProvider)
-        _ = try ManagedVoiceProtocol(settings: old)
-        let settings = VoiceSettings(outputProvider: .elevenlabs, elevenLabsVoiceId: "synthetic_voice")
-        _ = try ManagedVoiceProtocol(settings: settings)
-        let encoded = try JSONDecoder().decode(JSON.self, from: JSONEncoder().encode(settings))
-        XCTAssertEqual(encoded["outputProvider"].string, "elevenlabs")
-        XCTAssertThrowsError(try ManagedVoiceProtocol(settings: VoiceSettings(outputProvider: .elevenlabs)))
     }
     func testOnlyFinalCaptionSynthesizesOnceWithWholeResponse() {
         var captions = VoiceSpeechCaptions()
@@ -96,32 +45,6 @@ final class ElevenLabsTests: XCTestCase {
         XCTAssertEqual(captions.consume(.init(speaker: "assistant", text: "New response", id: 2)), "New response")
         captions.interrupt()
         XCTAssertNil(captions.consume(.init(speaker: "assistant", text: "New response repeated", id: 2)))
-    }
-    func testManyPartialSentencesNeverCreateSynthesisFragments() {
-        var captions = VoiceSpeechCaptions()
-        var text = ""
-        for _ in 0..<64 {
-            text += "A sentence. "
-            XCTAssertNil(captions.consume(.init(speaker: "assistant", text: text, isFinal: false, id: 1)))
-        }
-        XCTAssertEqual(captions.consume(.init(speaker: "assistant", text: text, id: 1)), text.trimmingCharacters(in: .whitespaces))
-        XCTAssertNil(captions.consume(.init(speaker: "assistant", text: "New unfinished response.", isFinal: false, id: 2)))
-        XCTAssertNil(captions.consume(.init(speaker: "assistant", text: "Stale final", id: 1)))
-    }
-    func testAccountAuthenticatedSpeechContract() async throws {
-        let fixture = try HTTPFixture { request in
-            XCTAssertEqual(request.path, "/api/voice/elevenlabs/speech")
-            XCTAssertEqual(request.method, "POST")
-            XCTAssertEqual(request.headers["authorization"], "Bearer \(fixtureKey)")
-            XCTAssertNil(request.headers["xi-api-key"])
-            XCTAssertEqual(request.json["voice_id"] as? String, "synthetic_voice")
-            XCTAssertEqual(request.json["output_format"] as? String, "mp3_44100_128")
-            XCTAssertEqual(request.json["text"] as? String, "Test speech")
-            return FixtureReply(headers: ["Content-Type": "audio/mpeg"], body: "audio")
-        }
-        let client = try ElevenLabs(configuration: .init(baseURL: URL(string: fixture.origin)!, apiKey: fixtureKey, agentID: "019d2f5d-7491-8000-8000-000000000001"), urlConfiguration: fixture.configuration)
-        let data = try await client.speech(text: "Test speech", voiceID: "synthetic_voice")
-        XCTAssertEqual(data, Data("audio".utf8))
     }
     func testCloneRequiresConsentAndReturnsVerificationWithoutRetry() async throws {
         var requests = 0

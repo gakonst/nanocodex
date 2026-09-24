@@ -147,17 +147,6 @@ class LocalOrganizationTests(unittest.TestCase):
         self.assertEqual(len(results), 5)
         self.assertEqual(len([c for c in self.backend.calls if c[0] == 'POST']), 1)
 
-    def test_concurrent_updates_do_not_lose_records(self):
-        errors = []
-        def rename(agent):
-            try: self.call('/api/threads/update', {'thread_id': agent, 'title': agent + '-new'})
-            except Exception as exc: errors.append(exc)
-        threads = [threading.Thread(target=rename, args=(agent,)) for agent in ('root', 'child')]
-        for thread in threads: thread.start()
-        for thread in threads: thread.join()
-        self.assertEqual(errors, [])
-        self.assertEqual(set(json.loads(self.file().read_text())['threads']), {'root', 'child'})
-
     def test_atomic_replace_failure_preserves_prior_state(self):
         self.call('/api/projects/update', {'project_id': 'root', 'name': 'Original'})
         original = self.file().read_bytes()

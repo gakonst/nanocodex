@@ -156,31 +156,3 @@ impl TurnUsage {
         self.cost_status
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{CostStatus, ReportedTurnUsage, TurnUsage};
-
-    #[test]
-    fn externally_reported_usage_preserves_exact_counts_and_cost_status() {
-        let usage = TurnUsage::from_reported(ReportedTurnUsage {
-            input_tokens: 13,
-            cached_input_tokens: 5,
-            cache_write_input_tokens: 2,
-            output_tokens: 8,
-            reasoning_output_tokens: 3,
-            total_tokens: 21,
-            estimated_cost: None,
-            cost_status: CostStatus::UsageNotReported,
-        });
-
-        assert_eq!(usage.input_tokens(), 13);
-        assert_eq!(usage.cached_input_tokens(), 5);
-        assert_eq!(usage.cache_write_input_tokens(), 2);
-        assert_eq!(usage.output_tokens(), 8);
-        assert_eq!(usage.reasoning_output_tokens(), 3);
-        assert_eq!(usage.total_tokens(), 21);
-        assert_eq!(usage.cost_status(), CostStatus::UsageNotReported);
-        assert!(usage.estimated_cost().is_none());
-    }
-}

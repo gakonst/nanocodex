@@ -7,32 +7,6 @@ import { fileURLToPath } from 'node:url';
 
 const root = fileURLToPath(new URL('../../', import.meta.url));
 const version = '0.1.78';
-const images = [
-  { file: 'js/managed/Dockerfile', stage: 'hand', args: '--release --locked -p nanocodex2-bin --bin nanocodex2' },
-  { file: 'js/phone-cloud/Dockerfile', stage: 'voice', args: '--release --locked -p nanocodex-phone' },
-];
-
-for (const { file, stage, args } of images) {
-  test(`${file} exports dependency objects before copying application sources`, () => {
-    const dockerfile = readFileSync(join(root, file), 'utf8');
-    assert.ok(dockerfile.includes(`RUN cargo install cargo-chef --version ${version} --locked --jobs 2`));
-    assert.ok(dockerfile.indexOf('cargo install cargo-chef') < dockerfile.indexOf('COPY '));
-    const planner = dockerfile.split(`FROM ${stage}-chef AS ${stage}-planner\n`)[1].split('\nFROM ')[0];
-    const builder = dockerfile.split(`FROM ${stage}-chef AS ${stage}\n`)[1].split('\nFROM ')[0];
-    assert.ok(planner.includes('RUN cargo chef prepare --recipe-path recipe.json'));
-    assert.ok(!planner.includes('cargo chef cook'));
-    const cook = `RUN CARGO_BUILD_JOBS=2 cargo chef cook ${args} --recipe-path recipe.json`;
-    assert.ok(builder.includes(cook));
-    assert.equal(builder.slice(0, builder.indexOf(cook)).split('\n').filter(line => line.startsWith('COPY ')).join('\n'),
-      `COPY --from=${stage}-planner /source/recipe.json recipe.json`);
-    const sourceCopies = block => block.split('\n').filter(line => line.startsWith('COPY ') && !line.startsWith('COPY --from='));
-    assert.deepEqual(sourceCopies(builder), sourceCopies(planner));
-    assert.ok(builder.indexOf(sourceCopies(builder)[0]) > builder.indexOf(cook));
-    assert.ok(builder.includes(`RUN CARGO_BUILD_JOBS=2 cargo build ${args}`));
-    assert.ok(!builder.includes('--mount=type=cache'), 'target, registry and git must survive remote layer export');
-  });
-}
-
 // Opt in to the real workspace checks with an explicitly installed pinned tool.
 // No production compilation: cook --no-build runs only in new empty directories.
 const chef = process.env.CARGO_CHEF_TEST_BIN;

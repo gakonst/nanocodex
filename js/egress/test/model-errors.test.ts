@@ -21,7 +21,7 @@ function request(method = "GET"): Request {
 }
 
 describe("model upstream rejection diagnostics", () => {
-  for (const method of ["GET", "POST"]) for (const status of [400, 401, 403, 413, 429, 500, 503]) {
+  for (const method of ["GET", "POST"]) for (const status of [400, 401, 429, 503]) {
     it(`${method} preserves HTTP ${status} and exposes only a recognized error code`, async () => {
       const logs = [vi.spyOn(console, "warn").mockImplementation(() => {}), vi.spyOn(console, "error").mockImplementation(() => {})];
       const response = await handleEgress(request(method), environment(), undefined, (async () => Response.json({

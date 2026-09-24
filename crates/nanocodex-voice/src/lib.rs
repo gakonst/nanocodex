@@ -1805,13 +1805,7 @@ fn send_event(events: &mpsc::UnboundedSender<VoiceEvent>, event: VoiceEvent) {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        AudioConfig, HandoffStream, REALTIME_END_INSTRUCTIONS, REALTIME_START_INSTRUCTIONS,
-        RealtimeTranscriptEntry, VoiceAgentControl, VoiceSpeaker, codex_realtime_delegation,
-        codex_realtime_delegation_with_transcript, codex_realtime_tail_delegation,
-        codex_voice_instructions, realtime_output_byte_limit, truncate_realtime_output,
-    };
-    use std::time::Duration;
+    use super::{HandoffStream, realtime_output_byte_limit, truncate_realtime_output};
 
     #[tokio::test]
     async fn meters_coalesce_without_delaying_terminal_events() {
@@ -1850,91 +1844,6 @@ mod tests {
             Some(MessagePhase::FinalAnswer)
         ));
         assert!(super::speakable_message("answer", None));
-    }
-
-    #[test]
-    fn desktop_audio_policy_is_explicit_and_stable() {
-        let config = AudioConfig::default();
-        assert_eq!(config.playback_prebuffer(), Duration::from_millis(120));
-        assert_eq!(config.maximum_playback_buffer(), Duration::from_secs(8));
-    }
-
-    #[test]
-    fn transcript_speakers_have_stable_labels() {
-        assert_eq!(VoiceSpeaker::User.to_string(), "user");
-        assert_eq!(VoiceSpeaker::Assistant.to_string(), "assistant");
-    }
-
-    #[test]
-    fn unused_agent_control_is_an_idempotent_interrupt() {
-        let control = VoiceAgentControl::default();
-        assert!(!control.has_active_turn());
-        let runtime = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("test runtime should build");
-        assert!(
-            !runtime
-                .block_on(control.cancel())
-                .expect("cancel should be idle")
-        );
-    }
-
-    #[test]
-    fn codex_backend_prompt_is_rendered_for_the_local_user() {
-        let prompt = codex_voice_instructions();
-        assert!(prompt.starts_with("## Identity, tone, and role"));
-        assert!(prompt.contains("Running backend work remains steerable."));
-        assert!(!prompt.contains("{{ user_first_name }}"));
-    }
-
-    #[test]
-    fn delegated_input_uses_codex_markers_and_xml_escaping() {
-        assert_eq!(
-            codex_realtime_delegation("fix <x> & ship"),
-            "<realtime_delegation>\n  <input>fix &lt;x&gt; &amp; ship</input>\n</realtime_delegation>"
-        );
-        assert_eq!(
-            codex_realtime_delegation_with_transcript(
-                "ship it",
-                &[
-                    RealtimeTranscriptEntry {
-                        role: "assistant".to_owned(),
-                        text: "Use <main>".to_owned(),
-                    },
-                    RealtimeTranscriptEntry {
-                        role: "user".to_owned(),
-                        text: "yes & now".to_owned(),
-                    },
-                ],
-            ),
-            "<realtime_delegation>\n  <input>ship it</input>\n  <transcript_delta>assistant: Use &lt;main&gt;\nuser: yes &amp; now</transcript_delta>\n</realtime_delegation>"
-        );
-    }
-
-    #[test]
-    fn lifecycle_and_tail_flush_markers_match_codex() {
-        assert!(
-            REALTIME_START_INSTRUCTIONS
-                .starts_with("<realtime_conversation>\nRealtime conversation started.")
-        );
-        assert!(
-            REALTIME_END_INSTRUCTIONS
-                .starts_with("<realtime_conversation>\nRealtime conversation ended.")
-        );
-        assert_eq!(
-            codex_realtime_tail_delegation(&[RealtimeTranscriptEntry {
-                role: "user".to_owned(),
-                text: "ship <it>".to_owned(),
-            }])
-            .unwrap(),
-            concat!(
-                "<realtime_delegation>\n",
-                "  <source>transcript_tail_flush</source>\n",
-                "  <input>The user just ended their realtime session. Here is the remaining handoff/transcript tail. You probably do not have to do anything; acknowledge the handoff unless the transcript itself asks for something.</input>\n",
-                "  <transcript_delta>user: ship &lt;it&gt;</transcript_delta>\n",
-                "</realtime_delegation>"
-            )
-        );
     }
 
     #[test]

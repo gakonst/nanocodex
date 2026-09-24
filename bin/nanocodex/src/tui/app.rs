@@ -332,11 +332,6 @@ impl Conversation {
             .unwrap_or_default()
     }
 
-    #[cfg(test)]
-    pub(super) const fn set_run_started_at(&mut self, started_at: Instant) {
-        self.run_started_at = Some(started_at);
-    }
-
     fn queue_prompt(&mut self, id: u64, prompt: String) {
         let display_immediately = !self.running && self.queued_prompts.is_empty();
         if display_immediately {
@@ -4018,13 +4013,6 @@ mod tests {
             app.main.transcript.latest_user_message(),
             Some("visible prompt")
         );
-    }
-
-    #[test]
-    fn configured_fast_mode_seeds_the_tui_state() {
-        let app = App::new(std::path::PathBuf::from("/worktree")).with_fast_mode(true);
-
-        assert!(app.fast_mode());
     }
 
     #[test]

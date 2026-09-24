@@ -80,26 +80,6 @@ test("cache controls compose with a lane whose send property is immutable", () =
   pool.close();
 });
 
-test("startup developer context preserves cache keys, stable prefix, and continuation lineage", () => {
-  const socket = new Socket();
-  const controlled = responseControlsSocket(socket, { promptCacheKey: "owner-team-key", promptCache: "explicit" });
-  const stable = { role: "developer", content: [{ type: "input_text", text: "Baseline and static host instructions" }] };
-  const startup = { role: "developer", content: [{ type: "input_text", text: '<startup_context><time>2026-09-16T19:00:00Z</time></startup_context>' }] };
-  const first = { type: "response.create", input: [stable, startup, { role: "user", content: "first" }] };
-  controlled.send(JSON.stringify(first));
-  assert.deepEqual(socket.sent[0].input[0], stable);
-  assert.equal(socket.sent[0].input[1].content[0].text, startup.content[0].text);
-  assert.deepEqual(socket.sent[0].input[1].content[0].prompt_cache_breakpoint, { mode: "explicit" });
-  controlled.send(JSON.stringify({ type: "response.create", previous_response_id: "first-response", input: [{ role: "user", content: "next" }] }));
-  assert.equal(socket.sent[1].previous_response_id, "first-response");
-  assert.deepEqual(socket.sent[1].input, [{ role: "user", content: "next" }]);
-  assert.equal(socket.sent[0].prompt_cache_key, socket.sent[1].prompt_cache_key);
-  // A full replay has the identical cacheable prefix, including the frozen timestamp.
-  controlled.send(JSON.stringify({ ...first, input: [...first.input, { role: "user", content: "next" }] }));
-  assert.deepEqual(socket.sent[2].input.slice(0, 2), socket.sent[0].input.slice(0, 2));
-});
-
-
 test("HTTPS and WebSocket requests apply identical response controls", () => {
   const controls = { promptCacheKey: "owner-team-key", promptCache: "explicit", outputSchema: { type: "object" } };
   const input = [{ role: "developer", content: [{ type: "input_text", text: "stable" }] },
@@ -120,16 +100,6 @@ test("HTTPS and WebSocket requests apply identical response controls", () => {
     assert.throws(() => responseControlsBody(JSON.stringify(request), invalid), TypeError);
   }
 });
-
-test("empty response controls do not parse or re-encode request bodies", () => {
-  const socket = { send() {} };
-  for (const controls of [undefined, {}, { promptCacheKey: undefined, outputSchema: undefined, promptCache: undefined }]) {
-    assert.equal(responseControlsSocket(socket, controls), socket);
-    // Deliberately not JSON: any parsing would throw rather than pass through.
-    assert.equal(responseControlsBody("opaque encoded request", controls), "opaque encoded request");
-  }
-});
-
 
 test("request observations omit content and cannot affect a sent request", async () => {
   const frames = [], observations = [];

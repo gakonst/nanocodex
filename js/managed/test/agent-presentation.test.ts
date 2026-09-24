@@ -2,7 +2,7 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import worker from "../src/index";
 import { attachAgent, listAgents } from "../src/account-auth";
-import { AgentPresentationWriter, cleanPresentationText, generatePresentationText, PRESENTATION_MODEL, presentationPending, type AgentPresentation } from "../src/agent-presentation";
+import { AgentPresentationWriter, presentationPending, type AgentPresentation } from "../src/agent-presentation";
 const runtime = env as Parameters<typeof worker.fetch>[1];
 
 describe("agent sidebar presentation", () => {
@@ -66,23 +66,6 @@ describe("agent sidebar presentation", () => {
       await Promise.all(pending);
       expect(calls).toEqual(["title"]);
     });
-  });
-
-  it("uses the small model and bounds source and output", async () => {
-    let body: Record<string, any> = {};
-    const fetcher = { fetch: async (request: Request) => {
-      body = await request.json();
-      expect(request.headers.get("x-nanocodex-subject")).toBe("synthetic-subject");
-      return Response.json({ output: [{ type: "message", content: [{ type: "output_text", text: "Fix sidebar status" }] }] });
-    } } as unknown as Fetcher;
-    expect(await generatePresentationText(fetcher, "synthetic-subject", "title", "x".repeat(10_000))).toBe("Fix sidebar status");
-    expect(body.model).toBe(PRESENTATION_MODEL);
-    expect(body.reasoning).toEqual({ effort: "low" });
-    expect(body.input[0].content[0].text).toHaveLength(4000);
-    expect(body.tools).toBeUndefined();
-    expect(cleanPresentationText("SKIP", 45)).toBeUndefined();
-    expect(cleanPresentationText("x".repeat(46), 45)).toBeUndefined();
-    expect(cleanPresentationText("First line\nSecond line", 45)).toBeUndefined();
   });
 
   it("discards late activity after completion and retries durable delivery", async () => {

@@ -22,34 +22,28 @@ resource, and binding changes are still applied with the reused image; Wrangler
 compares the existing application configuration and skips an identical rollout.
 
 Production completion includes a bounded public account Worker health check.
-The separate **Cloudflare live validation** workflow follows successful master
-production deployments, including manual production runs. Its gate excludes
-preview-only runs. It retains the full cron, large-input, and 96-turn durability
-journeys, checks out the deployed run's revision, and reports its own failures.
-Only one live validation workflow runs at a time; newer pending runs coalesce.
-It may also be dispatched manually on master. These checks exercise live
-production, which can advance during a long test; they do not certify a frozen
-preview environment.
+The separate **Cloudflare live validation** workflow currently runs only by
+manual dispatch on master with `CLOUDFLARE_DEPLOY_ENABLED=true`; its automatic
+post-deployment trigger is paused. The `all` suite runs cron, large-input,
+durability, and goal journeys; `goals` selects only goals. One live validation
+workflow runs at a time, with newer pending runs coalesced. These checks exercise
+live production, which can advance during a long test; they do not certify a
+frozen preview environment.
 
-CI builds WASM once and uploads both `pkg-node` and `pkg-web`, including package
-markers, declarations, and the attestation. Binding tests and JavaScript app
-checks and immutable package previews download the same artifact and run independently.
-The preview workflow remains manually dispatchable with a standalone build; normal
-pushes and PRs call it from CI and do not repeat Rust/wasm-bindgen/Binaryen work.
-The success gate still requires every validation job; preview publication
-reports its own result, as it did in its standalone workflow. The desktop Hand integration test has a separate 60-second
-watchdog because a node:test timeout cannot reliably interrupt child-process
-teardown; phase logs identify the blocked operation without losing coverage.
+CI publishes one WASM artifact containing both `pkg-node` and `pkg-web`, including
+package markers, declarations, and the attestation. JavaScript consumer checks
+and immutable package previews reuse that artifact. Preview publication is also
+manually dispatchable with a standalone build. The success gate requires each
+applicable build/check job; behavioral test steps are currently paused in the
+[CI workflow](../../.github/workflows/ci.yml).
 
-The four iOS Swift package suites run in two bounded lanes on the same runner,
-with independent package build directories and full transcripts saved alongside
-the existing evidence. Each lane completes both suites even if one fails; any
-failure fails the job. Compiler jobs are divided between lanes. The simulator
-UI suite retains its sequential execution and every existing case.
-
-The iOS journey builds the app and test runner together with `build-for-testing`
-for the simulator it actually runs. It omits the preceding generic simulator
-build; all Swift package checks, UI cases, retries, and evidence remain enabled.
+The [Apple workflow](../../.github/workflows/apple-inbox.yml) currently builds the
+iPhone app for a generic simulator; Swift package tests and the simulator journey
+are paused. The retained [package runner](../../scripts/ci/apple-package-tests.sh)
+runs five packages in two bounded lanes with independent build directories and
+per-package transcripts. Each lane finishes its packages even if one fails, and
+any failure fails the runner. The retained simulator journey uses
+`build-for-testing` for its selected device.
 
 ## Measurement
 
@@ -57,17 +51,14 @@ Report runner wait, actual job execution, deployment completion, and endurance
 completion separately. Compare the first cold run and a subsequent run with
 unchanged image inputs; a cold receipt miss intentionally still publishes images.
 Record cache hit outputs, registry push duration, and any failures before claiming
-a speedup. The prior observed production workflow took 47m04s: 5m09s initial wait,
-24m31s deployment, 1m44s wait for durability, and 15m40s durability. Its managed
-container step took 20m03s, including a 7m59s sandbox push. No measured after figure
-is implied by the new execution graph.
+a speedup. Keep per-run timing reports as CI artifacts or in ignored `output/`.
 
 To capture recent runs without changing them:
 
 ```sh
-node scripts/ci/timings.mjs gakonst/nanocodex 25 /tmp/ci-timings
+node scripts/ci/timings.mjs gakonst/nanocodex 25 output/ci-timings
 # Or compare specific runs (the limit is ignored when IDs are supplied):
-node scripts/ci/timings.mjs gakonst/nanocodex 1 /tmp/ci-comparison 35288898416 35294536791
+node scripts/ci/timings.mjs gakonst/nanocodex 1 output/ci-comparison RUN_ID_1 RUN_ID_2
 ```
 
 The tool uses the authenticated `gh` CLI and writes JSON step details plus a

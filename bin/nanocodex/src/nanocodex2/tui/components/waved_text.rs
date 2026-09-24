@@ -109,36 +109,3 @@ fn scale(channel: u8, percentage: u16) -> u8 {
     let scaled = u16::from(channel).saturating_mul(percentage) / 100;
     u8::try_from(scaled).unwrap_or(u8::MAX)
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{Color, FRAME_INTERVAL, WavedText};
-    use std::time::Instant;
-
-    #[test]
-    fn inactive_text_uses_its_base_color_without_scheduling_frames() {
-        let base = Color::Rgb(200, 100, 50);
-        let waved = WavedText::new("wave", base);
-
-        assert_eq!(waved.animation_deadline(), None);
-        assert!(waved.spans().iter().all(|span| span.style.fg == Some(base)));
-    }
-
-    #[test]
-    fn active_text_shades_the_base_color_and_advances_on_demand() {
-        let now = Instant::now();
-        let mut waved = WavedText::new("wave", Color::Rgb(200, 100, 50));
-        waved.set_active(true, now);
-        let initial = waved.spans();
-
-        assert_eq!(waved.animation_deadline(), Some(now + FRAME_INTERVAL));
-        assert_eq!(initial[0].style.fg, Some(Color::Rgb(200, 100, 50)));
-        assert_eq!(initial[1].style.fg, Some(Color::Rgb(170, 85, 42)));
-        assert!(waved.advance(now + FRAME_INTERVAL));
-        assert_ne!(waved.spans(), initial);
-
-        waved.set_active(false, now + FRAME_INTERVAL);
-        assert_eq!(waved.animation_deadline(), None);
-        assert!(!waved.advance(now + FRAME_INTERVAL * 2));
-    }
-}

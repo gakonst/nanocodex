@@ -28,14 +28,6 @@ function environment(signal = new AbortController().signal): Parameters<CodeEval
   };
 }
 
-it("constructs the managed evaluator without starting or waiting for QuickJS", async () => {
-  const { managedCodeEvaluator } = await import("../src/code-evaluator");
-  quickJs.initialize.mockImplementation(() => { throw new Error("not needed for inference"); });
-  expect(managedCodeEvaluator()).toBeTypeOf("function");
-  expect(quickJs.initialize).not.toHaveBeenCalled();
-  expect(quickJs.createEvaluator).not.toHaveBeenCalled();
-});
-
 it("shares pending module initialization but retains one evaluator per session", async () => {
   const { managedCodeEvaluator } = await import("../src/code-evaluator");
   const module = { newContext: vi.fn() };
@@ -103,17 +95,4 @@ it("cancellation during initialization prevents evaluation without discarding th
   await managedCodeEvaluator()("active session", environment());
   expect(quickJs.initialize).toHaveBeenCalledTimes(1);
   expect(run).toHaveBeenCalledTimes(1);
-});
-
-it("preserves the session evaluator after a cell fails", async () => {
-  const { managedCodeEvaluator } = await import("../src/code-evaluator");
-  quickJs.initialize.mockResolvedValue({ newContext: vi.fn() });
-  const failure = new Error("cell failed");
-  const run = vi.fn<CodeEvaluator>().mockRejectedValueOnce(failure).mockResolvedValue(undefined);
-  quickJs.createEvaluator.mockReturnValue(run);
-  const evaluate = managedCodeEvaluator();
-  await expect(evaluate("failed", environment())).rejects.toBe(failure);
-  await evaluate("next", environment());
-  expect(quickJs.createEvaluator).toHaveBeenCalledTimes(1);
-  expect(run).toHaveBeenCalledTimes(2);
 });

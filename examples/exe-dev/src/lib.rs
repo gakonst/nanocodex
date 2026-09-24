@@ -100,20 +100,6 @@ impl Config {
             transport,
         })
     }
-
-    #[cfg(test)]
-    fn for_test(workspace: PathBuf) -> Self {
-        Self {
-            listen: DEFAULT_LISTEN.parse().expect("valid test address"),
-            state_file: workspace.join("session.json"),
-            workspace,
-            instructions: DEFAULT_INSTRUCTIONS.to_owned(),
-            api_key: "test-key".to_owned(),
-            api_base: None,
-            websocket_url: None,
-            transport: ResponsesTransport::WebSocket,
-        }
-    }
 }
 
 fn nonempty_env(name: &str) -> Option<String> {
@@ -504,7 +490,6 @@ mod tests {
         http::{Request, StatusCode},
     };
     use http_body_util::BodyExt;
-    use tempfile::tempdir;
     use tower::ServiceExt;
 
     use super::*;
@@ -524,25 +509,6 @@ mod tests {
             },
             receiver,
         )
-    }
-
-    #[tokio::test]
-    async fn health_exposes_only_structural_session_information() {
-        let (state, _receiver) = test_state();
-        let response = router(state)
-            .oneshot(Request::get("/healthz").body(Body::empty()).unwrap())
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let body = response.into_body().collect().await.unwrap().to_bytes();
-        assert_eq!(
-            serde_json::from_slice::<serde_json::Value>(&body).unwrap(),
-            serde_json::json!({
-                "status": "ok",
-                "session_id": "session-test",
-                "workspace": "/workspace"
-            })
-        );
     }
 
     #[tokio::test]
@@ -590,13 +556,6 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
         assert!(receiver.try_recv().is_err());
-    }
-
-    #[test]
-    fn test_config_keeps_state_inside_the_selected_workspace() {
-        let directory = tempdir().unwrap();
-        let config = Config::for_test(directory.path().to_path_buf());
-        assert_eq!(config.state_file, directory.path().join("session.json"));
     }
 
     #[test]

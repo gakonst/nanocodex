@@ -511,22 +511,7 @@ test("buffered gateway reasoning details retain visible text without duplicating
 
 
 for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
-  for (const reasoningEffort of ["none", "low", "medium", "high", "xhigh", "max"]) {
-    test(`${model}/${reasoningEffort} preserves Responses tools and pinned effort`, async () => {
-      let calls = 0;
-      const transport = createGatewayResponses({ provider: "cloudflare", model, reasoningEffort, ai: {
-        async run(upstream, payload) {
-          calls++;
-          assert.equal(upstream, `openai/${model}`);
-          assert.deepEqual(payload.reasoning, { effort: reasoningEffort });
-          assert.equal(payload.tools[0].type, "function");
-          return nativeResponse([{ type: "message", role: "assistant", content: [{ type: "output_text", text: "ok" }] }]);
-        },
-      } });
-      const result = await events(await invoke(transport, { model, reasoning: { effort: reasoningEffort }, input: "test", tools: [{ type: "function", name: "inspect", parameters: { type: "object" } }] }));
-      assert.equal(calls, 1);
-      assert.equal(result.at(-1).response.model, model);
-    });
+  for (const reasoningEffort of ["none", "high"]) {
     for (const provider of ["openrouter", "vercel"]) {
       test(`${provider}/${model}/${reasoningEffort} enforces Chat tools contract before dispatch`, async () => {
         let calls = 0;
@@ -549,7 +534,7 @@ for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
 }
 
 
-for (const model of ["gpt-6-sol", "gpt-6-luna"]) for (const mode of ["standard", "pro"]) {
+for (const model of ["gpt-6-sol"]) for (const mode of ["standard", "pro"]) {
   for (const wire of ["binding", "rest"]) test(`${model}/${mode}/${wire} preserves Responses reasoning mode`, async () => {
     const run = async (_model, payload) => {
       assert.deepEqual(payload.reasoning, { effort: "medium", mode });

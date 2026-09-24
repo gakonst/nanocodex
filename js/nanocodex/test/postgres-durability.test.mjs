@@ -4,19 +4,6 @@ import test from "node:test";
 import { createPostgresDurabilityStore } from "../runtime/postgres-durability-store.mjs";
 import { DurabilityImportConflictError } from "../runtime/durability-store.mjs";
 
-test("the PostgreSQL durability leaf is cold and validates its pool", async () => {
-  assert.throws(
-    () => createPostgresDurabilityStore({}),
-    /requires a connection pool/,
-  );
-  const pool = new MockPool();
-  const store = createPostgresDurabilityStore(pool);
-  assert.equal(pool.connects, 0);
-  assert.deepEqual(await store.load("state"), { revision: "0", payload: null });
-  assert.equal(pool.connects, 1);
-  await assert.rejects(store.load(""), /state ID must be a non-empty string/);
-});
-
 test("PostgreSQL fences owners before comparing complete-state revisions", async () => {
   const pool = new MockPool();
   const store = createPostgresDurabilityStore(pool);

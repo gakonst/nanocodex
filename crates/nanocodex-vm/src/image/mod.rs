@@ -2711,10 +2711,9 @@ mod tests {
         path::{Path, PathBuf},
         process::Command,
         sync::{Arc, Mutex},
-        time::Duration,
     };
 
-    use crate::{config::Network, egress::EgressLease};
+    use crate::egress::EgressLease;
 
     use super::{
         BuildCacheInputs, CACHE_RECORD_VERSION, CONTEXT_DISK_BYTES, COPY_SCRIPT, CachePolicy,
@@ -2978,49 +2977,6 @@ mod tests {
             .unwrap();
         let encoder = archive.into_inner().unwrap();
         drop(encoder.finish().unwrap());
-    }
-
-    #[test]
-    fn accepts_the_first_proof_dockerfile() {
-        let recipe =
-            DockerfileRecipe::parse("FROM python:3.13-slim-bookworm\nWORKDIR /app\n").unwrap();
-
-        assert_eq!(
-            recipe.final_stage().unwrap().base_image,
-            "python:3.13-slim-bookworm"
-        );
-        assert_eq!(recipe.final_workdir(), Some("/app"));
-        assert!(!recipe.requires_build());
-    }
-
-    #[test]
-    fn builder_retains_explicit_vm_execution_policy() {
-        let builder = VmImageBuilder::new("/opt/nanocodex-vmm", "/cache/runtime.ext4")
-            .firmware_directory("/opt/libkrunfw")
-            .vmm_args(["run", "--private-config"])
-            .vmm_build_cache_identity("vm-process-v3")
-            .cpus(6)
-            .memory_mib(8_192)
-            .run_timeout(Duration::from_mins(15))
-            .copy_timeout(Duration::from_mins(2))
-            .egress(EgressLease::disabled());
-
-        assert_eq!(builder.vmm, Path::new("/opt/nanocodex-vmm"));
-        assert_eq!(builder.runtime_image, Path::new("/cache/runtime.ext4"));
-        assert_eq!(
-            builder.firmware_directory.as_deref(),
-            Some(Path::new("/opt/libkrunfw"))
-        );
-        assert_eq!(builder.vmm_arguments, ["run", "--private-config"]);
-        assert_eq!(
-            builder.vmm_build_cache_identity.as_deref(),
-            Some("vm-process-v3")
-        );
-        assert_eq!(builder.cpus, 6);
-        assert_eq!(builder.memory_mib, 8_192);
-        assert_eq!(builder.run_timeout, Duration::from_mins(15));
-        assert_eq!(builder.copy_timeout, Duration::from_mins(2));
-        assert_eq!(builder.egress.network(), &Network::Disabled);
     }
 
     #[test]

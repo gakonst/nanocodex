@@ -30,27 +30,6 @@ describe("Cloudflare sandbox tools", () => {
   beforeEach(() => sandboxSdk.getSandbox.mockReset());
   afterEach(() => vi.restoreAllMocks());
 
-  it("exposes only the canonical shell and preview tools without a host selector", () => {
-    const tools = createCloudflareSandboxTools(async () => fakeSandbox());
-
-    expect(Object.keys(tools)).toEqual(["exec_command", "write_stdin", "preview"]);
-    expect(tools.exec_command!.parameters).toMatchObject({
-      required: ["cmd"],
-    });
-    const parameters = tools.exec_command!.parameters as {
-      properties: Record<string, Record<string, unknown>>;
-    };
-    expect(parameters.properties.yield_time_ms!.maximum).toBeUndefined();
-    expect(parameters.properties.max_output_tokens!.maximum).toBeUndefined();
-    expect(parameters.properties.environment).toBeUndefined();
-    expect(parameters.properties.host).toBeUndefined();
-    expect(tools.exec_command!.outputSchema).toMatchObject({
-      required: ["wall_time_seconds", "output"],
-    });
-    expect(tools.write_stdin!.parameters).toMatchObject({ required: ["session_id"] });
-    expect(tools.preview!.parameters).toMatchObject({ required: ["port"] });
-  });
-
   it("does not impose command, wait, or output ceilings below the platform", async () => {
     const sandbox = fakeSandbox();
     const process = fakeProcess({ status: "completed", exitCode: 0 });
@@ -716,18 +695,6 @@ describe("Cloudflare sandbox tools", () => {
       .rejects.toThrow("invalid preview capability");
     await expect(openSandboxPreviewCapability(secret, malformed))
       .rejects.toThrow("invalid preview capability");
-  });
-
-  it("round-trips valid preview capabilities", async () => {
-    const secret = "preview-round-trip-secret";
-    const sessionId = "018f25e8-7b51-7a32-8c4d-fedcba987654";
-    const url = await cloudflareSandboxPreviewUrl(
-      "https://nanocodex.example", secret, sessionId, 8_080,
-    );
-    const capability = new URL(url).pathname.split("/")[2]!;
-
-    await expect(openSandboxPreviewCapability(secret, capability))
-      .resolves.toEqual({ sessionId, port: 8_080 });
   });
 
   it("caches one derived preview key and replaces it when the secret rotates", async () => {

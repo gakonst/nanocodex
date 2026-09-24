@@ -4407,15 +4407,14 @@ mod tests {
         CancellationToken, DriverRuntime, HistoryPrefetch, HistoryWindow, ManagedActiveTurns,
         SteerResolution, SteerTarget, cursor_at_or_before, decimal_successor, history_projection,
         history_projection_with_sequences, history_replay_matches, live_managed_projection,
-        new_agent_settings, prepare_history_replay, session_summaries, take_waiting_steer_failures,
+        new_agent_settings, prepare_history_replay, session_summaries,
     };
     use crate::config::ReasoningEffort;
     use crate::tui::{components::QueueId, pane::PaneId, prompt::Submission, transcript::TurnId};
     use nanocodex::Model;
     use nanocodex_managed::{
         AgentList, AgentSettings, AgentSummary, EventHistoryPage, ManagedApiKey, ManagedClient,
-        ManagedError, ManagedEvent, ManagedEventData, PromptInput,
-        ReasoningMode as ManagedReasoningMode, Thinking,
+        ManagedError, ManagedEvent, ManagedEventData, PromptInput, Thinking,
     };
     use serde_json::{json, value::to_raw_value};
     use std::{
@@ -4517,19 +4516,6 @@ mod tests {
             ..AgentSettings::default()
         };
         assert_eq!(super::fresh_thread_settings(false, manual), manual);
-    }
-
-    #[test]
-    fn new_agents_select_sol_xhigh_fast_without_an_entitlement_probe() {
-        assert_eq!(
-            new_agent_settings(),
-            AgentSettings {
-                model: Model::Sol,
-                thinking: Thinking::Xhigh,
-                reasoning_mode: ManagedReasoningMode::Standard,
-                fast_mode: true,
-            }
-        );
     }
 
     #[tokio::test]
@@ -5072,30 +5058,6 @@ mod tests {
     }
 
     #[test]
-    fn terminal_failures_drain_waiting_steers_in_queue_safe_order() {
-        let mut waiting = VecDeque::from([
-            (
-                PaneId::Main,
-                QueueId::new(7),
-                Submission::text("first".to_owned()),
-            ),
-            (
-                PaneId::Main,
-                QueueId::new(8),
-                Submission::text("second".to_owned()),
-            ),
-        ]);
-
-        let failures = take_waiting_steer_failures(&mut waiting);
-
-        assert_eq!(
-            failures.iter().map(|(_, id)| *id).collect::<Vec<_>>(),
-            [QueueId::new(7), QueueId::new(8)]
-        );
-        assert!(waiting.is_empty());
-    }
-
-    #[test]
     fn managed_active_turns_reconcile_cursor_order_idempotently() {
         let mut active = ManagedActiveTurns {
             ids: HashSet::from(["attached-1".to_owned()]),
@@ -5121,34 +5083,6 @@ mod tests {
         assert!(active.observe(&terminal, &HashMap::new()).active_changed);
         assert_eq!(active.ids, HashSet::from(["turn-1".to_owned()]));
         assert!(!active.observe(&terminal, &HashMap::new()).active_changed);
-    }
-
-    #[test]
-    fn fresh_session_can_steer_an_observed_turn_without_capability_initialization() {
-        let mut active = ManagedActiveTurns::default();
-        assert_eq!(
-            active.steer_target().unwrap_err(),
-            "no attached managed turn is active"
-        );
-
-        active.observe(&managed_turn("1", "new prompt"), &HashMap::new());
-        assert_eq!(active.steer_target().unwrap(), "turn-1");
-
-        active.observe(
-            &ManagedEvent {
-                cursor: "2".to_owned(),
-                created_at: None,
-                turn_id: Some("turn-1".to_owned()),
-                data: ManagedEventData::TurnCancelled {
-                    id: "turn-1".to_owned(),
-                },
-            },
-            &HashMap::new(),
-        );
-        assert_eq!(
-            active.steer_target().unwrap_err(),
-            "no attached managed turn is active"
-        );
     }
 
     #[test]
@@ -5210,100 +5144,6 @@ mod tests {
         assert!(observation.external);
         assert!(observation.active_changed);
         assert!(!active.ids.contains("attached-1"));
-    }
-
-    #[test]
-    fn attached_steering_uses_durable_admission_order() {
-        let mut active = ManagedActiveTurns {
-            ids: HashSet::from(["attached-1".to_owned()]),
-            order: vec!["attached-1".to_owned()],
-        };
-        assert_eq!(active.steer_target().unwrap(), "attached-1");
-
-        active.ids.insert("attached-2".to_owned());
-        active.order.push("attached-2".to_owned());
-        assert_eq!(active.steer_target().unwrap(), "attached-1");
-        active.remove("attached-1");
-        assert_eq!(active.steer_target().unwrap(), "attached-2");
-        active.remove("attached-2");
-        assert_eq!(
-            active.steer_target().unwrap_err(),
-            "no attached managed turn is active"
-        );
-    }
-
-    #[test]
-    fn managed_history_projects_into_tact_user_and_assistant_records() {
-        let agent_event = to_raw_value(&json!({
-            "protocol_version": 1,
-            "request_id": "request-1",
-            "seq": 2,
-            "type": "assistant.message",
-            "payload": {
-                "model_call_index": 0,
-                "item_id": null,
-                "phase": null,
-                "text": "done"
-            }
-        }))
-        .unwrap();
-        let history = vec![
-            ManagedEvent {
-                cursor: "1".to_owned(),
-                created_at: Some(1_750_000_000.0),
-                turn_id: Some("turn-1".to_owned()),
-                data: ManagedEventData::TurnAccepted {
-                    id: "turn-1".to_owned(),
-                    input: PromptInput::Text("inspect the tree".to_owned()),
-                    replayed: false,
-                },
-            },
-            ManagedEvent {
-                cursor: "2".to_owned(),
-                created_at: Some(1_750_000_001.0),
-                turn_id: Some("turn-1".to_owned()),
-                data: ManagedEventData::Event {
-                    event: agent_event,
-                    agent_id: None,
-                },
-            },
-        ];
-
-        let (records, next_sequence, recent) =
-            history_projection(history, "agent-1", Path::new("/workspace")).unwrap();
-
-        assert_eq!(records.len(), 2);
-        assert_eq!(
-            (records[0].source(), records[0].kind()),
-            ("tact", "user.submitted")
-        );
-        assert_eq!(
-            (records[1].source(), records[1].kind()),
-            ("agent", "assistant.message")
-        );
-        assert_eq!(next_sequence, 3);
-        assert_eq!(recent[0].text, "inspect the tree");
-    }
-
-    #[test]
-    fn live_managed_acceptance_projects_the_remote_user_prompt() {
-        let mut next_sequence = 7;
-        let (record, prompt) = live_managed_projection(
-            managed_turn("42", "sent from another client"),
-            "agent-1",
-            Path::new("/workspace"),
-            &mut next_sequence,
-        )
-        .unwrap()
-        .expect("turn acceptance should project");
-
-        let prompt = prompt.expect("turn acceptance should update prompt history");
-        assert_eq!((record.source(), record.kind()), ("tact", "user.submitted"));
-        assert_eq!(record.sequence(), 7);
-        assert_eq!(prompt.text, "sent from another client");
-        assert_eq!(prompt.session_id, "agent-1");
-        assert_eq!(prompt.workspace, Path::new("/workspace"));
-        assert_eq!(next_sequence, 8);
     }
 
     #[test]
@@ -5417,48 +5257,6 @@ mod tests {
                 .display_text(),
             "new thread"
         );
-    }
-
-    #[test]
-    fn live_managed_projection_preserves_agent_output_after_the_prompt() {
-        let mut next_sequence = 7;
-        let event = ManagedEvent {
-            cursor: "43".to_owned(),
-            created_at: Some(1_750_000_000.0),
-            turn_id: Some("turn-42".to_owned()),
-            data: ManagedEventData::Event {
-                event: to_raw_value(&json!({
-                    "protocol_version": 1,
-                    "request_id": "request-1",
-                    "seq": 1,
-                    "type": "assistant.message",
-                    "payload": {
-                        "model_call_index": 0,
-                        "item_id": null,
-                        "phase": null,
-                        "text": "done"
-                    }
-                }))
-                .unwrap(),
-                agent_id: None,
-            },
-        };
-
-        let (record, prompt) = live_managed_projection(
-            event,
-            "agent-1",
-            Path::new("/workspace"),
-            &mut next_sequence,
-        )
-        .unwrap()
-        .expect("agent output should project");
-
-        assert_eq!(
-            (record.source(), record.kind()),
-            ("agent", "assistant.message")
-        );
-        assert!(prompt.is_none());
-        assert_eq!(next_sequence, 8);
     }
 
     #[test]

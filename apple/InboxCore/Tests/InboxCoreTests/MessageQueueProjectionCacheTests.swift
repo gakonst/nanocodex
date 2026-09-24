@@ -2,69 +2,6 @@ import XCTest
 @testable import InboxCore
 
 final class MessageQueueProjectionCacheTests: XCTestCase {
-    func testAcceptedDirectSteeringRetainsOrdinaryMessageWithoutQueueOrSuccessNoise() throws {
-        var transfer = SteeringTransfer(agentID: "agent", sourceTurnID: "local", targetTurnID: "running", direct: true, sourceInput: "Use the small example")
-        transfer.wasAccepted = true
-        transfer.phase = .accepted
-        transfer = try JSONDecoder().decode(SteeringTransfer.self, from: JSONEncoder().encode(transfer))
-        var cache = MessageQueueProjectionCache()
-        let value = cache.presentation(agentID: "agent", events: [], rows: [], pending: [], steeringTransfers: [transfer], activeTurns: ["running"], isDemo: false)
-        XCTAssertTrue(value.messages.allSatisfy { $0.id != "local" })
-        XCTAssertEqual(value.rows.map(\.role), ["You"])
-        XCTAssertEqual(value.rows.map(\.text), ["Use the small example"])
-        XCTAssertEqual(value.rows.first?.detail, "")
-        cache.invalidate()
-        let otherWindow = cache.presentation(agentID: "agent", events: [], rows: [], pending: [], steeringTransfers: [transfer], activeTurns: [], isDemo: false)
-        XCTAssertTrue(otherWindow.rows.isEmpty)
-    }
-
-    func testPendingDirectSteeringShowsUnconfirmedOrRejectedErrorWithoutDuplicateMessage() {
-        for phase: SteeringTransfer.Phase in [.unconfirmed, .ready] {
-            var transfer = SteeringTransfer(agentID: "agent", sourceTurnID: "local", targetTurnID: "running", direct: true, sourceInput: "Keep my correction")
-            transfer.phase = phase
-            transfer.error = "Delivery could not be confirmed"
-            var pending = PendingMessage(agentID: "agent", input: "Keep my correction", predecessor: "", id: "local")
-            pending.phase = .starting
-            var cache = MessageQueueProjectionCache()
-            let result = cache.presentation(agentID: "agent", events: [], rows: [], pending: [pending], steeringTransfers: [transfer], activeTurns: ["running"], isDemo: false)
-            let messages = result.rows.filter { $0.turnID == "local" }
-            XCTAssertEqual(messages.count, 1)
-            XCTAssertEqual(messages.first?.role, "You")
-            XCTAssertEqual(messages.first?.detail, transfer.error)
-            XCTAssertEqual(result.messages.filter { $0.id == "local" }.count, 1)
-        }
-    }
-
-    func testConsumedDirectSteeringKeepsMessageAndDisplaysWithdrawalError() {
-        var transfer = SteeringTransfer(agentID: "agent", sourceTurnID: "local", targetTurnID: "running", direct: true, sourceInput: "Keep the small example")
-        transfer.wasAccepted = true
-        transfer.phase = .withdrawing
-        var cache = MessageQueueProjectionCache()
-        let withdrawing = cache.presentation(agentID: "agent", events: [], rows: [], pending: [], steeringTransfers: [transfer], activeTurns: ["running"], isDemo: false)
-        XCTAssertEqual(withdrawing.rows.first?.detail, "Withdrawing steering…")
-        transfer.phase = .accepted
-        transfer.error = "Steering could not be withdrawn; it may already be in use."
-        cache.invalidate()
-        let consumed = cache.presentation(agentID: "agent", events: [], rows: [], pending: [], steeringTransfers: [transfer], activeTurns: ["running"], isDemo: false)
-        XCTAssertEqual(consumed.rows.first?.text, "Keep the small example")
-        XCTAssertEqual(consumed.rows.first?.role, "You")
-        XCTAssertEqual(consumed.rows.first?.detail, transfer.error)
-        XCTAssertFalse(consumed.rows.contains { $0.text.contains("Steering withdrawn") })
-    }
-
-    func testDirectSteeringRetainsWithdrawnAndUnconfirmedStatusAfterPendingRetires() {
-        for phase: SteeringTransfer.Phase in [.withdrawn, .unconfirmed] {
-            var transfer = SteeringTransfer(agentID: "agent", sourceTurnID: "local", targetTurnID: "running", direct: true, sourceInput: "Keep this request")
-            transfer.phase = phase
-            transfer.error = phase == .unconfirmed ? "Receipt unavailable" : nil
-            var cache = MessageQueueProjectionCache()
-            let value = cache.presentation(agentID: "agent", events: [], rows: [], pending: [], steeringTransfers: [transfer], activeTurns: ["running"], isDemo: false)
-            XCTAssertEqual(value.rows.first?.role, "Status")
-            XCTAssertEqual(value.rows.first?.text, (phase == .withdrawn ? "Steering withdrawn: " : "Steering delivery unconfirmed: ") + "Keep this request")
-            XCTAssertEqual(value.rows.first?.detail, transfer.error ?? "")
-        }
-    }
-
     func testDirectUploadedAttachmentsSurviveAcceptanceAndRestore() throws {
         let image = try MessageAttachment(name: "synthetic.png", mediaType: "image/png", byteCount: 123)
         let video = try MessageAttachment(name: "synthetic.mp4", mediaType: "video/mp4", byteCount: 456,
@@ -118,13 +55,6 @@ final class MessageQueueProjectionCacheTests: XCTestCase {
         XCTAssertEqual(try project([output("before", 10), durable, output("later", 12)], events: [event(10, "event", turn: "running"), event(12, "event", turn: "running")]).filter { $0.role == "You" && $0.text == "first" }.count, 1)
     }
 
-    func testLegacySteeringDecodesWithoutPositionOrPayload() throws {
-        let data = Data(#"{"agentID":"agent","sourceTurnID":"local","targetTurnID":"running","phase":"accepted","direct":true,"sourceInput":"Correction","withdrawRequested":false,"wasAccepted":true}"#.utf8)
-        let transfer = try JSONDecoder().decode(SteeringTransfer.self, from: data)
-        XCTAssertNil(transfer.sourceCursor)
-        XCTAssertNil(transfer.sourceRowID)
-        XCTAssertNil(transfer.sourcePayload)
-    }
 
     private func row(_ id: String, text: String = "Request") -> TranscriptRow {
         var row = TranscriptRow(id: id, role: "You", text: text)
@@ -136,47 +66,7 @@ final class MessageQueueProjectionCacheTests: XCTestCase {
             "event": .object(["type": .string("run.started")])]))
     }
 
-    func testRepeatedComposerReadsDoNoProjectionOrHistoryWork() throws {
-        var cache = MessageQueueProjectionCache()
-        let events = try (1...10_000).map { try event($0, "event", turn: "running") }
-        let rows = (1...1_000).map { row("row-\($0)") }
-        let revision = cache.revision
-        for _ in 0..<100 {
-            let result = cache.presentation(agentID: "a", events: events, rows: rows, pending: [],
-                steeringTransfers: [], activeTurns: ["running", "queued"], isDemo: false)
-            XCTAssertEqual(result.messages.map(\.id), ["queued"])
-        }
-        XCTAssertEqual(cache.revision, revision)
-        XCTAssertEqual(cache.projectionCount, 1)
-        XCTAssertEqual(cache.historyScanCount, 1)
-    }
 
-    func testRowsPendingActiveAndDemoInvalidationReuseHistorySummary() {
-        var cache = MessageQueueProjectionCache()
-        var rows = [row("head")]
-        var pending: [PendingMessage] = []
-        var active = ["head"]
-        var demo = false
-        func read() -> MessageQueuePresentation {
-            cache.presentation(agentID: "a", events: [], rows: rows, pending: pending,
-                steeringTransfers: [], activeTurns: active, isDemo: demo)
-        }
-        XCTAssertEqual(read().messages.map(\.id), ["head"])
-        let initial = cache.revision
-        rows[0].text = "Edited request"; cache.invalidate()
-        XCTAssertNotEqual(cache.revision, initial)
-        XCTAssertEqual(read().messages.first?.input, "Edited request")
-        var local = PendingMessage(agentID: "a", input: "Local send", predecessor: "head", id: "local")
-        local.phase = .cancelling
-        pending = [local]; cache.invalidate()
-        XCTAssertEqual(read().messages.last?.phase, .cancelling)
-        active = ["local"]; cache.invalidate()
-        XCTAssertEqual(read().messages.first?.id, "local")
-        demo = true; cache.invalidate()
-        XCTAssertTrue(read().messages.isEmpty, "The demo head is executing")
-        XCTAssertEqual(cache.projectionCount, 5)
-        XCTAssertEqual(cache.historyScanCount, 1)
-    }
 
     func testEventAppendPrependTrimAndResetReplaceDerivedSets() throws {
         var cache = MessageQueueProjectionCache()

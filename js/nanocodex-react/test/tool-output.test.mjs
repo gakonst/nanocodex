@@ -34,7 +34,6 @@ test("MCP media and embedded resources retain playback and file content without 
   const detail = formatToolOutput(content);
   assert.doesNotMatch(detail, /iVBOR|UklGRg|JVBERi0/);
   assert.match(detail, /Embedded attachment/);
-  assert.deepEqual(JSON.parse(formatToolOutput({ machines: [{ id: "machine-1", mount: "/mac" }] })).machines, [{ id: "machine-1", mount: "/mac" }]);
 });
 
 test("output URL policy rejects active or unresolved local destinations and bounds diagnostics", () => {

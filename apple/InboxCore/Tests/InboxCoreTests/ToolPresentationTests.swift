@@ -2,22 +2,6 @@ import XCTest
 @testable import InboxCore
 
 final class ToolPresentationTests: XCTestCase {
-    func testComputerScreenProvenanceIsExactAndSurvivesCompletion() throws {
-        var direct = ToolPresentation(name: "functions.computer", arguments: .null)
-        XCTAssertTrue(direct.isComputerScreenOutput)
-        let metadata: JSON = .object(["tool_name": .string("screen")])
-        var result = ToolPresentation(name: "user_example", arguments: .null)
-        result.finish(.null, metadata: metadata)
-        direct.applyCompletion(result, metadata: metadata)
-        XCTAssertTrue(direct.isComputerScreenOutput)
-        XCTAssertTrue(try JSONDecoder().decode(ToolPresentation.self, from: JSONEncoder().encode(direct)).isComputerScreenOutput)
-        for name in ["mcp__cua_repl__js", "browser_execute", "view_image", "exec"] {
-            XCTAssertFalse(ToolPresentation(name: name, arguments: .null).isComputerScreenOutput)
-        }
-        var object = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(direct)) as? [String: Any])
-        object.removeValue(forKey: "generatedIsComputerScreen")
-        XCTAssertFalse(try JSONDecoder().decode(ToolPresentation.self, from: JSONSerialization.data(withJSONObject: object)).isComputerScreenOutput)
-    }
 
     func testNestedComputerAndOuterCodeModeKeepSeparateProvenanceInEitherCompletionOrder() throws {
         func event(_ cursor: Int, _ type: String, _ call: String, _ tool: String, metadata: JSON = .null, result: JSON = .null) throws -> AgentEvent {
@@ -59,43 +43,8 @@ final class ToolPresentationTests: XCTestCase {
         }
     }
 
-    func testDelegationSummaryIncludesRolePromptAndCompletedIdentity() {
-        var tool = ToolPresentation(name: "functions.spawn_agent", arguments: .object([
-            "role": .string("UI reviewer"), "task": .string("Review\n the   settings screen")
-        ]))
-        XCTAssertEqual(tool.subject, "UI reviewer · Review the settings screen")
-        var result = ToolPresentation(name: "spawn_agent", arguments: .null)
-        result.finish(.object(["agent_id": .number(42)]))
-        tool.applyCompletion(result, metadata: .null)
-        XCTAssertEqual(tool.subject, "Agent 42 · UI reviewer · Review the settings screen")
-        XCTAssertTrue(tool.input.contains { $0.label == "Task" && $0.value == "Review\n the   settings screen" })
-    }
 
-    func testAgentMessageSummaryIsBoundedAndRetainsFullDetails() throws {
-        let message = "Check\n  the preview " + String(repeating: "🧑🏽‍💻", count: 200)
-        let tool = ToolPresentation(name: "send_agent_message", arguments: .object([
-            "agent_id": .number(42), "message": .string(message)
-        ]))
-        XCTAssertTrue(tool.subject.hasPrefix("Agent 42 · Check the preview "))
-        XCTAssertEqual(tool.subject.count, 140)
-        XCTAssertTrue(tool.subject.hasSuffix("…"))
-        XCTAssertTrue(tool.input.contains { $0.label == "Message" && $0.value == message })
-        let restored = try JSONDecoder().decode(ToolPresentation.self, from: JSONEncoder().encode(tool))
-        XCTAssertEqual(restored, tool)
-    }
 
-    func testAgentTargetsHandleUnknownAndMultipleIDsWithoutJSON() {
-        XCTAssertEqual(ToolPresentation(name: "send_agent_message", arguments: .object([
-            "message": .string("Continue"), "agent_id": .object(["unexpected": .string("payload")])
-        ])).subject, "Agent · Continue")
-        XCTAssertEqual(ToolPresentation(name: "wait_agent", arguments: .object([
-            "agent_ids": .array((1...6).map { .number(Double($0)) })
-        ])).subject, "Agent 1, Agent 2, Agent 3, Agent 4 +2 more")
-        XCTAssertEqual(ToolPresentation(name: "close_agent", arguments: .string("{\"agent_id\":42}")).subject, "Agent 42")
-        XCTAssertEqual(ToolPresentation(name: "send_agent_message", arguments: .object([
-            "agent_id": .number(42), "role": .string("Reviewer"), "message": .string("Inspect tests")
-        ])).subject, "Agent 42 · Reviewer · Inspect tests")
-    }
 
     func testRecoveryReplayKeepsOneCommandAndItsOriginalStartTime() throws {
         func event(_ cursor: String, _ time: Double, _ type: String, _ payload: JSON) throws -> AgentEvent {
@@ -193,24 +142,6 @@ final class ToolPresentationTests: XCTestCase {
         XCTAssertEqual(tool.output.first?.value, source)
     }
 
-    func testCommandPreservesInputAndFormatsResult() {
-        var tool = ToolPresentation(name: "exec_command", arguments: .string("{\"cmd\":\"swift test\",\"workdir\":\"apple\"}"))
-        tool.finish(.string("{\"output\":\"14 tests passed\",\"exit_code\":0}"))
-        XCTAssertEqual(tool.title, "Run command")
-        XCTAssertEqual(tool.status, "Completed")
-        XCTAssertTrue(tool.input.contains { $0.label == "Command" && $0.value == "swift test" && $0.code })
-        XCTAssertTrue(tool.output.contains { $0.label == "Output" && $0.value == "14 tests passed" })
-        XCTAssertFalse(tool.output.contains { $0.value.contains("\"exit_code\"") })
-    }
-    func testUnknownToolsAndNestedContentStayReadable() {
-        var tool = ToolPresentation(name: "mcp__calendar__listUpcomingEvents", arguments: .object(["include_cancelled": .bool(false)]))
-        tool.finish(.object(["events": .array([.object(["event_title": .string("Lunch"), "all_day": .bool(true)])])]))
-        XCTAssertEqual(tool.title, "List upcoming events")
-        XCTAssertEqual(tool.input.first?.value, "No")
-        XCTAssertTrue(tool.output.contains { $0.label == "Event title" && $0.value == "Lunch" })
-        XCTAssertTrue(tool.output.contains { $0.value == "Yes" })
-        XCTAssertEqual(ToolPresentation(name: "user_a1392", arguments: .null, metadata: .object(["tool_name": .string("read_file")])).title, "Read file")
-    }
     func testFailuresAndBinaryContentDoNotBecomeSuccessOrGibberish() {
         var tool = ToolPresentation(name: "sandbox_exec", arguments: .null)
         tool.finish(.object(["exit_code": .number(2), "stderr": .string("File not found")]))

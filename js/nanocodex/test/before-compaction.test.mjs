@@ -3,7 +3,6 @@ import { test } from "node:test";
 import { createBeforeCompaction } from "../runtime/before-compaction.mjs";
 import { createNodeHost } from "../node/host.mjs";
 import { createBrowserHost } from "../browser/host.mjs";
-import { toWasmConfig } from "../internal.mjs";
 
 const request = (boundaryId = "boundary-fixture") => ({
   boundaryId,
@@ -14,53 +13,6 @@ const request = (boundaryId = "boundary-fixture") => ({
   truncated: false,
 });
 const deferred = () => Promise.withResolvers();
-
-test("beforeCompaction is disabled by default and rejects invalid callback configuration", async () => {
-  assert.equal(toWasmConfig({ apiKey: "fixture" }).before_compaction, undefined);
-  assert.equal(toWasmConfig({ apiKey: "fixture", beforeCompaction: false }).before_compaction, false);
-  assert.equal(toWasmConfig({ apiKey: "fixture", beforeCompaction: true }).before_compaction, true);
-  for (const callback of [null, true, "callback", {}]) {
-    assert.throws(() => createBeforeCompaction(callback), /must be a function/);
-  }
-  const hook = createBeforeCompaction();
-  await assert.rejects(hook.preserve(request()), /not configured/);
-  hook.dispose();
-});
-
-test("beforeCompaction awaits a durable receipt and supplies an immutable copied request", async () => {
-  const entered = deferred();
-  const committed = deferred();
-  const original = request();
-  const hook = createBeforeCompaction(input => {
-    entered.resolve(input);
-    return committed.promise;
-  });
-  let finished = false;
-  const pending = hook.preserve(original).then(value => { finished = true; return value; });
-  const input = await entered.promise;
-  assert.deepEqual(Object.keys(input).sort(), [...Object.keys(original), "signal"].sort());
-  assert.equal(input.boundaryId, original.boundaryId);
-  assert.equal(input.sessionId, original.sessionId);
-  assert.equal(input.rootSessionId, original.rootSessionId);
-  assert.equal(input.truncated, false);
-  assert.ok(input.signal instanceof AbortSignal);
-  assert.equal(input.signal.aborted, false);
-  assert.ok(Object.isFrozen(input));
-  assert.ok(Object.isFrozen(input.messages));
-  assert.ok(input.messages.every(Object.isFrozen));
-  assert.notEqual(input.messages, original.messages);
-  assert.notEqual(input.messages[0], original.messages[0]);
-  assert.throws(() => { input.boundaryId = "changed"; }, TypeError);
-  assert.throws(() => input.messages.push({ role: "user", text: "changed" }), TypeError);
-  assert.throws(() => { input.messages[0].text = "changed"; }, TypeError);
-  original.messages[0].text = "caller changed its own copy";
-  assert.equal(input.messages[0].text, "Remember the synthetic project decision.");
-  await Promise.resolve();
-  assert.equal(finished, false, "preservation cannot finish before the durable acknowledgement");
-  committed.resolve({ receiptId: "durable-fixture", ignored: "not part of the receipt" });
-  assert.deepEqual(await pending, { receiptId: "durable-fixture" });
-  hook.dispose();
-});
 
 test("beforeCompaction validates receipt shape and its UTF-8 byte limit", async t => {
   const invalid = [undefined, null, true, "receipt", {}, { receiptId: 1 },

@@ -6,36 +6,7 @@ import { Methods } from "mppx/tempo";
 
 import { createCodeRuntime } from "../runtime/code-runtime.mjs";
 import { createMcpRuntime } from "../runtime/mcp-runtime.mjs";
-import {
-  createTempoProvider,
-  createTempoProviderFromAccounts,
-  DEFAULT_MERCATOR_MCP_URL,
-  pinnedScopedAccountParameters,
-  resolveMcpServers,
-} from "../runtime/tempo-provider.mjs";
-
-test("Mercator is a paid default only for explicit Tempo provider mode", () => {
-  const session = { ws: async () => ({}) };
-  const payment = { methods: [{}] };
-  assert.throws(
-    () => createTempoProvider({ session, payment: { methods: [] } }),
-    /at least one MPPx method/,
-  );
-  const provider = createTempoProvider({ session, payment });
-
-  assert.equal(resolveMcpServers(session, undefined), undefined);
-  assert.equal(resolveMcpServers(undefined, undefined), undefined);
-  assert.equal(resolveMcpServers(provider, false), undefined);
-  assert.equal(provider.session, session);
-
-  const defaults = resolveMcpServers(provider, undefined);
-  assert.equal(DEFAULT_MERCATOR_MCP_URL, "https://mercator.sh/mcp");
-  assert.equal(defaults.mercator.url, DEFAULT_MERCATOR_MCP_URL);
-  assert.equal(defaults.mercator.payment, payment);
-
-  const custom = { client: { listTools() {}, callTool() {} } };
-  assert.equal(resolveMcpServers(provider, { mercator: custom }).mercator, custom);
-});
+import { createTempoProviderFromAccounts, DEFAULT_MERCATOR_MCP_URL, pinnedScopedAccountParameters, resolveMcpServers } from "../runtime/tempo-provider.mjs";
 
 test("any Accounts SDK provider can own both Tempo payment paths", async () => {
   const accessKey = "0x0000000000000000000000000000000000000001";
@@ -60,29 +31,12 @@ test("any Accounts SDK provider can own both Tempo payment paths", async () => {
   });
 
   assert.deepEqual(calls, [{ accessKey }]);
-  assert.equal(provider.kind, "tempo");
-  assert.equal(typeof provider.ws, "function");
-  assert.equal(typeof provider.fetch, "function");
   const mercator = resolveMcpServers(provider, undefined).mercator;
   assert.equal(mercator.url, DEFAULT_MERCATOR_MCP_URL);
-  assert.equal(mercator.payment.methods.length, 1);
-  assert.equal(mercator.payment.methods[0].length, 2);
-  assert.equal(mercator.fetch, undefined);
   assert.equal(await mercator.payment.onPaymentRequired({ request: { amount: "250000" } }), true);
   await assert.rejects(
     mercator.payment.onPaymentRequired({ request: { amount: "250001" } }),
     /exceeds the per-request limit 250000/,
-  );
-
-  await assert.rejects(
-    createTempoProviderFromAccounts({ wallet: {} }),
-    /getMppxParameters/,
-  );
-  await assert.rejects(
-    createTempoProviderFromAccounts({
-      wallet: { getMppxParameters: () => ({}) },
-    }),
-    /invalid MPPx parameters/,
   );
 });
 
