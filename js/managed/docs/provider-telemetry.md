@@ -1,6 +1,6 @@
-# Provider telemetry and routing
+# Provider telemetry
 
-Live provider observations measure actual managed generation attempts without issuing extra requests. Scheduled synthetic probes use a separate durable request budget. Both supply bounded context to Jev; neither is a task completion probability, quality score, task-duration estimate, or client-delivery measurement.
+Live provider observations measure actual managed generation attempts without issuing extra requests. Scheduled synthetic probes use a separate durable request budget. These measurements support diagnostics and the router dashboard; they are not inputs to Jev selection. Neither is a task completion probability, quality score, task-duration estimate, or client-delivery measurement.
 
 ## Live observer contract
 
@@ -20,11 +20,11 @@ HTTP OpenRouter/Vercel Chat SSE and Cloudflare Responses SSE use incremental obs
 
 Managed ingress is captured from trusted `request.cf.colo` at the public Worker boundary. Caller-supplied internal origin headers are stripped. The first thread creation stores the normalized ingress cohort transactionally in `managed_routing_origin`; reconnects and repeated creation assertions cannot replace it. Root runtime reconstruction reads that persisted value; new ephemeral children inherit it from the live root. Ingress is not execution placement: managed `workerColo` remains null unless separately established by trusted execution evidence.
 
-`summarizeProviderObservationGroups(samples, now, origin)` keeps live and probe sources separate and emits deployment-global aggregates plus matching live ingress/execution cohorts. A coordinator snapshot without an origin returns global cohorts only. Managed snapshot reads have a 250 ms deadline; unavailable evidence stays unknown. Local cohorts fill gaps in shared live snapshots, but overlapping local/shared counts are never added together.
+`summarizeProviderObservationGroups(samples, now, origin)` keeps live and probe sources separate and emits deployment-global aggregates plus matching live ingress/execution cohorts. A coordinator snapshot without an origin returns global cohorts only; its dashboard snapshot includes all observed cohorts. Managed routing performs no telemetry reads or coordinator snapshot RPCs before generation.
 
-Summaries use a two-hour freshness window, exclude future/stale samples, and report successful-duration p50, nearest-rank p95 and EWMA alongside censored outcome counts. Summary `usable` requires at least three full-response or TTFT samples; routing independently requires at least three fresh successful TTFT samples before exposing TTFT as usable. Full-response timings cannot substitute for missing TTFT.
+Summaries use a two-hour freshness window, exclude future/stale samples, and report successful-duration p50, nearest-rank p95 and EWMA alongside censored outcome counts. Summary `usable` requires at least three full-response or TTFT samples. Full-response timings cannot substitute for missing TTFT.
 
-Jev receives at most one cohort per candidate/source. Sufficient fresh ingress TTFT is preferred, then known execution-cohort TTFT, then global live fallback; a sparse regional cohort cannot hide sufficient global evidence. Synthetic probes remain global and separate from live observations. Selection still respects candidate availability, explicit model/effort restrictions and task capability. Missing evidence is unknown, never zero. Existing root and retained-child route pins remain immutable; updated evidence applies only to new decisions.
+The `jev-direct-v4` selector ignores historical provider telemetry and geography. Its compact input includes the opening task, eligible model and effort profiles, catalog price hints, published evaluation evidence, explicit policy `estimates`, and preferences. Telemetry collection remains independent of candidate selection. Existing root and retained-child route pins remain immutable.
 
 ## Scheduled probes and bounds
 
@@ -49,4 +49,4 @@ pnpm --filter nanocodex-managed-service exec vitest run test/provider-probe-coor
 pnpm --filter nanocodex-managed-service exec tsc --noEmit
 ```
 
-These tests use synthetic identities and provider responses. They cover privacy projection, monotonic timing and censoring, origin spoofing and reconstruction, private shared live observations, candidate aliases, cohort fallback, budgets and slot rotation, and real Rust/WASM root/child tool loops with pinned independent transports. They issue no paid provider requests.
+These tests use synthetic identities and provider responses. They cover privacy projection, monotonic timing and censoring, origin spoofing and reconstruction, private shared live observations, candidate aliases, cohort summaries, routing independence from telemetry, budgets and slot rotation, and real Rust/WASM root/child tool loops with pinned independent transports. They issue no paid provider requests.

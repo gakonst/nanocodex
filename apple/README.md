@@ -446,25 +446,12 @@ the Hand. Its keep-awake setting prevents idle system sleep without
 keeping the display on. Its setting persists; keeping awake uses more battery.
 Quitting, lid-close, or explicit system sleep can still interrupt availability.
 
-The opt-in `testLiveHandDisableSurvivesRelaunchAndBackground` UI journey verifies
-the disable preference through a cold launch, re-enabling against the real
-service, and reconnection after 30 seconds in the background. It passed on a
-physical iPhone on 2026-09-06. This is not evidence of an OS-scheduled wake or
-tool dispatch while the screen is locked; those journeys remain unverified.
-
-`testLiveHandContinuesUserTaskWhileBackgrounded` passed on a physical iPhone
-running iOS 26.6 on 2026-09-06. The service recorded 12 successful phone file
-operations after the old 25-second cutoff, up to 104 seconds after backgrounding.
-The test captured the system task activity on the lock screen and verified the
-final file contents after foregrounding. It does not establish indefinite
-availability or wake-on-call for an idle phone.
-A later repeat stalled at the model connection and was cancelled before any
-tool calls; that run did not pass the final-result assertion.
-
-`testLiveRunAgentShortcutOffersAccountAgents` also passed on the same phone. It
-verifies action discovery and the real account's agent picker, not execution of
-the SDK 27 branch. Local validation used Xcode 26; the Xcode 27 CI job has not
-been run for these changes.
+The opt-in UI journeys cover the Hand disable preference across relaunches
+(`testLiveHandDisableSurvivesRelaunchAndBackground`), continued user-task
+execution (`testLiveHandContinuesUserTaskWhileBackgrounded`), and Shortcut agent
+selection (`testLiveRunAgentShortcutOffersAccountAgents`). Run them on the target
+physical device; they do not establish OS-scheduled wake, indefinite idle
+availability, or SDK 27 behavior when built with SDK 26.
 
 `swift test --package-path apple/NanocodexHand` checks workspace and protocol
 boundaries. With `NANOCODEX_HAND_LIVE=1` and `NC_API_KEY`, its live journey writes
@@ -562,9 +549,8 @@ the shared container.
 
 `ContextUITests.testSafariShareReachesContextInbox` exercises Safari's iOS 26
 share sheet, the extension preview/save, and the imported page text appearing when
-the app resumes. It has been verified on a signed physical iPhone with a demo
-account, including the shared App Group container. The test skips older system
-share-sheet layouts.
+the app resumes. It requires a signed device with a demo account and the shared
+App Group container. The test skips older system share-sheet layouts.
 
 Incoming Message automation execution and capture while locked still require
 device validation. Automatic capture of WhatsApp, Instagram and Signal is not

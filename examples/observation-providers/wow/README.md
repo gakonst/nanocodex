@@ -30,18 +30,7 @@ python3 -m unittest discover -s . -p 'test_*.py'
 (cd NanocodexObserve && lua test_mock.lua > /dev/null)
 ```
 
-The original addon was tested live on Omarchy with Retail 12.1.0.69814: its exports included quest labels/status and BlindSlash narration. The generic-provider integration additionally replays that captured data while preserving its timestamp. Current desktop-session AT-SPI validation is reported separately from the addon proof.
-
-
-## Classic Beta live validation (2026-09-18)
-
-The same read-only addon was installed into `_classic_beta_/Interface/AddOns/`
-and loaded with `/reload` on Classic Beta 1.60.1.69893 (interface 16001). A new
-Orc Warrior entered Valley of Trials; bounded autorun, stop, turning and jumping
-were observed through the live screen. The explicit `/ncobserve` copy/publish
-flow returned 36 UI elements through `computer.observe`, including the current
-character name and zone, with `freshness: fresh` and age 4,409 ms. The export
-remained `partial: true`; it is not a complete 3D-world or combat observation.
+## Snapshot troubleshooting
 
 Publish to the exact path configured in the desktop publisher's
 `NANOCODEX_OBSERVATION_SNAPSHOT_PATHS`. Writing another similarly named snapshot

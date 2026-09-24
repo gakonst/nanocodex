@@ -278,14 +278,16 @@ Both JSON and SSE responses expose the selected route in headers. Session ID hea
 | `text` | Only `{ "format": { "type": "text" } }`. |
 | `store` | Only `false`, if supplied. |
 
-This is a subset, not a drop-in implementation of every Responses API feature. Unknown fields fail validation. Unsupported features include `previous_response_id`, server-restored history, response retrieval, background jobs, opaque compaction, encrypted reasoning, image/audio/file input, built-in web/computer/MCP tools, and structured JSON output modes.
+This is a subset, not a drop-in implementation of every Responses API feature. Unknown fields fail validation. Unsupported features include `previous_response_id`, server-restored history, response retrieval, background jobs, opaque compaction, audio/file input, built-in web/computer/MCP tools, and structured JSON output modes.
 
 History supports:
 
-- Messages with `role` of `user`, `assistant`, `system`, or `developer`, optional `type: "message"`, and string content or text parts (`input_text`, `output_text`, or `text`). Output annotations must be empty.
-- `function_call` with `name`, `call_id`, and JSON-object arguments encoded as a string; its matching `function_call_output` carries the same `call_id` and string/text output.
-- `custom_tool_call` with `name`, `call_id`, and string `input`; its matching `custom_tool_call_output` carries string/text output.
-- Returned `reasoning` items containing plain `summary_text` or `reasoning_text` content.
+- Messages with `role` of `user`, `assistant`, `system`, or `developer`, optional `type: "message"`, and string content or text parts (`input_text`, `output_text`, or `text`). Image parts use `type: "input_image"`, an HTTPS or PNG/JPEG/WebP/GIF base64 `image_url`, and optional `detail`. Output annotations must be empty.
+- `function_call` with `name`, `call_id`, and JSON-object arguments encoded as a string; its matching `function_call_output` carries the same `call_id` and string or text/image-part output.
+- `custom_tool_call` with `name`, `call_id`, and string `input`; its matching `custom_tool_call_output` carries string or text/image-part output.
+- Returned `reasoning` items containing plain `summary_text` or `reasoning_text` content and optional `encrypted_content`. Replay gateway reasoning envelopes unchanged; this field is opaque transport metadata, not a promise that the gateway encrypts it.
+
+Image support depends on the selected provider; GLM remains text-only. The internal response validator accepts up to 8 MiB and bounds each image URL to 6 MiB, but the public API currently limits the complete request body to 262,144 bytes, including images.
 
 Retain returned item IDs and status when replaying. Every historical tool call must have one matching output before the next user/assistant message. Duplicate call IDs, unmatched outputs, or pending calls at the end of a submitted history are rejected.
 
@@ -416,13 +418,13 @@ Failures before headers use ordinary HTTP errors. A failure after headers interr
 
 Client cancellation releases the upstream stream where supported. Workers AI's binding does not guarantee cancellation of already-running provider inference. Do not interpret an interrupted connection as proof that generation did not run.
 
-## Origin-aware latency routing
+## Origin-aware telemetry
 
 The Worker captures the request's Cloudflare ingress datacenter from trusted runtime metadata, ignoring caller-supplied geography headers. A backend caller's ingress describes that backend's path, not necessarily its human user's location. Ingress does not establish the Worker or GPU execution location.
 
-Before an automatic route is pinned, Jev can use fresh provider/model/effort latency aggregates for that ingress cohort. It falls back to global measurements when regional samples are insufficient or expired. Median, p95, sample counts, freshness and availability failures are distinct from model-quality probabilities. Measurements contain no prompts, generated content, IP addresses, API keys or account IDs. Public clients cannot submit routing telemetry.
+Provider observations retain ingress information for operational inspection. The current router does not wait for geographic/probe snapshots or include their aggregates in Jev input. Caller-supplied routing `estimates` remain available through the session policy. Measurements contain no prompts, generated content, IP addresses, API keys or account IDs. Public clients cannot submit routing telemetry.
 
-Existing sessions keep their exact provider/model/effort pin. New stateless requests and independently routed subagents can use updated measurements. Autorouting remains opt-in for managed Nanocodex threads. Paid periodic probes retain their deployment budget; real traffic supplies additional origin-specific observations.
+Existing sessions keep their exact provider/model/effort pin. Autorouting remains opt-in for managed Nanocodex threads. Paid periodic probes retain their deployment budget; real traffic supplies additional origin-specific observations without changing route selection.
 
 ## Limits and retries
 
@@ -435,7 +437,7 @@ Additional ceilings:
 | Limit | Value |
 | --- | --- |
 | Public session/response request body | 262,144 bytes |
-| JSON-encoded `input` plus JSON-encoded `instructions` | 32,768 bytes |
+| JSON-encoded `input` (excluding `image_url` values) plus JSON-encoded `instructions` | 32,768 bytes |
 | History items | 1,024 |
 | Tool definitions | 128 |
 | Output tokens | At most 4,096 and no more than the key cap |

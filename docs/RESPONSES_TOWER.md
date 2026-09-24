@@ -1,7 +1,5 @@
 # Responses transports and Tower architecture
 
-Status: implemented.
-
 ## Ownership and public composition
 
 `OpenAi::new(auth)` creates the standard client recipe with `gpt-6-astra`.
@@ -23,41 +21,18 @@ history, code-mode runtime, shell sessions, and prompt-cache identity across
 follow-on turns. A WebSocket policy also reuses its connection. The caller does
 not replay earlier results.
 
-The selected Sol, Luna, or Astra model may be changed only before the
-first turn is accepted and is fixed after conversation activity begins. Upstream
-Codex permits model changes on later turns at commit
-[`acd540f1`](https://github.com/openai/codex/commit/acd540f1581bf30f963fccbcce43ac494102242c):
-
-- [`TurnStartParams::model`](https://github.com/openai/codex/blob/acd540f1581bf30f963fccbcce43ac494102242c/codex-rs/app-server-protocol/src/protocol/v2/turn.rs#L122-L136)
-  applies to the current and subsequent turns, exactly like reasoning effort.
-- [`ThreadSettingsUpdateParams::model`](https://github.com/openai/codex/blob/acd540f1581bf30f963fccbcce43ac494102242c/codex-rs/app-server-protocol/src/protocol/v2/thread.rs#L236-L251)
-  updates subsequent turns without starting a turn.
-- On `turn/start`, Codex folds the requested model into thread settings, applies
-  those settings while constructing the new turn, and stores the resulting
-  session configuration for later turns
-  ([request mapping](https://github.com/openai/codex/blob/acd540f1581bf30f963fccbcce43ac494102242c/codex-rs/app-server/src/request_processors/turn_processor.rs#L542-L560),
-  [turn-boundary application](https://github.com/openai/codex/blob/acd540f1581bf30f963fccbcce43ac494102242c/codex-rs/core/src/session/handlers.rs#L184-L205),
-  [persistent state update](https://github.com/openai/codex/blob/acd540f1581bf30f963fccbcce43ac494102242c/codex-rs/core/src/session/turn_context.rs#L597-L627)).
-- Codex's own integration test verifies that a settings-only model update sends
-  no model request and that the next turn uses the updated model
-  ([test](https://github.com/openai/codex/blob/acd540f1581bf30f963fccbcce43ac494102242c/codex-rs/app-server/tests/suite/v2/thread_settings_update.rs#L32-L92)).
-
-Nanocodex deliberately does not expose that behavior. A model change cannot
-continue the prior provider checkpoint safely, so it would invalidate
-`previous_response_id` and replay the complete client-owned history. Keeping a
-thread on its creation-time model preserves incremental context reuse and
-avoids that inefficient replay.
+The selected Sol, Luna, or Astra model may be changed only before the first turn
+is accepted and is fixed after conversation activity begins. Keeping a thread on
+its creation-time model preserves provider checkpoint and incremental context
+reuse. See [model control](../crates/nanocodex-agent/src/agent/driver/control.rs).
 
 The standard policy is WebSocket plus incremental history and `store: false`
 for both API-key and ChatGPT subscription authentication. API-key callers can
 opt into durable provider checkpoints with `.store(true)`; ChatGPT
 subscription authentication cannot. Selecting HTTPS with storage disabled
-automatically selects full replay. WebSocket is the interactive default because
-its reused connection has the lowest measured warm first-event latency. Native
-callers can select HTTPS when cold start or fresh-fork startup matters more,
-but a session and every fork retain the one policy selected at build time. See
-[`RESPONSE_TRANSPORT_BENCH.md`](RESPONSE_TRANSPORT_BENCH.md) for the measured
-tradeoffs.
+automatically selects full replay. A session and every fork retain the policy
+selected at build time. Use the [transport benchmark](RESPONSE_TRANSPORT_BENCH.md)
+to compare warm, cold-start, and fresh-fork behavior for the target workload.
 
 `ResponsesClient<S>` is generic over `Service<ResponsesAttempt>`. The
 `OpenAi` builder applies caller layers when each independent session service is

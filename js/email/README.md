@@ -6,14 +6,12 @@ server-derived `owner_id` and `agent_id`. The only public HTTP response is
 `GET /health`; it contains readiness booleans only. `workers.dev` and preview
 URLs are disabled.
 
-The configured owner is `631f6a83-9e3f-474a-977a-68897d3ee436`; the fixed envelope
-recipient and sender is `agent@agents.gakonst.com`. Inbound Email Routing must
-route that exact address to this Worker. Sending requires
-`EMAIL_SEND_ENABLED=true` and Cloudflare sending activation. The initial deployment
-uses the verified `agents.gakonst.com` subdomain; other installations must configure
-their own owner, mailbox address, sender binding restriction, and DNS.
-The `EMAIL` binding additionally restricts sender addresses. No routes, DNS,
-or live deployment are performed by this package's tests/build.
+`MAILBOX_OWNER_ID` selects the owner; `MAILBOX_ADDRESS` is the fixed envelope
+recipient and sender. Inbound Email Routing must route that exact address to this
+Worker. Sending requires `EMAIL_SEND_ENABLED=true` and Cloudflare sending
+activation for the configured domain. Configure the owner, mailbox address,
+`EMAIL` sender binding restriction, and DNS for each installation. No routes,
+DNS, or live deployment are performed by this package's tests/build.
 
 Operations: `status`, `list` (opaque cursor, 1–50 items), `read` (`message_id`),
 and `send` (UUID `operation_id`, 1–10 explicit `to` addresses, `subject`, `text`,
@@ -43,9 +41,9 @@ mailboxes fail processing for provider retry; they do not silently discard mail.
 
 Validation: `pnpm --filter nanocodex-email-service typecheck`, `test`, and
 `build` (Wrangler dry run). Tests execute in Cloudflare's Worker pool with
-SQLite Durable Objects; provider delivery is mocked. Live acceptance on 2026-09-17 verified a three-message Gmail exchange in one
-thread, inbound attribution to its originating agent, passing SPF/DKIM/DMARC,
-and replay without duplicate delivery. Automatic follow-up uses the bounded watches described below.
+SQLite Durable Objects; provider delivery is mocked. Verify delivery, threading,
+SPF/DKIM/DMARC, and replay without duplicate delivery against an authorized test
+mailbox after deployment. Automatic follow-up uses the bounded watches below.
 
 ## Managed agent integration
 
@@ -54,10 +52,10 @@ and replay without duplicate delivery. Automatic follow-up uses the bounded watc
 every invocation additionally requires full account authority with
 `agents:write` and `tools:use`. Connect grants and multiplayer rooms cannot
 access the mailbox. Read/write operations use a private service binding,
-not a public mailbox API. The first rollout of follow-up requires the managed
-Worker export `EmailAgentBackend` to exist before deploying the new email Worker
-service binding. Deploy in this order: managed Worker, email Worker, then account
-Worker. Subsequent releases must preserve both private entrypoints.
+not a public mailbox API. The managed Worker export `EmailAgentBackend` must
+exist before deploying the email Worker service binding. Deploy in this order:
+managed Worker, email Worker, then account Worker. Preserve both private
+entrypoints across releases.
 
 The agent's `email` tool exposes status/list/read/send/watch/unwatch/listwatches. A status result reports
 the fixed sender address. Replying requires an explicit recipient and stored
@@ -67,8 +65,8 @@ automatically retry writes.
 
 ## Admin configuration
 
-The dedicated mailbox is enabled only for deployment-selected admin account
-`631f6a83-9e3f-474a-977a-68897d3ee436`. `NANOCODEX_EMAIL_ADMIN_ID` must match
+The dedicated mailbox is enabled only for the deployment-selected admin account.
+`NANOCODEX_EMAIL_ADMIN_ID` must match
 `NANOCODEX_EMAIL_OWNER_ID` in the managed Worker; `MAILBOX_ADMIN_ID` must match
 `MAILBOX_OWNER_ID` in the email Worker. Missing or mismatched settings disable
 access, including inbound routing. These are operator-controlled bindings,

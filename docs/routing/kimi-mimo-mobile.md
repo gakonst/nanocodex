@@ -50,8 +50,10 @@ reasoning items and tool outputs, must be replayed. Gateway reasoning envelopes
 in `encrypted_content` are opaque transport metadata, not a claim of encryption.
 
 User image parts and image tool outputs accept HTTPS URLs or PNG/JPEG/WebP/GIF
-base64 data URLs. Images have a 6 MiB encoded URL limit, requests an 8 MiB total
-limit, and non-image input retains its 32 KiB limit. GLM's adapter remains text-only.
+base64 data URLs. The internal validator allows 6 MiB per encoded image URL and
+8 MiB per request, but the public inference API currently imposes a 262,144-byte
+body limit, including images. Non-image input retains its 32 KiB limit. GLM's
+adapter remains text-only. See the [public limits](../STANDALONE_INFERENCE_API.md#limits-and-retries).
 
 Managed agents use the existing authorized tool dispatcher, including Hands and
 CUA. The adapter maps namespaced and free-form tools to gateway function calls,

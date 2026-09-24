@@ -12,8 +12,7 @@ JavaScript conformance cases.
 upstream V8 value/audio helpers, Rust wait parser, and Rust truncation code
 **directly from an external clean Codex checkout**. It does not reimplement the
 expected results. `native-behavior.json` is the bounded output corpus consumed
-by both Rust and JavaScript tests. The latest pin reproduces all 43 existing
-oracle cases without changing expected behavior.
+by both Rust and JavaScript tests.
 
 ```sh
 python3 scripts/codex-parity/native-behavior.py /path/to/pinned/codex
@@ -25,11 +24,6 @@ crates. It cannot run as a browser or Cloudflare Worker dependency. We reuse its
 actual helper code as the differential oracle, while retaining portable runtime
 adapters. The full upstream tree is not vendored. Pin changes should regenerate
 and review the oracle rather than silently updating expected outputs.
-
-The upstream changes since the previous pin primarily add tool-description and
-schema override configuration and use shared ownership for stored JSON values.
-Those host configuration APIs are not represented as newly implemented
-Nanocodex features. The inspected helper and wait behavior remains unchanged.
 
 ## Shared contract
 

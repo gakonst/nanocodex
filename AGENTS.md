@@ -33,6 +33,9 @@
 - Publish per-run screenshots, videos, logs, traces, and benchmark results as CI
   artifacts or keep them in ignored `output/`. Do not commit generated evidence;
   retain only intentional fixtures consumed by tests or current documentation.
+- Keep only the static assets and fixture files their consumers need. Check
+  dynamic filename construction and build manifests before pruning imported
+  asset packs; preserve attribution and canonical source artwork.
 
 - `macos/` owns the desktop app and native tiled workspace; `js/desktop-runtime`
   owns its runtime. `apple/NanocodexInbox` targets iPhone and iPad.

@@ -509,9 +509,10 @@ before the Connect API and the host application so exchanges do not fail with
 ## Development and operation
 
 This package participates in the checkout-isolated local platform rather than
-running as an independent product surface. Use the repository operator commands,
-deployment order, secret handling, and required browser evidence in
-[`../../AGENTS.md`](../../AGENTS.md). The package scripts provide its focused
+running as an independent product surface. Use the root
+[README.md](../../README.md) for repository commands and deployment order, and
+[AGENTS.md](../../AGENTS.md) for contribution and verification guidance.
+The package scripts provide its focused
 typecheck, test, and Wrangler dry-run build when that boundary changes.
 
 ### Sandbox development tools
