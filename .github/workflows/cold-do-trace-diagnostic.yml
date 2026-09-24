@@ -58,7 +58,7 @@ jobs:
               tid=meta.get('traceId') or w.get('traceId')
               if tid and tid not in trace_ids: trace_ids.append(tid)
               print('constructor event:',json.dumps({'timestamp':item.get('timestamp'),'service':meta.get('service'),'duration':meta.get('duration'),'colo':meta.get('colo')},sort_keys=True))
-          for i,tid in enumerate(trace_ids[:3]):
+          for i,tid in enumerate(trace_ids[:1]):
               found=query('events',{'datasets':[],'filters':[{'key':'$metadata.traceId','operation':'eq','type':'string','value':tid}]})
               if found is None: continue
               spans=(found.get('events') or {}).get('events') or []
@@ -67,11 +67,20 @@ jobs:
               if spans:
                   print('trace sample metadata:',{k:v for k,v in (spans[0].get('$metadata') or {}).items() if k in ('type','origin','trigger','service')})
                   print('trace sample source keys:',sorted((spans[0].get('source') or {}).keys()) if isinstance(spans[0].get('source'),dict) else type(spans[0].get('source')).__name__)
-              for item in spans[:30]:
-                  meta=item.get('$metadata') or {}; w=item.get('$workers') or {}; src=item.get('source') or {}
+              otel=[item for item in spans if item.get('dataset')=='otel']
+              if otel:
+                  print('otel metadata keys:',sorted((otel[0].get('$metadata') or {}).keys()))
+                  sample=otel[0].get('source') or {}
+                  print('otel source keys:',sorted(sample.keys()) if isinstance(sample,dict) else type(sample).__name__)
+                  attrs=sample.get('attributes') if isinstance(sample,dict) else None
+                  print('otel attribute keys:',sorted(attrs.keys())[:60] if isinstance(attrs,dict) else type(attrs).__name__)
+              for item in otel[:25]:
+                  meta=item.get('$metadata') or {}; src=item.get('source') or {}
                   attrs=src.get('attributes') if isinstance(src,dict) else None
                   if not isinstance(attrs,dict): attrs={}
-                  print('span:',json.dumps({'dataset':item.get('dataset'),'timestamp':item.get('timestamp'),'service':meta.get('service'),'type':meta.get('type'),'origin':meta.get('origin'),'name':src.get('name') if isinstance(src,dict) and 'trace' in str(item.get('dataset')) else None,'duration':src.get('duration') if isinstance(src,dict) else None,'source_keys':sorted(src.keys())[:12] if isinstance(src,dict) else [],'colo':attrs.get('cloudflare.colo'),'execution_model':w.get('executionModel'),'event_type':w.get('eventType')},sort_keys=True))
+                  name=src.get('name') if isinstance(src,dict) else None
+                  if isinstance(name,str): name=name.split('?')[0][:80]
+                  print('otel:',json.dumps({'timestamp':item.get('timestamp'),'name':name,'type':meta.get('type'),'origin':meta.get('origin'),'start':src.get('startTime') if isinstance(src,dict) else None,'end':src.get('endTime') if isinstance(src,dict) else None,'duration':src.get('duration') if isinstance(src,dict) else None,'colo':attrs.get('cloudflare.colo'),'script':attrs.get('cloudflare.script_name'),'method':attrs.get('jsrpc.method')},sort_keys=True))
           PY
       - name: Surface sanitized summary as one GitHub check annotation
         if: always()
