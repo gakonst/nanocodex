@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 
 use crate::login::{APP_ID, APP_ORIGIN, ScopedManagedCredential};
 
-const DEFAULT_MCP_SERVERS: [(&str, &str, &str); 5] = [
+const DEFAULT_MCP_SERVERS: [(&str, &str, &str); 6] = [
     (
         "openaiDeveloperDocs",
         "https://developers.openai.com/mcp",
@@ -30,6 +30,11 @@ const DEFAULT_MCP_SERVERS: [(&str, &str, &str); 5] = [
         "tempo",
         "https://mcp.tempo.xyz",
         "Tempo network and protocol tools.",
+    ),
+    (
+        "mercator",
+        MERCATOR_MCP_URL,
+        "Discovers and composes Tempo services and MPP flows; paid jobs require explicit payment authority.",
     ),
     (
         "cloudflare",
@@ -47,13 +52,17 @@ const DEFAULT_MCP_SERVERS: [(&str, &str, &str); 5] = [
         "Search Vocs developer documentation.",
     ),
 ];
-pub(crate) const MERCATOR_MCP_URL: &str = "https://mercator.tempo.xyz/mcp";
-const MERCATOR_MCP_DESCRIPTION: &str = "Discovers and composes paid Tempo services and MPP flows.";
+pub(crate) const MERCATOR_MCP_URL: &str = "https://mercator.sh/mcp";
 
 fn default_parallel_tools(name: &str) -> &'static [&'static str] {
     match name {
         "openaiDeveloperDocs" => &["fetch_openai_doc", "search_openai_docs"],
         "tempo" => &["code", "search"],
+        "mercator" => &[
+            "get_suggested_queries",
+            "get_connection_status",
+            "search_services",
+        ],
         "cloudflare" => &["search_cloudflare_documentation"],
         "viem" | "vocs" => &["list_pages", "read_page", "search_docs", "search_source"],
         _ => &[],
@@ -65,7 +74,7 @@ pub(crate) struct McpArgs {
     #[arg(skip)]
     disabled: bool,
 
-    /// Load the standard docs MCPs, plus paid Mercator in Tempo provider mode.
+    /// Load the public MCP catalog, including Mercator discovery. Paid calls require separate authority.
     #[arg(
         long,
         env = "NANOCODEX_MCP_DEFAULTS",
@@ -278,26 +287,6 @@ impl McpArgs {
                             .iter()
                             .map(|tool| (*tool).to_owned())
                             .collect(),
-                    });
-            }
-            if tempo.is_some() && !codex_server_names.contains("mercator") {
-                servers
-                    .entry("mercator".to_owned())
-                    .or_insert_with(|| ServerConfig {
-                        transport: Transport::Http(MERCATOR_MCP_URL.to_owned()),
-                        description: Some(MERCATOR_MCP_DESCRIPTION.to_owned()),
-                        arguments: Vec::new(),
-                        environment: BTreeMap::new(),
-                        cwd: None,
-                        bearer_env: None,
-                        bearer: None,
-                        headers: BTreeMap::new(),
-                        header_env: Vec::new(),
-                        startup_timeout: None,
-                        tool_timeout: None,
-                        enabled_tools: None,
-                        disabled_tools: Vec::new(),
-                        parallel_tools: Vec::new(),
                     });
             }
         }
@@ -965,6 +954,31 @@ mod tests {
     }
 
     #[test]
+    fn mercator_discovery_is_a_public_default_without_tempo() {
+        assert_eq!(MERCATOR_MCP_URL, "https://mercator.sh/mcp");
+        assert!(
+            DEFAULT_MCP_SERVERS
+                .iter()
+                .any(|(name, url, _)| *name == "mercator" && *url == MERCATOR_MCP_URL)
+        );
+        assert!(
+            args()
+                .build(Path::new("/missing"), None, None)
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            McpArgs {
+                mcp_defaults: false,
+                ..args()
+            }
+            .build(Path::new("/missing"), None, None)
+            .unwrap()
+            .is_none()
+        );
+    }
+
+    #[test]
     fn managed_mcp_config_uses_exact_proxy_url_and_scoped_headers() {
         let origin = reqwest::Url::parse("https://connect.example/").unwrap();
         let grant_id = format!("0x{}", "33".repeat(32));
@@ -1103,6 +1117,7 @@ enabled = false
         assert!(encoded.contains("centaur-paradigm"));
         assert!(encoded.contains("local"));
         assert!(encoded.contains("openaiDeveloperDocs"));
+        assert!(encoded.contains("mercator"));
         assert!(encoded.contains("cloudflare"));
         assert!(encoded.contains("viem"));
         assert!(encoded.contains("vocs"));

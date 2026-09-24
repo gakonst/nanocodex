@@ -393,6 +393,14 @@ branch, fan out with `Promise.all`, and call typed tools through
 and cancellation while keeping the model-facing schema compact.
 
 MCP is part of the native tools crate rather than a separate agent runtime.
+The `nanocodex` CLI and Cloudflare managed agents (including `nanocodex2`
+conversations) include [Mercator](https://mercator.sh/setup.md) discovery at
+`https://mercator.sh/mcp` in their default MCP catalog. Discover its tools with
+`tool_search`; free discovery does not provide a payment wallet or authorize a
+paid job. Native `--mcp-defaults=false` disables the CLI defaults, and a named
+MCP entry can override Mercator. Managed agents can still connect a separate
+authorized Mercator MCP account for protected workflows.
+
 Stdio and Streamable HTTP servers are discovered in the background; deferred
 tools remain out of the initial model prefix, are found with BM25
 `tool_search`, and become callable by their canonical
