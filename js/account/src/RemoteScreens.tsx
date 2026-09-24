@@ -112,7 +112,7 @@ export function Screen({ hand, onBack, preparing = false, selectedAt, iceContext
   const mouse = useRef(new RemoteMouseButtons());
   const mousePointer = useRef<number | undefined>(undefined);
   const motion = useRef<RemoteMotionBuffer | null>(null);
-  motion.current ??= new RemoteMotionBuffer(event => session.current?.input(event));
+  motion.current ??= new RemoteMotionBuffer(event => session.current?.input(event), () => session.current?.inputBacklogged() ?? false);
   function sendInput(event: RemoteInput) { motion.current!.input(event); }
   const pointers = useRef(new Map<number, Pointer>());
   const keys = useRef(new Set<number>());

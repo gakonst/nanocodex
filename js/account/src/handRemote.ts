@@ -956,6 +956,11 @@ export class RemoteBrowserSession {
     if (generation && !this.closed) this.send({ type: "release", generation });
     if (!this.closed) this.update({ controlling: false, controlPending: false, relativePointer: false, ...(this.state.connected ? { status: "Watching" } : {}) });
   }
+  /** A queued reliable input stream benefits from fewer lossless motion packets. */
+  inputBacklogged(): boolean {
+    const channel = this.hand.transport === "frames-v1" ? this.socket : this.reliable;
+    return (channel?.bufferedAmount ?? 0) > 1024;
+  }
   input(event: RemoteInput): void {
     if (!this.state.controlling || !this.generation || this.closed || this.suspended) return;
     if (event.kind === "move") {

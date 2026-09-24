@@ -1514,6 +1514,18 @@ test("congested absolute motion retains only the final position and sends when t
   assert.equal(f.session.state.controlling, true);
 });
 
+test("relative input pacing follows the reliable queue, not the disposable motion queue", async t => {
+  const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
+  const { reliable, motion } = f.peers[0]!;
+  assert.equal(f.session.inputBacklogged(), false);
+  motion.bufferedAmount = 5000;
+  assert.equal(f.session.inputBacklogged(), false);
+  reliable.bufferedAmount = 2048;
+  assert.equal(f.session.inputBacklogged(), true);
+  f.session.close();
+  assert.equal(f.session.inputBacklogged(), false);
+});
+
 for (const kind of ["button", "key", "scroll", "relativeMove", "releaseAll"] as const) {
   test(`congested pointer sample cannot replay across a ${kind} boundary`, async t => {
     const f = fixture(t); await f.session.connect(); f.peers[0]!.open();

@@ -71,6 +71,34 @@ test("sustained motion stays paced after trailing flushes and idle motion has no
   assert.equal(events.length, 4, "isolated motion sends synchronously after idle");
   assert.deepEqual(events.map(e => e.deltaX), [1, 2, 3, 4]); input.clear();
 });
+test("a backed-up reliable channel batches relative motion without losing distance or delaying a key", t => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let backlogged = true;
+  const events: RemoteInput[] = [], input = new RemoteMotionBuffer(e => events.push(e), () => backlogged);
+  for (let i = 0; i < 64; i++) {
+    input.input({ kind: "relativeMove", deltaX: 1, deltaY: -2 });
+    t.mock.timers.tick(1);
+  }
+  assert.equal(events.length, 5, "64 one-millisecond samples need only five reliable messages");
+  assert.equal(events.reduce((sum, event) => sum + (event.deltaX ?? 0), 0), 64);
+  assert.equal(events.reduce((sum, event) => sum + (event.deltaY ?? 0), 0), -128);
+  input.input({ kind: "relativeMove", deltaX: 7, deltaY: 8 });
+  input.input({ kind: "key", key: 4, down: false });
+  assert.deepEqual(events.slice(-2), [{ kind: "relativeMove", deltaX: 7, deltaY: 8 }, { kind: "key", key: 4, down: false }]);
+  backlogged = false;
+  input.input({ kind: "relativeMove", deltaX: 1, deltaY: 0 });
+  input.input({ kind: "relativeMove", deltaX: 2, deltaY: 0 });
+  t.mock.timers.tick(4);
+  assert.deepEqual(events.slice(-2), [{ kind: "relativeMove", deltaX: 1, deltaY: 0 }, { kind: "relativeMove", deltaX: 2, deltaY: 0 }]);
+  input.clear();
+  const baseline: RemoteInput[] = [], unqueued = new RemoteMotionBuffer(e => baseline.push(e));
+  for (let i = 0; i < 64; i++) {
+    unqueued.input({ kind: "relativeMove", deltaX: 1, deltaY: -2 });
+    t.mock.timers.tick(1);
+  }
+  assert.equal(baseline.length, 17, "the same samples use 4ms windows without backpressure");
+  unqueued.clear();
+});
 for (const event of [
   { kind: "key", key: 4, down: false }, { kind: "scroll", deltaX: 0, deltaY: 1 },
   { kind: "text", text: "fixture" },

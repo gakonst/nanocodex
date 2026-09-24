@@ -15,13 +15,16 @@ export class RemoteMouseButtons {
   }
 }
 
-/** Send the leading motion immediately, then coalesce bursts in 4ms windows.
+/** Send the leading motion immediately, then coalesce bursts in short windows.
  * Preserve relative distance and ordering before button/key/scroll transitions. */
 export class RemoteMotionBuffer {
   private pending?: RemoteInput;
   private timer?: ReturnType<typeof setTimeout>;
   private readonly send: (event: RemoteInput) => void;
-  constructor(send: (event: RemoteInput) => void) { this.send = send; }
+  private readonly backlogged: () => boolean;
+  constructor(send: (event: RemoteInput) => void, backlogged: () => boolean = () => false) {
+    this.send = send; this.backlogged = backlogged;
+  }
   input(event: RemoteInput): void {
     if (event.kind === "releaseAll") { this.clear(); this.send(event); return; }
     if (event.kind !== "move" && event.kind !== "relativeMove") { this.flush(); this.send(event); return; }
@@ -31,17 +34,17 @@ export class RemoteMotionBuffer {
     } else this.pending = { ...event };
     if (this.timer === undefined) {
       // Arm before sending: a synchronous disconnect can clear this window.
-      this.startWindow(); this.sendPending();
+      this.startWindow(event.kind); this.sendPending();
     }
   }
-  private startWindow(): void {
+  private startWindow(kind: RemoteInput["kind"]): void {
     this.timer = setTimeout(() => {
       this.timer = undefined;
       if (!this.pending) return;
       // A trailing batch begins another window, preventing a fresh leading
       // sample immediately after it from doubling the sustained packet rate.
-      this.startWindow(); this.sendPending();
-    }, 4);
+      this.startWindow(this.pending.kind); this.sendPending();
+    }, kind === "relativeMove" && this.backlogged() ? 16 : 4);
   }
   flush(): void {
     clearTimeout(this.timer); this.timer = undefined; this.sendPending();
