@@ -58,13 +58,11 @@ export class HandHosts {
     const name = body.name.trim();
     const result = await this.storage.transaction(async transaction => {
       const existing = await transaction.get<Host>(PREFIX + id);
-      if (!existing && (await transaction.list({ prefix: PREFIX, limit: 64 })).size >= 64) return undefined;
       const record: Host = { id, name, machineId, tokenDigest, createdAt: existing?.createdAt ?? now,
         expiresAt: now + CREDENTIAL_LIFETIME };
       await transaction.put(PREFIX + id, record);
       return record;
     });
-    if (!result) return failure(429);
     this.remote.revokePublisher(PREFIX + id);
     return Response.json({ ...metadata(result), credential: token }, { status: 201, headers });
   }

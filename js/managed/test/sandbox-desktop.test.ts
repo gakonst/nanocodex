@@ -123,3 +123,13 @@ it("enrolls and publishes a Cloudflare surface through the real account broker a
   expect(catalog.surfaces[0]).not.toHaveProperty("transport");
   expect((await account.fetch(`https://account-tools.internal/sandbox-hand-hosts/${id}`, { method: "DELETE", headers })).status).toBe(204);
 });
+
+it("reports enrollment status without disclosing the response body and can retry startup", async () => {
+  const f = fixture();
+  f.fetch.mockResolvedValueOnce(new Response("private upstream detail", { status: 429 }));
+  await expect(f.desktop.configure(scope)).rejects.toThrow("could not enroll sandbox desktop (HTTP 429)");
+  expect(f.runtime.writeFile).not.toHaveBeenCalled();
+  expect(f.runtime.startProcess).not.toHaveBeenCalled();
+  await f.desktop.configure(scope);
+  expect(f.runtime.startProcess).toHaveBeenCalledTimes(1);
+});
