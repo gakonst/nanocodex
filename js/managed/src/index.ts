@@ -1797,6 +1797,33 @@ async function managedFetchRoute(
       }
       return json({ error: "method_not_allowed" }, { status: 405 });
     }
+    // Admin-only, bounded first-use diagnostic. It never creates a managed
+    // agent, account registry entry, credential, or externally addressable ID.
+    if (request.method === "POST" && url.pathname === "/v1/internal/activation-probe") {
+      if (url.search !== "" || await hasRequestBody(request)) return json({ error: "invalid_request" }, { status: 400 });
+      const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
+      if (!principal || principal.kind !== "api_key"
+        || principal.userId !== env.NANOCODEX_ADMIN_USER_ID
+        || !principal.capabilities.includes("agents:write")) return json({ error: "not_found" }, { status: 404 });
+      const originFailure = requireSameOriginMutation(request, url, principal);
+      if (originFailure) return originFailure;
+      const kind = request.headers.get("x-nanocodex-probe-kind");
+      if (kind !== "named" && kind !== "unique") return json({ error: "invalid_request" }, { status: 400 });
+      const id = kind === "named" ? env.NANOCODEX_SESSIONS.idFromName(`activation-probe:${uuidV7()}`)
+        : env.NANOCODEX_SESSIONS.newUniqueId();
+      const startedAt = Date.now();
+      const started = performance.now();
+      try {
+        const phases = await env.NANOCODEX_SESSIONS.get(id, durablePlacementOptions(clientIngressColo)).activationProbe();
+        return json({ kind, dispatch_ms: roundMilliseconds(performance.now() - started),
+          before_constructor_ms: phases.constructor_entered_at_ms - startedAt,
+          constructor_ms: phases.constructor_ms,
+          after_constructor_ms: phases.handler_entered_at_ms - phases.constructor_ready_at_ms },
+          { headers: { "cache-control": "no-store" } });
+      } catch {
+        return json({ error: "activation_probe_failed" }, { status: 503 });
+      }
+    }
     if (request.method === "POST" && url.pathname === "/v1/agent-runs") {
       if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
       const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
@@ -3482,6 +3509,24 @@ export class DurableAgentSession extends DurableComputerSession {
         constructor_restore_read_ms: this.#constructorRestoreReadMs,
         constructor_sql_ms: this.#constructorSqlMs });
     }
+  }
+
+  /** No user state: compare first activation of a named and a unique ID. */
+  async activationProbe(): Promise<Readonly<{
+    constructor_entered_at_ms: number; constructor_ready_at_ms: number;
+    constructor_ms: number; handler_entered_at_ms: number;
+  }>> {
+    const handlerEnteredAt = Date.now();
+    if (this.#session() || this.#credentialBinding || this.#initializationOwnership())
+      throw new Error("activation_probe_not_empty");
+    const phases = {
+      constructor_entered_at_ms: this.#constructorEnteredAtMs,
+      constructor_ready_at_ms: this.#constructorReadyAtMs ?? handlerEnteredAt,
+      constructor_ms: this.#constructorMs,
+      handler_entered_at_ms: handlerEnteredAt,
+    };
+    await this.ctx.storage.deleteAll();
+    return phases;
   }
 
   /** Private RPC: live ownership without serializing a streamed HTTP body. */
