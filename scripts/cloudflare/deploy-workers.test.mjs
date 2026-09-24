@@ -13,7 +13,7 @@ test('independent Workers start concurrently and each retains the release guard'
       const child = new EventEmitter(); children.push(child); return child;
     },
   });
-  assert.equal(calls.length, 2, 'all independent Workers must start before waiting');
+  assert.equal(calls.length, 3, 'all independent Workers must start before waiting');
   for (const call of calls) {
     assert(call.args[0].endsWith('/scripts/cloudflare/current-production-release.mjs'));
     assert.equal(call.args[1], '--');

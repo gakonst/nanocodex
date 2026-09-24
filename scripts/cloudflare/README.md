@@ -5,8 +5,9 @@ planning, Docker publication, native/phone builds or CI tests. It selects change
 Workers inside its serialized deployment job, then installs/builds only their
 packages. There is no Docker builder or image recovery build in this path.
 
-Only managed, account and playground require WASM. Egress, X, email, Connect API,
-Connect dialog, Astra and Chief of Staff use JavaScript. Explicit build tiers avoid
+Only managed, account and playground require the Rust SDK WASM build. The private media
+Worker bundles its own checked-in FFmpeg WASM; it, egress, X, email, Connect API,
+Connect dialog, Astra and Chief of Staff do not schedule a Rust SDK build. Explicit build tiers avoid
 Turbo's general SDK-to-WASM build edge while preserving compiled dependency order.
 When adding a runtime import or generated asset, update `workerSpecs`/build targets
 and exercise a clean build with the generated WASM directories absent where the
@@ -66,8 +67,10 @@ Wrangler deploys, old-ref rollbacks, split traffic, interruptions and unknown st
 cannot masquerade as a current successful release. A source-identical manual deploy
 may therefore cause one deliberate reconciliation deployment on the next CI run.
 
-Selected deployments preserve dependency phases: egress/X, managed, consumers,
-then account. Independent members run concurrently. Every mutation rechecks current
+Selected deployments preserve dependency phases: egress/X, private media, managed,
+consumers, then account. A scoped `RELEASE_ONLY=managed` also selects and redeploys
+media before managed; unchanged media is otherwise safely reused through the live
+Worker deployment ledger. Independent members run concurrently. Every mutation rechecks current
 master; failed phases prevent later ones. Astra secrets are applied additively in
 its tagged deploy using a temporary private secrets file, then removed locally.
 Each phase checks health before success receipts. The job summary records per-Worker
