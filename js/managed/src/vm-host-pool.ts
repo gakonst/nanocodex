@@ -278,9 +278,11 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
       );
       const connected = this.#socketForHostLease(hostId, leaseId, epoch);
       if (connected) closeSocket(connected.socket, 1008, "VM host lease expired");
-      await this.#revokeHostAttachments(
+      this.ctx.waitUntil(this.#revokeHostAttachments(
         hostId, leaseId, epoch, "VM host control lease expired",
-      );
+      ).catch((error) => {
+        console.warn({ type: "vm_host_attachment_revoke_failed", error_kind: error instanceof Error ? error.name : "unknown" });
+      }));
     }
     await this.#scheduleLeaseAlarm();
   }
@@ -723,6 +725,15 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
       expires_at: host.lease_expires_at,
       ...(command.nonce === undefined ? {} : { nonce: command.nonce }),
     });
+    // A failed provision remains unacknowledged. Redrive it on the same lease
+    // so one stalled attachment does not force every VM to reconnect.
+    const pending = this.ctx.storage.sql.exec<AllocationRow>(
+      `SELECT * FROM vm_allocations
+       WHERE host_id = ? AND lease_id = ? AND host_epoch = ? AND state = 'provisioning'
+       ORDER BY slot ASC`,
+      host.host_id, host.lease_id, host.epoch,
+    ).toArray();
+    for (const allocation of pending) this.#sendProvision(socket, host, allocation);
   }
 
   #reconcile(

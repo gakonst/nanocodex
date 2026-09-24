@@ -328,6 +328,36 @@ describe("VM host pool", () => {
     host.socket.close(1000, "test complete");
   });
 
+  it("redrives an unacknowledged provision without replacing the host lease", async () => {
+    const stub = pool(crypto.randomUUID());
+    const host = await connectHost(stub, HOST_A, "donor-a", 1);
+    const provision = nextFrame(host.socket);
+    const acquired = await acquire(stub, MOUNT_A);
+    const initial = await provision;
+    const responses = new Promise<Record<string, unknown>[]>((resolve) => {
+      const frames: Record<string, unknown>[] = [];
+      const onMessage = (event: MessageEvent) => {
+        frames.push(JSON.parse(String(event.data)) as Record<string, unknown>);
+        if (frames.length === 2) {
+          host.socket.removeEventListener("message", onMessage);
+          resolve(frames);
+        }
+      };
+      host.socket.addEventListener("message", onMessage);
+    });
+    host.socket.send(JSON.stringify({
+      type: "ping", lease_id: host.lease.lease_id, epoch: host.lease.epoch,
+    }));
+    const [pong, replay] = await responses;
+    expect(pong).toMatchObject({ type: "pong", epoch: host.lease.epoch });
+    expect(replay).toMatchObject({
+      type: "provision", allocation_id: acquired.body.allocation_id,
+      tool_attachment: initial.tool_attachment,
+      lease_id: host.lease.lease_id, epoch: host.lease.epoch,
+    });
+    host.socket.close(1000, "test complete");
+  });
+
   it("fences only a replaced host identity and rejects donor or shape takeover", async () => {
     const stub = pool(crypto.randomUUID());
     const original = await connectHost(stub, HOST_A, "donor-a", 2);
