@@ -21,7 +21,7 @@ export type ManagedProxyEnv = {
 const MANAGED_ROUTE = /^(?:\/auth(?:\/.*)?|\/webauthn\/.*|\/sandbox-preview\/[^/]+(?:\/.*)?|\/v1\/(?:auth(?:\/.*)?|me|account\/(?:admin|communication|tool-host|vm-host|hand-hosts(?:\/[0-9a-f-]{36})?|hands(?:\/(?:screens|host|view|renew|ice))?)|hand-hosts\/[0-9a-f-]{36}\/[0-9a-f-]{36}\/hands\/(?:host|ice|renew)|system\/vm-host|vm-host-attachments\/[A-Za-z0-9_-]{43}\/[0-9a-f-]{36}\/(?:tool-host|hands\/(?:host|ice|renew))|wallet(?:\/(?:balance|connect|revoke-access-key))?|egress|router|responses|models|inference(?:\/.*)?|api-keys(?:\/.*)?|credentials(?:\/.*)?|connect(?:\/.*)?|connectors(?:\/.*)?|agents(?:\/.*)?|rooms(?:\/.*)?|history(?:\/.*)?|memories\/(?:list|read|search|add_ad_hoc_note|write|status)|markdown-memory\/(?:get|search|write|status)|organization(?:\/.*)?))$/;
 
 export function isManagedRoutePath(pathname: string): boolean {
-  return pathname === "/api/router" || MANAGED_ROUTE.test(pathname) || /^\/v1\/phone\/bridge\/(?:health|check|calls(?:\/[0-9a-f-]{36}(?:\/(?:hangup|steer))?)?|status\/[0-9a-f-]{36}|media\/[0-9a-f-]{36}\/|internal\/(?:state|setup))$/.test(pathname);
+  return pathname === "/api/router" || pathname === "/v1/agent-runs" || MANAGED_ROUTE.test(pathname) || /^\/v1\/phone\/bridge\/(?:health|check|calls(?:\/[0-9a-f-]{36}(?:\/(?:hangup|steer))?)?|status\/[0-9a-f-]{36}|media\/[0-9a-f-]{36}\/|internal\/(?:state|setup))$/.test(pathname);
 }
 
 /**
@@ -72,7 +72,7 @@ export async function routeManaged(
       // direct dispatch throws to the 503 boundary; never create a second agent.
       response = await directLiveAgent(request, env) ?? await env.NANOCODEX_BACKEND.fetch(request);
     }
-    if (/^\/v1\/agents(?:\/(?:live|[0-9a-f-]{36}(?:\/(?:routing|settings|prepare|ws|events(?:\/history)?|turns(?:\/[A-Za-z0-9_.:-]{1,128}\/cancel)?))?))?$/.test(url.pathname)) {
+    if (url.pathname === "/v1/agent-runs" || /^\/v1\/agents(?:\/(?:live|[0-9a-f-]{36}(?:\/(?:routing|settings|prepare|ws|events(?:\/history)?|turns(?:\/[A-Za-z0-9_.:-]{1,128}\/cancel)?))?))?$/.test(url.pathname)) {
       // Match the managed receipt without reading a body or changing upgraded
       // sockets. This separates account forwarding from managed execution and
       // the caller's network/scheduling residual in end-to-end traces.
