@@ -782,11 +782,13 @@ async function authenticateLive(request: Request, env: AccountAuthEnv, url: URL)
 }
 
 async function apiKeyAuthorized(env: AccountAuthEnv, record: StoredApiKey): Promise<boolean> {
-  const [account, grant] = await Promise.all([
-    readAccount(env, record.userId),
+  // Both independent live checks start together. RPC returns a single small
+  // value rather than a fetch Response followed by a separate body stream.
+  const [accountOrganizationId, grant] = await Promise.all([
+    readApiKeyAccountOrganization(env, record.userId),
     resolveOrganizationGrant(env, { id: record.userId, organizationId: record.organizationId }),
   ]);
-  if (!account || account.organizationId !== record.organizationId) return false;
+  if (accountOrganizationId !== record.organizationId) return false;
   if (!grant
     || grant.teamId !== record.teamId
     || grant.authorizationEpoch !== record.authorizationEpoch
@@ -1445,6 +1447,17 @@ async function readAccount(env: AccountAuthEnv, userId: string): Promise<UserRec
   return isUserRecord(record) && record.id === userId ? record : undefined;
 }
 
+/** Read live account ownership; never infer it solely from the key record. */
+async function readApiKeyAccountOrganization(env: AccountAuthEnv, userId: string): Promise<string | undefined> {
+  const stub = env.NANOCODEX_USERS.getByName(userId);
+  // Compatibility for a rolling deployment with an older account object.
+  if (typeof stub.authorizationOrganizationId === "function") {
+    const organizationId = await stub.authorizationOrganizationId(userId);
+    return isUuid(organizationId) ? organizationId : undefined;
+  }
+  return (await readAccount(env, userId))?.organizationId;
+}
+
 export async function isPersistentAccount(env: AccountAuthEnv, userId: string): Promise<boolean> {
   return (await readAccount(env, userId))?.persistent === true;
 }
@@ -1453,7 +1466,13 @@ async function resolveOrganizationGrant(
   env: AccountAuthEnv,
   account: Pick<UserRecord, "id" | "organizationId">,
 ): Promise<OrganizationGrant | undefined> {
-  const response = await env.NANOCODEX_ORGANIZATIONS.getByName(account.organizationId).fetch(
+  const stub = env.NANOCODEX_ORGANIZATIONS.getByName(account.organizationId);
+  if (typeof stub.authorizationGrant === "function") {
+    const grant = await stub.authorizationGrant(account.id);
+    return isOrganizationGrant(grant) && grant.organizationId === account.organizationId ? grant : undefined;
+  }
+  // Compatibility for an older organization object during a rolling deploy.
+  const response = await stub.fetch(
     `https://organization.internal/resolve?userId=${encodeURIComponent(account.id)}`,
   );
   if (!response.ok) {
@@ -1748,6 +1767,13 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
     }
   }
 
+  /** Same fresh account read as /account, but return only the ownership needed by key auth. */
+  async authorizationOrganizationId(userId: string): Promise<string | undefined> {
+    if (!isUserId(userId)) return undefined;
+    const account = await this.ctx.storage.get<UserRecord>("account");
+    return isUserRecord(account) && account.id === userId ? account.organizationId : undefined;
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (/^\/(agent-definitions|environment-templates)(?:\/|$)/.test(url.pathname)) {
@@ -1971,6 +1997,30 @@ function agentSummary(row: AgentRegistryRow): AgentSummary {
 }
 
 export class Organization extends DurableObject<AccountAuthEnv> {
+  /** Resolve current membership, team existence and organization epoch on every call. */
+  async authorizationGrant(userId: string): Promise<OrganizationGrant | undefined> {
+    if (!isUserId(userId)) return undefined;
+    const [metadata, membership] = await Promise.all([
+      this.ctx.storage.get<OrganizationMetadata>("metadata"),
+      this.ctx.storage.get<OrganizationMembership>(userMembershipStorageKey(userId)),
+    ]);
+    if (!isOrganizationMetadata(metadata)
+      || !isOrganizationMembership(membership)
+      || membership.userId !== userId
+      || membership.organizationId !== metadata.id) return undefined;
+    const team = await this.ctx.storage.get<TeamRecord>(teamStorageKey(membership.teamId));
+    if (!isTeamRecord(team)
+      || team.id !== membership.teamId
+      || team.organizationId !== metadata.id) return undefined;
+    return {
+      organizationId: metadata.id,
+      teamId: membership.teamId,
+      role: membership.role,
+      authorizationEpoch: metadata.authorizationEpoch,
+      capabilities: membership.role === "owner" ? OWNER_CAPABILITIES : membership.capabilities,
+    };
+  }
+
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
     if (url.pathname === "/initialize" && request.method === "PUT") {
@@ -2040,29 +2090,8 @@ export class Organization extends DurableObject<AccountAuthEnv> {
         userId = body.userId;
       }
       if (!isUserId(userId)) return json({ error: "invalid_subject" }, { status: 400 });
-      const [metadata, membership] = await Promise.all([
-        this.ctx.storage.get<OrganizationMetadata>("metadata"),
-        this.ctx.storage.get<OrganizationMembership>(userMembershipStorageKey(userId)),
-      ]);
-      if (!isOrganizationMetadata(metadata)
-        || !isOrganizationMembership(membership)
-        || membership.userId !== userId
-        || membership.organizationId !== metadata.id) {
-        return json({ error: "not_found" }, { status: 404 });
-      }
-      const team = await this.ctx.storage.get<TeamRecord>(teamStorageKey(membership.teamId));
-      if (!isTeamRecord(team)
-        || team.id !== membership.teamId
-        || team.organizationId !== metadata.id) {
-        return json({ error: "not_found" }, { status: 404 });
-      }
-      return json({
-        organizationId: metadata.id,
-        teamId: membership.teamId,
-        role: membership.role,
-        authorizationEpoch: metadata.authorizationEpoch,
-        capabilities: membership.role === "owner" ? OWNER_CAPABILITIES : membership.capabilities,
-      } satisfies OrganizationGrant);
+      const grant = await this.authorizationGrant(userId);
+      return grant ? json(grant) : json({ error: "not_found" }, { status: 404 });
     }
     if (url.pathname === "/metadata") {
       const metadata = await this.ctx.storage.get<OrganizationMetadata>("metadata");

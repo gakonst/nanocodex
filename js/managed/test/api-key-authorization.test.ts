@@ -43,6 +43,31 @@ async function withKey(run: (key: ApiKeyRecord, f: Awaited<ReturnType<typeof fix
 }
 
 describe("live API key authorization beside the key", () => {
+  it("uses fresh account and organization RPC results on every key request", async () => {
+    const f = await fixture();
+    const userRpc = vi.fn(async () => f.account.organizationId);
+    const orgRpc = vi.fn(async () => f.grant);
+    const bindings = {
+      ...f.bindings,
+      NANOCODEX_USERS: { getByName: () => ({ authorizationOrganizationId: userRpc,
+        fetch: () => { throw new Error("unexpected account HTTP read"); } }) },
+      NANOCODEX_ORGANIZATIONS: { getByName: () => ({ authorizationGrant: orgRpc,
+        fetch: () => { throw new Error("unexpected grant HTTP read"); } }) },
+    } as unknown as AccountAuthEnv;
+    const namespace = (env as unknown as { NANOCODEX_USERS: DurableObjectNamespace }).NANOCODEX_USERS;
+    await runInDurableObject(namespace.getByName(crypto.randomUUID()), async (_, state) => {
+      await state.storage.put("record", f.record);
+      const key = new ApiKeyRecord(state, bindings);
+      expect(await key.resolveAuthorizedKey()).toBeDefined();
+      f.grant.authorizationEpoch++;
+      expect(await key.resolveAuthorizedKey()).toBeUndefined();
+      f.grant.authorizationEpoch--;
+      f.account.organizationId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+      expect(await key.resolveAuthorizedKey()).toBeUndefined();
+    });
+    expect(userRpc).toHaveBeenCalledTimes(3);
+    expect(orgRpc).toHaveBeenCalledTimes(3);
+  });
   it("uses one RPC reply and observes key deletion without a streamed response", async () => {
     await withKey(async (key, f) => {
       const rpc = vi.fn(() => key.resolveAuthorizedKey());
