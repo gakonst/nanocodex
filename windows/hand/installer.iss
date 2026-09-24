@@ -16,7 +16,7 @@ AppVerName={#AppName} {#AppVersion}
 AppPublisher={#AppPublisher}
 AppPublisherURL=https://github.com/gakonst/nanocodex
 AppSupportURL=https://github.com/gakonst/nanocodex/issues
-DefaultDirName={userprofile}\.nanocodex\bin
+DefaultDirName={%USERPROFILE}\.nanocodex\bin
 UsePreviousAppDir=no
 DefaultGroupName=Nanocodex
 DisableProgramGroupPage=yes
@@ -48,9 +48,9 @@ Source: "payload\ffmpeg.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "payload\ffmpeg-*.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
-Name: "{group}\Set up or repair Nanocodex"; Filename: "{app}\nanocodex.exe"; Parameters: "setup --refresh"; WorkingDir: "{userprofile}"
-Name: "{group}\Start Nanocodex Hand"; Filename: "{app}\nanocodex.exe"; Parameters: "hand start"; WorkingDir: "{userprofile}"
-Name: "{group}\Stop Nanocodex Hand"; Filename: "{app}\nanocodex.exe"; Parameters: "hand stop"; WorkingDir: "{userprofile}"
+Name: "{group}\Set up or repair Nanocodex"; Filename: "{app}\nanocodex.exe"; Parameters: "setup --refresh"; WorkingDir: "{%USERPROFILE}"
+Name: "{group}\Start Nanocodex Hand"; Filename: "{app}\nanocodex.exe"; Parameters: "hand start"; WorkingDir: "{%USERPROFILE}"
+Name: "{group}\Stop Nanocodex Hand"; Filename: "{app}\nanocodex.exe"; Parameters: "hand stop"; WorkingDir: "{%USERPROFILE}"
 Name: "{group}\Nanocodex Hand logs"; Filename: "{localappdata}\Nanocodex\Hand"
 Name: "{group}\Uninstall Nanocodex"; Filename: "{uninstallexe}"
 
