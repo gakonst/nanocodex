@@ -25,8 +25,8 @@ to the intended viewers, executable, and UDP range. A LAN address only supports
 viewers that can reach that LAN; it does not provide cellular Internet access.
 
 Mac and Windows H.264 quality can be configured with `NANOCODEX_SCREEN_MAX_DIMENSION`
-(1280–7680; Mac default 3840, Windows default 1280) and `NANOCODEX_SCREEN_BITRATE_KBPS` (1000–100000; Mac default 24000,
-Windows default 6000). The encoder preserves aspect ratio, never upscales, and selects
+(1280–7680; Mac default 3840, Windows default 1280) and `NANOCODEX_SCREEN_BITRATE_KBPS` (1000–100000; at default output size Mac 24000,
+Windows 6000). Without an explicit bitrate, smaller encoded frames scale the default by pixel area (a 1080p Mac stream defaults to 6000); an override remains exact. The encoder preserves aspect ratio, never upscales, and selects
 an H.264 level covering the output's 60 Hz macroblock rate and bitrate. Higher
 settings need enough capture/encoding CPU and network bandwidth; verify decoded
 frame rate in the actual viewer after changing them.

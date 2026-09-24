@@ -91,6 +91,7 @@ export type RemoteInput = {
 
 const encoder = new TextEncoder();
 const mediaStartTimeout = 15_000;
+const directMediaStartTimeout = 8_000;
 const mediaStallTimeout = 10_000;
 const mediaStableTime = 10_000;
 
@@ -239,6 +240,7 @@ export class RemoteBrowserSession {
   private attempt = 0;
   private startup: RemoteStartupTiming = {};
   private attemptIcePolicy?: RTCIceTransportPolicy;
+  private attemptHasTurn = false;
   private firstFrameMs?: number;
   private selectedAt?: number;
   private selectionFirstFrameMs?: number;
@@ -392,6 +394,7 @@ export class RemoteBrowserSession {
         if (!this.current(epoch)) return;
         if ("error" in result) throw result.error;
         const ice = result.ice;
+        this.attemptHasTurn = hasTurnCredentials(ice.iceServers);
         this.attemptIcePolicy = this.icePolicy(ice.iceServers);
         // Gather one session's candidates while the publisher prepares its
         // offer. The pool belongs to this attempt, even when credentials are reused;
@@ -535,6 +538,7 @@ export class RemoteBrowserSession {
               const ice = await this.lookupIce(signal);
               if (!this.current(epoch)) return;
               this.attemptIcePolicy = this.icePolicy(ice.iceServers);
+              this.attemptHasTurn = hasTurnCredentials(ice.iceServers);
               peer.setConfiguration({ ...peer.getConfiguration(), iceServers: ice.iceServers, iceTransportPolicy: this.attemptIcePolicy });
             }
             await peer.setRemoteDescription({ type: "offer", sdp: offer.sdp });
@@ -907,7 +911,7 @@ export class RemoteBrowserSession {
       }
       if (!valid()) return;
       const stale = this.lastVideoFrameAt === undefined
-        ? now - this.mediaStartedAt! >= mediaStartTimeout
+        ? now - this.mediaStartedAt! >= (this.attemptIcePolicy === "all" && this.attemptHasTurn ? directMediaStartTimeout : mediaStartTimeout)
         : now - this.lastVideoFrameAt >= mediaStallTimeout;
       // A throttled background timer must let its decoder sample settle before
       // declaring a stall. Two seconds allow a baseline and the next 1s sample
@@ -995,7 +999,7 @@ export class RemoteBrowserSession {
     ++this.statsRun; clearTimeout(this.statsTimer); this.statsTimer = undefined; this.statsRequest = undefined;
     // Selection timing belongs to the user wait, not each automatic attempt.
     this.cancelVideoWatch(); this.firstFrameMs = undefined; this.videoTrackId = undefined;
-    this.startup = {}; this.attemptIcePolicy = undefined;
+    this.startup = {}; this.attemptIcePolicy = undefined; this.attemptHasTurn = false;
     clearTimeout(this.mediaTimer); this.mediaTimer = undefined; this.mediaStartedAt = undefined;
     this.lastVideoFrameAt = this.mediaHealthySince = undefined; this.videoFrames = 0; this.decodedFrames.clear();
     this.stopMicrophone(true);

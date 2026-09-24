@@ -25,22 +25,21 @@ impl VideoSettings {
         default_max_dimension: u32,
         default_bitrate: u32,
     ) -> Result<Self> {
-        Self::new(
-            width,
-            height,
-            video_setting(
-                "NANOCODEX_SCREEN_MAX_DIMENSION",
-                default_max_dimension,
-                1280,
-                7680,
-            )?,
-            video_setting(
-                "NANOCODEX_SCREEN_BITRATE_KBPS",
-                default_bitrate,
-                1000,
-                100000,
-            )?,
-        )
+        let maximum = video_setting(
+            "NANOCODEX_SCREEN_MAX_DIMENSION",
+            default_max_dimension,
+            1280,
+            7680,
+        )?;
+        let mut settings = Self::new(width, height, maximum, default_bitrate)?;
+        // Budget the default for the pixels actually sent. 24 Mbps is useful
+        // for 4K, but at 1080p it can needlessly queue video on a WAN uplink.
+        // An explicit bitrate remains an exact override.
+        let suggested = default_bitrate_for(&settings, default_max_dimension, default_bitrate);
+        settings.bitrate_kbps =
+            video_setting("NANOCODEX_SCREEN_BITRATE_KBPS", suggested, 1000, 100000)?;
+        settings.level = video_level(settings.width, settings.height, settings.bitrate_kbps);
+        Ok(settings)
     }
     fn new(width: u32, height: u32, maximum: u32, bitrate_kbps: u32) -> Result<Self> {
         if !(2..=65536).contains(&width) || !(2..=65536).contains(&height) {
@@ -56,6 +55,14 @@ impl VideoSettings {
             level: video_level(width, height, bitrate_kbps),
         })
     }
+}
+fn default_bitrate_for(settings: &VideoSettings, max_dimension: u32, bitrate: u32) -> u32 {
+    // Platform defaults describe a 16:9 frame at the default longest side.
+    let reference_pixels = u64::from(max_dimension) * u64::from(max_dimension) * 9 / 16;
+    let pixels = u64::from(settings.width) * u64::from(settings.height);
+    (u64::from(bitrate) * pixels / reference_pixels)
+        .max(1000)
+        .min(u64::from(bitrate)) as u32
 }
 fn video_setting(name: &str, default: u32, min: u32, max: u32) -> Result<u32> {
     let value = match std::env::var(name) {
@@ -103,5 +110,19 @@ mod tests {
             (3840, 2160, "5.2")
         );
         assert!(VideoSettings::new(0, 1080, 3840, 24000).is_err());
+    }
+
+    #[test]
+    fn default_bitrate_tracks_encoded_area_with_bounded_extremes() {
+        let hd = VideoSettings::new(1920, 1080, 3840, 24000).unwrap();
+        let four_k = VideoSettings::new(3840, 2160, 3840, 24000).unwrap();
+        assert_eq!(default_bitrate_for(&hd, 3840, 24000), 6000);
+        assert_eq!(default_bitrate_for(&four_k, 3840, 24000), 24000);
+        let reduced = VideoSettings::new(1920, 1080, 1280, 6000).unwrap();
+        assert_eq!(default_bitrate_for(&reduced, 1280, 6000), 6000);
+        let tiny = VideoSettings::new(640, 360, 3840, 24000).unwrap();
+        assert_eq!(default_bitrate_for(&tiny, 3840, 24000), 1000);
+        let square = VideoSettings::new(3840, 3840, 3840, 24000).unwrap();
+        assert_eq!(default_bitrate_for(&square, 3840, 24000), 24000);
     }
 }

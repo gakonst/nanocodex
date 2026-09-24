@@ -1842,7 +1842,7 @@ test("a connected direct path with no video retries via TURN with Stats off and 
     ["audio", { id: "audio", type: "inbound-rtp", kind: "audio", framesDecoded: Date.now() }],
   ]) as RTCStatsReport;
   f.session.takeControl(); first.reliable.message({ type: "granted", generation: "direct-lease" });
-  for (let i = 0; i < 14; i++) { Object.assign(f.video, { currentTime: i }); await f.tick(1000); }
+  for (let i = 0; i < 7; i++) { Object.assign(f.video, { currentTime: i }); await f.tick(1000); }
   assert.equal(f.session.state.connected, true); assert.equal(f.session.state.mediaReady, false);
   await f.tick(1000);
   assert.equal(first.connectionState, "closed"); assert.equal(f.session.state.controlling, false);
@@ -1851,6 +1851,18 @@ test("a connected direct path with no video retries via TURN with Stats off and 
   assert.equal(second.config.iceTransportPolicy, "relay"); assert.deepEqual(second.reliable.sent, []);
   staleFrame(); assert.equal(f.session.state.mediaReady, false);
   assert.equal(f.session.state.stats, undefined); assert.ok(first.statsCalls > 0);
+});
+
+test("a relay attempt gets the full video startup window after direct media fails", async t => {
+  const f = fixture(t);
+  f.setIceResponse(async () => Response.json({ iceServers: turnServers }));
+  await f.session.connect(); f.peers[0]!.fail(); await f.tick(1000);
+  const relay = f.peers[1]!; relay.open();
+  assert.equal(relay.config.iceTransportPolicy, "relay");
+  await f.tick(8000);
+  assert.equal(relay.connectionState, "connected");
+  await f.tick(7000);
+  assert.equal(relay.connectionState, "closed");
 });
 
 for (const iceServers of [[], [{ urls: "stun:ice.example" }], [{ urls: "turn:ice.example" }], [{ urls: "turn:ice.example", username: "viewer", credential: "" }]]) {
@@ -2239,9 +2251,9 @@ test("a failed prefetch is retryable and invalidation cannot publish an old pend
 test("cached credentials do not bypass viewer authorization, and a terminal rejection clears them", async t => {
   const f = credentialFixture(t);
   await f.credentials.get("account-a");
-  await f.session.connect(); f.peers[0]!.open();
+  await f.session.connect(); f.peers[0]!.open(); f.playVideo();
   f.sockets[0]!.message({ type: "ready", connection_id: "viewer" }); await flush();
-  f.setStatus(403); await f.tick(10_000);
+  f.setStatus(403); await f.tick(5000); f.playVideo(); await f.tick(5000);
   assert.equal(f.session.state.connected, false);
   assert.equal(f.session.state.connecting, false);
   assert.equal(f.session.state.status, "This remote session is no longer authorized.");
