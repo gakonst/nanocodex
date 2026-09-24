@@ -393,17 +393,21 @@ branch, fan out with `Promise.all`, and call typed tools through
 and cancellation while keeping the model-facing schema compact.
 
 MCP is part of the native tools crate rather than a separate agent runtime.
-The headless `nanocodex` CLI and Cloudflare managed agents (including `nanocodex2`
+The `nanocodex` CLI and Cloudflare managed agents (including `nanocodex2`
 conversations) include [Mercator](https://mercator.sh/setup.md) discovery at
-`https://mercator.sh/mcp` in their default MCP catalog. In the native interactive
-TUI, the public default Mercator server starts **off**: enter `/mercator on` (or
-`/mercator` to toggle) before the first prompt in a new main thread to connect
-and expose its tools to `tool_search`; `/mercator off` hides them again before
-that prompt. Explicit named Mercator MCP configurations are not controlled by
-this toggle. Free discovery does not provide a payment wallet or authorize a
-paid job. Native `--mcp-defaults=false` disables the CLI defaults. Managed
-agents can still connect a separate authorized Mercator MCP account for
-protected workflows.
+`https://mercator.sh/mcp` in their default MCP catalog. Discover its tools with
+`tool_search`; free discovery does not provide a payment wallet or authorize a
+paid job. Native `--mcp-defaults=false` disables the CLI defaults, and a named
+MCP entry can override Mercator. To onboard Mercator for protected workflows in Nanocodex web, open **Account →
+Connections**, select **Mercator → Add**, then **Authorize** the new connection.
+The browser flow asks you to approve a Tempo Wallet capability and select its
+spending limits and expiry. A connected account is not necessarily funded or
+payment-ready; use Mercator’s free `get_connection_status` to check readiness
+before any paid job. You can also add `https://mercator.sh/mcp/auth` as an MCP
+connection manually. When using an external Connect app, approve that MCP
+connection in its grant as well. Nanocodex does not receive your wallet key or
+infer spending permission from public discovery. Native `--provider.tempo` instead
+uses a separately configured local Tempo Accounts wallet for MPP challenges.
 
 Stdio and Streamable HTTP servers are discovered in the background; deferred
 tools remain out of the initial model prefix, are found with BM25

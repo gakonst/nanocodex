@@ -78,6 +78,40 @@ describe("generic remote MCP connection owner", () => {
     });
   });
 
+  it("onboards protected Mercator with advertised scope and a public PKCE client", async () => {
+    const user = "mcp-mercator-wallet";
+    const id = connectionId("B");
+    const ownerSubject = subject("mercator-wallet");
+    const endpoint = "https://mercator.sh/mcp/auth";
+    await materialize(user, id, endpoint, "Mercator");
+    const started = await start(user, id);
+    expect(started.response.status).toBe(200);
+    const authorization = new URL(started.body.authorization_url);
+    expect(authorization.origin).toBe("https://mercator.sh");
+    expect(authorization.searchParams.get("resource")).toBe(endpoint);
+    expect(authorization.searchParams.get("scope")).toBe("mercator:tools");
+    expect(authorization.searchParams.get("client_id")).toBe("mercator-test-client");
+    expect(authorization.searchParams.get("code_challenge_method")).toBe("S256");
+    expect(started.body.mcp_connections).toEqual([{ id, name: "Mercator", status: "authorization_required" }]);
+    const completed = await control(`/users/${user}/mcp-connections/${id}/callback`, "POST", {
+      code: "wallet-approved", state: authorization.searchParams.get("state"),
+    });
+    expect(completed.status).toBe(200);
+    expect(await completed.json()).toEqual({
+      mcp_connections: [{ id, name: "Mercator", status: "connected" }],
+      return_to: "/connections",
+    });
+    await bindSubject(ownerSubject, user);
+    const listed = await SELF.fetch(mcpRequest(id, ownerSubject, {
+      method: "POST", contentType: "application/json",
+      body: JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/list", params: {} }),
+    }));
+    expect(listed.status).toBe(200);
+    expect((await listed.json() as { result: { tools: { name: string }[] } }).result.tools[0]?.name)
+      .toBe("search_services");
+    expect(JSON.stringify(started.body)).not.toContain("mercator-test-access");
+  });
+
   it("materializes one immutable endpoint and denies cross-owner use", async () => {
     const id = connectionId("M");
     const created = await control(`/users/mcp-owner/mcp-connections/${id}`, "PUT", {
