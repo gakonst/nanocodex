@@ -1,7 +1,8 @@
 name: Bounded cold Durable Object trace diagnostic
 on:
   workflow_dispatch:
-permissions: {}
+permissions:
+  issues: write
 jobs:
   inspect:
     runs-on: ubuntu-latest
@@ -10,18 +11,17 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
-      - name: Query bounded production telemetry without printing source or credentials
+      - name: Query bounded telemetry with no raw source or credentials
         shell: bash
         run: |
-          python3 - <<'PY'
+          python3 - <<'PY' > "$RUNNER_TEMP/cold-trace-summary.txt"
           import json, os, urllib.request, urllib.error
-          account=os.environ['CLOUDFLARE_ACCOUNT_ID']
-          token=os.environ['CLOUDFLARE_API_TOKEN']
+          account=os.environ['CLOUDFLARE_ACCOUNT_ID']; token=os.environ['CLOUDFLARE_API_TOKEN']
           assert account and token, 'Missing Cloudflare deployment context'
           endpoint=f'https://api.cloudflare.com/client/v4/accounts/{account}/workers/observability/telemetry/query'
-          timeframe={'from':1790273220000,'to':1790273760000} # Sep 24, 18:07–18:16 UTC
+          timeframe={'from':1790273220000,'to':1790273760000} # 2026-09-24 18:07–18:16 UTC
           def query(view, parameters):
-              body={'queryId':'cold-do-20260924','timeframe':timeframe,'view':view,'dry':True,'limit':100,'parameters':parameters}
+              body={'queryId':'cold-do-20260924','timeframe':timeframe,'view':view,'dry':True,'limit':30,'parameters':parameters}
               req=urllib.request.Request(endpoint,data=json.dumps(body).encode(),headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'},method='POST')
               try:
                   with urllib.request.urlopen(req,timeout=35) as r: result=json.load(r)
@@ -29,28 +29,33 @@ jobs:
                   print('Cloudflare telemetry HTTP status:', e.code)
                   return None
               if not result.get('success'):
-                  print('Cloudflare telemetry rejected request, error codes:', [e.get('code') for e in result.get('errors',[])])
+                  print('Cloudflare telemetry error codes:', [e.get('code') for e in result.get('errors',[])])
                   return None
               return result.get('result') or {}
-          parameters={'datasets':['cloudflare-workers'],'filters':[{'key':'$metadata.service','operation':'eq','type':'string','value':'nanocodex-durable-agent'}], 'needle':{'value':'managed.session.constructor'}}
-          result=query('events',parameters)
+          params={'datasets':['cloudflare-workers'],'filters':[{'key':'$metadata.service','operation':'eq','type':'string','value':'nanocodex-durable-agent'}], 'needle':{'value':'managed.session.constructor'}}
+          result=query('events',params)
           if result is None: raise SystemExit(1)
           events=(result.get('events') or {}).get('events') or []
-          print('Bounded constructor events:', len(events))
+          print('Bounded constructor events:',len(events))
           trace_ids=[]
-          for item in events:
-              meta=item.get('$metadata') or {}
-              workers=item.get('$workers') or {}
-              tid=meta.get('traceId') or workers.get('traceId')
+          for item in events[:10]:
+              meta=item.get('$metadata') or {}; w=item.get('$workers') or {}
+              tid=meta.get('traceId') or w.get('traceId')
               if tid and tid not in trace_ids: trace_ids.append(tid)
-              print('constructor event:',json.dumps({k:meta.get(k) for k in ('timestamp','service','traceId','spanId','parentSpanId','duration') if meta.get(k) is not None},sort_keys=True))
-          # Request only the first few traces; never print source, request bodies, headers, or arbitrary log text.
-          for tid in trace_ids[:4]:
+              print('constructor event:',json.dumps({'timestamp':item.get('timestamp'),'service':meta.get('service'),'duration':meta.get('duration'),'colo':meta.get('colo')},sort_keys=True))
+          for i,tid in enumerate(trace_ids[:2]):
               found=query('events',{'datasets':['cloudflare-workers'],'filters':[{'key':'$metadata.traceId','operation':'eq','type':'string','value':tid}]})
               if found is None: continue
               spans=(found.get('events') or {}).get('events') or []
-              print('trace summary:',tid,'events:',len(spans))
-              for item in spans:
+              print('trace',i+1,'event count:',len(spans))
+              for item in spans[:30]:
                   meta=item.get('$metadata') or {}; w=item.get('$workers') or {}
-                  print('span:',json.dumps({'timestamp':item.get('timestamp'),'service':meta.get('service'),'name':meta.get('spanName') or meta.get('message'),'duration':meta.get('duration'),'span_id':meta.get('spanId'),'parent_span_id':meta.get('parentSpanId'),'colo':meta.get('colo'),'execution_model':w.get('executionModel'),'event_type':w.get('eventType')},sort_keys=True))
+                  print('span:',json.dumps({'timestamp':item.get('timestamp'),'service':meta.get('service'),'name':meta.get('spanName'),'duration':meta.get('duration'),'colo':meta.get('colo'),'execution_model':w.get('executionModel'),'event_type':w.get('eventType')},sort_keys=True))
           PY
+      - name: Publish only sanitized summary to diagnostic PR
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test -s "$RUNNER_TEMP/cold-trace-summary.txt" || echo 'No diagnostic output available' > "$RUNNER_TEMP/cold-trace-summary.txt"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/579/comments" -f body="$(cat "$RUNNER_TEMP/cold-trace-summary.txt")" >/dev/null
