@@ -160,7 +160,7 @@ test('workflow gates selective same-runner deployment and retains serialized pro
   const plan = all.find(step => step.run === 'node scripts/cloudflare/release-plan.mjs plan');
   assert.match(plan.source, /if: steps\.current-release\.outputs\.active == 'true'/);
   assert.ok(all.findIndex(step => step.run === 'node scripts/cloudflare/current-production-release.mjs') < all.indexOf(plan));
-  assert.deepEqual(releasePhases, [['egress', 'x'], ['managed'],
+  assert.deepEqual(releasePhases, [['egress', 'x'], ['media'], ['managed'],
     ['email', 'dialog', 'connect-api', 'astra', 'chief-of-staff', 'playground'], ['account']]);
   assert.match(production, /group: cloudflare-production\n      cancel-in-progress: false/);
   assert.match(production, /GH_TOKEN: \$\{\{ github\.token \}\}/);
