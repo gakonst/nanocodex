@@ -1450,11 +1450,12 @@ async function managedFetch(
   ctx: Pick<ExecutionContext, "waitUntil">,
   trustedAgentPrincipal?: Principal,
   clientIngressColo = normalizeProviderColo(request.cf?.colo),
+  firstTurn?: Readonly<{ id: string; key: string; input: unknown }>,
 ): Promise<Response> {
   const began = performance.now();
   const startedAt = Date.now();
   beginHandTiming(request);
-  const response = await managedAccessResponse(request, await managedFetchRoute(request, env, ctx, trustedAgentPrincipal, clientIngressColo), env);
+  const response = await managedAccessResponse(request, await managedFetchRoute(request, env, ctx, trustedAgentPrincipal, clientIngressColo, firstTurn), env);
   const path = new URL(request.url).pathname;
   if (path.startsWith("/v1/agents")) {
     try {
@@ -1475,6 +1476,7 @@ async function managedFetchRoute(
   ctx: Pick<ExecutionContext, "waitUntil">,
   trustedAgentPrincipal?: Principal,
   clientIngressColo: string | null = null,
+  firstTurn?: Readonly<{ id: string; key: string; input: unknown }>,
 ): Promise<Response> {
     env = withIngressPlacement(env, clientIngressColo);
     const url = new URL(request.url);
@@ -1874,65 +1876,34 @@ async function managedFetchRoute(
         return json({ error: protocol.code, message: protocol.message }, { status: 400 });
       }
 
-      // Reuse the existing independently durable creation and turn-admission
-      // owners. The stable outer key converges retries on both resources while
-      // keeping this public request to one client round trip.
-      const innerHeaders = new Headers({
-        "content-type": "application/json",
-        "idempotency-key": requestKey,
-        origin: url.origin,
-      });
+      // Compute stable identities before dispatch. The AgentDO still durably
+      // commits creation before admitting the turn, but one RPC now owns both
+      // sequential operations (including their idempotent crash replay).
+      const [expectedAgentId, turnId, turnKeyHash] = await Promise.all([
+        idempotentAgentId(principal.userId, requestKey),
+        idempotentAgentId(principal.userId, `agent-run-turn\0${requestKey}`),
+        hashText(`${principal.userId}\0${requestKey}\0first-turn`),
+      ]);
+      const turnKey = `agent-run:${turnKeyHash}`;
       const created = await managedFetch(new Request(new URL("/v1/agents", url), {
         method: "POST",
-        headers: innerHeaders,
+        headers: { "content-type": "application/json", "idempotency-key": requestKey, origin: url.origin },
         body: run.creationBody,
-      }), env, ctx, principal, clientIngressColo);
+      }), env, ctx, principal, clientIngressColo, { id: turnId, key: turnKey, input: run.input });
       if (!created.ok) return created;
-      let creationReceipt: { agent_id?: unknown };
+      let receipt: Record<string, unknown>;
       try {
-        creationReceipt = await created.json<{ agent_id?: unknown }>();
-      } catch {
-        return json({ error: "agent_creation_invalid_response" }, { status: 502 });
-      }
-      const expectedAgentId = await idempotentAgentId(principal.userId, requestKey);
-      if (creationReceipt.agent_id !== expectedAgentId) {
-        return json({ error: "agent_creation_invalid_response" }, { status: 502 });
-      }
-
-      const turnId = await idempotentAgentId(
-        principal.userId,
-        `agent-run-turn\0${requestKey}`,
-      );
-      const turnKey = `agent-run:${await hashText(
-        `${principal.userId}\0${requestKey}\0first-turn`,
-      )}`;
-      innerHeaders.set("idempotency-key", turnKey);
-      const admitted = await managedFetch(new Request(
-        new URL(`/v1/agents/${expectedAgentId}/turns`, url),
-        {
-          method: "POST",
-          headers: innerHeaders,
-          body: JSON.stringify({ id: turnId, input: run.input }),
-        },
-      ), env, ctx, principal, clientIngressColo);
-      if (!admitted.ok) return admitted;
-      let turnReceipt: Record<string, unknown>;
-      try {
-        turnReceipt = await admitted.json<Record<string, unknown>>();
+        receipt = await created.json<Record<string, unknown>>();
       } catch {
         return json({ error: "turn_admission_invalid_response" }, { status: 502 });
       }
-      if (turnReceipt.turn_id !== turnId
-        || typeof turnReceipt.accepted_cursor !== "string"
-        || !/^[1-9][0-9]*$/.test(turnReceipt.accepted_cursor)) {
+      if (receipt.agent_id !== expectedAgentId || receipt.turn_id !== turnId
+        || receipt.turn_idempotency_key !== turnKey
+        || typeof receipt.accepted_cursor !== "string"
+        || !/^[1-9][0-9]*$/.test(receipt.accepted_cursor)) {
         return json({ error: "turn_admission_invalid_response" }, { status: 502 });
       }
-      return json({
-        agent_id: expectedAgentId,
-        session_id: expectedAgentId,
-        turn_idempotency_key: turnKey,
-        ...turnReceipt,
-      }, { status: admitted.status === 202 ? 201 : 200 });
+      return json(receipt, { status: created.status });
     }
     if (request.method === "POST" && url.pathname === "/v1/agents") {
       if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
@@ -1990,6 +1961,9 @@ async function managedFetchRoute(
       } catch (error) {
         return json({ error: "invalid_request", message: errorMessage(error) }, { status: 400 });
       }
+      if (firstTurn && durabilityArchive !== undefined) {
+        return json({ error: "invalid_request", message: "agent runs cannot import durability state" }, { status: 400 });
+      }
       if (durabilityArchive !== undefined
         && !principal.capabilities.includes("agents:portability")) {
         return json({ error: "forbidden" }, { status: 403 });
@@ -2040,13 +2014,17 @@ async function managedFetchRoute(
         let sessionDispatchAt = Date.now();
         let sessionAttempts = 0;
         try {
-          created = await fetchCreateStage(stub, "https://session.internal/create", {
-            method: "POST", headers: forwardManagedIngress(new Headers({ "content-type": "application/json" }), clientIngressColo),
+          created = await fetchCreateStage(stub, firstTurn
+            ? "https://session.internal/create-run" : "https://session.internal/create", {
+            method: "POST", headers: (() => { const headers = forwardManagedIngress(new Headers({ "content-type": "application/json" }), clientIngressColo);
+              if (firstTurn) forwardPrincipalAssertions(headers, principal);
+              return headers; })(),
             body: JSON.stringify({
               session_id: agentId, owner_id: principal.userId,
               organization_id: principal.organizationId, team_id: principal.teamId,
               authorization_epoch: principal.authorizationEpoch, public_origin: url.origin,
               settings: creationSettings, configuration: creationConfiguration,
+              ...(firstTurn ? { first_turn: firstTurn } : {}),
             }),
           }, ownershipTimeoutMs, "agent creation", 5, (attempt) => {
             sessionAttempts = attempt;
@@ -2060,7 +2038,7 @@ async function managedFetchRoute(
           if (created.status >= 500 && requestKey === null) await requestSessionCleanup(stub, ownershipTimeoutMs);
           return created;
         }
-        const phases = await created.json<Record<string, number>>();
+        const phases = await created.json<Record<string, number> & { first_turn?: Record<string, unknown>; first_turn_status?: number; first_turn_summary?: unknown }>();
         const sessionReceivedAt = Date.now();
         const sessionCreateMs = roundMilliseconds(performance.now() - sessionCreationStartedAt);
         const createMs = roundMilliseconds(performance.now() - creationStartedAt);
@@ -2106,6 +2084,25 @@ async function managedFetchRoute(
           session_commit_alarm_ms: phases.commit_alarm_ms,
           create_ms: createMs,
         });
+        if (firstTurn) {
+          if (!phases.first_turn || ![200, 202].includes(phases.first_turn_status ?? 0)) {
+            return json({ error: "turn_admission_invalid_response" }, { status: 502 });
+          }
+          if (phases.first_turn_status === 202) {
+            const summary = phases.first_turn_summary;
+            if (summary && typeof summary === "object" && !Array.isArray(summary)) {
+              const { title, turnCount } = summary as { title?: unknown; turnCount?: unknown };
+              if (Number.isSafeInteger(turnCount) && Number(turnCount) > 0) {
+                ctx.waitUntil(recordAgentActivity(env, principal.userId, agentId, {
+                  title: typeof title === "string" ? title : "", turnCount: Number(turnCount),
+                }).catch((error) => console.warn({ type: "managed.agent_summary_update_failed", error_kind: errorKind(error) })));
+              }
+            }
+          }
+          return json({ agent_id: agentId, session_id: agentId,
+            turn_idempotency_key: firstTurn.key, ...phases.first_turn },
+          { status: phases.first_turn_status === 202 ? 201 : 200 });
+        }
         const response = agentCreationResponse(url, agentId, creationSettings, true);
         response.headers.append("server-timing", `managed_create;dur=${createMs}, managed_session_create;dur=${sessionCreateMs}`);
         if (preHandlerMs !== undefined) response.headers.append("server-timing", `managed_session_pre_handler;dur=${preHandlerMs}`);
@@ -3668,6 +3665,12 @@ export class DurableAgentSession extends DurableComputerObject {
         ? json({ error: "agent_subject_unavailable" }, { status: 404 })
         : json({ user_id: owner }, { headers: { "cache-control": "no-store" } });
     }
+    // A fused creation has no retained session yet, so authenticate its
+    // forwarded principal inside #createRunHttp before the ordinary session
+    // ownership gate (which correctly rejects assertions on empty sessions).
+    if (request.method === "POST" && url.pathname === "/create-run") {
+      return this.#createRunHttp(request);
+    }
     const ownerAssertion = request.headers.get(SESSION_OWNER_ASSERTION);
     let turnAuthorization: TurnAuthorization = { capabilities: [] };
     if (request.method === "GET" && url.pathname === "/connect-existence") {
@@ -4637,6 +4640,60 @@ export class DurableAgentSession extends DurableComputerObject {
     await this.#scheduleNextAlarm();
     if (timing) timing.alarm_ms = roundMilliseconds(performance.now() - alarmStartedAt);
     return new Response(null, { status: 204 });
+  }
+
+  // A single SessionDO RPC saves an inter-colo round trip without weakening
+  // the two durable commit points. If the RPC is lost between commits, replay
+  // runs #createHttp again and #submitHttpTurn converges on the retained turn.
+  async #createRunHttp(request: Request): Promise<Response> {
+    let value: unknown;
+    try { value = await request.json(); }
+    catch { return json({ error: "invalid_request" }, { status: 400 }); }
+    if (!value || typeof value !== "object" || Array.isArray(value))
+      return json({ error: "invalid_request" }, { status: 400 });
+    const { first_turn: firstTurn, ...initialization } = value as Record<string, unknown>;
+    if (!firstTurn || typeof firstTurn !== "object" || Array.isArray(firstTurn))
+      return json({ error: "invalid_request" }, { status: 400 });
+    const turn = firstTurn as Record<string, unknown>;
+    if (Object.keys(turn).sort().join(",") !== "id,input,key"
+      || typeof turn.id !== "string" || !TURN_ID.test(turn.id)
+      || typeof turn.key !== "string" || !IDEMPOTENCY_KEY.test(turn.key))
+      return json({ error: "invalid_request" }, { status: 400 });
+    const asserted = forwardedPrincipal(request.headers);
+    if (!asserted || asserted.ownerId !== initialization.owner_id
+      || asserted.organizationId !== initialization.organization_id
+      || asserted.teamId !== initialization.team_id
+      || asserted.authorizationEpoch !== initialization.authorization_epoch
+      || !asserted.authorization.capabilities.includes("agents:write")
+      || !asserted.authorization.capabilities.includes("tools:use")
+      || (asserted.authorization.connectGrant
+        && !asserted.authorization.connectGrant.connectors.includes("chatgpt")))
+      return json({ error: "not_found" }, { status: 404 });
+    const created = await this.#createHttp(new Request("https://session.internal/create", {
+      method: "POST", headers: request.headers, body: JSON.stringify(initialization),
+    }));
+    if (!created.ok) return created;
+    const phases = await created.json<Record<string, number>>();
+    const session = this.#session();
+    if (!session || session.owner_id !== asserted.ownerId
+      || session.organization_id !== asserted.organizationId
+      || session.team_id !== asserted.teamId
+      || session.authorization_epoch !== asserted.authorizationEpoch
+      || this.#durabilityExported || this.#deleting || this.#deleted)
+      return json({ error: "not_found" }, { status: 404 });
+    const headers = new Headers(request.headers);
+    headers.set("idempotency-key", turn.key);
+    const admitted = await this.#submitHttpTurn(new Request("https://session.internal/turns", {
+      method: "POST", headers, body: JSON.stringify({ id: turn.id, input: turn.input }),
+    }), asserted.authorization);
+    if (!admitted.ok) return admitted;
+    const turnReceipt = await admitted.json<Record<string, unknown>>();
+    let summary: unknown;
+    try { summary = JSON.parse(admitted.headers.get("x-nanocodex-turn-summary") ?? "null"); }
+    catch { /* Best effort summary, never part of turn admission. */ }
+    return json({ ...phases, first_turn: turnReceipt, first_turn_status: admitted.status,
+      ...(admitted.headers.get("x-nanocodex-turn-created") === "1" ? { first_turn_summary: summary } : {}),
+    });
   }
 
   async #createHttp(request: Request): Promise<Response> {
