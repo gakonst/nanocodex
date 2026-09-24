@@ -53,13 +53,14 @@ describe("trusted managed ingress", () => {
         expect(request.headers.has("x-nanocodex-worker-colo")).toBe(false);
         const body: any = await request.json();
         expect(body).not.toHaveProperty("clientIngressColo");
-        return new URL(request.url).pathname === "/create" ? Response.json({})
-          : Response.json({ turn_id: body.id, accepted_cursor: "1" }, { status: 202 });
+        return new URL(request.url).pathname === "/create-run"
+          ? Response.json({ first_turn: { turn_id: body.first_turn.id, accepted_cursor: "1" }, first_turn_status: 202 })
+          : Response.json({});
       } }),
     } } as unknown as Parameters<typeof worker.fetch>[1];
     const response = await worker.fetch(publicRequest(path, "FRA", path.endsWith("agent-runs") ? { input: "Synthetic task" } : undefined), runtime, createExecutionContext(), principal);
     expect(response.status).toBe(201);
-    expect(calls).toEqual(path.endsWith("agent-runs") ? ["/create", "/turns"] : ["/create"]);
+    expect(calls).toEqual(path.endsWith("agent-runs") ? ["/create-run"] : ["/create"]);
   });
 
   it.each([false, true])("retains creation origin without telemetry reads before generation (observation coordinator fails: %s)", async unavailable => {
