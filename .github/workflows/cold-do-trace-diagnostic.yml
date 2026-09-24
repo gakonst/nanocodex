@@ -6,57 +6,64 @@ permissions:
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 6
+    timeout-minutes: 8
     env:
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      NANOCODEX_PROBE_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
     steps:
-      - name: Summarize bounded production span chains without raw telemetry
+      - name: Measure twelve create, replay and cleanup pairs against deployed API
         shell: bash
         run: |
-          python3 - <<'PY' > "$RUNNER_TEMP/cold-trace-summary.txt"
-          import json, os, urllib.request
-          account=os.environ['CLOUDFLARE_ACCOUNT_ID']; token=os.environ['CLOUDFLARE_API_TOKEN']
-          endpoint=f'https://api.cloudflare.com/client/v4/accounts/{account}/workers/observability/telemetry/query'
-          timeframe={'from':1790273220000,'to':1790273760000}
-          def query(view, parameters):
-              body={'queryId':'cold-do-chains-20260924','timeframe':timeframe,'view':view,'dry':True,'limit':200,'parameters':parameters}
-              req=urllib.request.Request(endpoint,data=json.dumps(body).encode(),headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'},method='POST')
-              with urllib.request.urlopen(req,timeout=35) as r: response=json.load(r)
-              assert response.get('success'), [x.get('code') for x in response.get('errors',[])]
-              return response.get('result') or {}
-          params={'datasets':['cloudflare-workers'],'filters':[{'key':'$metadata.service','operation':'eq','type':'string','value':'nanocodex-durable-agent'}], 'needle':{'value':'managed.session.constructor'}}
-          summaries=query('traces',params).get('traces') or []
-          print('trace duration | root worker/colo | caller dispatch start+duration | callee handler start+duration | residual | constructor log offset; all milliseconds')
-          for index,trace in enumerate([t for t in summaries if t.get('rootSpanName')=='POST'][:8]):
-              tid=trace['traceId']; found=query('events',{'datasets':[],'filters':[{'key':'$metadata.traceId','operation':'eq','type':'string','value':tid}]})
-              events=(found.get('events') or {}).get('events') or []
-              spans=[e.get('source') or {} for e in events if e.get('dataset')=='otel']
-              byid={s.get('spanId'):s for s in spans if s.get('spanId')}
-              root=min((s.get('startTime') or 0) for s in spans)
-              constructors=[e for e in events if isinstance(e.get('source'),dict) and e['source'].get('type')=='managed.session.constructor']
-              print('TRACE',index,'summary',trace.get('traceDurationMs'),'spans',len(spans),'constructors',len(constructors))
-              candidates=[]
-              for handler in spans:
-                  cf=handler.get('cloudflare') or {}
-                  if handler.get('name')!='POST' or not cf.get('durable_object'): continue
-                  fetch=byid.get(handler.get('parentSpanId')) or {}
-                  caller=byid.get(fetch.get('parentSpanId')) or {}
-                  if caller.get('name')!='durable_object_subrequest': continue
-                  hstart=handler.get('startTime') or 0; cstart=caller.get('startTime') or 0
-                  candidates.append((handler,fetch,caller))
-              for h,f,c in sorted(candidates,key=lambda x:x[0].get("durationMS") or 0,reverse=True)[:2]:
-                  hc=h.get('cloudflare') or {}; cc=c.get('cloudflare') or {}
-                  print('  root=%s/%s caller=%s/%s %s+%s callee=%s/%s %s+%s residual=%s fetch=%s constructor_logs=%s' % (next((str((s.get('cloudflare') or {}).get('script_name'))+'/'+str((s.get('cloudflare') or {}).get('colo')) for s in spans if s.get('name')=='POST' and not (s.get('cloudflare') or {}).get('durable_object')),'none'),str((byid.get(c.get('parentSpanId')) or {}).get('name')),cc.get('script_name'),cc.get('colo'),(c.get('startTime') or 0)-root,c.get('durationMS'),hc.get('script_name'),hc.get('colo'),(h.get('startTime') or 0)-root,h.get('durationMS'),(c.get('durationMS') or 0)-(h.get('durationMS') or 0),f.get('durationMS'),[(e.get('timestamp',0)-(h.get('startTime') or 0), (e.get('source') or {}).get('constructor_ms')) for e in constructors]))
-          PY
+          node --input-type=module <<'JS' > "$RUNNER_TEMP/cold-create-summary.txt"
+          import { randomUUID } from 'node:crypto';
+          import { performance } from 'node:perf_hooks';
+          const key = process.env.NANOCODEX_PROBE_API_KEY;
+          if (!key) throw new Error('Live-test API key unavailable');
+          const origin = 'https://nanocodex.gakonst.workers.dev';
+          const body = JSON.stringify({settings:{model:'gpt-6-luna',thinking:'low',reasoning_mode:'standard',fast_mode:false}});
+          const records=[];
+          const metricNames=new Set(['managed_auth','managed_create','session_create','session_pre_handler','session_before_constructor','session_constructor','session_constructor_base','session_handler','catalog_attach']);
+          const timing = headers => {
+            const output={}; const raw=headers.get('server-timing')||'';
+            for(const match of raw.matchAll(/([a-zA-Z_]+)(?:;[^,]*?)?;dur=([\d.]+)/g)) if(metricNames.has(match[1])) output[match[1]]=Number(match[2]);
+            return output;
+          };
+          const request=async (method,path,body,key) => {
+            const started=performance.now();
+            const response=await fetch(origin+path,{method,headers:{authorization:'Bearer '+process.env.NANOCODEX_PROBE_API_KEY,'content-type':'application/json',...(key?{'idempotency-key':key}:{})},...(body?{body}:{}),signal:AbortSignal.timeout(16000)});
+            const text=await response.text();
+            return {status:response.status,elapsed:Math.round(performance.now()-started),metrics:timing(response.headers),colo:(response.headers.get('cf-ray')||'').split('-').at(-1),text};
+          };
+          for(let i=0;i<12;i++) {
+            const idem='cold-do-followup-'+process.env.GITHUB_RUN_ID+'-'+randomUUID();
+            let id; let deletion='not-created';
+            try {
+              const fresh=await request('POST','/v1/agents',body,idem);
+              if(fresh.status<200||fresh.status>=300) throw new Error('create status '+fresh.status);
+              id=JSON.parse(fresh.text).id ?? JSON.parse(fresh.text).agent_id;
+              if(typeof id!=='string') throw new Error('create response missing id');
+              const replay=await request('POST','/v1/agents',body,idem);
+              if(replay.status<200||replay.status>=300) throw new Error('replay status '+replay.status);
+              const replayId=JSON.parse(replay.text).id ?? JSON.parse(replay.text).agent_id;
+              if(replayId!==id) throw new Error('idempotency mismatch');
+              records.push({index:i,fresh:{status:fresh.status,elapsed:fresh.elapsed,colo:fresh.colo,metrics:fresh.metrics},replay:{status:replay.status,elapsed:replay.elapsed,colo:replay.colo,metrics:replay.metrics}});
+            } finally {
+              if(id) {
+                const removed=await request('DELETE','/v1/agents/'+encodeURIComponent(id));
+                deletion=removed.status;
+              }
+              console.log('trial',i,JSON.stringify(records.at(-1)||{}),'delete_status',deletion);
+            }
+          }
+          console.log('completed',records.length);
+          JS
       - name: Surface bounded sanitized summary as one annotation
         if: always()
         shell: bash
         run: |
           python3 - <<'PYCODE'
           import os
-          p=os.path.join(os.environ['RUNNER_TEMP'],'cold-trace-summary.txt')
+          p=os.path.join(os.environ['RUNNER_TEMP'],'cold-create-summary.txt')
           content=open(p).read()[:16000] if os.path.exists(p) else 'No diagnostic output'
           content=content.replace('%','%25').replace('\r','%0D').replace('\n','%0A')
-          print('::notice file=.github/workflows/cold-do-trace-diagnostic.yml,line=1,title=Cold DO trace::'+content)
+          print('::notice file=.github/workflows/cold-do-trace-diagnostic.yml,line=1,title=Cold create sample::'+content)
           PYCODE
