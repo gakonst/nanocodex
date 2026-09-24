@@ -50,8 +50,6 @@ struct Catalog {
     search_index: Option<Arc<SearchIndex>>,
     pending_servers: BTreeSet<String>,
     generations: BTreeMap<String, u64>,
-    opt_in: BTreeSet<String>,
-    hidden: BTreeSet<String>,
 }
 
 pub(crate) struct ConnectedCatalog {
@@ -125,14 +123,13 @@ impl ProviderState {
     pub(crate) fn new(
         server_names: impl IntoIterator<Item = String>,
         discovery_timeout: Duration,
-        initially_hidden: BTreeSet<String>,
     ) -> Self {
-        let server_names = server_names.into_iter().collect::<BTreeSet<_>>();
-        let pending_servers = server_names
-            .difference(&initially_hidden)
+        let pending_servers = server_names.into_iter().collect::<BTreeSet<_>>();
+        let generations = pending_servers
+            .iter()
             .cloned()
-            .collect::<BTreeSet<_>>();
-        let generations = server_names.iter().cloned().map(|name| (name, 0)).collect();
+            .map(|name| (name, 0))
+            .collect();
         let (remaining, _) = watch::channel(pending_servers.len());
         Self {
             catalog: Mutex::new(Catalog {
@@ -143,35 +140,10 @@ impl ProviderState {
                 search_index: None,
                 pending_servers,
                 generations,
-                opt_in: initially_hidden.clone(),
-                hidden: initially_hidden,
             }),
             remaining,
             discovery_timeout,
         }
-    }
-
-    pub(crate) fn hidden_servers(&self) -> BTreeSet<String> {
-        self.catalog().hidden.clone()
-    }
-
-    pub(crate) fn is_opt_in(&self, name: &str) -> bool {
-        self.catalog().opt_in.contains(name)
-    }
-
-    pub(crate) fn is_connected(&self, name: &str) -> bool {
-        self.catalog().clients.contains_key(name)
-    }
-
-    pub(crate) fn set_opt_in_enabled(&self, name: &str, enabled: bool) {
-        let mut catalog = self.catalog();
-        if enabled {
-            catalog.hidden.remove(name);
-        } else {
-            catalog.hidden.insert(name.to_owned());
-        }
-        catalog.active.clear();
-        catalog.search_index = None;
     }
 
     pub(crate) fn complete_server(
@@ -230,10 +202,7 @@ impl ProviderState {
                 catalog
                     .entries
                     .values()
-                    .filter(|entry| {
-                        !catalog.hidden.contains(&entry.server_name)
-                            && entry.tool_exposure.is_deferred()
-                    })
+                    .filter(|entry| entry.tool_exposure.is_deferred())
                     .cloned(),
             )));
         } else {
@@ -285,10 +254,7 @@ impl ProviderState {
                 catalog
                     .entries
                     .values()
-                    .filter(|entry| {
-                        !catalog.hidden.contains(&entry.server_name)
-                            && entry.tool_exposure.is_deferred()
-                    })
+                    .filter(|entry| entry.tool_exposure.is_deferred())
                     .cloned(),
             )));
         }
@@ -297,12 +263,7 @@ impl ProviderState {
             .clone()
             .ok_or_else(|| "MCP search index was not initialized".to_owned())?;
         let pending_servers = catalog.pending_servers.len();
-        let failed_servers = catalog
-            .failures
-            .iter()
-            .filter(|(name, _)| !catalog.hidden.contains(*name))
-            .map(|(name, error)| (name.clone(), error.clone()))
-            .collect();
+        let failed_servers = catalog.failures.clone();
         drop(catalog);
 
         let selected = index.search(query, limit.min(MAX_SEARCH_LIMIT));
@@ -331,21 +292,13 @@ impl ProviderState {
         catalog
             .entries
             .values()
-            .filter(|entry| {
-                !catalog.hidden.contains(&entry.server_name)
-                    && entry.tool_exposure.is_available_in_code_mode()
-            })
+            .filter(|entry| entry.tool_exposure.is_available_in_code_mode())
             .map(|entry| entry.definition.clone())
             .collect()
     }
 
     pub(crate) fn entry(&self, name: &str) -> Option<Arc<ToolEntry>> {
-        let catalog = self.catalog();
-        catalog
-            .entries
-            .get(name)
-            .filter(|entry| !catalog.hidden.contains(&entry.server_name))
-            .cloned()
+        self.catalog().entries.get(name).cloned()
     }
 
     pub(crate) async fn ready_entry(&self, name: &str) -> Option<Arc<ToolEntry>> {
@@ -392,10 +345,7 @@ impl ProviderState {
         Ok(catalog
             .entries
             .values()
-            .filter(|entry| {
-                !catalog.hidden.contains(&entry.server_name)
-                    && entry.tool_exposure == McpToolExposure::DeferredAndCodeMode
-            })
+            .filter(|entry| entry.tool_exposure == McpToolExposure::DeferredAndCodeMode)
             .cloned()
             .collect())
     }
