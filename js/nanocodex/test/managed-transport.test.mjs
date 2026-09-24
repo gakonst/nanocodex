@@ -174,6 +174,83 @@ test("managed create reverse-attaches one Tools recipe and shutdown closes it wi
   assert.equal(requests.some((request) => request.method === "DELETE"), false);
 });
 
+test("managed creation uses only the matching receipt identity, not its synthetic initial state", async () => {
+  const requests = [];
+  const agent = await NodeAgent.create({
+    transport: NodeTransport.managed({
+      agent: { create: true }, baseUrl: origin,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(`${request.method} ${new URL(request.url).pathname}`);
+        if (request.method === "POST" && new URL(request.url).pathname === "/v1/agents") {
+          return Response.json({
+            agent_id: agentId, session_id: agentId,
+            // A keyed replay can carry a synthetic fresh initial_state even
+            // though the actual retained session has existing turns.
+            initial_state: { agent_id: agentId, session_id: "stale", completed_turns: 0 },
+          }, { status: 201 });
+        }
+        if (request.method === "GET") {
+          return Response.json({ agent_id: agentId, session_id: agentId, completed_turns: 9 });
+        }
+        return Response.json({ state: "preparing" }, { status: 202 });
+      },
+    }),
+  });
+  try {
+    assert.equal(agent.agentId, agentId);
+    assert.equal(agent.sessionId, agentId);
+    assert.equal(requests.filter((request) => request === `GET /v1/agents/${agentId}`).length, 0);
+  } finally {
+    await agent.session.shutdown();
+  }
+});
+
+test("managed creation falls back to GET for missing or inconsistent receipt identity", async () => {
+  for (const session_id of [undefined, "bad-session", sessionId]) {
+    const requests = [];
+    const agent = await NodeAgent.create({
+      transport: NodeTransport.managed({
+        agent: { create: true }, baseUrl: origin,
+        fetch: async (input, init) => {
+          const request = new Request(input, init);
+          requests.push(`${request.method} ${new URL(request.url).pathname}`);
+          if (request.method === "POST" && new URL(request.url).pathname === "/v1/agents") {
+            return Response.json({ agent_id: agentId, ...(session_id === undefined ? {} : { session_id }) }, { status: 201 });
+          }
+          if (request.method === "GET") return Response.json({ agent_id: agentId, session_id: sessionId });
+          return Response.json({ state: "preparing" }, { status: 202 });
+        },
+      }),
+    });
+    try {
+      assert.equal(agent.sessionId, sessionId);
+      assert.equal(requests.filter((request) => request === `GET /v1/agents/${agentId}`).length, 1);
+    } finally {
+      await agent.session.shutdown();
+    }
+  }
+});
+
+test("malformed create receipt cannot install speculative managed identity", async () => {
+  const requests = [];
+  await assert.rejects(NodeAgent.create({
+    transport: NodeTransport.managed({
+      agent: { create: true }, baseUrl: origin,
+      fetch: async (input, init) => {
+        const request = new Request(input, init);
+        requests.push(`${request.method} ${new URL(request.url).pathname}`);
+        if (request.method === "POST" && new URL(request.url).pathname === "/v1/agents") {
+          return Response.json({ agent_id: agentId, session_id: "invalid", initial_state: { agent_id: agentId, session_id: agentId } });
+        }
+        if (request.method === "GET") return Response.json({ agent_id: sessionId, session_id: sessionId });
+        return Response.json({ state: "preparing" }, { status: 202 });
+      },
+    }),
+  }), /inconsistent agent or session identity/);
+  assert.equal(requests.filter((request) => request === `GET /v1/agents/${agentId}`).length, 1);
+});
+
 test("cold reverse attachment failure does not block the durable Agent and retries under its lifecycle", async () => {
   const socket = new ManagedToolSocket();
   let attempts = 0;

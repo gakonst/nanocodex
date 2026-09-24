@@ -35,7 +35,7 @@ const REASONING_MODES = new Set(["standard", "pro"]);
 const eventEncoder = new TextEncoder();
 
 /** Create a new managed agent owned by the authenticated account. */
-export async function create(options = {}) {
+export async function create(options = {}, onCreated) {
   const { clientOptions, requestBody, creationKey } = managedCreateOptions(options);
   const client = managedClient(clientOptions);
   const idempotencyKey = creationKey ?? `managed-create:${globalThis.crypto.randomUUID()}`;
@@ -45,7 +45,12 @@ export async function create(options = {}) {
     idempotencyKey,
     requestBody,
   );
-  return agentHandle(client, requiredString(receipt, "agent_id"));
+  const agent = agentHandle(client, requiredString(receipt, "agent_id"));
+  // Internal transport hook: preserve the public handle while sharing the POST
+  // identity receipt with the common Agent lifecycle. Never cache initial_state: an
+  // idempotent replay may return synthetic creation state for an existing agent.
+  onCreated?.(receipt);
+  return agent;
 }
 
 /** Create a managed agent and durably admit its first turn in one request. */

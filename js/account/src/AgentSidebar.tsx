@@ -184,9 +184,9 @@ export function AgentSidebar({
                     key={conversation.id}
                     type="button"
                     title={conversation.title}
-                    onPointerEnter={() => onPrefetch(conversation.id)}
-                    onFocus={() => onPrefetch(conversation.id)}
-                    disabled={pending}
+                    onPointerEnter={() => { if (!conversation.id.startsWith("pending:")) onPrefetch(conversation.id); }}
+                    onFocus={() => { if (!conversation.id.startsWith("pending:")) onPrefetch(conversation.id); }}
+                    disabled={conversation.id.startsWith("pending:")}
                     aria-current={
                       conversation.id === selectedId ? "location" : undefined
                     }
@@ -293,6 +293,7 @@ export function AgentSidebar({
 }
 
 function sidebarStatus(conversation: ManagedConversation): string {
+  if (conversation.id.startsWith("pending:")) return "Creating…";
   switch (conversation.presentation?.status) {
     case "running": return "Running";
     case "stopping": return "Stopping";

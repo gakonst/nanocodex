@@ -86,6 +86,21 @@ function run(runtime: Env, body: unknown, key?: string, actor = principal) {
 }
 
 describe("combined managed agent creation", () => {
+  it("publishes create and session timing without leaking internal timestamps", async () => {
+    const { runtime } = fixtureEnvironment();
+    const response = await worker.fetch(new Request("https://nanocodex.example/v1/agents", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ settings: { model: "gpt-6-astra", thinking: "low",
+        reasoning_mode: "standard", fast_mode: false } }),
+    }), runtime, createExecutionContext(), principal);
+    expect(response.status).toBe(201);
+    expect(response.headers.get("server-timing")).toContain("managed_session_create;dur=");
+    expect(response.headers.get("server-timing")).toContain("managed_create;dur=");
+    expect(response.headers.get("server-timing")).not.toContain("managed_session_pre_handler");
+    expect(response.headers.get("server-timing")).not.toContain("managed_session_attach");
+    expect(await response.json()).not.toHaveProperty("handler_entered_at_ms");
+  });
+
   it.each([false, true])("retains only keyed preparations after exhausted creation retries (keyed=%s)", async (keyed) => {
     const { runtime, requests } = fixtureEnvironment(503);
     const response = await worker.fetch(new Request("https://nanocodex.example/v1/agents", {

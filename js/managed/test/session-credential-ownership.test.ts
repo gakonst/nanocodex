@@ -234,7 +234,7 @@ describe("Session-owned credential authority", () => {
           method: "POST", body: JSON.stringify(input),
         }));
         const ownership = await state.storage.get<{ state: string }>("nanocodex:credential-binding");
-        return { status: response.status, body: await response.json(), ownership,
+        return { status: response.status, body: await response.json() as Record<string, number>, ownership,
           initializations: state.storage.sql.exec<{ count: number }>(
             "SELECT COUNT(*) AS count FROM session_initialization_ownership",
           ).toArray()[0]!.count };
@@ -244,7 +244,14 @@ describe("Session-owned credential authority", () => {
       expect(await create()).toMatchObject({ status: 503, ownership: { state: "preparing" } });
       await evictDurableObject(stub);
       registrationAvailable = true;
-      expect(await create()).toMatchObject({ status: 200, ownership: { state: "active" }, initializations: 1 });
+      const firstSuccess = await create();
+      expect(firstSuccess).toMatchObject({ status: 200, ownership: { state: "active" }, initializations: 1 });
+      expect(firstSuccess.body.handler_entered_at_ms).toBeGreaterThan(0);
+      expect(firstSuccess.body.response_ready_at_ms).toBeGreaterThanOrEqual(firstSuccess.body.handler_entered_at_ms);
+      expect(firstSuccess.body.handler_ms).toBeGreaterThanOrEqual(0);
+      for (const phase of ["commit_attach_ms", "commit_activate_ms", "commit_alarm_ms"]) {
+        expect(firstSuccess.body[phase]).toBeGreaterThanOrEqual(0);
+      }
       const replays = await Promise.all([create(), create()]);
       for (const replay of replays) expect(replay).toMatchObject({ status: 200, ownership: { state: "active" }, initializations: 1 });
       expect((await create({ ...initialization, owner_id: "44444444-4444-4444-8444-444444444444" })).status).toBe(409);

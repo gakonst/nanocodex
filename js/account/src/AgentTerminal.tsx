@@ -230,6 +230,7 @@ const BrowserAgentTerminal = memo(function BrowserAgentTerminal({
 export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
   agentId,
   authStatus,
+  initialDraft,
   mode,
   onConversationActivity,
   onStateChange,
@@ -238,6 +239,7 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
 }: {
   agentId: string;
   authStatus: ModelSessionStatus | undefined;
+  initialDraft?: string;
   mode: AgentTerminalMode;
   onConversationActivity(input: string): void;
   onStateChange(state: AgentTerminalState): void;
@@ -329,6 +331,7 @@ export const ManagedAgentTerminal = memo(function ManagedAgentTerminal({
     <PhoneCallsPanel key={`${accountId}:${agentId}`} parentAgentId={agentId} enabled={Boolean(accountId) && mode !== "hidden"} />
     <AgentTerminalView
       agent={startupReady ? agent : undefined}
+      initialDraft={initialDraft}
       agentError={stateQuery.error?.message}
       inactiveMessage={({ agentError, agentStatus }) => inactiveTerminalMessage({
         agentError,
