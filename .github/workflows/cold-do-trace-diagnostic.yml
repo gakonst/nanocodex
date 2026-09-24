@@ -52,10 +52,14 @@ jobs:
                   meta=item.get('$metadata') or {}; w=item.get('$workers') or {}
                   print('span:',json.dumps({'timestamp':item.get('timestamp'),'service':meta.get('service'),'name':meta.get('spanName'),'duration':meta.get('duration'),'colo':meta.get('colo'),'execution_model':w.get('executionModel'),'event_type':w.get('eventType')},sort_keys=True))
           PY
-      - name: Publish only sanitized summary to diagnostic PR
+      - name: Surface sanitized summary as GitHub check annotations
         if: always()
-        env:
-          GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
-          test -s "$RUNNER_TEMP/cold-trace-summary.txt" || echo 'No diagnostic output available' > "$RUNNER_TEMP/cold-trace-summary.txt"
-          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/579/comments" -f body="$(cat "$RUNNER_TEMP/cold-trace-summary.txt")" >/dev/null
+          if test -s "$RUNNER_TEMP/cold-trace-summary.txt"; then
+            head -n 25 "$RUNNER_TEMP/cold-trace-summary.txt" | while IFS= read -r line; do
+              printf '::notice file=.github/workflows/cold-do-trace-diagnostic.yml,line=1,title=Cold DO trace::%s\n' "$line"
+            done
+          else
+            echo '::warning file=.github/workflows/cold-do-trace-diagnostic.yml,line=1::No diagnostic output'
+          fi
