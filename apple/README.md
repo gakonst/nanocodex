@@ -16,12 +16,22 @@ Mac destination are disabled. It connects directly to the managed HTTP/SSE
 contract without a bundled Node runtime.
 Its authenticated native Hand can also bridge [Bluetooth Low Energy devices](../docs/bluetooth-le.md), including typed [Flipper Zero](../docs/flipper-zero.md) RPC tools without custom Flipper firmware.
 
-For Lock Screen voice tasks, add the **Speak to Nanocodex** widget after
+For Lock Screen voice tasks, add the circular or rectangular **Speak to Nanocodex** widget after
 signing in and granting Microphone and Speech Recognition access in the app.
-Record, then tap **Send** or **Cancel** in the Live Activity. Send waits for
-transcription and cloud admission; the activity shows **Sent** only after the
+The widget, separate **Record Voice Task** Control Widget, and Shortcut request capture without opening the app or unlocking.
+Speech starts immediately; a completed utterance starts a new conversation automatically.
+Use **Send** to end early or **Cancel** to discard. Send waits for
+final transcription and cloud admission; the activity shows **Sent** only after the
 service accepts the message. English and Greek use the language selected in
-the app's quick voice sheet.
+the app's quick voice sheet. The inline accessory is not offered because it
+cannot run an interactive recording intent; actual locked-device microphone
+behavior requires physical-device testing.
+
+For meetings, add the **Listen to a meeting** widget or Control Widget. It records from
+the Lock Screen until **Finish & send**, then transcribes bounded segments and
+starts a new conversation without opening the app. **Discard** deletes the
+capture; recognition interruptions can leave only a partial transcript. Grant
+permissions in the app once and test cold locked starts on a physical iPhone.
 
 On iPhones with an Action Button, select **Settings → Action Button → Shortcut
 → Choose a Shortcut → Nanocodex → Record Voice Task**. The shortcut uses the

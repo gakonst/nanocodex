@@ -101,8 +101,8 @@ history expires after ten minutes; account changes remove it. Live turn events
 invalidate the list and selected thread state. Streaming transport and
 OAuth/device lifecycles retain their existing protocol ownership.
 
-Use the root [README.md](../../README.md) for local development, checks, and
-deployment commands. Follow [AGENTS.md](../../AGENTS.md) for contribution and
-verification guidance. This package exposes
+Use the root [README.md](../../README.md) for checkout setup and the root
+[package scripts](../../package.json) for repository commands. Follow
+[AGENTS.md](../../AGENTS.md) for deployment order and verification guidance. This package exposes
 the supporting `dev`, `build`, `test`, `typecheck`, `check:docs`, and `deploy`
 scripts, but the repository instructions own how they are run.

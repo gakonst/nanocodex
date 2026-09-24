@@ -84,9 +84,12 @@ concurrently with `Promise.all`; JS and reset calls to the same Hand are ordered
 A cell pins each captured Hand connection, so reconnecting does not retarget an
 admitted call. A new cell discovers replacement connections.
 
-A screen publication alone does not provide CUA. `environment` advertises
-`computer` and `screen` capabilities for viewers, while CUA requires its own
-attached provider. Screen-only Hands therefore report CUA unavailable.
+A signed upstream CUA provider is preferred when one is attached. A Hand with
+only a controllable screen is exposed through the same workdir-routed CUA entry
+point using its native `observe`, `click`, `type`, `key`, `scroll`, and `drag`
+action schema. This gives Linux VMs and Cloudflare desktop sandboxes real CUA
+without pretending they implement OpenAI's JavaScript provider contract; the
+initial workdir-only call returns the exact contract selected for that Hand.
 
 Each surface also advertises its account-owned `screen_*` tool through
 `tool_search`, including individual windows when no unique desktop exists. Code Mode callers

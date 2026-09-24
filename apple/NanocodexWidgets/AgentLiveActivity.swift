@@ -11,6 +11,9 @@ struct NanocodexWidgets: WidgetBundle {
         VoiceTaskWidget()
         LockedVoiceActivity()
         LockedVoiceControl()
+        MeetingStartWidget()
+        MeetingLockedControl()
+        MeetingLockedActivityWidget()
     }
 }
 
@@ -162,8 +165,8 @@ struct VoiceTaskWidget: Widget {
                 .containerBackground(for: .widget) { Color.clear }
         }
         .configurationDisplayName("Speak to Nanocodex")
-        .description("Tap to record a voice task with a small recording activity. Set up permissions in the app first. The inline widget opens the app.")
-        .supportedFamilies([.accessoryCircular, .accessoryRectangular, .accessoryInline])
+        .description("Start recording from the Lock Screen without opening the app. Grant microphone and speech permission in the app first.")
+        .supportedFamilies([.accessoryCircular, .accessoryRectangular])
     }
 }
 
@@ -171,6 +174,7 @@ private struct VoiceTaskWidgetView: View {
     @Environment(\.widgetFamily) private var family
     var body: some View {
         if family == .accessoryInline {
+            // Inline accessories cannot offer a tappable App Intent button.
             Label("Speak to Nanocodex", systemImage: "mic.fill")
                 .widgetURL(URL(string: "nanocodex://voice/new")!)
         } else {
@@ -192,7 +196,7 @@ private struct VoiceTaskWidgetView: View {
             }
             .buttonStyle(.plain)
             .accessibilityLabel("Record a voice task")
-            .accessibilityHint("Starts recording with a small Live Activity")
+            .accessibilityHint("Starts recording without opening the app")
         }
     }
 }
@@ -216,7 +220,7 @@ struct LockedVoiceActivity: Widget {
             HStack(spacing: 12) {
                 Image(systemName: symbol(displayPhase(context))).font(.title2)
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(headline(displayPhase(context))).font(.headline)
+                    Text(headline(displayPhase(context), failure: context.state.failure)).font(.headline)
                     Text(context.state.language == "el-GR" ? "Ελληνικά" : "English")
                         .font(.caption).foregroundStyle(.secondary)
                 }
@@ -233,7 +237,7 @@ struct LockedVoiceActivity: Widget {
                     Image(systemName: symbol(displayPhase(context)))
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    Text(headline(displayPhase(context))).font(.headline)
+                    Text(headline(displayPhase(context), failure: context.state.failure)).font(.headline)
                 }
                 DynamicIslandExpandedRegion(.bottom) { controls(context) }
             } compactLeading: {
@@ -261,7 +265,7 @@ struct LockedVoiceActivity: Widget {
                 }
             }.buttonStyle(.bordered)
         } else if ["recordingFailed", "transcriptionFailed"].contains(context.state.phase) {
-            Button("Record again", intent: StartLockedVoiceIntent()).buttonStyle(.bordered)
+            Button("Try again", intent: StartLockedVoiceIntent()).buttonStyle(.bordered)
         }
     }
 
@@ -271,7 +275,7 @@ struct LockedVoiceActivity: Widget {
         return context.isStale && active ? "expired" : phase
     }
 
-    private func headline(_ phase: String) -> String {
+    private func headline(_ phase: String, failure: String?) -> String {
         switch phase {
         case "preparing": "Getting ready…"
         case "listening": "Recording…"
@@ -279,7 +283,7 @@ struct LockedVoiceActivity: Widget {
         case "sending": "Sending…"
         case "sent": "Task sent"
         case "cancelled": "Cancelled"
-        case "recordingFailed": "Recording stopped"
+        case "recordingFailed": failure ?? "Recording stopped"
         case "transcriptionFailed": "Transcription unfinished"
         case "deliveryFailed": "Delivery unconfirmed"
         case "expired": "Status unavailable"

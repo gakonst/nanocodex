@@ -37,6 +37,8 @@ const STABLE_CONNECTION: Duration = Duration::from_secs(30);
 #[cfg(test)]
 const STABLE_CONNECTION: Duration = Duration::from_millis(250);
 
+const HEARTBEAT_TIMEOUT_REASON: &str = "attachment heartbeat timed out";
+
 pub(crate) struct Config {
     pub(crate) endpoint: Url,
     pub(crate) authorization: Box<str>,
@@ -149,6 +151,25 @@ pub(crate) async fn run(
         {
             backoff = Duration::from_millis(100);
         }
+        match &end {
+            ConnectionEnd::HeartbeatTimeout => tracing::warn!(
+                target: "nanocodex_tools::attachment",
+                stage = "attachment.socket.closed",
+                reason = "heartbeat_timeout",
+                "attachment WebSocket heartbeat timed out"),
+            ConnectionEnd::Disconnected => tracing::warn!(
+                target: "nanocodex_tools::attachment",
+                stage = "attachment.socket.closed",
+                reason = "remote_disconnect",
+                "attachment WebSocket disconnected"),
+            ConnectionEnd::Failed(error) => tracing::warn!(
+                target: "nanocodex_tools::attachment",
+                stage = "attachment.socket.closed",
+                reason = "transport_failure",
+                error = %error,
+                "attachment WebSocket transport failed"),
+            _ => {}
+        }
         match end {
             ConnectionEnd::Detached => break Ok(()),
             ConnectionEnd::DetachFailed(error) => break Err(error),
@@ -162,7 +183,9 @@ pub(crate) async fn run(
                 );
                 break Err(AttachmentError::Fenced(reason));
             }
-            ConnectionEnd::Failed(_) | ConnectionEnd::Disconnected => {
+            ConnectionEnd::Failed(_)
+            | ConnectionEnd::Disconnected
+            | ConnectionEnd::HeartbeatTimeout => {
                 let _ = status.send(AttachmentStatus::Disconnected);
                 if wait_backoff(&mut commands, backoff).await {
                     break Ok(());
@@ -210,6 +233,7 @@ enum ConnectionEnd {
     Detached,
     DetachFailed(AttachmentError),
     Disconnected,
+    HeartbeatTimeout,
     Failed(AttachmentError),
     Rejected(Box<str>),
 }
@@ -582,14 +606,10 @@ where
                 }
             }
             _ = &mut pong_timeout, if awaiting_pong.is_some() => {
-                break if detaching {
-                    ConnectionEnd::DetachFailed(AttachmentError::Transport("heartbeat timed out while draining".into()))
-                } else {
-                    ConnectionEnd::Disconnected
-                };
+                break ConnectionEnd::HeartbeatTimeout;
             },
             _ = heartbeat.tick() => {
-                if awaiting_pong.is_some() { break ConnectionEnd::Disconnected; }
+                if awaiting_pong.is_some() { break ConnectionEnd::HeartbeatTimeout; }
                 let nonce = uuid::Uuid::new_v4().to_string();
                 if let Err(error) = send(&mut socket, &ExecutorFrame::Ping { nonce: &nonce }).await {
                     break if detaching { ConnectionEnd::DetachFailed(error) } else { ConnectionEnd::Failed(error) };
@@ -670,11 +690,20 @@ where
         }
     };
 
+    if matches!(&end, ConnectionEnd::HeartbeatTimeout) {
+        // The transport is still writable: send a reason before relinquishing
+        // the socket, including when a detach was draining in the background.
+        close_heartbeat_timeout(&mut socket).await;
+    }
+
     let end = if detaching {
         match end {
             ConnectionEnd::Disconnected => ConnectionEnd::DetachFailed(AttachmentError::Transport(
                 "websocket disconnected while draining".into(),
             )),
+            ConnectionEnd::HeartbeatTimeout => ConnectionEnd::DetachFailed(
+                AttachmentError::Transport(HEARTBEAT_TIMEOUT_REASON.into()),
+            ),
             ConnectionEnd::Failed(error) => ConnectionEnd::DetachFailed(error),
             end => end,
         }
@@ -689,10 +718,25 @@ where
         ConnectionEnd::Rejected(reason) => {
             policy_close(&mut socket, reason).await;
         }
+        ConnectionEnd::HeartbeatTimeout => {}
         ConnectionEnd::Disconnected | ConnectionEnd::Failed(_) | ConnectionEnd::DetachFailed(_) => {
         }
     }
     end
+}
+
+async fn close_heartbeat_timeout<S>(socket: &mut tokio_tungstenite::WebSocketStream<S>)
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+{
+    let _ = tokio::time::timeout(
+        Duration::from_secs(1),
+        socket.close(Some(CloseFrame {
+            code: CloseCode::Restart,
+            reason: HEARTBEAT_TIMEOUT_REASON.into(),
+        })),
+    )
+    .await;
 }
 
 async fn next_handshake_frame<S>(
@@ -968,6 +1012,23 @@ mod tracing_tests {
                 captured.closed = true;
             }
         }
+    }
+
+    #[tokio::test]
+    async fn heartbeat_timeout_sends_a_close_reason_to_the_broker() {
+        use tokio_tungstenite::tungstenite::protocol::Role;
+
+        let (hand_io, broker_io) = tokio::io::duplex(1024);
+        let (mut hand, mut broker) = tokio::join!(
+            tokio_tungstenite::WebSocketStream::from_raw_socket(hand_io, Role::Client, None),
+            tokio_tungstenite::WebSocketStream::from_raw_socket(broker_io, Role::Server, None),
+        );
+        close_heartbeat_timeout(&mut hand).await;
+        let Some(Ok(Message::Close(Some(frame)))) = broker.next().await else {
+            panic!("heartbeat timeout must deliver a WebSocket close frame");
+        };
+        assert_eq!(frame.code, CloseCode::Restart);
+        assert_eq!(frame.reason.to_string(), HEARTBEAT_TIMEOUT_REASON);
     }
 
     #[test]

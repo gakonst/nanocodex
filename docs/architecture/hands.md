@@ -1,6 +1,6 @@
 # Hands
 
-`nanocodex2 hand` is the headless machine runner. Install it once as an OS boot service; the CLI and app observe it. On macOS and systemd Linux, the CLI checks the installed service and requests a noninteractive start when needed. It never invokes sudo, restarts a running publisher, or creates an app-owned daemon. If installation, start permission, or the account-scoped connection is unavailable, the CLI prints an actionable warning and continues remote work. `NANOCODEX_DISABLE_HAND=1` skips the local Hand check.
+`nanocodex2 hand` is the headless machine runner. Install it once under the OS service manager; the CLI and app observe it. The native `nanocodex hand` controller uses a per-user LaunchAgent on macOS, systemd on Linux, and a per-user Task Scheduler job on Windows. If installation, start permission, or the account-scoped connection is unavailable, the CLI prints an actionable warning and continues remote work. `NANOCODEX_DISABLE_HAND=1` skips the local Hand check.
 
 ```text
 OS -> Hand daemon <--- outbound WebSocket ---> AccountHostedTools <- agent
@@ -22,7 +22,20 @@ Set `NANOCODEX_HAND_KEEP_AWAKE=0` in the standalone service environment to opt o
 
 ## Install
 
-First run `nanocodex2 login` as the machine owner. Then install the built binary:
+The supported local path is `nanocodex setup`, which performs the shared SMS
+login, platform CUA provisioning, and idempotent `nanocodex hand install`. Use
+`nanocodex hand status`, `start`, `stop`, or `restart` on all three desktop
+platforms. A remote Linux host can be enrolled without interactive auth using
+`nanocodex hand install --target user@host [--port PORT]`.
+
+The installed Rust updater runs hourly as a per-user LaunchAgent, systemd timer,
+or Task Scheduler job. It stages verified matching CLI/Hand bundles and never
+silently restarts a running Hand; the next explicit start or restart activates a
+staged Hand update. Windows background runs also refresh the verified upstream
+CUA payload.
+
+The older machine-wide helper remains available for explicitly managed macOS or
+Linux deployments. First run `nanocodex2 login` as the machine owner, then:
 
 ```sh
 sudo python3 scripts/install-hand-service.py --user "$USER" --binary /path/to/nanocodex2

@@ -21,10 +21,11 @@ final class QuickVoiceRecorder: ObservableObject {
     private var recognition: SFSpeechRecognitionTask?
     private var deadline: Task<Void, Never>?
     private var gate = QuickVoiceCaptureGate()
-    fileprivate static weak var audioOwner: AnyObject?
+    static weak var audioOwner: AnyObject?
     private var sessionActive = false
     private var tapped = false
     private var finishing = false
+    var finalizationTimeout: Double = 5
 
     static var permissionsGranted: Bool {
         SFSpeechRecognizer.authorizationStatus() == .authorized && AVAudioApplication.shared.recordPermission == .granted
@@ -38,7 +39,7 @@ final class QuickVoiceRecorder: ObservableObject {
         Self.audioOwner = self
         let token = gate.begin()
         working = true
-        if permissions == .alreadyGranted {
+        if permissions == .alreadyGranted || Self.permissionsGranted {
             guard Self.permissionsGranted else {
                 fail("Allow Microphone and Speech Recognition in the app before recording from the Lock Screen."); return
             }
@@ -57,10 +58,12 @@ final class QuickVoiceRecorder: ObservableObject {
         guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: locale)), recognizer.isAvailable else {
             fail("Speech recognition is unavailable. Try again when connected."); return
         }
+        var stage = "sessionCategory"
         do {
             let session = AVAudioSession.sharedInstance()
             // duckOthers is unsupported by the record-only category.
             try session.setCategory(.record, mode: .measurement)
+            stage = "sessionActivation"
             try session.setActive(true)
             sessionActive = true
             let request = SFSpeechAudioBufferRecognitionRequest()
@@ -86,7 +89,7 @@ final class QuickVoiceRecorder: ObservableObject {
                     if let error {
                         let failure = error as NSError
                         self.log.error("Speech failed: domain=\(failure.domain, privacy: .public) code=\(failure.code)")
-                        self.fail(error.localizedDescription); return
+                        self.fail("Speech recognition stopped."); return
                     }
                     if let text, let input = self.gate.completed(text, token: token, isFinal: final) {
                         self.stop()
@@ -100,6 +103,7 @@ final class QuickVoiceRecorder: ObservableObject {
                 }
             }
             engine.prepare()
+            stage = "engineStart"
             try engine.start()
             transcript = ""
             recording = true
@@ -108,8 +112,8 @@ final class QuickVoiceRecorder: ObservableObject {
             armDeadline(seconds: 15, token: token) { self.fail("No speech was recognized. Try again.") }
         } catch {
             let failure = error as NSError
-            log.error("Audio start failed: domain=\(failure.domain, privacy: .public) code=\(failure.code)")
-            fail(error.localizedDescription)
+            log.error("Audio start failed at \(stage, privacy: .public): domain=\(failure.domain, privacy: .public) code=\(failure.code)")
+            fail("Microphone could not start.")
         }
     }
 
@@ -121,7 +125,7 @@ final class QuickVoiceRecorder: ObservableObject {
         onStatus?("transcribing")
         releaseMicrophone(endAudio: true)
         // Wait for the recognizer's final result; never send the last partial on timeout.
-        armDeadline(seconds: 5, token: gate.token) {
+        armDeadline(seconds: finalizationTimeout, token: gate.token) {
             self.fail("Transcription did not finish. Your words are preserved; edit and send or try again.")
         }
     }

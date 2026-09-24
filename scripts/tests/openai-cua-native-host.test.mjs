@@ -32,7 +32,7 @@ function fixture(t, extra = {}, settings = {}) {
 }
 
 for (const [name, fn] of [
-  ['configuration rejects other platforms and URL inputs; bundle build isolates state', async () => {
+  ['configuration rejects other platforms and URL inputs; bundle build isolates headless state', async () => {
     await assert.rejects(configuration({}, 'linux'), /requires macOS/);
     await assert.rejects(configuration({ NANOCODEX_CUA_NATIVE_APP: 'https://example.com' }, 'darwin'), /absolute filesystem/);
     const env = { NANOCODEX_CUA_NATIVE_APP: '/immutable/Codex.app', NANOCODEX_CUA_NATIVE_PROVIDER: '/immutable/direct', NANOCODEX_CUA_NATIVE_STATE: '/private/synthetic' };
@@ -41,7 +41,7 @@ for (const [name, fn] of [
     const next = await configuration(env, 'darwin', (_, key) => key === 'CFBundleVersion' ? '9923' : 'Codex');
     assert.notEqual(first.socket, next.socket);
     assert.equal(first.node, '/immutable/Codex.app/Contents/Resources/cua_node/bin/node');
-    assert.equal(first.gui, '/immutable/Codex.app/Contents/MacOS/Codex');
+    assert.equal(first.gui, undefined);
   }],
   ['state rejects symlinks and broad permissions', async t => {
     const root = await realpath(await mkdtemp(path.join(tmpdir(), 'native-host-test-')));

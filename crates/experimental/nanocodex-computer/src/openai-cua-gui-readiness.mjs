@@ -4,7 +4,6 @@ import { StringDecoder } from 'node:string_decoder';
 // capability, attestation, or authenticated host-identity boundary. The official
 // GUI remains responsible for consent. A matched log describes one moment;
 // its owner must invalidate readiness when the GUI/server connection is lost.
-export const KNOWN_GUI_BUILD = '9922';
 export const MAX_GUI_READY_LINE_BYTES = 16 * 1024;
 const PREFIX = '[electron-message-handler] maybe_resume_success ';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

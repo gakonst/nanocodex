@@ -1,9 +1,10 @@
 # Nanocodex egress
 
 This package contains the private Cloudflare credential broker and a small
-service-binding example agent. Setup and deployment commands live in the root
-[README.md](../../README.md); [AGENTS.md](../../AGENTS.md) covers contribution
-and verification guidance.
+service-binding example agent. Checkout setup lives in the root
+[README.md](../../README.md); the root [package scripts](../../package.json)
+expose repository commands, and [AGENTS.md](../../AGENTS.md) covers deployment
+order and verification guidance.
 
 ## Entrypoints
 
@@ -18,7 +19,7 @@ and verification guidance.
 
 The package scripts expose broker and example-agent dry runs and deployments
 (`dry-run:broker`, `deploy:broker`, `dry-run:agent`, and `deploy:agent`). Use
-the root [README.md](../../README.md) for repository-level operation.
+the root [package scripts](../../package.json) for repository-level operation.
 
 Subscription voice can use `CHATGPT_VOICE_RELAY_RPC=true` to transfer the small
 SDP request and answer through the private `ChatGptEgress.createRealtimeCall`

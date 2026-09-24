@@ -25,6 +25,8 @@ struct FinishLockedVoiceIntent: AudioRecordingIntent, LiveActivityIntent {
     static var title: LocalizedStringResource = "Finish voice task"
     static var openAppWhenRun = false
     static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
+    @available(iOS 26.0, *)
+    static var supportedModes: IntentModes { .background }
     @Parameter(title: "Recording") var captureID: String
     init() {}
     init(captureID: String) { self.captureID = captureID }
@@ -42,6 +44,8 @@ struct CancelLockedVoiceIntent: AudioRecordingIntent, LiveActivityIntent {
     static var title: LocalizedStringResource = "Cancel voice task"
     static var openAppWhenRun = false
     static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
+    @available(iOS 26.0, *)
+    static var supportedModes: IntentModes { .background }
     @Parameter(title: "Recording") var captureID: String
     init() {}
     init(captureID: String) { self.captureID = captureID }

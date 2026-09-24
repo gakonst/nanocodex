@@ -218,13 +218,17 @@ jobs:
           VERGEN_GIT_SHA: ${{ github.sha }}
           STABLE_GIT_COMMIT: ${{ github.sha }}
         run: |
+          cargo build --locked --release --package nanocodex-bin --bin nanocodex --features tempo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo build --locked --release --package nanocodex2-bin --bin nanocodex2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
       - name: Sign payload when Authenticode is configured
         shell: pwsh
         run: >-
-          ./windows/hand/sign.ps1 -Path
-          ./target/release/nanocodex2.exe
+          ./windows/hand/sign.ps1 -Path @(
+            "./target/release/nanocodex.exe",
+            "./target/release/nanocodex2.exe"
+          )
       - name: Build and sign one-click installer
         shell: pwsh
         env:
@@ -232,6 +236,7 @@ jobs:
         run: |
           $version = $env:RELEASE_VERSION.TrimStart("v")
           ./windows/hand/build.ps1 `
+            -Nanocodex ./target/release/nanocodex.exe `
             -Nanocodex2 ./target/release/nanocodex2.exe `
             -Version $version `
             -NumericVersion $version
@@ -239,6 +244,7 @@ jobs:
       - name: Stage release assets
         shell: pwsh
         run: |
+          Copy-Item target/release/nanocodex.exe dist/windows-hand/nanocodex-x86_64-pc-windows-msvc.exe
           Copy-Item target/release/nanocodex2.exe dist/windows-hand/nanocodex2-x86_64-pc-windows-msvc.exe
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:

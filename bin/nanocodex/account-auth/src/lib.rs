@@ -277,6 +277,28 @@ impl Login {
     }
 }
 
+/// Whether the default managed account selection has a usable local
+/// credential. This never prints or returns the credential.
+pub fn has_default_login() -> bool {
+    enrollment_credentials(None).is_ok()
+}
+
+/// Run the normal SMS login against the default managed account and credential
+/// file. Used by the guided first-run flow without inventing a second auth path.
+pub async fn login_default() -> std::result::Result<(), Error> {
+    Login {
+        options: Options {
+            managed_url: None,
+            account_file: None,
+        },
+        phone: None,
+        with_api_key: false,
+        label: "Nanocodex CLI".into(),
+    }
+    .run()
+    .await
+}
+
 async fn status(options: Options) -> Result<()> {
     let (origin, path) = options.resolve()?;
     let Some((key, source)) = resolve_key(&origin, &path)? else {

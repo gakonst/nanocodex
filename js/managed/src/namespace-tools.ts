@@ -65,6 +65,27 @@ type ProcessBinding = Readonly<{
   writeStdin: RoutedTool;
 }>;
 
+function nativeScreenCua(screen: RoutedTool): Readonly<{ cua: RoutedTool; cuaReset: RoutedTool }> {
+  const parameters = screen.definition?.parameters;
+  const description = screen.definition?.description;
+  const cua: RoutedTool = Object.freeze({
+    definition: {
+      ...(screen.definition ?? {}),
+      description: `Native screen control fallback. ${description ?? "Observe and control this Hand's screen."}`,
+      ...(parameters === undefined ? {} : { parameters }),
+    },
+    handler: (input, context) => screen.handler(input, context),
+  });
+  const cuaReset: RoutedTool = Object.freeze({
+    definition: {
+      description: "Release this Hand's native screen control lease. No input action is replayed or retried.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+    handler: (_input, context) => screen.handler({ action: "release" }, context),
+  });
+  return Object.freeze({ cua, cuaReset });
+}
+
 export type NamespaceCaptureFilter = (machine: NamespaceMachine) => boolean;
 
 export type NamespaceExecutionRuntime = Readonly<{
@@ -134,7 +155,7 @@ export function createNamespaceExecutionRuntime(
     const route = routeNamespaceCwd(binding.scope, canonicalCwd(binding, workdir), "namespace.discover");
     const hand = binding.hands.get(route.mount.mountId);
     if (!hand?.cua || !hand.cuaReset) {
-      throw new Error(`namespace mount ${route.mount.root} has no CUA runtime; screen-only Hands are unsupported by cua_repl. Use environment to find a Hand with an attached CUA provider.`);
+      throw new Error(`namespace mount ${route.mount.root} has no CUA runtime or controllable native screen. Use environment to find a CUA-capable Hand.`);
     }
     const providerInput = without(value, "workdir");
     // JS with only a workdir discovers the actual provider API without executing
@@ -179,7 +200,7 @@ export function createNamespaceExecutionRuntime(
 
   const tools: ToolMap = {
     [CUA_JS_NAME]: {
-      description: "Use a Hand's CUA MCP provider. Set workdir on every call, just like exec_command. First call with only {workdir} to read that provider's descriptions and schemas without executing code; then add its exact arguments alongside workdir. Nanocodex strips only workdir before forwarding. Use Promise.all for different workdirs in Code Mode; JS and reset calls to the same Hand are ordered. Each cell pins its Hand connections; there is no global computer selection. /brain and screen-only Hands have no CUA provider.",
+      description: "Use a Hand's CUA provider. Set workdir on every call, just like exec_command. First call with only {workdir} to read that Hand's exact descriptions and schemas without executing an action; then add those provider arguments alongside workdir. OpenAI CUA is preferred when attached; VM, Cloudflare, and native Hands can fall back to their controllable screen action contract. Nanocodex strips only workdir before forwarding. Use Promise.all for different workdirs in Code Mode; calls to the same Hand are ordered. /brain has no desktop.",
       parameters: computerParameters,
       supportsParallelToolCalls: true,
       handler: (input, context) => computerCall(CUA_JS_NAME, input, context),
@@ -340,6 +361,13 @@ function createCellBinding(
     const root = machine.root ?? machineMountRoot(machine.id);
     if (roots.has(root)) throw new Error(`duplicate namespace mount root ${root}`);
     roots.add(root);
+    const screen = resolveScreenTool(machine.id, context);
+    const upstreamCua = resolveMachineTool(machine.id, CUA_JS_NAME, context);
+    const upstreamReset = resolveMachineTool(machine.id, CUA_RESET_NAME, context);
+    const upstream = upstreamCua !== undefined && upstreamReset !== undefined
+      ? { cua: upstreamCua, cuaReset: upstreamReset } : undefined;
+    const fallback = upstream === undefined && screen !== undefined
+      ? nativeScreenCua(screen) : undefined;
     hands.push(Object.freeze({
       mountId: `mount:user:${machine.id}`,
       machineId: machine.id,
@@ -348,9 +376,9 @@ function createCellBinding(
       exec: resolveMachineTool(machine.id, "exec_command", context),
       writeStdin: resolveMachineTool(machine.id, "write_stdin", context),
       preview: resolveMachineTool(machine.id, "preview", context),
-      cua: resolveMachineTool(machine.id, CUA_JS_NAME, context),
-      cuaReset: resolveMachineTool(machine.id, CUA_RESET_NAME, context),
-      screen: resolveScreenTool(machine.id, context),
+      cua: upstream?.cua ?? fallback?.cua,
+      cuaReset: upstream?.cuaReset ?? fallback?.cuaReset,
+      screen,
     }));
   }
   const manifest = createNamespaceManifest({

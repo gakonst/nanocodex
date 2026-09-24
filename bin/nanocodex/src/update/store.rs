@@ -293,6 +293,38 @@ impl VersionStore {
         Ok(())
     }
 
+    /// Windows has no symlink launcher. Keep stable PATH entrypoints beside the
+    /// version store while a running executable is replaced in place.
+    pub(super) fn sync_windows_entrypoints(&self, key: &str) -> Result<()> {
+        if !cfg!(windows) {
+            return Ok(());
+        }
+        if !self.is_cached_bundle(key, false)? {
+            bail!("cannot publish an incomplete Windows Nanocodex bundle");
+        }
+        let bin = self.root.join("bin");
+        let selected = self.version_dir(key);
+        let running = std::env::current_exe()?.canonicalize()?;
+        let entrypoint = bin.join(BINARY_NAME);
+        if entrypoint.canonicalize().ok().as_deref() != Some(running.as_path()) {
+            atomic_write(&entrypoint, &fs::read(selected.join(BINARY_NAME))?, true)?;
+        }
+        let companion = fs::read(selected.join(NANOCODEX2_BINARY_NAME))?;
+        let stable_companion = bin.join(NANOCODEX2_BINARY_NAME);
+        atomic_write(&stable_companion, &companion, true)?;
+
+        // The signed Inno installer puts both commands beside each other on
+        // PATH. Keep that companion in lockstep too; raw bootstrap executables
+        // have no sibling and therefore only publish into the stable bin dir.
+        let running_companion = running.with_file_name(NANOCODEX2_BINARY_NAME);
+        if running_companion != stable_companion
+            && fs::symlink_metadata(&running_companion).is_ok_and(|metadata| metadata.is_file())
+        {
+            atomic_write(&running_companion, &companion, true)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn activate(&self, key: &str) -> Result<()> {
         self.validate_activation(key)?;
         #[cfg(unix)]

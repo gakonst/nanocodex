@@ -19,6 +19,7 @@ mod eval;
 mod eval;
 mod hand_service;
 mod hand_setup;
+mod install;
 mod launcher;
 mod login;
 mod managed_memory;
@@ -28,6 +29,7 @@ mod mcp;
 mod mpp;
 mod observability;
 mod run;
+mod setup;
 mod startup_timing;
 mod subagents;
 mod tui;
@@ -44,6 +46,7 @@ mod vm;
 )))]
 #[path = "vm_unsupported.rs"]
 mod vm;
+mod windows_hand;
 
 use std::process::ExitCode;
 
@@ -98,6 +101,10 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Install the verified release bundle and start guided setup.
+    Install(install::Install),
+    /// Sign in and set up Computer Use, Hand, and the browser extension.
+    Setup(setup::Setup),
     /// Discover and control a running interactive terminal.
     Tui(nanocodex_tui_control::Cli),
     /// Install or refresh the upstream computer-use runtime.
@@ -231,6 +238,8 @@ async fn run(cli: Cli) -> Result<()> {
         }
     }
     match cli.command {
+        Some(Command::Install(command)) => command.run().await,
+        Some(Command::Setup(command)) => command.run().await,
         Some(Command::Tui(command)) => command.run().await.map_err(Into::into),
         Some(Command::Computer(command)) => command.run().await.map_err(|error| eyre!(error)),
         Some(Command::Hand(command)) => command.run().await,

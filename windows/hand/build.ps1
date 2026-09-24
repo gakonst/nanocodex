@@ -1,6 +1,9 @@
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]
+    [string]$Nanocodex,
+
+    [Parameter(Mandatory = $true)]
     [string]$Nanocodex2,
 
     [string]$Version = "dev",
@@ -23,13 +26,14 @@ $compiler = @(
     (Join-Path ${env:ProgramFiles(x86)} "Inno Setup 6\ISCC.exe")
 ) | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } | Select-Object -First 1
 if (-not $compiler) { throw "Inno Setup 6 is required to build the Windows installer" }
-foreach ($path in @($Nanocodex2)) {
+foreach ($path in @($Nanocodex, $Nanocodex2)) {
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
         throw "Missing Windows Hand payload: $path"
     }
 }
 
 New-Item -ItemType Directory -Force -Path $payload, $output | Out-Null
+Copy-Item -LiteralPath $Nanocodex -Destination (Join-Path $payload "nanocodex.exe") -Force
 Copy-Item -LiteralPath $Nanocodex2 -Destination (Join-Path $payload "nanocodex2.exe") -Force
 
 $ffmpegVersion = "9.0.1"

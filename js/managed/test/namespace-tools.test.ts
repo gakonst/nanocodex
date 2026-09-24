@@ -40,23 +40,30 @@ const context = (overrides: Partial<{
 });
 
 describe("cwd-root namespace execution", () => {
-  it("does not publish a custom computer tool or silently adapt screen-only Hands", async () => {
+  it("routes a controllable screen as the native CUA fallback", async () => {
     const screen = vi.fn();
+    const definition = { description: "Fixture native screen", parameters: {
+      type: "object", properties: { action: { enum: ["observe", "release"] } }, required: ["action"],
+    } };
     const runtime = createNamespaceExecutionRuntime(
       () => [{ id: "screen", workspace: "/workspace" }],
-      () => undefined, undefined, () => ({ handler: screen }),
+      () => undefined, undefined, () => ({ handler: screen, definition }),
     );
     expect(runtime.tools).not.toHaveProperty("computer");
     expect(runtime.tools).not.toHaveProperty("select_computer");
     await expect(runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/screen" }, context()))
-      .rejects.toThrow("screen-only Hands are unsupported");
-    await expect(runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/screen", code: "await cua.getState()" }, context()))
-      .rejects.toThrow("no CUA runtime");
-    expect(screen).not.toHaveBeenCalled();
+      .resolves.toMatchObject({ definitions: expect.arrayContaining([
+        expect.objectContaining({ description: expect.stringContaining("Native screen control fallback"), parameters: definition.parameters }),
+      ]) });
+    await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/screen", action: "observe" }, context());
+    expect(screen).toHaveBeenLastCalledWith({ action: "observe" }, expect.anything());
+    await runtime.tools[CUA_RESET_NAME]!.handler({ workdir: "/screen" }, context());
+    expect(screen).toHaveBeenLastCalledWith({ action: "release" }, expect.anything());
   });
 
   it("returns discovered provider instructions and accepts provider-owned schemas", async () => {
     const handler = vi.fn();
+    const screen = vi.fn();
     let description = "Provider-native initialization: await desktop.connect()";
     let supported = true;
     const runtime = createNamespaceExecutionRuntime(
@@ -67,6 +74,10 @@ describe("cwd-root namespace execution", () => {
           ? (name === CUA_JS_NAME ? providerParameters : resetParameters)
           : { type: "object", properties: { invented: { type: "string" } } } },
       } : undefined,
+      undefined,
+      () => ({ handler: screen, definition: { description: "Fallback screen", parameters: {
+        type: "object", properties: { action: { type: "string" } }, required: ["action"],
+      } } }),
     );
     await expect(runtime.tools[CUA_JS_NAME]!.handler({ code: "1" }, context()))
       .rejects.toThrow("explicit Hand workdir");
@@ -77,10 +88,31 @@ describe("cwd-root namespace execution", () => {
         _meta: { provider: { retained: true } }, annotations: { readOnlyHint: false } },
       { name: CUA_RESET_NAME, description, parameters: resetParameters },
     ] });
+    await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/native", source: "upstream" }, context());
+    expect(handler).toHaveBeenCalledWith({ source: "upstream" }, expect.anything());
+    expect(screen).not.toHaveBeenCalled();
     supported = false;
     const changed = await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/native" }, context({ parentCallId: "new" }));
     expect(changed).toMatchObject({ definitions: [{ parameters: { type: "object", properties: { invented: { type: "string" } } } }, { parameters: { type: "object", properties: { invented: { type: "string" } } } }] });
-    expect(handler).not.toHaveBeenCalled();
+    expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not combine a partial upstream provider with native screen control", async () => {
+    const upstream = vi.fn();
+    const screen = vi.fn();
+    const runtime = createNamespaceExecutionRuntime(
+      () => [{ id: "partial", workspace: "/workspace" }],
+      (_machineId, name) => name === CUA_JS_NAME ? { handler: upstream } : undefined,
+      undefined,
+      () => ({ handler: screen, definition: { parameters: {
+        type: "object", properties: { action: { type: "string" } }, required: ["action"],
+      } } }),
+    );
+    await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/partial", action: "observe" }, context());
+    await runtime.tools[CUA_RESET_NAME]!.handler({ workdir: "/partial" }, context());
+    expect(upstream).not.toHaveBeenCalled();
+    expect(screen).toHaveBeenNthCalledWith(1, { action: "observe" }, expect.anything());
+    expect(screen).toHaveBeenNthCalledWith(2, { action: "release" }, expect.anything());
   });
 
   it("routes old identity paths through the same captured Hand as its readable name", async () => {

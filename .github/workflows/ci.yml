@@ -210,22 +210,16 @@ jobs:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10 # v6
         with:
           persist-credentials: false
-      - name: Compile the service supervisor and validate Windows scripts
+      - name: Validate thin Windows bootstrap and packaging scripts
         shell: powershell
         run: |
-          # Keep syntax and supervisor compilation checks while behavioral tests are paused.
           $ErrorActionPreference = "Stop"
-          foreach ($script in Get-ChildItem ./windows/hand -Filter "*.ps1") {
+          foreach ($script in @((Get-Item ./install.ps1)) + @(Get-ChildItem ./windows/hand -Filter "*.ps1")) {
             $tokens = $null
             $parseErrors = $null
             [Management.Automation.Language.Parser]::ParseFile($script.FullName, [ref]$tokens, [ref]$parseErrors) | Out-Null
             if ($parseErrors.Count -gt 0) { throw "Invalid PowerShell in $($script.Name): $parseErrors" }
           }
-          Add-Type -Path ./windows/hand/hand-service.cs -ReferencedAssemblies "System.ServiceProcess.dll", "System.Core.dll", "System.Xml.dll" -OutputAssembly "$env:RUNNER_TEMP/nanocodex-hand-service.exe" -OutputType WindowsApplication
-      - name: Test service registration plan
-        if: ${{ false }}
-        shell: powershell
-        run: ./windows/hand/test-service-build.ps1
       - name: Verify CUA bootstrap copies without Store installation
         # Temporarily disabled: CI tests are paused.
         if: ${{ false }}
@@ -274,13 +268,21 @@ jobs:
         env:
           NANOCODEX_COMPUTER: "off"
         run: cargo test --locked --package nanocodex2-bin --bin nanocodex2
-      - name: Build the account Hand
+      - name: Build the native controller and account Hand
         shell: pwsh
         env:
           NANOCODEX_COMPUTER: "off"
         run: |
+          cargo build --locked --package nanocodex-bin --bin nanocodex --features tempo
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           cargo build --locked --package nanocodex2-bin --bin nanocodex2
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Test native Windows Hand task policy
+        shell: pwsh
+        run: |
+          cargo test --locked --package nanocodex-bin --bin nanocodex windows_hand
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cargo test --locked --package nanocodex-bin --bin nanocodex update::automatic::tests::windows_schedule
       - name: Run real CLI/app sharing against a local account server
         # Temporarily disabled: CI tests are paused.
         if: ${{ false }}
@@ -289,22 +291,11 @@ jobs:
           NANOCODEX_DEVICE_TEST_BINARY="$(node -p 'require("node:path").resolve("target/debug/nanocodex2" + (process.platform === "win32" ? ".exe" : ""))')"
           export NANOCODEX_DEVICE_TEST_BINARY
           node --test js/desktop-runtime/test/device-hand.integration.test.mjs js/desktop-runtime/test/device-hand-shutdown.test.mjs
-      - name: Validate the per-user startup plan
-        # Temporarily disabled: CI tests are paused.
-        if: ${{ false }}
-        shell: pwsh
-        env:
-          NANOCODEX_COMPUTER: "off"
-        run: |
-          $stage = Join-Path $env:RUNNER_TEMP "nanocodex-hand"
-          New-Item -ItemType Directory -Force -Path $stage | Out-Null
-          Copy-Item target/debug/nanocodex2.exe $stage/
-          Copy-Item windows/hand/run-hand.ps1 $stage/
-          ./windows/hand/test-setup.ps1 -InstallDir $stage
       - name: Build the one-click installer
         shell: pwsh
         run: >-
           ./windows/hand/build.ps1
+          -Nanocodex ./target/debug/nanocodex.exe
           -Nanocodex2 ./target/debug/nanocodex2.exe
           -Version 0.0.0-ci
           -NumericVersion 0.0.0.0
@@ -337,10 +328,6 @@ jobs:
           cache-on-failure: false
       - run: cargo fmt --all -- --check
         if: matrix.check == 'workspace-clippy'
-      - name: Check Linux Hand installation boundaries
-        # Temporarily disabled: CI tests are paused.
-        if: ${{ false }}
-        run: python3 bin/nanocodex/src/hand_setup/test_install.py
       - name: Clippy workspace targets
         if: matrix.check == 'workspace-clippy'
         run: cargo clippy --locked --workspace --all-targets --all-features --exclude nanocodex-bin -- -D warnings -A clippy::missing_const_for_fn
