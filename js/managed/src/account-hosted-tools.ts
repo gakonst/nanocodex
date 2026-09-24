@@ -504,7 +504,14 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
         handler: (
           input: unknown,
           context: InvocationContext,
-        ) => this.#invoke(definition.name, entry.route_token, input, context),
+        ) => this.#invoke(
+          definition.name,
+          entry.route_token,
+          input,
+          context,
+          undefined,
+          entry.provider === "screens" ? "screen" : "refresh",
+        ),
       };
       tools.set(definition.name, Object.freeze(tool));
     }
@@ -574,7 +581,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     input: unknown,
     context: InvocationContext,
     machineId?: string,
-    refreshRoute = true,
+    routePolicy: "refresh" | "fixed" | "screen" = "refresh",
   ): Promise<unknown> {
     if (!this.#allowed(context)) {
       return failedToolResult("Account hand is outside the active grant", "unavailable", true);
@@ -605,7 +612,17 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
     if (!response.ok) {
       try { await response.body?.cancel(); } catch { /* No call was admitted for 404/409. */ }
       const preAdmission = response.status === 404 || response.status === 409;
-      if (preAdmission && refreshRoute && name !== "write_stdin" && !context.signal?.aborted) {
+      if (preAdmission && routePolicy === "screen") {
+        // Screen routes fence one exact publication generation. Redirecting a
+        // stale click to a replacement publisher would turn a safe routing
+        // rejection into a new side effect on a different desktop.
+        return failedToolResult(
+          "The selected screen was disconnected or replaced before this action began. Observe the current screen before sending input.",
+          "unavailable",
+          true,
+        );
+      }
+      if (preAdmission && routePolicy === "refresh" && name !== "write_stdin" && !context.signal?.aborted) {
         // Only an explicit routing rejection permits local reconciliation. Keep
         // the original effect identity so the broker replays any prior receipt;
         // transport/decoding failures and server errors never trigger a retry.
@@ -619,7 +636,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
           ? this.#tools.get(name)
           : this.#machineTools.get(machineToolKey(machineId, name as HostedMachineToolName));
         if (route?.routeToken && route.routeToken !== routeToken) {
-          return this.#invoke(name, route.routeToken, input, context, machineId, false);
+          return this.#invoke(name, route.routeToken, input, context, machineId, "fixed");
         }
       }
       if (machineId !== undefined && name === "write_stdin" && response.status === 409) {
@@ -667,7 +684,7 @@ export class AccountHostedToolsProvider implements HostedToolsDynamicProvider {
       ...(machineId !== undefined && name === "exec_command" && typeof result.process_route_token === "string"
         ? { [PROCESS_SESSION_TOOL]: Object.freeze({
           handler: (input: unknown, context: InvocationContext) =>
-            this.#invoke("write_stdin", result.process_route_token!, input, context, machineId, false),
+            this.#invoke("write_stdin", result.process_route_token!, input, context, machineId, "fixed"),
         }) } : {}),
       ...(result.pre_admission_unavailable === true
         ? { [HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE]: true as const }

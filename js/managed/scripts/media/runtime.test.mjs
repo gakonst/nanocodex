@@ -11,6 +11,7 @@ const root = new URL('../../', import.meta.url);
 const mediaRoot = new URL('../../../media/', import.meta.url);
 let mf;
 let mediaMf;
+let mediaModules;
 let fixture;
 before(async () => {
   fixture = await readFile(new URL('test-fixtures/media/color-bars.mov', root));
@@ -18,8 +19,9 @@ before(async () => {
   const client = await transform(clientSource, {loader:'ts',format:'esm',target:'es2024'});
   const sidecarSource = await readFile(new URL('src/index.ts',mediaRoot), 'utf8');
   const sidecar = await transform(sidecarSource.replace('"./media-runtime"','"./media-runtime.js"')
+    .replace('"nanocodex-tools/pdf-extract"','"./pdf-extract.js"')
     .replace('export default { fetch(): Response { return new Response("Not found", { status: 404 }); } };',
-      'export default {fetch(request,env){return runMediaRequest(request,env.LOADER)}};'), {loader:'ts',format:'esm',target:'es2024'});
+      'export default {fetch(request,env){return new URL(request.url).pathname==="/pdf-text"?runPdfTextRequest(request):runMediaRequest(request,env.LOADER)}};'), {loader:'ts',format:'esm',target:'es2024'});
   const runtimeSource = await readFile(new URL('src/media-runtime.ts',mediaRoot), 'utf8');
   const runtime = await transform(runtimeSource, {loader:'ts',format:'esm',target:'es2024'});
   const managed = [{type:'ESModule',path:'/entry.js',contents:`
@@ -38,8 +40,11 @@ before(async () => {
         }catch(error){return new Response(String(error),{status:500})}
       }};`,
   }, {type:'ESModule',path:'/client.js',contents:client.code}];
+  const pdfBundle=await build({entryPoints:[fileURLToPath(new URL('../../../nanocodex-tools/src/pdf-extract.ts',import.meta.url))],
+    bundle:true,format:'esm',platform:'browser',target:'es2024',write:false});
   const modules = [{type:'ESModule',path:'/index.js',contents:sidecar.code},
-    {type:'ESModule',path:'/media-runtime.js',contents:runtime.code}];
+    {type:'ESModule',path:'/media-runtime.js',contents:runtime.code},
+    {type:'ESModule',path:'/pdf-extract.js',contents:pdfBundle.outputFiles[0].text}];
   for(const program of ['ffmpeg','ffprobe']) {
     for(const [suffix,type] of [['js.txt','Text'],['wasm.bin','Data']]) {
       const path=`media/generated/${program}.${suffix}`;
@@ -47,6 +52,7 @@ before(async () => {
     }
   }
   modules.push({type:'Text',path:'/media/worker.js.txt',contents:await readFile(new URL('src/media/worker.js.txt',mediaRoot),'utf8')});
+  mediaModules=modules;
   mediaMf=new Miniflare({modulesRoot:'/',modules,compatibilityDate:'2026-07-29',
     compatibilityFlags:['enable_request_signal'],workerLoaders:{LOADER:{}},
     outboundService:()=>{throw new Error('Media attempted network access')}});
@@ -95,9 +101,40 @@ test('sidecar alone owns WASM assets; media loader has no network or custom limi
   assert.doesNotMatch(client,/\.(?:wasm\.bin|js\.txt)|workerSource|loader\.load/);
 });
 
+test('private media service extracts compressed Unicode PDF without egress',async()=>{
+  const {pdf}=await import('../../../nanocodex-tools/test/fixtures/pdf.mjs');
+  const body=new FormData();
+  body.set('input',new Blob([pdf()]),'input.pdf');
+  body.set('options',JSON.stringify({first:2,layout:false,raw:false,pageBreaks:false}));
+  const service=await mediaMf.getWorker();
+  const serialized=new Response(body);
+  const response=await service.fetch('http://localhost/pdf-text',{method:'POST',headers:Object.fromEntries(serialized.headers),body:await serialized.arrayBuffer()});
+  assert.equal(response.status,200,await response.clone().text());
+  assert.equal(await response.text(),'Page two: Ω\n');
+  body.set('options',JSON.stringify({first:0,layout:false,raw:false,pageBreaks:false}));
+  const invalid=new Response(body);
+  assert.equal((await service.fetch('http://localhost/pdf-text',{method:'POST',headers:Object.fromEntries(invalid.headers),body:await invalid.arrayBuffer()})).status,400);
+});
+
+test('production media default fetch cannot expose private PDF extraction',async()=>{
+  const source=await readFile(new URL('src/index.ts',mediaRoot),'utf8');
+  const transformed=await transform(source.replace('"./media-runtime"','"./media-runtime.js"')
+    .replace('"nanocodex-tools/pdf-extract"','"./pdf-extract.js"'),
+    {loader:'ts',format:'esm',target:'es2024'});
+  const publicMf=new Miniflare({modulesRoot:'/',
+    modules:[{type:'ESModule',path:'/index.js',contents:transformed.code},...mediaModules.slice(1)],
+    compatibilityDate:'2026-07-29',compatibilityFlags:['enable_request_signal'],
+    workerLoaders:{LOADER:{}},outboundService:()=>{throw new Error('Media attempted network access')},
+  });
+  try {
+    const response=await publicMf.dispatchFetch('http://localhost/pdf-text',{method:'POST'});
+    assert.equal(response.status,404);
+  } finally { await publicMf.dispose(); }
+});
+
 test('sidecar rejects unsupported requests',async()=>{
   const service=await mediaMf.getWorker();
-  assert.equal((await service.fetch('https://media.internal/not-run',{method:'POST'})).status,404);
+  assert.equal((await service.fetch('http://localhost/not-run',{method:'POST'})).status,404);
   const body=new FormData();body.set('command','invalid');body.set('args','["-version"]');
   assert.equal((await service.fetch('https://media.internal/run',{method:'POST',body})).status,400);
   body.set('command','ffmpeg');body.set('args','not JSON');

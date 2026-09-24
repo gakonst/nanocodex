@@ -5,6 +5,395 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.5](https://github.com/gakonst/nanocodex/releases/tag/v0.6.5) - 2026-09-24
+
+### Bug Fixes
+
+- [computer] Keep generated browser bridge configuration outside the signed CUA bundle
+- Gate public bootstrap on stable release
+- Fix probe telemetry query variable shadowing
+- [nanocodex2] Include Mercator in local managed tool runtime
+- [tui] Publish tmux overview without blocking input
+- [cli] Verify local bundle revisions and expose startup timings
+- [managed] Avoid agent lookup on screen publication
+- [managed] Keep rebound VM pending until acknowledged
+- [managed] Redrive provisions and reschedule lease alarms promptly
+- [hand] Retry attachment failures on the current lease
+- [remote] Reuse resolved screen address on retry
+- [tui] Stop spinner after managed turn ends
+- [managed] Grant replacement Hand lease before route revocation
+- [cli] Default to Sol with xhigh reasoning and fast mode
+- [hand] Keep standalone macOS publisher awake during idle
+- [ios] Recover remote viewers without decoded video progress
+- [ios] Recover remote screen paths and distinguish discovery failures
+- [tools] Tolerate WebSocket pong control frames
+- [screen] Keep remote video on a compositor layer
+- [screen] Recover direct paths after publisher replacement
+- [vm] Keep owned virtual displays awake while idle
+- [cli] Wait for Hand unload before activating an update
+- [account] Retain prepared screen while intent remains active
+- Preserve validated multi-tool provider responses
+- [tools] Honor admitted attachment budgets without local frame caps
+- [remote] Retain media through brief ICE disconnects
+- [tools] Queue attachment calls and retain process runtime routes
+- [account] Prepare screen for the latest hover or focus intent
+- [cli] Keep reload contention off the startup path
+- [computer] Collapse nested provision test condition
+- [ci] Satisfy subagent transcript control-flow lints
+- Fix WASM image gate and removal lint regressions
+- Fix module ordering after integrating master
+- [memory] Retain unrelated lines after curated fact removal
+- [memory] Deliver voice context and isolate optional background work
+- [memory] Unify tools and share context with voice
+- [hand] Supervise capture throughout the computer service lifetime
+- [ci] Release APIs independently of native image publication ([#548](https://github.com/gakonst/nanocodex/issues/548))
+- [remote] Keep screen sessions alive during WebRTC preparation ([#545](https://github.com/gakonst/nanocodex/issues/545))
+- [cli] Bound terminal hint startup and preserve input ownership
+- Preserve unwrapped Chat custom tool input ([#543](https://github.com/gakonst/nanocodex/issues/543))
+- [managed] Remove memory preservation from compaction ([#540](https://github.com/gakonst/nanocodex/issues/540))
+- [memory] Accept structured Workers AI extraction responses ([#539](https://github.com/gakonst/nanocodex/issues/539))
+- [memory] Align Codex behavior and exclude audit journals from recall ([#537](https://github.com/gakonst/nanocodex/issues/537))
+- [hand] Preserve opaque hosted model metadata
+- [tools] Treat hosted model strings as opaque metadata
+- [tools] Accept provider-qualified hosted model metadata
+- [managed] Always allow steering and cancellation
+- [subagents] Remove mailbox caps and render readable TUI cards
+- [memory] Preserve latest occurrence order during compaction
+- [memory] Keep consolidation audits readable without indexing them
+- Fence preservation callbacks against cancellation races
+- Preserve whole compaction evidence and cover lifecycle boundaries
+- [ci] Version TUI control dependencies and simplify test condition
+- Fix transcript gesture retention and bound tool result previews
+- [router] Stream managed reasoning and reduce selection latency
+- [computer] Enable upstream CUA discovery and turn metadata in Linux VMs ([#520](https://github.com/gakonst/nanocodex/issues/520))
+- [router] Preserve existing managed event protocol for route updates ([#523](https://github.com/gakonst/nanocodex/issues/523))
+- [router] Accept Workers AI streams and terminate protocol failures ([#522](https://github.com/gakonst/nanocodex/issues/522))
+- [ios] Register phone Hand with current hosted protocol ([#516](https://github.com/gakonst/nanocodex/issues/516))
+- [runtime] Prevent image replay crashes and reconcile steering delivery ([#435](https://github.com/gakonst/nanocodex/issues/435))
+- [durability] Defer developer checkpoints until queued turns settle ([#502](https://github.com/gakonst/nanocodex/issues/502))
+- Keep subagents ephemeral and remove restart recovery ([#509](https://github.com/gakonst/nanocodex/issues/509))
+- [apple] Await locked voice transcription and admission on Send ([#508](https://github.com/gakonst/nanocodex/issues/508))
+- [cli] Ensure the installed Hand service at startup ([#497](https://github.com/gakonst/nanocodex/issues/497))
+- [subagents] Make result revisions runtime-owned ([#484](https://github.com/gakonst/nanocodex/issues/484))
+- [apple] Protect locked recording output and improve diagnostics ([#474](https://github.com/gakonst/nanocodex/issues/474))
+- [apple] Distinguish Markdown links and wrap table cells ([#478](https://github.com/gakonst/nanocodex/issues/478))
+- [subagents] Restore evicted children and preserve live checkpoints ([#494](https://github.com/gakonst/nanocodex/issues/494))
+- Let official CUA own execution deadlines ([#491](https://github.com/gakonst/nanocodex/issues/491))
+- Preserve CUA execution budgets and explain native recovery ([#489](https://github.com/gakonst/nanocodex/issues/489))
+- Fix threads blocked by stale child checkpoint bindings ([#488](https://github.com/gakonst/nanocodex/issues/488))
+- Fix ElevenLabs provider requests in Workers runtime ([#479](https://github.com/gakonst/nanocodex/issues/479))
+- [voice] Expose active preview URL
+- [voice] Publish preview duration and test save transitions
+- [voice] Preserve reviewed samples and support imported playback
+- [voice] Expose recording save and playback progress states
+- Fix iOS conversation navigation and float controls above chat ([#473](https://github.com/gakonst/nanocodex/issues/473))
+- Fix child transcript leakage and harden error recovery boundaries ([#471](https://github.com/gakonst/nanocodex/issues/471))
+- Fix optional browser receiver hint feature detection types
+- Fix Clippy warnings in voice protocol and TUI audio paths
+- Fix voice playback gaps and package native macOS clone recording
+- [voice] Dogfood recording menus and stream echo-safe ElevenLabs audio
+- [remote] Reconnect failed thread viewer on explicit refresh
+- [cua] Bound provider calls by their requested deadline
+- Fix official browser accessibility in CUA launchers ([#462](https://github.com/gakonst/nanocodex/issues/462))
+- Fix Windows Sky decline probe launcher ([#459](https://github.com/gakonst/nanocodex/issues/459))
+- Fix Hand discovery interruptions and stranded durable turns ([#458](https://github.com/gakonst/nanocodex/issues/458))
+- Require explicit opt-in for thread routing
+- Verify gateway routing on native and managed runtimes
+- Preserve routed children across managed idle recovery
+- Admit routed children and clarify structured tool contracts
+- [cua] Run the official Linux Sky helper on the desktop host ([#454](https://github.com/gakonst/nanocodex/issues/454))
+- Fix iPhone photo input and private browser takeover controls ([#455](https://github.com/gakonst/nanocodex/issues/455))
+- [windows] Fetch pinned FFmpeg from its versioned release ([#453](https://github.com/gakonst/nanocodex/issues/453))
+- Fix remote control and audio parity; add WoW thread sidebar ([#450](https://github.com/gakonst/nanocodex/issues/450))
+- Fix oversized command cards and stalled iOS conversations ([#439](https://github.com/gakonst/nanocodex/issues/439))
+- [wow] Generate valid systemd working directories ([#446](https://github.com/gakonst/nanocodex/issues/446))
+- [computer] Present native Sky consent on Mac and Windows ([#440](https://github.com/gakonst/nanocodex/issues/440))
+- [computer] Host official Windows Sky through native pipe ([#437](https://github.com/gakonst/nanocodex/issues/437))
+- [ci] Align nightly Mac runner with release builds ([#434](https://github.com/gakonst/nanocodex/issues/434))
+- Accept live Jev Unified Billing response envelopes
+- [computer] Hash Windows bootstrap without module functions ([#432](https://github.com/gakonst/nanocodex/issues/432))
+- Fix clippy warning in local reload lifecycle test ([#433](https://github.com/gakonst/nanocodex/issues/433))
+- [vault] Preserve login discovery and private browser continuation ([#430](https://github.com/gakonst/nanocodex/issues/430))
+- [ios] Improve Code Mode card rendering ([#424](https://github.com/gakonst/nanocodex/issues/424))
+- [release] Use supported macOS toolchain and recover tagged builds ([#422](https://github.com/gakonst/nanocodex/issues/422))
+- [ci] Isolate Windows Hand tests from CUA provisioning ([#421](https://github.com/gakonst/nanocodex/issues/421))
+
+### Dependencies
+
+- [workers] Load SSH dependencies only when used
+
+### Documentation
+
+- [memory] Distinguish legacy management from model tools
+- [perf] Record deployed inference and voice measurements
+- [computer] Record installed host and browser verification
+- [computer] Describe managed Mac startup and launcher upgrades
+
+### Features
+
+- [ios] Start voice tasks and meeting transcription from Lock Screen
+- [tui] Opt into Mercator before first thread prompt
+- [mcp] Discover Mercator by default in native and managed agents
+- Add running-agent navigation and tmux overview ([#560](https://github.com/gakonst/nanocodex/issues/560))
+- [account] Show selected media address families safely
+- [memory] Complete bounded semantic indexing and verify managed preservation
+- [memory] Wire preservation and background jobs into Workers
+- [memory] Add Workers-native Markdown memory
+- [wow] Restore durable streaming and addon preview improvements
+- [router] Add Kimi and MiMo with mobile model controls ([#519](https://github.com/gakonst/nanocodex/issues/519))
+- [router] Plot all thinking levels together per provider ([#513](https://github.com/gakonst/nanocodex/issues/513))
+- [router] Group provider comparisons by model ([#512](https://github.com/gakonst/nanocodex/issues/512))
+- [tui] Add authenticated rich terminal integration ([#344](https://github.com/gakonst/nanocodex/issues/344))
+- [router] One dense atlas for models, providers and routing health ([#511](https://github.com/gakonst/nanocodex/issues/511))
+- [mac] Coordinate Hand service installation and updates in Rust ([#507](https://github.com/gakonst/nanocodex/issues/507))
+- [router] Latency plots, routing health and bounded Jev recovery ([#505](https://github.com/gakonst/nanocodex/issues/505))
+- [api] Support standard stateless Responses clients
+- [api] Add isolated user-attributed inference keys and sessions
+- [computer] Manage the official macOS CUA host lifecycle
+- [voice] Guide clone recordings and explain early stops
+- [tui] Record and review voice clones in place
+- [tui] Add ElevenLabs cloning and live voice switching
+- [voice] Add ElevenLabs speech and instant voice cloning
+- Add opt-in autoroute UX and retained provider display
+- Auto-route with scheduled streaming TTFT probes
+- [ios] Show available updates above the conversation ([#445](https://github.com/gakonst/nanocodex/issues/445))
+- [ios] Personal data tools, location context, and Lock Screen voice
+- Select thread model and effort with Jev preferences
+- [nanocodex2] Reload local terminals into their current threads ([#431](https://github.com/gakonst/nanocodex/issues/431))
+- [ios] Start voice tasks from Lock Screen widgets ([#425](https://github.com/gakonst/nanocodex/issues/425))
+- [ios] Redesign WoW controller with landscape Liquid Glass controls ([#427](https://github.com/gakonst/nanocodex/issues/427))
+- [remote] Add native touch gamepad and Linux virtual controller ([#423](https://github.com/gakonst/nanocodex/issues/423))
+
+### Miscellaneous Tasks
+
+- Prioritize Worker uploads and skip optional preview images ([#566](https://github.com/gakonst/nanocodex/issues/566))
+- Reduce cache pressure and skip unused native JS setup ([#565](https://github.com/gakonst/nanocodex/issues/565))
+- Reuse Rust dependency layers and reduce cache duplication ([#563](https://github.com/gakonst/nanocodex/issues/563))
+- Validate container images beside Worker previews
+- Move Docker layer caches out of the Actions quota ([#559](https://github.com/gakonst/nanocodex/issues/559))
+- Reserve compiler cache writes for trusted master builds ([#558](https://github.com/gakonst/nanocodex/issues/558))
+- Build Windows once and pipeline WASM consumers ([#557](https://github.com/gakonst/nanocodex/issues/557))
+- Parallelize Rust quality checks and cache native compilation ([#550](https://github.com/gakonst/nanocodex/issues/550))
+- [screen] Report safe candidate families and negotiation timings
+- Build Workers while managed images publish ([#482](https://github.com/gakonst/nanocodex/issues/482))
+- Avoid unrelated voice and Python builds for CUA changes ([#490](https://github.com/gakonst/nanocodex/issues/490))
+
+### Other
+
+- Merge pull request [#581](https://github.com/gakonst/nanocodex/issues/581) from gakonst/codex/ios-voice-listening-20260924
+- Make CUA and Hand setup native, seamless, and cross-platform ([#571](https://github.com/gakonst/nanocodex/issues/571))
+- Split optional media runtime out of managed Session Worker ([#582](https://github.com/gakonst/nanocodex/issues/582))
+- Add reproducible isolated cold-DO activation control ([#580](https://github.com/gakonst/nanocodex/issues/580))
+- Remove temporary cold DO trace diagnostic workflow
+- Identify repeated auth DO versus fresh probe DO colos
+- Correlate synthetic probe trace placement
+- Limit DO colo query to RPC spans
+- Correlate cold DO control placement from traces
+- Capture preconstructor Server-Timing in bounded probe
+- Run bounded follow-up cold-create measurement
+- Show longest DO handlers in trace chains
+- Summarize multiple cold DO trace chains
+- Narrow cold DO span summary
+- Summarize parented OpenTelemetry dispatch spans
+- Isolate OpenTelemetry Durable Object spans
+- Inspect all trace datasets for preconstructor gap
+- Preserve full sanitized trace annotation
+- Inspect trace schema and bounded span summaries
+- Expose sanitized Cloudflare span metadata as check annotations
+- Publish sanitized DO trace summary through GitHub API
+- Merge pull request [#579](https://github.com/gakonst/nanocodex/issues/579) from gakonst/diagnostics/cold-do-traces-20260924
+- Bounded read-only Cloudflare DO trace inspection
+- Merge pull request [#578](https://github.com/gakonst/nanocodex/issues/578) from gakonst/perf/lazy-session-workspace
+- Keep Mercator default-on with Tempo Wallet onboarding
+- Remove artificial Hand host enrollment cap ([#564](https://github.com/gakonst/nanocodex/issues/564))
+- Revert "fix(remote): reuse resolved screen address on retry"
+- Add sandbox-free pdftotext to Just Bash ([#562](https://github.com/gakonst/nanocodex/issues/562))
+- Merge pull request [#561](https://github.com/gakonst/nanocodex/issues/561) from gakonst/codex/ci-cloudflare-preview-pipeline
+- Merge pull request [#556](https://github.com/gakonst/nanocodex/issues/556): recover stalled iPhone desktop video
+- Merge remote-tracking branch 'origin/master' into perf/inference-master-20260922
+- Merge pull request [#555](https://github.com/gakonst/nanocodex/issues/555) from gakonst/fix/screen-video-presentation-20260923
+- Merge pull request [#554](https://github.com/gakonst/nanocodex/issues/554) from gakonst/fix/screen-reconnect-lifecycle-20260923
+- Merge remote-tracking branch 'origin/master' into perf/inference-master-20260922
+- Merge pull request [#553](https://github.com/gakonst/nanocodex/issues/553) from gakonst/fix/vm-idle-capture-20260923
+- Merge remote-tracking branch 'origin/master' into perf/inference-master-20260922
+- Merge pull request [#552](https://github.com/gakonst/nanocodex/issues/552) from gakonst/fix/provider-and-screen-preparation-20260923
+- Classify rejected provider tool aliases without content
+- Merge pull request [#551](https://github.com/gakonst/nanocodex/issues/551) from gakonst/perf/screen-direct-latency-20260923
+- Merge remote-tracking branch 'origin/master' into perf/screen-direct-latency-20260923
+- Merge pull request [#549](https://github.com/gakonst/nanocodex/issues/549) from gakonst/perf/screen-latency-20260923
+- Merge remote-tracking branch 'origin/master' into perf/screen-latency-20260923
+- Merge [#528](https://github.com/gakonst/nanocodex/issues/528): retire legacy facts and preserve Codex memory APIs
+- Merge branch 'codex/memories-surface' into codex/memory-retirement-integration
+- Retire legacy facts while preserving Codex memory and background personalization
+- Merge remote-tracking branch 'origin/master' into remove-legacy-memory
+- Remove legacy memory storage and personalization
+- Merge [#544](https://github.com/gakonst/nanocodex/issues/544): align Codex memory APIs and background personalization
+- Merge remote-tracking branch 'origin/master' into codex/memories-surface
+- Use baseline Codex read and search for canonical Markdown memory
+- Merge remote-tracking branch 'origin/master' into codex/memories-surface
+- Preserve memory placement coverage and satisfy spelling checks
+- Merge remote-tracking branch 'origin/master' into codex/memories-surface
+- Move automatic memory refresh and indexing off live execution paths
+- Route non-GPT children while preserving manual GPT spawning ([#536](https://github.com/gakonst/nanocodex/issues/536))
+- Distinguish unwrapped custom input in provider diagnostics ([#541](https://github.com/gakonst/nanocodex/issues/541))
+- Merge pull request [#532](https://github.com/gakonst/nanocodex/issues/532) from gakonst/fix/code-mode-upstream-parity
+- Align Code Mode helpers and terminal receipts across runtimes
+- Merge pull request [#538](https://github.com/gakonst/nanocodex/issues/538) from gakonst/revert/mobile-ui-518-20260923
+- Revert "Merge pull request [#518](https://github.com/gakonst/nanocodex/issues/518) from gakonst/fix/ui-scroll-smooth-20260922"
+- Merge pull request [#535](https://github.com/gakonst/nanocodex/issues/535) from gakonst/fix/provider-stream-diagnostics-compat-20260923
+- Preserve terminal retry classification for stream diagnostics
+- Merge pull request [#534](https://github.com/gakonst/nanocodex/issues/534) from gakonst/fix/provider-stream-diagnostics-20260923
+- Add safe provider stream rejection diagnostics
+- Merge pull request [#533](https://github.com/gakonst/nanocodex/issues/533) from gakonst/fix/native-hand-opaque-model-20260923
+- Simplify remote screen streaming and improve latency across platforms ([#524](https://github.com/gakonst/nanocodex/issues/524))
+- Merge pull request [#531](https://github.com/gakonst/nanocodex/issues/531) from gakonst/fix/hosted-model-opaque-20260922
+- Merge pull request [#530](https://github.com/gakonst/nanocodex/issues/530) from gakonst/fix/hosted-model-metadata-20260922
+- Merge remote-tracking branch 'origin/master' into fix/hosted-model-metadata-20260922
+- Merge remote-tracking branch 'origin/master' into fix/turn-controls-merge
+- Preserve GPT-6 reasoning contracts across gateways ([#529](https://github.com/gakonst/nanocodex/issues/529))
+- Integrate GPT-6 Sol and Luna across Nanocodex ([#526](https://github.com/gakonst/nanocodex/issues/526))
+- Make precompaction memory flush durable and evidence bounded
+- Fence stale markdown consolidation and invalidate source attribution
+- Implement Workers memory automation components
+- Merge pull request [#518](https://github.com/gakonst/nanocodex/issues/518) from gakonst/fix/ui-scroll-smooth-20260922
+- Prefetch formatted Markdown and reuse cached blocks on first paint
+- Adapt chat controls and tool headers to safe areas and large text
+- Use fixed stress deadlines and verify visible reading progress
+- Add recorded repeated chat stress tests for 200 tool calls
+- Use native chat navigation and incremental transcript updates
+- Merge pull request [#515](https://github.com/gakonst/nanocodex/issues/515) from gakonst/fix/phone-quality-20260922
+- Improve phone audio fidelity, pacing, interruptions and diagnostics
+- Make router provider thinking lines compact and mobile first ([#514](https://github.com/gakonst/nanocodex/issues/514))
+- Publish regional streaming and Jev performance measurements ([#500](https://github.com/gakonst/nanocodex/issues/500))
+- Recheck master before each production deployment ([#499](https://github.com/gakonst/nanocodex/issues/499))
+- Stream inference responses and route using trusted ingress latency ([#498](https://github.com/gakonst/nanocodex/issues/498))
+- Enable bounded production provider latency probes ([#496](https://github.com/gakonst/nanocodex/issues/496))
+- Restore unchanged repository files omitted from frontier REST publication
+- Support configured Cloudflare REST transport for frontier inference ([#495](https://github.com/gakonst/nanocodex/issues/495))
+- Run one persistent Hand daemon per machine ([#483](https://github.com/gakonst/nanocodex/issues/483))
+- Route frontier OpenAI models through Cloudflare Responses binding ([#493](https://github.com/gakonst/nanocodex/issues/493))
+- Expose Jev choice probabilities and add an end-to-end Bash inference demo ([#492](https://github.com/gakonst/nanocodex/issues/492))
+- Merge pull request [#487](https://github.com/gakonst/nanocodex/issues/487) from gakonst/feat/inference-responses-compat-20260921
+- Run macOS CUA headlessly with official Codex approval policy ([#485](https://github.com/gakonst/nanocodex/issues/485))
+- Merge pull request [#486](https://github.com/gakonst/nanocodex/issues/486) from gakonst/feat/inference-only-api-20260921
+- Merge pull request [#436](https://github.com/gakonst/nanocodex/issues/436) from gakonst/poc/thread-model-routing
+- Enable reqwest query support explicitly for the Windows managed CLI
+- Scope spelling checks around vendored WebRTC and FFmpeg identifiers
+- Merge master into thread routing, preserving voice controls and typed subagent diagnostics
+- Route CUA by workdir and disable legacy browser backends ([#480](https://github.com/gakonst/nanocodex/issues/480))
+- Scope ElevenLabs deployment credential to its account ([#477](https://github.com/gakonst/nanocodex/issues/477))
+- Merge pull request [#476](https://github.com/gakonst/nanocodex/issues/476) from gakonst/feat/managed-native-openai-host
+- Merge pull request [#475](https://github.com/gakonst/nanocodex/issues/475) from gakonst/fix/mobile-voice-clone-ux
+- Dogfood the complete iPhone cloning flow and recovery in Simulator
+- Complete mobile clone review, preview, consent and recovery flow
+- Merge pull request [#469](https://github.com/gakonst/nanocodex/issues/469) from gakonst/fix/mobile-transcript-perf-20260921
+- Update render projection fixture for native cell revisions
+- Virtualize the iOS transcript with native reusable cells
+- Merge master photo UI and conversation controls into PR469
+- Verify drawer gesture lifetime and 500-message scrolling
+- Reduce long mobile transcript scroll and streaming work
+- Delegate native CUA calls through the official OpenAI host ([#465](https://github.com/gakonst/nanocodex/issues/465))
+- Remove artificial WASM media resource caps ([#472](https://github.com/gakonst/nanocodex/issues/472))
+- Manage scheduled prompts through API, chat, and native apps ([#467](https://github.com/gakonst/nanocodex/issues/467))
+- Merge pull request [#466](https://github.com/gakonst/nanocodex/issues/466) from gakonst/feat/mobile-elevenlabs-voices
+- Merge branch 'feat/elevenlabs-voice-cloning' into feat/mobile-elevenlabs-voices
+- Merge branch 'feat/elevenlabs-voice-cloning' into feat/mobile-elevenlabs-voices
+- Synthesize each final mobile voice caption once
+- Add mobile ElevenLabs catalogs and in-place voice recording
+- Merge pull request [#426](https://github.com/gakonst/nanocodex/issues/426) from gakonst/feat/elevenlabs-voice-cloning
+- Keep clone guidance renderer independent and pass all-target TUI lint
+- Merge remote-tracking branch 'origin/master' into feat/elevenlabs-voice-cloning
+- Isolate PTY clipboard tests from the native desktop
+- Bound voice startup and preserve connection diagnostics
+- Merge latest master and retain voice lifecycle controls
+- Route ElevenLabs speech through the native ChatGPT audio engine
+- Add sandbox-free WASM ffmpeg and ffprobe to the durable brain ([#470](https://github.com/gakonst/nanocodex/issues/470))
+- Render photo galleries above messages and enlarge composer previews ([#468](https://github.com/gakonst/nanocodex/issues/468))
+- Merge pull request [#460](https://github.com/gakonst/nanocodex/issues/460) from gakonst/fix/cua-deadline-current
+- Reduce remote screen capture and playback latency ([#464](https://github.com/gakonst/nanocodex/issues/464))
+- Use phone-local image paths and preserve multi-photo previews ([#463](https://github.com/gakonst/nanocodex/issues/463))
+- Remove redundant workspace, schedule, and context confirmations ([#457](https://github.com/gakonst/nanocodex/issues/457))
+- Recover iPhone personal tools after attachment reconnects ([#461](https://github.com/gakonst/nanocodex/issues/461))
+- Remove custom CUA consent UI and handlers ([#456](https://github.com/gakonst/nanocodex/issues/456))
+- Complete pinned provider and child routing with runtime validation
+- Merge remote-tracking branch 'origin/master' into finish/thread-routing-20260921
+- Keep disconnected VMs from blocking healthy Hands ([#452](https://github.com/gakonst/nanocodex/issues/452))
+- Add thread controls to collapse tools and jump between user messages ([#449](https://github.com/gakonst/nanocodex/issues/449))
+- Retire legacy CUA launchers during upgrades ([#451](https://github.com/gakonst/nanocodex/issues/451))
+- Remove custom CUA and use the official Sky MCP provider ([#448](https://github.com/gakonst/nanocodex/issues/448))
+- Order agent sidebar by last user message ([#447](https://github.com/gakonst/nanocodex/issues/447))
+- Stream attachments through R2 bindings and bound image inspection memory ([#444](https://github.com/gakonst/nanocodex/issues/444))
+- Show iOS Code Mode as expanded batches of tool cards ([#441](https://github.com/gakonst/nanocodex/issues/441))
+- Add in-app updates for Mac-built iPhone releases ([#442](https://github.com/gakonst/nanocodex/issues/442))
+- Unify remote publishing and repair native input and duplex audio ([#438](https://github.com/gakonst/nanocodex/issues/438))
+- Preserve unfinished provider routing and subagent integration
+- Handle GLM original tool names and record live Mac routing tests
+- Add opt-in Jev thread routing with Workers AI GLM transport
+- Forward Codex turn metadata and surface Sky consent in foreground Hands ([#429](https://github.com/gakonst/nanocodex/issues/429))
+
+### Performance
+
+- [managed] Defer Workspace initialization and correct constructor timing
+- Isolate first-activation delay with same-Worker control
+- Measure first-use Durable Object activation
+- Instrument and streamline managed agent creation
+- [remote] Pace relative input when control queue backs up
+- [managed] Overlap engine startup and defer code evaluator
+- [remote] Reduce WAN media fallback and scale video bitrate
+- [remote] Cap interactive video playout at 30ms
+- Cache discovery metadata and stop idle TUI redraws
+- [api] Streamline session initialization and metadata lifetimes
+- [api] Use direct RPC for inference startup metadata
+- [tls] Avoid macOS root-store enumeration on connect
+- [tui] Skip unavailable math renderer workers
+- [cli] Present first responses immediately and finish shutdown promptly
+- [api] Streamline live creation and overlap provider connection
+- [inference] Measure host socket queues and provider timing
+- [account] Reuse dialog-owned screen ICE credentials
+- [cli] Make startup editable before backend discovery
+- [cli] Remove external processes from launcher path setup
+- [remote] Expose conservative relay credential expiry for prewarming
+- [cli] Cache computer startup and cancel background work on exit
+- [observability] Trace managed WebSocket admission boundaries
+- [account] Reuse verified browser screen admission across fresh viewers
+- [screen] Prefetch and share session ICE credentials
+- [account] Prepare one screen on bounded hover or focus intent
+- [remote] Expose conservative relay credential expiry for prewarming
+- [account] Overlap screen recovery setup and pre-gather ICE
+- [screen] Nominate validated native ICE paths sooner
+- [ci] Retain WASM outputs and share the regional relay image ([#547](https://github.com/gakonst/nanocodex/issues/547))
+- [ci] Reuse images published by overlapping pushes ([#546](https://github.com/gakonst/nanocodex/issues/546))
+- [ci] Release affected services with reusable WASM and image artifacts ([#542](https://github.com/gakonst/nanocodex/issues/542))
+- [inference] Cache startup memory and colocate text and voice relays
+- [managed] Share discovery snapshots and retain warm inference
+- [inference] Reuse discovery and regionalize text relays
+- [apple] Defer code highlighting until near the viewport
+
+### Styling
+
+- [remote] Clarify independent publication startup actions
+- Merge pull request [#521](https://github.com/gakonst/nanocodex/issues/521) from gakonst/feat/workers-markdown-memory
+- Refine iOS sidebar design and show agent status and progress ([#443](https://github.com/gakonst/nanocodex/issues/443))
+
+### Testing
+
+- [tui] Echo requested settings in live session fixture
+- [vm] Compare XScreenSaver wire states as bytes
+- [voice] Move consumed context into prepared event
+- [screen] Move one-shot channel sender into open callback
+- [tools] Cover deployed non-GPT model slugs
+- Cover before-compaction cancellation races
+- Exclude non-source context from compaction preservation
+- Cover before-compaction host contracts
+- Replay compaction preservation against retained source history
+- Use current response history constructors for preservation fixtures
+- [apple] Match transcript equality in render fixture
+- [managed] Align routing fixtures with runtime-owned result context ([#510](https://github.com/gakonst/nanocodex/issues/510))
+- [desktop] Use managed host receipts and isolate VM fixtures
+- [voice] Add opt-in simulator recording fixture
+- Test pinned routing through two real WASM agent turns
+
+
 ## [0.6.4](https://github.com/gakonst/nanocodex/releases/tag/v0.6.4) - 2026-09-19
 
 ### Bug Fixes

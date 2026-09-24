@@ -5,6 +5,38 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.5](https://github.com/gakonst/nanocodex/releases/tag/v0.6.5) - 2026-09-24
+
+### Bug Fixes
+
+- Fix WASM image gate and removal lint regressions
+- [memory] Deliver voice context and isolate optional background work
+- [memory] Unify tools and share context with voice
+
+### Features
+
+- [voice] Add ElevenLabs speech and instant voice cloning
+
+### Other
+
+- Merge pull request [#549](https://github.com/gakonst/nanocodex/issues/549) from gakonst/perf/screen-latency-20260923
+- Merge remote-tracking branch 'origin/master' into perf/screen-latency-20260923
+- Merge [#528](https://github.com/gakonst/nanocodex/issues/528): retire legacy facts and preserve Codex memory APIs
+- Retire legacy facts while preserving Codex memory and background personalization
+- Remove legacy memory storage and personalization
+- Merge [#544](https://github.com/gakonst/nanocodex/issues/544): align Codex memory APIs and background personalization
+- Move automatic memory refresh and indexing off live execution paths
+- Restore unchanged repository files omitted from frontier REST publication
+- Support configured Cloudflare REST transport for frontier inference ([#495](https://github.com/gakonst/nanocodex/issues/495))
+- Merge master into thread routing, preserving voice controls and typed subagent diagnostics
+- Merge master photo UI and conversation controls into PR469
+- Merge pull request [#426](https://github.com/gakonst/nanocodex/issues/426) from gakonst/feat/elevenlabs-voice-cloning
+
+### Testing
+
+- [voice] Move consumed context into prepared event
+
+
 ## [0.6.4](https://github.com/gakonst/nanocodex/releases/tag/v0.6.4) - 2026-09-19
 
 ### Features

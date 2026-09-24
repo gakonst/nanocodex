@@ -5,6 +5,53 @@ set -eu
 
 repository=gakonst/nanocodex
 
+temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/nanocodex-bootstrap.XXXXXX")" || {
+  echo "nanocodex: failed to create a temporary directory" >&2
+  exit 1
+}
+trap 'rm -rf -- "$temporary_dir"' EXIT HUP INT TERM
+
+release_tag=${NANOCODEX_RELEASE_TAG:-}
+if [ -z "$release_tag" ]; then
+  release_redirect="$(
+    curl --fail --silent --show-error --head \
+      --output /dev/null --write-out '%{redirect_url}' \
+      "https://github.com/$repository/releases/latest"
+  )"
+  release_tag=${release_redirect##*/}
+fi
+version=${release_tag#v}
+major=${version%%.*}
+remainder=${version#*.}
+minor=${remainder%%.*}
+patch=${remainder#*.}
+case "$release_tag" in v*) ;; *) release_tag= ;; esac
+if [ "$remainder" = "$version" ] || [ "$patch" = "$remainder" ]; then
+  release_tag=
+fi
+case "$major" in ''|*[!0-9]*) release_tag= ;; esac
+case "$minor" in ''|*[!0-9]*) release_tag= ;; esac
+case "$patch" in ''|*[!0-9]*) release_tag= ;; esac
+if [ -z "$release_tag" ]; then
+  echo "nanocodex: could not resolve the latest stable release" >&2
+  exit 1
+fi
+
+# The public URL follows master, while native artifacts are published from a
+# stable tag. Load the install contract from that tag first so a merge can
+# never pair a newer script with an older binary. Tagged installers set the
+# stage marker for their second pass and download from the exact same tag.
+if [ "${NANOCODEX_RELEASE_BOOTSTRAP:-0}" != 1 ]; then
+  stable_installer="$temporary_dir/install"
+  curl --fail --silent --show-error --location \
+    "https://raw.githubusercontent.com/$repository/refs/tags/$release_tag/install" \
+    --output "$stable_installer"
+  chmod 755 "$stable_installer"
+  NANOCODEX_RELEASE_BOOTSTRAP=1 NANOCODEX_RELEASE_TAG="$release_tag" \
+    "$stable_installer" "$@"
+  exit
+fi
+
 case "$(uname -s)" in
   Linux) platform=unknown-linux-gnu ;;
   Darwin) platform=apple-darwin ;;
@@ -32,25 +79,6 @@ case "$architecture-$platform" in
     ;;
 esac
 
-temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/nanocodex-bootstrap.XXXXXX")" || {
-  echo "nanocodex: failed to create a temporary directory" >&2
-  exit 1
-}
-trap 'rm -rf -- "$temporary_dir"' EXIT HUP INT TERM
-
-release_redirect="$(
-  curl --fail --silent --show-error --head \
-    --output /dev/null --write-out '%{redirect_url}' \
-    "https://github.com/$repository/releases/latest"
-)"
-release_tag=${release_redirect##*/}
-case "$release_tag" in
-  v?*) ;;
-  *)
-    echo "nanocodex: could not resolve the latest release" >&2
-    exit 1
-    ;;
-esac
 release_url="https://github.com/$repository/releases/download/$release_tag"
 curl --fail --silent --show-error --location \
   "$release_url/SHA256SUMS" --output "$temporary_dir/SHA256SUMS"

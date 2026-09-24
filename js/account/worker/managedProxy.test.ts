@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { routeManaged } from "./managedProxy.ts";
+import { isManagedRoutePath, routeManaged } from "./managedProxy.ts";
 
 test("screen proxy timing preserves authentication headers, response identity and private query data", async () => {
   const request = new Request("https://nanocodex.localhost/v1/account/hands/view?generation=private-generation", {
@@ -354,4 +354,22 @@ test("live renewal and broker authorization failures clear browser access withou
       else assert.ok(response!.headers.get("x-nanocodex-request-id"));
     }
   }
+});
+
+test("combined agent create-and-turn forwards exactly once with its idempotency key", async () => {
+  for (const path of ["/v1/agent-runs/", "/v1/agent-runs/extra", "/v1/agent-runs-other"]) assert.equal(isManagedRoutePath(path), false, path);
+  assert.equal(isManagedRoutePath("/v1/agent-runs"), true);
+  const request = new Request("https://nanocodex.localhost/v1/agent-runs", {
+    method: "POST", headers: { authorization: "Bearer test", origin: "https://nanocodex.localhost",
+      "idempotency-key": "one-create-one-turn", "content-type": "application/json" },
+    body: JSON.stringify({ input: "hello" }),
+  });
+  const forwarded: Request[] = [];
+  const response = await routeManaged(request, { NANOCODEX_BACKEND: {
+    fetch(candidate: Request) { forwarded.push(candidate); return Promise.resolve(Response.json({ agent_id: "expected", turn_id: "expected" }, { status: 201 })); },
+    connect() { throw Error("unused"); },
+  } }, new URL(request.url));
+  assert.equal(response?.status, 201);
+  assert.deepEqual(forwarded, [request]);
+  assert.equal(forwarded[0]?.headers.get("idempotency-key"), "one-create-one-turn");
 });
