@@ -1,10 +1,12 @@
-//! SSH enrollment is client-owned; runtime ownership remains with systemd.
+//! Native local and SSH Hand enrollment.
+
 use clap::{Args, Subcommand};
 use eyre::{Result, WrapErr, bail};
 use serde_json::json;
-use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, process::Stdio};
 use tokio::{io::AsyncWriteExt, process::Command};
+
+const LINUX_SERVICE: &str = "nanocodex-hand.service";
 
 #[derive(Args)]
 pub(crate) struct Hand {
@@ -14,14 +16,23 @@ pub(crate) struct Hand {
 
 #[derive(Subcommand)]
 enum HandCommand {
-    /// Install or update a persistent Linux Hand and KVM factory over SSH.
-    Add(Add),
-    /// Install the current macOS user Hand LaunchAgent.
+    /// Install or repair the Hand on this machine or a remote Linux host.
     Install {
-        #[arg(long)]
+        /// SSH alias, hostname, IP, or user@host. Omit for this machine.
+        #[arg(long, value_parser = ssh_target)]
+        target: Option<String>,
+        /// SSH port for --target; otherwise use normal SSH configuration.
+        #[arg(short, long, requires = "target")]
+        port: Option<u16>,
+        /// nanocodex2 executable override for local macOS or Windows development.
+        #[arg(long, conflicts_with = "target")]
         executable: Option<PathBuf>,
-        #[arg(long)]
+        /// macOS account file override for local development.
+        #[arg(long, conflicts_with = "target")]
         account_file: Option<PathBuf>,
+        /// Directory containing a development Linux nanocodex2 binary.
+        #[arg(long, value_name = "DIRECTORY", hide = true)]
+        artifacts: Option<PathBuf>,
     },
     /// Show local Hand service status as JSON.
     Status,
@@ -33,51 +44,73 @@ enum HandCommand {
     Restart,
     /// Restore the LaunchAgent saved by an interrupted update.
     Recover,
-    /// Install or update the Hand and VM factory on this device after account login.
-    Setup(Setup),
 }
 
-#[derive(Args)]
-struct Add {
-    /// SSH alias, hostname, IP, or user@host. Uses your normal SSH configuration.
-    #[arg(value_parser = ssh_target)]
-    target: String,
-    /// SSH port, when not specified in SSH configuration.
-    #[arg(short, long)]
-    port: Option<u16>,
-    #[command(flatten)]
-    setup: Setup,
-}
-
-#[derive(Args)]
-struct Setup {
-    /// Exact provider name passed to mount. Defaults to linux-<remote hostname>.
-    #[arg(long)]
-    factory_name: Option<String>,
-    /// Skip the VM factory on a machine without KVM.
-    #[arg(long)]
-    native_only: bool,
-    #[arg(long, default_value_t = 4)]
-    max_vms: u16,
-    #[arg(long, default_value_t = 2)]
-    vm_cpus: u8,
-    #[arg(long, default_value_t = 4096)]
-    vm_memory_mib: u32,
-    /// Use local nanocodex2 and nanocodex-vm-guest binaries.
-    #[arg(long, value_name = "DIRECTORY")]
-    artifacts: Option<PathBuf>,
-}
-
-fn ssh_target(value: &str) -> std::result::Result<String, String> {
+pub(crate) fn ssh_target(value: &str) -> std::result::Result<String, String> {
     if value.is_empty()
         || value.starts_with('-')
         || !value
             .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._-@:%[]".contains(&b))
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-@:%[]".contains(&byte))
     {
         return Err("Expected an SSH alias, IP, hostname, or user@host".into());
     }
     Ok(value.into())
+}
+
+/// One idempotent install entry point for guided setup and direct commands.
+pub(crate) async fn install_default(
+    target: Option<String>,
+    port: Option<u16>,
+    executable: Option<PathBuf>,
+    account_file: Option<PathBuf>,
+) -> Result<()> {
+    install_with(target, port, executable, account_file, None).await
+}
+
+async fn install_with(
+    target: Option<String>,
+    port: Option<u16>,
+    executable: Option<PathBuf>,
+    account_file: Option<PathBuf>,
+    artifacts: Option<PathBuf>,
+) -> Result<()> {
+    if target.is_none() && cfg!(target_os = "macos") {
+        if artifacts.is_some() {
+            bail!("--artifacts is only for a Linux Hand");
+        }
+        let _lock = crate::update::lock_service_operation()?;
+        return crate::hand_service::ensure(executable, account_file).await;
+    }
+    if target.is_none() && cfg!(target_os = "windows") {
+        if artifacts.is_some() {
+            bail!("--artifacts is only for a Linux Hand");
+        }
+        if account_file.is_some() {
+            bail!("--account-file is only for a local macOS Hand");
+        }
+        let _lock = crate::update::lock_service_operation()?;
+        return crate::windows_hand::ensure(executable).await;
+    }
+    if executable.is_some() || account_file.is_some() {
+        bail!(
+            "--executable applies only to a local macOS or Windows Hand; --account-file applies only to macOS"
+        );
+    }
+    if target.is_none() && !cfg!(target_os = "linux") {
+        bail!(
+            "Local Hand installation is not available on {}; use --target for a Linux host",
+            std::env::consts::OS
+        );
+    }
+    let destination = match target {
+        Some(target) => Destination::Ssh {
+            target: ssh_target(&target).map_err(eyre::Report::msg)?,
+            port,
+        },
+        None => Destination::Local,
+    };
+    install_linux(destination, artifacts).await
 }
 
 enum Destination {
@@ -92,11 +125,12 @@ impl Destination {
             Self::Ssh { target, .. } => target,
         }
     }
-    fn command(&self, script: &str) -> Command {
+
+    fn command(&self, program: &str, arguments: &[&str]) -> Command {
         let mut command = match self {
             Self::Local => {
-                let mut command = Command::new("sh");
-                command.args(["-c", script]);
+                let mut command = Command::new(program);
+                command.args(arguments);
                 command
             }
             Self::Ssh { target, port } => {
@@ -105,205 +139,199 @@ impl Destination {
                 if let Some(port) = port {
                     command.args(["-p", &port.to_string()]);
                 }
-                command.arg("--").arg(target).arg(script);
+                command.arg("--").arg(target).arg(program).args(arguments);
                 command
             }
         };
         command.kill_on_drop(true);
         command
     }
-}
 
-impl Setup {
-    async fn run(self, destination: Destination) -> Result<()> {
-        if self.max_vms == 0 || self.vm_cpus == 0 || self.vm_memory_mib < 128 {
-            bail!("VM capacity, CPU count, and memory must be positive (memory at least 128 MiB)");
+    async fn authorize_sudo(&self) -> Result<()> {
+        let mut command = self.command("sudo", &["-n", "true"]);
+        if matches!(self, Self::Local) {
+            command = self.command("sudo", &["-v"]);
         }
-        let (origin, key) = nanocodex_cli_auth::enrollment_credentials(None)?;
-        // Verify account authority before changing a remote machine.
-        let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(30))
-            .build()?;
-        let response = client
-            .get(format!("{origin}/v1/me"))
-            .bearer_auth(key.as_str())
-            .send()
-            .await?;
-        if !response.status().is_success() {
-            bail!("Account verification failed: {}", response.status());
-        }
-        let identity: serde_json::Value = response.json().await?;
-        let owner = identity["user"]["id"]
-            .as_str()
-            .ok_or_else(|| eyre::eyre!("Invalid account identity"))?;
-        if matches!(destination, Destination::Local)
-            && !Command::new("sudo").arg("-v").status().await?.success()
-        {
-            bail!("Administrator access is required to install the Hand services");
-        }
-        eprintln!(
-            "Checking SSH, sudo, systemd, and Linux on {}…",
-            destination.label()
-        );
-        let preflight = destination.command("set -eu; test \"$(uname -s)\" = Linux; test \"$(uname -m)\" = x86_64; command -v python3 >/dev/null; command -v systemctl >/dev/null; sudo -n true; python3 -c 'import json,socket; print(json.dumps({\"hostname\":socket.gethostname()}))'")
-            .output().await.wrap_err("Could not start SSH")?;
-        if !preflight.status.success() {
-            // No credentials have been sent; OpenSSH diagnostics are safe here.
+        if !command.status().await?.success() {
             bail!(
-                "SSH preflight failed. The host needs x86_64 Linux, systemd, Python 3, and passwordless sudo.\n{}",
-                String::from_utf8_lossy(&preflight.stderr)
-            );
-        }
-        let remote: serde_json::Value = serde_json::from_slice(&preflight.stdout)?;
-        let hostname = remote["hostname"]
-            .as_str()
-            .ok_or_else(|| eyre::eyre!("SSH returned no hostname"))?;
-        let factory = self
-            .factory_name
-            .clone()
-            .unwrap_or_else(|| format!("linux-{}", hostname.split('.').next().unwrap_or(hostname)));
-        if factory.len() > 63
-            || !factory
-                .bytes()
-                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b"._-".contains(&b))
-            || !factory
-                .as_bytes()
-                .first()
-                .is_some_and(u8::is_ascii_alphanumeric)
-            || !factory
-                .as_bytes()
-                .last()
-                .is_some_and(u8::is_ascii_alphanumeric)
-        {
-            bail!("Use --factory-name with a lowercase portable name of at most 63 characters");
-        }
-        let temporary = tempfile::tempdir()?;
-        let mut bundle = if let Some(directory) = &self.artifacts {
-            let mut artifacts = Vec::new();
-            for name in ["nanocodex2", "nanocodex-vm-guest"] {
-                let bytes = fs::read(directory.join(name))
-                    .wrap_err_with(|| format!("Missing {name} in {}", directory.display()))?;
-                if !bytes.starts_with(b"\x7fELF") {
-                    bail!("{name} must be a Linux ELF binary");
+                "{} needs {}sudo access to install the Hand service",
+                self.label(),
+                if matches!(self, Self::Ssh { .. }) {
+                    "passwordless "
+                } else {
+                    ""
                 }
-                let hash = hex::encode(Sha256::digest(&bytes));
-                fs::write(temporary.path().join(name), bytes)?;
-                artifacts.push(json!({"name":name,"sha256":hash,"local":true}));
-            }
-            json!({"release":"local", "artifacts":artifacts})
-        } else {
-            crate::update::linux_hand_artifacts().await?
-        };
-        bundle["origin"] = json!(origin);
-        bundle["owner"] = json!(owner);
-        bundle["factory_name"] = json!(factory);
-        bundle["native_only"] = json!(self.native_only);
-        bundle["max_vms"] = json!(self.max_vms);
-        bundle["vm_cpus"] = json!(self.vm_cpus);
-        bundle["vm_memory_mib"] = json!(self.vm_memory_mib);
-        fs::write(
-            temporary.path().join("install.py"),
-            include_str!("hand_setup/install.py"),
-        )?;
-        fs::create_dir(temporary.path().join("toolkit"))?;
-        for (name, content) in [
-            (
-                "toolkit/install-alpine.sh",
-                include_str!("../../../crates/nanocodex-vm/image/toolkit/install-alpine.sh"),
-            ),
-            (
-                "toolkit/install-paths.sh",
-                include_str!("../../../crates/nanocodex-vm/image/toolkit/install-paths.sh"),
-            ),
-            (
-                "toolkit/python.txt",
-                include_str!("../../../crates/nanocodex-vm/image/toolkit/python.txt"),
-            ),
-            (
-                "toolkit/check.py",
-                include_str!("../../../crates/nanocodex-vm/image/toolkit/check.py"),
-            ),
-            (
-                "Dockerfile",
-                include_str!("../../../crates/nanocodex-vm/image/Dockerfile"),
-            ),
-            (
-                "Dockerfile.ext4",
-                include_str!("../../../crates/nanocodex-vm/image/Dockerfile.ext4"),
-            ),
-            (
-                "populate-ext4.sh",
-                include_str!("../../../crates/nanocodex-vm/image/populate-ext4.sh"),
-            ),
-            (
-                "build-root.sh",
-                include_str!("../../../crates/nanocodex-vm/image/build-root.sh"),
-            ),
-        ] {
-            fs::write(temporary.path().join(name), content)?;
-        }
-        let archive = tempfile::NamedTempFile::new()?;
-        let status = Command::new("tar")
-            .arg("-czf")
-            .arg(archive.path())
-            .arg("-C")
-            .arg(temporary.path())
-            .arg(".")
-            .status()
-            .await?;
-        if !status.success() {
-            bail!("Could not package Hand setup");
-        }
-        let remote_dir = format!("/tmp/nanocodex-hand-{}", uuid::Uuid::new_v4());
-        let mut upload = destination
-            .command(&format!(
-                "umask 077; mkdir {remote_dir} && tar -xzf - -C {remote_dir}"
-            ))
-            .stdin(Stdio::piped())
-            .spawn()?;
-        upload
-            .stdin
-            .take()
-            .expect("piped stdin")
-            .write_all(&fs::read(archive.path())?)
-            .await?;
-        if !upload.wait().await?.success() {
-            bail!("Could not upload Hand setup");
-        }
-        eprintln!(
-            "Installing Hand and {} on {}…",
-            if self.native_only {
-                "desktop"
-            } else {
-                "VM factory"
-            },
-            destination.label()
-        );
-        // Only this encrypted stdin carries the credential. It is never in argv,
-        // the archive, progress output, or a local persisted setup file.
-        bundle["credential"] = json!(key.as_str());
-        let mut install = destination.command(&format!("sudo -n python3 {remote_dir}/install.py {remote_dir}; result=$?; rm -rf {remote_dir}; exit $result"))
-            .stdin(Stdio::piped()).spawn()?;
-        install
-            .stdin
-            .take()
-            .expect("piped stdin")
-            .write_all(&serde_json::to_vec(&bundle)?)
-            .await?;
-        if !install.wait().await?.success() {
-            bail!(
-                "Hand setup did not become ready. Its private state was retained; rerun the command after correcting the reported error."
             );
         }
         Ok(())
     }
+
+    async fn upload(&self, local: &std::path::Path, remote: &str) -> Result<()> {
+        match self {
+            Self::Local => fs::copy(local, remote).map(|_| ()).map_err(Into::into),
+            Self::Ssh { target, port } => {
+                let mut command = Command::new("scp");
+                command.args(["-q", "-o", "BatchMode=yes", "-o", "ConnectTimeout=15"]);
+                if let Some(port) = port {
+                    command.args(["-P", &port.to_string()]);
+                }
+                let status = command
+                    .arg("--")
+                    .arg(local)
+                    .arg(format!("{target}:{remote}"))
+                    .status()
+                    .await
+                    .wrap_err("Could not start scp")?;
+                if !status.success() {
+                    bail!("Could not upload the native Hand installer");
+                }
+                Ok(())
+            }
+        }
+    }
+
+    async fn cleanup(&self, remote: &str) {
+        let _ = self.command("rm", &["-f", "--", remote]).status().await;
+    }
+}
+
+async fn install_linux(destination: Destination, artifacts: Option<PathBuf>) -> Result<()> {
+    let (origin, key) = nanocodex_cli_auth::enrollment_credentials(None)?;
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(30))
+        .build()?;
+    let response = client
+        .get(format!("{origin}/v1/me"))
+        .bearer_auth(key.as_str())
+        .send()
+        .await?;
+    if !response.status().is_success() {
+        bail!("Account verification failed: {}", response.status());
+    }
+    let identity: serde_json::Value = response.json().await?;
+    let owner = identity["user"]["id"]
+        .as_str()
+        .ok_or_else(|| eyre::eyre!("Invalid account identity"))?;
+
+    destination.authorize_sudo().await?;
+    eprintln!(
+        "Preparing the native Rust Hand for {}…",
+        destination.label()
+    );
+    let binary = match artifacts {
+        Some(directory) => fs::read(directory.join("nanocodex2"))
+            .wrap_err_with(|| format!("Missing nanocodex2 in {}", directory.display()))?,
+        None => crate::update::linux_hand_binary().await?,
+    };
+    if binary.get(..6) != Some(b"\x7fELF\x02\x01") || binary.get(18..20) != Some(b"\x3e\x00") {
+        bail!("the Hand installer is not an x86_64 Linux executable");
+    }
+    let mut staged = tempfile::NamedTempFile::new()?;
+    use std::io::Write as _;
+    staged.write_all(&binary)?;
+    staged.as_file().sync_all()?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt as _;
+        staged
+            .as_file()
+            .set_permissions(fs::Permissions::from_mode(0o755))?;
+    }
+    let remote = format!("/tmp/nanocodex-hand-{}", uuid::Uuid::new_v4());
+    destination.upload(staged.path(), &remote).await?;
+    let request = json!({"origin": origin, "credential": key.as_str(), "owner": owner});
+    eprintln!(
+        "Installing or repairing the Hand on {}…",
+        destination.label()
+    );
+    let mut install = destination
+        .command("sudo", &["-n", "--", &remote, "__install-hand"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .wrap_err("Could not start the native Hand installer")?;
+    install
+        .stdin
+        .take()
+        .expect("piped stdin")
+        .write_all(&serde_json::to_vec(&request)?)
+        .await?;
+    let result = install.wait().await;
+    destination.cleanup(&remote).await;
+    if !result?.success() {
+        bail!(
+            "Hand setup did not become ready. Its private state was retained; rerun the command after correcting the reported error."
+        );
+    }
+    Ok(())
+}
+
+async fn linux_service_status() -> Result<()> {
+    let output = Command::new("systemctl")
+        .args([
+            "show",
+            LINUX_SERVICE,
+            "--no-pager",
+            "--property=LoadState,ActiveState,SubState,MainPID,FragmentPath",
+        ])
+        .output()
+        .await
+        .wrap_err("Could not inspect the Linux Hand service")?;
+    if !output.status.success() {
+        bail!(
+            "Could not inspect the Linux Hand service: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let mut values = std::collections::BTreeMap::new();
+    let properties = String::from_utf8(output.stdout)?;
+    for line in properties.lines() {
+        if let Some((name, value)) = line.split_once('=') {
+            values.insert(name, value);
+        }
+    }
+    let load = values.get("LoadState").copied().unwrap_or("unknown");
+    let active = values.get("ActiveState").copied().unwrap_or("unknown");
+    let pid = values
+        .get("MainPID")
+        .and_then(|value| value.parse::<u32>().ok())
+        .filter(|pid| *pid != 0);
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "installed": load == "loaded",
+            "loaded": active == "active",
+            "pid": pid,
+            "executable": "/opt/nanocodex/current/nanocodex2",
+            "unit": LINUX_SERVICE,
+            "load_state": load,
+            "active_state": active,
+            "sub_state": values.get("SubState").copied().unwrap_or("unknown"),
+            "fragment_path": values.get("FragmentPath").copied().unwrap_or(""),
+        }))?
+    );
+    Ok(())
+}
+
+async fn linux_service_action(action: &str) -> Result<()> {
+    Destination::Local.authorize_sudo().await?;
+    let status = Command::new("sudo")
+        .args(["-n", "--", "systemctl", action, LINUX_SERVICE])
+        .status()
+        .await
+        .wrap_err_with(|| format!("Could not {action} the Linux Hand service"))?;
+    if !status.success() {
+        bail!("Could not {action} the Linux Hand service: {status}");
+    }
+    Ok(())
 }
 
 impl Hand {
     pub(crate) async fn run(self) -> Result<()> {
         let _service_lock = if matches!(
             &self.command,
-            HandCommand::Add(_) | HandCommand::Setup(_) | HandCommand::Status
+            HandCommand::Install { .. } | HandCommand::Status
         ) {
             None
         } else {
@@ -311,29 +339,54 @@ impl Hand {
         };
         match self.command {
             HandCommand::Install {
+                target,
+                port,
                 executable,
                 account_file,
-            } => crate::hand_service::install(executable, account_file).await,
+                artifacts,
+            } => install_with(target, port, executable, account_file, artifacts).await,
             HandCommand::Status => {
+                if cfg!(target_os = "linux") {
+                    return linux_service_status().await;
+                }
+                if cfg!(target_os = "windows") {
+                    return crate::windows_hand::print_status().await;
+                }
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&crate::hand_service::status().await?)?
                 );
                 Ok(())
             }
-            HandCommand::Start => crate::update::start_hand().await,
-            HandCommand::Stop => crate::hand_service::stop().await,
-            HandCommand::Restart => crate::update::restart_hand().await,
-            HandCommand::Recover => crate::update::recover_hand_update().await,
-            HandCommand::Add(add) => {
-                add.setup
-                    .run(Destination::Ssh {
-                        target: add.target,
-                        port: add.port,
-                    })
-                    .await
+            HandCommand::Start => {
+                if cfg!(target_os = "linux") {
+                    linux_service_action("start").await
+                } else {
+                    crate::update::start_hand().await
+                }
             }
-            HandCommand::Setup(setup) => setup.run(Destination::Local).await,
+            HandCommand::Stop => {
+                if cfg!(target_os = "linux") {
+                    linux_service_action("stop").await
+                } else if cfg!(target_os = "windows") {
+                    crate::windows_hand::stop().await
+                } else {
+                    crate::hand_service::stop().await
+                }
+            }
+            HandCommand::Restart => {
+                if cfg!(target_os = "linux") {
+                    linux_service_action("restart").await
+                } else {
+                    crate::update::restart_hand().await
+                }
+            }
+            HandCommand::Recover => {
+                if cfg!(target_os = "linux") {
+                    bail!("Linux Hand repairs are idempotent; rerun `nanocodex hand install`");
+                }
+                crate::update::recover_hand_update().await
+            }
         }
     }
 }
@@ -342,11 +395,13 @@ impl Hand {
 mod tests {
     use super::*;
     use clap::Parser;
+
     #[derive(Parser)]
     struct TestCli {
         #[command(flatten)]
         hand: Hand,
     }
+
     #[test]
     fn accepts_local_service_commands() {
         for action in ["install", "status", "start", "stop", "restart"] {
@@ -363,12 +418,15 @@ mod tests {
             ])
             .is_ok()
         );
-        assert!(TestCli::try_parse_from(["hand", "stop", "--system"]).is_err());
     }
+
     #[test]
-    fn accepts_ssh_config_aliases_and_rejects_options_or_shell_programs() {
+    fn install_accepts_only_safe_remote_targets() {
         for target in ["paradigm", "ubuntu@192.0.2.5", "user@[2001:db8::1]"] {
-            assert!(TestCli::try_parse_from(["hand", "add", target]).is_ok());
+            assert!(
+                TestCli::try_parse_from(["hand", "install", "--target", target]).is_ok(),
+                "{target}"
+            );
         }
         for target in [
             "-oProxyCommand=evil",
@@ -379,5 +437,19 @@ mod tests {
         ] {
             assert!(ssh_target(target).is_err());
         }
+        assert!(TestCli::try_parse_from(["hand", "install", "--port", "2222"]).is_err());
+        assert!(
+            TestCli::try_parse_from([
+                "hand",
+                "install",
+                "--target",
+                "ubuntu@host",
+                "--port",
+                "2222",
+                "--account-file",
+                "/private/account.json"
+            ])
+            .is_err()
+        );
     }
 }

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { KNOWN_GUI_BUILD, MAX_GUI_READY_LINE_BYTES, parseGuiReady, createGuiReadiness } from '../../crates/experimental/nanocodex-computer/src/openai-cua-gui-readiness.mjs';
+import { MAX_GUI_READY_LINE_BYTES, parseGuiReady, createGuiReadiness } from '../../crates/experimental/nanocodex-computer/src/openai-cua-gui-readiness.mjs';
 
 const id = '00000000-0000-7000-8000-000000000001';
 const other = '00000000-0000-7000-8000-000000000002';
@@ -9,7 +9,6 @@ const fields = `assignedStreamRole=owner conversationId=${id} markedStreaming=tr
 const line = prefix + fields;
 
 test('accepts the pinned event with fully parsed logger scalar and JSON fields', () => {
-  assert.equal(KNOWN_GUI_BUILD, '9922');
   assert.equal(parseGuiReady(line, id), true);
   assert.equal(parseGuiReady(`${line} routePath="/local/a b" environmentIds=["x", "y"] extra={"message":"a \\\"quoted\\\" value", "nested":[1,true]} count=0 absent=undefined`, id), true);
   assert.equal(parseGuiReady(`${prefix}assignedStreamRole="owner" conversationId="${id}" markedStreaming=true threadId="${id}" vmEvent="thread_resumed"`, id), true);

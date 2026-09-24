@@ -7,6 +7,10 @@
   X-Content-Type-Options: nosniff
   X-Frame-Options: SAMEORIGIN
 
+/install.ps1
+  Cache-Control: public, max-age=300, must-revalidate
+  Content-Type: text/plain; charset=utf-8
+
 /assets/*
   Access-Control-Allow-Origin: *
   Cache-Control: public, max-age=31536000, immutable

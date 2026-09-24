@@ -66,7 +66,10 @@ try {
     Copy-Item -LiteralPath $sourceNode -Destination $bootstrap
     if ((Get-Sha256FileHash $sourceNode) -ne (Get-Sha256FileHash $bootstrap)) { throw 'Node bootstrap copy differs' }
     $current = Join-Path $root 'provider.json'
-    if ((Test-Path -LiteralPath $current -PathType Leaf) -and $env:NANOCODEX_UPSTREAM_REFRESH -ne '1') {
+    # Refresh asks the Store for a newer signed package above. Once that check
+    # completes, keep an already verified cache for the same package build
+    # instead of recopied hundreds of megabytes on every hourly update.
+    if (Test-Path -LiteralPath $current -PathType Leaf) {
         $previous = Get-Content -LiteralPath $current -Raw | ConvertFrom-Json
         if ($previous.build -eq [string]$package.Version -and $previous.versionDirectory) {
             $candidate = [IO.Path]::GetFullPath([string]$previous.versionDirectory)

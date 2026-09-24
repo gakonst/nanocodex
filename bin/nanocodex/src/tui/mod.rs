@@ -3,6 +3,10 @@ mod clipboard;
 mod composer;
 mod control;
 mod diff;
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "musl")),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
 mod eval_attach;
 mod external_editor;
 mod markdown;
@@ -65,6 +69,10 @@ use crate::{
     subagents::{AgentId, AgentStatus, AgentUpdate, ScopedAgentUpdate},
 };
 
+#[cfg(any(
+    all(target_os = "linux", not(target_env = "musl")),
+    all(target_os = "macos", target_arch = "aarch64")
+))]
 pub(crate) use eval_attach::attach_evaluation;
 pub(crate) use resume_picker::select_resume_session;
 

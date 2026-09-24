@@ -23,6 +23,8 @@ mod host;
 mod installation;
 #[path = "../launcher.rs"]
 mod launcher;
+#[cfg(any(target_os = "linux", test))]
+mod linux_hand_install;
 mod native_hand;
 mod observation_providers;
 mod reload;
@@ -139,6 +141,10 @@ enum Command {
     #[cfg(target_os = "linux")]
     #[command(name = "__hand-desktop", hide = true)]
     HandDesktop(screen_native::DesktopCommand),
+    /// Install this binary as a native Linux Hand from a private stdin request.
+    #[cfg(any(target_os = "linux", test))]
+    #[command(name = "__install-hand", hide = true)]
+    InstallHand,
     /// Share an existing Wayland session through the shared Rust publisher.
     #[cfg(target_os = "linux")]
     #[command(name = "wayland-host", hide = true)]
@@ -663,6 +669,8 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         }
         #[cfg(target_os = "linux")]
         Some(Command::HandDesktop(command)) => return screen_native::serve_desktop(command).await,
+        #[cfg(any(target_os = "linux", test))]
+        Some(Command::InstallHand) => return linux_hand_install::run().await,
         Some(Command::Hand(command)) if command.rootfs.is_none() && command.docker.is_none() => {
             return native_hand::serve_hand(command).await;
         }
@@ -730,6 +738,8 @@ async fn run(cli: Cli) -> Result<(), ManagedError> {
         Some(Command::HandScreen(command)) => screen_native::serve(&client, command).await,
         #[cfg(target_os = "linux")]
         Some(Command::HandDesktop(_)) => unreachable!("handled before managed client setup"),
+        #[cfg(any(target_os = "linux", test))]
+        Some(Command::InstallHand) => unreachable!("handled before managed client setup"),
         Some(Command::Host(_)) => unreachable!("handled before managed client setup"),
         Some(Command::New(settings)) => {
             let account = settings.chatgpt_account.clone();

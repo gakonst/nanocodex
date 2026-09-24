@@ -33,8 +33,8 @@ export async function configuration(env = process.env, platform = process.platfo
   const provider = absolute(env.NANOCODEX_CUA_NATIVE_PROVIDER, 'NANOCODEX_CUA_NATIVE_PROVIDER');
   const state = absolute(env.NANOCODEX_CUA_NATIVE_STATE ?? path.join(homedir(), '.nanocodex', 's'), 'NANOCODEX_CUA_NATIVE_STATE');
   const info = path.join(app, 'Contents', 'Info.plist');
-  const [version, executable] = await Promise.all([plist(info, 'CFBundleVersion'), plist(info, 'CFBundleExecutable')]);
-  if (!/^[A-Za-z0-9._-]+$/.test(version) || !/^[A-Za-z0-9._ -]+$/.test(executable) || ['.', '..'].includes(executable)) throw fail('Invalid official bundle metadata.');
+  const version = await plist(info, 'CFBundleVersion');
+  if (!/^[A-Za-z0-9._-]+$/.test(version)) throw fail('Invalid official bundle metadata.');
   // Resolve the selected home for identity only; preserve the caller's environment
   // and never inspect its auth/config files. Relative homes are cwd-dependent.
   const codexHome = path.resolve(env.CODEX_HOME || path.join(env.HOME || homedir(), '.codex'));
@@ -44,7 +44,7 @@ export async function configuration(env = process.env, platform = process.platfo
   if (Buffer.byteLength(socket) > 103) throw fail('Native host Unix socket path is too long.');
   return { ...DEFAULTS, app, provider, state, socketRoot, version, key, socket, lock: path.join(socketRoot, `${key}.lock`),
     profile: path.join(state, `${key}.profile`), node: path.join(app, 'Contents/Resources/cua_node/bin/node'),
-    codex: path.join(app, 'Contents/Resources/codex'), gui: path.join(app, 'Contents/MacOS', executable), env };
+    codex: path.join(app, 'Contents/Resources/codex'), env };
 }
 
 // Reject symlink traversal and state directories belonging to another user.
@@ -225,6 +225,7 @@ export class NativeHost {
   }
   attach(threadId) {
     if (typeof threadId !== 'string' || !UUID.test(threadId)) return Promise.reject(fail('Attach requires a thread UUID.'));
+    if (!this.config.gui || !this.deps.createReadiness || !this.deps.dispatchUrl) return Promise.reject(fail('GUI attachment is unavailable in the headless CUA runtime.'));
     const run = async () => {
       if (this.closed) throw this.closed;
       await this.start();
@@ -471,13 +472,10 @@ export async function main(args = process.argv.slice(2)) {
   const config = await configuration();
   await secureDirectory(config.state);
   await secureDirectory(config.socketRoot);
-  for (const executable of [config.node, config.codex, config.gui, config.provider]) await access(executable, constants.X_OK);
-  // Implementations are separately reviewed against the pinned official build.
-  const { KNOWN_GUI_BUILD, createGuiReadiness } = await import('./openai-cua-gui-readiness.mjs');
-  if (config.version !== KNOWN_GUI_BUILD) throw fail('Unsupported official GUI readiness build.');
+  for (const executable of [config.node, config.codex, config.provider]) await access(executable, constants.X_OK);
   if (args[0] === '--daemon') {
     if (await realpath(process.execPath) !== await realpath(config.node)) throw fail('Daemon mode requires the official bundled Node runtime.');
-    await runDaemon(config, { createReadiness: createGuiReadiness, dispatchUrl: dispatchGuiUrl });
+    await runDaemon(config);
   } else {
     const lease = await connectLease(config);
     const stop = serveMcp(bindBridge(lease));

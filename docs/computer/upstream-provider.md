@@ -12,16 +12,24 @@ bundle; a launcher update does not require `--refresh`.
 
 ```sh
 nanocodex2 computer setup           # provision once or verify/reuse the cache
-nanocodex2 computer setup --refresh # check/download the current upstream release
+nanocodex2 computer setup --refresh # check OpenAI's feed and update changed components
 # Both commands are also available as nanocodex computer setup.
 ```
 
-Direct binary/source installs provision the runtime on first CUA use. Installation
-does not sign in to an account. On macOS, CUA starts an isolated official app server
+`nanocodex setup` is the guided, resumable path: it signs in to the shared account,
+installs CUA and its official browser bridge, ensures Hand is connected, and offers
+the official browser-extension page. On macOS, CUA starts an isolated official app server
 without the desktop GUI and delegates application access and confirmation
-handling to the existing upstream permission policy. Nanocodex adds no prompts. Build 9922 is currently supported;
-setup rejects other builds before publication. Official sign-in and OS permissions
+handling to the existing upstream permission policy. Nanocodex adds no prompts. Official sign-in and OS permissions
 still apply. See [managed macOS host](official-app-server-bridge.md).
+
+The macOS updater reads OpenAI's live appcast and HTTP range-fetches only the
+signed `codex`, `cua_node`, and Chrome bridge resources plus their signature
+metadata. It does not install Electron, `app.asar`, frameworks, or the desktop
+application. Every selected resource is checked against the SHA-256 seals bound
+to OpenAI's Developer ID signature before atomic publication. The hourly
+Nanocodex updater performs the same cheap feed check and downloads payload bytes
+only when the upstream build changes.
 
 A running Hand retains its provider launch configuration. Updating the installed
 launcher or reloading a TUI does not replace that configuration in the shared
@@ -106,14 +114,14 @@ discovery separately from the unchanged provider tool definitions.
 
 ## Distribution
 
-On macOS, setup uses the official architecture-specific desktop DMG URLs from
-[upstream's installer](https://github.com/openai/codex/blob/36430b36881cf5c289cb48e671cfc9e8b542ae7b/codex-rs/cli/src/desktop_app/mac.rs).
-First use can reuse a compatible installed ChatGPT/Codex app. Explicit refresh
-always downloads the current official release. The complete app is copied into
-Nanocodex's cache and verified before and after copying against Apple's signature
-chain, OpenAI team `2DC432GLL2`, and bundle identity `com.openai.codex`. This retains
-the signed Codex host, Node, node_repl, CUA packages, and Sky service together.
-The user's existing app is never replaced.
+On macOS, setup uses the official versioned, architecture-specific archives from
+the desktop appcast. Setup probes the immutable archive with bounded HTTP ranges,
+rebuilds a ZIP containing only the CLI, CUA Node runtime, Chrome bridge, and
+signature metadata, and rejects archives that do not honor exact ranges. The
+minimal bundle is verified against Apple's signature chain, OpenAI team
+`2DC432GLL2`, bundle identity `com.openai.codex`, and every selected `files2`
+SHA-256 seal. Compatibility is based on required signed components, not a hardcoded
+desktop build. The user's installed desktop app is never read or replaced.
 
 On Windows, setup obtains Store product `9PLM9XGG6VKS` through winget, as identified
 by [upstream's Windows installer](https://github.com/openai/codex/blob/36430b36881cf5c289cb48e671cfc9e8b542ae7b/codex-rs/cli/src/desktop_app/windows.rs).
@@ -143,8 +151,9 @@ replacing the selected runtime does not overwrite a running host.
 Linux and Linux VM/container guests require an explicitly configured upstream
 MCP provider. No custom CUA runtime, background-input plugin, or legacy fallback
 is bundled. Automatic `computer setup` currently supports macOS and Windows;
-without a provider, guests report CUA unavailable. Remote screen streaming is
-a separate feature and does not imply an installed CUA provider.
+without a provider, guests use their native controllable screen action contract
+through the workdir-routed CUA entry point. This fallback does not emulate or
+claim to install OpenAI's JavaScript provider.
 
 ## Selection and updates
 
