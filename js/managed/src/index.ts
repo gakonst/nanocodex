@@ -424,6 +424,7 @@ export interface Env extends
   NANOCODEX_SYSTEM_HOST_TOKEN?: string;
   HISTORY_AI_SEARCH?: AiSearchInstance;
   LOADER?: WorkerLoader;
+  NANOCODEX_MEDIA?: Fetcher;
   AGENT_IDLE_TIMEOUT_MS?: string;
   MANAGED_MULTIPLAYER_IO_TIMEOUT_MS?: string;
   MANAGED_OWNERSHIP_IO_TIMEOUT_MS?: string;
@@ -8105,7 +8106,7 @@ export class DurableAgentSession extends DurableComputerObject {
       computer: workspace,
       ...(multiplayer ? {} : { filesystem: createBrainWorkspace(this.#brainBucket(), session.session_id) }),
       egress: this.env.NANOCODEX,
-      mediaLoader: this.env.LOADER,
+      mediaService: this.env.NANOCODEX_MEDIA,
       networkPolicy: configuration.environment?.network,
       ...(multiplayer ? {} : { subject: this.#credentialSubject() }),
       connectorAllowed: (connector, connectionId, context) => (

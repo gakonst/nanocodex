@@ -28,7 +28,7 @@ configuration. This is media inspection, not a general-purpose transcoding build
 
 The generated core assets are checked in so ordinary installs, tests, and deployments
 do not download a compiler or build FFmpeg. They are LGPL-2.1-or-later, independently
-of the TypeScript wrapper's license. `src/media/generated/COPYING.LGPLv2.1` contains
+of the TypeScript wrapper's license. `js/media/src/media/generated/COPYING.LGPLv2.1` contains
 the license; `build.sh` contains the pinned source URL/hash, flags, and toolchain.
 
 Activate Emscripten **3.1.74**, then run:

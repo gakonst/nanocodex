@@ -27,6 +27,7 @@
     }
   },
   "services": [
+    { "binding": "NANOCODEX_MEDIA", "service": "nanocodex-media", "entrypoint": "MediaService" },
     { "binding": "NANOCODEX_EMAIL", "service": "nanocodex-email", "entrypoint": "EmailService" },
     { "binding": "NANOCODEX_REALTIME", "service": "nanocodex-egress", "entrypoint": "ManagedRealtimeEgress" },
     { "binding": "NANOCODEX_X", "service": "nanocodex-x" },
@@ -198,6 +199,7 @@
     "development": {
       "name": "nanocodex-durable-agent",
       "services": [
+        { "binding": "NANOCODEX_MEDIA", "service": "nanocodex-media", "entrypoint": "MediaService", "remote": false },
         { "binding": "NANOCODEX_X", "service": "nanocodex-x" },
         { "binding": "NANOCODEX", "service": "nanocodex-egress", "remote": false },
         {

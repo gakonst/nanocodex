@@ -6,7 +6,8 @@ source "$EMSDK/emsdk_env.sh"
 case "$(emcc --version | head -n 1)" in *3.1.74*) ;; *) echo 'Emscripten 3.1.74 is required' >&2; exit 1;; esac
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 BUILD="${MEDIA_BUILD_DIR:-$ROOT/.media-build}"
-mkdir -p "$BUILD" "$ROOT/src/media/generated"
+MEDIA_ROOT="$ROOT/../media"
+mkdir -p "$BUILD" "$MEDIA_ROOT/src/media/generated"
 ARCHIVE="$BUILD/ffmpeg-5.1.10.tar.xz"
 if [[ ! -f "$ARCHIVE" ]]; then curl --fail --location --max-time 120 https://ffmpeg.org/releases/ffmpeg-5.1.10.tar.xz --output "$ARCHIVE"; fi
 # The release archive is verified before any source is executed.
@@ -44,7 +45,7 @@ open(p,'w').write(s)
 PYOPT
 emmake make -j "${MEDIA_BUILD_JOBS:-4}" EXESUF=.mjs ffmpeg.mjs ffprobe.mjs
 for program in ffmpeg ffprobe; do
- python3 - "$program.mjs" "$ROOT/src/media/generated/$program.js.txt" <<'PYGLUE'
+ python3 - "$program.mjs" "$MEDIA_ROOT/src/media/generated/$program.js.txt" <<'PYGLUE'
 import pathlib,sys
 source=pathlib.Path(sys.argv[1]).read_text()
 # workerd has WorkerGlobalScope but no self.location. instantiateWasm supplies
@@ -53,7 +54,7 @@ needle='scriptDirectory=self.location.href'
 assert source.count(needle)==1, 'Emscripten loader changed; review worker adaptation'
 pathlib.Path(sys.argv[2]).write_text(source.replace(needle,'scriptDirectory=""'))
 PYGLUE
- cp "${program}_g.wasm" "$ROOT/src/media/generated/$program.wasm.bin"
- chmod 644 "$ROOT/src/media/generated/$program.wasm.bin"
+ cp "${program}_g.wasm" "$MEDIA_ROOT/src/media/generated/$program.wasm.bin"
+ chmod 644 "$MEDIA_ROOT/src/media/generated/$program.wasm.bin"
 done
-cp COPYING.LGPLv2.1 "$ROOT/src/media/generated/COPYING.LGPLv2.1"
+cp COPYING.LGPLv2.1 "$MEDIA_ROOT/src/media/generated/COPYING.LGPLv2.1"

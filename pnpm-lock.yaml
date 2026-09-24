@@ -520,6 +520,22 @@ importers:
         specifier: ^8.18.3
         version: 8.21.3
 
+  js/media:
+    dependencies:
+      nanocodex-tools:
+        specifier: workspace:*
+        version: link:../nanocodex-tools
+    devDependencies:
+      '@cloudflare/workers-types':
+        specifier: ^5.20260730.1
+        version: 5.20260831.1
+      typescript:
+        specifier: 5.9.3
+        version: 5.9.3
+      wrangler:
+        specifier: 4.127.1
+        version: 4.127.1(@cloudflare/workers-types@5.20260831.1)
+
   js/nanocodex:
     dependencies:
       '@cfworker/json-schema':
