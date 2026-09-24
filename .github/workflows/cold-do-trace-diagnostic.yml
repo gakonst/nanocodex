@@ -21,7 +21,7 @@ jobs:
           endpoint=f'https://api.cloudflare.com/client/v4/accounts/{account}/workers/observability/telemetry/query'
           timeframe={'from':1790273220000,'to':1790273760000} # 2026-09-24 18:07–18:16 UTC
           def query(view, parameters):
-              body={'queryId':'cold-do-20260924','timeframe':timeframe,'view':view,'dry':True,'limit':30,'parameters':parameters}
+              body={'queryId':'cold-do-20260924','timeframe':timeframe,'view':view,'dry':True,'limit':200,'parameters':parameters}
               req=urllib.request.Request(endpoint,data=json.dumps(body).encode(),headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'},method='POST')
               try:
                   with urllib.request.urlopen(req,timeout=35) as r: result=json.load(r)
@@ -52,20 +52,26 @@ jobs:
               for trace in summaries[:8]:
                   print('trace root:',json.dumps({'name':trace.get('rootSpanName'),'duration':trace.get('traceDurationMs'),'services':trace.get('service'),'spans':trace.get('spans')},sort_keys=True))
           trace_ids=[]
-          if traces is not None: trace_ids.extend([t['traceId'] for t in (traces.get('traces') or []) if t.get('traceId') and t.get('rootSpanName')=='POST' and (t.get('traceDurationMs') or 0)<10000][:3])
+          if traces is not None: trace_ids.extend([t['traceId'] for t in (traces.get('traces') or []) if t.get('traceId') and t.get('rootSpanName')=='POST' and (t.get('traceDurationMs') or 0)<4000][:3])
           for item in events[:10]:
               meta=item.get('$metadata') or {}; w=item.get('$workers') or {}
               tid=meta.get('traceId') or w.get('traceId')
               if tid and tid not in trace_ids: trace_ids.append(tid)
               print('constructor event:',json.dumps({'timestamp':item.get('timestamp'),'service':meta.get('service'),'duration':meta.get('duration'),'colo':meta.get('colo')},sort_keys=True))
           for i,tid in enumerate(trace_ids[:3]):
-              found=query('events',{'datasets':['cloudflare-workers'],'filters':[{'key':'$metadata.traceId','operation':'eq','type':'string','value':tid}]})
+              found=query('events',{'datasets':[],'filters':[{'key':'$metadata.traceId','operation':'eq','type':'string','value':tid}]})
               if found is None: continue
               spans=(found.get('events') or {}).get('events') or []
               print('trace',i+1,'event count:',len(spans))
+              print('trace datasets:',{dataset:sum(1 for item in spans if item.get('dataset')==dataset) for dataset in set(item.get('dataset') for item in spans)})
+              if spans:
+                  print('trace sample metadata:',{k:v for k,v in (spans[0].get('$metadata') or {}).items() if k in ('type','origin','trigger','service')})
+                  print('trace sample source keys:',sorted((spans[0].get('source') or {}).keys()) if isinstance(spans[0].get('source'),dict) else type(spans[0].get('source')).__name__)
               for item in spans[:30]:
-                  meta=item.get('$metadata') or {}; w=item.get('$workers') or {}
-                  print('span:',json.dumps({'timestamp':item.get('timestamp'),'service':meta.get('service'),'name':meta.get('spanName'),'duration':meta.get('duration'),'colo':meta.get('colo'),'execution_model':w.get('executionModel'),'event_type':w.get('eventType')},sort_keys=True))
+                  meta=item.get('$metadata') or {}; w=item.get('$workers') or {}; src=item.get('source') or {}
+                  attrs=src.get('attributes') if isinstance(src,dict) else None
+                  if not isinstance(attrs,dict): attrs={}
+                  print('span:',json.dumps({'dataset':item.get('dataset'),'timestamp':item.get('timestamp'),'service':meta.get('service'),'type':meta.get('type'),'origin':meta.get('origin'),'name':src.get('name') if isinstance(src,dict) and 'trace' in str(item.get('dataset')) else None,'duration':src.get('duration') if isinstance(src,dict) else None,'source_keys':sorted(src.keys())[:12] if isinstance(src,dict) else [],'colo':attrs.get('cloudflare.colo'),'execution_model':w.get('executionModel'),'event_type':w.get('eventType')},sort_keys=True))
           PY
       - name: Surface sanitized summary as one GitHub check annotation
         if: always()
