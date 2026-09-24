@@ -43,6 +43,7 @@ if [[ "$head_request" == true ]]; then
   exit 0
 fi
 printf '%s\n' "${url##*/}" >> "$TEST_INSTALL_DOWNLOADS"
+printf '%s\n' "$url" >> "$TEST_INSTALL_URLS"
 asset="${url##*/}"
 [[ -n "$output" && -f "$TEST_INSTALL_FIXTURE/$asset" ]]
 cp "$TEST_INSTALL_FIXTURE/$asset" "$output"
@@ -54,6 +55,18 @@ make_bootstrap() {
   cat > "$path" <<'EOF'
 #!/bin/sh
 printf '%s\n' "$NANOCODEX_DIR" "$@" > "$TEST_INSTALL_RECORD"
+EOF
+  chmod +x "$path"
+}
+
+make_stable_installer() {
+  local path="$1"
+  cat > "$path" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+bash_only=(tagged installer)
+[[ "${bash_only[*]}" == "tagged installer" ]]
+exec sh "$TEST_INSTALL_CURRENT_INSTALL" "$@"
 EOF
   chmod +x "$path"
 }
@@ -83,15 +96,22 @@ run_case() {
   # These entries prove the shell never fetches the companion or voice bundle.
   printf '%064d  nanocodex2-%s\n' 0 "$target" >> "$fixture/SHA256SUMS"
   printf '%064d  nanocodex-voice-%s.tar.gz\n' 0 "$target" >> "$fixture/SHA256SUMS"
+  make_stable_installer "$fixture/install"
 
   PATH="$mock_bin:$PATH" HOME="$case_root/home" NANOCODEX_DIR="$case_root/install" \
     NANOCODEX_INSTALL_NO_SETUP=1 TEST_INSTALL_FIXTURE="$fixture" \
     TEST_INSTALL_OS="$os" TEST_INSTALL_ARCH="$arch" TEST_INSTALL_DOWNLOADS="$downloads" \
+    TEST_INSTALL_URLS="$case_root/urls" \
+    TEST_INSTALL_CURRENT_INSTALL="$workspace_root/install" \
     TEST_INSTALL_RECORD="$case_root/record" \
     sh "$workspace_root/install" --no-modify-path >/dev/null
 
   [[ "$(cat "$case_root/record")" == "$case_root/install"$'\ninstall\n--no-modify-path' ]]
-  [[ "$(cat "$downloads")" == $'SHA256SUMS\n'"$asset" ]]
+  [[ "$(cat "$downloads")" == $'install\nSHA256SUMS\n'"$asset" ]]
+  grep -Fxq "https://raw.githubusercontent.com/gakonst/nanocodex/refs/tags/v1.2.3/install" \
+    "$case_root/urls"
+  grep -Fxq "https://github.com/gakonst/nanocodex/releases/download/v1.2.3/$asset" \
+    "$case_root/urls"
 }
 
 run_case raw
@@ -101,9 +121,12 @@ run_case raw Darwin arm64
 rejected="$temporary_root/rejected"
 mkdir -p "$rejected/fixture"
 make_bootstrap "$rejected/fixture/nanocodex-x86_64-unknown-linux-gnu"
+make_stable_installer "$rejected/fixture/install"
 printf '%064d  nanocodex-x86_64-unknown-linux-gnu\n' 0 > "$rejected/fixture/SHA256SUMS"
 if PATH="$mock_bin:$PATH" TEST_INSTALL_FIXTURE="$rejected/fixture" \
   TEST_INSTALL_DOWNLOADS="$rejected/downloads" TEST_INSTALL_RECORD="$rejected/record" \
+  TEST_INSTALL_URLS="$rejected/urls" \
+  TEST_INSTALL_CURRENT_INSTALL="$workspace_root/install" \
   NANOCODEX_INSTALL_NO_SETUP=1 sh "$workspace_root/install" >"$rejected/output" 2>&1; then
   echo "test-install: accepted a corrupt bootstrap" >&2
   exit 1
