@@ -1,0 +1,14 @@
+{
+  "name": "nanocodex-cold-slim-probe",
+  "main": "worker.mjs",
+  "compatibility_date": "2026-07-29",
+  "compatibility_flags": ["nodejs_compat", "global_fetch_strictly_public", "enable_request_signal"],
+  "workers_dev": true,
+  "observability": {
+    "enabled": true,
+    "logs": { "enabled": true, "head_sampling_rate": 1 },
+    "traces": { "enabled": true, "head_sampling_rate": 1 }
+  },
+  "durable_objects": { "bindings": [{ "name": "TINY", "class_name": "TinyProbe" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["TinyProbe"] }]
+}
