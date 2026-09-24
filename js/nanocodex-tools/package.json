@@ -108,7 +108,8 @@
     "hyparquet-compressors": "1.1.1",
     "isomorphic-git": "^1.41.5",
     "just-bash": "^3.4.0",
-    "modern-tar": "0.7.7"
+    "modern-tar": "0.7.7",
+    "unpdf": "1.8.1"
   },
   "devDependencies": {
     "typescript": "5.9.3"

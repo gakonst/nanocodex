@@ -2,6 +2,7 @@ import type { JustBashCustomCommand, JustBashDescriptor } from "../tools/bash.mj
 import { justBash } from "../tools/bash.mjs";
 import type { NamedTool, Workspace } from "../tools/types.mjs";
 
+import { createPdfTextCommand } from "./pdf.js";
 import { createGhCommand, createGitCommand, type ShellFetch } from "./shell.js";
 
 const DEFAULT_MAX_OUTPUT_TOKENS = 10_000;
@@ -53,7 +54,7 @@ export async function createComputerRuntime(
     maxOutputTokens: options.maxOutputTokens ?? DEFAULT_MAX_OUTPUT_TOKENS,
     fetch: options.fetch,
     networkMode: options.networkMode,
-    customCommands: [git, gh, ...additional],
+    customCommands: [git, gh, createPdfTextCommand(filesystem), ...additional],
   });
   mountedFilesystem = shell.filesystem;
   return Object.freeze({

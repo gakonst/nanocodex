@@ -1,3 +1,4 @@
+export { createPdfTextCommand } from "./pdf.js";
 export {
   createComputerRuntime,
   type ComputerCommandContext,

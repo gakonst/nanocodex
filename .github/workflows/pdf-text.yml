@@ -1,0 +1,26 @@
+name: PDF text runtime
+on:
+  pull_request:
+    paths:
+      - 'js/nanocodex-tools/**'
+      - 'js/managed/test/pdf-runtime.test.ts'
+      - 'js/managed/vitest.pdf.config.ts'
+      - 'pnpm-lock.yaml'
+      - '.github/workflows/pdf-text.yml'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  pdf:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10
+      - uses: pnpm/action-setup@fc06bc1257f339d1d5d8b3a19a8cae5388b55320
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: pnpm --filter nanocodex-tools run test
+      - run: pnpm --filter nanocodex-managed-service exec vitest run --config vitest.pdf.config.ts
