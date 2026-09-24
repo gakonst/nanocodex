@@ -1,9 +1,10 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import { EventEmitter } from 'node:events';
-import { existsSync, writeFileSync, readFileSync, statSync } from 'node:fs';
-import { dirname } from 'node:path';
-import { releaseWorkers, releasePhases, guardedCommand, accountHealth } from './release-workers.mjs';
+import { existsSync, writeFileSync, readFileSync, statSync, mkdtempSync, rmSync } from 'node:fs';
+import { dirname, join } from 'node:path';
+import { tmpdir } from 'node:os';
+import { releaseWorkers, releasePhases, prepareReleasePhase, guardedCommand, accountHealth } from './release-workers.mjs';
 function fixture(selected, overrides = {}) {
   const events = [], calls = [];
   const plan = { revision: 'b'.repeat(40), selected, fingerprints: Object.fromEntries(selected.map(name => [name, 'a'.repeat(64)])) };
@@ -11,6 +12,7 @@ function fixture(selected, overrides = {}) {
     env: { DEPLOY_MESSAGE: 'spaces "quotes" $HOME `literal` $(literal)' },
     ledger: { async start(name, fingerprint) { assert.equal(fingerprint, plan.fingerprints[name]); events.push(['start', name]); return name; }, async finish(name, state) { events.push([state, name]); } },
     isCurrent: async () => true,
+    prepare: async () => {},
     run: async (command, options) => { calls.push({ command, options }); return true; },
     health: async () => events.push(['health']), ...overrides,
   };
@@ -179,4 +181,105 @@ test('account phase health receives the revision before certifying its release',
   f.options.health = async revision => { revisions.push(revision); };
   await f.release();
   assert.deepEqual(revisions, [undefined, f.plan.revision]);
+});
+
+test('managed uploads before unrelated Astra and account builds without duplicate targets', async () => {
+  const f = fixture(['egress', 'managed', 'astra', 'account']);
+  const targets = [];
+  f.options.prepare = async (plan, options) => prepareReleasePhase(plan, {
+    ...options,
+    run(command, args) {
+      f.events.push(['build', args.join(' ')]);
+      if (command === 'pnpm') targets.push(...args.filter((_, i) => args[i - 1] === '--filter'));
+    },
+    managed: async () => f.events.push(['config', 'managed']),
+    account: async () => f.events.push(['config', 'account']),
+  });
+  await f.release();
+  const managed = f.events.findIndex(row => row[0] === 'success' && row[1] === 'managed');
+  const astraInstall = f.events.findIndex(row => row[0] === 'build' && row[1].startsWith('ci --prefix examples/astra-mpp-trial'));
+  const astra = f.events.findIndex(row => row[0] === 'build' && row[1].includes('build:client'));
+  const account = f.events.findIndex(row => row[0] === 'build' && row[1].includes('nanocodex-web'));
+  assert.ok(managed >= 0 && managed < astraInstall && astraInstall < astra && astra < account);
+  assert.ok(account < f.events.findIndex(row => row[0] === 'config' && row[1] === 'account'));
+  assert.equal(new Set(targets).size, targets.length);
+  assert.deepEqual(f.events.slice(-2), [['health'], ['success', 'account']]);
+});
+
+test('preparation failure preserves earlier releases and blocks dependent uploads', async () => {
+  const f = fixture(['egress', 'managed', 'account']), prepared = [];
+  f.options.prepare = async plan => {
+    prepared.push(...plan.selected);
+    if (plan.selected.includes('managed')) throw Error('synthetic build failure');
+  };
+  await assert.rejects(f.release(), /phase preparation failed/);
+  assert.deepEqual(prepared, ['egress', 'managed']);
+  assert.deepEqual(f.events, [['start', 'egress'], ['health'], ['success', 'egress']]);
+});
+
+test('superseded phases skip compilation and freshness is rechecked after building', async () => {
+  const f = fixture(['managed', 'account'], {
+    isCurrent: async () => false,
+    prepare: async () => { throw Error('must not build'); },
+  });
+  assert.ok((await f.release()).every(row => row.state === 'superseded'));
+  assert.deepEqual(f.events, []);
+  let checks = 0;
+  const prepared = [];
+  const later = fixture(['managed', 'account'], {
+    isCurrent: async () => ++checks === 1,
+    prepare: async plan => prepared.push(...plan.selected),
+  });
+  assert.ok((await later.release()).every(row => row.state === 'superseded'));
+  assert.deepEqual(prepared, ['managed']);
+  assert.deepEqual(later.events, []);
+});
+
+test('phase builds strip deployment-only secrets and configure images after their build', async () => {
+  const env = { ASTRA_MANAGED_API_KEY: 'synthetic-api', ASTRA_MPP_SECRET: 'synthetic-mpp', TEMPO_API_KEY: 'synthetic-tempo',
+    KEEP: 'value', RELEASE_ONLY: 'managed,account', CLOUDFLARE_ACCOUNT_ID: 'a'.repeat(32), GITHUB_REPOSITORY: 'fixture/repo' };
+  const calls = [], configs = [];
+  await prepareReleasePhase({ selected: ['managed', 'account'] }, {
+    cwd: '/synthetic-checkout', env,
+    run(command, args, options) {
+      calls.push([command, args]);
+      assert.equal(options.cwd, '/synthetic-checkout');
+      assert.equal(options.env.KEEP, 'value');
+      for (const key of ['ASTRA_MANAGED_API_KEY', 'ASTRA_MPP_SECRET', 'TEMPO_API_KEY']) assert.ok(!Object.hasOwn(options.env, key));
+    },
+    managed: async options => { assert.equal(options.requireCurrent, true); configs.push('managed'); },
+    account: async () => { assert.ok(calls.some(([, args]) => args.includes('nanocodex-web'))); configs.push('account'); },
+  });
+  assert.deepEqual(configs, ['managed', 'account']);
+  assert.equal(env.ASTRA_MANAGED_API_KEY, 'synthetic-api');
+});
+
+
+test('post-build input verification rejects changed inputs before publishing that phase', async () => {
+  const f = fixture(['managed', 'account']);
+  const events = [];
+  f.options.prepare = async plan => events.push(['prepare', ...plan.selected]);
+  f.options.verify = async () => { events.push(['verify']); throw Error('inputs changed'); };
+  await assert.rejects(f.release(), /phase preparation failed/);
+  assert.deepEqual(events, [['prepare', 'managed'], ['verify']]);
+  assert.deepEqual(f.events, []);
+});
+
+
+test('successful WASM builds remain retainable after a later phase fails or is superseded', async t => {
+  const directory = mkdtempSync(join(tmpdir(), 'release-wasm-'));
+  t.after(() => rmSync(directory, { recursive: true, force: true }));
+  for (const outcome of ['failure', 'superseded', 'never-built']) {
+    const output = join(directory, outcome);
+    let checks = 0;
+    const f = fixture(['managed', 'account'], { env: { GITHUB_OUTPUT: output } });
+    f.options.isCurrent = async () => outcome === 'never-built' ? false : outcome === 'superseded' ? ++checks === 1 : true;
+    f.options.prepare = async (plan, { completedTargets }) => {
+      if (plan.selected.includes('account')) throw Error('later build failed');
+      completedTargets.add('nanocodex');
+    };
+    if (outcome === 'failure') await assert.rejects(f.release(), /preparation failed/);
+    else await f.release();
+    assert.equal(readFileSync(output, 'utf8'), `wasm-built=${outcome !== 'never-built'}\n`);
+  }
 });

@@ -10,7 +10,8 @@ import { releasePhases } from './release-workers.mjs';
 const guard = fileURLToPath(new URL('./current-production-release.mjs', import.meta.url));
 const workspace = fileURLToPath(new URL('../../', import.meta.url));
 const workflow = readFileSync(new URL('../../.github/workflows/cloudflare.yml', import.meta.url), 'utf8');
-const production = workflow.split('\n  production:\n')[1];
+const production = workflow.split('\n  production:\n')[1].split(/\n  [\w-]+:\n/)[0];
+const deployAction = readFileSync(new URL('../../.github/actions/deploy-workers/action.yml', import.meta.url), 'utf8');
 const oldSha = 'a'.repeat(40), newSha = 'b'.repeat(40);
 
 function fixture(t) {
@@ -58,7 +59,8 @@ function fixture(t) {
 }
 
 function steps() {
-  return production.split(/(?=^      - (?:name|uses):)/m).slice(1).map(source => {
+  const normalized = deployAction.split('  steps:\n')[1].split('\n').map(line => '  ' + line).join('\n');
+  return normalized.split(/(?=^      - (?:name|uses):)/m).slice(1).map(source => {
     const name = /^      - name: (.+)$/m.exec(source)?.[1];
     const run = /^        run: (.+)$/m.exec(source)?.[1];
     const body = run === '|' ? source.split('        run: |\n')[1].split('\n')

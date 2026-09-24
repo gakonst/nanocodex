@@ -72,6 +72,10 @@ on:
         default: preview
         type: choice
         options: [preview, production]
+      validate_images:
+        description: Also validate container images independently of Worker uploads
+        type: boolean
+        default: false
 
 env:
   # Bump this repository variable to refresh mutable upstream base images or
@@ -149,11 +153,12 @@ jobs:
 
   preview-image-plan:
     name: select preview container images
+    # Production already publishes changed images independently. Avoid repeating
+    # release compilation on every PR; request it explicitly when testing images.
     if: >-
       vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
-      ((github.event_name == 'pull_request' &&
-        github.event.pull_request.head.repo.full_name == github.repository) ||
-       (github.event_name == 'workflow_dispatch' && inputs.target == 'preview'))
+      github.event_name == 'workflow_dispatch' && inputs.target == 'preview' &&
+      inputs.validate_images
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -242,17 +247,19 @@ jobs:
         run: node --test scripts/cloudflare/*.test.mjs
       - name: Install deployment packages
         run: pnpm install --frozen-lockfile
-      - name: Install Astra trial package
-        run: npm ci --prefix examples/astra-mpp-trial
-      - name: Prepare managed evaluator asset
-        working-directory: js/managed
-        run: npm run prepare:code-evaluator
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: cloudflare-worker-build
           path: .ci-worker-build
       - name: Restore same-revision Worker outputs
         run: node scripts/cloudflare/worker-build.mjs restore
+      # Publish ready assets before unrelated Worker validation.
+      - name: Upload Connect dialog preview version
+        working-directory: js/connect-dialog
+        run: npx wrangler versions upload --config wrangler.jsonc --preview-alias "pr-${{ github.event.pull_request.number || github.run_id }}" --message "$DEPLOY_MESSAGE"
+      - name: Upload Connect playground preview version
+        working-directory: js/connect-playground
+        run: npx wrangler versions upload --config wrangler.jsonc --preview-alias "pr-${{ github.event.pull_request.number || github.run_id }}" --message "$DEPLOY_MESSAGE"
       # Cloudflare does not issue preview URLs for Durable Object or container
       # Workers. Dry-run those and publish previews only for asset Workers.
       - name: Validate egress Worker
@@ -263,15 +270,17 @@ jobs:
         run: npx wrangler deploy --dry-run --env=""
       - name: Validate X Worker
         run: pnpm --filter @nanocodex/x-api run build
+      - name: Prepare managed evaluator asset
+        working-directory: js/managed
+        run: npm run prepare:code-evaluator
       - name: Validate managed Worker
         working-directory: js/managed
         run: npx wrangler deploy --dry-run --config wrangler.jsonc --containers-rollout none
-      - name: Upload Connect dialog preview version
-        working-directory: js/connect-dialog
-        run: npx wrangler versions upload --config wrangler.jsonc --preview-alias "pr-${{ github.event.pull_request.number || github.run_id }}" --message "$DEPLOY_MESSAGE"
       - name: Validate Connect API Worker
         working-directory: js/connect-api
         run: npx wrangler deploy --dry-run --config wrangler.jsonc
+      - name: Install Astra trial package
+        run: npm ci --prefix examples/astra-mpp-trial
       - name: Validate Astra trial Worker
         working-directory: examples/astra-mpp-trial
         run: npx wrangler deploy --dry-run --env="" --outdir dist
@@ -281,13 +290,11 @@ jobs:
       - name: Validate account Worker
         working-directory: js/account
         run: npx wrangler deploy --dry-run --config dist/nanocodex/wrangler.json
-      - name: Upload Connect playground preview version
-        working-directory: js/connect-playground
-        run: npx wrangler versions upload --config wrangler.jsonc --preview-alias "pr-${{ github.event.pull_request.number || github.run_id }}" --message "$DEPLOY_MESSAGE"
 
   preview-success:
     name: Cloudflare preview success
-    needs: [worker-build, preview-image-plan, preview-images, preview]
+    # Worker readiness is independent of optional native image validation.
+    needs: [worker-build, preview]
     if: >-
       always() &&
       vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
@@ -298,27 +305,46 @@ jobs:
     timeout-minutes: 5
     permissions: {}
     steps:
-      - name: Require every selected preview validation
+      - name: Require Worker build and preview publication
         shell: bash
         env:
           WORKER_BUILD_RESULT: ${{ needs.worker-build.result }}
+          PREVIEW_RESULT: ${{ needs.preview.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$WORKER_BUILD_RESULT" != success || "$PREVIEW_RESULT" != success ]]; then
+            printf '::error::Worker preview failed (build=%s, preview=%s)\n' \
+              "$WORKER_BUILD_RESULT" "$PREVIEW_RESULT"
+            exit 1
+          fi
+
+  preview-images-success:
+    name: Cloudflare image validation
+    needs: [preview-image-plan, preview-images]
+    if: >-
+      always() && vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' &&
+      github.event_name == 'workflow_dispatch' && inputs.target == 'preview' &&
+      inputs.validate_images
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions: {}
+    steps:
+      - name: Require explicitly requested image validation
+        shell: bash
+        env:
           IMAGE_PLAN_RESULT: ${{ needs.preview-image-plan.result }}
           PREVIEW_IMAGES_RESULT: ${{ needs.preview-images.result }}
-          PREVIEW_RESULT: ${{ needs.preview.result }}
           IMAGES_REQUIRED: ${{ needs.preview-image-plan.outputs.required }}
         run: |
           set -euo pipefail
-          if [[ "$WORKER_BUILD_RESULT" != success ||
-                "$IMAGE_PLAN_RESULT" != success ||
-                "$PREVIEW_RESULT" != success ]]; then
-            printf '::error::Preview prerequisites did not succeed (worker=%s, plan=%s, preview=%s)\n' \
-              "$WORKER_BUILD_RESULT" "$IMAGE_PLAN_RESULT" "$PREVIEW_RESULT"
+          if [[ "$IMAGE_PLAN_RESULT" != success ]]; then
+            printf '::error::Image selection failed (%s)\n' "$IMAGE_PLAN_RESULT"
             exit 1
           fi
           case "$IMAGES_REQUIRED:$PREVIEW_IMAGES_RESULT" in
             true:success|false:skipped) ;;
             *)
-              printf '::error::Invalid preview image result (required=%s, result=%s)\n' \
+              printf '::error::Invalid image validation (required=%s, result=%s)\n' \
                 "$IMAGES_REQUIRED" "$PREVIEW_IMAGES_RESULT"
               exit 1
               ;;

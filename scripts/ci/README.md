@@ -118,22 +118,28 @@ behavioral test pause is otherwise unchanged.
 
 ## Cloudflare preview latency
 
-Preview Worker bundling and image selection start independently. Only changed
-phone or sandbox image inputs create container validation jobs, which run in
-parallel. Selection compares the committed production image dependency closure
-against the PR base; missing history or an uncertain comparison selects both.
-Manual preview dispatches always validate both images.
+Worker builds and uploads determine `Cloudflare preview success`. Ready dialog
+and playground assets upload immediately after artifact restoration, before
+unrelated Worker validation, evaluator preparation, or Astra dependency setup.
+Worker build or validation failures still fail this gate.
 
-The Worker preview job restores its same-revision artifacts and validates
-Wrangler configuration with `--containers-rollout none`, so Docker compilation
-does not delay asset preview URLs. Independent container jobs still prepare and
-build the same images, preserving Dockerfile checks and importing registry caches
-without deployment credentials or cache writes. Production publication and its
-receipt validation keep their existing behavior.
+Preview container compilation is skipped on PRs and ordinary preview dispatches.
+Production already publishes changed phone and sandbox inputs independently of
+Worker deployment. To test Docker changes before merging, dispatch the Cloudflare
+workflow with target `preview` and `validate_images: true`. The separate
+`Cloudflare image validation` check then requires image selection and both full
+image builds; it never delays the Worker readiness gate. Image failures remain
+visible instead of being converted into successful Worker results.
 
-`Cloudflare preview success` requires the Worker build, selection, Worker
-validation/publication, and all selected image builds to succeed. An image build
-may be skipped only when a successful selection explicitly requires none.
+Image validation remains unprivileged with no registry writes. Its sandbox build
+retains Dockerfile checks; preview Worker validation uses
+`--containers-rollout none`. Production release compilation, image verification,
+publication and immutable receipts keep their existing behavior.
+
+Production builds applications in deployment order. Infrastructure and managed
+Workers upload before unrelated consumer and account UI builds, with successful
+health/receipt barriers and account deployed last. Completed shared build targets
+are reused between phases. Superseded pushes stop before starting another phase.
 The small orchestration tests run in the main CI selection job even while
 behavioral test suites remain paused.
 

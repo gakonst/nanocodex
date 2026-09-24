@@ -4,12 +4,14 @@ import { appendFileSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from
 import { tmpdir } from 'node:os';
 import { resolve, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 import { createDeploymentLedger } from './deployment-ledger.mjs';
 import { releaseTag } from './live-worker-state.mjs';
 import { currentRelease } from './current-production-release.mjs';
 import { phases } from './deploy-workers.mjs';
-import { readPlan, releaseFingerprints } from './release-plan.mjs';
+import { readPlan, releaseFingerprints, buildSelected } from './release-plan.mjs';
+import { resolveReleasedImages } from './released-images.mjs';
+import { configureReleasedAccount } from './released-account-image.mjs';
 
 const commands=Object.fromEntries([...phases.infrastructure,...phases.consumers,
   ['managed','js/managed',['npx','wrangler','deploy','--config','wrangler.ci.jsonc','--containers-rollout','immediate']],
@@ -38,10 +40,32 @@ export async function accountHealth(expectedRevision) {
   assert.equal(health.service,'nanocodex');assert.equal(health.runtime,'cloudflare-workers');assert.equal(health.status,'ok');
   if(expectedRevision)assert.equal(health.deployment_sha,expectedRevision,'Account health must identify the released revision');
 }
-export async function releaseWorkers(plan,{ledger=createDeploymentLedger(),isCurrent=currentRelease,run=guardedCommand,health=accountHealth,env=process.env,cwd=process.cwd()}={}){
+// Prepare only the next selected deployment phase. The same checkout and set of
+// completed targets let later consumers reuse dependencies already built here.
+export async function prepareReleasePhase(plan, {cwd=process.cwd(),env=process.env,
+  completedTargets=new Set(),run=execFileSync,managed=resolveReleasedImages,
+  account=configureReleasedAccount}={}) {
+  const buildEnv={...env};
+  for(const key of ['ASTRA_MANAGED_API_KEY','ASTRA_MPP_SECRET','TEMPO_API_KEY'])delete buildEnv[key];
+  const buildRun=(command,args,options)=>run(command,args,{...options,cwd,env:buildEnv});
+  if(plan.selected.includes('astra'))buildRun('npm',['ci','--prefix','examples/astra-mpp-trial'],{stdio:'inherit'});
+  buildSelected(plan,buildRun,completedTargets);
+  if(plan.selected.includes('managed'))await managed({cwd,account:env.CLOUDFLARE_ACCOUNT_ID,
+    repository:env.GITHUB_REPOSITORY,epoch:env.MANAGED_IMAGE_CACHE_EPOCH||'1',
+    requireCurrent:(env.RELEASE_ONLY||'').split(',').includes('managed')});
+  // Account's generated Wrangler config exists only after its application build.
+  if(plan.selected.includes('account'))await account({cwd,account:env.CLOUDFLARE_ACCOUNT_ID,
+    repository:env.GITHUB_REPOSITORY,token:env.CLOUDFLARE_API_TOKEN});
+}
+
+export async function releaseWorkers(plan,{ledger=createDeploymentLedger(),isCurrent=currentRelease,run=guardedCommand,health=accountHealth,env=process.env,cwd=process.cwd(),prepare=prepareReleasePhase,verify=async()=>{}}={}){
   if(plan.selected.includes('account'))assert.match(plan.revision,/^[a-f0-9]{40}$/);
   const results=[];
-  const result=(pending,state)=>results.push({name:pending.name,state,seconds:(Date.now()-pending.started)/1000});
+  const completedTargets=new Set();
+  const result=(pending,state)=>{
+    results.push({name:pending.name,state,seconds:(Date.now()-pending.started)/1000});
+    if(state==='success')console.log(`::notice title=Worker released::${pending.name} verified at ${new Date().toISOString()}`);
+  };
   async function deploy(name){
     if(!plan.selected.includes(name))return;
     if(!await isCurrent()){results.push({name,state:'superseded',seconds:0});return;}
@@ -82,7 +106,24 @@ export async function releaseWorkers(plan,{ledger=createDeploymentLedger(),isCur
   }
   try{
     for(const phase of releasePhases){
-      const completed=await Promise.allSettled(phase.map(deploy));
+      const selected=phase.filter(name=>plan.selected.includes(name));
+      if(!selected.length)continue;
+      // Avoid starting unrelated compilation after a newer push supersedes us.
+      if(!await isCurrent()){
+        for(const name of selected)results.push({name,state:'superseded',seconds:0});
+        continue;
+      }
+      const started=Date.now();
+      console.log(`::notice title=Worker preparation::${selected.join(", ")} started at ${new Date(started).toISOString()}`);
+      try{
+        await prepare({...plan,selected},{cwd,env,completedTargets});
+        await verify(plan);
+      }
+      catch{
+        for(const name of selected)results.push({name,state:'preparation-failure',seconds:(Date.now()-started)/1000});
+        throw new Error('Worker phase preparation failed; dependent Workers were not deployed');
+      }
+      const completed=await Promise.allSettled(selected.map(deploy));
       const pending=completed.filter(row=>row.status==='fulfilled'&&row.value).map(row=>row.value);
       let failed=completed.some(row=>row.status==='rejected');
       let healthy=true;
@@ -103,6 +144,9 @@ export async function releaseWorkers(plan,{ledger=createDeploymentLedger(),isCur
     }
     return results;
   }finally{
+    // Retain successful compilation even if a later upload/health check fails.
+    if(env.GITHUB_OUTPUT)appendFileSync(env.GITHUB_OUTPUT,
+      `wasm-built=${completedTargets.has('nanocodex')}\n`);
     if(env.GITHUB_STEP_SUMMARY)appendFileSync(env.GITHUB_STEP_SUMMARY,
       '\n| Worker | Result | Seconds |\n|---|---|---:|\n'+results.map(result=>`| ${result.name} | ${result.state} | ${result.seconds.toFixed(1)} |\n`).join(''));
   }
@@ -110,5 +154,6 @@ export async function releaseWorkers(plan,{ledger=createDeploymentLedger(),isCur
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)){
   const plan=readPlan();
   assert.deepEqual(plan.fingerprints,await releaseFingerprints(),'Release inputs changed after planning');
-  await releaseWorkers(plan);
+  await releaseWorkers(plan,{verify:async()=>
+    assert.deepEqual(plan.fingerprints,await releaseFingerprints(),'Release inputs changed during preparation')});
 }

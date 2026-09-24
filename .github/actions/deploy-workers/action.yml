@@ -42,31 +42,21 @@ runs:
     - name: Install only selected application dependencies
       if: steps.plan.outputs.any == 'true'
       shell: bash
-      run: node scripts/cloudflare/release-plan.mjs install
-    - name: Build only selected applications and their dependencies
+      run: node scripts/cloudflare/release-plan.mjs install --defer-astra
+    - name: Deploy selected Workers and record successful releases
+      id: release
       if: steps.plan.outputs.any == 'true'
       shell: bash
-      run: node scripts/cloudflare/release-plan.mjs build
-    - name: Use published phone and sandbox images
-      if: steps.plan.outputs.managed == 'true'
-      shell: bash
-      run: node scripts/cloudflare/released-images.mjs ${{ contains(inputs.component, 'managed') && '--current' || '' }}
-    - name: Preserve published account relay images
-      if: steps.plan.outputs.account == 'true'
-      shell: bash
-      run: node scripts/cloudflare/released-account-image.mjs
+      env:
+        RELEASE_ONLY: ${{ inputs.component }}
+        ASTRA_MANAGED_API_KEY: ${{ inputs.astra-api-key }}
+        ASTRA_MPP_SECRET: ${{ inputs.astra-mpp-secret }}
+        TEMPO_API_KEY: ${{ inputs.tempo-api-key }}
+      run: node scripts/cloudflare/release-workers.mjs
     - name: Retain verified WASM outputs
-      if: steps.plan.outputs.wasm == 'true' && github.ref == 'refs/heads/master'
+      if: ${{ !cancelled() && steps.release.outputs.wasm-built == 'true' && github.ref == 'refs/heads/master' }}
       uses: ./.github/actions/save-wasm-outputs
       with:
         key: ${{ steps.wasm.outputs.key }}
         cache-hit: ${{ steps.wasm.outputs.cache-hit }}
         rejected-artifact-id: ${{ steps.wasm.outputs.rejected-artifact-id }}
-    - name: Deploy selected Workers and record successful releases
-      if: steps.plan.outputs.any == 'true'
-      shell: bash
-      env:
-        ASTRA_MANAGED_API_KEY: ${{ inputs.astra-api-key }}
-        ASTRA_MPP_SECRET: ${{ inputs.astra-mpp-secret }}
-        TEMPO_API_KEY: ${{ inputs.tempo-api-key }}
-      run: node scripts/cloudflare/release-workers.mjs
