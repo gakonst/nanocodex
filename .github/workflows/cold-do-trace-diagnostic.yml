@@ -74,13 +74,21 @@ jobs:
                   print('otel source keys:',sorted(sample.keys()) if isinstance(sample,dict) else type(sample).__name__)
                   attrs=sample.get('attributes') if isinstance(sample,dict) else None
                   print('otel attribute keys:',sorted(attrs.keys())[:60] if isinstance(attrs,dict) else type(attrs).__name__)
-              for item in otel[:25]:
-                  meta=item.get('$metadata') or {}; src=item.get('source') or {}
-                  attrs=src.get('attributes') if isinstance(src,dict) else None
-                  if not isinstance(attrs,dict): attrs={}
-                  name=src.get('name') if isinstance(src,dict) else None
-                  if isinstance(name,str): name=name.split('?')[0][:80]
-                  print('otel:',json.dumps({'timestamp':item.get('timestamp'),'name':name,'type':meta.get('type'),'origin':meta.get('origin'),'start':src.get('startTime') if isinstance(src,dict) else None,'end':src.get('endTime') if isinstance(src,dict) else None,'duration':src.get('duration') if isinstance(src,dict) else None,'colo':attrs.get('cloudflare.colo'),'script':attrs.get('cloudflare.script_name'),'method':attrs.get('jsrpc.method')},sort_keys=True))
+              if otel:
+                  from collections import Counter
+                  counts=Counter(str((item.get('source') or {}).get('name')) for item in otel)
+                  print('span names:',counts.most_common(25))
+                  print('cloudflare keys:',sorted(((otel[0].get('source') or {}).get('cloudflare') or {}).keys()))
+                  print('faas keys:',sorted(((otel[0].get('source') or {}).get('faas') or {}).keys()))
+              focus=[]
+              for item in otel:
+                  src=item.get('source') or {}; name=str(src.get('name') or '')
+                  if any(x in name.lower() for x in ('subrequest','handler','rpc','fetch','http','post','get')) and 'storage' not in name.lower(): focus.append(item)
+              focus.sort(key=lambda x:(x.get('source') or {}).get('startTime') or 0)
+              print('focused spans:',len(focus))
+              for item in focus[:35]:
+                  meta=item.get('$metadata') or {}; src=item.get('source') or {}; cf=src.get('cloudflare') or {}
+                  print('otel:',json.dumps({'name':str(src.get('name') or '')[:80],'start':src.get('startTime'),'end':src.get('endTime'),'duration_ms':src.get('durationMS'),'colo':cf.get('colo'),'script':cf.get('script_name'),'span_id_index':next((j for j,x in enumerate(focus) if (x.get('source') or {}).get('spanId')==src.get('spanId')),None),'parent_name':next(((x.get('source') or {}).get('name') for x in otel if (x.get('source') or {}).get('spanId')==src.get('parentSpanId')),None),'cf_keys':sorted(cf.keys())[:20]},sort_keys=True))
           PY
       - name: Surface sanitized summary as one GitHub check annotation
         if: always()
