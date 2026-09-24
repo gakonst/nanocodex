@@ -14,7 +14,7 @@ function fixture() {
   return { account, headers, enroll };
 }
 
-it("enrolls retained sandbox publishers beyond the server quota without consuming server capacity", async () => {
+it("enrolls more than 64 retained sandbox publishers", async () => {
   const f = fixture();
   for (let i = 0; i < 65; i++) expect((await f.enroll(true)).status).toBe(201);
   expect((await f.enroll(false)).status).toBe(201);
@@ -22,11 +22,11 @@ it("enrolls retained sandbox publishers beyond the server quota without consumin
   expect((await list.json<{ data: unknown[] }>()).data).toHaveLength(66);
 });
 
-it("retains the 64-server cap while allowing sandbox startup and credential renewal at capacity", async () => {
+it("enrolls more than 64 servers while preserving sandbox credential rotation", async () => {
   const f = fixture(), server = crypto.randomUUID();
   expect((await f.enroll(false, server)).status).toBe(201);
-  for (let i = 1; i < 64; i++) expect((await f.enroll(false)).status).toBe(201);
-  expect((await f.enroll(false)).status).toBe(429);
+  for (let i = 1; i < 65; i++) expect((await f.enroll(false)).status).toBe(201);
+  expect((await f.enroll(false)).status).toBe(201);
   expect((await f.enroll(false, server)).status).toBe(201);
   const sandbox = crypto.randomUUID();
   const first = await f.enroll(true, sandbox);
@@ -36,7 +36,7 @@ it("retains the 64-server cap while allowing sandbox startup and credential rene
   expect(rotated.status).toBe(201);
   const after = await rotated.json<{ credential: string }>();
   expect(after.credential).not.toBe(before.credential);
-  expect((await f.enroll(false)).status).toBe(429);
+  expect((await f.enroll(false)).status).toBe(201);
   const ice = (credential: string) => f.account.fetch(`https://account-tools.internal/hand-hosts/${sandbox}/hands/ice`, {
     method: "POST", headers: { ...f.headers, authorization: `Bearer ${credential}` },
   });
@@ -44,7 +44,7 @@ it("retains the 64-server cap while allowing sandbox startup and credential rene
   expect((await ice(after.credential)).status).toBe(200);
 });
 
-it("does not accept a sandbox quota exemption from a server enrollment body", async () => {
+it("rejects a forged machine identity in a server enrollment body", async () => {
   const f = fixture();
   const response = await f.account.fetch(`https://account-tools.internal/hand-hosts/${crypto.randomUUID()}`, {
     method: "PUT", headers: f.headers, body: JSON.stringify({ name: "Server", machine_id: "cf:forged" }),
