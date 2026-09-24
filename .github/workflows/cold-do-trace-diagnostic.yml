@@ -19,7 +19,7 @@ jobs:
           a=os.environ['CLOUDFLARE_ACCOUNT_ID']; t=os.environ['CLOUDFLARE_API_TOKEN']
           u=f'https://api.cloudflare.com/client/v4/accounts/{a}/workers/observability/telemetry/query'
           for service in ['nanocodex-cold-slim-probe','nanocodex-durable-agent']:
-            body={'queryId':'cold-colo-20260924','timeframe':{'from':1790275680000,'to':1790275920000},'view':'events','dry':True,'limit':1000,'parameters':{'datasets':['otel'],'filters':[{'key':'$metadata.service','operation':'eq','type':'string','value':service}]}}
+            body={'queryId':'cold-colo-20260924','timeframe':{'from':1790275680000,'to':1790275920000},'view':'events','dry':True,'limit':1000,'parameters':{'datasets':['otel'],'filters':[{'key':'$metadata.service','operation':'eq','type':'string','value':service},{'key':'$metadata.spanName','operation':'eq','type':'string','value':'jsrpc'}]}}
             req=urllib.request.Request(u,data=json.dumps(body).encode(),headers={'Authorization':'Bearer '+t,'Content-Type':'application/json'},method='POST')
             with urllib.request.urlopen(req,timeout=35) as r: response=json.load(r)
             assert response.get('success'),[e.get('code') for e in response.get('errors',[])]
