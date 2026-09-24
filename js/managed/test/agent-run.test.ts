@@ -125,7 +125,7 @@ describe("first-activation probe", () => {
           expect(id).toBe(kind);
           return { activationProbe: async () => ({
             constructor_entered_at_ms: Date.now(), constructor_ready_at_ms: Date.now(),
-            constructor_ms: 2, handler_entered_at_ms: Date.now(),
+            constructor_ms: 2, constructor_base_ms: 1, handler_entered_at_ms: Date.now(),
           }) };
         },
       },
@@ -135,7 +135,7 @@ describe("first-activation probe", () => {
     }), runtime, createExecutionContext(), principal);
     expect(response.status).toBe(200);
     expect(ids).toEqual([kind]);
-    expect(await response.json()).toMatchObject({ kind, constructor_ms: 2 });
+    expect(await response.json()).toMatchObject({ kind, constructor_ms: 2, constructor_base_ms: 1 });
   });
 });
 

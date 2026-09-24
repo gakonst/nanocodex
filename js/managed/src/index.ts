@@ -1831,6 +1831,7 @@ async function managedFetchRoute(
         return json({ kind, dispatch_ms: roundMilliseconds(performance.now() - started),
           before_constructor_ms: phases.constructor_entered_at_ms - startedAt,
           constructor_ms: phases.constructor_ms,
+          constructor_base_ms: phases.constructor_base_ms,
           after_constructor_ms: phases.handler_entered_at_ms - phases.constructor_ready_at_ms },
           { headers: { "cache-control": "no-store" } });
       } catch {
@@ -2091,6 +2092,7 @@ async function managedFetchRoute(
           session_pre_handler_ms: preHandlerMs,
           session_before_constructor_ms: beforeConstructorMs,
           session_constructor_ms: phases.constructor_ms,
+          session_constructor_base_ms: phases.constructor_base_ms,
           session_constructor_sql_ms: phases.constructor_sql_ms,
           session_constructor_restore_read_ms: phases.constructor_restore_read_ms,
           session_after_constructor_ms: afterConstructorMs,
@@ -2108,6 +2110,7 @@ async function managedFetchRoute(
         if (preHandlerMs !== undefined) response.headers.append("server-timing", `managed_session_pre_handler;dur=${preHandlerMs}`);
         if (beforeConstructorMs !== undefined) response.headers.append("server-timing", `managed_session_before_constructor;dur=${beforeConstructorMs}`);
         if (Number.isFinite(phases.constructor_ms)) response.headers.append("server-timing", `managed_session_constructor;dur=${phases.constructor_ms}`);
+        if (Number.isFinite(phases.constructor_base_ms)) response.headers.append("server-timing", `managed_session_constructor_base;dur=${phases.constructor_base_ms}`);
         if (afterConstructorMs !== undefined) response.headers.append("server-timing", `managed_session_after_constructor;dur=${afterConstructorMs}`);
         if (handlerMs !== undefined) response.headers.append("server-timing", `managed_session_handler;dur=${handlerMs}`);
         if (returnMs !== undefined) response.headers.append("server-timing", `managed_session_return;dur=${returnMs}`);
@@ -3165,16 +3168,25 @@ class DurableComputerObject extends DurableObject<Env> {
   get computerContext(): DurableObjectState { return this.ctx; }
 }
 
-const DurableComputerSession = withWorkspace(
-  DurableComputerObject,
-  (self) => ({
-    storage: self.computerContext.storage as unknown as DurableObjectStorageLike,
-    sessionId: self.computerContext.id.toString(),
-  }),
-);
+// The workspace constructor initializes its SQLite filesystem schema. It is
+// needed for tool execution and deletion, not for admitting a new Session.
+// Construct it on first use rather than before the Session's first handler.
+class WorkspaceOwner {
+  constructor(readonly computerContext: DurableObjectState) {}
+}
+const LazyWorkspaceOwner = withWorkspace(WorkspaceOwner, (self) => ({
+  storage: self.computerContext.storage as unknown as DurableObjectStorageLike,
+  sessionId: self.computerContext.id.toString(),
+}));
 
-export class DurableAgentSession extends DurableComputerSession {
+export class DurableAgentSession extends DurableComputerObject {
   #handPaths: HandPaths;
+  #workspaceHolder?: InstanceType<typeof LazyWorkspaceOwner>;
+
+  async #workspace() {
+    this.#workspaceHolder ??= new LazyWorkspaceOwner(this.ctx);
+    return getWorkspace(this.#workspaceHolder);
+  }
 
   /** Internal RPC after allocation authentication; labels never select a machine. */
   vmHostDisplayName(ownerId: string, machineId: string): string | undefined {
@@ -3261,7 +3273,8 @@ export class DurableAgentSession extends DurableComputerSession {
   #deletionGeneration = 0;
   #runtimeOwnershipGeneration = 0;
   readonly #commandReceipts: CommandReceipts;
-  readonly #constructorEnteredAtMs = Date.now();
+  readonly #constructorEnteredAtMs: number;
+  #constructorBaseMs = 0;
   #constructorReadyAtMs?: number;
   #constructorMs = 0;
   #constructorSqlMs = 0;
@@ -3269,8 +3282,13 @@ export class DurableAgentSession extends DurableComputerSession {
   #createConstructorPending = true;
 
   constructor(ctx: DurableObjectState, env: Env) {
-    super(ctx, env);
+    // Capture entry before super() and field initializers so dispatch time
+    // does not include inherited Workspace setup or our own constructor.
+    const enteredAt = Date.now();
     const constructorStartedAt = performance.now();
+    super(ctx, env);
+    this.#constructorEnteredAtMs = enteredAt;
+    this.#constructorBaseMs = roundMilliseconds(performance.now() - constructorStartedAt);
     ctx = this.ctx;
     this.#commandReceipts = new CommandReceipts(ctx.storage);
     initializeTurnInputs(ctx.storage, "managed_history_projection_chunks");
@@ -3518,6 +3536,7 @@ export class DurableAgentSession extends DurableComputerSession {
     if (!retainedSession || this.#constructorMs >= 100) {
       console.info({ type: "managed.session.constructor", fresh: !retainedSession,
         constructor_ms: this.#constructorMs,
+        constructor_base_ms: this.#constructorBaseMs,
         constructor_sync_ms: constructorSyncMs,
         constructor_restore_read_ms: this.#constructorRestoreReadMs,
         constructor_sql_ms: this.#constructorSqlMs });
@@ -3527,7 +3546,7 @@ export class DurableAgentSession extends DurableComputerSession {
   /** No user state: compare first activation of a named and a unique ID. */
   async activationProbe(): Promise<Readonly<{
     constructor_entered_at_ms: number; constructor_ready_at_ms: number;
-    constructor_ms: number; handler_entered_at_ms: number;
+    constructor_ms: number; constructor_base_ms: number; handler_entered_at_ms: number;
   }>> {
     const handlerEnteredAt = Date.now();
     if (this.#session() || this.#credentialBinding || this.#initializationOwnership())
@@ -3536,6 +3555,7 @@ export class DurableAgentSession extends DurableComputerSession {
       constructor_entered_at_ms: this.#constructorEnteredAtMs,
       constructor_ready_at_ms: this.#constructorReadyAtMs ?? handlerEnteredAt,
       constructor_ms: this.#constructorMs,
+      constructor_base_ms: this.#constructorBaseMs,
       handler_entered_at_ms: handlerEnteredAt,
     };
     await this.ctx.storage.deleteAll();
@@ -4678,6 +4698,7 @@ export class DurableAgentSession extends DurableComputerSession {
         constructor_entered_at_ms: this.#constructorEnteredAtMs,
         constructor_ready_at_ms: this.#constructorReadyAtMs,
         constructor_ms: this.#constructorMs,
+        constructor_base_ms: this.#constructorBaseMs,
         constructor_sql_ms: this.#constructorSqlMs,
         constructor_restore_read_ms: this.#constructorRestoreReadMs,
       } : {}),
@@ -7469,7 +7490,7 @@ export class DurableAgentSession extends DurableComputerSession {
       ]);
     }
     await withHardDeadline("managed workspace deletion", timeoutMs, async () => {
-      const workspace = await getWorkspace(this);
+      const workspace = await this.#workspace();
       try {
         await workspace.fs.rm("/workspace", { recursive: true, force: true });
       } finally {
@@ -8074,7 +8095,7 @@ export class DurableAgentSession extends DurableComputerSession {
     if (!multiplayer && create === undefined) await this.#ensureCredentialBinding(session);
     const credentialBindingMs = preparation?.credentialBindingMs ?? performance.now() - phaseStartedAt;
     phaseStartedAt = performance.now();
-    const workspace = await getWorkspace(this);
+    const workspace = await this.#workspace();
     const workspaceMs = performance.now() - phaseStartedAt;
     phaseStartedAt = performance.now();
     // Shared-room members can all admit turns. Never attach the room owner's
