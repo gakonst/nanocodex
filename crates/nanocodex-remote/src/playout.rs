@@ -1,4 +1,4 @@
-//! Negotiated screen playout hint, matching the Go Hand's 0–100ms range.
+//! Negotiated screen playout hint for interactive desktop video.
 //! Keep this per stream: a shared track can have different extension IDs for
 //! each viewer, including viewers that do not negotiate the extension at all.
 use async_trait::async_trait;
@@ -61,11 +61,12 @@ impl Interceptor for PlayoutDelay {
         {
             Some(extension) => Arc::new(PlayoutWriter {
                 writer,
-                // Two 12-bit fields, in 10ms units: minimum 0, maximum 10.
+                // Two 12-bit fields, in 10ms units: minimum 0, maximum 3.
+                // Limit buffering to less than two frames on a stable 60 FPS stream.
                 // Repeat on every packet for joins, packet loss, and ICE restarts.
                 extension: Extension {
                     id: extension.id as u8,
-                    payload: vec![0, 0, 10].into(),
+                    payload: vec![0, 0, 3].into(),
                 },
             }),
             None => writer,

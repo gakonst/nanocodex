@@ -82,7 +82,7 @@ async fn negotiated_video_hint_preserves_packets_without_leaking_across_viewers(
                 delay,
                 PlayoutDelayExtension {
                     min_delay: 0,
-                    max_delay: 10
+                    max_delay: 3
                 }
             );
             assert_eq!(
@@ -176,7 +176,7 @@ async fn real_peer_roundtrip(supported: bool) {
                     let (packet, _) = packet.expect("track callback").expect("received RTP");
                     if let Some(extension) = extension {
                         let mut bytes = packet.header.get_extension(extension.id as u8).expect("negotiated playout hint");
-                        assert_eq!(PlayoutDelayExtension::unmarshal(&mut bytes).unwrap(), PlayoutDelayExtension { min_delay: 0, max_delay: 10 });
+                        assert_eq!(PlayoutDelayExtension::unmarshal(&mut bytes).unwrap(), PlayoutDelayExtension { min_delay: 0, max_delay: 3 });
                     } else {
                         assert!(packet.header.extensions.is_empty(), "legacy viewer received an unnegotiated extension");
                     }
@@ -237,7 +237,7 @@ async fn large_extension_ids_use_two_byte_wire_format_without_changing_source() 
             assert_eq!(parsed.header.extension_profile, EXTENSION_PROFILE_TWO_BYTE);
             assert_eq!(
                 parsed.header.get_extension(id as u8).unwrap().as_ref(),
-                &[0, 0, 10]
+                &[0, 0, 3]
             );
             if existing_extension {
                 assert_eq!(parsed.header.get_extension(3).unwrap().as_ref(), &[42]);
@@ -422,7 +422,7 @@ async fn real_peer_fragmented_roundtrip(supported: bool, frame_count: usize, nal
                     assert_eq!(*timestamp.get_or_insert(packet.header.timestamp), packet.header.timestamp);
                     if let Some(id) = extension_id {
                         let mut bytes = packet.header.get_extension(id).expect("playout hint on every fragment");
-                        assert_eq!(PlayoutDelayExtension::unmarshal(&mut bytes).unwrap(), PlayoutDelayExtension { min_delay: 0, max_delay: 10 });
+                        assert_eq!(PlayoutDelayExtension::unmarshal(&mut bytes).unwrap(), PlayoutDelayExtension { min_delay: 0, max_delay: 3 });
                     } else {
                         assert!(packet.header.extensions.is_empty(), "unnegotiated extension");
                     }
