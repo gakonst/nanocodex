@@ -21,7 +21,7 @@ jobs:
           const origin = 'https://nanocodex.gakonst.workers.dev';
           const body = JSON.stringify({settings:{model:'gpt-6-luna',thinking:'low',reasoning_mode:'standard',fast_mode:false}});
           const records=[];
-          const metricNames=new Set(['managed_auth','managed_create','session_create','session_pre_handler','session_before_constructor','session_constructor','session_constructor_base','session_handler','catalog_attach']);
+          const metricNames=new Set(['managed_auth','managed_create','managed_session_create','managed_session_pre_handler','managed_session_before_constructor','managed_session_constructor','managed_session_constructor_base','managed_session_handler','managed_session_after_constructor','managed_session_return','managed_session_attach']);
           const timing = headers => {
             const output={}; const raw=headers.get('server-timing')||'';
             for(const match of raw.matchAll(/([a-zA-Z_]+)(?:;[^,]*?)?;dur=([\d.]+)/g)) if(metricNames.has(match[1])) output[match[1]]=Number(match[2]);
