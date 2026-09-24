@@ -16,10 +16,10 @@ jobs:
         run: |
           python3 - <<'PY' > "$RUNNER_TEMP/cold-probe-traces.txt"
           import json,os,urllib.request,collections
-          a=os.environ['CLOUDFLARE_ACCOUNT_ID']; t=os.environ['CLOUDFLARE_API_TOKEN'];u=f'https://api.cloudflare.com/client/v4/accounts/{a}/workers/observability/telemetry/query'
+          a=os.environ['CLOUDFLARE_ACCOUNT_ID']; tok=os.environ['CLOUDFLARE_API_TOKEN'];u=f'https://api.cloudflare.com/client/v4/accounts/{a}/workers/observability/telemetry/query'
           def query(view,params,limit=200):
             body={'queryId':'cold-probe-20260924','timeframe':{'from':1790275680000,'to':1790275920000},'view':view,'dry':True,'limit':limit,'parameters':params}
-            req=urllib.request.Request(u,data=json.dumps(body).encode(),headers={'Authorization':'Bearer '+t,'Content-Type':'application/json'},method='POST')
+            req=urllib.request.Request(u,data=json.dumps(body).encode(),headers={'Authorization':'Bearer '+tok,'Content-Type':'application/json'},method='POST')
             with urllib.request.urlopen(req,timeout=35) as r: resp=json.load(r)
             assert resp.get('success'),[e.get('code') for e in resp.get('errors',[])]
             return resp.get('result') or {}
