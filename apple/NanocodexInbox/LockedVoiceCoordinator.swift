@@ -55,14 +55,15 @@ final class LockedVoiceCoordinator {
     private let log = Logger(subsystem: "xyz.paradigm.centaur", category: "LockedVoice")
 
     func start() async throws {
+        VoiceDiagnostic.note("speak.coordinator.enter.state-\(UIApplication.shared.applicationState.rawValue).protected-\(UIApplication.shared.isProtectedDataAvailable)")
         log.info("Start requested: applicationState=\(UIApplication.shared.applicationState.rawValue) protectedDataAvailable=\(UIApplication.shared.isProtectedDataAvailable)")
-        guard capture == nil else { throw CaptureError.alreadyRecording }
-        guard !model.voice.isEngaged else { throw CaptureError.alreadyRecording }
-        guard QuickVoiceRecorder.permissionsGranted else { throw CaptureError.permissions }
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else { throw CaptureError.unavailable }
+        guard capture == nil else { VoiceDiagnostic.note("speak.coordinator.busy"); throw CaptureError.alreadyRecording }
+        guard !model.voice.isEngaged else { VoiceDiagnostic.note("speak.coordinator.otherVoiceBusy"); throw CaptureError.alreadyRecording }
+        guard QuickVoiceRecorder.permissionsGranted else { VoiceDiagnostic.note("speak.coordinator.permissionsDenied"); throw CaptureError.permissions }
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else { VoiceDiagnostic.note("speak.coordinator.activityDisabled"); throw CaptureError.unavailable }
         let account: String
         do { account = try model.lockedVoiceAccountScope() }
-        catch { throw CaptureError.account }
+        catch { VoiceDiagnostic.note("speak.coordinator.accountUnavailable", error: error); throw CaptureError.account }
         let language = UserDefaults.standard.string(forKey: "quickVoice.locale") == "el-GR" ? "el-GR" : "en-US"
         let current = Capture(account: account, generation: model.connected ? model.quickVoiceGeneration : nil, language: language)
         capture = current
@@ -70,9 +71,12 @@ final class LockedVoiceCoordinator {
             // The combined recording/Live Activity intent is the intended locked path.
             // Physical-device validation is still required for OS launch eligibility.
             // The Live Activity must exist before activating the microphone.
+            VoiceDiagnostic.note("speak.coordinator.activityRequest")
             current.activity = try Activity.request(attributes: LockedVoiceActivityAttributes(captureID: current.id),
                 content: content(current, phase: "preparing"), pushType: nil)
+            VoiceDiagnostic.note("speak.coordinator.activityStarted")
         } catch {
+            VoiceDiagnostic.note("speak.coordinator.activityFailed", error: error)
             capture = nil
             throw CaptureError.unavailable
         }
@@ -89,12 +93,14 @@ final class LockedVoiceCoordinator {
         }
         current.recorder.onError = { [weak self, weak current] message in
             guard let self, let current, self.capture === current else { return }
+            VoiceDiagnostic.note("speak.coordinator.recorderFailure.phase-\(current.phase)")
             current.failure = LockedVoiceFailure.description(for: message)
             self.log.error("Capture \(current.id, privacy: .public) stopped: \(message, privacy: .public)")
             self.end(current, phase: self.failurePhase(current), preserve: true)
         }
         current.recorder.onFinal = { [weak self, weak current] text in
             guard let self, let current, self.capture === current else { return }
+            VoiceDiagnostic.note("speak.coordinator.finalTextReady")
             self.deliver(text, capture: current)
         }
         let captureID = current.id
@@ -118,7 +124,9 @@ final class LockedVoiceCoordinator {
         // Restore in parallel, never before or instead of microphone startup. An
         // unusually fast final callback still has a task to await for delivery.
         current.restore = Task { try await model.restoreLockedVoiceAccount(scope: account) }
+        VoiceDiagnostic.note("speak.coordinator.recorderStarting")
         await current.recorder.start(locale: language, permissions: .alreadyGranted)
+        VoiceDiagnostic.note("speak.coordinator.recorderReturned.active-\(current.recorder.recording)")
         guard capture === current, current.recorder.recording else {
             if capture === current { end(current, phase: failurePhase(current), preserve: true) }
             throw CaptureError.unavailable
@@ -189,9 +197,11 @@ final class LockedVoiceCoordinator {
                 try await self.model.submitLockedVoice(text, captureID: current.id, accountScope: current.account, generation: epoch)
                 try Task.checkCancellation()
                 guard self.capture === current else { return }
+                VoiceDiagnostic.note("speak.coordinator.deliveryAdmitted")
                 self.end(current, phase: "sent", preserve: false)
             } catch {
                 guard self.capture === current else { return }
+                VoiceDiagnostic.note("speak.coordinator.deliveryFailed", error: error)
                 self.end(current, phase: self.failurePhase(current), preserve: true)
             }
         }
@@ -232,6 +242,7 @@ final class LockedVoiceCoordinator {
         guard capture === current else { return }
         // Fence all callbacks before stopping audio; a late final can never send.
         capture = nil
+        VoiceDiagnostic.note("speak.coordinator.ended.\(phase)")
         log.info("Capture ended: \(phase, privacy: .public)")
         current.recorder.onAudioEnded = nil
         current.recorder.onFinal = nil

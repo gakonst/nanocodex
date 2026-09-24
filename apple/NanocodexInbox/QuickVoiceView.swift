@@ -33,6 +33,7 @@ final class QuickVoiceRecorder: ObservableObject {
 
     func start(locale: String, permissions: PermissionMode = .request) async {
         stop()
+        VoiceDiagnostic.note("speak.recorder.enter")
         guard Self.audioOwner == nil else {
             fail("Another voice recording is in progress. Finish it first."); return
         }
@@ -56,6 +57,7 @@ final class QuickVoiceRecorder: ObservableObject {
             }
         }
         guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: locale)), recognizer.isAvailable else {
+            VoiceDiagnostic.note("speak.recorder.speechUnavailable")
             fail("Speech recognition is unavailable. Try again when connected."); return
         }
         var stage = "sessionCategory"
@@ -65,6 +67,7 @@ final class QuickVoiceRecorder: ObservableObject {
             try session.setCategory(.record, mode: .measurement)
             stage = "sessionActivation"
             try session.setActive(true)
+            VoiceDiagnostic.note("speak.recorder.sessionActivated")
             sessionActive = true
             let request = SFSpeechAudioBufferRecognitionRequest()
             request.shouldReportPartialResults = true
@@ -88,12 +91,14 @@ final class QuickVoiceRecorder: ObservableObject {
                     // Errors and interruptions never submit a partial transcript.
                     if let error {
                         let failure = error as NSError
+                        VoiceDiagnostic.note("speak.recorder.speechFailed", error: error)
                         self.log.error("Speech failed: domain=\(failure.domain, privacy: .public) code=\(failure.code)")
                         self.fail("Speech recognition stopped."); return
                     }
                     if let text, let input = self.gate.completed(text, token: token, isFinal: final) {
                         self.stop()
                         self.status = "Starting task…"
+                        VoiceDiagnostic.note("speak.recorder.finalReady")
                         self.onFinal?(input)
                     } else if final {
                         self.fail("No speech was recognized. Try again.")
@@ -105,6 +110,7 @@ final class QuickVoiceRecorder: ObservableObject {
             engine.prepare()
             stage = "engineStart"
             try engine.start()
+            VoiceDiagnostic.note("speak.recorder.engineStarted")
             transcript = ""
             recording = true
             status = "Listening… Pause when finished to start your task."
@@ -112,6 +118,7 @@ final class QuickVoiceRecorder: ObservableObject {
             armDeadline(seconds: 15, token: token) { self.fail("No speech was recognized. Try again.") }
         } catch {
             let failure = error as NSError
+            VoiceDiagnostic.note("speak.recorder.audioStartFailed.\(stage)", error: error)
             log.error("Audio start failed at \(stage, privacy: .public): domain=\(failure.domain, privacy: .public) code=\(failure.code)")
             fail("Microphone could not start.")
         }
@@ -132,6 +139,7 @@ final class QuickVoiceRecorder: ObservableObject {
 
     func interrupt() {
         guard working else { return }
+        VoiceDiagnostic.note("speak.recorder.interrupted")
         fail("Recording interrupted. Your words are preserved; edit and send or try again.")
     }
 
