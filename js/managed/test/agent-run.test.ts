@@ -85,6 +85,43 @@ function run(runtime: Env, body: unknown, key?: string, actor = principal) {
   }), runtime, createExecutionContext(), actor);
 }
 
+describe("first-activation probe", () => {
+  it("requires the admin API key before allocating either Durable Object ID", async () => {
+    let allocations = 0;
+    const runtime = { ...env, NANOCODEX_ADMIN_USER_ID: "other-admin",
+      NANOCODEX_SESSIONS: { idFromName: () => { allocations++; return "named"; },
+        newUniqueId: () => { allocations++; return "unique"; } } } as unknown as Env;
+    const response = await worker.fetch(new Request("https://nanocodex.example/v1/agents/activation-probe", {
+      method: "POST", headers: { "x-nanocodex-probe-kind": "unique" },
+    }), runtime, createExecutionContext(), principal);
+    expect(response.status).toBe(404);
+    expect(allocations).toBe(0);
+  });
+
+  it.each(["named", "unique"])("times a fresh %s ID without exposing it", async (kind) => {
+    const ids: string[] = [];
+    const runtime = { ...env, NANOCODEX_ADMIN_USER_ID: principal.userId,
+      NANOCODEX_SESSIONS: {
+        idFromName: () => { ids.push("named"); return "named"; },
+        newUniqueId: () => { ids.push("unique"); return "unique"; },
+        get: (id: string) => {
+          expect(id).toBe(kind);
+          return { activationProbe: async () => ({
+            constructor_entered_at_ms: Date.now(), constructor_ready_at_ms: Date.now(),
+            constructor_ms: 2, handler_entered_at_ms: Date.now(),
+          }) };
+        },
+      },
+    } as unknown as Env;
+    const response = await worker.fetch(new Request("https://nanocodex.example/v1/agents/activation-probe", {
+      method: "POST", headers: { "x-nanocodex-probe-kind": kind },
+    }), runtime, createExecutionContext(), principal);
+    expect(response.status).toBe(200);
+    expect(ids).toEqual([kind]);
+    expect(await response.json()).toMatchObject({ kind, constructor_ms: 2 });
+  });
+});
+
 describe("combined managed agent creation", () => {
   it("publishes create and session timing without leaking internal timestamps", async () => {
     const { runtime } = fixtureEnvironment();
