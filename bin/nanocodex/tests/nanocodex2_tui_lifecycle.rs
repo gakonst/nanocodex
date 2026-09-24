@@ -591,6 +591,13 @@ async fn socket(
     upgrade: WebSocketUpgrade,
     Query(query): Query<HashMap<String, String>>,
 ) -> axum::response::Response {
+    if uri.path() == "/v1/agents/live" {
+        let mut settings = service.settings.lock().unwrap();
+        for field in ["model", "thinking", "reasoning_mode"] {
+            settings[field] = json!(query[field]);
+        }
+        settings["fast_mode"] = json!(query["fast_mode"].parse::<bool>().unwrap());
+    }
     service
         .socket_paths
         .lock()
@@ -621,7 +628,7 @@ async fn serve(mut socket: WebSocket, service: Service, cursor: u64, agent: Stri
         "capabilities": {"durable_turns": true, "resumable_events": true,
             "workspace": "cloudflare-computer",
             "execution_environments": true, "execution_namespace": "cwd-root-v1", "native_cross_mounts": false},
-        "settings": {"model": "gpt-6-astra", "thinking": "low", "reasoning_mode": "standard", "fast_mode": false}
+        "settings": service.settings.lock().unwrap().clone()
     });
     if socket
         .send(Message::Text(ready.to_string().into()))
