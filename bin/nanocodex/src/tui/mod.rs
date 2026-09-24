@@ -767,6 +767,7 @@ pub(crate) async fn run_observed(
     observability: Option<crate::observability::ObservabilityArgs>,
 ) -> Result<()> {
     let resumed_model = resume.as_ref().map(DurableSession::model);
+    let first_frame = crate::startup_timing::Stage::new("tui_first_frame");
     let initial_thinking = config.thinking();
     let initial_fast_mode = config.fast_mode();
     let cwd = resume
@@ -799,6 +800,7 @@ pub(crate) async fn run_observed(
         None,
     )?;
 
+    drop(first_frame);
     if let Some(session) = &resume {
         ui.app
             .restore_transcript(session.transcript().iter().cloned());

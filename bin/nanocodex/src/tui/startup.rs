@@ -131,6 +131,7 @@ impl Backend {
         observability: Option<crate::observability::ObservabilityArgs>,
     ) -> Task<Result<Self>> {
         Task::spawn(async move {
+            let _backend = crate::startup_timing::Stage::new("native_backend");
             let cwd = resume
                 .as_ref()
                 .map(|session| PathBuf::from(session.workspace()))
@@ -138,12 +139,14 @@ impl Backend {
             let observability = observability
                 .map(|args| args.install(true, &cwd))
                 .transpose()?;
+            let updater = crate::startup_timing::Stage::new("updater_setup");
             if let Err(error) = crate::update::prepare_legacy_nightly_bootstrap() {
                 tracing::warn!(%error, "failed to prepare the Nanocodex updater bootstrap");
             }
             if let Err(error) = crate::update::ensure_default_automatic_updates() {
                 tracing::warn!(%error, "could not configure automatic updates");
             }
+            drop(updater);
             let control_server = if nanocodex_tui_control::Server::enabled() {
                 Some(nanocodex_tui_control::Server::start("native")?)
             } else {

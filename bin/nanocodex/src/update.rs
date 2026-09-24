@@ -19,6 +19,7 @@ use sha2::{Digest, Sha256};
 use crate::version;
 
 mod automatic;
+mod local;
 mod pr;
 mod store;
 mod voice;
@@ -175,7 +176,7 @@ pub(crate) struct Update {
     #[arg(long, conflicts_with_all = ["pr", "path"])]
     force: bool,
 
-    /// Matching nanocodex2 binary when installing a local CLI build.
+    /// nanocodex2 binary built from the same source revision as the local CLI.
     #[arg(long, requires = "path", value_name = "PATH")]
     hand_binary: Option<PathBuf>,
 
@@ -748,6 +749,9 @@ async fn install_local_binary(
     previous: &str,
     restart_hand: bool,
 ) -> Result<()> {
+    if let Some(companion) = companion {
+        local::verify_pair(path, companion).await?;
+    }
     let contents = fs::read(path).wrap_err_with(|| format!("failed to read {}", path.display()))?;
     let companion = companion
         .map(fs::read)

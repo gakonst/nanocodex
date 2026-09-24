@@ -582,6 +582,14 @@ catalog, and then activates the CLI. A failed Hand startup restores the previous
 service and leaves the CLI unchanged. An explicit update restarts the Hand and
 its VM host; finish active work first. For a matching local build, use
 `nanocodex update --path PATH_TO_NANOCODEX --hand-binary PATH_TO_NANOCODEX2`.
+Both local binaries must report the same full `Commit SHA` in `--version`.
+Build both packages from the same checkout; a missing or mismatched revision
+stops installation before candidate files are written.
+
+Set `NANOCODEX_STARTUP_TIMING=1` on either CLI to emit content-free JSON phase
+timings on stderr. These distinguish the first frame, local computer discovery,
+and backend initialization. Measure process launch separately: operating-system
+launch delay occurs before these timers start.
 
 ```sh
 nanocodex update --auto enable --nightly

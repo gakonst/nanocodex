@@ -28,6 +28,7 @@ mod mcp;
 mod mpp;
 mod observability;
 mod run;
+mod startup_timing;
 mod subagents;
 mod tui;
 mod update;
@@ -171,6 +172,7 @@ struct ResumeCommand {
 }
 
 fn main() -> ExitCode {
+    let _startup = startup_timing::Stage::new("process");
     match try_main() {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {

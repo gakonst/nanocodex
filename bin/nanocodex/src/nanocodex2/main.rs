@@ -48,9 +48,13 @@ mod screen_wayland_input;
 mod service;
 #[allow(dead_code)]
 mod skill;
+#[path = "../startup_timing.rs"]
 mod startup_timing;
 #[allow(dead_code, unused_imports)]
 mod tui;
+#[allow(dead_code)]
+#[path = "../version.rs"]
+mod version;
 #[cfg(any(
     all(target_os = "linux", not(target_env = "musl")),
     all(target_os = "macos", target_arch = "aarch64")
@@ -97,7 +101,8 @@ const SYSTEM_HOST_TOKEN_ENV: &str = "NANOCODEX_SYSTEM_HOST_TOKEN";
 #[derive(Parser)]
 #[command(
     name = "nanocodex2",
-    version,
+    version = version::SHORT_VERSION,
+    long_version = version::LONG_VERSION,
     about = "Small managed Nanocodex client with local workspace tools"
 )]
 struct Cli {
@@ -1232,6 +1237,22 @@ fn write_json_line<T: serde::Serialize>(value: &T) -> Result<(), ManagedError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn version_reports_full_source_revision_for_local_updates() {
+        use clap::CommandFactory;
+
+        let output = Cli::command()
+            .try_get_matches_from(["nanocodex2", "--version"])
+            .unwrap_err();
+        assert_eq!(output.kind(), clap::error::ErrorKind::DisplayVersion);
+        assert!(
+            output
+                .to_string()
+                .contains(concat!("Commit SHA: ", env!("VERGEN_GIT_SHA"),))
+        );
+        assert!(output.to_string().contains("Build Profile: "));
+    }
 
     #[test]
     fn runtime_waits_for_foreground_cleanup_before_success_or_error() {

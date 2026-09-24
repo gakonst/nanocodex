@@ -6427,6 +6427,7 @@ dependencies = [
  "unicode-width 0.2.0",
  "url",
  "uuid",
+ "vergen",
  "vt100",
  "webrtc",
  "whoami 1.6.1",

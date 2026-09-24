@@ -1,4 +1,4 @@
-//! Opt-in, content-free client timings for real binary end-to-end measurements.
+//! Shared opt-in, content-free client timings for real binary measurements.
 use std::{sync::OnceLock, time::Instant};
 
 pub(super) struct Stage {

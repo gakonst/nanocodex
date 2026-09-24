@@ -356,6 +356,7 @@ impl AgentArgs {
             session.session_id = Some(SessionId::new());
         }
         let managed_memory = if self.memory {
+            let _timing = crate::startup_timing::Stage::new("managed_memory");
             let root_session_id = session.session_id.ok_or_else(|| {
                 eyre!("memory-enabled sessions require an explicit session identity")
             })?;
@@ -425,6 +426,7 @@ impl AgentArgs {
         .web_search(web_search)
         .image_generation(self.image_generation);
         let managed_mcp = if self.mcp.loads_managed() {
+            let _timing = crate::startup_timing::Stage::new("managed_mcp_credentials");
             load_managed_mcp_credential(&codex_home).await?
         } else {
             None
@@ -442,11 +444,16 @@ impl AgentArgs {
             }
             tools = tools.remote_http_client(mpp_adapter.tool_http_client()?);
         }
-        if configured_vm.is_none()
-            && let Some(config) = nanocodex_computer::ComputerConfig::discover_or_install()
+        let computer_config = if configured_vm.is_none() {
+            let _timing = crate::startup_timing::Stage::new("computer_discovery");
+            nanocodex_computer::ComputerConfig::discover_or_install()
                 .await
                 .map_err(|error| eyre!(error))?
-        {
+        } else {
+            None
+        };
+        if let Some(config) = computer_config {
+            let _timing = crate::startup_timing::Stage::new("computer_catalog");
             let computer = nanocodex_computer::ComputerTools::connect(config)
                 .await
                 .map_err(|error| eyre!(error.to_string()))?;
@@ -525,7 +532,10 @@ impl AgentArgs {
         } else {
             builder
         };
-        let (handle, events) = builder.build()?;
+        let (handle, events) = {
+            let _timing = crate::startup_timing::Stage::new("native_agent");
+            builder.build()?
+        };
         let (child_agents, subagent_updates) =
             subagent_runtime.map_or((None, None), |(_, control, updates)| {
                 let (drain_updates, subagent_updates) = if tui {
