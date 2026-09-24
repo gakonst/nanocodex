@@ -5,6 +5,41 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.5](https://github.com/gakonst/nanocodex/releases/tag/v0.6.5) - 2026-09-24
+
+### Bug Fixes
+
+- [router] Stream managed reasoning and reduce selection latency
+- [router] Accept Workers AI streams and terminate protocol failures ([#522](https://github.com/gakonst/nanocodex/issues/522))
+- [runtime] Prevent image replay crashes and reconcile steering delivery ([#435](https://github.com/gakonst/nanocodex/issues/435))
+- [subagents] Make result revisions runtime-owned ([#484](https://github.com/gakonst/nanocodex/issues/484))
+
+### Features
+
+- [router] Add Kimi and MiMo with mobile model controls ([#519](https://github.com/gakonst/nanocodex/issues/519))
+- [tui] Add authenticated rich terminal integration ([#344](https://github.com/gakonst/nanocodex/issues/344))
+
+### Other
+
+- Merge remote-tracking branch 'origin/master' into remove-legacy-memory
+- Route non-GPT children while preserving manual GPT spawning ([#536](https://github.com/gakonst/nanocodex/issues/536))
+- Merge pull request [#535](https://github.com/gakonst/nanocodex/issues/535) from gakonst/fix/provider-stream-diagnostics-compat-20260923
+- Preserve terminal retry classification for stream diagnostics
+- Merge remote-tracking branch 'origin/master' into fix/turn-controls-merge
+- Integrate GPT-6 Sol and Luna across Nanocodex ([#526](https://github.com/gakonst/nanocodex/issues/526))
+- Restore unchanged repository files omitted from frontier REST publication
+- Support configured Cloudflare REST transport for frontier inference ([#495](https://github.com/gakonst/nanocodex/issues/495))
+- Merge pull request [#436](https://github.com/gakonst/nanocodex/issues/436) from gakonst/poc/thread-model-routing
+- Merge latest master and retain voice lifecycle controls
+- Complete pinned provider and child routing with runtime validation
+- Add opt-in Jev thread routing with Workers AI GLM transport
+- Forward Codex turn metadata and surface Sky consent in foreground Hands ([#429](https://github.com/gakonst/nanocodex/issues/429))
+
+### Performance
+
+- [tls] Avoid macOS root-store enumeration on connect
+
+
 ## [0.6.4](https://github.com/gakonst/nanocodex/releases/tag/v0.6.4) - 2026-09-19
 
 ### Bug Fixes

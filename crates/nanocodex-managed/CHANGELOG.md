@@ -5,6 +5,45 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.5](https://github.com/gakonst/nanocodex/releases/tag/v0.6.5) - 2026-09-24
+
+### Bug Fixes
+
+- [managed] Always allow steering and cancellation
+- [router] Preserve existing managed event protocol for route updates ([#523](https://github.com/gakonst/nanocodex/issues/523))
+- [runtime] Prevent image replay crashes and reconcile steering delivery ([#435](https://github.com/gakonst/nanocodex/issues/435))
+
+### Features
+
+- Add running-agent navigation and tmux overview ([#560](https://github.com/gakonst/nanocodex/issues/560))
+- [router] Add Kimi and MiMo with mobile model controls ([#519](https://github.com/gakonst/nanocodex/issues/519))
+- [tui] Add authenticated rich terminal integration ([#344](https://github.com/gakonst/nanocodex/issues/344))
+- Add opt-in autoroute UX and retained provider display
+
+### Other
+
+- Merge remote-tracking branch 'origin/master' into perf/screen-direct-latency-20260923
+- Merge remote-tracking branch 'origin/master' into perf/screen-latency-20260923
+- Merge [#528](https://github.com/gakonst/nanocodex/issues/528): retire legacy facts and preserve Codex memory APIs
+- Retire legacy facts while preserving Codex memory and background personalization
+- Merge remote-tracking branch 'origin/master' into remove-legacy-memory
+- Remove legacy memory storage and personalization
+- Merge remote-tracking branch 'origin/master' into fix/turn-controls-merge
+- Integrate GPT-6 Sol and Luna across Nanocodex ([#526](https://github.com/gakonst/nanocodex/issues/526))
+- Restore unchanged repository files omitted from frontier REST publication
+- Support configured Cloudflare REST transport for frontier inference ([#495](https://github.com/gakonst/nanocodex/issues/495))
+- Run one persistent Hand daemon per machine ([#483](https://github.com/gakonst/nanocodex/issues/483))
+- Merge pull request [#436](https://github.com/gakonst/nanocodex/issues/436) from gakonst/poc/thread-model-routing
+- Merge latest master and retain voice lifecycle controls
+- Add opt-in Jev thread routing with Workers AI GLM transport
+- Forward Codex turn metadata and surface Sky consent in foreground Hands ([#429](https://github.com/gakonst/nanocodex/issues/429))
+
+### Performance
+
+- [cli] Present first responses immediately and finish shutdown promptly
+- [cli] Make startup editable before backend discovery
+
+
 ## [0.6.4](https://github.com/gakonst/nanocodex/releases/tag/v0.6.4) - 2026-09-19
 
 ### Bug Fixes

@@ -62,7 +62,7 @@ Build both Rust binaries, then run:
 .\windows\hand\build.ps1 `
   -Nanocodex .\target\release\nanocodex.exe `
   -Nanocodex2 .\target\release\nanocodex2.exe `
-  -Version 0.6.4
+  -Version 0.6.5
 ```
 
 Inno Setup 6 produces `dist\windows-hand\nanocodex-hand-setup-x86_64.exe`.
