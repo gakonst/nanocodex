@@ -824,12 +824,11 @@ mod tests {
 
     #[test]
     fn windows_schedule_runs_the_native_updater_without_secrets_or_powershell() {
-        let task = windows::render(
-            Path::new(r"/C:/Users/test/.nanocodex"),
-            r"DESKTOP\test",
-            false,
-        )
-        .unwrap();
+        #[cfg(target_os = "windows")]
+        let root = Path::new(r"C:\Users\test\.nanocodex");
+        #[cfg(not(target_os = "windows"))]
+        let root = Path::new(r"/C:/Users/test/.nanocodex");
+        let task = windows::render(root, r"DESKTOP\test", false).unwrap();
         assert!(task.contains("nanocodex.native-updater.v1"));
         assert!(task.contains("nanocodex.exe</Command>"));
         assert!(task.contains("<Arguments>update --background</Arguments>"));
