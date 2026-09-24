@@ -98,6 +98,23 @@ describe("first-activation probe", () => {
     expect(allocations).toBe(0);
   });
 
+  it("uses a fresh API-key DO as a same-Worker control without storing credentials", async () => {
+    const runtime = { ...env, NANOCODEX_ADMIN_USER_ID: principal.userId,
+      NANOCODEX_API_KEYS: {
+        newUniqueId: () => "key-unique",
+        get: (id: string) => {
+          expect(id).toBe("key-unique");
+          return { activationProbe: async () => Date.now() };
+        },
+      },
+    } as unknown as Env;
+    const response = await worker.fetch(new Request("https://nanocodex.example/v1/agents/activation-probe", {
+      method: "POST", headers: { "x-nanocodex-probe-kind": "key-unique" },
+    }), runtime, createExecutionContext(), principal);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({ kind: "key-unique", dispatch_ms: expect.any(Number) });
+  });
+
   it.each(["named", "unique"])("times a fresh %s ID without exposing it", async (kind) => {
     const ids: string[] = [];
     const runtime = { ...env, NANOCODEX_ADMIN_USER_ID: principal.userId,

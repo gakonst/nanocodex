@@ -2080,6 +2080,13 @@ export class Organization extends DurableObject<AccountAuthEnv> {
 }
 
 export class ApiKeyRecord extends DurableObject<AccountAuthEnv> {
+  /** No credentials are read or written: same-Worker cold DO dispatch control. */
+  async activationProbe(): Promise<number> {
+    const enteredAt = Date.now();
+    await this.ctx.storage.deleteAll();
+    return enteredAt;
+  }
+
   async resolveAuthorizedKey(observeCreate = false): Promise<StoredApiKey | undefined> {
     const startedAt = performance.now();
     const record = await this.ctx.storage.get<StoredApiKey>("record");
