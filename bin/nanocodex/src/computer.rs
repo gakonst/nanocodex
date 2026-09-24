@@ -9,9 +9,9 @@ pub(crate) struct Computer {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Install and select OpenAI's signed CUA runtime without starting its GUI.
+    /// Install and select OpenAI's signed headless CUA components.
     Setup {
-        /// Download the current upstream release instead of reusing a cached runtime.
+        /// Check OpenAI's component feed and update when its signed build changed.
         #[arg(long)]
         refresh: bool,
     },

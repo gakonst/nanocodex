@@ -406,6 +406,46 @@ pub(crate) async fn install(binary: Option<PathBuf>, account_file: Option<PathBu
     }
     Ok(())
 }
+
+/// Make the user Hand service present, current, running, and connected. This is
+/// deliberately idempotent so first-run setup and later repairs share one path.
+pub(crate) async fn ensure(binary: Option<PathBuf>, account_file: Option<PathBuf>) -> Result<()> {
+    let candidate =
+        executable(&binary.unwrap_or(std::env::current_exe()?.with_file_name("nanocodex2")))?;
+    let state = status().await?;
+    if !state.installed && !state.loaded {
+        return install(Some(candidate), account_file).await;
+    }
+    if !state.installed {
+        bail!("Loaded Hand has no installed LaunchAgent; cannot safely repair it");
+    }
+    let selected = state.executable.as_deref().map(executable).transpose()?;
+    if selected.as_deref() == Some(candidate.as_path()) {
+        if connected_catalog(&state, &candidate) {
+            return Ok(());
+        }
+        let since = SystemTime::now();
+        if state.loaded {
+            restart().await?;
+        } else {
+            start().await?;
+        }
+        verify_connected(&candidate, since, Duration::from_secs(60)).await?;
+        return Ok(());
+    }
+    let mut update = prepare_update(&candidate, true)
+        .await?
+        .ok_or_else(|| eyre!("Hand service disappeared during setup"))?;
+    if let Err(error) = update.apply().await {
+        if let Err(rollback) = update.rollback().await {
+            bail!(
+                "Hand setup failed: {error:#}; restoring the previous service also failed: {rollback:#}. Run nanocodex hand recover"
+            );
+        }
+        return Err(error.wrap_err("Hand setup failed; previous service restored"));
+    }
+    update.commit().await
+}
 fn fresh_connected(path: &Path, since: SystemTime) -> bool {
     fs::metadata(path)
         .and_then(|m| m.modified())
@@ -414,6 +454,25 @@ fn fresh_connected(path: &Path, since: SystemTime) -> bool {
             .ok()
             .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
             .is_some_and(|v| v["status"] == "connected")
+}
+
+fn connected_catalog(state: &ServiceStatus, expected: &Path) -> bool {
+    let Ok(home) = home() else {
+        return false;
+    };
+    state.pid.is_some()
+        && state.executable.as_deref() == Some(expected)
+        && fs::read_dir(home.join(".nanocodex/hands")).is_ok_and(|entries| {
+            entries.flatten().any(|entry| {
+                fs::read(entry.path().join("status.json"))
+                    .ok()
+                    .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                    .is_some_and(|value| {
+                        value["status"] == "connected"
+                            && daemon_matches(&value, state.pid, expected)
+                    })
+            })
+        })
 }
 /// Require a newly published connected catalog and the expected launchd owner.
 pub(crate) async fn verify_connected(

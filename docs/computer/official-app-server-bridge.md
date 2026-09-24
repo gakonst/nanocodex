@@ -1,10 +1,12 @@
 # Managed official macOS CUA host
 
-On macOS, `computer setup` installs a signed, unmodified OpenAI application bundle
-and a Nanocodex transport launcher. The launcher starts the official app server
+On macOS, `computer setup` installs an attested subset of OpenAI's signed release
+and a Nanocodex transport launcher. The subset contains only the official CLI,
+CUA Node runtime, browser bridge, and the minimum bundle signature metadata. It
+excludes the Electron application shell. The launcher starts the official app server
 and CUA provider **without launching the ChatGPT/Codex desktop GUI**. The upstream
 native computer-use helper can run in the background; its OS permissions still
-apply. The currently validated bundle is build **9922**.
+apply. Compatibility is capability-checked instead of pinned to a GUI build.
 
 ## Permission handling
 
@@ -22,7 +24,7 @@ macOS access controls, or upstream operations that require interactive input.
 
 ## Installation and lifecycle
 
-The signed bundle is cached under `runtimes/openai-cua/versions`. Nanocodex's own
+The signed component set is cached under `runtimes/openai-cua/versions`. Nanocodex's own
 launcher and bridge modules live separately under `hosts/<content-hash>`.
 `provider.json` selects an immutable launcher. Updating Nanocodex generates a new
 host directory while reusing the verified bundle. Existing processes retain their

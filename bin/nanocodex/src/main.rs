@@ -28,6 +28,7 @@ mod mcp;
 mod mpp;
 mod observability;
 mod run;
+mod setup;
 mod startup_timing;
 mod subagents;
 mod tui;
@@ -98,6 +99,8 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Sign in and set up Computer Use, Hand, and the browser extension.
+    Setup(setup::Setup),
     /// Discover and control a running interactive terminal.
     Tui(nanocodex_tui_control::Cli),
     /// Install or refresh the upstream computer-use runtime.
@@ -231,6 +234,7 @@ async fn run(cli: Cli) -> Result<()> {
         }
     }
     match cli.command {
+        Some(Command::Setup(command)) => command.run().await,
         Some(Command::Tui(command)) => command.run().await.map_err(Into::into),
         Some(Command::Computer(command)) => command.run().await.map_err(|error| eyre!(error)),
         Some(Command::Hand(command)) => command.run().await,

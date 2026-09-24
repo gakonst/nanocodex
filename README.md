@@ -115,6 +115,10 @@ curl -fsSL https://nanocodex.paradigm.xyz | bash
 nanocodex
 ```
 
+With an interactive terminal, the installer immediately runs `nanocodex setup`:
+account SMS login, exact upstream Computer Use components, the persistent Hand,
+and the official browser-extension prompt. The flow is idempotent and resumable.
+
 Release bundles include the native voice helper, libraries, and plugins.
 Installation and updates verify and install them with the matching CLI version;
 voice users do not need to run a source build. The updater checks cached runtime
@@ -123,8 +127,8 @@ For upgrades performed by an older updater, the CLI repairs its matching runtime
 automatically on first voice use.
 
 On macOS and Windows, current native CLIs and Hands automatically provision
-OpenAI's signed CUA runtime and select its upstream MCP tools. The macOS installer
-fetches the official app bundle; Windows uses its official Microsoft Store package.
+OpenAI's signed CUA runtime and select its upstream MCP tools. macOS range-fetches
+only the signed upstream CUA and browser-bridge components; Windows uses its official Microsoft Store package.
 Linux requires an explicitly installed upstream MCP provider; no custom CUA backend is bundled.
 Use `nanocodex2 computer setup --refresh`
 to update or repair the runtime, or `NANOCODEX_COMPUTER=off` to disable it.

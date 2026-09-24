@@ -298,22 +298,6 @@ EOF
   fi
 fi
 
-# Both CLIs and local Hands use the same per-user upstream runtime. The native
-# helper verifies OpenAI's signature and atomically activates the complete app.
-if [[ "$platform" == apple-darwin ]]; then
-  case "${NANOCODEX_COMPUTER:-}" in
-    off|none|0) ;;
-    *)
-      if ! "$version_dir/nanocodex2" computer setup --help >/dev/null 2>&1; then
-        echo "nanocodex: this release predates automatic upstream CUA setup; update to a release with 'computer setup' support." >&2
-      elif ! NANOCODEX_DIR="$install_root" "$version_dir/nanocodex2" computer setup --refresh; then
-        echo "nanocodex: CLIs installed, but upstream CUA setup failed. Retry: nanocodex2 computer setup" >&2
-        exit 1
-      fi
-      ;;
-  esac
-fi
-
 shell_quote() {
   local quoted
   quoted="${1//\'/\'\"\'\"\'}"
@@ -354,4 +338,24 @@ echo "Activated them through $bin_dir/nanocodex and $bin_dir/nanocodex2"
 if [[ ":$PATH:" != *":$bin_dir:"* ]]; then
   echo "Restart your shell or add $bin_dir to PATH."
 fi
-echo "Run 'nanocodex update' whenever you want the latest release."
+
+# A curl-piped script cannot lend its stdin to interactive login. Use the
+# controlling terminal explicitly, and leave a resumable command when no TTY
+# is available (CI, provisioning systems, and redirected installs).
+if [[ "$platform" == apple-darwin && "${NANOCODEX_INSTALL_NO_SETUP:-0}" != 1 ]]; then
+  setup_tty="${NANOCODEX_INSTALL_TTY:-/dev/tty}"
+  case "${NANOCODEX_COMPUTER:-}" in
+    off|none|0) ;;
+    *)
+      if [[ -r "$setup_tty" && -w "$setup_tty" ]]; then
+        if ! NANOCODEX_DIR="$install_root" "$version_dir/nanocodex" setup --refresh <"$setup_tty"; then
+          echo "nanocodex: binaries are installed; resume setup with: $bin_dir/nanocodex setup" >&2
+          exit 1
+        fi
+      else
+        echo "No interactive terminal detected. Finish setup with: $bin_dir/nanocodex setup"
+      fi
+      ;;
+  esac
+fi
+echo "Automatic updates are enabled; run 'nanocodex update' to check immediately."

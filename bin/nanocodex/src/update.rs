@@ -265,6 +265,24 @@ impl Update {
             println!("activated staged Nanocodex update {key}");
             return Ok(());
         }
+        // The same hourly job keeps upstream Computer Use components current.
+        // It checks the small signed appcast first and range-downloads only
+        // changed CUA/browser payloads; CLI updates remain independent.
+        if self.background && cfg!(target_os = "macos") {
+            match nanocodex_computer::provision::provision_upstream(true).await {
+                Ok(receipt) if receipt["status"] == "installed" => {
+                    if let Err(error) =
+                        nanocodex_computer::provision::configure_browser_bridge().await
+                    {
+                        eprintln!("warning: could not refresh the browser bridge: {error}");
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => {
+                    eprintln!("warning: could not refresh Computer Use components: {error}")
+                }
+            }
+        }
         let manager_key = manager_key(&manager_version);
         store.prepare(&manager_key)?;
         automatic::ensure_default(store.root(), self.nightly || version::IS_NIGHTLY)?;

@@ -16,7 +16,7 @@ pub(crate) struct Hand {
 enum HandCommand {
     /// Install or update a persistent Linux Hand and KVM factory over SSH.
     Add(Add),
-    /// Install the current macOS user Hand LaunchAgent.
+    /// Install or repair the current macOS user Hand LaunchAgent.
     Install {
         #[arg(long)]
         executable: Option<PathBuf>,
@@ -313,7 +313,7 @@ impl Hand {
             HandCommand::Install {
                 executable,
                 account_file,
-            } => crate::hand_service::install(executable, account_file).await,
+            } => crate::hand_service::ensure(executable, account_file).await,
             HandCommand::Status => {
                 println!(
                     "{}",
