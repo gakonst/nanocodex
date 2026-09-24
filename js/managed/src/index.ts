@@ -1808,7 +1808,20 @@ async function managedFetchRoute(
       const originFailure = requireSameOriginMutation(request, url, principal);
       if (originFailure) return originFailure;
       const kind = request.headers.get("x-nanocodex-probe-kind");
-      if (kind !== "named" && kind !== "unique") return json({ error: "invalid_request" }, { status: 400 });
+      if (kind !== "named" && kind !== "unique" && kind !== "key-unique") return json({ error: "invalid_request" }, { status: 400 });
+      if (kind === "key-unique") {
+        const id = env.NANOCODEX_API_KEYS.newUniqueId();
+        const startedAt = Date.now();
+        const started = performance.now();
+        try {
+          const enteredAt = await env.NANOCODEX_API_KEYS.get(id).activationProbe();
+          return json({ kind, dispatch_ms: roundMilliseconds(performance.now() - started),
+            before_constructor_ms: enteredAt - startedAt },
+            { headers: { "cache-control": "no-store" } });
+        } catch {
+          return json({ error: "activation_probe_failed" }, { status: 503 });
+        }
+      }
       const id = kind === "named" ? env.NANOCODEX_SESSIONS.idFromName(`activation-probe:${uuidV7()}`)
         : env.NANOCODEX_SESSIONS.newUniqueId();
       const startedAt = Date.now();
