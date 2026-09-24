@@ -2662,10 +2662,7 @@ async function routeVmHostToolAttachment(
   headers.set(SESSION_AUTHORIZATION_EPOCH_ASSERTION, String(grant.authorization_epoch));
   headers.set(SESSION_CAPABILITIES_ASSERTION, JSON.stringify(["agents:write", "tools:use"]));
   if (endpoint.startsWith("hands/")) {
-    const machineName = await env.NANOCODEX_SESSIONS.getByName(grant.agent_id)
-      .vmHostDisplayName(grant.owner_id, grant.machine_id);
     headers.set(REMOTE_VM_ASSERTION, JSON.stringify({ machineId: grant.machine_id,
-      ...(machineName ? { machineName } : {}),
       routeId: grant.route_id, expiresAt: grant.lease_expires_at } satisfies RemoteVMPublisher));
     return env.NANOCODEX_ACCOUNT_TOOLS.getByName(grant.owner_id).fetch(
       `https://account-tools.internal/${endpoint}`, new Request(request, { headers }),

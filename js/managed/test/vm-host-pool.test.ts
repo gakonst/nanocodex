@@ -36,7 +36,9 @@ describe("VM host pool", () => {
     const base = `${ORIGIN}/v1/vm-host-attachments/${LOCATOR}/${allocation.allocation_id}/hands`;
     const auth = { authorization: `Bearer ${bearer}` };
     const call = (url: string, init: RequestInit) => worker.fetch(new Request(url, init),
-      { ...env, NANOCODEX_TURN_KEY_ID: undefined, NANOCODEX_TURN_API_TOKEN: undefined } as Parameters<typeof worker.fetch>[1], createExecutionContext());
+      { ...env, NANOCODEX_TURN_KEY_ID: undefined, NANOCODEX_TURN_API_TOKEN: undefined,
+        NANOCODEX_SESSIONS: { getByName() { throw new Error("screen route queried agent session"); } },
+      } as unknown as Parameters<typeof worker.fetch>[1], createExecutionContext());
     expect((await call(base + "/ice", { method: "POST" })).status).toBe(401);
     expect((await call(base + "/ice", { method: "POST", headers: { authorization: `Bearer ${"x".repeat(43)}` } })).status).toBe(404);
     expect((await call(base + "/ice", { method: "POST", headers: auth })).status).toBe(200);
