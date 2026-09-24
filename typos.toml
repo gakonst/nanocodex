@@ -46,6 +46,8 @@ extend-ignore-re = ['\btime_base\.numer\b']
 extend-ignore-re = ['\bwaymote-streamd\b', '\bgrantUniveralAccess\b', '\bitms-beta://', '\bitms-services\b', '\bDuPont\b']
 
 [default.extend-words]
+# PDF's FlateDecode compression filter is a protocol identifier.
+Flate = "Flate"
 # Mesa's OpenGL-over-Vulkan driver.
 zink = "zink"
 Zink = "Zink"
