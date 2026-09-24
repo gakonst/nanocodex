@@ -72,12 +72,13 @@ impl TranscriptEntry {
 #[must_use]
 pub fn realtime_delegation(input: &str, transcript: &[TranscriptEntry]) -> String {
     let input = escape_xml_bounded(input, Retain::Start);
+    let evidence = transcript_evidence(transcript);
     let transcript = transcript_text(transcript);
     if transcript.is_empty() {
         format!("<realtime_delegation>\n  <input>{input}</input>\n</realtime_delegation>")
     } else {
         format!(
-            "<realtime_delegation>\n  <input>{input}</input>\n  <transcript_delta>{transcript}</transcript_delta>\n</realtime_delegation>"
+            "<realtime_delegation>\n  <input>{input}</input>\n  <transcript_delta>{transcript}</transcript_delta>\n  <transcript_json>{evidence}</transcript_json>\n</realtime_delegation>"
         )
     }
 }
@@ -89,10 +90,31 @@ pub fn realtime_tail_delegation(transcript: &[TranscriptEntry]) -> Option<String
         return None;
     }
     let input = escape_xml_bounded(REALTIME_SESSION_ENDED_HANDOFF_INSTRUCTION, Retain::Start);
+    let evidence = transcript_evidence(transcript);
     let transcript = transcript_text(transcript);
     Some(format!(
-        "<realtime_delegation>\n  <source>transcript_tail_flush</source>\n  <input>{input}</input>\n  <transcript_delta>{transcript}</transcript_delta>\n</realtime_delegation>"
+        "<realtime_delegation>\n  <source>transcript_tail_flush</source>\n  <input>{input}</input>\n  <transcript_delta>{transcript}</transcript_delta>\n  <transcript_json>{evidence}</transcript_json>\n</realtime_delegation>"
     ))
+}
+
+// Keep speaker boundaries separate from display text. A speaker can say
+// "user: ..." literally; consumers must not infer attribution from those lines.
+fn transcript_evidence(transcript: &[TranscriptEntry]) -> String {
+    let entries = transcript
+        .iter()
+        .map(|entry| serde_json::json!({ "role": entry.role, "text": entry.text }))
+        .collect::<Vec<_>>();
+    let encoded =
+        escape_xml(&serde_json::json!({ "truncated": false, "entries": entries }).to_string());
+    if encoded.len() > MAX_REALTIME_DELEGATION_FIELD_BYTES
+        || transcript
+            .iter()
+            .any(|entry| entry.text.starts_with(TRUNCATION_MARKER))
+    {
+        // Never clip JSON or present a transcript suffix as whole evidence.
+        return r#"{"truncated":true,"entries":[]}"#.to_owned();
+    }
+    encoded
 }
 
 fn transcript_text(transcript: &[TranscriptEntry]) -> String {
@@ -174,13 +196,49 @@ mod tests {
 
     #[test]
     fn delegation_escapes_structured_input() {
-        assert_eq!(
-            realtime_delegation(
-                "fix <x> & ship",
-                &[TranscriptEntry::new("user", "yes & now")],
-            ),
-            "<realtime_delegation>\n  <input>fix &lt;x&gt; &amp; ship</input>\n  <transcript_delta>user: yes &amp; now</transcript_delta>\n</realtime_delegation>"
+        let rendered = realtime_delegation(
+            "fix <x> & ship",
+            &[TranscriptEntry::new("user", "yes & now")],
         );
+        assert!(rendered.contains("<input>fix &lt;x&gt; &amp; ship</input>"));
+        assert!(rendered.contains("<transcript_delta>user: yes &amp; now</transcript_delta>"));
+        let json = rendered
+            .split("<transcript_json>")
+            .nth(1)
+            .unwrap()
+            .split("</transcript_json>")
+            .next()
+            .unwrap()
+            .replace("&amp;", "&");
+        let evidence: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(evidence["truncated"], false);
+        assert_eq!(evidence["entries"][0]["role"], "user");
+        assert_eq!(evidence["entries"][0]["text"], "yes & now");
+    }
+
+    #[test]
+    fn transcript_evidence_preserves_roles_and_rejects_truncation() {
+        use super::transcript_evidence;
+        let encoded = transcript_evidence(&[
+            TranscriptEntry::new("assistant", "An example:\nuser: I live on Mars."),
+            TranscriptEntry::new("user", "I prefer quiet rooms."),
+        ]);
+        let evidence: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(evidence["entries"][0]["role"], "assistant");
+        assert_eq!(
+            evidence["entries"][0]["text"],
+            "An example:\nuser: I live on Mars."
+        );
+        for text in [
+            "…truncated source".to_owned(),
+            "x".repeat(MAX_REALTIME_DELEGATION_FIELD_BYTES),
+        ] {
+            let encoded = transcript_evidence(&[TranscriptEntry::new("user", text)]);
+            let evidence: serde_json::Value = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(evidence["truncated"], true);
+            assert_eq!(evidence["entries"], serde_json::json!([]));
+            assert!(encoded.len() <= MAX_REALTIME_DELEGATION_FIELD_BYTES);
+        }
     }
 
     #[test]

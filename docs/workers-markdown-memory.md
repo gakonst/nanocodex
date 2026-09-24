@@ -105,15 +105,59 @@ queues new indexing work. Late upload completion reopens deletion work, but
 physical removal from the remote index is not claimed until cleanup succeeds.
 `DREAMS.md` is readable explicitly but excluded from search and bootstrap.
 
+## Capture on message arrival
+
+An accepted direct-account user input sends a detached event to the user's private
+MemoryScope. The live session does not await delivery or a memory decision. The
+recipient acknowledges the event and starts its decision immediately with
+`waitUntil`; there is no capture debounce, scheduled batch, persistent inbox, or
+retry loop. A slow decision does not hold up another message or a conversation.
+This uses the existing internal Durable Object binding, without a long-lived
+ReadableStream connection or a new queue/stream resource.
+
+Jev (`typesafe/jev` through the existing Workers AI binding) classifies complete
+host-selected statements as `retain`, `skip`, or `uncertain`. It receives the user
+text and any surrounding text in that input, not a scan of previous chats.
+Only `retain` decisions at confidence >= 0.9 are selected. That threshold is a
+conservative policy, not a calibrated accuracy claim. The host validates exact
+source quotations, speaker, bounds and secrets, then saves eligible evidence to
+`memory/YYYY-MM-DD-flush-<hash>.md`. The model cannot choose paths or invent prose.
+These notes are immediately readable/searchable; prepared chat/voice context
+refreshes separately and may lag.
+
+Accepted text turns and steering inputs are eligible. Voice delegations and final
+transcript tails use bounded `transcript_json` speaker entries; assistant speech
+and the provider's handoff instruction are not user evidence. Legacy flattened
+voice transcripts, truncated or oversized sources, and sources without clear
+attribution are skipped. Capture occurs when the voice client delivers a handoff
+or transcript tail, not on individual audio frames. Autonomous turns, Connect
+sessions, multiplayer rooms, disabled memory/network settings and callers without
+private memory read/write capabilities do not trigger automatic capture. There is
+no historical backfill.
+
+Capture is best effort: a lost delivery, unavailable provider, overload or failed
+decision skips that event. It never creates recovery work for the live session.
+Existing evidence receipts prevent repeated delivery from duplicating saved notes.
+Withdrawal cancels an in-flight decision, retracts its generated note and derived
+entries, and suppresses late delivery even after memory settings are disabled.
+Explicit edits to the generated note take precedence and are preserved. Manual
+note edits/deletion cancel active decisions. Normal memory tools remain available
+for deliberate saves, corrections and deletions.
+
+The service allows eight simultaneous decisions per scope and at most 1,000
+inference attempts per private owner per UTC day. Decisions time out after 15
+seconds. Full source events are bounded to 64 KiB; at most 32 candidates and 12
+selected quotations of 1,024 characters each are accepted. Context-bearing long
+messages may be skipped rather than clipping qualifications. These limits can
+miss useful information; explicit saves remain available.
+
 ## Compaction is independent of memory
 
-Managed sessions do not invoke memory extraction before compaction and do not
-require a memory receipt to continue. Memory inference failures cannot block
-compaction or fail a conversation. Agents save useful context explicitly with
-`memories__write` during their work. Existing durable conversation records remain
-available independently of compaction. The old extraction endpoint has no
-production trigger; this implementation does not claim automatic extraction from
-every retained conversation. Saved-note consolidation runs in the background.
+Managed sessions do not invoke memory extraction before compaction, wait for a
+memory receipt, or include capture in their execution/recovery lifecycle. Memory
+failures cannot reject live input, block compaction, or fail a conversation.
+The old internal flush endpoint still has no pre-compaction caller. Existing
+durable conversation records remain independent of optional memory capture.
 
 ## Background consolidation
 
@@ -137,19 +181,38 @@ personalization-cache invalidation failures. Markdown changes invalidate prepare
 copies in the background.
 `DREAMS.md` records bounded outcomes without being fed back into retrieval.
 Model attempts and retry leases are bounded and persist across eviction.
-Extraction permits 48 inference attempts per owner per UTC day. Consolidation
+The older internal extraction endpoint retains its 48-attempt admission limit
+on the same per-owner daily counter. Consolidation
 permits three attempts per owner per UTC day, selects at most eight sources and
-12 KiB per batch, and retains 32 audit receipts with their preimages. Both passes
-limit model output to 2,048 tokens. These are ceilings, not usage targets.
+12 KiB per batch, and retains 32 audit receipts with their preimages. The generative extraction/consolidation model output is limited to 2,048 tokens.
+Jev returns bounded classifications rather than generated notes. These are ceilings, not usage targets.
 
 `memories__status` (and its authenticated HTTP endpoint) exposes semantic backlog,
-consolidation work and receipts, and extraction receipts without invoking a
-model. `NANOCODEX_MEMORY_AUTOMATION=false` disables automatic extraction and
-consolidation while retaining authored Markdown and search. The configured
-Workers AI model is `@cf/meta/llama-3.3-70b-instruct-fp8-fast`; automatic passes
+consolidation work and receipts, and on-message capture attempts/receipts without
+invoking a model. `NANOCODEX_MEMORY_AUTOMATION=false` disables automatic extraction and
+consolidation while retaining authored Markdown and search. Consolidation uses
+`@cf/meta/llama-3.3-70b-instruct-fp8-fast`; capture uses `typesafe/jev`. Automatic passes
 consume Workers AI usage within the enforced per-owner budgets. Existing
 Cloudflare bindings are reused; no local daemon or additional resource is
 required.
+
+## Evaluation
+
+Run `pnpm --filter nanocodex-managed-service run test:memory` for runtime, scope,
+Codex tool contract and personalization checks, and
+`cargo test -p nanocodex-voice-protocol` for transcript provenance. The bounded
+live classifier evaluation uses only synthetic data and the existing development
+Wrangler AI binding:
+
+```sh
+node scripts/memory-capture-eval.mjs NEW_OUTPUT_DIRECTORY
+```
+
+It freezes cases and source hashes before calls, makes at most one request per
+case, records abstentions/failures and never retries an uncertain request. It is
+a small workload check, not a calibrated benchmark or production latency test.
+The [2026-09-24 live results](evals/memory-capture-2026-09-24/REPORT.md) include
+all outcomes, fixture labels and source hashes.
 
 ## References and limits
 

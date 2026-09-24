@@ -3,7 +3,7 @@ import { MarkdownMemoryStore, validateMarkdownMemoryPath } from './markdown-memo
 import { boundedMemoryOperation, type MarkdownMemoryCompletion } from './markdown-memory-ai';
 export type { MarkdownMemoryCompletion } from './markdown-memory-ai';
 
-export type MemoryChangeOrigin = 'direct' | 'precompaction' | 'recalled' | 'consolidation';
+export type MemoryChangeOrigin = 'direct' | 'capture' | 'precompaction' | 'recalled' | 'consolidation';
 export interface ConsolidationOptions {
   complete: MarkdownMemoryCompletion;
   containsSecret: (text: string) => boolean;

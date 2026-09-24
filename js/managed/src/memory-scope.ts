@@ -1,7 +1,9 @@
 import { MarkdownMemoryStore, MarkdownMemoryError } from "./markdown-memory";
 import { MarkdownMemorySemantic } from "./markdown-memory-semantic";
 import { MarkdownMemoryConsolidation } from "./markdown-memory-consolidation";
-import { MarkdownMemoryFlush } from "./markdown-memory-flush";
+import { MarkdownMemoryFlush, type MarkdownMemoryFlushInput } from "./markdown-memory-flush";
+import { MarkdownMemoryCapture } from "./markdown-memory-capture";
+import { createJevMemorySelection } from "./markdown-memory-selection";
 import { createMarkdownMemoryCompletion, type MarkdownMemoryAi } from "./markdown-memory-ai";
 import { scopeMemoryFiles, scopeFileMemories } from "./extension-memory-storage";
 import { PreparedPersonalizationStore } from "./personalization";
@@ -127,7 +129,7 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
   #aiTask?: Promise<void>;
   #markdown?: {
     store: MarkdownMemoryStore; semantic: MarkdownMemorySemantic;
-    consolidation: MarkdownMemoryConsolidation; flush: MarkdownMemoryFlush;
+    consolidation: MarkdownMemoryConsolidation; flush: MarkdownMemoryFlush; capture: MarkdownMemoryCapture;
   };
 
   #markdownServices() {
@@ -141,6 +143,10 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
     });
     return this.#markdown = {
       store, consolidation,
+      capture: new MarkdownMemoryCapture(this.ctx.storage, new MarkdownMemoryFlush(this.ctx.storage, createJevMemorySelection(this.env.AI), {
+        containsSecret: containsLikelySecret, dailyInferenceLimit: 1000,
+        onPersist: (owner, path, revision) => consolidation.noteChange(owner, path, revision, 'capture'),
+      }), (owner, path, revision) => consolidation.noteChange(owner, path, revision, 'capture')),
       semantic: new MarkdownMemorySemantic(this.ctx.storage, organization, this.env.HISTORY_AI_SEARCH),
       flush: new MarkdownMemoryFlush(this.ctx.storage, complete, {
         containsSecret: containsLikelySecret,
@@ -218,9 +224,9 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
           || (assertedTeam.startsWith("personal:") && (!owner || assertedTeam !== `personal:${owner}`)))
           return json({ error: "forbidden" }, { status: 403 });
         const operation = url.pathname.slice("/markdown-memory/".length);
-        if (!["get", "search", "write", "bootstrap", "status", "flush"].includes(operation))
+        if (!["get", "search", "write", "bootstrap", "status", "flush", "capture"].includes(operation))
           return json({ error: "not_found" }, { status: 404 });
-        if ((operation === "write" || operation === "flush") && request.headers.get(MEMORY_MUTATION_ASSERTION) !== "1")
+        if ((operation === "write" || operation === "flush" || operation === "capture") && request.headers.get(MEMORY_MUTATION_ASSERTION) !== "1")
           return json({ error: "memory_read_only" }, { status: 403 });
         const services = this.#markdownServices();
         const input = await parseJsonBody<unknown>(request);
@@ -232,7 +238,35 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
           semantic: services.semantic.status(assertedTeam),
           consolidation: services.consolidation.status(assertedTeam),
           flush: services.flush.status(assertedTeam),
+          capture: services.capture.status(assertedTeam),
         });
+        if (operation === "capture") {
+          // Detached per-message processing. This request acknowledges delivery;
+          // neither the sender nor the response waits for inference or a timer.
+          if (!assertedTeam.startsWith("personal:") || !isRecord(input)
+            || request.headers.get(SUBJECT_ASSERTION) !== `agent:${input.session_id}`)
+            return json({ error: "memory_capture_forbidden" }, { status: 403 });
+          if (input.cancel === true) {
+            if (Object.keys(input).some(key => !["session_id", "boundary_id", "cancel"].includes(key))
+              || typeof input.boundary_id !== "string")
+              return json({ error: "invalid_memory_capture" }, { status: 400 });
+            // Cleanup remains available after automatic capture is disabled.
+            services.capture.cancel(assertedTeam, input.boundary_id);
+            this.ctx.waitUntil(this.#scheduleOptionalMemoryAlarm());
+            return json({ cancelled: true }, { status: 202 });
+          }
+          if (!this.#markdownAutomationEnabled())
+            return json({ error: "memory_automation_unavailable" }, { status: 503 });
+          const task = services.capture.capture(assertedTeam, input as unknown as MarkdownMemoryFlushInput)
+            .catch(error => {
+              if (error instanceof MarkdownMemoryError && error.code === "memory_inference_cancelled") return;
+              console.warn({ type: "memory_scope.capture_failed",
+                reason: error instanceof MarkdownMemoryError && error.code === "memory_inference_budget" ? "daily_budget" : "capture_failed" });
+            })
+            .then(() => this.#scheduleOptionalMemoryAlarm());
+          this.ctx.waitUntil(task);
+          return json({ status: "accepted" }, { status: 202 });
+        }
         if (operation === "flush") {
           // Only the root runtime can attest its own transcript. This operation
           // is absent from public routes and model-visible tools.
@@ -248,7 +282,10 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
           return json({ error: "memory_secret_rejected", message: "memory content was rejected as a likely secret" }, { status: 422 });
         const result = this.ctx.storage.transactionSync(() => {
           const result = services.store.write(assertedTeam, input);
-          if (result.ok) services.consolidation.noteChange(assertedTeam, result.path, result.revision);
+          if (result.ok) {
+            services.capture.cancelActive(assertedTeam);
+            services.consolidation.noteChange(assertedTeam, result.path, result.revision);
+          }
           return result;
         });
         await this.#scheduleOptionalMemoryAlarm();
@@ -347,7 +384,9 @@ export class MemoryScope extends DurableObject<MemoryScopeEnv> {
       else await this.#drainAiOutbox();
       if (this.#organizationId()) {
         const services = this.#markdownServices();
-        if (this.#markdownAutomationEnabled()) await services.consolidation.runDue();
+        if (this.#markdownAutomationEnabled()) {
+          await services.consolidation.runDue();
+        }
         await services.semantic.drain();
       }
     } finally {

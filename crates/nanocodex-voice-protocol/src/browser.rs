@@ -525,14 +525,7 @@ impl BrowserVoiceProtocol {
                 if let Some(delivery) = &mut self.client_delivery {
                     delivery.delegate();
                 }
-                if !self
-                    .transcript
-                    .iter()
-                    .any(|entry| entry.role == "user" && entry.text == input)
-                {
-                    self.transcript
-                        .push(super::TranscriptEntry::new("user", input.clone()));
-                }
+                // The provider's handoff is carried in input, not user speech.
                 update.delegation = Some(BrowserVoiceDelegation {
                     id,
                     bootstrap: false,
@@ -1056,13 +1049,18 @@ fn retains_spoken_prefix(role: &str, streamed: &str, completed: &str) -> bool {
 
 fn truncate_active_transcript(entries: &mut Vec<super::TranscriptEntry>) {
     let mut total_bytes = transcript_entries_bytes(entries);
+    let mut removed = false;
     while total_bytes > MAX_ACTIVE_TRANSCRIPT_BYTES && entries.len() > 1 {
         total_bytes = total_bytes.saturating_sub(transcript_entry_bytes(&entries[0]));
         entries.remove(0);
+        removed = true;
     }
     let Some(entry) = entries.first_mut() else {
         return;
     };
+    if removed && !entry.text.starts_with(TRUNCATED_TRANSCRIPT_PREFIX) {
+        entry.text.insert_str(0, TRUNCATED_TRANSCRIPT_PREFIX);
+    }
     let entry_overhead = entry.role.len() + 3;
     let max_text_bytes = MAX_ACTIVE_TRANSCRIPT_BYTES.saturating_sub(entry_overhead);
     if entry.text.len() <= max_text_bytes {
