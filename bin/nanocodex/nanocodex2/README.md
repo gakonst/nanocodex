@@ -6,6 +6,9 @@ with an SMS code. `NANOCODEX_MANAGED_URL` selects another cluster.
 Running `nanocodex2` opens a new interactive session;
 `nanocodex2 attach AGENT_URL_OR_ID` resumes an existing one with local workspace
 tools.
+The local tool runtime also includes Mercator discovery through
+`https://mercator.sh/mcp` by default. Use `tool_search` to find its free
+read-only discovery tools; paid jobs still require separate authorization.
 
 Image rendering uses terminal geometry and known terminal hints without reading
 keyboard input for capability probes. Recognized Kitty, Ghostty, iTerm2, and

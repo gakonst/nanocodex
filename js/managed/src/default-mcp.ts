@@ -13,6 +13,13 @@ export const DEFAULT_MANAGED_MCP_CATALOG = Object.freeze({
     description: "Tempo network and protocol tools.",
     parallelTools: Object.freeze(["code", "search"]),
   }),
+  // Anonymous MCP discovery, not the separate hosted OAuth/payment endpoint.
+  // No payment credentials or MPP client are configured by default.
+  mercator: Object.freeze({
+    url: "https://mercator.sh/mcp",
+    description: "Discover and quote Mercator API workflows; paid execution needs separate authorization.",
+    parallelTools: Object.freeze(["get_suggested_queries", "get_connection_status", "search_services"]),
+  }),
   cloudflare: Object.freeze({
     url: "https://docs.mcp.cloudflare.com/mcp",
     description: "Search Cloudflare developer documentation.",

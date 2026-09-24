@@ -1330,6 +1330,7 @@ pub(super) struct App {
     pending_link_destination: Option<String>,
     tool_details_expanded: bool,
     fast_mode: bool,
+    mercator: bool,
     model: Model,
     thinking: Thinking,
     model_picker: Option<usize>,
@@ -1379,7 +1380,7 @@ impl App {
             "composer":{"text":self.input,"cursor":self.cursor,"attachments":self.local_images.iter().map(|i| serde_json::json!({"path":i.path,"placeholder":i.placeholder})).collect::<Vec<_>>()},
             "menu":menu,"ui_blocked": self.historical_editor.is_some() || self.cancel_confirmation.is_some(),
             "questions":{"supported":false},
-            "settings":{"model":self.model.as_str(),"effort":self.thinking.to_string(),"fast_mode":self.fast_mode,"model_mutable":self.focus == PaneId::Main && self.can_change_start_settings(),"mutable":self.focus == PaneId::Main}})
+            "settings":{"model":self.model.as_str(),"effort":self.thinking.to_string(),"fast_mode":self.fast_mode,"mercator":self.mercator,"model_mutable":self.focus == PaneId::Main && self.can_change_start_settings(),"mutable":self.focus == PaneId::Main}})
     }
 
     pub(super) fn new(cwd: PathBuf) -> Self {
@@ -1413,6 +1414,7 @@ impl App {
             pending_link_destination: None,
             tool_details_expanded: true,
             fast_mode: false,
+            mercator: false,
             model: Model::default(),
             thinking: Thinking::default(),
             model_picker: None,
@@ -2964,6 +2966,24 @@ impl App {
         if let Some(conversation) = self.conversation_mut(self.focus) {
             conversation.status = status.into();
         }
+    }
+
+    pub(super) const fn mercator(&self) -> bool {
+        self.mercator
+    }
+
+    pub(super) fn mercator_changed(&mut self, enabled: bool) {
+        self.mercator = enabled;
+        self.set_active_status(if enabled {
+            "Mercator enabled"
+        } else {
+            "Mercator disabled"
+        });
+    }
+
+    pub(super) fn mercator_change_failed(&mut self, error: &str) {
+        self.push_active_error(format!("Could not change Mercator: {error}"));
+        self.set_active_status("Mercator unchanged");
     }
 
     pub(super) const fn fast_mode(&self) -> bool {

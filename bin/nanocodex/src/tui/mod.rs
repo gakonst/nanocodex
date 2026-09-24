@@ -195,6 +195,9 @@ enum WorkerCommand {
     SetFastMode {
         enabled: bool,
     },
+    SetMercator {
+        enabled: bool,
+    },
     SetModel {
         model: Model,
     },
@@ -325,6 +328,12 @@ enum WorkerEvent {
         enabled: bool,
     },
     FastModeChangeFailed {
+        error: String,
+    },
+    MercatorChanged {
+        enabled: bool,
+    },
+    MercatorChangeFailed {
         error: String,
     },
     ModelChanged {
@@ -726,6 +735,7 @@ enum Submission {
     Cancel,
     Trace,
     Fast(Option<bool>),
+    Mercator(Option<bool>),
     AutoRoute,
     ModelPicker,
     Model(Model),
@@ -1445,6 +1455,8 @@ fn handle_worker_update(
         }
         WorkerEvent::FastModeChanged { enabled } => app.fast_mode_changed(enabled),
         WorkerEvent::FastModeChangeFailed { error } => app.fast_mode_change_failed(&error),
+        WorkerEvent::MercatorChanged { enabled } => app.mercator_changed(enabled),
+        WorkerEvent::MercatorChangeFailed { error } => app.mercator_change_failed(&error),
         WorkerEvent::ModelChanged { model } => app.model_changed(model),
         WorkerEvent::ModelChangeFailed { error } => app.model_change_failed(&error),
         WorkerEvent::ThinkingChanged { thinking } => app.thinking_changed(thinking),
@@ -1736,6 +1748,7 @@ impl AgentWorker {
             }
             WorkerCommand::SwitchMainBranch { id } => self.switch_main_branch(id),
             WorkerCommand::SetFastMode { enabled } => self.set_fast_mode(enabled).await,
+            WorkerCommand::SetMercator { enabled } => self.set_mercator(enabled).await,
             WorkerCommand::SetModel { model } => self.set_model(model).await,
             WorkerCommand::SetThinking { thinking } => self.set_thinking(thinking).await,
             WorkerCommand::McpLogin { name } => self.mcp_login(name),
@@ -1944,6 +1957,27 @@ impl AgentWorker {
                 }
             }
         }));
+    }
+
+    async fn set_mercator(&mut self, enabled: bool) {
+        let result = match &self.mcp {
+            Some(mcp) => mcp
+                .set_opt_in_enabled("mercator", enabled)
+                .await
+                .map_err(|error| error.to_string())
+                .and_then(|count| {
+                    count.ok_or_else(|| {
+                        "Mercator is controlled by an explicit MCP configuration, not /mercator"
+                            .to_owned()
+                    })
+                }),
+            None => Err("Mercator is unavailable (MCP defaults are disabled)".to_owned()),
+        };
+        let update = match result {
+            Ok(_) => WorkerEvent::MercatorChanged { enabled },
+            Err(error) => WorkerEvent::MercatorChangeFailed { error },
+        };
+        drop(self.updates.send(update));
     }
 
     async fn set_fast_mode(&mut self, enabled: bool) {
@@ -3608,6 +3642,16 @@ fn submit(
                 Err(error) => app.push_active_error(format!("failed to open Jaeger: {error}")),
             }
         }
+        Submission::Mercator(enabled) => {
+            if app.focus != PaneId::Main || !app.can_change_start_settings() {
+                app.push_active_error(
+                    "/mercator can only be changed at the beginning of a new main thread",
+                );
+                return Ok(());
+            }
+            let enabled = enabled.unwrap_or(!app.mercator());
+            send_command(commands, WorkerCommand::SetMercator { enabled })?;
+        }
         Submission::Fast(enabled) => {
             let enabled = enabled.unwrap_or(!app.fast_mode());
             send_command(commands, WorkerCommand::SetFastMode { enabled })?;
@@ -3751,6 +3795,16 @@ fn classify_submission(input: impl Into<SubmittedPrompt>) -> Submission {
             _ => Submission::InvalidCommand(
                 "Usage: /voice [on|off|stop|mute|list|<voice>]".to_owned(),
             ),
+        };
+    }
+    if trimmed == "/mercator" {
+        return Submission::Mercator(None);
+    }
+    if let Some(argument) = trimmed.strip_prefix("/mercator ") {
+        return match argument.trim() {
+            "on" => Submission::Mercator(Some(true)),
+            "off" => Submission::Mercator(Some(false)),
+            _ => Submission::InvalidCommand("Usage: /mercator [on|off]".to_owned()),
         };
     }
     if trimmed == "/fast" {
@@ -4173,6 +4227,19 @@ mod tests {
                 "Unknown voice. Use /voice list to see Codex voices.".to_owned()
             )
         );
+        assert_eq!(classify_submission("/mercator"), Submission::Mercator(None));
+        assert_eq!(
+            classify_submission(" /mercator on "),
+            Submission::Mercator(Some(true))
+        );
+        assert_eq!(
+            classify_submission("/mercator off"),
+            Submission::Mercator(Some(false))
+        );
+        assert_eq!(
+            classify_submission("/mercator invalid"),
+            Submission::InvalidCommand("Usage: /mercator [on|off]".to_owned())
+        );
         assert_eq!(classify_submission("/fast"), Submission::Fast(None));
         assert_eq!(
             classify_submission(" /fast on "),
@@ -4255,6 +4322,29 @@ mod tests {
             classify_submission("/autorouter"),
             Submission::Prompt("/autorouter".into())
         );
+    }
+
+    #[test]
+    fn mercator_only_dispatches_before_first_prompt() {
+        for started in [false, true] {
+            let (commands, mut worker) = mpsc::unbounded_channel();
+            let mut app = App::new("/workspace".into());
+            if started {
+                app.queue_prompt(PaneId::Main, "existing message".into());
+            }
+            app.input = "/mercator on".to_owned();
+            app.cursor = app.input.len();
+            submit(&mut app, "local-thread", &commands, SubmitIntent::Immediate).unwrap();
+            assert_eq!(app.mercator(), false);
+            if started {
+                assert!(worker.try_recv().is_err());
+            } else {
+                assert!(matches!(
+                    worker.try_recv(),
+                    Ok(WorkerCommand::SetMercator { enabled: true })
+                ));
+            }
+        }
     }
 
     #[test]

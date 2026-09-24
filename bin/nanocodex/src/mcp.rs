@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 
 use crate::login::{APP_ID, APP_ORIGIN, ScopedManagedCredential};
 
-const DEFAULT_MCP_SERVERS: [(&str, &str, &str); 5] = [
+const DEFAULT_MCP_SERVERS: [(&str, &str, &str); 6] = [
     (
         "openaiDeveloperDocs",
         "https://developers.openai.com/mcp",
@@ -30,6 +30,11 @@ const DEFAULT_MCP_SERVERS: [(&str, &str, &str); 5] = [
         "tempo",
         "https://mcp.tempo.xyz",
         "Tempo network and protocol tools.",
+    ),
+    (
+        "mercator",
+        MERCATOR_MCP_URL,
+        "Discovers and composes Tempo services and MPP flows; paid jobs require explicit payment authority.",
     ),
     (
         "cloudflare",
@@ -47,13 +52,17 @@ const DEFAULT_MCP_SERVERS: [(&str, &str, &str); 5] = [
         "Search Vocs developer documentation.",
     ),
 ];
-pub(crate) const MERCATOR_MCP_URL: &str = "https://mercator.tempo.xyz/mcp";
-const MERCATOR_MCP_DESCRIPTION: &str = "Discovers and composes paid Tempo services and MPP flows.";
+pub(crate) const MERCATOR_MCP_URL: &str = "https://mercator.sh/mcp";
 
 fn default_parallel_tools(name: &str) -> &'static [&'static str] {
     match name {
         "openaiDeveloperDocs" => &["fetch_openai_doc", "search_openai_docs"],
         "tempo" => &["code", "search"],
+        "mercator" => &[
+            "get_suggested_queries",
+            "get_connection_status",
+            "search_services",
+        ],
         "cloudflare" => &["search_cloudflare_documentation"],
         "viem" | "vocs" => &["list_pages", "read_page", "search_docs", "search_source"],
         _ => &[],
@@ -65,7 +74,7 @@ pub(crate) struct McpArgs {
     #[arg(skip)]
     disabled: bool,
 
-    /// Load the standard docs MCPs, plus paid Mercator in Tempo provider mode.
+    /// Load the public MCP catalog (Mercator is opt-in in the native interactive TUI). Paid calls require separate authority.
     #[arg(
         long,
         env = "NANOCODEX_MCP_DEFAULTS",
@@ -221,11 +230,22 @@ impl McpArgs {
         self.header_env.clear();
     }
 
+    #[cfg(test)]
     pub(crate) fn build(
         self,
         codex_home: &Path,
         tempo: Option<&crate::mpp::MppAdapter>,
         managed: Option<&ScopedManagedCredential>,
+    ) -> Result<Option<ConfiguredMcp>> {
+        self.build_for_tui(codex_home, tempo, managed, false)
+    }
+
+    pub(crate) fn build_for_tui(
+        self,
+        codex_home: &Path,
+        tempo: Option<&crate::mpp::MppAdapter>,
+        managed: Option<&ScopedManagedCredential>,
+        native_tui: bool,
     ) -> Result<Option<ConfiguredMcp>> {
         if self.mcp_startup_timeout == 0 || self.mcp_tool_timeout == 0 {
             bail!("MCP timeouts must be greater than zero");
@@ -253,10 +273,14 @@ impl McpArgs {
                 }
             }
         }
+        let mut opt_in_mercator = false;
         if self.mcp_defaults {
             for (name, url, description) in DEFAULT_MCP_SERVERS {
                 if codex_server_names.contains(name) {
                     continue;
+                }
+                if native_tui && name == "mercator" && !servers.contains_key(name) {
+                    opt_in_mercator = true;
                 }
                 servers
                     .entry(name.to_owned())
@@ -278,26 +302,6 @@ impl McpArgs {
                             .iter()
                             .map(|tool| (*tool).to_owned())
                             .collect(),
-                    });
-            }
-            if tempo.is_some() && !codex_server_names.contains("mercator") {
-                servers
-                    .entry("mercator".to_owned())
-                    .or_insert_with(|| ServerConfig {
-                        transport: Transport::Http(MERCATOR_MCP_URL.to_owned()),
-                        description: Some(MERCATOR_MCP_DESCRIPTION.to_owned()),
-                        arguments: Vec::new(),
-                        environment: BTreeMap::new(),
-                        cwd: None,
-                        bearer_env: None,
-                        bearer: None,
-                        headers: BTreeMap::new(),
-                        header_env: Vec::new(),
-                        startup_timeout: None,
-                        tool_timeout: None,
-                        enabled_tools: None,
-                        disabled_tools: Vec::new(),
-                        parallel_tools: Vec::new(),
                     });
             }
         }
@@ -348,6 +352,7 @@ impl McpArgs {
             tool_timeout,
             oauth_store,
             tempo,
+            opt_in_mercator,
         )?))
     }
 }
@@ -447,8 +452,12 @@ fn build_mcp(
     tool_timeout: Duration,
     oauth_store: Option<Arc<CodexOAuthStore>>,
     tempo: Option<&crate::mpp::MppAdapter>,
+    opt_in_mercator: bool,
 ) -> Result<ConfiguredMcp> {
     let mut builder = Mcp::builder();
+    if opt_in_mercator {
+        builder = builder.initially_hidden("mercator");
+    }
     if let Some(store) = oauth_store {
         builder = builder.oauth_store(store);
     }
@@ -954,6 +963,60 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn native_tui_gates_only_default_mercator_not_explicit_overrides() {
+        let codex_home = tempfile::tempdir().unwrap();
+        let mcp = args()
+            .build_for_tui(codex_home.path(), None, None, true)
+            .unwrap()
+            .unwrap();
+        assert!(
+            mcp.handle
+                .set_opt_in_enabled("mercator", false)
+                .await
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            mcp.handle
+                .set_opt_in_enabled("tempo", false)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let mut explicit = args();
+        explicit.http.push(NamedValue {
+            name: "mercator".to_owned(),
+            value: "https://example.test/mercator".to_owned(),
+        });
+        let configured = explicit
+            .build_for_tui(codex_home.path(), None, None, true)
+            .unwrap()
+            .unwrap();
+        assert!(
+            configured
+                .handle
+                .set_opt_in_enabled("mercator", false)
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        let ordinary = args()
+            .build(codex_home.path(), None, None)
+            .unwrap()
+            .unwrap();
+        assert!(
+            ordinary
+                .handle
+                .set_opt_in_enabled("mercator", false)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
     #[test]
     fn managed_mcp_config_uses_exact_proxy_url_and_scoped_headers() {
         let origin = reqwest::Url::parse("https://connect.example/").unwrap();
@@ -1093,6 +1156,7 @@ enabled = false
         assert!(encoded.contains("centaur-paradigm"));
         assert!(encoded.contains("local"));
         assert!(encoded.contains("openaiDeveloperDocs"));
+        assert!(encoded.contains("mercator"));
         assert!(encoded.contains("cloudflare"));
         assert!(encoded.contains("viem"));
         assert!(encoded.contains("vocs"));
@@ -1234,6 +1298,7 @@ tool_timeout_sec = 9.5
             Duration::from_mins(5),
             Some(Arc::new(CodexOAuthStore::new(codex_home))),
             None,
+            false,
         )
         .unwrap();
 
@@ -1281,6 +1346,7 @@ tool_timeout_sec = 9.5
             Duration::from_mins(5),
             Some(Arc::new(CodexOAuthStore::new(codex_home))),
             None,
+            false,
         )
         .unwrap();
 

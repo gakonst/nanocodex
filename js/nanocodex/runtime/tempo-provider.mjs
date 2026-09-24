@@ -1,6 +1,6 @@
 const tempoMcp = Symbol.for("nanocodex.tempo.mcp");
 
-export const DEFAULT_MERCATOR_MCP_URL = "https://mercator.tempo.xyz/mcp";
+export const DEFAULT_MERCATOR_MCP_URL = "https://mercator.sh/mcp";
 
 const defaultMercator = (payment) => ({
   url: DEFAULT_MERCATOR_MCP_URL,
