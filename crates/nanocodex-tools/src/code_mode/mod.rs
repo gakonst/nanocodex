@@ -281,11 +281,6 @@ struct HostFailure {
 }
 
 impl CodeModeRuntime {
-    #[cfg(test)]
-    pub(super) fn new(workspace: PathBuf) -> Self {
-        Self::new_with_turn(workspace, Arc::new(AtomicU64::new(0)))
-    }
-
     pub(super) fn new_with_turn(_workspace: PathBuf, current_turn: Arc<AtomicU64>) -> Self {
         Self {
             admission: Arc::new(Mutex::new(())),

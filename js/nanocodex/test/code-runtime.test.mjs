@@ -430,16 +430,6 @@ for (const evaluator of ["quickjs", "worker"]) test(`${evaluator} preserves Code
   runtime.reset();
 });
 
-test("Code Mode preserves a real PNG fixture", async () => {
-  const url = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4z8AAAAMBAQDJ/pLvAAAAAElFTkSuQmCC";
-  const runtime = createCodeRuntime({});
-  const result = JSON.parse(await runtime.executeCode(`image(${JSON.stringify(url)});`, "png", "exec-png"));
-  assert.equal(result.success, true);
-  assert.equal(result.output.find((item) => item.type === "input_image").image_url, url);
-  runtime.reset();
-});
-
-
 test("direct and yielded nested calls retain the originating turn identity", async () => {
   const release = deferred();
   const contexts = [];

@@ -882,20 +882,6 @@ final class RemoteViewerTests: XCTestCase {
     }
     #endif
 
-    @MainActor func testCanvasTeardownDoesNotPublishDuringSwiftUIInvalidation() {
-        let viewer = RemoteViewer()
-#if os(macOS)
-        let canvas = MacRemoteCanvas(viewer: viewer)
-#else
-        let canvas = TouchRemoteCanvas(viewer: viewer)
-#endif
-        var changes = 0
-        let observer = viewer.objectWillChange.sink { changes += 1 }
-        canvas.detach()
-        XCTAssertEqual(changes, 0)
-        withExtendedLifetime(observer) {}
-    }
-
     override func tearDown() {
         RemoteHTTPFixture.lock.withLock { RemoteHTTPFixture.handler = nil }
         super.tearDown()

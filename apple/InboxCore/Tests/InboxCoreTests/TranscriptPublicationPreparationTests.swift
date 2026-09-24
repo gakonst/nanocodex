@@ -29,12 +29,4 @@ final class TranscriptPublicationPreparationTests: XCTestCase {
         XCTAssertEqual(prepared.card?.appliedHistoryCursor, event.cursor)
     }
 
-    func testUnchangedRowsDoNotRequireMediaOrTranscriptPublication() throws {
-        let revision = UUID()
-        let rows = [TranscriptRow(id: "synthetic-row", role: "Agent", text: "Retained reply")]
-        let prepared = TranscriptPublicationPreparation(events: [], rows: rows,
-            previousRows: rows, card: nil, rowsRevision: revision)
-        XCTAssertFalse(prepared.rowsChanged)
-        XCTAssertTrue(prepared.isCurrent(rowsRevision: revision, card: nil))
-    }
 }

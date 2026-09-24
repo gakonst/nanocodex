@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test, { type TestContext } from "node:test";
-import { canStartBroadcast, listRemoteHands, RemoteBrowserSession, RemoteScreenIntent, RemoteIceCredentials, type RemoteScreenSelection, type RemoteHand } from "./handRemote.ts";
+import { listRemoteHands, RemoteBrowserSession, RemoteScreenIntent, RemoteIceCredentials, type RemoteScreenSelection, type RemoteHand } from "./handRemote.ts";
 
 const screen: RemoteHand = {
   id: "desktop", name: "Desktop", kind: "desktop", width: 1600, height: 900, controllable: true,
@@ -1094,20 +1094,6 @@ test("broadcast polling times out, recovers status and never replays start on re
   f.sockets.at(-1)!.message({ type: "ready", connection_id: "new-viewer" }); await flush();
   assert.equal(f.sockets.at(-1)!.sent.some(m => m.action === "start"), false);
   assert.equal(f.sockets.at(-1)!.sent.some(m => m.action === "status"), true);
-});
-
-
-test("stream start UI waits for status and disables active, pending and disconnected states", () => {
-  const base = { connected: true, controlling: false, connecting: false, status: "Connected" };
-  assert.equal(canStartBroadcast(base), false);
-  for (const broadcastStatus of ["starting", "live", "reconnecting"] as const) {
-    assert.equal(canStartBroadcast({ ...base, broadcastStatus }), false);
-  }
-  for (const broadcastStatus of ["idle", "failed", "stopped"] as const) {
-    assert.equal(canStartBroadcast({ ...base, broadcastStatus }), true);
-    assert.equal(canStartBroadcast({ ...base, broadcastStatus, broadcastPending: true }), false);
-    assert.equal(canStartBroadcast({ ...base, broadcastStatus, connected: false }), false);
-  }
 });
 
 

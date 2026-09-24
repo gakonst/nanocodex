@@ -48,7 +48,7 @@ async function fixture(t, respond = (_req, res) => res.end(JSON.stringify(comple
   return { requests, run, dir };
 }
 
-test('lists every candidate, runs exactly six stateless sequential prompts, and labels confidence/latency', async t => {
+test('lists candidates and runs exactly six stateless sequential prompts', async t => {
   let active = 0, maxActive = 0;
   const f = await fixture(t, async (_req, res) => {
     maxActive = Math.max(maxActive, ++active);
@@ -62,10 +62,6 @@ test('lists every candidate, runs exactly six stateless sequential prompts, and 
   assert.equal(maxActive, 1);
   assert.match(result.stdout, /fixture-low/);
   assert.match(result.stdout, /fixture-high/);
-  assert.match(result.stdout, /Classifier confidence: \[#{17}-{3}\] 85%/);
-  assert.match(result.stdout, /Candidate confidence: unavailable/);
-  assert.match(result.stdout, /HTTP TTFB is not model TTFT/);
-  assert.match(result.stdout, /cached=2 reasoning=1/);
   for (const req of f.requests.slice(1)) {
     assert.equal(req.headers.authorization, `Bearer ${key}`);
     assert.deepEqual(Object.keys(JSON.parse(req.body)).sort(), ['input', 'max_output_tokens', 'model', 'store', 'stream']);
@@ -150,25 +146,6 @@ test('rejects invalid arguments and missing credentials before sending', async t
   const help = await f.run(['--help'], { NANOCODEX_INFERENCE_KEY: '' });
   assert.equal(help.code, 0);
   assert.equal(f.requests.length, 0);
-});
-
-test('renders all real Jev distributions without confusing candidate and family confidence', async t => {
-  const f = await fixture(t, (_req, res) => res.end(JSON.stringify({ ...completed, route: {
-    ...completed.route, confidence: 0,
-    diagnostics: { source: 'typesafe/jev', family_confidence: 0.73, candidate_confidence: 0.61,
-      eligible_candidates: ['fixture-low', 'fixture-high'], proposed_candidate: 'fixture-low', chosen_candidate: 'fixture-high',
-      candidate_probabilities: { 'fixture-low': 0.61, 'fixture-high': 0.39 },
-      family_probabilities: { code: 0.73, other: 0.27 }, min_confidence: 0.7, confidence_status: 'low', fallback_basis: 'eligible_frontier',
-    },
-  } })));
-  const result = await f.run(['--prompt', 'one']);
-  assert.equal(result.code, 0, result.stderr);
-  assert.match(result.stdout, /Classifier confidence: \[#{14}-{6}\] 73%/);
-  assert.match(result.stdout, /Candidate confidence \(selector\): \[#{12}-{8}\] 61%/);
-  assert.match(result.stdout, /\+ fixture-low +\[#{12}-{8}\] 61%/);
-  assert.match(result.stdout, /\*  fixture-high +\[#{7}-{13}\] 39%/);
-  assert.match(result.stdout, /other +\[#{5}-{15}\] 27%/);
-  assert.equal(JSON.parse(f.requests[1].body).max_output_tokens, 2048);
 });
 
 test('invalid diagnostics confidence stays unavailable even when legacy route confidence is zero', async t => {

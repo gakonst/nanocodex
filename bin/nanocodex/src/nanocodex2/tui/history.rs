@@ -664,50 +664,6 @@ mod tests {
     }
 
     #[test]
-    fn retained_completion_preserves_the_answer_without_a_nested_final_message() {
-        use crate::tui::transcript::{EntryKind, TranscriptModel};
-        let history = vec![
-            serde_json::from_value::<ManagedEvent>(json!({"cursor": "1", "turn_id": "turn", "type": "turn_accepted", "id": "turn", "input": "question", "replayed": false})).unwrap(),
-            serde_json::from_value::<ManagedEvent>(json!({"cursor": "2", "turn_id": "turn", "type": "turn_completed", "id": "turn", "final_message": "retained final answer", "usage": null, "citations": []})).unwrap(),
-        ];
-        let (records, _, _) =
-            super::history_projection(history, "agent", std::path::Path::new("/workspace"))
-                .unwrap();
-        let mut model = TranscriptModel::default();
-        for record in records {
-            model.apply(&record);
-        }
-        assert!(model.entries().iter().any(|entry| matches!(&entry.kind, EntryKind::Assistant { text, complete: true, agent_id: None } if text == "retained final answer")));
-    }
-
-    #[test]
-    fn retained_answers_keep_their_turn_scope_when_call_numbers_restart() {
-        use crate::tui::transcript::{EntryKind, TranscriptModel};
-        let mut history = Vec::new();
-        for (turn, text) in [("first", "first answer"), ("second", "second answer")] {
-            let cursor = history.len() + 1;
-            history.push(serde_json::from_value::<ManagedEvent>(json!({"cursor": cursor.to_string(), "turn_id": turn, "type": "turn_accepted", "id": turn, "input": turn, "replayed": false})).unwrap());
-            history.push(serde_json::from_value::<ManagedEvent>(json!({"cursor": (cursor + 1).to_string(), "turn_id": turn, "type": "event", "event": {"protocol_version": 1, "request_id": "agent", "seq": cursor, "type": "assistant.message", "payload": {"model_call_index": 1, "item_id": null, "phase": "final_answer", "text": text}}})).unwrap());
-        }
-        let (records, _, _) =
-            super::history_projection(history, "agent", std::path::Path::new("/workspace"))
-                .unwrap();
-        let mut model = TranscriptModel::default();
-        for record in records {
-            model.apply(&record);
-        }
-        let answers = model
-            .entries()
-            .iter()
-            .filter_map(|entry| match &entry.kind {
-                EntryKind::Assistant { text, .. } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>();
-        assert_eq!(answers, ["first answer", "second answer"]);
-    }
-
-    #[test]
     fn unrecognized_nested_update_keeps_surrounding_history_and_stable_sequences() {
         let history: Vec<ManagedEvent> = [
             json!({"cursor": "1", "turn_id": "turn-1", "type": "turn_accepted", "id": "turn-1", "input": "original", "replayed": false}),

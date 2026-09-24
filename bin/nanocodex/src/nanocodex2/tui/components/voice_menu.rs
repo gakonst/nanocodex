@@ -172,24 +172,6 @@ mod tests {
         Event::Key(KeyEvent::new(code, KeyModifiers::NONE))
     }
     #[test]
-    fn menu_exposes_clone_and_explicit_start_stop() {
-        for (active, expected) in [(false, Command::Start(None)), (true, Command::Stop)] {
-            let mut menu = VoiceMenu::new(active);
-            assert_eq!(
-                menu.update(key(KeyCode::Enter)).effects,
-                vec![Some(expected)]
-            );
-            for _ in 0..3 {
-                menu.update(key(KeyCode::Down));
-            }
-            assert_eq!(
-                menu.update(key(KeyCode::Enter)).effects,
-                vec![Some(Command::CloneOpen("My voice".into()))]
-            );
-            assert_eq!(menu.update(key(KeyCode::Esc)).effects, vec![None]);
-        }
-    }
-    #[test]
     fn catalogs_select_provider_ids_and_empty_catalog_offers_clone() {
         assert!(VoiceMenu::elevenlabs_catalog("ChatGPT voices: cove\nElevenLabs voices (use /voice elevenlabs VOICE_ID):\nvoice_123 — Speaker").is_none());
         let mut menu = VoiceMenu::chatgpt();

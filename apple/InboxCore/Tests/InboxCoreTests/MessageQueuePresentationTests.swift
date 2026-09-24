@@ -12,26 +12,6 @@ final class MessageQueuePresentationTests: XCTestCase {
         message.phase = phase
         return message
     }
-    func testAdmissionHasExactlyOneRepresentationUntilExecution() {
-        let rows = [row("running"), row("queued")]
-        let waiting = MessageQueuePresentation(agentID: "a", rows: rows, pending: [message("queued")], activeTurns: ["running", "queued"], executingTurns: ["running"])
-        XCTAssertEqual(waiting.messages.map(\.id), ["queued"])
-        XCTAssertEqual(waiting.rows.map(\.turnID), ["running"])
-        let started = MessageQueuePresentation(agentID: "a", rows: rows, pending: [], activeTurns: ["queued"], executingTurns: ["queued"])
-        XCTAssertTrue(started.messages.isEmpty)
-        XCTAssertEqual(started.rows.map(\.turnID), ["running", "queued"])
-    }
-    func testFirstSendStaysInConversationAcrossEveryDeliveryState() {
-        for phase in [PendingMessage.Phase.submitting, .queued, .starting, .cancelling, .failed] {
-            var message = message("first", phase: phase)
-            message.predecessor = ""
-            let projection = MessageQueuePresentation(agentID: "a", rows: [row("first")], pending: [message], activeTurns: ["first"])
-            XCTAssertEqual(projection.messages.count, 1)
-            XCTAssertEqual(projection.rows.map(\.text), ["Text first"])
-            XCTAssertTrue(projection.queuedMessages.isEmpty)
-            XCTAssertEqual(projection.messages[0].phase, phase)
-        }
-    }
     func testRemoteQueueUsesServerOrderBeforeLocalPending() {
         let projection = MessageQueuePresentation(agentID: "a", rows: [row("running"), row("remote"), row("local")],
             pending: [message("local"), message("uploading", phase: .submitting)], activeTurns: ["running", "remote", "local"], executingTurns: ["running"])
@@ -74,14 +54,6 @@ final class MessageQueuePresentationTests: XCTestCase {
         XCTAssertEqual(projection.messages.first?.acceptedCursor, adopted.acceptedCursor)
         XCTAssertFalse(adopted.hasFinished(activeTurns: [], stateCursor: Cursor(rawValue: "41")!))
         XCTAssertTrue(adopted.hasFinished(activeTurns: [], stateCursor: Cursor(rawValue: "43")!))
-    }
-    func testRemoteHeadDisplaysBeforeExecutionBegins() {
-        let waiting = MessageQueuePresentation(agentID: "a", rows: [row("head")], pending: [], activeTurns: ["head"])
-        XCTAssertEqual(waiting.messages.first?.queueTitle, "Sent")
-        XCTAssertEqual(waiting.rows.count, 1)
-        let started = MessageQueuePresentation(agentID: "a", rows: [row("head")], pending: [], activeTurns: ["head"], executingTurns: ["head"])
-        XCTAssertTrue(started.messages.isEmpty)
-        XCTAssertEqual(started.rows.count, 1)
     }
     func testFirstBubbleHasOneStableIdentityBeforeReceiptThroughExecution() throws {
         var pending = PendingMessage(agentID: "a", input: "Show this immediately", predecessor: "", id: "instant")

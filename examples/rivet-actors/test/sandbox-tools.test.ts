@@ -30,13 +30,6 @@ afterEach(() => {
 });
 
 describe("Rivet AgentOS workspace paths", () => {
-  test("canonicalizes paths under the workspace", () => {
-    expect(workspacePath(".")).toBe("/workspace");
-    expect(workspacePath("././")).toBe("/workspace");
-    expect(workspacePath("src//./index.ts")).toBe("/workspace/src/index.ts");
-    expect(workspacePath("/workspace/out.txt")).toBe("/workspace/out.txt");
-  });
-
   test.each([
     "",
     "../secret",

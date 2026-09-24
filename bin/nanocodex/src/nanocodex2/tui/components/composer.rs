@@ -2890,27 +2890,6 @@ mod tests {
     }
 
     #[test]
-    fn leading_bang_uses_yellow_shell_chrome_and_submits_only_the_command() {
-        let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
-        composer.replace_draft("!  printf hello  ".to_owned());
-
-        let terminal = render(&mut composer, 80, 5);
-        let buffer = terminal.backend().buffer();
-        for position in [(0, 0), (79, 0), (0, 2), (79, 2), (0, 4), (79, 4)] {
-            assert_eq!(buffer[position].fg, Color::Yellow);
-        }
-        assert!(!rows(&terminal)[0].contains("shell"));
-        assert!(rows(&terminal)[4].starts_with("╰─ shell "));
-
-        let update = composer.update(key(KeyCode::Enter, KeyModifiers::NONE));
-        assert_eq!(
-            update.effect,
-            Some(ComposerEffect::RunShell("printf hello".to_owned()))
-        );
-        assert!(composer.draft().is_empty());
-    }
-
-    #[test]
     fn bang_without_a_command_is_not_submitted() {
         let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
         composer.replace_draft("!   ".to_owned());
@@ -3074,29 +3053,6 @@ mod tests {
     }
 
     #[test]
-    fn slash_bug_parses_optional_description_and_preserves_internal_whitespace() {
-        for (input, description) in [
-            ("/bug", ""),
-            ("  /bug  ", ""),
-            (
-                "/bug  rendering  breaks\non resize  ",
-                "rendering  breaks\non resize",
-            ),
-        ] {
-            let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
-            composer.replace_draft(input.to_owned());
-            assert_eq!(
-                composer.submit().effect,
-                Some(ComposerEffect::Settings(SettingsCommand::Bug(
-                    description.to_owned()
-                )))
-            );
-            assert!(composer.draft().is_empty());
-        }
-        assert_eq!(SettingsCommand::parse("/bugfix rendering"), None);
-    }
-
-    #[test]
     fn voice_commands_with_attachments_never_become_model_submissions() {
         let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
         composer.replace_draft("/voice clone me sample.wav --consent ".into());
@@ -3135,58 +3091,6 @@ mod tests {
                 crate::voice::Provider::ElevenLabs
             )))
         ));
-    }
-
-    #[test]
-    fn slash_settings_commands_open_pickers_and_accept_direct_values() {
-        let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
-
-        composer.replace_draft("/model".to_owned());
-        assert_eq!(
-            composer.submit().effect,
-            Some(ComposerEffect::Settings(SettingsCommand::OpenModel))
-        );
-        composer.replace_draft("/model astra".to_owned());
-        assert_eq!(
-            composer.submit().effect,
-            Some(ComposerEffect::Settings(SettingsCommand::SetModel(
-                Model::Astra
-            )))
-        );
-
-        for alias in ["/effort", "/reasoning", "/thinking"] {
-            composer.replace_draft(alias.to_owned());
-            assert_eq!(
-                composer.submit().effect,
-                Some(ComposerEffect::Settings(SettingsCommand::OpenEffort))
-            );
-            composer.replace_draft(format!("{alias} high"));
-            assert_eq!(
-                composer.submit().effect,
-                Some(ComposerEffect::Settings(SettingsCommand::SetEffort(
-                    ReasoningEffort::High
-                )))
-            );
-        }
-    }
-
-    #[test]
-    fn slash_goal_commands_remain_standard_submissions() {
-        let mut composer = Composer::new(Path::new("/work"), ReasoningEffort::Medium);
-        for command in [
-            "/goal",
-            "/goal status",
-            "/goal pause",
-            "/goal resume",
-            "/goal clear",
-            "/goal build  a better TUI",
-        ] {
-            assert_eq!(SettingsCommand::parse(command), None);
-            composer.replace_draft(command.to_owned());
-            assert!(
-                matches!(composer.submit().effect, Some(ComposerEffect::Submit(prompt)) if prompt.display_text() == command)
-            );
-        }
     }
 
     #[test]

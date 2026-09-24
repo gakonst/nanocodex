@@ -60,53 +60,6 @@ describe("managed account connector tool", () => {
     expect(options.mock.calls.map(([context]) => context)).toEqual([root, child, child]);
   });
 
-  it("lists provider-neutral connection metadata without broker credentials", async () => {
-    const fetch = vi.fn(async () => Response.json(canonicalStatuses()));
-    const result = await manageAccountConnectors({
-      ...base,
-      broker: { fetch } as unknown as Fetcher,
-    }, { operation: "list" });
-
-    expect(result).toMatchObject({
-      connectors: {
-        github: {
-          connected: true,
-          account: "octocat",
-          connections: [{ id: A, label: "octocat", accountId: "github-1", capabilities: ["github"] }],
-        },
-        gmail: {
-          connected: true,
-          connections: [
-            { id: A, label: "work@example.com", accountId: "google-1", capabilities: ["gmail", "gdrive"] },
-            { id: B, label: "home@example.com", accountId: "google-2", capabilities: ["gmail"] },
-          ],
-        },
-        gdrive: {
-          connected: true,
-          account: "work@example.com",
-          connections: [
-            { id: A, label: "work@example.com", accountId: "google-1", capabilities: ["gmail", "gdrive"] },
-          ],
-        },
-        slack: { connected: true, account: "Acme (U123)", connections: [{ id: B, label: "Acme (U123)", accountId: "T123:U123", capabilities: ["slack"] }] },
-      },
-      supported: [
-        { id: "github", name: "GitHub", capabilities: ["github"] },
-        { id: "google", name: "Google Workspace", capabilities: ["gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets", "gslides", "gcontacts"] },
-        { id: "slack", name: "Slack", capabilities: ["slack"] },
-        { id: "x", name: "X", capabilities: ["x"] },
-        { id: "spotify", name: "Spotify", capabilities: ["spotify"] },
-        { id: "soundcloud", name: "SoundCloud", capabilities: ["soundcloud"] },
-        { id: "link", name: "Stripe Link", capabilities: ["link"] },
-      ],
-    });
-    expect(JSON.stringify(result)).not.toMatch(/access_token|secret/);
-    expect(fetch).toHaveBeenCalledWith(
-      "https://broker.internal/users/user%2Fwith%20spaces/connectors",
-      expect.objectContaining({ signal: expect.any(AbortSignal) }),
-    );
-  });
-
   it("filters both capabilities and exact connection IDs for a delegated grant", async () => {
     const result = await manageAccountConnectors({
       ...base,

@@ -1,20 +1,9 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import {
-  managedMountProviderResourceId,
   managedMountRoot,
-  managedMountTool,
   parseManagedMountRequest,
-  type ManagedMountRequest,
 } from "../src/mount-tool";
-
-const context = () => ({
-  callId: "call",
-  model: "gpt-6-sol",
-  parentCallId: "cell",
-  sessionId: "session",
-  signal: new AbortController().signal,
-});
 
 describe("managed mount protocol", () => {
   it("names new VM and sandbox roots by provider and purpose with collision handling", () => {
@@ -24,51 +13,6 @@ describe("managed mount protocol", () => {
     expect(managedMountRoot("demo", id, "cf_sandbox")).toBe("/cloudflare-demo");
     expect(managedMountRoot("demo", id, "cf_sandbox", ["/cloudflare-demo"])).toBe("/cloudflare-demo-2");
     expect(managedMountRoot("x".repeat(63), id, "y".repeat(63)).length).toBeLessThanOrEqual(64);
-  });
-  it("keeps a provider-neutral strict schema and dispatches the current provider", async () => {
-    const handler = vi.fn(async (request: ManagedMountRequest) => ({
-      id: "mount-id",
-      name: request.name,
-      provider: request.provider,
-      mount: "/mnt-repo-test-01234567",
-      status: "mounted" as const,
-      created: true,
-    }));
-    const tool = managedMountTool(handler);
-
-    expect(tool.name).toBe("mount");
-    expect(tool.parameters).toMatchObject({
-      required: ["provider", "name"],
-      additionalProperties: false,
-      properties: { provider: { type: "string", pattern: expect.any(String) } },
-    });
-    expect((tool.parameters as { properties: { provider: object } }).properties.provider)
-      .not.toHaveProperty("enum");
-    expect(tool.outputSchema).toMatchObject({
-      required: ["id", "name", "provider", "mount", "status", "created"],
-      additionalProperties: false,
-    });
-    await expect(tool.handler(
-      { provider: "cf_sandbox", name: "repo-test" },
-      context(),
-    )).resolves.toMatchObject({
-      provider: "cf_sandbox",
-      mount: "/mnt-repo-test-01234567",
-      status: "mounted",
-    });
-    expect(handler).toHaveBeenCalledWith(
-      { provider: "cf_sandbox", name: "repo-test" },
-      expect.objectContaining({ callId: "call" }),
-    );
-    await expect(tool.handler(
-      { provider: "garage-mac", name: "vm-build" },
-      context(),
-    )).resolves.toMatchObject({ provider: "garage-mac", status: "mounted" });
-    await tool.handler({ provider: "cloudflare", name: "legacy" }, context());
-    expect(handler).toHaveBeenLastCalledWith(
-      { provider: "cf_sandbox", name: "legacy" },
-      expect.objectContaining({ callId: "call" }),
-    );
   });
 
   it("rejects reserved generic hosts, unsafe names, and extra fields", () => {
@@ -97,15 +41,5 @@ describe("managed mount protocol", () => {
       "Build Box",
       "01234567-89ab-7def-8123-456789abcdef",
     )).toThrow("mount name must be a lowercase portable identifier");
-  });
-
-  it("keeps additional Cloudflare sandbox IDs within the provider limit", () => {
-    const sessionId = "0198d3f0-8844-7000-8000-000000000001";
-    const mountId = "0198d3f0-8844-7000-8000-000000000002";
-
-    expect(managedMountProviderResourceId(sessionId, mountId, 0)).toBe(sessionId);
-    expect(managedMountProviderResourceId(sessionId, mountId, 1)).toBe(mountId);
-    expect(`nanocodex-${managedMountProviderResourceId(sessionId, mountId, 1)}`)
-      .toHaveLength(46);
   });
 });

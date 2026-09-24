@@ -3722,11 +3722,10 @@ mod tests {
     use url::Url;
 
     use super::{
-        ActiveTranscript, CHATGPT_REALTIME_MODEL, CHATGPT_REALTIME_VOICE, CHATGPT_REALTIME_VOICES,
-        Command, CommandKind, CommandOutcome, MAX_ACTIVE_TRANSCRIPT_BYTES, OutputPolicy,
-        PLATFORM_REALTIME_VOICE, PLATFORM_REALTIME_VOICES, RealtimeAgentSteer, RealtimeAudio,
-        RealtimeEvent, RealtimeInitialItem, RealtimeInputTextRole, RealtimeOutputModality,
-        RealtimeProtocol, RealtimeResponseHandoffMode, RealtimeSessionMode, RealtimeTextRole,
+        ActiveTranscript, Command, CommandKind, CommandOutcome, MAX_ACTIVE_TRANSCRIPT_BYTES,
+        OutputPolicy, RealtimeAgentSteer, RealtimeAudio, RealtimeEvent, RealtimeInitialItem,
+        RealtimeInputTextRole, RealtimeOutputModality, RealtimeProtocol,
+        RealtimeResponseHandoffMode, RealtimeSessionMode, RealtimeTextRole,
         RealtimeTranscriptEntry, RealtimeTransport, RealtimeVersion, RealtimeVoice,
         SIDEBAND_RECONNECT_MAX_DELAY, SessionOwnership, SocketCommandExit, SocketState,
         configured_session_update, context_append_chunks, delegated_prompt, handle_socket_command,

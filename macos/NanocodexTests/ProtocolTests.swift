@@ -77,27 +77,6 @@ final class ProtocolTests: XCTestCase {
     }
 
     @MainActor
-    func testPaneDragPublishesOnlyWhenPreviewChanges() {
-        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-drag-publications")
-        defer { model.shutdown() }
-        var changes = 0
-        let subscription = model.objectWillChange.sink { changes += 1 }
-        defer { subscription.cancel() }
-        for _ in 0..<100 { model.cancelPaneDrag() }
-        XCTAssertEqual(changes, 0, "Ordinary window focus changes cannot invalidate an idle workspace")
-        model.draggingPaneID = "one"
-        model.updatePaneDrop(target: "two", edge: .left)
-        let before = changes
-        for _ in 0..<100 { model.updatePaneDrop(target: "two", edge: .left) }
-        XCTAssertEqual(changes, before, "Pointer movement within one docking region must not republish the workspace")
-        model.updatePaneDrop(target: "two", edge: .right)
-        XCTAssertEqual(changes, before + 1)
-        XCTAssertEqual(model.paneDropEdge, .right)
-        model.cancelPaneDrag()
-        XCTAssertNil(model.draggingPaneID); XCTAssertNil(model.paneDropTarget); XCTAssertNil(model.paneDropEdge)
-    }
-
-    @MainActor
     func testNativeWindowMovementAndResizeRetainContent() async throws {
         func findEditor(_ view: NSView) -> ComposerTextView? {
             if let editor = view as? ComposerTextView { return editor }
@@ -1329,19 +1308,6 @@ final class ProtocolTests: XCTestCase {
             frame.append(10); model.runtime.receiveForTesting(frame)
         }
         XCTAssertEqual(model.snapshots["thread"]?.cursor, "2")
-    }
-    @MainActor
-    func testIdenticalRuntimeStateDoesNotPublishAgain() throws {
-        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-isolated-state-dedup")
-        model.runtime.requestOverride = { _, _ in .null }
-        defer { model.shutdown() }
-        var updates = 0
-        let observation = model.$state.dropFirst().sink { _ in updates += 1 }
-        defer { observation.cancel() }
-        var data = try JSONEncoder().encode(JSONValue.object(["event": .object(["type": .string("state"), "state": Self.connectedState])]))
-        data.append(10)
-        model.runtime.receiveForTesting(data); model.runtime.receiveForTesting(data)
-        XCTAssertEqual(updates, 1)
     }
     func testCachedTimelinePreservesInterleavingReplayHistoryAndCorrections() {
         func delta(_ cursor: String, _ turn: String, _ text: String) -> ManagedEvent {

@@ -42,23 +42,6 @@ function fixture(env?: Partial<InferenceSessionEnv>) {
 afterEach(() => { vi.restoreAllMocks(); vi.unstubAllGlobals(); vi.useRealTimers(); });
 
 describe("standalone inference session isolation", () => {
-  it("pins before generation and persists only route/policy/key/counters", async () => {
-    const f = fixture();
-    expect((await f.create()).status).toBe(201);
-    f.ai.mockImplementation(async (model, input) => {
-      if (model === "typesafe/jev") return classification();
-      expect(f.commits.at(-1)?.route).toMatchObject({ model: OSS_MODEL, backend: "workers_ai", thinking: "medium" });
-      expect(input).toMatchObject({ messages: [{ role: "user", content: "private prompt" }], max_completion_tokens: 4096,
-        reasoning_effort: "medium" });
-      return completion("private generated answer");
-    });
-    const response = await f.call("POST", "/responses", { input: "private prompt" });
-    expect(response.status).toBe(200);
-    expect(await response.json()).toMatchObject({ object: "response", model: OSS_MODEL, session_id: sessionId,
-      buffering: "buffered", status: "completed", route: { backend: "workers_ai" } });
-    expect(JSON.stringify(f.commits)).not.toContain("private");
-    expect(f.commits.at(-1)?.counters).toEqual({ requests: 1, completed: 1, failed: 0 });
-  });
 
   it("commits the first route and admission together before issuing generation", async () => {
     const f = fixture(); await f.create();

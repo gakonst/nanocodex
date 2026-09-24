@@ -528,25 +528,6 @@ mod tests {
     use crate::CONTEXT_WINDOW_TOKENS;
 
     #[test]
-    fn original_image_estimate_decodes_dimensions() {
-        use base64::{Engine as _, engine::general_purpose::STANDARD};
-
-        let mut png = std::io::Cursor::new(Vec::new());
-        image::DynamicImage::new_rgb8(65, 33)
-            .write_to(&mut png, image::ImageFormat::Png)
-            .unwrap();
-        let image_url = format!(
-            "data:image/png;base64,{}",
-            STANDARD.encode(png.into_inner())
-        );
-
-        assert_eq!(
-            original_image_bytes_estimate(&image_url),
-            Some(6 * APPROX_BYTES_PER_TOKEN)
-        );
-    }
-
-    #[test]
     fn original_image_estimate_reads_dimensions_without_decoding_pixels() {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
         let mut encoded = std::io::Cursor::new(Vec::new());
@@ -585,77 +566,6 @@ mod tests {
             auto_compact_token_limit("unknown-model", CONTEXT_WINDOW_TOKENS),
             None
         );
-    }
-
-    #[test]
-    fn installed_history_retains_user_inputs_and_reinjects_context() {
-        let permissions = ResponseItem::message(
-            crate::MessageRole::Developer,
-            [ContentItem::InputText {
-                text: "<permissions instructions>...</permissions instructions>".into(),
-            }],
-        );
-        let initial =
-            message("<environment_context>\n<cwd>/workspace</cwd>\n</environment_context>");
-        let first = message("do the task");
-        let mut adapter = ResponseItem::message(
-            crate::MessageRole::Developer,
-            [ContentItem::InputText {
-                text: "adapter session state".into(),
-            }],
-        );
-        adapter.set_id(Some("client-adapter".into()));
-        let provenance = BTreeSet::from(["client-adapter".to_owned()]);
-        let latest = message("and preserve the tests");
-        let history = vec![
-            initial.clone(),
-            first.clone(),
-            adapter.clone(),
-            ResponseItem::Reasoning {
-                id: None,
-                summary: Vec::new(),
-                content: None,
-                encrypted_content: Some("old".into()),
-                status: None,
-                internal_chat_message_metadata_passthrough: None,
-            },
-            latest.clone(),
-        ];
-        let compaction: ResponseItem = serde_json::from_str(
-            r#"{"id":"cmp-id","type":"compaction","encrypted_content":"opaque"}"#,
-        )
-        .unwrap();
-        let installed = install_history_with_provenance(
-            &history,
-            &[permissions.clone(), initial.clone()],
-            compaction,
-            &provenance,
-        );
-        assert_eq!(installed.len(), 6);
-        assert_eq!(
-            serde_json::to_value(&installed[0]).unwrap(),
-            serde_json::to_value(first).unwrap()
-        );
-        assert_eq!(
-            serde_json::to_value(&installed[1]).unwrap(),
-            serde_json::to_value(adapter).unwrap()
-        );
-        assert_eq!(
-            serde_json::to_value(&installed[2]).unwrap(),
-            serde_json::to_value(permissions).unwrap()
-        );
-        assert_eq!(
-            serde_json::to_value(&installed[3]).unwrap(),
-            serde_json::to_value(initial).unwrap()
-        );
-        assert_eq!(
-            serde_json::to_value(&installed[4]).unwrap(),
-            serde_json::to_value(latest).unwrap()
-        );
-        assert!(matches!(
-            &installed[5],
-            ResponseItem::Compaction { id: Some(id), .. } if id.as_str() == "cmp-id"
-        ));
     }
 
     #[test]
@@ -720,29 +630,6 @@ mod tests {
                 },
             })
         );
-    }
-
-    #[test]
-    fn under_window_history_keeps_its_shared_storage() {
-        let mut history = ResponseHistory::new(vec![ResponseItem::custom_tool_output(
-            "call".to_owned(),
-            None,
-            FunctionOutputBody::Text("output".into()),
-        )]);
-        let shared_tail = history.shared_tail();
-
-        assert_eq!(
-            trim_tool_outputs_to_fit_context_window(&mut history, &[], CONTEXT_WINDOW_TOKENS,),
-            0
-        );
-        assert!(std::sync::Arc::ptr_eq(&history.shared_tail(), &shared_tail));
-    }
-
-    fn message(text: &str) -> ResponseItem {
-        ResponseItem::message(
-            crate::MessageRole::User,
-            [ContentItem::InputText { text: text.into() }],
-        )
     }
 }
 

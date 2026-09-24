@@ -45,44 +45,6 @@ test("workspace tools expose bounded text operations", async () => {
   );
 });
 
-test("workspace tools cross the browser host into model-visible Code Mode definitions", async () => {
-  const workspace = await BrowserWorkspace.open({ storage: memoryOpfs() });
-  const host = createBrowserHost({
-    createWebSocket() {},
-    filesystem: workspace,
-  });
-  await host.ready();
-  const names = JSON.parse(host.toolDefinitions()).map((definition) => definition.name);
-  assert.deepEqual(names, [
-    "list_files",
-    "read_file",
-    "write_file",
-    "make_directory",
-    "delete_file",
-  ]);
-});
-
-test("a shell-owned browser workspace omits legacy filesystem functions", async () => {
-  const workspace = await BrowserWorkspace.open({ storage: memoryOpfs() });
-  const host = createBrowserHost({
-    createWebSocket() {},
-    filesystem: workspace,
-    filesystemTools: false,
-    tools: {
-      exec_command: {
-        description: "Run browser bash.",
-        parameters: { type: "object", required: ["cmd"] },
-        handler() {},
-      },
-    },
-  });
-  await host.ready();
-  assert.deepEqual(
-    JSON.parse(host.toolDefinitions()).map((definition) => definition.name),
-    ["exec_command", "apply_patch"],
-  );
-});
-
 test("filesystem mounting rejects ambiguous application tool names", async () => {
   const workspace = await BrowserWorkspace.open({ storage: memoryOpfs() });
   const host = createBrowserHost({

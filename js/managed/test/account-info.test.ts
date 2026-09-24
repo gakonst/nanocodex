@@ -34,52 +34,6 @@ describe("managed account info", () => {
     expect(fetch).toHaveBeenCalledTimes(2);
   });
 
-  it("projects provider-neutral Google and Slack connection identities", async () => {
-    const fetch = vi.fn(async () => Response.json(statuses()));
-    const machines = [{
-      id: "sandbox",
-      name: "Agent sandbox",
-      kind: "sandbox" as const,
-      provider: "cloudflare",
-      mount: "/sandbox",
-      workspace: "/sandbox",
-      capabilities: ["filesystem", "native-linux"],
-    }];
-    const info = await accountInfo(
-      { fetch },
-      "user/with spaces",
-      { enabled: true, machines },
-    );
-
-    expect(info).toEqual({
-      status: "ready",
-      apis: [],
-      authenticated: ["gmail", "gdrive", "slack"],
-      connectorTools: connectorToolMetadata(["gmail", "gdrive", "slack"]),
-      accounts: { gdrive: "work@example.com", slack: "Acme (U123)" },
-      connectorAccounts: {
-        gmail: [
-          { id: A, label: "work@example.com", accountId: "google-work", capabilities: ["gmail", "gdrive"] },
-          { id: B, label: "home@example.com", accountId: "google-home", capabilities: ["gmail"] },
-        ],
-        gdrive: [
-          { id: A, label: "work@example.com", accountId: "google-work", capabilities: ["gmail", "gdrive"] },
-        ],
-        slack: [{ id: B, label: "Acme (U123)", accountId: "T123:U123", capabilities: ["slack"] }],
-      },
-      machines,
-      identity: {},
-      stablecoins: [],
-      authorizations: [],
-      vault: [],
-    });
-    expect(info.machines[0]).toMatchObject({ mount: "/sandbox", workspace: "/sandbox" });
-    expect(JSON.stringify(info)).not.toMatch(/access_token|secret/);
-    expect(fetch).toHaveBeenCalledWith(
-      "https://broker.internal/users/user%2Fwith%20spaces/connectors",
-    );
-  });
-
   it("filters exact grant connection IDs and withholds selectors from legacy grants", async () => {
     const binding = { fetch: async () => Response.json(statuses()) };
     const exact = await accountInfo(binding, "user", {

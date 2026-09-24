@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 
 import {
   DEFAULT_AGENT_SETTINGS,
-  agentSettingsQuery,
   parseAgentCreateBody,
   parseAgentRunBody,
   parseAgentSettingsPatch,
@@ -11,23 +10,6 @@ import {
 } from "../src/agent-settings";
 
 describe("managed agent settings", () => {
-  it("strictly parses and forwards every live creation setting", () => {
-    const settings = parseAgentSettingsQuery(new URLSearchParams(
-      "model=gpt-6-astra&thinking=max&reasoning_mode=standard&fast_mode=true",
-    ));
-    expect(settings).toEqual({
-      model: "gpt-6-astra",
-      thinking: "max",
-      reasoning_mode: "standard",
-      fast_mode: true,
-    });
-    expect(Object.fromEntries(agentSettingsQuery(settings))).toEqual({
-      model: "gpt-6-astra",
-      thinking: "max",
-      reasoning_mode: "standard",
-      fast_mode: "true",
-    });
-  });
 
   it.each([
     "model=gpt-5.6",

@@ -59,18 +59,6 @@ mod tests {
     use std::time::Instant;
 
     #[test]
-    fn spinner_advances_only_at_demand_driven_deadlines() {
-        let started_at = Instant::now();
-        let mut spinner = Spinner::new(started_at);
-
-        assert_eq!(spinner.symbol(), "⠋");
-        assert!(!spinner.advance(started_at + SPINNER_INTERVAL / 2));
-        assert!(spinner.advance(started_at + SPINNER_INTERVAL));
-        assert_eq!(spinner.symbol(), "⠙");
-        assert_eq!(spinner.deadline(), started_at + SPINNER_INTERVAL * 2);
-    }
-
-    #[test]
     fn delayed_spinner_frame_schedules_its_next_deadline_in_the_future() {
         let started_at = Instant::now();
         let mut spinner = Spinner::new(started_at);

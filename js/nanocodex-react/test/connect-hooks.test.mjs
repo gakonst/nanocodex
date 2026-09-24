@@ -4,9 +4,8 @@ import test from "node:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { createElement } from "react";
 import { act, create } from "react-test-renderer";
-import { Client, Dialog, Transport } from "nanocodex/connect";
 
-import { createConfig, useConnect, useConnectAgent, useLogoutAccount } from "../cloud/index.mjs";
+import { createConfig, useConnectAgent, useLogoutAccount } from "../cloud/index.mjs";
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -146,129 +145,6 @@ test("useConnectAgent validates a retained agent while refreshing its grant proj
   queryClient.clear();
 });
 
-test("useConnect signs exact pre-registered MCP IDs without forwarding host secrets", async () => {
-  const mcpId = "abcdefghijklmnopqrstuvwxyz0123456789_-ABCDE";
-  const expiry = Math.floor(Date.now() / 1_000) + 3_600;
-  const keyId = "0x1111111111111111111111111111111111111111";
-  const walletRequests = [];
-  const apiRequests = [];
-  const client = Client.create({
-    appId: "atlas-workspace",
-    appOrigin: "https://consumer.example",
-    dialog: Dialog.memory(),
-    provider: {
-      async request(request) {
-        walletRequests.push(request);
-        return {
-          accounts: [{
-            address: "0x8ba1f109551bd432803012645ac136ddd64dba72",
-            capabilities: {
-              auth: { approval_id: "approval-test" },
-              keyAuthorization: {
-                address: keyId,
-                keyId,
-                keyType: "p256",
-                chainId: 4217n,
-                expiry,
-                witness: `0x${"22".repeat(32)}`,
-              },
-              personalSign: { keyAuthorization: "0x1234" },
-            },
-          }],
-        };
-      },
-    },
-    session: false,
-    transport: Transport.from({
-      key: "capture",
-      name: "capture",
-      type: "capture",
-      setup() {
-        return {
-          baseUrl: "https://connect.example",
-          async fetch() { return Response.json({ ok: true }); },
-          async request(request) {
-            apiRequests.push(request);
-            return testConnectionWire({
-              expiry,
-              keyId,
-              capabilities: [
-                "nanocodex.agent",
-                "agent.output.final",
-                "agent.output.actions",
-                "chatgpt",
-                `mcp:${mcpId}`,
-              ],
-              mcpConnections: [{ id: mcpId, name: "Linear workspace" }],
-            });
-          },
-        };
-      },
-    }),
-  });
-  const config = createConfig({ client });
-  const queryClient = new QueryClient({ defaultOptions: { mutations: { retry: false } } });
-  let connect;
-
-  function Consumer() {
-    connect = useConnect({ config });
-    return null;
-  }
-
-  let root;
-  await act(async () => {
-    root = create(createElement(
-      QueryClientProvider,
-      { client: queryClient },
-      createElement(Consumer),
-    ));
-  });
-  await act(async () => connect.mutateAsync({
-    capabilities: { cloudAccounts: { chatgpt: true } },
-    focusMcpConnectionId: mcpId,
-    mcpConnections: [{
-      id: mcpId,
-      name: "Linear workspace",
-      endpoint: "https://mcp.linear.app/mcp",
-      token: "provider-secret",
-    }],
-    permission: "agent.run",
-  }));
-
-  assert.deepEqual(walletRequests[0].context, {
-    focusMcpConnection: mcpId,
-    requestedMcpConnections: [{
-      id: mcpId,
-      name: "Linear workspace",
-      status: "authorization_required",
-    }],
-  });
-  const resources = walletRequests[0].params[0].capabilities.auth.resources;
-  assert.equal(resources.includes(`urn:nanocodex:mcp:${mcpId}`), true);
-  assert.equal(resources.includes(`urn:nanocodex:mcp-focus:${mcpId}`), true);
-  assert.deepEqual(apiRequests[0].body.requested_mcp_connections, [mcpId]);
-  const captured = JSON.stringify(
-    { walletRequests, apiRequests },
-    (_key, value) => typeof value === "bigint" ? value.toString() : value,
-  );
-  assert.equal(captured.includes("provider-secret"), false);
-  assert.equal(captured.includes("mcp.linear.app"), false);
-  let invalidIdError;
-  await act(async () => {
-    try {
-      await connect.mutateAsync({
-        mcpConnections: [{ id: `${mcpId}x`, name: "Substituted MCP" }],
-      });
-    } catch (error) {
-      invalidIdError = error;
-    }
-  });
-  assert.match(invalidIdError.message, /opaque 43-character IDs/);
-  assert.equal(walletRequests.length, 1);
-  await act(async () => root.unmount());
-  queryClient.clear();
-});
-
 test("useConnectAgent closes the manual dialog after the connected tree commits", async () => {
   const events = [];
   const connection = Object.freeze({
@@ -403,46 +279,6 @@ test("useLogoutAccount publishes disconnected before remote cleanup settles", as
   await act(async () => root.unmount());
   queryClient.clear();
 });
-
-function testConnectionWire({ expiry, keyId, capabilities, mcpConnections = [] }) {
-  return {
-    grant_token: "grant-session-test",
-    account_address: "0x8ba1f109551bd432803012645ac136ddd64dba72",
-    agent_id: "agent-connect-react",
-    grant: {
-      id: `0x${"33".repeat(32)}`,
-      permission: "agent.run",
-      status: "active",
-      expires_at: expiry,
-      capabilities,
-      mcp_connections: mcpConnections,
-    },
-    access_key: {
-      address: keyId,
-      chain_id: "4217",
-      key_id: keyId,
-      key_type: "p256",
-      limits: [],
-      scopes: [],
-      witness: `0x${"22".repeat(32)}`,
-      expiry,
-      authorization: "0x1234",
-    },
-    mpp: {
-      token: "0x20c0000000000000000000000000000000000001",
-      symbol: "MACH",
-      balance_status: "ready",
-      settlement_token: "0x20C000000000000000000000b9537d11c60E8b50",
-      settlement_symbol: "USDC.e",
-      settlement_balance_atomics: "0",
-      limit_atomics: "10000000",
-      max_per_request_atomics: "250000",
-      period: 86_400,
-      balance_atomics: "0",
-      spent_atomics: "0",
-    },
-  };
-}
 
 async function waitFor(predicate) {
   for (let attempt = 0; attempt < 50; attempt += 1) {

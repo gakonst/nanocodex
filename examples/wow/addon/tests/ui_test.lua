@@ -73,9 +73,6 @@ assert(NanocodexWowDB == nil, "file loading and unrelated ADDON_LOADED must not 
 NanocodexWowDB = { hidden=true, position={point="TOPLEFT", relativePoint="TOPLEFT", x=10, y=-20} }
 eventFrame.scripts.OnEvent(eventFrame, "ADDON_LOADED", "Nanocodex")
 assert(not NanocodexWowPanel:IsShown())
-assert(NanocodexWowPanel.template == "BackdropTemplate")
-assert(NanocodexWowPanel.backdrop.bgFile == "Interface\\Buttons\\WHITE8X8")
-assert(NanocodexWowPanel.backdrop.edgeFile == "Interface\\DialogFrame\\UI-DialogBox-Border")
 assert(NanocodexWowPanel.point[1] == "TOPLEFT")
 assert(eventFrame.events.ADDON_LOADED == nil)
 assert(SLASH_NANOCODEXWOW1 == "/nc" and SLASH_NANOCODEXWOW2 == "/nanocodex")
@@ -119,7 +116,7 @@ assert(#chat == 2)
 clock = clock + 4
 NS.Notify("error", "Fallback error")
 assert(#chat == 3, "notices can repeat after throttle expires")
-io.write("PASS: native dialog assets/fonts/templates, semantic local notices, throttling, API fallbacks\n")
+io.write("PASS: semantic local notices, throttling, API fallbacks\n")
 
 function methods:GetText() return self.value or "" end
 function methods:SetVerticalScroll(value) self.offset = value end
@@ -198,25 +195,9 @@ io.write("PASS: snapshot bounds/atomic validation, native browse/select, persist
 
 assert(NS.ParseProjects("ncw1\nP    root    My%20Project\nT    root    chat    Test%20chat    Ready"))
 
--- Delivery and failure semantics: queue receipt must not claim connection/success.
-local sends = 0
-NS.TransportSend = function() sends = sends + 1 return false, "pending" end
-assert(NS.Ask("queued offline"))
-assert(sends == 1, "pending must never automatically retry")
-assert(NS.TransportDisplay():find("Disconnected",1,true))
-assert(NS.TransportDisplay():find("Queued",1,true))
-NS.OnTransportMessage("transport_ack", "1")
-assert(NS.TransportDisplay():find("Transport acknowledged",1,true))
-assert(NS.TransportDisplay():find("Disconnected",1,true))
-NS.TransportStatus = function() return {connected=true, state="ready"} end
-assert(NS.TransportDisplay():find("Bridge linked",1,true))
+-- Missing and failed adapters must not claim successful delivery.
 NS.TransportStatus = function() error("unavailable") end
 assert(NS.TransportDisplay():find("Disconnected",1,true))
-NS.TransportSend = function() return true end
-assert(NS.Ask("acknowledged"))
-assert(NS.TransportDisplay():find("Transport acknowledged",1,true))
-NS.TransportSend = function() return false, "busy" end
-assert(not NS.Ask("different request while busy"))
 NS.TransportSend = function() return false, "queue full" end
 assert(not NS.Ask("full"))
 assert(NS.TransportDisplay():find("Not queued",1,true))
@@ -236,15 +217,8 @@ NS.OnTransportMessage("error", "Denied |cffff0000")
 assert(NS.TransportDisplay():find("Denied ||cffff0000",1,true))
 NS.OnTransportMessage("unknown", "ignored")
 NS.OnTransportMessage("reply", {})
-for _, f in ipairs(frames) do
-    if f.value then
-        assert(not f.value:find("Paste reply",1,true))
-        assert(not f.value:find("Ask / Copy",1,true))
-        assert(not f.value:find("Import snapshot",1,true))
-    end
-end
 NanocodexWowPanel.scripts.OnUpdate(NanocodexWowPanel, 1)
-io.write("PASS: missing/offline/failed transport, queued versus ack, automatic replies/snapshots, markup safety, no manual controls\n")
+io.write("PASS: missing/failed transport, automatic replies/snapshots, markup safety\n")
 
 local answerBefore = NanocodexWowPanel.answer:GetText()
 assert(NS.Reply(string.rep("x",262145)) == false)

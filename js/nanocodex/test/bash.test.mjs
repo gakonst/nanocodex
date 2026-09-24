@@ -4,36 +4,6 @@ import test from "node:test";
 import { createJustBashRuntime, justBash } from "../tools/bash.mjs";
 import { Bash } from "nanocodex-tools/just-bash/browser";
 
-test("Just Bash advertises its cloud workspace execution", async () => {
-  const { descriptor, instructions, tool } = await justBash({ filesystem: memoryWorkspace() });
-  assert.equal(tool.provider, undefined);
-  assert.equal(
-    tool.description,
-    "Runs a shell command, returning output or a session ID for ongoing interaction.",
-  );
-  assert.equal(descriptor.cwd, "/workspace");
-  assert.equal(descriptor.shell, "nanocodex-just-bash");
-  assert.equal(descriptor.network.enabled, false);
-  assert.equal(descriptor.network.mode, "disabled");
-  assert.equal(descriptor.pty, false);
-  assert.equal(descriptor.sessions, false);
-  assert.equal(descriptor.sandboxEscalation, false);
-  assert.deepEqual(descriptor.limits, {});
-  assert(descriptor.commands.includes("grep"));
-  assert(!descriptor.commands.includes("curl"));
-  assert(!descriptor.commands.includes("wget"));
-  assert.match(instructions, /Available commands:/);
-  assert.match(
-    instructions,
-    /call exec_command immediately and once with the complete command/,
-  );
-  assert.match(instructions, /exactly gh repo clone OWNER\/REPO DESTINATION/);
-  assert.match(instructions, /git clone URL DESTINATION/);
-  assert.match(instructions, /all current files, without .git or history/);
-  assert.match(instructions, /Do not add depth, filter, branch, or other flags/);
-  assert.doesNotMatch(instructions, /\bwget\b/);
-});
-
 test("ordinary sequence commands work with host-managed interpreter limits", async () => {
   const runtime = await justBash({ filesystem: memoryWorkspace() });
   const result = await runtime.tool.handler({

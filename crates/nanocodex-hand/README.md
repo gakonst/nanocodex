@@ -4,7 +4,7 @@ Native screen capture and input for Nanocodex Hands. This package is part of the
 
 macOS requires macOS 26 or later for native observation. It captures the current main-display rectangle directly through ScreenCaptureKit, without enumerating windows or caching screenshots. Remote viewing uses hardware H.264 over the shared WebRTC publisher; encoder failure is reported and retried rather than silently switching to screenshot streaming. FFmpeg must be available on PATH.
 
-Still-image sizing, JPEG encoding and transport limits share a Rust core between Mac and Windows. The canonical policy is `src/capture_policy.json`; Linux embeds a generated copy with a drift test. After changing policy, run `node scripts/sync-capture-policy.mjs` from the repository root. The current budget is 1280 pixels on the longest side and 500,000 bytes **after base64 encoding**.
+Still-image sizing, JPEG encoding and transport limits share a Rust core between Mac and Windows. The canonical policy is `src/capture_policy.json`; Linux embeds a generated copy. After changing policy, run `node scripts/sync-capture-policy.mjs` from the repository root. The current budget is 1280 pixels on the longest side and 500,000 bytes **after base64 encoding**.
 
 Windows uses native, bounded GDI JPEG capture and Win32 input in the signed-in user's desktop. The background Windows service launches and supervises the Hand worker in that user's interactive session because Session 0 cannot access the desktop. Locked and elevated secure desktops are not controlled by an ordinary user process.
 

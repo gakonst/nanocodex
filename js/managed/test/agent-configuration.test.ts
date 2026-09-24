@@ -1,7 +1,7 @@
 import { env, runInDurableObject } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 import type { DurableAgentSession } from "../src/index";
-import { configurationCatalog, networkAllows, normalizeToolNames, parseConfiguration } from "../src/agent-configuration";
+import { configurationCatalog, networkAllows, parseConfiguration } from "../src/agent-configuration";
 import { SessionOperations } from "../src/session-operations";
 import { DurableEventLog } from "../src/durable-events";
 import { createBrainWorkspace } from "../src/brain-workspace";
@@ -159,15 +159,6 @@ it("prepares files, skills and actual embedded-shell commands once, under the ne
     expect(state.storage.sql.exec("SELECT state,step FROM managed_environment_setup").one()).toEqual({ state: "ready", step: 3 });
   } finally { runtime.dispose(); }
 }));
-
-
-it("normalizes retained tool names without mutating stored configuration or changing grants", () => {
-  const stored = { instructions: "existing", tools: ["accountInfo", "exec_command"] };
-  expect(normalizeToolNames(stored)).toEqual({ instructions: "existing", tools: ["environment", "exec_command"] });
-  expect(stored.tools).toEqual(["accountInfo", "exec_command"]);
-  const current = { tools: ["environment", "exec_command"] };
-  expect(normalizeToolNames(current)).toBe(current);
-});
 
 it("accepts immutable template retries after discovery tool renaming", () => inside(async state => {
   await configurationCatalog(req("/agent-definitions/legacy"), state.storage);

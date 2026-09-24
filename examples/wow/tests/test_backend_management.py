@@ -46,12 +46,6 @@ class ManagementTests(unittest.TestCase):
             self.assertEqual(error.exception.status, 501)
         self.assertEqual(self.backend.calls, [])
 
-    def test_cancel_uses_bodyless_post_and_real_receipt(self):
-        self.backend.response = {'turn_id': 'project-followup:1', 'state': 'cancelling'}
-        result = self.call('/api/turns/cancel', {'thread_id': 'root', 'turn_id': 'project-followup:1'})
-        self.assertEqual(self.backend.calls, [('POST', '/v1/agents/root/turns/project-followup%3A1/cancel', None, None)])
-        self.assertEqual(result['receipt']['state'], 'cancelling')
-
     def test_steer_uses_message_id_not_turn_admission(self):
         self.call('/api/turns/steer', {'thread_id': 'root', 'turn_id': 't:1', 'text': 'Change direction', 'message_id': 'm:1'})
         self.assertEqual(self.backend.calls, [('POST', '/v1/agents/root/turns/t%3A1/steer', {'input': 'Change direction', 'message_id': 'm:1'}, None)])

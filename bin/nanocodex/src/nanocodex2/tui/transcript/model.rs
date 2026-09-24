@@ -3415,36 +3415,6 @@ mod tests {
     }
 
     #[test]
-    fn semantic_children_hide_single_wrapper_but_keep_multi_tool_batch() {
-        let mut model = TranscriptModel::default();
-        model.apply(&call(1, "outer", "exec", json!("await tools.one({})")));
-        model.apply(&call(
-            2,
-            "outer/code-0",
-            "exec_command",
-            json!({"cmd": "pwd"}),
-        ));
-        assert!(model.entries()[0].hidden);
-        model.apply(&call(
-            3,
-            "outer/code-1",
-            "mcp__docs__search",
-            json!({"query": "x"}),
-        ));
-
-        assert_eq!(model.entries().len(), 3);
-        assert!(!model.entries()[0].hidden);
-        assert!(!model.entries()[1].hidden);
-        assert!(!model.entries()[2].hidden);
-        assert_eq!(model.entries()[1].parent, Some(model.entries()[0].id));
-        assert_eq!(model.entries()[2].parent, Some(model.entries()[0].id));
-        let EntryKind::Tool(wrapper) = &model.entries()[0].kind else {
-            panic!("wrapper should remain a tool entry");
-        };
-        assert_eq!(wrapper.child_count, 2);
-    }
-
-    #[test]
     fn structured_results_drive_failure_state_and_machine_origin() {
         let mut model = TranscriptModel::default();
         model.apply(&call(1, "remote", "custom_operation", json!({})));

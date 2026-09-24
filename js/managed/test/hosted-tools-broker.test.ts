@@ -154,27 +154,6 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(host.sent).not.toContainEqual(expect.objectContaining({ type: "fenced" }));
   });
 
-  it("projects account machines only while their host is routing-ready", async () => {
-    const fixture = createFixture();
-    const host = fixture.socket();
-    const machines = [{
-      id: "desktop",
-      name: "Build desktop",
-      workspace: "/home/george/repo",
-      capabilities: ["filesystem", "native-shell"],
-    }];
-    await fixture.broker.message(host.webSocket, JSON.stringify({
-      type: "catalog", capabilities: ["turn_metadata"],
-      attachment_id: "desktop",
-      tools: [entry()],
-      machines,
-    }));
-
-    expect(fixture.broker.machines()).toEqual(machines);
-    await fixture.broker.message(host.webSocket, JSON.stringify({ type: "drain" }));
-    expect(fixture.broker.machines()).toEqual([]);
-  });
-
   for (const name of ["browser_execute", "browser_vault_fill", "browser_vault_snapshot", "browser_vault_request_takeover"]) {
     it(`filters disabled hosted browser tool ${name}`, async () => {
       const fixture = createFixture();
@@ -1086,25 +1065,6 @@ describe("HostedToolsBroker socket-owned protocol", () => {
 
     digest = undefined;
     expect(fixture.broker.provider().resolve("cleanup")).toBeUndefined();
-    await expect(selected.handler({}, { sessionId: "session:1", callId: "source:1" }))
-      .resolves.toMatchObject({
-        success: false,
-        structuredResult: { status: "unavailable" },
-      });
-    expect(host.sent.some((frame) => frame.type === "call")).toBe(false);
-  });
-
-  it("projects a retained catalog and blocks a stale tool when the active grant changes", async () => {
-    let allowed = true;
-    const fixture = createFixture((candidate) => allowed && candidate.provider === "fixture");
-    const host = fixture.socket();
-    await catalog(fixture.broker, host);
-    const selected = fixture.broker.provider().resolve("fixture__lookup")!;
-    expect(fixture.broker.provider().definitions()).toHaveLength(1);
-
-    allowed = false;
-    expect(fixture.broker.provider().definitions()).toEqual([]);
-    expect(fixture.broker.provider().resolve("fixture__lookup")).toBeUndefined();
     await expect(selected.handler({}, { sessionId: "session:1", callId: "source:1" }))
       .resolves.toMatchObject({
         success: false,

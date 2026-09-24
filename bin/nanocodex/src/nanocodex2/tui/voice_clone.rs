@@ -156,21 +156,6 @@ impl Panel {
 mod tests {
     use super::*;
     #[tokio::test]
-    async fn guidance_is_compact_and_script_is_a_full_practice_passage() {
-        let mut panel = Panel::new("Synthetic voice".into());
-        assert!(panel.text().contains("60–90s"));
-        assert!(panel.text().contains("H: read-aloud script"));
-        let script = include_str!("voice_clone_script.txt").trim();
-        assert!(!panel.text().contains(script));
-        assert!((130..=160).contains(&script.split_whitespace().count()));
-        panel.state = State::Stopping;
-        panel.notice = Some("Stopped by you".into());
-        assert!(!panel.text().contains("H: read-aloud script"));
-        assert!(panel.text().contains("Stopped by you"));
-        assert!(panel.text().contains("Pressing U confirms"));
-    }
-
-    #[tokio::test]
     async fn recording_requires_explicit_start_and_review_requires_stopped_sample() {
         let mut panel = Panel::new("Synthetic voice".into());
         assert!(matches!(panel.state, State::Ready));

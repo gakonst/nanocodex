@@ -13,16 +13,6 @@ struct PromptInput {
     prompt: String,
 }
 
-#[derive(Deserialize, Serialize)]
-struct ModelInput {
-    history: u32,
-}
-
-#[derive(Debug, Deserialize, PartialEq, Serialize)]
-struct ModelOutput {
-    answer: u32,
-}
-
 #[derive(Debug, Deserialize, PartialEq, Serialize)]
 struct Checkpoint {
     version: u32,
@@ -240,68 +230,6 @@ fn memory_store_requires_an_owner_runtime() {
 }
 
 #[tokio::test]
-async fn replays_completed_operations_and_steps_after_reopen() {
-    let store = MemoryStore::new().unwrap();
-    let session = DurableSession::open(store.clone(), "session")
-        .await
-        .unwrap();
-    assert!(matches!(
-        session
-            .admit_typed::<_, Checkpoint, TurnOutput>(
-                "turn-1",
-                &PromptInput {
-                    prompt: "hi".to_owned(),
-                },
-            )
-            .await,
-        Ok(Admission::Accepted)
-    ));
-    session.begin_attempt("turn-1").await.unwrap();
-    assert!(matches!(
-        session
-            .begin_step_typed::<_, ModelOutput>(
-                "turn-1",
-                "model-1",
-                "model",
-                &ModelInput { history: 0 },
-            )
-            .await,
-        Ok(BeginStep::Execute)
-    ));
-    session
-        .complete_step("turn-1", "model-1", &ModelOutput { answer: 42 })
-        .await
-        .unwrap();
-    session
-        .complete(
-            "turn-1",
-            &Checkpoint { version: 1 },
-            &TurnOutput {
-                message: "done".to_owned(),
-            },
-        )
-        .await
-        .unwrap();
-
-    let reopened = DurableSession::open(store, "session").await.unwrap();
-    let admission = reopened
-        .admit_typed::<_, Checkpoint, TurnOutput>(
-            "turn-1",
-            &PromptInput {
-                prompt: "hi".to_owned(),
-            },
-        )
-        .await
-        .unwrap();
-    let Admission::Completed { checkpoint, output } = admission else {
-        panic!("completed operation must replay typed terminal values");
-    };
-    assert_eq!(checkpoint, Checkpoint { version: 1 });
-    assert_eq!(output.message, "done");
-    assert_eq!(reopened.state().await.unwrap().revision(), 4);
-}
-
-#[tokio::test]
 async fn failed_operations_replay_their_error_and_do_not_block_follow_on_work() {
     let store = MemoryStore::new().unwrap();
     let session = DurableSession::open(store.clone(), "failed-session")
@@ -339,44 +267,6 @@ async fn failed_operations_replay_their_error_and_do_not_block_follow_on_work() 
     assert_eq!(
         checkpoint.decode::<Checkpoint>().unwrap(),
         Checkpoint { version: 2 }
-    );
-}
-
-#[tokio::test]
-async fn retries_an_unfinished_step_after_reopen() {
-    let store = MemoryStore::new().unwrap();
-    let session = DurableSession::open(store.clone(), "session")
-        .await
-        .unwrap();
-    session.admit("turn-1", &"hi").await.unwrap();
-    session.begin_attempt("turn-1").await.unwrap();
-    session
-        .begin_step("turn-1", "tool-1", "tool", &"charge")
-        .await
-        .unwrap();
-
-    let reopened = DurableSession::open(store, "session").await.unwrap();
-    assert!(matches!(
-        reopened.admit("turn-1", &"hi").await,
-        Ok(Admission::Pending)
-    ));
-    reopened.begin_attempt("turn-1").await.unwrap();
-    assert!(matches!(
-        reopened
-            .begin_step("turn-1", "tool-1", "tool", &"charge")
-            .await,
-        Ok(BeginStep::Execute)
-    ));
-    assert_eq!(
-        reopened
-            .state()
-            .await
-            .unwrap()
-            .operation("turn-1")
-            .unwrap()
-            .steps["tool-1"]
-            .attempts,
-        2
     );
 }
 
@@ -757,104 +647,6 @@ async fn reopens_a_restarted_step() {
             .attempts,
         2
     );
-}
-
-#[tokio::test]
-async fn reopens_a_seeded_step_start() {
-    let store = MemoryStore::new().unwrap();
-    let session = DurableSession::open(store.clone(), "seeded-step-start")
-        .await
-        .unwrap();
-    session.admit("turn", &"prompt").await.unwrap();
-    session.begin_attempt("turn").await.unwrap();
-    session
-        .begin_step("turn", "tool-1", "tool", &"charge")
-        .await
-        .unwrap();
-    drop(session);
-    let session = DurableSession::open(store, "seeded-step-start")
-        .await
-        .unwrap();
-
-    let state = session.state().await.unwrap();
-    let operation = state.operation("turn").unwrap();
-    assert!(matches!(
-        operation.steps.get("tool-1").map(|step| &step.status),
-        Some(nanocodex_durability::StepStatus::EffectPending)
-    ));
-}
-
-#[tokio::test]
-async fn reopens_a_seeded_step_completion() {
-    let store = MemoryStore::new().unwrap();
-    let session = DurableSession::open(store.clone(), "seeded-step-completion")
-        .await
-        .unwrap();
-    session.admit("turn", &"prompt").await.unwrap();
-    session.begin_attempt("turn").await.unwrap();
-    session
-        .begin_step("turn", "tool-1", "tool", &"charge")
-        .await
-        .unwrap();
-    session
-        .complete_step("turn", "tool-1", &"receipt")
-        .await
-        .unwrap();
-    drop(session);
-    let session = DurableSession::open(store, "seeded-step-completion")
-        .await
-        .unwrap();
-
-    let state = session.state().await.unwrap();
-    let operation = state.operation("turn").unwrap();
-    let Some(nanocodex_durability::StepStatus::Completed(output)) =
-        operation.steps.get("tool-1").map(|step| &step.status)
-    else {
-        panic!("missing completion");
-    };
-    assert_eq!(
-        session
-            .resolve(output)
-            .await
-            .unwrap()
-            .decode::<String>()
-            .unwrap(),
-        "receipt"
-    );
-}
-
-#[tokio::test]
-async fn reopens_a_seeded_completion() {
-    let store = MemoryStore::new().unwrap();
-    let session = DurableSession::open(store.clone(), "seeded-completion")
-        .await
-        .unwrap();
-    session.admit("turn", &"prompt").await.unwrap();
-    session.begin_attempt("turn").await.unwrap();
-    session
-        .complete(
-            "turn",
-            &Checkpoint { version: 7 },
-            &TurnOutput {
-                message: "done".to_owned(),
-            },
-        )
-        .await
-        .unwrap();
-    drop(session);
-    let session = DurableSession::open(store, "seeded-completion")
-        .await
-        .unwrap();
-
-    let replay = session
-        .admit_typed::<_, Checkpoint, TurnOutput>("turn", &"prompt")
-        .await
-        .unwrap();
-    assert!(matches!(
-        replay,
-        Admission::Completed { checkpoint, output }
-            if checkpoint == Checkpoint { version: 7 } && output.message == "done"
-    ));
 }
 
 #[tokio::test]

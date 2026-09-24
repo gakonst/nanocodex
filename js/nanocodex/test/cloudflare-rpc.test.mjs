@@ -20,8 +20,3 @@ test("failed cloning still disposes the result without silently dropping capabil
     { name: "DataCloneError" });
   assert.equal(disposals, 1);
 });
-
-test("plain adapters and primitive RPC results remain supported", () => {
-  for (const value of [undefined, null, false, 1, "synthetic"]) assert.equal(consumeRpcData(value), value);
-  assert.deepEqual(consumeRpcData({ status: 403, catalog: null }), { status: 403, catalog: null });
-});

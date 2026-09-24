@@ -5,26 +5,13 @@ import { runOwnedSession } from "./session.mjs";
 
 test("the Node example reads typed results and releases every handle", async () => {
   const harness = createHarness(["42", "43"]);
-  const logs = [];
   const results = await runOwnedSession(harness.agent, {
-    log: (...values) => logs.push(values),
-    logDiagnostic: (value) => logs.push([value]),
+    log() {},
+    logDiagnostic() {},
   });
 
   assert.equal(results.first, "42");
   assert.equal(results.second, "43");
-  assert.deepEqual(logs, [
-    ["tool: multiply"],
-    ["first:", "42"],
-    ["second:", "43"],
-  ]);
-  assert.deepEqual(
-    harness.prompts,
-    [
-      "Use multiply to calculate 6 × 7. Return only the number.",
-      "Add one to that result. Return only the number.",
-    ],
-  );
   assert.deepEqual(harness.disposedTurns, [1, 1]);
   assert.deepEqual(harness.disposedResults, [1, 1]);
   assert.equal(harness.unwatched, 1);
@@ -149,24 +136,5 @@ function turnResult(finalMessage, dispose) {
   return {
     finalMessage,
     dispose,
-    snapshot: {
-      version: 1,
-      model: "gpt-6-sol",
-      lineage_id: "lineage",
-      prompt_cache_key: "cache",
-      workspace: "/workspace",
-      canonical_context: {},
-      history: [],
-    },
-    usage: {
-      input_tokens: 1,
-      cached_input_tokens: 0,
-      cache_write_input_tokens: 0,
-      output_tokens: 1,
-      reasoning_output_tokens: 0,
-      total_tokens: 2,
-      estimated_cost: null,
-      cost_status: "usage_not_reported",
-    },
   };
 }

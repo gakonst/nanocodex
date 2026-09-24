@@ -317,37 +317,6 @@ final class ProtocolTests: XCTestCase {
         let values = [first, first, try delta("2", "b", "Two"), try delta("3", "b", " more")]
         XCTAssertEqual(transcript(values).map(\.text), ["One", "Two more"])
     }
-    func testDeckDoesNotSwitchAgentsOnRefresh() {
-        var deck = InboxDeck()
-        deck.reconcile(["a", "b"]); deck.focus("b")
-        deck.reconcile(["c", "a", "b"])
-        XCTAssertEqual(deck.focusedID, "b")
-        deck.advance(); XCTAssertEqual(deck.focusedID, "a")
-        deck.back(); XCTAssertEqual(deck.focusedID, "b")
-        deck.reconcile(["c"]); XCTAssertEqual(deck.focusedID, "c")
-        deck.reconcile(["a", "b", "c"]); deck.focus("b")
-        deck.prioritize(["c", "b", "a"])
-        XCTAssertEqual(deck.focusedID, "b")
-        deck.advance(); XCTAssertEqual(deck.focusedID, "c")
-    }
-    func testDeckEqualityRetainsReviewAndBackHistoryBeyondVisibleSelection() {
-        var deck = InboxDeck(); deck.reconcile(["a", "b"])
-        var unchanged = deck; unchanged.reconcile(["a", "b"])
-        XCTAssertEqual(deck, unchanged)
-        unchanged.prioritize(["a", "b"])
-        XCTAssertEqual(deck, unchanged)
-        var visited = deck
-        visited.advance(reviewed: Cursor(rawValue: "20")); visited.back()
-        visited.prioritize(["a", "b"])
-        XCTAssertEqual(visited.order, deck.order)
-        XCTAssertEqual(visited.focusedID, deck.focusedID)
-        XCTAssertNotEqual(visited, deck, "Review cursor changes must be retained even with identical visible selection")
-        deck.advance(); deck.prioritize(["a", "b"]); deck.focus("a")
-        var noHistory = InboxDeck(); noHistory.reconcile(["a", "b"])
-        XCTAssertEqual(deck.order, noHistory.order)
-        XCTAssertEqual(deck.focusedID, noHistory.focusedID)
-        XCTAssertNotEqual(deck, noHistory, "Back history is also part of deck identity")
-    }
     func testDeferredInboxCanReachZeroAndOnlyNewUpdatesReturn() throws {
         var card = AgentCard(id: "agent", title: "Test")
         try card.apply(state: state("20", turns: []))

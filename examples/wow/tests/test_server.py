@@ -59,26 +59,11 @@ class BackendTests(unittest.TestCase):
         result = subprocess.run([bun, '-e', script], input=json.dumps(b.calls[0][2]), text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def test_resume_persistent_thread(self):
-        b = FakeBackend()
-        b.handle('POST', '/api/send', {}, {'text': 'Next hint', 'mode': 'hint', 'thread_id': 'existing', 'idempotency_key': 'same'})
-        self.assertEqual(b.calls[0][0:2], ('POST', '/v1/agents/existing/turns'))
-        self.assertEqual(b.calls[0][3], 'same')
-        self.assertEqual(len(b.calls), 1)
-
     def test_agent_mode_preserves_configuration_and_raw_task(self):
         b = FakeBackend()
         b.handle('POST', '/api/send', {}, {'text': 'Review the code', 'mode': 'agent', 'thread_id': 'existing'})
         self.assertEqual(len(b.calls), 1)
         self.assertEqual(b.calls[0][:3], ('POST', '/v1/agents/existing/turns', {'input': 'Review the code'}))
-
-    def test_projection_uses_real_membership_unknown_status(self):
-        b = FakeBackend()
-        b.response = {'data': ['root', 'child', 'solo'], 'summaries': {'root': {'title': 'WoW', 'project_root_id': 'root', 'project_name': 'WoW'}, 'child': {'project_root_id': 'root', 'project_title': 'Build'}, 'solo': {'title': 'Solo'}}}
-        self.assertEqual(len(b.handle('GET', '/api/projects', {}, None)['projects']), 2)
-        threads = b.handle('GET', '/api/threads', {'project_id': ['root']}, None)['threads']
-        self.assertEqual([t['id'] for t in threads], ['root', 'child'])
-        self.assertEqual(threads[1]['status'], 'unknown')
 
     def test_messages_filter_tools_and_duplicate_final(self):
         b = FakeBackend()

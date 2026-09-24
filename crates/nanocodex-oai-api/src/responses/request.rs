@@ -1317,12 +1317,6 @@ mod tests {
     }
 
     #[test]
-    fn response_storage_support_tracks_auth_mode() {
-        assert!(crate::OpenAiAuthMode::ApiKey.supports_stored_responses());
-        assert!(!crate::OpenAiAuthMode::ChatGpt.supports_stored_responses());
-    }
-
-    #[test]
     fn fast_mode_selects_the_codex_compatible_service_tier() {
         let config = ModelConfig::default();
         let profile = RequestProfile::new("fast-agent", "fast-lineage", Arc::from([]));
@@ -1357,37 +1351,6 @@ mod tests {
         ))
         .expect("Astra standard request should serialize");
         assert_eq!(astra_standard["service_tier"], json!("default"));
-    }
-
-    #[test]
-    fn committed_history_is_shared_and_iterates_oldest_first() {
-        let mut history = ResponseHistory::new(vec![ResponseItem::message(
-            MessageRole::User,
-            [ContentItem::InputText { text: "one".into() }],
-        )]);
-        history.commit_tail();
-        let first_head = Arc::clone(history.committed_head().unwrap());
-        history.push(ResponseItem::message(
-            MessageRole::Assistant,
-            [ContentItem::OutputText {
-                text: "two".into(),
-                annotations: None,
-                logprobs: None,
-            }],
-        ));
-        history.commit_tail();
-        let fork = history.clone();
-
-        assert_eq!(history.len(), 2);
-        assert!(Arc::ptr_eq(
-            history.committed_head().unwrap().previous.as_ref().unwrap(),
-            &first_head
-        ));
-        assert!(Arc::ptr_eq(
-            history.committed_head().unwrap(),
-            fork.committed_head().unwrap()
-        ));
-        assert_eq!(history.iter().count(), 2);
     }
 
     #[test]

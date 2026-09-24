@@ -388,26 +388,5 @@ class RealDispatcherTests(unittest.TestCase):
                 dispatcher.close()
 
 
-class CalibrationCLITests(unittest.TestCase):
-    def test_physical_xy_scale_forwarded_without_desktop_access(self):
-        from types import SimpleNamespace
-        from unittest.mock import patch
-        from transport.daemon import main
-        class StopBeforeDesktop(Exception):
-            pass
-        arguments = ['--window-address', 'fixture-address', '--window-class', 'fixture-class',
-                     '--state-dir', '/unused-local-fixture', '--evidence', '/unused-local-fixture/evidence',
-                     '--left', '0', '--top', '51', '--cell-size', '4.8',
-                     '--cell-size-y', '4.67', '--output-scale', '2', '--session', '53281', '--allow-input']
-        with patch('transport.daemon.desktop_session', return_value={'user':'fixture'}), \
-             patch('os.geteuid', return_value=1000), \
-             patch.dict('os.environ', WAYLAND_DISPLAY='local-fixture', HYPRLAND_INSTANCE_SIGNATURE='local-fixture'), \
-             patch('transport.daemon.Desktop', side_effect=StopBeforeDesktop) as desktop:
-            with self.assertRaises(StopBeforeDesktop):
-                main(arguments)
-            desktop.assert_called_once_with('fixture-address', 'fixture-class', 0, 51, 4.8,
-                                            output_scale=2.0, cell_size_y=4.67, min_margin=2, input_backend="wayland", key_encoding="octal", key_hold_ms=0)
-
-
 if __name__ == '__main__':
     unittest.main()

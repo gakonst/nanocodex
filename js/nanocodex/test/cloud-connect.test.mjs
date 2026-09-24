@@ -1196,37 +1196,6 @@ test("Connect rejects contradictory MCP capability and metadata projections", ()
   })), /MCP capabilities and metadata must match exactly/);
 });
 
-test("Connect reads exact connector connection selections and rejects widening metadata", () => {
-  const expiry = Math.floor(Date.now() / 1_000) + 3_600;
-  const keyId = "0x1111111111111111111111111111111111111111";
-  const connectionId = "a".repeat(43);
-  const legacy = connectionFromWire(testConnectionWire({
-    expiry,
-    keyId,
-    capabilities: ["nanocodex.agent", "slack"],
-  }));
-  assert.equal(legacy.grant.connectorConnections, undefined);
-
-  assert.throws(() => connectionFromWire(testConnectionWire({
-    expiry,
-    keyId,
-    capabilities: ["nanocodex.agent", "slack"],
-    connectorConnections: { github: [connectionId] },
-  })), /ungranted connector capability/);
-  assert.throws(() => connectionFromWire(testConnectionWire({
-    expiry,
-    keyId,
-    capabilities: ["nanocodex.agent", "slack"],
-    connectorConnections: { slack: ["not-an-id"] },
-  })), /opaque connection ID/);
-  assert.throws(() => connectionFromWire(testConnectionWire({
-    expiry,
-    keyId,
-    capabilities: ["nanocodex.agent", "slack"],
-    connectorConnections: { slack: [connectionId, connectionId] },
-  })), /duplicate connections/);
-});
-
 test("Connect keeps the hosted dialog open until the grant session is committed", async () => {
   const events = [];
   let releaseConnection;

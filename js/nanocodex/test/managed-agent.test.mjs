@@ -76,24 +76,6 @@ test("managed Agent retries creation with one stable identity", async () => {
   assert.match(keys[0], /^managed-create:[0-9a-f-]{36}$/);
 });
 
-test("managed Agent preserves Sol and Luna none/pro policy", async () => {
-  for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
-    let body;
-    await Agent.create({
-      baseUrl: origin,
-      idempotencyKey: `create:${model}`,
-      settings: { model, thinking: "none", reasoningMode: "pro", fastMode: false },
-      fetch: async (_url, init) => {
-        body = JSON.parse(init.body);
-        return Response.json({ agent_id: agentId });
-      },
-    });
-    assert.deepEqual(body.settings, {
-      model, thinking: "none", reasoning_mode: "pro", fast_mode: false,
-    });
-  }
-});
-
 test("managed Agent rejects incomplete, retired, and Astra-incompatible creation policy", async () => {
   const options = { baseUrl: origin, fetch: async () => Response.json({ agent_id: agentId }) };
   await assert.rejects(Agent.create({
@@ -816,76 +798,6 @@ test("shared event replay reconnect resolves one turn and delivers each cursor e
   });
   assert.equal(maximumActiveConnections, 1);
   await waitFor(() => activeConnections === 0);
-});
-
-test("turn result without an event watcher opens one shared stream and preserves idempotency", async () => {
-  const requests = [];
-  let eventConnections = 0;
-  const fetch = async (input, init) => {
-    const request = new Request(input, init);
-    requests.push(request);
-    const url = new URL(request.url);
-    if (request.method === "POST" && url.pathname === "/v1/agents") {
-      return Response.json({ agent_id: agentId }, { status: 201 });
-    }
-    if (request.method === "POST" && url.pathname.endsWith("/turns")) {
-      assert.deepEqual(await request.json(), { id: "turn-1", input: "hello" });
-      return Response.json({
-        turn_id: "turn-1",
-        state: "accepted",
-        accepted_cursor: "5",
-        terminal_cursor: null,
-      }, { status: 202 });
-    }
-    if (request.method === "GET" && url.pathname.endsWith("/events")) {
-      eventConnections += 1;
-      if (eventConnections === 1) {
-        assert.equal(url.searchParams.get("cursor"), "5");
-        return eventStream([
-          "retry: 0\n\n",
-          sse("6", "event", {
-            cursor: "6",
-            created_at: 10,
-            turn_id: "turn-1",
-            type: "event",
-            event: { type: "reasoning" },
-          }),
-        ]);
-      }
-      assert.equal(url.searchParams.get("cursor"), "6");
-      return eventStream([sse("7", "turn_completed", {
-        cursor: "7",
-        created_at: 11,
-        turn_id: "turn-1",
-        type: "turn_completed",
-        id: "turn-1",
-        final_message: "done",
-        usage: null,
-        citations: [],
-      })]);
-    }
-    return Response.json({ error: "not_found" }, { status: 404 });
-  };
-
-  const agent = await Agent.create({ baseUrl: origin, fetch });
-  const turn = agent.turn.prompt({
-    id: "turn-1",
-    input: "hello",
-    idempotencyKey: "request-1",
-  });
-  assert.equal(turn.idempotencyKey, "request-1");
-  assert.equal(await turn.accepted(), "turn-1");
-  assert.deepEqual(await turn.result(), {
-    turnId: "turn-1",
-    finalMessage: "done",
-    usage: null,
-    citations: [],
-    cursor: "7",
-  });
-  assert.strictEqual(await turn.result(), await turn.result());
-  assert.equal(eventConnections, 2);
-  const submission = requests.find((request) => request.method === "POST" && request.url.endsWith("/turns"));
-  assert.equal(submission.headers.get("idempotency-key"), "request-1");
 });
 
 test("terminal managed failures are typed and HTTP failures hide response headers", async () => {

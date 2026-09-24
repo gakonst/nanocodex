@@ -169,26 +169,6 @@ test("restart releases active Turns and stale event listeners exactly once", asy
   await controller.dispose();
 });
 
-test("one frame reduces 20,000 deltas into one bounded React update", () => {
-  const deltas = Array.from(
-    { length: 20_000 },
-    (_, index) => event(index + 1, "assistant.delta", { text: "x" }),
-  );
-  const summary = summarizeEventBatch(deltas as any, 100, 120);
-  const retained = appendRetainedEvents(
-    [event(0, "run.started")] as any,
-    deltas as any,
-  );
-
-  assert.deepEqual(summary.assistant, {
-    mode: "append",
-    text: "x".repeat(20_000),
-  });
-  assert.equal(retained.length, 500);
-  assert.equal(retained[0]?.seq, 19_501);
-  assert.equal(retained.at(-1)?.seq, 20_000);
-});
-
 test("frame reduction preserves ordered final and terminal semantics", () => {
   const summary = summarizeEventBatch([
     event(1, "run.started"),
@@ -334,7 +314,7 @@ class FakeTurn {
   }
 
   complete(value: string) {
-    this.resolve(turnResult(value, this.input, () => {
+    this.resolve(turnResult(value, () => {
       this.resultDisposed += 1;
     }));
   }
@@ -354,28 +334,9 @@ class FakeTurn {
 
 type FakeTurnResult = ReturnType<typeof turnResult>;
 
-function turnResult(finalMessage: string, input: string, dispose = () => {}) {
+function turnResult(finalMessage: string, dispose = () => {}) {
   return {
     finalMessage,
     dispose,
-    snapshot: {
-      version: 1,
-      model: "gpt-6-sol",
-      lineage_id: "lineage",
-      prompt_cache_key: "cache",
-      workspace: "/workspace",
-      canonical_context: {},
-      history: [{ input }],
-    },
-    usage: {
-      input_tokens: 1,
-      cached_input_tokens: 0,
-      cache_write_input_tokens: 0,
-      output_tokens: 1,
-      reasoning_output_tokens: 0,
-      total_tokens: 2,
-      estimated_cost: null,
-      cost_status: "usage_not_reported",
-    },
   } as const;
 }

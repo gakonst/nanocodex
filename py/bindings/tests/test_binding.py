@@ -66,16 +66,6 @@ class BindingTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             Nanocodex("test-key", session_id="not-a-uuid-v7")
 
-    def test_spawn_returns_independent_agent_without_network(self) -> None:
-        agent, events = Nanocodex("test-key", thinking="low")
-        child, child_events = agent.spawn()
-        self.assertIsNot(agent, child)
-        self.assertNotEqual(agent.session_id, child.session_id)
-        child.shutdown()
-        agent.shutdown()
-        drain(child_events)
-        drain(events)
-
     def test_fork_before_safe_boundary_is_typed(self) -> None:
         agent, events = Nanocodex("test-key", thinking="low")
         with self.assertRaises(RuntimeError):

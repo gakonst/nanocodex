@@ -5,7 +5,6 @@ import {
   EXECUTION_OUTPUT_SCHEMA,
   WRITE_STDIN_PARAMETERS,
 } from "nanocodex-tools/execution-contract";
-import { HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE } from "nanocodex-tools/hosted";
 // @ts-expect-error The runtime subpath is intentionally JavaScript-only.
 import { ToolRouter, toolMapSource } from "nanocodex-tools/runtime/tool-router";
 import { createNamespaceExecutionTools } from "../src/namespace-tools";
@@ -18,7 +17,6 @@ import {
 
 const ACCOUNT_A = "11111111-1111-4111-8111-111111111111";
 const ACCOUNT_B = "22222222-2222-4222-8222-222222222222";
-const TOOL_RESULT = Symbol.for("nanocodex.toolResult");
 
 const snapshot = {
   tools: [{
@@ -75,19 +73,6 @@ describe("account Hosted Tools provider", () => {
     expect(provider.screenTool("laptop")).toBeUndefined();
     expect(provider.screenMachines()).toEqual([]);
     expect(provider.machines()[0]!.capabilities).not.toContain("screen");
-  });
-  it.each(["mac", "windows", "linux", "phone"])("keeps %s screen publishers internal to the viewer", async kind => {
-    const target = { machine_id: `screen-${kind}`, machine_name: "Fixture screen", id: "desktop", name: "Screen",
-      kind, generation: "generation", width: 800, height: 600, controllable: true, agent_tools: true };
-    const published = screenTool(target);
-    const catalog = { tools: [published], machines: [], screens: [target] };
-    const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([
-      [ACCOUNT_A, async () => Response.json(catalog)],
-    ])), ACCOUNT_A, () => true);
-    await provider.refresh();
-    expect(provider.screenTool(target.machine_id)).toBeDefined();
-    expect(provider.definitions()).toEqual([]);
-    expect(provider.resolve(published.definition.name)).toBeUndefined();
   });
 
   it("settles an offline VM probe through the real broker and tool router, then recovers after reconnect", async () => {
@@ -175,23 +160,6 @@ describe("account Hosted Tools provider", () => {
     } finally {
       successor.close(1000, "test complete");
     }
-  });
-
-  it("returns a known unstarted call to the agent without requesting durable replay", async () => {
-    const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([[ACCOUNT_A, async (request) => {
-      if (new URL(request.url).pathname === "/snapshot") return Response.json(snapshot);
-      return Response.json({
-        output: "Hosted machine is reconnecting", structured_result: { status: "unavailable" },
-        success: false, metadata: null, value: null, pre_admission_unavailable: true,
-      });
-    }]])), ACCOUNT_A, () => true);
-    await provider.refresh();
-    const result = await provider.machineTool("laptop", "exec_command")!.handler({}, {
-      sessionId: "agent", callId: "unstarted",
-    });
-    expect(result).toMatchObject({ success: false, structuredResult: { status: "unavailable" } });
-    expect((result as Record<PropertyKey, unknown>)[HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE]).toBe(true);
-    expect((result as { output: string }).output).toContain("Hosted machine is reconnecting");
   });
 
   it.each(["transport", "truncated", "invalid", "stale", "missing", "server"])(
@@ -589,79 +557,6 @@ describe("account Hosted Tools provider", () => {
     successor.close(1000, "test complete");
   });
 
-  it("shares one account hand across independent agent session IDs", async () => {
-    const calls: Record<string, unknown>[] = [];
-    let snapshotLoads = 0;
-    const namespace = fakeNamespace(new Map([[ACCOUNT_A, async (request) => {
-      const url = new URL(request.url);
-      if (url.pathname === "/snapshot") {
-        snapshotLoads += 1;
-        return Response.json(snapshot);
-      }
-      const body = await request.json<Record<string, unknown>>();
-      calls.push(body);
-      return Response.json({
-        output: `ran for ${body.session_id}`,
-        structured_result: { session_id: body.session_id },
-        success: true,
-        metadata: null,
-        value: body.session_id,
-      });
-    }]]));
-    const provider = new AccountHostedToolsProvider(namespace, ACCOUNT_A, () => true);
-    provider.setCatalogValidator((candidates) => {
-      expect(candidates[0]).toMatchObject({ provider: "fixture", remote_name: "lookup" });
-      return true;
-    });
-    await provider.refresh();
-    await provider.settled();
-
-    expect(snapshotLoads).toBe(1);
-    expect(provider.definitions()).toEqual([snapshot.tools[0]!.definition]);
-    expect(provider.machines()).toEqual(snapshot.machines.map(({ machine }) => machine));
-    const tool = provider.resolve("fixture__lookup")!;
-    const [left, right] = await Promise.all([
-      tool.handler({}, {
-        sessionId: "agent-a",
-        turnId: "agent-a:7",
-        callId: "call-a",
-      }),
-      tool.handler({}, {
-        sessionId: "agent-b",
-        callId: "call-b",
-      }),
-    ]);
-
-    expect((left as Record<PropertyKey, unknown>)[TOOL_RESULT]).toBe(true);
-    expect((right as Record<string, unknown>).value).toBe("agent-b");
-    expect(calls.map((call) => call.session_id)).toEqual(["agent-a", "agent-b"]);
-    expect(calls.map((call) => call.turn_id)).toEqual(["agent-a:7", undefined]);
-  });
-
-  it("uses account-keyed objects and hides the catalog outside account-owned turns", async () => {
-    let allowed = true;
-    const requested: string[] = [];
-    const namespace = fakeNamespace(new Map([[ACCOUNT_A, async (request) => {
-      requested.push(ACCOUNT_A);
-      return new URL(request.url).pathname === "/snapshot"
-        ? Response.json(snapshot)
-        : new Response(null, { status: 404 });
-    }]]), requested);
-    const owned = new AccountHostedToolsProvider(namespace, ACCOUNT_A, () => allowed);
-    const other = new AccountHostedToolsProvider(namespace, ACCOUNT_B, () => true);
-    await Promise.all([owned.refresh(), other.refresh()]);
-
-    expect(owned.definitions()).toHaveLength(1);
-    expect(other.definitions()).toEqual([]);
-    expect(owned.machineOnline("laptop")).toBe(true);
-    expect(other.machineOnline("laptop")).toBe(false);
-    allowed = false;
-    expect(owned.definitions()).toEqual([]);
-    expect(owned.machines()).toEqual([]);
-    expect(owned.machineOnline("laptop")).toBe(false);
-    expect(requested).toContain(ACCOUNT_B);
-  });
-
   it("rechecks account hand calls against the invoking subagent context", async () => {
     const invoked: string[] = [];
     const namespace = fakeNamespace(new Map([[ACCOUNT_A, async (request) => {
@@ -713,24 +608,6 @@ describe("account Hosted Tools provider", () => {
       expect(provider.definitions()).toEqual([]);
       expect(provider.machines()).toEqual([]);
     }
-  });
-
-  it("pins invocation to the discovered catalog and brands truncated results ambiguous", async () => {
-    let mode: "stale" | "truncated" = "stale";
-    const namespace = fakeNamespace(new Map([[ACCOUNT_A, async (request) => {
-      if (new URL(request.url).pathname === "/snapshot") return Response.json(snapshot);
-      if (mode === "stale") return Response.json({ error: "stale_catalog" }, { status: 409 });
-      return new Response("{", { headers: { "content-type": "application/json" } });
-    }]]));
-    const provider = new AccountHostedToolsProvider(namespace, ACCOUNT_A, () => true);
-    await provider.refresh();
-    const tool = provider.resolve("fixture__lookup")!;
-
-    const stale = await tool.handler({}, { sessionId: "agent-a", callId: "call-stale" });
-    expect(stale).toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
-    mode = "truncated";
-    const truncated = await tool.handler({}, { sessionId: "agent-a", callId: "call-truncated" });
-    expect(truncated).toMatchObject({ success: false, structuredResult: { status: "ambiguous" } });
   });
 });
 

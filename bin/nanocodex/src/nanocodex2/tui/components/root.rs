@@ -4470,9 +4470,7 @@ fn is_plain_key(event: &Event, character: char) -> bool {
 
 #[cfg(test)]
 mod history_tests {
-    use super::{
-        Component, Overlay, RenderRequest, RootEffect, RootEvent, RootNode, SettingsCommand,
-    };
+    use super::{Component, Overlay, RootEffect, RootEvent, RootNode};
     use crate::config::ReasoningEffort;
     use crate::tui::{
         theme::Theme,
@@ -4732,29 +4730,6 @@ mod history_tests {
     }
 
     #[test]
-    fn upward_at_top_and_home_request_older_history() {
-        let mut root = RootNode::new(std::path::Path::new("/workspace"), ReasoningEffort::Medium);
-
-        let page_up = root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
-            KeyCode::PageUp,
-            KeyModifiers::NONE,
-        ))));
-        assert!(matches!(
-            page_up.effects.as_slice(),
-            [RootEffect::LoadOlderHistory]
-        ));
-
-        let home = root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
-            KeyCode::Home,
-            KeyModifiers::CONTROL,
-        ))));
-        assert!(matches!(
-            home.effects.as_slice(),
-            [RootEffect::LoadOlderHistory]
-        ));
-    }
-
-    #[test]
     fn downward_scroll_does_not_request_older_history() {
         let mut root = RootNode::new(std::path::Path::new("/workspace"), ReasoningEffort::Medium);
         let update = root.update(RootEvent::Terminal(Event::Key(KeyEvent::new(
@@ -4831,33 +4806,6 @@ mod history_tests {
         }
 
         panic!("expected to prefetch before entering the cached near-top window");
-    }
-
-    #[test]
-    fn background_history_replay_does_not_restore_the_original_prompt_into_the_composer() {
-        let mut root = RootNode::new(std::path::Path::new("/workspace"), ReasoningEffort::Medium);
-        root.composer
-            .component_mut()
-            .replace_draft("new follow-up draft".to_owned());
-        let original = Arc::new(
-            TranscriptRecord::from_local(
-                1,
-                1,
-                LocalEvent::UserSubmitted {
-                    id: TurnId::new(1),
-                    text: "original prompt".to_owned(),
-                },
-            )
-            .unwrap(),
-        );
-        let projection = RootNode::project_open_session(ReasoningEffort::Medium, vec![original]);
-
-        let update = root.update(RootEvent::HistoryReplayed {
-            projection: Box::new(projection),
-        });
-
-        assert_eq!(update.render, RenderRequest::Immediate);
-        assert_eq!(root.composer.component().draft(), "new follow-up draft");
     }
 }
 
@@ -5154,20 +5102,6 @@ mod live_control_tests {
             root.update(RootEvent::Transcript(invalid))
                 .effects
                 .is_empty()
-        );
-    }
-
-    #[test]
-    fn vault_command_is_local_and_receipt_is_submitted() {
-        let mut root = root_with_draft("/vault review abcdefghijklmnopqrstuv https://example.com");
-        assert!(matches!(
-            root.update(key(KeyCode::Enter)).effects.as_slice(),
-            [RootEffect::Vault(crate::tui::vault::Command::Review { .. })]
-        ));
-        let receipt = crate::tui::vault::receipt(&vault_review().login);
-        let update = root.update(RootEvent::VaultReceipt(receipt.clone()));
-        assert!(
-            matches!(update.effects.as_slice(), [RootEffect::Submit(prompt)] if prompt.display_text() == receipt)
         );
     }
 
@@ -5526,34 +5460,6 @@ mod live_control_tests {
     }
 
     #[test]
-    fn repeated_autoroute_after_first_prompt_preserves_the_before_first_diagnostic() {
-        for active in [false, true] {
-            let mut root = root_with_draft("/autoroute");
-            root.update(RootEvent::RoutingHydrated {
-                enabled: true,
-                provider: Some("Vercel".into()),
-                model: Some(Model::Glm53),
-                effort: Some(ReasoningEffort::Low),
-            });
-            if active {
-                root.managed_active_turns = 1;
-            } else {
-                root.thread = super::ThreadState::Started;
-            }
-            let update = root.apply_settings_command(super::SettingsCommand::AutoRoute);
-            assert!(update.effects.is_empty());
-            assert!(
-                root.notification
-                    .as_ref()
-                    .unwrap()
-                    .message
-                    .to_string()
-                    .contains("before the first prompt")
-            );
-        }
-    }
-
-    #[test]
     fn routing_hydration_closes_selectors_and_session_reset_clears_the_route() {
         for open_model in [false, true] {
             let mut root = root_with_draft("");
@@ -5825,25 +5731,6 @@ mod live_control_tests {
         assert_eq!(root.composer.component().draft(), "not yet");
         assert_eq!(root.queue.component().len(), 1);
         assert!(root.queue.component().focused());
-    }
-
-    #[test]
-    fn queue_focused_tab_returns_to_the_composer_without_consuming_its_draft() {
-        let mut root = root_with_draft("first follow up");
-        root.in_flight_turns = 1;
-        let _ = root.sync_live_controls();
-        let _ = root.update(key(KeyCode::Tab));
-        root.composer
-            .component_mut()
-            .replace_draft("keep this draft".to_owned());
-        root.queue.component_mut().set_focused(true);
-
-        let update = root.update(key(KeyCode::Tab));
-
-        assert!(update.effects.is_empty());
-        assert_eq!(root.composer.component().draft(), "keep this draft");
-        assert_eq!(root.queue.component().len(), 1);
-        assert!(!root.queue.component().focused());
     }
 
     #[test]

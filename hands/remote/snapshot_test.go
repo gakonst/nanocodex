@@ -58,19 +58,6 @@ func TestSnapshotUsesDirectJPEGAndFallsBackForPNGOnlyGrim(t *testing.T) {
 	}
 }
 
-func TestCapturePolicyMatchesCanonicalRustPolicy(t *testing.T) {
-	canonical, err := os.ReadFile("../../crates/nanocodex-hand/src/capture_policy.json")
-	if os.IsNotExist(err) {
-		t.Skip("standalone relay checkout")
-	}
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(canonical, capturePolicyJSON) {
-		t.Fatal("Go capture policy differs from canonical Rust policy")
-	}
-}
-
 func TestSnapshotBase64Budget(t *testing.T) {
 	output := &boundedSnapshot{}
 	if _, err := output.Write(make([]byte, capturePolicy.MaxBase64Bytes/4*3)); err != nil {

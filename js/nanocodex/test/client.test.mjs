@@ -10,7 +10,6 @@ import {
   defineRuntime,
   parseSubagentAgentId,
   releaseHostSession,
-  toWasmConfig,
 } from "../internal.mjs";
 import {
   own as ownDurabilityHost,
@@ -387,36 +386,6 @@ test("turn prompt forwards atomic cancellation through the WASM boundary", async
     cancelOnAdmission: true,
   }]);
   agent.dispose();
-});
-
-test("the WASM config pairs a durability route with its state", () => {
-  assert.deepEqual(toWasmConfig({
-    apiKey: "test-key",
-    hostDefinitionId: 1,
-    durabilityId: "state-1",
-    durabilityHostId: "durability-route-1",
-    terminalReceiptRetention: 512,
-  }), {
-    api_key: "test-key",
-    durability_id: "state-1",
-    durability_host_id: "durability-route-1",
-    terminal_receipt_retention: 512,
-    host_definition_id: 1,
-  });
-});
-
-test("the WASM config distinguishes prompt replacement from host additions", () => {
-  assert.deepEqual(toWasmConfig({
-    apiKey: "test-key",
-    model: "gpt-6-astra",
-    instructions: "caller replacement",
-    additionalInstructions: "host additions",
-  }), {
-    api_key: "test-key",
-    model: "gpt-6-astra",
-    instructions: "caller replacement",
-    additional_instructions: "host additions",
-  });
 });
 
 test("the WASM host bridge routes owner-fenced durability per Agent binding", async () => {

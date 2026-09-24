@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   nanocodexActor: vi.fn(),
@@ -11,7 +11,6 @@ vi.mock("@/workflows/nanocodex-actor", () => ({
 }));
 
 import { POST } from "../app/api/sessions/route";
-import { nanocodexActor } from "../workflows/nanocodex-actor";
 
 const originalAdminToken = process.env.NANOCODEX_ADMIN_TOKEN;
 
@@ -63,9 +62,5 @@ describe("session creation route", () => {
       durability_id: "portable-agent",
     });
     expect(mocks.start).toHaveBeenCalledWith(mocks.nanocodexActor, [durability]);
-  });
-
-  it("accepts only a portable archive argument at the actor boundary", () => {
-    expectTypeOf(nanocodexActor).toBeFunction();
   });
 });

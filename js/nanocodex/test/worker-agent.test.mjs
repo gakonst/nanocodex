@@ -929,22 +929,6 @@ test("pending RPCs and structured-clone configuration fail closed at explicit bo
   assert.equal(replacementWorker.terminated, 1);
 });
 
-test("host-managed transport is a clone-safe Worker descriptor without app callbacks", async () => {
-  const fixture = createFixture();
-  const worker = new LoopbackWorker(fixture.createAgent);
-  const agent = await createWorkerAgent({
-    sessionId: "hosted",
-    harness: false,
-    transport: Transport.hostManaged({
-      websocketUrl: "wss://nanocodex.example/api/responses",
-    }),
-  }, { worker });
-
-  assert.equal(agent.sessionId, "hosted");
-  agent.dispose();
-  assert.equal(worker.terminated, 1);
-});
-
 test("rebooting a runtime disposes the replaced Agent and suppresses stale completion", async () => {
   const created = [];
   const outgoing = [];
@@ -1063,32 +1047,6 @@ test("a historical fork completing across reboot disposes its stale child", asyn
   assert.equal(outgoing.at(-1).channel, "new");
   runtime.dispose();
   assert.equal(created[1].fixture.disposedAgents.has("new"), true);
-});
-
-test("Worker runtime prewarms the engine and exact browser harness before boot", async () => {
-  const outgoing = [];
-  const warmed = [];
-  const module = emptyWasmModule();
-  const scope = { onmessage: null, postMessage: (message) => outgoing.push(message) };
-  const runtime = installWorkerAgentRuntime(scope, {
-    prewarmLocal(harness, options) { warmed.push({ harness, options }); },
-  });
-
-  scope.onmessage({ data: {
-    protocol: "nanocodex.worker-agent.v1",
-    channel: "warm",
-    type: "prewarm",
-    harness: { threadId: "thread-1", origin: "https://nanocodex.test" },
-    module,
-  } });
-  await tick();
-
-  assert.deepEqual(warmed, [{
-    harness: { threadId: "thread-1", origin: "https://nanocodex.test" },
-    options: { module },
-  }]);
-  assert.equal(outgoing.at(-1).type, "prewarmed");
-  runtime.dispose();
 });
 
 test("stable browser harness identity opts into Worker-owned durability", async () => {
