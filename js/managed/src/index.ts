@@ -8082,7 +8082,7 @@ export class DurableAgentSession extends DurableComputerSession {
     };
     const codeEvaluatorStartedAt = performance.now();
     const hostedRuntime = hostedProviders.length === 0 ? undefined : {
-      codeEvaluator: await managedCodeEvaluator(),
+      codeEvaluator: managedCodeEvaluator(),
       toolMode: "code" as const,
       toolProviders: hostedProviders,
     };

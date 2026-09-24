@@ -311,20 +311,28 @@ async function createPrepared(module, resolved, options, hostAgent, lifecycle, p
   let accepting = true;
   let attempted = false;
   try {
+    // Share the realm's engine initialization while the socket and tool metadata
+    // load. No Agent or durable runtime owner exists until preparation finishes.
+    installHostBridge();
+    const initializing = initializeBrowserEngine({ module });
+    void initializing.catch(() => {});
     const result = await prepare((prepared) => {
       if (!accepting || attempted) throw new Error("Cloudflare Agent preparation was already completed");
       attempted = true;
       signal?.throwIfAborted();
-      const runtime = prepared?.[INTERNAL_RUNTIME];
-      const pinned = prepared?.[INTERNAL_CONFIGURATION];
-      validateInternalConfiguration(pinned);
-      if (prepared?.durabilityId !== stateId
-        || ["model", "reasoning_mode"].some(key => pinned?.[key] !== configuration[key])
-        || runtime?.prepare !== undefined || runtime?.workersAi !== undefined || runtime?.gateway !== undefined
-        || (runtime?.inferenceForSession !== undefined && runtime?.preserveRootTransport !== true)) {
-        throw new Error("Cloudflare Agent preparation changed its pinned transport or configuration");
-      }
-      completing = createOwned(module, resolved, prepared, hostAgent, lifecycle, connection);
+      completing = initializing.then(() => {
+        signal?.throwIfAborted();
+        const runtime = prepared?.[INTERNAL_RUNTIME];
+        const pinned = prepared?.[INTERNAL_CONFIGURATION];
+        validateInternalConfiguration(pinned);
+        if (prepared?.durabilityId !== stateId
+          || ["model", "reasoning_mode"].some(key => pinned?.[key] !== configuration[key])
+          || runtime?.prepare !== undefined || runtime?.workersAi !== undefined || runtime?.gateway !== undefined
+          || (runtime?.inferenceForSession !== undefined && runtime?.preserveRootTransport !== true)) {
+          throw new Error("Cloudflare Agent preparation changed its pinned transport or configuration");
+        }
+        return createOwned(module, resolved, prepared, hostAgent, lifecycle, connection);
+      });
       void completing.catch(() => {});
       return completing;
     });

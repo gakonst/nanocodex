@@ -200,6 +200,95 @@ function durableOwner(storage, binding = egressBinding(), id = FIRST_OBJECT_ID) 
   };
 }
 
+// Keep this before successful creation: the engine is shared for the whole realm.
+test("prepared construction shares cold engine initialization without retaining failed metadata", { timeout: 10_000 }, async t => {
+  const module = await WebAssembly.compile(await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url)));
+  const instantiate = WebAssembly.instantiate;
+  let engine = { started: deferred(), release: deferred(), finished: deferred() };
+  const instantiations = t.mock.method(WebAssembly, "instantiate", async (...args) => {
+    const current = engine;
+    current.started.resolve();
+    await current.release.promise;
+    const result = await instantiate(...args);
+    current.finished.resolve();
+    return result;
+  });
+  const sockets = [];
+  const storage = new MemoryStorage();
+  const owner = durableOwner(storage, { async fetch() {
+    const socket = new UpstreamSocket();
+    sockets.push(socket);
+    return { status: 101, headers: new Headers(), webSocket: socket };
+  } });
+  const invalid = nativePreparationOptions(() => { throw new Error("must not prepare"); });
+  invalid.apiKey = "forbidden";
+  await assert.rejects(create(module, owner, invalid), /does not accept apiKey/);
+  assert.equal(instantiations.mock.callCount(), 0);
+  assert.equal(sockets.length, 0);
+
+  const discoveryFailure = new Error("discovery failed");
+  const discovery = deferred();
+  let staleFinish;
+  const failed = create(module, owner, nativePreparationOptions(async finish => {
+    staleFinish = finish;
+    await discovery.promise;
+    throw discoveryFailure;
+  }));
+  const rejected = assert.rejects(failed, error => error === discoveryFailure);
+  await engine.started.promise;
+  assert.equal(sockets.length, 1, "socket and engine start while discovery is blocked");
+  assert.equal(storage.owners.size, 0, "warming the engine does not acquire a durable runtime owner");
+  assert.equal(storage.states.length, 0);
+  discovery.resolve();
+  await rejected;
+  assert.equal(sockets[0].closed, true);
+  assert.throws(() => staleFinish(nativePreparationOptions()), /already completed/);
+
+  const initializationFailure = new Error("engine initialization failed");
+  let retryPrepared = false;
+  const failedEngine = create(module, owner, nativePreparationOptions(finish => {
+    retryPrepared = true;
+    return finish(nativePreparationOptions());
+  }));
+  assert.equal(retryPrepared, true, "metadata failure releases the lifecycle before the engine settles");
+  assert.equal(instantiations.mock.callCount(), 1, "retry shares the still-pending initialization");
+  const rejectedEngine = assert.rejects(failedEngine, error => error === initializationFailure);
+  engine.release.reject(initializationFailure);
+  await rejectedEngine;
+  assert.equal(storage.owners.size, 0);
+  assert.equal(sockets[1].closed, true);
+
+  engine = { started: deferred(), release: deferred(), finished: deferred() };
+  const metadata = deferred();
+  const prepare = async finish => { await metadata.promise; return finish(nativePreparationOptions()); };
+  const first = create(module, owner, nativePreparationOptions(prepare));
+  await engine.started.promise;
+  const otherStorage = new MemoryStorage();
+  const second = create(module, durableOwner(otherStorage, egressBinding(), SECOND_OBJECT_ID), nativePreparationOptions(prepare));
+  const cancelledStorage = new MemoryStorage();
+  const cancellation = new AbortController();
+  const cancelled = create(module, durableOwner(cancelledStorage, egressBinding(), "c".repeat(64)),
+    nativePreparationOptions(finish => finish(nativePreparationOptions()), cancellation.signal));
+  cancellation.abort();
+  const rejectedCancellation = assert.rejects(cancelled, /abort/i);
+  assert.equal(instantiations.mock.callCount(), 2, "concurrent owners share the single retrying initialization");
+  engine.release.resolve();
+  await engine.finished.promise;
+  await rejectedCancellation;
+  assert.equal(storage.owners.size, 0, "engine readiness alone does not create a session");
+  assert.equal(otherStorage.owners.size, 0);
+  assert.equal(cancelledStorage.owners.size, 0, "cancellation while the engine loads prevents runtime ownership");
+  metadata.resolve();
+  const agents = await Promise.all([first, second]);
+  try {
+    assert.equal(instantiations.mock.callCount(), 2, "normal Agent construction reuses the initialized engine");
+    assert.equal(storage.owners.size, 1);
+    assert.equal(otherStorage.owners.size, 1);
+  } finally {
+    await Promise.all(agents.map(agent => agent.session.shutdown()));
+  }
+});
+
 test("Cloudflare Agent owns credentials, transport, and durability options", async () => {
   const module = new Uint8Array();
   await assert.rejects(create(module), /requires a Durable Object instance/);
