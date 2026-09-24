@@ -34,7 +34,7 @@ test('Worker inputs isolate services and follow dependencies, assets, config and
   await put('js/email/build.mjs', 'const asset = new URL("../../assets/", import.meta.url);');
   await put('assets/template.html', 'hello');
   let previous = await fingerprintWorkers(root);
-  assert.equal(Object.keys(previous).length, 10);
+  assert.equal(Object.keys(previous).length, 11);
   assert.deepEqual(await fingerprintWorkers(root), previous);
   const change = async (path, text, expected) => {
     await put(path, text);
@@ -42,6 +42,8 @@ test('Worker inputs isolate services and follow dependencies, assets, config and
     assert.deepEqual(Object.keys(next).filter(name => next[name] !== previous[name]).sort(), expected.sort(), path);
     previous = next;
   };
+  await change('js/media/src/index.ts', 'export const value = 2;', ['media']);
+  await change('js/media/src/media/generated/ffmpeg.wasm.bin', 'fixture binary', ['media']);
   await change('js/managed/src/index.ts', 'export const value = 2;', ['managed']);
   await change('js/fixture-protocol/index.ts', 'export const version = 2;', ['x']);
   await change('js/shared-inner.mjs', 'export const value = 2;', ['egress']);

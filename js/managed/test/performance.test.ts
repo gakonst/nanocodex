@@ -2,6 +2,15 @@ import { env, runInDurableObject } from "cloudflare:test";
 import { expect, it, vi } from "vitest";
 import { type Env, DurableAgentSession } from "../src/index";
 
+it("does not initialize Workspace SQL schema before a Session first needs files", async () => {
+  const sessions = (env as unknown as Env).NANOCODEX_SESSIONS as DurableObjectNamespace<DurableAgentSession>;
+  await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (_session, state) => {
+    const workspaceTables = state.storage.sql.exec("SELECT name FROM sqlite_master WHERE name = 'vfs_meta'").toArray();
+    expect(workspaceTables).toEqual([]);
+    await state.storage.deleteAlarm();
+  });
+});
+
 it.each([undefined, "false", "TRUE"])("keeps native SQL without the explicit audit opt-in (%s)", async (trace) => {
   const sessions = (env as unknown as Env).NANOCODEX_SESSIONS as DurableObjectNamespace<DurableAgentSession>;
   await runInDurableObject(sessions.getByName(crypto.randomUUID()), async (_instance, original) => {

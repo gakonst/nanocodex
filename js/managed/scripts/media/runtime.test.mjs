@@ -8,21 +8,28 @@ import {createComputerRuntime, createMediaCommands} from 'nanocodex-tools';
 import {createWorkspace} from 'nanocodex-tools/workspace';
 
 const root = new URL('../../', import.meta.url);
+const mediaRoot = new URL('../../../media/', import.meta.url);
 let mf;
+let mediaMf;
 let fixture;
 before(async () => {
   fixture = await readFile(new URL('test-fixtures/media/color-bars.mov', root));
-  const source = await readFile(new URL('src/media-runtime.ts', root), 'utf8');
-  const compiled = await transform(source, {loader:'ts',format:'esm',target:'es2024'});
-  const modules = [{type:'ESModule',path:'/media-runtime.js',contents:compiled.code}, {
-    type:'ESModule',path:'/entry.js',contents:`
-      import {createMediaExecutor} from './media-runtime.js';
+  const clientSource = await readFile(new URL('src/media-runtime.ts', root), 'utf8');
+  const client = await transform(clientSource, {loader:'ts',format:'esm',target:'es2024'});
+  const sidecarSource = await readFile(new URL('src/index.ts',mediaRoot), 'utf8');
+  const sidecar = await transform(sidecarSource.replace('"./media-runtime"','"./media-runtime.js"')
+    .replace('export default { fetch(): Response { return new Response("Not found", { status: 404 }); } };',
+      'export default {fetch(request,env){return runMediaRequest(request,env.LOADER)}};'), {loader:'ts',format:'esm',target:'es2024'});
+  const runtimeSource = await readFile(new URL('src/media-runtime.ts',mediaRoot), 'utf8');
+  const runtime = await transform(runtimeSource, {loader:'ts',format:'esm',target:'es2024'});
+  const managed = [{type:'ESModule',path:'/entry.js',contents:`
+      import {createMediaExecutor} from './client.js';
       export default {async fetch(request,env){
         const f=await request.formData();
         const args=JSON.parse(f.get('args'));
         const file=f.get('input');
         try {
-          const result=await createMediaExecutor(env.LOADER)({command:f.get('command'),args,
+          const result=await createMediaExecutor(env.MEDIA)({command:f.get('command'),args,
             files:file?[{path:'/input.mov',data:new Uint8Array(await file.arrayBuffer())}]:[]});
           const out=new FormData();
           out.set('result',JSON.stringify({...result,files:undefined}));
@@ -30,29 +37,36 @@ before(async () => {
           return new Response(out);
         }catch(error){return new Response(String(error),{status:500})}
       }};`,
-  }];
+  }, {type:'ESModule',path:'/client.js',contents:client.code}];
+  const modules = [{type:'ESModule',path:'/index.js',contents:sidecar.code},
+    {type:'ESModule',path:'/media-runtime.js',contents:runtime.code}];
   for(const program of ['ffmpeg','ffprobe']) {
     for(const [suffix,type] of [['js.txt','Text'],['wasm.bin','Data']]) {
       const path=`media/generated/${program}.${suffix}`;
-      modules.push({type,path:`/${path}`,contents:await readFile(new URL(`src/${path}`,root),type==='Text'?'utf8':undefined)});
+      modules.push({type,path:`/${path}`,contents:await readFile(new URL(`src/${path}`,mediaRoot),type==='Text'?'utf8':undefined)});
     }
   }
-  modules.push({type:'Text',path:'/media/worker.js.txt',contents:await readFile(new URL('src/media/worker.js.txt',root),'utf8')});
-  mf=new Miniflare({modulesRoot:'/',modules:[modules[1],modules[0],...modules.slice(2)],compatibilityDate:'2026-07-29',workerLoaders:{LOADER:{}},outboundService:()=>{throw new Error('Media attempted network access')}});
+  modules.push({type:'Text',path:'/media/worker.js.txt',contents:await readFile(new URL('src/media/worker.js.txt',mediaRoot),'utf8')});
+  mediaMf=new Miniflare({modulesRoot:'/',modules,compatibilityDate:'2026-07-29',
+    compatibilityFlags:['enable_request_signal'],workerLoaders:{LOADER:{}},
+    outboundService:()=>{throw new Error('Media attempted network access')}});
+  mf=new Miniflare({modulesRoot:'/',modules:managed,compatibilityDate:'2026-07-29',
+    compatibilityFlags:['enable_request_signal'],serviceBindings:{MEDIA: request=>mediaMf.dispatchFetch(request)},
+    outboundService:()=>{throw new Error('Media attempted network access')}});
 }, {timeout:30000});
-after(async()=>{await mf?.dispose()});
+after(async()=>{await Promise.all([mf?.dispose(),mediaMf?.dispose()])});
 async function run(command,args,input=fixture) {
   const body=new FormData();body.set('command',command);body.set('args',JSON.stringify(args));
   if(input)body.set('input',new Blob([input]),'input.mov');
   const serialized=new Response(body);
-  const response=await mf.dispatchFetch('https://media.test/',{method:'POST',headers:Object.fromEntries(serialized.headers),body:await serialized.arrayBuffer()});
+  const response=await mf.dispatchFetch('http://localhost/',{method:'POST',headers:Object.fromEntries(serialized.headers),body:await serialized.arrayBuffer()});
   assert.equal(response.status,200, response.status===200?'':await response.text());
   const form=await response.formData();
   return {...JSON.parse(form.get('result')),output:form.get('output')};
 }
-test('media executor delegates resource limits to the worker platform',async()=>{
+test('sidecar alone owns WASM assets; media loader has no network or custom limits',async()=>{
   const compiled=await build({
-    entryPoints:[fileURLToPath(new URL('src/media-runtime.ts',root))],
+    entryPoints:[fileURLToPath(new URL('src/media-runtime.ts',mediaRoot))],
     bundle:true,format:'esm',write:false,
     plugins:[{name:'stub-media-assets',setup(builder){
       builder.onResolve({filter:/\.(?:txt|bin)$/},args=>({path:args.path,namespace:'media-assets'}));
@@ -77,6 +91,17 @@ test('media executor delegates resource limits to the worker platform',async()=>
     assert.equal(Object.hasOwn(configuration,'limits'),false);
     assert.equal(configuration.globalOutbound,null);
   }
+  const client=await readFile(new URL('src/media-runtime.ts',root),'utf8');
+  assert.doesNotMatch(client,/\.(?:wasm\.bin|js\.txt)|workerSource|loader\.load/);
+});
+
+test('sidecar rejects unsupported requests',async()=>{
+  const service=await mediaMf.getWorker();
+  assert.equal((await service.fetch('https://media.internal/not-run',{method:'POST'})).status,404);
+  const body=new FormData();body.set('command','invalid');body.set('args','["-version"]');
+  assert.equal((await service.fetch('https://media.internal/run',{method:'POST',body})).status,400);
+  body.set('command','ffmpeg');body.set('args','not JSON');
+  assert.equal((await service.fetch('https://media.internal/run',{method:'POST',body})).status,400);
 });
 
 test('real workerd ffprobe reads H264/AAC MOV metadata',async()=>{

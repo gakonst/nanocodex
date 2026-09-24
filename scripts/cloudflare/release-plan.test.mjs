@@ -3,7 +3,7 @@ import test from 'node:test';
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { selectRelease, readPlan, planPath, buildSelected } from './release-plan.mjs';
+import { selectRelease, readPlan, planPath, installSelected, buildSelected, scopedRelease } from './release-plan.mjs';
 import { workerSpecs } from './worker-inputs.mjs';
 const fingerprints = Object.fromEntries(Object.keys(workerSpecs).map(name => [name, 'a'.repeat(64)]));
 
@@ -45,4 +45,17 @@ test('release phases reuse successfully completed targets and never cache failed
     if (args.includes('nanocodex-terminal')) throw Error('second tier failed');
   }, failed), /second tier failed/);
   assert.deepEqual([...failed], ['nanocodex-tools', 'nanocodex-connect-protocol', 'nanocodex']);
+});
+
+const commands = (fn, selected) => { const calls = []; fn({ selected }, (...args) => calls.push(args)); return calls; };
+test('managed-only scope includes its private media dependency before managed', () => {
+  const selected = Object.keys(workerSpecs);
+  assert.deepEqual(scopedRelease(selected, 'managed'), ['media', 'managed']);
+  assert.deepEqual(scopedRelease(['managed'], 'managed'), ['media', 'managed']);
+  assert.deepEqual(scopedRelease(selected, 'managed,account'), ['media', 'managed', 'account']);
+  assert.deepEqual(scopedRelease(selected, 'account'), ['account']);
+  assert.deepEqual(scopedRelease(selected, undefined), selected);
+  assert.throws(() => scopedRelease(selected, 'media'));
+  assert.deepEqual(commands(installSelected, ['media'])[0][1].slice(-2), ['--filter', 'nanocodex-media-service...']);
+  assert.deepEqual(commands(buildSelected, ['media'])[0][1].slice(-2), ['--filter', 'nanocodex-tools']);
 });

@@ -724,7 +724,13 @@ async function authenticateLive(request: Request, env: AccountAuthEnv, url: URL)
   let record: StoredApiKey | undefined;
   const rpc = stub.resolveAuthorizedKey;
   if (typeof rpc === "function") {
-    record = consumeRpcData(await Reflect.apply(rpc, stub, []));
+    const observeCreate = request.method === "POST"
+      && (url.pathname === "/v1/agents" || url.pathname === "/v1/agent-runs");
+    const rpcStartedAt = performance.now();
+    record = consumeRpcData(await Reflect.apply(rpc, stub, [observeCreate]));
+    if (observeCreate) console.info({ type: "managed.auth.api_key_rpc",
+      resolve_rpc_ms: Math.round((performance.now() - rpcStartedAt) * 100) / 100 });
+
   } else {
     const response = await stub.fetch("https://api-key.internal/resolve?authorize=1");
     if (!response.ok) {
@@ -2074,12 +2080,26 @@ export class Organization extends DurableObject<AccountAuthEnv> {
 }
 
 export class ApiKeyRecord extends DurableObject<AccountAuthEnv> {
-  async resolveAuthorizedKey(): Promise<StoredApiKey | undefined> {
+  /** No credentials are read or written: same-Worker cold DO dispatch control. */
+  async activationProbe(): Promise<number> {
+    const enteredAt = Date.now();
+    await this.ctx.storage.deleteAll();
+    return enteredAt;
+  }
+
+  async resolveAuthorizedKey(observeCreate = false): Promise<StoredApiKey | undefined> {
+    const startedAt = performance.now();
     const record = await this.ctx.storage.get<StoredApiKey>("record");
+    const storageMs = performance.now() - startedAt;
     // Read current key, account and membership on every request, including
     // repeated voice starts. RPC changes transport, not revocation semantics.
-    return isStoredApiKey(record) && await apiKeyAuthorized(this.env, record)
-      ? record : undefined;
+    const authorized = isStoredApiKey(record) && await apiKeyAuthorized(this.env, record);
+    if (observeCreate) console.info({ type: "managed.auth.api_key_handler",
+      storage_ms: Math.round(storageMs * 100) / 100,
+      membership_ms: Math.round((performance.now() - startedAt - storageMs) * 100) / 100,
+      handler_ms: Math.round((performance.now() - startedAt) * 100) / 100,
+      authorized });
+    return authorized ? record : undefined;
   }
 
   async fetch(request: Request): Promise<Response> {

@@ -22,7 +22,7 @@ function fixture(selected, overrides = {}) {
 test('all selected Workers preserve dependency barriers, literal arguments and account-last health', async () => {
   const f = fixture(releasePhases.flat());
   const results = await f.release();
-  assert.equal(results.length, 10); assert.ok(results.every(row => row.state === 'success'));
+  assert.equal(results.length, 11); assert.ok(results.every(row => row.state === 'success'));
   for (let i = 1; i < releasePhases.length; i++) {
     const previous = releasePhases[i - 1].map(name => f.events.findIndex(row => row[0] === 'success' && row[1] === name));
     const next = releasePhases[i].map(name => f.events.findIndex(row => row[0] === 'start' && row[1] === name));
@@ -34,6 +34,7 @@ test('all selected Workers preserve dependency barriers, literal arguments and a
   }
   assert.equal(f.events.filter(row => row[0] === 'health').length, releasePhases.length);
   assert.equal(f.calls.filter(({ command }) => command.includes('--env=')).length, 3);
+  assert.equal(f.calls.find(({ options }) => options.directory === 'js/media').command.slice(0, 6).join(' '), 'npx wrangler deploy --config wrangler.jsonc --message');
   assert.equal(f.calls.at(-1).options.directory, 'js/account');
   const account = f.calls.at(-1).command;
   assert.equal(account[account.indexOf('--config') + 1], 'dist/nanocodex/wrangler.ci.json');
@@ -282,4 +283,19 @@ test('successful WASM builds remain retainable after a later phase fails or is s
     else await f.release();
     assert.equal(readFileSync(output, 'utf8'), `wasm-built=${outcome !== 'never-built'}\n`);
   }
+});
+
+test('media must pass its own health and ledger phase before managed starts', async () => {
+  const f = fixture(['media', 'managed']);
+  f.options.health = async () => {
+    f.events.push(['health']);
+    if (!f.events.some(row => row[0] === 'success' && row[1] === 'media')) throw Error('media not healthy');
+  };
+  // The first phase fails; managed is never started.
+  await assert.rejects(f.release(), /Release phase failed/);
+  assert.deepEqual(f.events, [['start', 'media'], ['health'], ['failure', 'media']]);
+  const success = fixture(['media', 'managed']);
+  await success.release();
+  assert.ok(success.events.findIndex(row => row[0] === 'success' && row[1] === 'media') <
+    success.events.findIndex(row => row[0] === 'start' && row[1] === 'managed'));
 });

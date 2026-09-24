@@ -39,7 +39,7 @@ export async function createManagedComputerRuntime(options: Readonly<{
     context?: ToolContext,
   ) => ManagedEgressConnectorAccess;
   egress: Fetcher;
-  mediaLoader?: WorkerLoader;
+  mediaService?: Fetcher;
   sshIdentityAllowed?: (reference: string, context?: ToolContext) => boolean;
   vaultAllowed?: (context?: ToolContext) => boolean;
   subject?: string;
@@ -73,9 +73,9 @@ export async function createManagedComputerRuntime(options: Readonly<{
         ? "public-http-only"
         : "connector-http-gateway",
       commands: ({ filesystem: mountedFilesystem }) => [
-        ...(options.mediaLoader ? createMediaCommands({
+        ...(options.mediaService ? createMediaCommands({
           filesystem: mountedFilesystem,
-          execute: createMediaExecutor(options.mediaLoader),
+          execute: createMediaExecutor(options.mediaService),
         }) : []),
         ...(options.networkPolicy && options.networkPolicy.access !== "enabled" ? [] : [{
           name: "ssh",

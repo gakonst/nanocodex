@@ -273,6 +273,9 @@ jobs:
       - name: Prepare managed evaluator asset
         working-directory: js/managed
         run: npm run prepare:code-evaluator
+      - name: Validate private media Worker
+        working-directory: js/media
+        run: npx wrangler deploy --dry-run --config wrangler.jsonc
       - name: Validate managed Worker
         working-directory: js/managed
         run: npx wrangler deploy --dry-run --config wrangler.jsonc --containers-rollout none

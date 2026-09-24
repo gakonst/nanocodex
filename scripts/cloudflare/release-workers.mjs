@@ -17,7 +17,7 @@ const commands=Object.fromEntries([...phases.infrastructure,...phases.consumers,
   ['managed','js/managed',['npx','wrangler','deploy','--config','wrangler.ci.jsonc','--containers-rollout','immediate']],
   ['account','js/account',['npx','wrangler','deploy','--config','dist/nanocodex/wrangler.ci.json']],
 ].map(([name,directory,command])=>[name,{directory,command}]));
-export const releasePhases=[['egress','x'],['managed'],['email','dialog','connect-api','astra','chief-of-staff','playground'],['account']];
+export const releasePhases=[['egress','x'],['media'],['managed'],['email','dialog','connect-api','astra','chief-of-staff','playground'],['account']];
 
 export async function guardedCommand(command, {cwd=process.cwd(),directory='.',env=process.env,input,launch=spawn}={}) {
   const temporary=mkdtempSync(join(tmpdir(),'nanocodex-release-'));

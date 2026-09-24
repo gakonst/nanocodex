@@ -110,21 +110,31 @@ export async function loadManagedConversationSelection(options: Readonly<{
   const accountId = options.accountId ?? "default";
   const listing = listManagedConversations(accountId, { refresh: options.refresh });
   if (options.routeAgentId) {
-    const [, listed] = await Promise.all([
-      appQueryClient.fetchQuery(managedConversationQueryOptions(accountId, options.routeAgentId)),
-      listing.catch((): readonly ManagedConversation[] => Object.freeze([])),
-    ]);
-    const exact = listed.find(({ id }) => id === options.routeAgentId) ?? Object.freeze({
-      id: options.routeAgentId,
-      title: `Conversation ${options.routeAgentId.slice(0, 8)}`,
+    // Exact-route verification may fail while the parallel list is still in flight.
+    void listing.catch(() => undefined);
+    // Verify the exact route without gating its terminal on a possibly slow list.
+    // The list is still started above, so navigation and sidebar load in parallel.
+    await appQueryClient.fetchQuery(managedConversationQueryOptions(accountId, options.routeAgentId));
+    const agentId = options.routeAgentId;
+    const cached = appQueryClient.getQueryData<readonly ManagedConversation[]>(managedConversationsKey(accountId)) ?? [];
+    const exact = cached.find(({ id }) => id === agentId) ?? Object.freeze({
+      id: agentId,
+      title: `Conversation ${agentId.slice(0, 8)}`,
     });
-    const conversations = listed.some(({ id }) => id === exact.id)
-      ? listed
-      : Object.freeze([exact, ...listed]);
-    const listState = appQueryClient.getQueryState(managedConversationsKey(accountId));
-    if (conversations !== listed && listState) {
-      appQueryClient.setQueryData(managedConversationsKey(accountId), conversations, { updatedAt: listState.dataUpdatedAt });
-    }
+    const conversations = cached.some(({ id }) => id === agentId)
+      ? cached
+      : Object.freeze([exact, ...cached]);
+    // A stale list response may arrive after the exact state and omit this id.
+    // Reinsert it *after* listing settles, retaining the list's original freshness.
+    void listing.then(() => {
+      const key = managedConversationsKey(accountId);
+      const listState = appQueryClient.getQueryState(key);
+      if (listState?.data === undefined) return;
+      appQueryClient.setQueryData<readonly ManagedConversation[]>(key,
+        (current) => current && !current.some(({ id }) => id === agentId)
+          ? Object.freeze([exact, ...current]) : current,
+        { updatedAt: listState.dataUpdatedAt });
+    }).catch(() => undefined);
     return Object.freeze({ conversations, selectedId: exact.id, replaceRoute: false });
   }
   const listed = await listing;
@@ -138,6 +148,30 @@ export async function loadManagedConversationSelection(options: Readonly<{
     ...(selectedId === undefined ? {} : { selectedId }),
     replaceRoute: selectedId !== undefined,
   });
+}
+
+/** A local-only id gives the new tab an identity before the server acknowledges it.
+ * Never pass this id to Agent.open or put it in the URL. */
+export function beginManagedConversationCreation(accountId: string): Readonly<{
+  provisional: ManagedConversation;
+  receipt: Promise<ManagedConversation>;
+}> {
+  const provisional = Object.freeze({
+    id: `pending:${crypto.randomUUID()}`,
+    title: "New agent",
+    updatedAt: Date.now(),
+    turnCount: 0,
+  });
+  return { provisional, receipt: createManagedConversation(accountId) };
+}
+
+/** A late create receipt must not take focus back from a tab chosen since creation. */
+export function reconcileManagedCreateSelection(
+  selectedId: string | undefined,
+  provisionalId: string,
+  actualId: string,
+): string | undefined {
+  return selectedId === provisionalId ? actualId : selectedId;
 }
 
 export function createManagedConversation(

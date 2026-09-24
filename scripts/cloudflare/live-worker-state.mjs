@@ -1,6 +1,6 @@
 // Live provider state is authoritative after manual deployments and rollbacks.
 export const workerScripts = Object.freeze({
-  egress: 'nanocodex-egress', x: 'nanocodex-x', managed: 'nanocodex-durable-agent',
+  egress: 'nanocodex-egress', x: 'nanocodex-x', media: 'nanocodex-media', managed: 'nanocodex-durable-agent',
   email: 'nanocodex-email', dialog: 'nanocodex-connect-dialog',
   'connect-api': 'nanocodex-connect-api', astra: 'nanocodex-astra-mpp-trial',
   'chief-of-staff': 'nanocodex-chief-of-staff', playground: 'nanocodex-connect-playground',

@@ -424,6 +424,7 @@ export interface Env extends
   NANOCODEX_SYSTEM_HOST_TOKEN?: string;
   HISTORY_AI_SEARCH?: AiSearchInstance;
   LOADER?: WorkerLoader;
+  NANOCODEX_MEDIA?: Fetcher;
   AGENT_IDLE_TIMEOUT_MS?: string;
   MANAGED_MULTIPLAYER_IO_TIMEOUT_MS?: string;
   MANAGED_OWNERSHIP_IO_TIMEOUT_MS?: string;
@@ -1342,6 +1343,17 @@ const SAFE_OBSERVATION_FIELDS = new Set([
   "session_prepare_ms",
   "session_initialize_ms",
   "session_commit_ms",
+  "session_commit_attach_ms",
+  "session_commit_activate_ms",
+  "session_commit_alarm_ms",
+  "session_pre_handler_ms",
+  "session_before_constructor_ms",
+  "session_constructor_ms",
+  "session_constructor_sql_ms",
+  "session_constructor_restore_read_ms",
+  "session_after_constructor_ms",
+  "session_handler_ms",
+  "session_return_ms",
   "error_code",
   "error_kind",
   "initialization_ms",
@@ -1786,6 +1798,47 @@ async function managedFetchRoute(
       }
       return json({ error: "method_not_allowed" }, { status: 405 });
     }
+    // Admin-only, bounded first-use diagnostic. It never creates a managed
+    // agent, account registry entry, credential, or externally addressable ID.
+    if (request.method === "POST" && url.pathname === "/v1/agents/activation-probe") {
+      if (url.search !== "" || await hasRequestBody(request)) return json({ error: "invalid_request" }, { status: 400 });
+      const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
+      if (!principal || principal.kind !== "api_key"
+        || principal.userId !== env.NANOCODEX_ADMIN_USER_ID
+        || !principal.capabilities.includes("agents:write")) return json({ error: "not_found" }, { status: 404 });
+      const originFailure = requireSameOriginMutation(request, url, principal);
+      if (originFailure) return originFailure;
+      const kind = request.headers.get("x-nanocodex-probe-kind");
+      if (kind !== "named" && kind !== "unique" && kind !== "key-unique") return json({ error: "invalid_request" }, { status: 400 });
+      if (kind === "key-unique") {
+        const id = env.NANOCODEX_API_KEYS.newUniqueId();
+        const startedAt = Date.now();
+        const started = performance.now();
+        try {
+          const enteredAt = await env.NANOCODEX_API_KEYS.get(id).activationProbe();
+          return json({ kind, dispatch_ms: roundMilliseconds(performance.now() - started),
+            before_constructor_ms: enteredAt - startedAt },
+            { headers: { "cache-control": "no-store" } });
+        } catch {
+          return json({ error: "activation_probe_failed" }, { status: 503 });
+        }
+      }
+      const id = kind === "named" ? env.NANOCODEX_SESSIONS.idFromName(`activation-probe:${uuidV7()}`)
+        : env.NANOCODEX_SESSIONS.newUniqueId();
+      const startedAt = Date.now();
+      const started = performance.now();
+      try {
+        const phases = await env.NANOCODEX_SESSIONS.get(id, durablePlacementOptions(clientIngressColo)).activationProbe();
+        return json({ kind, dispatch_ms: roundMilliseconds(performance.now() - started),
+          before_constructor_ms: phases.constructor_entered_at_ms - startedAt,
+          constructor_ms: phases.constructor_ms,
+          constructor_base_ms: phases.constructor_base_ms,
+          after_constructor_ms: phases.handler_entered_at_ms - phases.constructor_ready_at_ms },
+          { headers: { "cache-control": "no-store" } });
+      } catch {
+        return json({ error: "activation_probe_failed" }, { status: 503 });
+      }
+    }
     if (request.method === "POST" && url.pathname === "/v1/agent-runs") {
       if (url.search !== "") return json({ error: "invalid_request" }, { status: 400 });
       const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
@@ -1984,6 +2037,8 @@ async function managedFetchRoute(
       if (durabilityArchive === undefined) {
         let created: Response;
         const sessionCreationStartedAt = performance.now();
+        let sessionDispatchAt = Date.now();
+        let sessionAttempts = 0;
         try {
           created = await fetchCreateStage(stub, "https://session.internal/create", {
             method: "POST", headers: forwardManagedIngress(new Headers({ "content-type": "application/json" }), clientIngressColo),
@@ -1993,7 +2048,10 @@ async function managedFetchRoute(
               authorization_epoch: principal.authorizationEpoch, public_origin: url.origin,
               settings: creationSettings, configuration: creationConfiguration,
             }),
-          }, ownershipTimeoutMs, "agent creation", 5);
+          }, ownershipTimeoutMs, "agent creation", 5, (attempt) => {
+            sessionAttempts = attempt;
+            sessionDispatchAt = Date.now();
+          });
         } catch {
           if (requestKey === null) await requestSessionCleanup(stub, ownershipTimeoutMs);
           return json({ error: "agent creation failed" }, { status: 503 });
@@ -2003,15 +2061,68 @@ async function managedFetchRoute(
           return created;
         }
         const phases = await created.json<Record<string, number>>();
+        const sessionReceivedAt = Date.now();
+        const sessionCreateMs = roundMilliseconds(performance.now() - sessionCreationStartedAt);
+        const createMs = roundMilliseconds(performance.now() - creationStartedAt);
+        // Timestamp pairs are wall-clock estimates (clock skew can affect the
+        // boundary), while the per-isolate durations below are monotonic.
+        const hasBoundaryTimes = Number.isFinite(phases.handler_entered_at_ms)
+          && Number.isFinite(phases.response_ready_at_ms)
+          && phases.handler_entered_at_ms >= sessionDispatchAt
+          && sessionReceivedAt >= phases.response_ready_at_ms;
+        const preHandlerMs = hasBoundaryTimes
+          ? phases.handler_entered_at_ms - sessionDispatchAt : undefined;
+        const handlerMs = Number.isFinite(phases.handler_ms) ? phases.handler_ms : undefined;
+        const hasConstructorTimes = hasBoundaryTimes
+          && Number.isFinite(phases.constructor_entered_at_ms)
+          && Number.isFinite(phases.constructor_ready_at_ms)
+          && phases.constructor_entered_at_ms >= sessionDispatchAt
+          && phases.constructor_ready_at_ms >= phases.constructor_entered_at_ms
+          && phases.handler_entered_at_ms >= phases.constructor_ready_at_ms;
+        const beforeConstructorMs = hasConstructorTimes
+          ? phases.constructor_entered_at_ms - sessionDispatchAt : undefined;
+        const afterConstructorMs = hasConstructorTimes
+          ? phases.handler_entered_at_ms - phases.constructor_ready_at_ms : undefined;
+        const returnMs = hasBoundaryTimes
+          ? sessionReceivedAt - phases.response_ready_at_ms : undefined;
         observeManagedPrincipal(env, "managed.agent.created", principal, {
           agent_id: agentId, thread_id: agentId, outcome: "success",
           auth_ms: roundMilliseconds(authenticatedAt - creationStartedAt),
-          session_create_ms: roundMilliseconds(performance.now() - sessionCreationStartedAt),
+          session_create_ms: sessionCreateMs,
+          attempt_count: sessionAttempts,
+          session_pre_handler_ms: preHandlerMs,
+          session_before_constructor_ms: beforeConstructorMs,
+          session_constructor_ms: phases.constructor_ms,
+          session_constructor_base_ms: phases.constructor_base_ms,
+          session_constructor_sql_ms: phases.constructor_sql_ms,
+          session_constructor_restore_read_ms: phases.constructor_restore_read_ms,
+          session_after_constructor_ms: afterConstructorMs,
+          session_handler_ms: handlerMs,
+          session_return_ms: returnMs,
           session_prepare_ms: phases.prepare_ms,
           session_initialize_ms: phases.initialize_ms, session_commit_ms: phases.commit_ms,
-          create_ms: roundMilliseconds(performance.now() - creationStartedAt),
+          session_commit_attach_ms: phases.commit_attach_ms,
+          session_commit_activate_ms: phases.commit_activate_ms,
+          session_commit_alarm_ms: phases.commit_alarm_ms,
+          create_ms: createMs,
         });
-        return agentCreationResponse(url, agentId, creationSettings, true);
+        const response = agentCreationResponse(url, agentId, creationSettings, true);
+        response.headers.append("server-timing", `managed_create;dur=${createMs}, managed_session_create;dur=${sessionCreateMs}`);
+        if (preHandlerMs !== undefined) response.headers.append("server-timing", `managed_session_pre_handler;dur=${preHandlerMs}`);
+        if (beforeConstructorMs !== undefined) response.headers.append("server-timing", `managed_session_before_constructor;dur=${beforeConstructorMs}`);
+        if (Number.isFinite(phases.constructor_ms)) response.headers.append("server-timing", `managed_session_constructor;dur=${phases.constructor_ms}`);
+        if (Number.isFinite(phases.constructor_base_ms)) response.headers.append("server-timing", `managed_session_constructor_base;dur=${phases.constructor_base_ms}`);
+        if (afterConstructorMs !== undefined) response.headers.append("server-timing", `managed_session_after_constructor;dur=${afterConstructorMs}`);
+        if (handlerMs !== undefined) response.headers.append("server-timing", `managed_session_handler;dur=${handlerMs}`);
+        if (returnMs !== undefined) response.headers.append("server-timing", `managed_session_return;dur=${returnMs}`);
+        for (const [name, duration] of [
+          ["managed_session_attach", phases.commit_attach_ms],
+          ["managed_session_activate", phases.commit_activate_ms],
+          ["managed_session_alarm", phases.commit_alarm_ms],
+        ] as const) {
+          if (Number.isFinite(duration)) response.headers.append("server-timing", `${name};dur=${duration}`);
+        }
+        return response;
       }
       let prepared: Response;
       const credentialPreparationStartedAt = performance.now();
@@ -3058,16 +3169,25 @@ class DurableComputerObject extends DurableObject<Env> {
   get computerContext(): DurableObjectState { return this.ctx; }
 }
 
-const DurableComputerSession = withWorkspace(
-  DurableComputerObject,
-  (self) => ({
-    storage: self.computerContext.storage as unknown as DurableObjectStorageLike,
-    sessionId: self.computerContext.id.toString(),
-  }),
-);
+// The workspace constructor initializes its SQLite filesystem schema. It is
+// needed for tool execution and deletion, not for admitting a new Session.
+// Construct it on first use rather than before the Session's first handler.
+class WorkspaceOwner {
+  constructor(readonly computerContext: DurableObjectState) {}
+}
+const LazyWorkspaceOwner = withWorkspace(WorkspaceOwner, (self) => ({
+  storage: self.computerContext.storage as unknown as DurableObjectStorageLike,
+  sessionId: self.computerContext.id.toString(),
+}));
 
-export class DurableAgentSession extends DurableComputerSession {
+export class DurableAgentSession extends DurableComputerObject {
   #handPaths: HandPaths;
+  #workspaceHolder?: InstanceType<typeof LazyWorkspaceOwner>;
+
+  async #workspace() {
+    this.#workspaceHolder ??= new LazyWorkspaceOwner(this.ctx);
+    return getWorkspace(this.#workspaceHolder);
+  }
 
   /** Internal RPC after allocation authentication; labels never select a machine. */
   vmHostDisplayName(ownerId: string, machineId: string): string | undefined {
@@ -3154,9 +3274,22 @@ export class DurableAgentSession extends DurableComputerSession {
   #deletionGeneration = 0;
   #runtimeOwnershipGeneration = 0;
   readonly #commandReceipts: CommandReceipts;
+  readonly #constructorEnteredAtMs: number;
+  #constructorBaseMs = 0;
+  #constructorReadyAtMs?: number;
+  #constructorMs = 0;
+  #constructorSqlMs = 0;
+  #constructorRestoreReadMs = 0;
+  #createConstructorPending = true;
 
   constructor(ctx: DurableObjectState, env: Env) {
+    // Capture entry before super() and field initializers so dispatch time
+    // does not include inherited Workspace setup or our own constructor.
+    const enteredAt = Date.now();
+    const constructorStartedAt = performance.now();
     super(ctx, env);
+    this.#constructorEnteredAtMs = enteredAt;
+    this.#constructorBaseMs = roundMilliseconds(performance.now() - constructorStartedAt);
     ctx = this.ctx;
     this.#commandReceipts = new CommandReceipts(ctx.storage);
     initializeTurnInputs(ctx.storage, "managed_history_projection_chunks");
@@ -3165,6 +3298,7 @@ export class DurableAgentSession extends DurableComputerSession {
     this.#goalRuntime = new GoalRuntime(ctx.storage, this.#goals);
     this.#startupContext = new ManagedStartupContext(ctx.storage);
     this.#handPaths = new HandPaths(ctx.storage);
+    const schemaStartedAt = performance.now();
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS session_state (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -3318,6 +3452,7 @@ export class DurableAgentSession extends DurableComputerSession {
         citations_json TEXT NOT NULL
       );
     `);
+    this.#constructorSqlMs = roundMilliseconds(performance.now() - schemaStartedAt);
     initializeManagedAgentSettingsSchema(this.ctx.storage);
     initializeVmHostScopeSchema(this.ctx.storage);
     this.#operations = new SessionOperations(this.ctx.storage);
@@ -3370,15 +3505,21 @@ export class DurableAgentSession extends DurableComputerSession {
       this.ctx.id.toString(),
     );
     this.#deleted = this.#initializationOwnership()?.state === "deleted";
-    this.#streamError = this.#session()?.stream_error ?? undefined;
+    const retainedSession = this.#session();
+    this.#streamError = retainedSession?.stream_error ?? undefined;
+    const constructorSyncMs = roundMilliseconds(performance.now() - constructorStartedAt);
+    const restoreStartedAt = performance.now();
     performanceSyncScope(this.ctx.id.toString(), "session.constructor.restore", () => {
       // SQLite KV reads restore lifecycle fences before the constructor returns.
       const retained = this.ctx.storage.kv;
+      const readStartedAt = performance.now();
+
       this.#deleting = retained.get(SESSION_DELETING_KEY) === true;
       this.#credentialBinding = retained.get<CredentialBindingOwnership>(CREDENTIAL_BINDING_KEY);
       this.#deletionGeneration = retained.get<number>(SESSION_DELETION_GENERATION_KEY) ?? 0;
       this.#durabilityExported = retained.get(DURABILITY_EXPORTED_KEY) === true;
       this.#durabilityImportState = retained.get<"pending" | "complete">(DURABILITY_IMPORT_STATE_KEY);
+      this.#constructorRestoreReadMs = roundMilliseconds(performance.now() - readStartedAt);
       // Durable state and SSE replay are immediately usable after eviction.
       // Re-admission or deletion may load external resources, so neither sits
       // on the object's request-readiness boundary.
@@ -3391,6 +3532,35 @@ export class DurableAgentSession extends DurableComputerSession {
         this.#resumeClientReplays();
       }
     });
+    this.#constructorReadyAtMs = Date.now();
+    this.#constructorMs = roundMilliseconds(performance.now() - constructorStartedAt);
+    if (!retainedSession || this.#constructorMs >= 100) {
+      console.info({ type: "managed.session.constructor", fresh: !retainedSession,
+        constructor_ms: this.#constructorMs,
+        constructor_base_ms: this.#constructorBaseMs,
+        constructor_sync_ms: constructorSyncMs,
+        constructor_restore_read_ms: this.#constructorRestoreReadMs,
+        constructor_sql_ms: this.#constructorSqlMs });
+    }
+  }
+
+  /** No user state: compare first activation of a named and a unique ID. */
+  async activationProbe(): Promise<Readonly<{
+    constructor_entered_at_ms: number; constructor_ready_at_ms: number;
+    constructor_ms: number; constructor_base_ms: number; handler_entered_at_ms: number;
+  }>> {
+    const handlerEnteredAt = Date.now();
+    if (this.#session() || this.#credentialBinding || this.#initializationOwnership())
+      throw new Error("activation_probe_not_empty");
+    const phases = {
+      constructor_entered_at_ms: this.#constructorEnteredAtMs,
+      constructor_ready_at_ms: this.#constructorReadyAtMs ?? handlerEnteredAt,
+      constructor_ms: this.#constructorMs,
+      constructor_base_ms: this.#constructorBaseMs,
+      handler_entered_at_ms: handlerEnteredAt,
+    };
+    await this.ctx.storage.deleteAll();
+    return phases;
   }
 
   /** Private RPC: live ownership without serializing a streamed HTTP body. */
@@ -4422,16 +4592,27 @@ export class DurableAgentSession extends DurableComputerSession {
     return new Response(null, { status: this.#deleting || this.#deleted ? 409 : 204 });
   }
 
-  async #commitPreparedCredential(): Promise<Response> {
+  async #commitPreparedCredential(
+    freshDirectCreate = false,
+    timing?: { attach_ms?: number; activate_ms?: number; alarm_ms?: number },
+  ): Promise<Response> {
     if (this.#deleting || this.#deleted) return new Response(null, { status: 409 });
     if (this.#durabilityImportState === "pending") return new Response(null, { status: 409 });
-    const ownership = await this.#refreshCredentialPreparation();
+    // /create has just persisted the direct credential lease. Re-reading and
+    // extending it twice before registration adds durable transactions but no
+    // safety: the original lease outlives the bounded downstream attachment.
+    // Staged imports and legacy broker bindings must still refresh normally.
+    const retained = this.#credentialBinding;
+    const ownership = freshDirectCreate && retained?.strategy === "session_v1"
+      && retained.cleanup_at > Date.now() + this.#ownershipIoTimeoutMs()
+      ? retained : await this.#refreshCredentialPreparation();
     const session = this.#session();
     if (!ownership || !session
       || ownership.owner_id !== session.owner_id
       || ownership.session_id !== session.session_id) {
       return new Response(null, { status: 409 });
     }
+    const attachStartedAt = performance.now();
     try {
       await this.#track(attachAgent(
         this.env,
@@ -4443,17 +4624,26 @@ export class DurableAgentSession extends DurableComputerSession {
     } catch {
       return new Response(null, { status: 503 });
     }
+    if (timing) timing.attach_ms = roundMilliseconds(performance.now() - attachStartedAt);
     if (this.#deleting || this.#deleted) return new Response(null, { status: 409 });
+    const activateStartedAt = performance.now();
     if (ownership.state !== "active") {
       const active = { ...ownership, state: "active" as const };
       await this.ctx.storage.put(CREDENTIAL_BINDING_KEY, active);
       this.#credentialBinding = active;
     }
+    if (timing) timing.activate_ms = roundMilliseconds(performance.now() - activateStartedAt);
+    const alarmStartedAt = performance.now();
     await this.#scheduleNextAlarm();
+    if (timing) timing.alarm_ms = roundMilliseconds(performance.now() - alarmStartedAt);
     return new Response(null, { status: 204 });
   }
 
   async #createHttp(request: Request): Promise<Response> {
+    const handlerEnteredAt = Date.now();
+    const handlerStartedAt = performance.now();
+    const includeConstructor = this.#createConstructorPending;
+    this.#createConstructorPending = false;
     if (this.#deleting || this.#deleted) return new Response(null, { status: 409 });
     const body = await request.text();
     if (body.length > 2048) return new Response(null, { status: 400 });
@@ -4478,20 +4668,41 @@ export class DurableAgentSession extends DurableComputerSession {
     if (!prepared.ok) return json({ error: prepared.status === 409
       ? "agent_creation_expired" : "agent cleanup initialization failed" }, { status: prepared.status });
     const preparedAt = performance.now();
+    // A direct session credential was durably prepared above; bind is a no-op.
+    // Avoid its otherwise redundant lease refresh while preserving the broker
+    // path and the initialize/credential parallelism for legacy sessions.
+    const directCredential = this.#credentialBinding?.strategy === "session_v1";
     const [binding, initialized] = await Promise.allSettled([
-      this.#bindPreparedCredential(), Promise.resolve().then(() => this.#initializeSession(initialization, normalizeProviderColo(request.headers.get(MANAGED_INGRESS_COLO)))),
+      directCredential ? Promise.resolve(new Response(null, { status: 204 }))
+        : this.#bindPreparedCredential(),
+      Promise.resolve().then(() => this.#initializeSession(initialization, normalizeProviderColo(request.headers.get(MANAGED_INGRESS_COLO)))),
     ]);
     if (initialized.status === "fulfilled" && initialized.value.status === 409) return json({ error: "agent_initialization_conflict",
       message: "The retained agent has different settings or configuration." }, { status: 409 });
     if (binding.status === "rejected" || !binding.value.ok) return json({ error: "credential_broker_unavailable" }, { status: 503 });
     if (initialized.status === "rejected" || !initialized.value.ok) return json({ error: "agent initialization failed" }, { status: 503 });
     const initializedAt = performance.now();
-    const committed = await this.#commitPreparedCredential();
+    const commitTiming: { attach_ms?: number; activate_ms?: number; alarm_ms?: number } = {};
+    const committed = await this.#commitPreparedCredential(directCredential, commitTiming);
     if (!committed.ok) return json({ error: "agent cleanup commit failed" }, { status: 503 });
     return json({
       prepare_ms: roundMilliseconds(preparedAt - started),
       initialize_ms: roundMilliseconds(initializedAt - preparedAt),
       commit_ms: roundMilliseconds(performance.now() - initializedAt),
+      commit_attach_ms: commitTiming.attach_ms,
+      commit_activate_ms: commitTiming.activate_ms,
+      commit_alarm_ms: commitTiming.alarm_ms,
+      handler_ms: roundMilliseconds(performance.now() - handlerStartedAt),
+      handler_entered_at_ms: handlerEnteredAt,
+      response_ready_at_ms: Date.now(),
+      ...(includeConstructor && this.#constructorReadyAtMs !== undefined ? {
+        constructor_entered_at_ms: this.#constructorEnteredAtMs,
+        constructor_ready_at_ms: this.#constructorReadyAtMs,
+        constructor_ms: this.#constructorMs,
+        constructor_base_ms: this.#constructorBaseMs,
+        constructor_sql_ms: this.#constructorSqlMs,
+        constructor_restore_read_ms: this.#constructorRestoreReadMs,
+      } : {}),
     });
   }
 
@@ -7280,7 +7491,7 @@ export class DurableAgentSession extends DurableComputerSession {
       ]);
     }
     await withHardDeadline("managed workspace deletion", timeoutMs, async () => {
-      const workspace = await getWorkspace(this);
+      const workspace = await this.#workspace();
       try {
         await workspace.fs.rm("/workspace", { recursive: true, force: true });
       } finally {
@@ -7885,7 +8096,7 @@ export class DurableAgentSession extends DurableComputerSession {
     if (!multiplayer && create === undefined) await this.#ensureCredentialBinding(session);
     const credentialBindingMs = preparation?.credentialBindingMs ?? performance.now() - phaseStartedAt;
     phaseStartedAt = performance.now();
-    const workspace = await getWorkspace(this);
+    const workspace = await this.#workspace();
     const workspaceMs = performance.now() - phaseStartedAt;
     phaseStartedAt = performance.now();
     // Shared-room members can all admit turns. Never attach the room owner's
@@ -7895,7 +8106,7 @@ export class DurableAgentSession extends DurableComputerSession {
       computer: workspace,
       ...(multiplayer ? {} : { filesystem: createBrainWorkspace(this.#brainBucket(), session.session_id) }),
       egress: this.env.NANOCODEX,
-      mediaLoader: this.env.LOADER,
+      mediaService: this.env.NANOCODEX_MEDIA,
       networkPolicy: configuration.environment?.network,
       ...(multiplayer ? {} : { subject: this.#credentialSubject() }),
       connectorAllowed: (connector, connectionId, context) => (
@@ -11618,10 +11829,12 @@ async function fetchCreateStage(
   timeoutMs: number,
   operation: string,
   attempts = 2,
+  onAttemptStart?: (attempt: number) => void,
 ): Promise<Response> {
   let failure: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
+      onAttemptStart?.(attempt + 1);
       const response = await fetchWithDeadline(binding, input, init, timeoutMs, operation);
       if (response.status !== 408 && response.status !== 429 && response.status < 500) {
         return response;

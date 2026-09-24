@@ -82,13 +82,16 @@ describe("live API key authorization beside the key", () => {
   );
   it("uses one RPC reply and observes key deletion without a streamed response", async () => {
     await withKey(async (key, f) => {
-      const rpc = vi.fn(() => key.resolveAuthorizedKey());
+      const rpc = vi.fn((observeCreate?: boolean) => key.resolveAuthorizedKey(observeCreate));
       const fetch = vi.fn(() => { throw new Error("unexpected HTTP fallback"); });
       const edge = { ...f.bindings, NANOCODEX_API_KEYS: { getByName: () => ({ resolveAuthorizedKey: rpc, fetch }) } } as unknown as AccountAuthEnv;
-      expect(await authenticate(request(), edge)).toMatchObject({ kind: "api_key", capabilities: f.record.capabilities });
+      expect(await authenticate(new Request(request(), { method: "POST" }), edge))
+        .toMatchObject({ kind: "api_key", capabilities: f.record.capabilities });
       await key.fetch(new Request("https://key/record", { method: "DELETE" }));
       expect(await authenticate(request(), edge)).toBeUndefined();
       expect(rpc).toHaveBeenCalledTimes(2);
+      expect(rpc).toHaveBeenNthCalledWith(1, true);
+      expect(rpc).toHaveBeenNthCalledWith(2, false);
       expect(fetch).not.toHaveBeenCalled();
     });
   });
