@@ -313,11 +313,14 @@ export class AccountHostedTools extends DurableObject<AccountHostedToolsEnv> {
 
   webSocketClose(socket: WebSocket, code: number, reason: string): void {
     if (this.#remote.owns(socket)) { this.#remote.close(socket); return; }
+    console.warn({ type: "hand.socket.closed", code, reason: reason.slice(0, 123),
+      pending: this.#broker.hasPendingCalls() });
     this.#broker.webSocketClose(socket, code, reason);
   }
 
   webSocketError(socket: WebSocket): void {
     if (this.#remote.owns(socket)) { this.#remote.close(socket); return; }
+    console.warn({ type: "hand.socket.error", pending: this.#broker.hasPendingCalls() });
     this.#broker.webSocketError(socket);
   }
 
