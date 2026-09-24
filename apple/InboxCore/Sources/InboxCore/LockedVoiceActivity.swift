@@ -7,9 +7,12 @@ public struct LockedVoiceActivityAttributes: ActivityAttributes {
     public struct ContentState: Codable, Hashable, Sendable {
         public var phase: String
         public var language: String
-        public init(phase: String, language: String) {
+        /// Privacy-safe failure reason; never contains dictated speech or account data.
+        public var failure: String?
+        public init(phase: String, language: String, failure: String? = nil) {
             self.phase = phase
             self.language = language
+            self.failure = failure
         }
     }
     public var captureID: String

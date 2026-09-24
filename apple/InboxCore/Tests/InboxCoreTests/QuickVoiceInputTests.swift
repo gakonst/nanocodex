@@ -3,6 +3,14 @@ import XCTest
 @testable import InboxCore
 
 final class QuickVoiceInputTests: XCTestCase {
+    func testLockedVoiceFailureLabelsNeverEchoUnknownErrors() {
+        XCTAssertEqual(LockedVoiceFailure.description(for: "Recording interrupted."), "Recording interrupted")
+        XCTAssertEqual(LockedVoiceFailure.description(for: "Microphone could not start."), "Microphone unavailable")
+        XCTAssertEqual(LockedVoiceFailure.description(for: "Speech recognition stopped."), "Speech recognition unavailable")
+        XCTAssertEqual(LockedVoiceFailure.description(for: "Recording storage unavailable."), "Recording storage unavailable")
+        XCTAssertEqual(LockedVoiceFailure.description(for: "private transcript or AVFoundation error"), "Recording stopped")
+    }
+
     func testExactVoiceRouteOnly() {
         XCTAssertTrue(QuickVoiceInput.matches(URL(string: "nanocodex://voice/new")!))
         for value in ["https://voice/new", "nanocodex://voice/other", "nanocodex://voice/new?text=send", "nanocodex://voice/new#send", "nanocodex://user@voice/new", "nanocodex://voice:123/new", "nanocodex://agent/new"] {
