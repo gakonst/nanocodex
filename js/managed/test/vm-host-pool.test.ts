@@ -334,17 +334,7 @@ describe("VM host pool", () => {
     const provision = nextFrame(host.socket);
     const acquired = await acquire(stub, MOUNT_A);
     const initial = await provision;
-    const responses = new Promise<Record<string, unknown>[]>((resolve) => {
-      const frames: Record<string, unknown>[] = [];
-      const onMessage = (event: MessageEvent) => {
-        frames.push(JSON.parse(String(event.data)) as Record<string, unknown>);
-        if (frames.length === 2) {
-          host.socket.removeEventListener("message", onMessage);
-          resolve(frames);
-        }
-      };
-      host.socket.addEventListener("message", onMessage);
-    });
+    const responses = nextFrames(host.socket, 2);
     host.socket.send(JSON.stringify({
       type: "ping", lease_id: host.lease.lease_id, epoch: host.lease.epoch,
     }));
@@ -422,6 +412,12 @@ describe("VM host pool", () => {
     const allocation = allocationIdentity(acquired.body, MOUNT_A);
     const provision = await initialProvision;
     const bearer = (provision.tool_attachment as { bearer: string }).bearer;
+    first.socket.send(JSON.stringify({
+      type: "provisioned", lease_id: first.lease.lease_id, epoch: first.lease.epoch,
+      allocation_id: allocation.allocation_id, generation: allocation.generation,
+      machine_id: `vm:${MOUNT_A}`,
+    }));
+    await eventuallyReady(stub, allocation);
 
     const denied = await stub.fetch("https://pool.internal/acquire", {
       method: "POST",
@@ -455,6 +451,17 @@ describe("VM host pool", () => {
     });
     const successorBearer = (redriven.tool_attachment as { bearer: string }).bearer;
     expect(successorBearer).not.toBe(bearer);
+    await eventuallyState(stub, allocation, "provisioning");
+    const responses = nextFrames(replacement.socket, 2);
+    replacement.socket.send(JSON.stringify({
+      type: "ping", lease_id: replacement.lease.lease_id, epoch: replacement.lease.epoch,
+    }));
+    const [pong, retry] = await responses;
+    expect(pong).toMatchObject({ type: "pong" });
+    expect(retry).toMatchObject({
+      type: "provision", allocation_id: allocation.allocation_id,
+      tool_attachment: redriven.tool_attachment,
+    });
     replacement.socket.send(JSON.stringify({
       type: "provisioned",
       lease_id: replacement.lease.lease_id,
@@ -789,6 +796,20 @@ function nextFrame(socket: WebSocket): Promise<Record<string, unknown>> {
     };
     socket.addEventListener("message", onMessage);
     socket.addEventListener("error", onError);
+  });
+}
+
+function nextFrames(socket: WebSocket, count: number): Promise<Record<string, unknown>[]> {
+  return new Promise((resolve) => {
+    const frames: Record<string, unknown>[] = [];
+    const onMessage = (event: MessageEvent) => {
+      frames.push(JSON.parse(String(event.data)) as Record<string, unknown>);
+      if (frames.length === count) {
+        socket.removeEventListener("message", onMessage);
+        resolve(frames);
+      }
+    };
+    socket.addEventListener("message", onMessage);
   });
 }
 

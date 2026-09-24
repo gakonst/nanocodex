@@ -847,6 +847,12 @@ export class VmHostPool extends DurableObject<VmHostPoolEnv> {
   }
 
   #sendProvision(socket: WebSocket, host: HostRow, allocation: AllocationRow): void {
+    // A retained VM still needs to attach with the new bearer before it is ready.
+    this.ctx.storage.sql.exec(
+      `UPDATE vm_allocations SET state = 'provisioning', updated_at = ?
+       WHERE allocation_id = ? AND generation = ? AND state = 'ready'`,
+      Date.now(), allocation.allocation_id, allocation.generation,
+    );
     console.info({ type: "vm.pool.stage", stage: "provision_dispatch", mount_id: allocation.mount_id,
       allocation_id: allocation.allocation_id, timestamp: Date.now() });
     this.#send(socket, {
