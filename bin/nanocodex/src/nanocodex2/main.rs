@@ -91,12 +91,14 @@ use nanocodex_managed::{
 use nanocodex_tools::{
     Tools, WorkspaceTools,
     attachment::{Attachment, AttachmentMetadata, AttachmentTarget},
+    mcp::{Mcp, McpServer},
 };
 use percent_encoding::percent_decode_str;
 use tracing::Instrument as _;
 use url::Url;
 
 const SYSTEM_HOST_TOKEN_ENV: &str = "NANOCODEX_SYSTEM_HOST_TOKEN";
+const MERCATOR_MCP_URL: &str = "https://mercator.sh/mcp";
 
 #[derive(Parser)]
 #[command(
@@ -1137,7 +1139,10 @@ async fn open_workspace_agent_with_settings(
             tools = tools.add(tool);
         }
     }
+    // The terminal owns its local tool runtime. Cloudflare managed-agent MCP
+    // defaults are not inherited by nanocodex2's workspace-backed driver.
     let tools = tools
+        .add(default_mercator_mcp()?)
         .build()
         .map_err(|error| ManagedError::Configuration(error.to_string()))?;
     let backend = match (agent_id, state) {
@@ -1165,6 +1170,18 @@ async fn open_workspace_agent_with_settings(
     };
     let agent_id = agent.agent_id().to_owned();
     Ok((agent, events, agent_id, workspace))
+}
+
+fn default_mercator_mcp() -> Result<Mcp, ManagedError> {
+    Mcp::builder()
+        .server(
+            "mercator",
+            McpServer::http(MERCATOR_MCP_URL)
+                .description("Discover and quote Mercator services. Paid jobs require separate authorization.")
+                .parallel_tools(["get_suggested_queries", "get_connection_status", "search_services"]),
+        )
+        .build()
+        .map_err(|error| ManagedError::Configuration(error.to_string()))
 }
 
 async fn await_turn(
@@ -1237,6 +1254,22 @@ fn write_json_line<T: serde::Serialize>(value: &T) -> Result<(), ManagedError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn local_managed_client_exposes_public_mercator_by_default() {
+        assert_eq!(MERCATOR_MCP_URL, "https://mercator.sh/mcp");
+        let tools = Tools::builder()
+            .without_defaults()
+            .add(default_mercator_mcp().unwrap())
+            .build()
+            .unwrap();
+        let specs = serde_json::to_string(
+            &nanocodex_tools::runtime::ToolRuntime::new_with_tools(".", None, None, &tools)
+                .model_specs("mercator-test"),
+        )
+        .unwrap();
+        assert!(specs.contains("mercator"), "{specs}");
+    }
 
     #[test]
     fn version_reports_full_source_revision_for_local_updates() {
