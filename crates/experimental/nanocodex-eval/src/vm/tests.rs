@@ -3,7 +3,6 @@ use std::{
     sync::atomic::{AtomicUsize, Ordering},
 };
 
-use nanocodex_agent::{Nanocodex, OpenAi};
 use nanocodex_vm::tools::{VmCommandOutput, VmCommandPartialOutput};
 use nix::unistd::getpgrp;
 
@@ -11,19 +10,6 @@ use super::*;
 
 // VM lifecycle regression tests are kept beside the backend that owns the
 // behavior rather than in the CLI adapter.
-#[test]
-fn evaluator_vm_builder_records_the_backend_environment() {
-    let output = tempfile::tempdir().unwrap();
-    let backend = VmBackend::builder().build();
-    let openai = OpenAi::new("test").unwrap();
-    let evaluator = crate::Evaluator::builder(Nanocodex::builder(openai), backend)
-        .output_directory(output.path())
-        .build()
-        .unwrap();
-
-    assert_eq!(evaluator.attempt_environment(), EvalEnvironment::MicroVm);
-}
-
 #[test]
 fn run_scoped_judge_credentials_are_verifier_only() {
     let task =

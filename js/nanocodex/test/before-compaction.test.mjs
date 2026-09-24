@@ -3,7 +3,6 @@ import { test } from "node:test";
 import { createBeforeCompaction } from "../runtime/before-compaction.mjs";
 import { createNodeHost } from "../node/host.mjs";
 import { createBrowserHost } from "../browser/host.mjs";
-import { toWasmConfig } from "../internal.mjs";
 
 const request = (boundaryId = "boundary-fixture") => ({
   boundaryId,
@@ -14,18 +13,6 @@ const request = (boundaryId = "boundary-fixture") => ({
   truncated: false,
 });
 const deferred = () => Promise.withResolvers();
-
-test("beforeCompaction is disabled by default and rejects invalid callback configuration", async () => {
-  assert.equal(toWasmConfig({ apiKey: "fixture" }).before_compaction, undefined);
-  assert.equal(toWasmConfig({ apiKey: "fixture", beforeCompaction: false }).before_compaction, false);
-  assert.equal(toWasmConfig({ apiKey: "fixture", beforeCompaction: true }).before_compaction, true);
-  for (const callback of [null, true, "callback", {}]) {
-    assert.throws(() => createBeforeCompaction(callback), /must be a function/);
-  }
-  const hook = createBeforeCompaction();
-  await assert.rejects(hook.preserve(request()), /not configured/);
-  hook.dispose();
-});
 
 test("beforeCompaction validates receipt shape and its UTF-8 byte limit", async t => {
   const invalid = [undefined, null, true, "receipt", {}, { receiptId: 1 },

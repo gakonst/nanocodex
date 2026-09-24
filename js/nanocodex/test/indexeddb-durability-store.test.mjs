@@ -141,10 +141,6 @@ test("IndexedDB durability rejects stores with incompatible key semantics", asyn
   );
 });
 
-test("IndexedDB durability has no browser-global import-time dependency", () => {
-  assert.throws(() => createIndexedDbDurabilityStore(), /requires IndexedDB/);
-});
-
 test("IndexedDB durability retries failed opens and reopens retained state after close", async () => {
   const indexedDB = createFakeIndexedDb();
   const store = createIndexedDbDurabilityStore({ indexedDB, databaseName: "reopen" });

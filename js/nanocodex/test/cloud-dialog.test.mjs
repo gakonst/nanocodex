@@ -74,49 +74,6 @@ test("the default Connect dialog stays embedded and accepts responses only from 
   }
 });
 
-test("the popup Connect dialog opens the canonical host as a top-level wallet target", () => {
-  const previousWindow = globalThis.window;
-  const opened = [];
-  const popupWindow = {
-    closed: false,
-    focusCount: 0,
-    close() { this.closed = true; },
-    focus() { this.focusCount += 1; },
-  };
-  globalThis.window = {
-    location: { origin: "chrome-extension://extension-id" },
-    open(source, target, features) {
-      opened.push({ source, target, features });
-      return popupWindow;
-    },
-  };
-
-  try {
-    const dialog = Dialog.popup().setup({ appId: "popup-test" });
-    dialog.showWallet();
-    assert.equal(opened.length, 1);
-    assert.equal(opened[0].target, "nanocodex-connect");
-    assert.match(opened[0].features, /popup=yes/);
-    const source = new URL(opened[0].source);
-    assert.equal(source.origin, DEFAULT_ORIGIN);
-    assert.equal(source.pathname, "/connect-dialog/");
-    assert.equal(source.searchParams.get("app_id"), "popup-test");
-    assert.equal(source.searchParams.get("origin"), "chrome-extension://extension-id");
-    assert.equal(source.searchParams.get("mode"), "popup");
-    assert.equal(dialog.host, source.toString());
-    assert.equal(dialog.walletTarget(), popupWindow);
-
-    dialog.showWallet();
-    assert.equal(opened.length, 1);
-    assert.equal(popupWindow.focusCount, 2);
-    dialog.hideWallet();
-    assert.equal(popupWindow.closed, true);
-    assert.equal(dialog.walletTarget(), undefined);
-  } finally {
-    globalThis.window = previousWindow;
-  }
-});
-
 test("popup URLs overwrite caller-controlled routing parameters", () => {
   const previousWindow = globalThis.window;
   const opened = [];

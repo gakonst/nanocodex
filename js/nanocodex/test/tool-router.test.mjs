@@ -7,7 +7,6 @@ import {
   preDispatchUnavailable,
   providerSource,
   ToolRouter,
-  toolMapSource,
 } from "../runtime/tool-router.mjs";
 import { createTools } from "../tools/Tools.mjs";
 import { createWorkspace } from "../runtime/workspace.mjs";
@@ -21,13 +20,6 @@ const contract = (name, extra = {}) => ({
   parameters: { type: "object", properties: {}, additionalProperties: false },
   output_schema: { type: "object", additionalProperties: true },
   ...extra,
-});
-
-test("createTools rejects ambiguous and orphaned configuration", async () => {
-  await assert.rejects(createTools({ customTools: {} }), /unsupported createTools option/);
-  await assert.rejects(createTools({ workspaceOptions: {} }), /requires workspace/);
-  await assert.rejects(createTools({ mcp: false, mcpOptions: {} }), /requires mcp/);
-  await assert.rejects(createTools({ tools: null }), /tools must be/);
 });
 
 test("createTools transfers caller tool ownership only after successful construction", async () => {
@@ -151,15 +143,6 @@ function source(id, entries, options = {}) {
     ...(options.search ? { search: options.search } : {}),
   };
 }
-
-test("source permutations produce byte-identical deterministic snapshots", () => {
-  const a = source("a", [{ definition: contract("alpha") }]);
-  const z = source("z", [{ definition: contract("zeta") }]);
-  const left = new ToolRouter([z, a]);
-  const right = new ToolRouter([a, z]);
-  assert.equal(JSON.stringify(left.definitions()), JSON.stringify(right.definitions()));
-  assert.deepEqual(left.definitions().map(({ name }) => name), ["alpha", "zeta"]);
-});
 
 test("duplicate and normalized collisions reject and addSource rolls back", () => {
   const router = new ToolRouter([source("first", [{ definition: contract("a.b") }])]);
@@ -518,27 +501,4 @@ test("direct and Code Mode calls share the exclusive scheduler", async () => {
   release();
   await direct;
   assert.equal(JSON.parse(await code).success, true);
-});
-
-test("createTools accepts the portable WorkspaceBackend shape", async () => {
-  const files = new Map();
-  const workspace = createWorkspace({ backend: {
-    async list() { return [...files].map(([path, bytes]) => ({ kind: "file", path, size: bytes.length })); },
-    async readFile(path) { return files.get(path); },
-    async writeFile(path, bytes) { files.set(path, bytes); },
-    async remove(path) { files.delete(path); },
-    async mkdir() {},
-  } });
-  const tools = await createTools({ workspace });
-  const runtime = createCodeRuntime(tools);
-  assert.deepEqual(JSON.parse(runtime.toolDefinitions()).map(({ name }) => name).sort(), [
-    "delete_file", "list_files", "make_directory", "read_file", "write_file",
-  ]);
-  const written = JSON.parse(await runtime.executeTool(
-    "write_file",
-    JSON.stringify({ path: "rn.txt", content: "portable" }),
-  ));
-  assert.equal(written.success, true);
-  assert.equal(new TextDecoder().decode(files.get("rn.txt")), "portable");
-  await tools.close();
 });

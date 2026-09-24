@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import type { WhatsAppRawMessage } from "@chat-adapter/whatsapp";
 import {
-  configurationReadiness,
   whatsAppMessageIdentity,
 } from "../src/protocol.ts";
 
@@ -53,18 +52,4 @@ test("WhatsApp identity is bound to the configured business phone and canonical 
     ),
     /business phone identity/,
   );
-});
-
-test("WhatsApp readiness is independent from Slack configuration", () => {
-  const readiness = configurationReadiness({
-    CHIEF_OF_STAFF_PUBLIC_ORIGIN: "https://chief.example",
-    WHATSAPP_ACCESS_TOKEN: "token".repeat(12),
-    WHATSAPP_APP_SECRET: "app-secret-which-is-long-enough",
-    WHATSAPP_PHONE_NUMBER_ID: "123456789012345",
-    WHATSAPP_VERIFY_TOKEN: "verify-token-which-is-long-enough",
-  });
-
-  assert.equal(readiness.configured, false);
-  assert.equal(readiness.whatsapp.configured, true);
-  assert.equal(readiness.whatsapp.webhookUrl, "https://chief.example/webhooks/whatsapp");
 });

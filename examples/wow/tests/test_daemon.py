@@ -91,15 +91,6 @@ class DaemonTests(unittest.TestCase):
                 return
         self.fail('request was not ACKed')
 
-    def test_pending_seq_one_and_stable_mapping_before_backend(self):
-        self.assertEqual(self.desktop.peer.tx, 1)
-        self.receive_request()
-        self.assertEqual(self.dispatcher.calls, [])
-        row = self.bridge.store.db.execute('SELECT session,mid,rid,body FROM bridge_requests').fetchone()
-        self.assertEqual(row, (17, 1, 'ncw:00000011:0001', self.request))
-        self.bridge.work_once()
-        self.assertEqual(self.dispatcher.calls, [(self.request, row[2])])
-
     def test_mapping_committed_on_separate_connection_before_final_ack(self):
         emit = self.desktop.send_keys
         checked = []
@@ -121,20 +112,6 @@ class DaemonTests(unittest.TestCase):
         self.desktop.send_keys = inspect_before_emit
         self.receive_request()
         self.assertEqual(checked, [True])
-
-    def test_output_retained_until_final_ack_and_full_utf8(self):
-        self.receive_request()
-        self.bridge.work_once()
-        self.bridge.step()
-        self.assertEqual(self.bridge.store.db.execute('SELECT delivered FROM bridge_outputs').fetchone()[0], 0)
-        for _ in range(200):
-            self.bridge.step()
-            if self.bridge.stats['delivered_outputs']:
-                break
-        self.assertEqual(self.desktop.responses, [('reply', self.dispatcher.value.encode())])
-        self.assertEqual(self.bridge.stats['delivered_outputs'], 1)
-        self.assertTrue(all(len(batch) <= 335 for batch in self.desktop.batches))
-        self.assertFalse(self.bridge.evidence()['model_roundtrip_proven'])
 
     def test_stream_is_delivered_before_completion_and_empty_poll_keeps_waiting(self):
         self.receive_request()

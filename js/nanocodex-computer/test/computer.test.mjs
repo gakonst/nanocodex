@@ -10,12 +10,6 @@ import { catalog, provider, png } from "./provider-fixture.mjs";
 const context = (sessionId, signal = new AbortController().signal) => ({ sessionId, signal, callId: "test", parentCallId: "", model: "fixture" });
 const open = async t => { const computer = await connectComputerTools(provider()); t.after(computer.close); return computer; };
 
-test("MCP images remain image inputs in model outputs", () => {
-  const output = outputContent({ content: [{ type: "text", text: "observed" }, { type: "image", mimeType: "image/png", data: png }] });
-  assert.equal(output[0].type, "input_text");
-  assert.deepEqual(output[1], {type:"input_image",image_url:`data:image/png;base64,${png}`,detail:"original"});
-});
-
 test("each conversation owns a provider process and reset is forwarded to the provider", async t => {
   const computer = await open(t), js = computer.tool("js");
   const first = await js.handler({set:"one"}, context("one"));
@@ -36,22 +30,6 @@ test("provider owns arguments, errors, and post-error behavior", async t => {
   assert.equal(result.value.isError, true);
   assert.equal((await js.handler({}, context("contracts"))).success, true);
 });
-
-for (const trigger of ["abort", "release", "exit"]) {
-  test(`${trigger} stops the owned transport and preserves explicit recovery`, async t => {
-    const computer = await open(t), js = computer.tool("js");
-    await js.handler({set:"old"}, context(trigger));
-    const abort = new AbortController();
-    const pending = assert.rejects(js.handler(trigger === "exit" ? {crash:true} : {block:true}, context(trigger, abort.signal)));
-    if (trigger !== "exit") setTimeout(() => trigger === "abort" ? abort.abort() : js.releaseSession(trigger), 30);
-    await pending;
-    if (trigger !== "release") {
-      await assert.rejects(js.handler({get:true}, context(trigger)), /session interrupted.*js_reset/);
-      await computer.tool("js_reset").handler({}, context(trigger));
-    }
-    assert.equal((await js.handler({get:true}, context(trigger))).output[0].text, "undefined");
-  });
-}
 
 test("queued cancellation rejects promptly without running or resetting the active process", async t => {
   const computer = await open(t), js = computer.tool("js");

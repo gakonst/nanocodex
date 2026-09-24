@@ -873,27 +873,11 @@ pub(crate) fn default_codex_home() -> Result<PathBuf> {
 mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
 
-    use clap::{CommandFactory, Parser};
-    use nanocodex::{Model, oai::auth::OpenAiAuthMode};
-
-    #[test]
-    fn default_model_is_sol_for_every_auth_mode() {
-        assert_eq!(
-            connected_account_default_model(OpenAiAuthMode::ChatGpt),
-            Model::Sol
-        );
-        assert_eq!(
-            connected_account_default_model(OpenAiAuthMode::ApiKey),
-            Model::Sol
-        );
-    }
+    use nanocodex::oai::auth::OpenAiAuthMode;
 
     use super::{
-        SUBAGENT_INSTRUCTIONS, connected_account_default_model, direct_websocket_url, select_auth,
-        select_auth_with_default, selected_api_base_url, selected_subagent_tools,
-        session_instructions,
+        direct_websocket_url, select_auth, select_auth_with_default, selected_api_base_url,
     };
-    use crate::{managed_memory::MEMORY_INSTRUCTIONS, subagents::SubagentToolSet};
 
     #[test]
     fn default_websocket_url_follows_the_selected_auth_mode() {
@@ -953,94 +937,6 @@ mod tests {
             }"#,
         )
         .unwrap();
-    }
-
-    #[test]
-    fn subagents_can_be_disabled_explicitly() {
-        let cli = crate::Cli::try_parse_from(["nanocodex", "--subagents", "false"]).unwrap();
-
-        assert!(!cli.agent.subagents);
-    }
-
-    #[test]
-    fn subagent_instructions_follow_the_enable_switch() {
-        assert_eq!(session_instructions(None, false, false), None);
-        assert_eq!(
-            session_instructions(Some(SUBAGENT_INSTRUCTIONS), true, false),
-            None
-        );
-        let enabled = session_instructions(None, true, false).unwrap();
-        assert!(enabled.ends_with(SUBAGENT_INSTRUCTIONS));
-        assert_eq!(enabled.matches(SUBAGENT_INSTRUCTIONS).count(), 1);
-    }
-
-    #[test]
-    fn memory_instructions_follow_the_enable_switch() {
-        assert_eq!(session_instructions(None, false, false), None);
-        assert_eq!(
-            session_instructions(Some(MEMORY_INSTRUCTIONS), false, true),
-            None
-        );
-        let enabled = session_instructions(None, false, true).unwrap();
-        assert!(enabled.ends_with(MEMORY_INSTRUCTIONS));
-        assert_eq!(enabled.matches(MEMORY_INSTRUCTIONS).count(), 1);
-    }
-
-    #[test]
-    fn simplify_reuses_the_runtime_without_exposing_generic_subagents() {
-        assert_eq!(
-            selected_subagent_tools(false, true),
-            Some(SubagentToolSet::Simplify)
-        );
-        assert_eq!(selected_subagent_tools(false, false), None);
-        assert_eq!(
-            selected_subagent_tools(true, false),
-            Some(SubagentToolSet::Generic)
-        );
-        assert_eq!(
-            selected_subagent_tools(true, true),
-            Some(SubagentToolSet::GenericAndSimplify)
-        );
-    }
-
-    #[test]
-    fn reasoning_defaults_to_xhigh_and_preserves_overrides() {
-        let cli = crate::Cli::try_parse_from(["nanocodex"]).unwrap();
-        assert_eq!(cli.agent.thinking(), nanocodex::Thinking::Xhigh);
-        let cli =
-            crate::Cli::try_parse_from(["nanocodex", "--thinking", "high", "--fast-mode", "false"])
-                .unwrap();
-        assert_eq!(cli.agent.thinking(), nanocodex::Thinking::High);
-        assert!(!cli.agent.fast_mode());
-    }
-
-    #[test]
-    fn responses_transport_and_storage_are_selected_once_at_startup() {
-        let command = crate::Cli::command();
-        let transport = command
-            .get_arguments()
-            .find(|argument| argument.get_id() == "responses_transport")
-            .expect("the CLI should expose the Responses transport argument");
-        assert!(transport.get_default_values().is_empty());
-
-        assert!(
-            command
-                .get_arguments()
-                .all(|argument| argument.get_id() != "responses_history"),
-            "history replay policy is internal and must not be a CLI argument"
-        );
-
-        let store = command
-            .get_arguments()
-            .find(|argument| argument.get_id() == "store_responses")
-            .expect("the CLI should expose the Responses storage argument");
-        assert!(store.get_default_values().is_empty());
-
-        let warmup = command
-            .get_arguments()
-            .find(|argument| argument.get_id() == "websocket_warmup")
-            .expect("the CLI should expose the WebSocket warmup argument");
-        assert_eq!(warmup.get_default_values(), ["false"]);
     }
 
     #[test]

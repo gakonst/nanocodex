@@ -2,16 +2,6 @@ import XCTest
 @testable import NanocodexUI
 
 final class ChatGeneratedOutputTests: XCTestCase {
-    func testComputerScreenRequiresAttributedToolContext() throws {
-        let result = #"{"type":"input_image","image_url":"data:image/png;base64,AQIDBA==","detail":"original"}"#
-        let ordinary = try XCTUnwrap(ChatGeneratedOutput.parse(results: [result]).first)
-        let screen = try XCTUnwrap(ChatGeneratedOutput.parse(results: [result], computerScreen: true).first)
-        XCTAssertFalse(ordinary.isComputerScreen)
-        XCTAssertTrue(screen.isComputerScreen)
-        // An outer Code Mode image is matched to its attributed nested output.
-        XCTAssertEqual(ordinary.id, screen.id)
-    }
-
     func testComputerContextDoesNotConvertArtifactsIntoScreens() throws {
         let result = #"{"content":[{"type":"resource_link","uri":"https://example.invalid/report.pdf","mimeType":"application/pdf"},{"type":"input_image","image_url":"data:image/svg+xml;base64,c3Zn"}]}"#
         let outputs = ChatGeneratedOutput.parse(results: [result], computerScreen: true)

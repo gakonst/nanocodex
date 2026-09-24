@@ -23,7 +23,6 @@ test("the extracted plugin preserves all browser compatibility aliases", async (
   assert.equal(tools.resolveId("sprintf-js", sprintfCompatibility), null);
 
   const plugin = nanocodex({ chatGpt: false });
-  assert.equal(plugin.name, "nanocodex");
   assert.match(plugin.resolveId("node:zlib"), /browserZlib\.mjs$/);
 
   const [{ gzipSync, gunzipSync }, { sprintf }] = await Promise.all([

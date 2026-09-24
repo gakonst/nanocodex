@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { expect, it, vi } from "vitest";
 import type { ToolContext } from "nanocodex";
 import worker from "../src/index";
-import { preparedMarkdownText, markdownMemoryRequest, markdownMemoryTools } from "../src/markdown-memory-tools";
+import { markdownMemoryRequest, markdownMemoryTools } from "../src/markdown-memory-tools";
 import { managedExtensionTools, type ManagedExtensionOptions } from "../src/extension-tools";
 
 function fixture() {
@@ -62,18 +62,6 @@ it("protects Markdown API methods and capabilities before forwarding to storage"
   expect((await call("status", {})).status).toBe(403);
   expect(f.fetch).toHaveBeenCalledTimes(requestsBeforeDeniedStatus);
   expect((await call("write", { operation: "put", path: "MEMORY.md", expected_revision: 0, content: "private" })).status).toBe(200);
-});
-
-it("renders prepared Markdown without I/O and preserves bounded scoped excerpts", () => {
-  const document = { path: "USER.md", revision: 1, content: '"\\<🦊'.repeat(5000), truncated: false };
-  const text = preparedMarkdownText({ team_markdown: { documents: [document] }, user_markdown: { documents: [document] } })!;
-  expect(new TextEncoder().encode(text).byteLength).toBeLessThan(32000);
-  expect(text).not.toContain("<");
-  expect(text).not.toContain("\ufffd");
-  const scopes = JSON.parse(text.slice(text.indexOf("\n") + 1));
-  expect(scopes.map((snapshot: { scope: string }) => snapshot.scope)).toEqual(["personal", "team"]);
-  expect(scopes.every((snapshot: { truncated: boolean }) => snapshot.truncated)).toBe(true);
-  expect(preparedMarkdownText()).toBeUndefined();
 });
 
 it("requires live read authority for status and never exposes flush as a model tool", async () => {

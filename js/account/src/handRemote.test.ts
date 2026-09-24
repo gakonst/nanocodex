@@ -987,27 +987,6 @@ for (const status of [401, 403, 409]) {
 }
 
 
-test("audio and video tracks share a stream in either arrival order", async t => {
-  const f = fixture(t); await f.session.connect(); f.peers[0]!.open();
-  const audio = { kind: "audio", stop() {} }, video = { kind: "video", stop() {} };
-  f.peers[0]!.ontrack!({ track: audio });
-  const stream = f.video.srcObject as MediaStream;
-  f.peers[0]!.ontrack!({ track: video });
-  assert.equal(f.video.srcObject, stream);
-  assert.equal(stream.getTracks().length, 2);
-  assert.equal(f.session.state.audioAvailable, true);
-  await f.session.setAudioEnabled(true);
-  assert.equal(f.video.muted, false);
-  assert.equal(f.session.state.audioEnabled, true);
-  await f.session.setAudioEnabled(false);
-  assert.equal(f.video.muted, true);
-  f.video.srcObject = null;
-  f.peers[0]!.ontrack!({ track: video });
-  f.peers[0]!.ontrack!({ track: audio });
-  assert.equal((f.video.srcObject as MediaStream).getTracks().length, 2);
-  f.session.close(); assert.equal(f.session.state.audioAvailable, false);
-});
-
 for (const order of [["video", "audio"], ["audio", "video"]]) {
   test(`WebRTC ${order.join(" then ")} attaches once and updates tracks without reloading playback`, async t => {
     const f = fixture(t); await f.session.connect();
@@ -1029,6 +1008,11 @@ for (const order of [["video", "audio"], ["audio", "video"]]) {
     assert.equal(tracks[0]!.stops, 1);
     assert.deepEqual(stream.getTracks(), [tracks[1], replacement]);
     assert.equal(f.session.state.audioAvailable, true);
+    await f.session.setAudioEnabled(true);
+    assert.equal(f.video.muted, false);
+    assert.equal(f.session.state.audioEnabled, true);
+    await f.session.setAudioEnabled(false);
+    assert.equal(f.video.muted, true);
     f.session.suspend();
     assert.equal(f.video.srcObject, null); assert.equal(assignments, 2);
     f.session.resume(); await flush();

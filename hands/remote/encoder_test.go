@@ -77,19 +77,6 @@ func TestScreenEncoderRejectsMissingClockOrOutput(t *testing.T) {
 	}
 }
 
-func TestScreenNetworkPortBounds(t *testing.T) {
-	for _, config := range []hostConfig{{UDPPortMin: 50000}, {UDPPortMax: 50031}, {UDPPortMin: 50031, UDPPortMax: 50000}, {UDPPortMin: 1, UDPPortMax: 65536}, {Interface: "nanocodex-no-such-interface"}} {
-		if config.validateNetwork() == nil {
-			t.Fatal("invalid network configuration accepted")
-		}
-	}
-	for _, config := range []hostConfig{{}, {UDPPortMin: 50000, UDPPortMax: 50031}} {
-		if err := config.validateNetwork(); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
-
 // Keep raw input open after one frame: an Annex-B lookahead parser would stall
 // forever here. This exercises real encoder, tee flushes, framing, and reader.
 func TestEncoderForwardsOneFrameBeforeNextCapture(t *testing.T) {

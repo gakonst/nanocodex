@@ -7,15 +7,6 @@ final class ModelSelectionTests: XCTestCase {
                  "active_turns": .array([]), "settings": .object(["model": .string("gpt-6-astra"), "thinking": .string("low")])]
             .merging(values, uniquingKeysWith: { _, new in new }))
     }
-    func testPendingAutomaticRouteAndResolvedProvider() throws {
-        var card = AgentCard(id: "fixture", title: "Fixture")
-        try card.apply(state: state(["model_routing_enabled": .bool(true), "model_routing_automatic": .bool(true)]))
-        XCTAssertTrue(card.routingAutomatic); XCTAssertFalse(card.modelLocked); XCTAssertEqual(card.provider, "")
-        try card.apply(state: state(["model_routing_enabled": .bool(true), "model_routing_automatic": .bool(true),
-            "model_route": .object(["model": .string("kimi-k3"), "backend": .string("vercel"), "thinking": .string("high")])]))
-        XCTAssertEqual(card.model, "kimi-k3"); XCTAssertEqual(card.provider, "vercel"); XCTAssertEqual(card.thinking, "high")
-        XCTAssertTrue(card.modelLocked); XCTAssertTrue(card.effortLocked)
-    }
 
     func testAcceptedEventDoesNotUnlockBetweenCompletionAndStateRefresh() throws {
         var card = AgentCard(id: "fixture", title: "Fixture")

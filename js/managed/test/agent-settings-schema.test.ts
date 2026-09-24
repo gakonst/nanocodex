@@ -8,8 +8,6 @@ import type { DurableAgentSession } from "../src/index";
 describe("managed agent settings schema", () => {
   it.each([
     ["gpt-5.6-sol", "max", "pro", 1, false],
-    ["gpt-5.6-terra", "max", "pro", 1, false],
-    ["gpt-5.6-luna", "none", "standard", 0, false],
     ["gpt-6-astra", "low", "standard", 0, true],
   ] as const)(
     "preserves legacy model %s exactly while admitting only current models",

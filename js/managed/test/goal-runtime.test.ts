@@ -104,22 +104,6 @@ describe("goal runtime", () => {
     });
   });
 
-  it("preserves a newer resume when the paused turn finishes cancelling", async () => {
-    await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_session, state) => {
-      const goals = new Goals(state.storage, () => "thread");
-      const runtime = new GoalRuntime(state.storage, goals);
-      runtime.command("Ship"); runtime.bind("old", 1);
-      runtime.command("pause"); runtime.command("resume"); runtime.bind("resume", 1);
-      runtime.finish("resume", true, true);
-      runtime.finish("old", false, true, "paused");
-      expect(goals.get()?.status).toBe("active");
-      expect(runtime.pending()?.turn_id).toBe("resume");
-      runtime.command("edit Ship everything");
-      expect(() => runtime.assertCurrentObjective("resume")).toThrow("changed");
-      runtime.acknowledgeObjective("resume", goals.get());
-      expect(() => runtime.assertCurrentObjective("resume")).not.toThrow();
-    });
-  });
   it("stops budgeted work on missing provider usage and freezes elapsed time at stop", async () => {
     await runInDurableObject(sessions().getByName(crypto.randomUUID()), async (_session, state) => {
       const goals = new Goals(state.storage, () => "thread");

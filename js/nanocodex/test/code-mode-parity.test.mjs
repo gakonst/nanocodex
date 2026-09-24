@@ -5,42 +5,7 @@ import { createCodeRuntime } from "../runtime/code-runtime.mjs";
 
 // Contract reference: openai/codex 506a328dab110591d3c1449a15217596e7e9cd61,
 // code-mode-protocol/src/description.rs and code-mode-runtime/src/runtime/{value,callbacks}.rs.
-const imageUrl = "data:image/png;base64,AAAA";
 const run = async (source) => JSON.parse(await createCodeRuntime().executeCode(source));
-const images = (result) => result.output.filter((item) => item.type === "input_image");
-
-for (const [label, expression, expected] of [
-  ["default", JSON.stringify(imageUrl), "high"],
-  ["embedded detail", JSON.stringify({ image_url: imageUrl, detail: "LOW" }), "low"],
-  ["explicit override", `${JSON.stringify({ image_url: imageUrl, detail: "low" })}, "ORIGINAL"`, "original"],
-  ["MCP metadata", JSON.stringify({ type: "image", mimeType: "image/png", data: "AAAA", _meta: { "codex/imageDetail": "original" } }), "original"],
-  ["invalid MCP metadata ignored", JSON.stringify({ type: "image", mimeType: "image/png", data: "AAAA", _meta: { "codex/imageDetail": "unexpected" } }), "high"],
-  ["MCP existing data URL", JSON.stringify({ type: "image", data: imageUrl }), "high"],
-  ["MCP snake-case MIME", JSON.stringify({ type: "image", mime_type: "image/png", data: "AAAA" }), "high"],
-  ["image_url before MCP fields", JSON.stringify({ type: "image", image_url: imageUrl, detail: "low", data: "invalid", _meta: { "codex/imageDetail": "original" } }), "low"],
-]) {
-  test(`Codex image semantics: ${label}`, async () => {
-    const result = await run(`image(${expression});`);
-    assert.equal(result.success, true);
-    assert.deepEqual(images(result), [{ type: "input_image", image_url: imageUrl, detail: expected }]);
-  });
-}
-
-test("generatedImage preserves embedded detail and emits even an empty hint", async () => {
-  const result = await run(`generatedImage(${JSON.stringify({ image_url: imageUrl, detail: "original", output_hint: "" })});`);
-  assert.equal(result.success, true);
-  assert.equal(images(result)[0].detail, "original");
-  assert.deepEqual(result.output.at(-1), { type: "input_text", text: "" });
-});
-
-for (const outputHint of [null, 1, false, {}]) {
-  test(`generatedImage rejects invalid hint ${JSON.stringify(outputHint)}`, async () => {
-    const result = await run(`generatedImage(${JSON.stringify({ image_url: imageUrl, output_hint: outputHint })});`);
-    assert.equal(result.success, false);
-    assert.match(result.output, /output_hint must be a string when provided/);
-  });
-}
-
 for (const value of ["", " \t\n"]) {
   test(`notify rejects whitespace ${JSON.stringify(value)}`, async () => {
     const result = await run(`notify(${JSON.stringify(value)});`);

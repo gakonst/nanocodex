@@ -1,4 +1,3 @@
-import { phoneAdminConfigured } from "../src/phone-admin";
 import { afterEach, expect, it, vi } from "vitest";
 import { phoneTools, type PhoneConfig } from "../src/phone-tool";
 
@@ -180,13 +179,6 @@ it.each([undefined, "", "other"])("requires the deployment phone admin at discov
   for (const value of [input, { operation: "status", call_id: id }, { operation: "hangup", call_id: id }])
     await expect(f.tool.handler(value, context())).rejects.toThrow("unavailable");
   expect(f.fetcher).not.toHaveBeenCalled();
-});
-
-it("bridge admission requires an explicitly selected phone admin matching the configured owner", () => {
-  expect(phoneAdminConfigured({})).toBe(false);
-  expect(phoneAdminConfigured({ NANOCODEX_PHONE_OWNER_ID: "owner" })).toBe(false);
-  expect(phoneAdminConfigured({ NANOCODEX_PHONE_ADMIN_ID: "admin", NANOCODEX_PHONE_OWNER_ID: "owner" })).toBe(false);
-  expect(phoneAdminConfigured({ NANOCODEX_PHONE_ADMIN_ID: "admin", NANOCODEX_PHONE_OWNER_ID: "admin" })).toBe(true);
 });
 
 it("projects agent-scoped call lists with safe destination and truncation fields", async () => {

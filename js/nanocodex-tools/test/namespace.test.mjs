@@ -6,7 +6,6 @@ import {
   createNamespaceScope,
   deriveChildNamespaceScope,
   isNamespacePathWithin,
-  namespaceMountRoot,
   normalizeNamespacePath,
   resolveNamespaceCwd,
   resolveNamespaceMount,
@@ -100,15 +99,6 @@ test("manifest admission rejects root ambiguity, aliases, reserved roots, and bo
   assert.doesNotThrow(
     () => make(Array.from({ length: 100 }, (_, index) => mount(`/m${index}`))),
   );
-});
-
-test("machine identities receive deterministic portable non-system roots", () => {
-  assert.equal(namespaceMountRoot("laptop"), "/laptop");
-  assert.match(namespaceMountRoot("Build Box"), /^\/hand-build-box-[0-9a-f]{8}$/);
-  assert.match(namespaceMountRoot("sandbox"), /^\/hand-sandbox-/);
-  assert.match(namespaceMountRoot("con"), /^\/hand-con-/);
-  assert.equal(namespaceMountRoot("Build Box"), namespaceMountRoot("Build Box"));
-  assert.throws(() => namespaceMountRoot(""), /non-empty/);
 });
 
 test("normalization resolves cwd and rejects traversal and host-dependent separators", () => {

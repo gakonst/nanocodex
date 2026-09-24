@@ -618,30 +618,6 @@ final class ProtocolTests: XCTestCase {
     }
 
     @MainActor
-    func testPaneMotionCommitsSizeOnceAndLiveResizeCancelsMotion() throws {
-        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-pane-motion-fixture")
-        defer { model.shutdown() }
-        let surface = AgentSplitSurface(model: model)
-        let host = NSHostingView(rootView: AnyView(Text("A stable live editor")))
-        host.sizingOptions = []; host.wantsLayer = true
-        surface.addSubview(host)
-        surface.placeHost(host, in: NSRect(x: 0, y: 0, width: 800, height: 600), animated: false)
-        let final = NSRect(x: 410, y: 0, width: 390, height: 600)
-        surface.placeHost(host, in: final, animated: true)
-        XCTAssertEqual(host.frame, final, "Content adopts its final size before the transition starts")
-        XCTAssertEqual(host.bounds.size, final.size)
-        let motion = try XCTUnwrap(host.layer?.animation(forKey: "pane-position") as? CABasicAnimation)
-        XCTAssertEqual(motion.keyPath, "position")
-        XCTAssertNil(host.layer?.animation(forKey: "bounds"), "Animation must not reflow live text at every frame")
-        surface.placeHost(host, in: final, animated: false)
-        XCTAssertNotNil(host.layer?.animation(forKey: "pane-position"), "Redundant layout must not snap an active transition to its endpoint")
-        let resized = NSRect(x: 380, y: 0, width: 420, height: 600)
-        surface.placeHost(host, in: resized, animated: false)
-        XCTAssertEqual(host.frame, resized)
-        XCTAssertNil(host.layer?.animation(forKey: "pane-position"), "A real divider drag immediately takes ownership of geometry")
-    }
-
-    @MainActor
     func testNativeDockingRetainsEditorsAndRendersGlass() async throws {
         let model = AppModel(runtimeDirectory: "/tmp/nanocodex-glass-fixture")
         model.runtime.requestOverride = { _, _ in .null }

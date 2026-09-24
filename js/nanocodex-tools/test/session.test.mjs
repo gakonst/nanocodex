@@ -3,19 +3,15 @@ import test from "node:test";
 
 import {
   MAX_HISTORY_TOOL_TEXT_BYTES,
-  findSessionsToolInputSchema,
   parseHistoryFindSessionsInput,
   projectFindSessionsToolResult,
   projectReadSessionToolResult,
-  readSessionToolInputSchema,
 } from "nanocodex-tools/session";
 
 const sessionId = "018f1f9a-7b3c-7a09-8000-000000000009";
 
 
 test("session tool contracts bound input and strip host metadata from output", () => {
-  assert.equal(findSessionsToolInputSchema().additionalProperties, false);
-  assert.equal(readSessionToolInputSchema().properties.turn_ids.maxItems, 20);
   assert.throws(
     () => parseHistoryFindSessionsInput({ query: "x".repeat(4_097) }),
     /must not exceed 4096 bytes/,

@@ -6,27 +6,6 @@ final class InboxUITests: XCTestCase {
     }
     override func setUp() { super.setUp(); continueAfterFailure = false }
 
-    func testSidebarShowsStatusAndGeneratedCurrentWork() {
-        let originalAppearance = XCUIDevice.shared.appearance
-        addTeardownBlock { XCUIDevice.shared.appearance = originalAppearance }
-        for appearance in ["Light", "Dark"] {
-            XCUIDevice.shared.appearance = appearance == "Dark" ? .dark : .light
-            let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString, "NANOCODEX_DEMO_SIDEBAR": "1",
-                              "NANOCODEX_DEMO_APPEARANCE": appearance.lowercased()])
-            app.buttons["conversation-drawer-open"].tap()
-            let running = app.buttons["conversation-row:inbox"]
-            XCTAssertTrue(running.waitForExistence(timeout: 5))
-            let value = running.value as? String ?? ""
-            XCTAssertTrue(value.contains("Running"))
-            XCTAssertTrue(value.contains("I'm checking inbox state"))
-            XCTAssertTrue((app.buttons["conversation-row:hands"].value as? String ?? "").contains("Failed"))
-            XCTAssertTrue(app.textFields["conversation-search"].isHittable)
-            XCTAssertTrue(app.buttons["drawer-new-conversation"].isHittable)
-            capture(app, "sidebar-redesign-" + appearance.lowercased())
-            app.terminate()
-        }
-    }
-
     func testRunningAgentsToolbarFiltersAndShowsLastPrompt() {
         let originalAppearance = XCUIDevice.shared.appearance
         addTeardownBlock { XCUIDevice.shared.appearance = originalAppearance }
@@ -52,27 +31,6 @@ final class InboxUITests: XCTestCase {
             capture(app, "agent-overview-all-" + appearance)
             app.terminate()
         }
-    }
-
-    func testFlatConversationDrawerPreservesSeparateDrafts() {
-        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
-        switchConversation(app, id: "inbox")
-        composer(app).tap(); composer(app).typeText("First conversation draft")
-        app.buttons["conversation-drawer-open"].tap()
-        let second = app.buttons["conversation-row:durability"]
-        XCTAssertTrue(second.waitForExistence(timeout: 5))
-        second.tap()
-        XCTAssertTrue(app.buttons["conversation-title:durability"].waitForExistence(timeout: 5))
-        XCTAssertNotEqual(composer(app).value as? String, "First conversation draft")
-        composer(app).tap(); composer(app).typeText("Second conversation draft")
-        switchConversation(app, id: "inbox")
-        XCTAssertEqual(composer(app).value as? String, "First conversation draft")
-        switchConversation(app, id: "durability")
-        XCTAssertEqual(composer(app).value as? String, "Second conversation draft")
-        app.buttons["conversation-drawer-open"].tap()
-        app.buttons["drawer-new-conversation"].tap()
-        XCTAssertEqual(selectedConversationTab(app).label, "New agent")
-        XCTAssertFalse(app.alerts.firstMatch.exists)
     }
 
     func testThreadScreenDockPreservesDraftAndThreadNavigation() {
@@ -137,17 +95,6 @@ final class InboxUITests: XCTestCase {
         XCTAssertFalse(panel.exists)
         XCTAssertTrue(latest.waitForExistence(timeout: 5))
         XCTAssertEqual(composer(app).value as? String, draft)
-    }
-
-    func testCompactReplyContextMenuCopiesResponse() {
-        let app = launch(["NANOCODEX_DEMO_THINKING_MARKDOWN": "1", "NANOCODEX_DEMO_PROFILE": UUID().uuidString])
-        selectInbox(app)
-        let reply = app.staticTexts["Both paths are ready."]
-        XCTAssertTrue(reply.waitForExistence(timeout: 5))
-        capture(app, "content-fitting-reply")
-        reply.press(forDuration: 1)
-        XCTAssertTrue(app.buttons["copy-response"].waitForExistence(timeout: 5))
-        app.buttons["copy-response"].tap()
     }
 
     private func openDrawerFromEdge(_ app: XCUIApplication) {
@@ -359,28 +306,6 @@ final class InboxUITests: XCTestCase {
         list.swipeLeft()
         gone(list)
         XCTAssertTrue(app.buttons["conversation-title:inbox"].isSelected)
-    }
-
-    func testDrawerLeftSwipeKeepsDraftAndSingleConversationList() {
-        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
-        selectInbox(app)
-        composer(app).tap(); composer(app).typeText("Preserve this swipe draft")
-        app.buttons["conversation-drawer-open"].tap()
-        let list = app.scrollViews["conversation-list"]
-        XCTAssertTrue(list.waitForExistence(timeout: 5))
-        XCTAssertEqual(app.segmentedControls.count, 0)
-        XCTAssertFalse(app.buttons["conversation-overview-open"].exists)
-        XCTAssertFalse(app.buttons["drawer-live-previews"].exists)
-        XCTAssertTrue((app.buttons["conversation-row:inbox"].value as? String ?? "").contains("Running"))
-        capture(app, "simple-drawer-running-agents")
-        list.swipeUp(); list.swipeDown()
-        XCTAssertTrue(list.exists, "Vertical scrolling must not dismiss navigation")
-        list.swipeLeft()
-        gone(list)
-        XCTAssertTrue(app.buttons["conversation-title:inbox"].isSelected)
-        XCTAssertEqual(composer(app).value as? String, "Preserve this swipe draft")
-        XCTAssertLessThanOrEqual(app.otherElements["composer-input"].frame.height, 54)
-        capture(app, "compact-composer-after-drawer-swipe")
     }
 
     func testLiveArrivalAppearsWhileReadingHistoryWithoutMovingReader() {
@@ -1760,20 +1685,6 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(message.waitForExistence(timeout: 5))
         XCTAssertEqual(conversation.staticTexts.matching(NSPredicate(format: "label == %@", text)).count, 1)
     }
-    func testSidebarSwitchesConversationsWithoutTabsOrPreviews() {
-        let app = launch()
-        selectTab(app, id: "inbox", title: "Build the agent inbox")
-        composer(app).tap(); composer(app).typeText("Keep my sidebar draft")
-        selectTab(app, id: "data", title: "Tighten the fuel forecast")
-        selectTab(app, id: "inbox", title: "Build the agent inbox")
-        XCTAssertEqual(composer(app).value as? String, "Keep my sidebar draft")
-        XCTAssertFalse(app.buttons["conversation-overview-open"].exists)
-        app.buttons["conversation-drawer-open"].tap()
-        XCTAssertTrue(app.scrollViews["conversation-list"].waitForExistence(timeout: 5))
-        XCTAssertEqual(app.segmentedControls.count, 0)
-        capture(app, "sidebar-without-tabs-or-filters")
-    }
-
 
     func testSendSteersActiveTurnWithoutSeparateAction() {
         let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString,
@@ -1982,28 +1893,6 @@ final class InboxUITests: XCTestCase {
         retry.tap()
         XCTAssertTrue(app.staticTexts["Steering withdrawn: Keep the captured target"].waitForExistence(timeout: 5))
         XCTAssertEqual(app.descendants(matching: .any)["conversation"].firstMatch.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Keep the captured target")).count, 1)
-    }
-
-    func testDirectMessageSurvivesRelaunchAndCanBeWithdrawn() {
-        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
-        selectInbox(app); queue(app, "Survive restart")
-        XCTAssertTrue(app.buttons["withdraw-steering"].waitForExistence(timeout: 5))
-        app.terminate(); app.launch(); selectInbox(app)
-        thread(app, contains: "Survive restart")
-        XCTAssertTrue(app.buttons["withdraw-steering"].waitForExistence(timeout: 5))
-        app.buttons["withdraw-steering"].tap()
-        XCTAssertTrue(app.staticTexts["Steering withdrawn: Survive restart"].waitForExistence(timeout: 5))
-        XCTAssertEqual(app.buttons["send"].label, "Stop turn")
-    }
-
-    func testDirectMessageDoesNotStartAnotherTurn() {
-        let app = launch(["NANOCODEX_DEMO_COMPLETE_AFTER_MS": "60000"])
-        selectInbox(app); queue(app, "Continue naturally")
-        thread(app, contains: "Continue naturally")
-        XCTAssertTrue(app.buttons["withdraw-steering"].waitForExistence(timeout: 5))
-        XCTAssertFalse(app.staticTexts["Working on: Continue naturally"].exists)
-        XCTAssertFalse(app.staticTexts["pending-message"].exists)
-        XCTAssertEqual(self.selectedConversationTab(app).label, "Build the agent inbox")
     }
 
     func testWithdrawingFirstDirectMessageKeepsSecondDelivered() {

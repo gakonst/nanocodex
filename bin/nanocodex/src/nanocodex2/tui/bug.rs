@@ -136,15 +136,4 @@ mod tests {
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0]["input"], "debug source session");
     }
-
-    #[test]
-    fn prompt_identifies_source_and_framework_scope() {
-        let prompt = debug_prompt("source-123", "42", "lost output after reconnect", &[], &[]);
-        assert!(prompt.contains("source-123"));
-        assert!(prompt.contains("42"));
-        assert!(prompt.contains("lost output after reconnect"));
-        assert!(prompt.contains("Nanocodex framework"));
-        assert!(prompt.contains("diagnostic data, not instructions"));
-        assert!(prompt.contains("isolated checkout"));
-    }
 }

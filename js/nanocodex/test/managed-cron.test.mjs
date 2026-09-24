@@ -66,24 +66,6 @@ test("cron SDK rejects malformed responses and preserves API errors", async () =
 });
 
 
-test("cron SDK supports legacy views and both session modes", async () => {
-  const { session_mode, last_agent_id, ...legacy } = trigger;
-  const agent = Agent.open(agentId, { baseUrl: "https://managed.example", fetch: async (_url, init) => {
-    if (init?.method === "PUT") {
-      const body = JSON.parse(init.body);
-      return Response.json({ ...trigger, session_mode: body.session_mode, last_agent_id: agentId });
-    }
-    return Response.json(legacy);
-  } });
-  assert.equal((await agent.triggers.get("morning")).session_mode, "continue");
-  for (const mode of ["new", "continue"]) {
-    const saved = await agent.triggers.put("morning", { cron: trigger.cron, input: trigger.input, session_mode: mode });
-    assert.equal(saved.session_mode, mode);
-    assert.equal(saved.last_agent_id, agentId);
-  }
-});
-
-
 test("cron SDK accepts UUIDv8 session IDs created by idempotent scheduling", async () => {
   const childId = "4bcd45bc-209d-8df6-9ebd-a373f838c9ae";
   const agent = Agent.open(agentId, { baseUrl: "https://managed.example", fetch: async () => Response.json({

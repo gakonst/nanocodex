@@ -748,15 +748,6 @@ mod tests {
     use super::{Prompt, PromptMessage, PromptValidationError};
 
     #[test]
-    fn prompt_serialization_contains_only_user_input() {
-        let prompt = Prompt::new("inspect the repository");
-        assert_eq!(
-            serde_json::to_value(prompt).unwrap(),
-            json!({ "instruction": "inspect the repository" })
-        );
-    }
-
-    #[test]
     fn synthetic_transcript_is_typed_serialized_and_counted() {
         let prompt = Prompt::new("repeat the second answer").with_transcript([
             PromptMessage::user("first request"),

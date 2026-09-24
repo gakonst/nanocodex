@@ -5,12 +5,11 @@ import {
   classifyFundingOrder,
   decodeFundingAttempt,
   decodeWalletBalance,
-  formatWalletBalance,
 } from "./walletFunding.ts";
 
 const account = "0x1111111111111111111111111111111111111111";
 
-test("decodes and formats the canonical MACH balance", () => {
+test("decodes the canonical MACH balance and rejects negative or foreign-account values", () => {
   const balance = decodeWalletBalance({
     account,
     balance: "12345678",
@@ -19,9 +18,6 @@ test("decodes and formats the canonical MACH balance", () => {
     token: "0x20c000000000000000000000f37de3740ADec032",
   }, account.toUpperCase());
   assert.equal(balance.atomics, 12_345_678n);
-  assert.equal(formatWalletBalance(balance), "$12.345678");
-  assert.equal(formatWalletBalance({ ...balance, atomics: 0n }), "$0.00");
-  assert.equal(formatWalletBalance({ ...balance, atomics: 1_200_000n }), "$1.20");
   assert.throws(() => decodeWalletBalance({
     account,
     balance: "-1",

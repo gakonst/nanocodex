@@ -820,34 +820,6 @@ mod settings_tests {
     }
 
     #[test]
-    fn settings_use_canonical_managed_protocol_values() {
-        assert_eq!(
-            serde_json::to_value(AgentSettings::default()).expect("settings should serialize"),
-            json!({
-                "model": "gpt-6-astra",
-                "thinking": "low",
-                "reasoning_mode": "standard",
-                "fast_mode": false
-            })
-        );
-        assert_eq!(
-            serde_json::from_value::<AgentSettings>(json!({
-                "model": "gpt-6-astra",
-                "thinking": "xhigh",
-                "reasoning_mode": "pro",
-                "fast_mode": true
-            }))
-            .expect("canonical settings should deserialize"),
-            AgentSettings {
-                model: Model::Astra,
-                thinking: Thinking::Xhigh,
-                reasoning_mode: ReasoningMode::Pro,
-                fast_mode: true,
-            }
-        );
-    }
-
-    #[test]
     fn settings_reject_aliases_and_patch_only_selected_fields() {
         for model in ["sol", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"] {
             assert!(

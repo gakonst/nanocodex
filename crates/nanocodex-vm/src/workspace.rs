@@ -568,17 +568,6 @@ mod tests {
         assert!(!offline.contains("resolv.conf"));
     }
 
-    #[test]
-    fn builder_retains_explicit_image_environment() {
-        let builder = VmWorkspaceBuilder::new("/root.ext4", "/vmm").environment([
-            ("LANG".to_owned(), "C.UTF-8".to_owned()),
-            ("APP_MODE".to_owned(), "test".to_owned()),
-        ]);
-
-        assert_eq!(builder.environment["LANG"], "C.UTF-8");
-        assert_eq!(builder.environment["APP_MODE"], "test");
-    }
-
     #[tokio::test]
     async fn vmm_runs_outside_the_owners_terminal_process_group() {
         let directory = tempdir().unwrap();

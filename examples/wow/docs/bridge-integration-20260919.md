@@ -22,7 +22,7 @@ lua transport/test_autostart_transport.lua
 lua transport/test_chord_transport.lua
 ```
 
-135 application Python tests and 77 transport Python tests passed. The four addon Lua suites and explicit auto-start/chord suites passed. The stdin-driven `transport/test_streaming_pipeline.lua` is invoked with generated frames by `tests/test_streaming.py`; it must not be run standalone without its input fixture.
+135 application Python tests and 77 transport Python tests passed. The four addon Lua suites and explicit auto-start/chord suites passed. That run also included a standalone Python/Lua streaming fixture, since removed as redundant with `tests/test_addon_bridge_integration.py`, which exercises the full addon and journal pipeline.
 
 `tests/test_addon_bridge_integration.py` drives the real Lua request encoder, carrier painter, chord receiver, application assembler and stream receiver through the Python raster decoder, desktop adapter, bridge journals and dispatcher. Only external desktop/WoW APIs and the backend are mocked. It proves:
 

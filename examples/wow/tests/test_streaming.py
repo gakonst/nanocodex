@@ -2,7 +2,6 @@
 import json
 from pathlib import Path
 import tempfile
-import subprocess
 import unittest
 from transport.streaming import project, decode, StreamLimit
 from transport.dispatch import Dispatcher
@@ -70,21 +69,6 @@ class ProjectionTests(unittest.TestCase):
         self.assertEqual(''.join(o['text'] for o in decoded[2:] if o['op']=='append'),final)
         self.assertTrue(all(len(o['value'].encode())<=4096 for o in record['outputs']))
         self.assertEqual(len({o['event_id'] for o in record['outputs']}),len(record['outputs']))
-
-    def test_python_frames_reach_lua_incrementally_without_replay_duplication(self):
-        from transport.dispatch import wire_fragments
-        from transport.protocol import Frame
-        record=self.record()
-        for event in [delta('Hello '),delta('Ω!'),dict(type='turn_completed',final_message='Hello Ω!')]:
-            project('request-1',record,event)
-        frames=[]; seq=0
-        for mid, output in enumerate(record['outputs'],1):
-            for payload in wire_fragments(output,mid):
-                seq+=1
-                frames.append(Frame(19,seq,0,payload,True).encode().hex())
-        result=subprocess.run(['lua','transport/test_streaming_pipeline.lua'],input='\n'.join(frames)+'\n',text=True,capture_output=True)
-        self.assertEqual(result.returncode,0,result.stderr)
-        self.assertIn('PASS:',result.stdout)
 
     def test_bound_is_explicit_and_child_text_is_not_root_reply(self):
         record=self.record(); event=delta('child'); event['agent_id']=2

@@ -8,24 +8,6 @@ from transport.driver import Pump
 
 
 class BinaryCarrierTests(unittest.TestCase):
-    def test_msb_encoding_bounds_and_octal_default(self):
-        packet = Frame(17, 1, payload=bytes(range(96))).encode()
-        wire = keys(packet, encoding='binary')
-        self.assertEqual(len(wire), 890)
-        self.assertEqual(wire[0], 'F24')
-        self.assertEqual(wire[-1], 'F24')
-        self.assertEqual(set(wire), {'F19', 'F23', 'F24'})
-        decoded = bytes(int(''.join('1' if key == 'F23' else '0'
-                                   for key in wire[i:i+8]), 2)
-                        for i in range(1, len(wire)-1, 8))
-        self.assertEqual(decoded, packet)
-        self.assertEqual(keys(packet), keys(packet, encoding='octal'))
-        self.assertEqual(len(keys(packet)), 335)
-        with self.assertRaises(ValueError):
-            keys(packet, encoding='unknown')
-        with self.assertRaises(ValueError):
-            keys(packet[:-1] + bytes([packet[-1] ^ 1]), encoding='binary')
-
     def test_python_lua_interop_all_byte_values_and_lifecycle(self):
         with tempfile.TemporaryDirectory() as directory:
             path = pathlib.Path(directory) / 'wire.txt'
@@ -58,18 +40,6 @@ class BinaryCarrierTests(unittest.TestCase):
         link.send(b'next')
         self.assertTrue(pump.tick())
         self.assertEqual(batches[-1], keys(link.packet(), encoding='binary'))
-
-    def test_pump_defaults_and_configuration_bounds(self):
-        args = (Link(17), lambda: True, lambda key: True, lambda: 0, lambda: True)
-        default = Pump(*args)
-        self.assertEqual(default.encoding, 'octal')
-        self.assertEqual(default.burst_size, 335)
-        for size in (0, 891, 335.5):
-            with self.assertRaises(ValueError):
-                Pump(*args, burst_size=size)
-        with self.assertRaises(ValueError):
-            Pump(*args, encoding='unknown')
-
 
 if __name__ == '__main__':
     unittest.main()

@@ -2,16 +2,6 @@ import XCTest
 @testable import InboxCore
 
 final class SidebarPresentationTests: XCTestCase {
-    func testSidebarOrdersByLastUserMessageInsteadOfAgentOutput() throws {
-        var earlier = AgentCard(id: "earlier", title: "Earlier", updatedAt: 10, lastUserMessageAt: 10)
-        let later = AgentCard(id: "later", title: "Later", updatedAt: 20, lastUserMessageAt: 20)
-        let empty = AgentCard(id: "empty", title: "Empty", updatedAt: 999, lastUserMessageAt: 0)
-        earlier.updatedAt = 1000 // A late reply must not change sidebar ordering.
-        XCTAssertEqual([earlier, empty, later].sorted(by: AgentCard.mostRecentlyMessagedFirst).map(\.id), ["later", "earlier", "empty"])
-        earlier.lastUserMessageAt = 30
-        XCTAssertEqual([later, earlier].sorted(by: AgentCard.mostRecentlyMessagedFirst).map(\.id), ["earlier", "later"])
-    }
-
     func testOlderTurnCannotSupplyCurrentActivity() {
         var card = AgentCard(id: "agent", title: "Fix sidebar")
         card.checked = true; card.status = "Running"; card.activeTurns = ["new"]

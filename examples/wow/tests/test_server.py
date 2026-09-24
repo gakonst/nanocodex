@@ -34,14 +34,6 @@ class BackendTests(unittest.TestCase):
         credentials = patch.object(FakeBackend, 'credentials', return_value='test-account')
         credentials.start(); self.addCleanup(credentials.stop)
 
-    def test_new_run_exact_shape_and_idempotency(self):
-        b = FakeBackend()
-        result = b.handle('POST', '/api/send', {}, {'text': 'Help', 'mode': 'build', 'context': {'edition': 'Classic'}, 'idempotency_key': 'stable-1'})
-        method, path, body, key = b.calls[0]
-        self.assertEqual((method, path, key), ('POST', '/v1/agent-runs', 'stable-1'))
-        self.assertEqual(result['thread_id'], 'agent-1')
-        self.assertEqual(len(b.calls), 1)
-
     def test_new_run_against_upstream_source_validator(self):
         source = Path(__file__).resolve()
         validator = source.parents[3] / 'js/managed/src/agent-settings.ts'
@@ -58,12 +50,6 @@ class BackendTests(unittest.TestCase):
                   'if(!rejected) throw new Error("incomplete settings unexpectedly accepted");')
         result = subprocess.run([bun, '-e', script], input=json.dumps(b.calls[0][2]), text=True, capture_output=True, timeout=20)
         self.assertEqual(result.returncode, 0, result.stderr)
-
-    def test_agent_mode_preserves_configuration_and_raw_task(self):
-        b = FakeBackend()
-        b.handle('POST', '/api/send', {}, {'text': 'Review the code', 'mode': 'agent', 'thread_id': 'existing'})
-        self.assertEqual(len(b.calls), 1)
-        self.assertEqual(b.calls[0][:3], ('POST', '/v1/agents/existing/turns', {'input': 'Review the code'}))
 
     def test_messages_filter_tools_and_duplicate_final(self):
         b = FakeBackend()

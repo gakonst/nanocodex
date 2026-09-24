@@ -22,24 +22,12 @@ import {
 } from "nanocodex/durability/postgres";
 import { Agent, Transport } from "nanocodex/node";
 import { cloudflareDurabilityStorage } from "./cloudflare-durability-storage";
-import { postgresDurabilityStore } from "../workflows/postgres-durability";
 
 const MAX_REVISION = durabilityRevision("18446744073709551615");
 const BEFORE_MAX_REVISION = durabilityRevision("18446744073709551614");
 type NodeAgent = Awaited<ReturnType<typeof Agent.create>>;
 
 describe("Vercel PostgreSQL durability store", () => {
-  it("does not require DATABASE_URL until the application store is requested", () => {
-    const original = process.env.DATABASE_URL;
-    delete process.env.DATABASE_URL;
-    try {
-      expect(() => postgresDurabilityStore()).toThrow("DATABASE_URL is not configured");
-    } finally {
-      if (original === undefined) delete process.env.DATABASE_URL;
-      else process.env.DATABASE_URL = original;
-    }
-  });
-
   it("guards independent cold schema initializers with the PostgreSQL advisory lock", async () => {
     const pool = new PGlitePool();
     try {

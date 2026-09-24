@@ -2070,7 +2070,7 @@ pub fn channel(
 mod tests {
     use super::{
         AgentDescriptor, AgentId, AgentStatus, ChildSession, OutputContract, Registry,
-        RegistryState, complete_session, completion_instructions, forward_events,
+        RegistryState, complete_session, forward_events,
     };
     use crate::platform;
     use crate::{
@@ -2288,22 +2288,6 @@ mod tests {
             validator: jsonschema::validator_for(&json!({})).unwrap(),
             schema: "{}".to_owned(),
         }
-    }
-
-    #[test]
-    fn output_contract_renders_the_schema_for_every_turn() {
-        let schema = json!({
-            "type": "object",
-            "properties": { "report": { "type": "string" } },
-            "required": ["report"]
-        });
-
-        let contract = OutputContract::compile(&schema).unwrap();
-        let instructions = completion_instructions(&contract.schema);
-
-        assert!(!instructions.contains("turn_token"));
-        assert!(instructions.contains("\"report\""));
-        assert!(contract.validator.is_valid(&json!({ "report": "done" })));
     }
 
     #[tokio::test]

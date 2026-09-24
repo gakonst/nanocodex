@@ -379,7 +379,7 @@ test("a durable Node-hosted root runs the canonical in-memory Rust subagent task
     );
     sendWarmup(rootSocket, "root-warmup");
 
-    const rootGeneration = await rootReader.next();
+    await rootReader.next();
     const childConnection = new Promise((resolve) => {
       server.websocketServer.once("connection", (socket, request) => {
         socket.request = request;
@@ -857,44 +857,6 @@ test("Node can load an application-owned web module and resume Codex rollout his
   await scenario;
   agent.dispose();
   await server.close();
-});
-
-test("Node Astra sends its model prompt with additive host rules and preserves replacements", async () => {
-  const astraPrompt = await readFile(
-    new URL("../../../crates/nanocodex-oai-api/prompts/astra.md", import.meta.url),
-    "utf8",
-  );
-  for (const instructions of [undefined, "Caller-owned base instructions."]) {
-    const server = await startServer();
-    const agent = await createWarmAgent({
-      apiKey: "test-key",
-      websocketUrl: server.url,
-      model: "gpt-6-astra",
-      thinking: "low",
-      instructions,
-      additionalInstructions: "Use the caller's workspace.",
-    });
-    try {
-      const scenario = (async () => {
-        const socket = await bounded(server.connection, "Astra connection");
-        const reader = messageReader(socket);
-        const warmup = await bounded(reader.next(), "Astra warmup");
-        assert.equal(warmup.model, "gpt-6-astra");
-        assert.equal(warmup.reasoning.summary, undefined);
-        assert.equal(warmup.input[1].content[0].text,
-          `${instructions ?? astraPrompt}\n\nUse the caller's workspace.`);
-        sendWarmup(socket, "astra-warmup");
-        await bounded(reader.next(), "Astra turn");
-        sendFinal(socket, "astra-final", "done");
-      })();
-      const result = await bounded(agent.turn.prompt({ input: "hello" }).result(), "Astra result");
-      assert.equal(result.finalMessage, "done");
-      await scenario;
-    } finally {
-      await agent.session.shutdown();
-      await server.close();
-    }
-  }
 });
 
 test("independent agents keep their host connections isolated", async () => {

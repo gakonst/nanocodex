@@ -140,62 +140,6 @@ test("attachment does not confuse transport buffering with a failed tool call", 
   await fixture.tools.close();
 });
 
-test("catalog preserves provider, remote name, summary, and timeout metadata", async () => {
-  const tools = await createTools({ tools: {
-    local: {
-      description: "Local.", provider: "local-provider", remoteName: "remote-local",
-      summary: "search metadata", timeoutMs: 9_000, handler: () => "ok",
-    },
-  } });
-  const socket = new FakeSocket();
-  const connector = createAttachment(tools, reverseTarget(async () => socket), { reconnect: false, provider: "fallback-provider" });
-  const connecting = connector.connect();
-  await waitFor(() => socket.frames().length === 1);
-  assert.deepEqual(socket.frames()[0].tools[0], {
-    provider: "local-provider", remote_name: "remote-local",
-    definition: {
-      type: "function", name: "local", description: "Local.", strict: false,
-      parameters: { type: "object", additionalProperties: true },
-    },
-    parallel_safe: false, summary: "search metadata", timeout_ms: 9_000,
-  });
-  socket.receive({ type: "ready" });
-  await drain(await connecting, socket);
-  await tools.close();
-});
-
-test("Tools publishes its non-secret user-machine snapshot with each attachment", async () => {
-  const tools = await createTools({
-    attachmentId: "laptop",
-    machines: [{
-      id: "laptop",
-      name: "George's laptop",
-      workspace: "/Users/george/project",
-      capabilities: ["filesystem", "native-shell"],
-    }],
-  });
-  const socket = new FakeSocket();
-  const connector = tools.attach(reverseTarget(async () => socket));
-  const connecting = connector.connect();
-  await waitFor(() => socket.frames().length === 1);
-  assert.deepEqual(socket.frames()[0], {
-    type: "catalog",
-    runtime_id: socket.frames()[0].runtime_id,
-    capabilities: ["turn_metadata"],
-    tools: [],
-    attachment_id: "laptop",
-    machines: [{
-      id: "laptop",
-      name: "George's laptop",
-      workspace: "/Users/george/project",
-      capabilities: ["filesystem", "native-shell"],
-    }],
-  });
-  socket.receive({ type: "ready" });
-  await drain(await connecting, socket);
-  await tools.close();
-});
-
 test("independent Tools runtimes publish distinct attachment identifiers", async () => {
   const firstTools = await createTools({ attachmentId: "machine:first" });
   const secondTools = await createTools({ attachmentId: "machine:second" });

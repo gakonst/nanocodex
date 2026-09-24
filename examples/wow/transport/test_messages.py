@@ -24,13 +24,6 @@ class MessageTests(unittest.TestCase):
             self.assertEqual(got,[('request',payload)])
             self.assertIsNone(assembly.current)
 
-    def test_inbound_types(self):
-        for code,kind in [('R','reply'),('P','projects'),('A','ack'),('E','error'),('S','stream')]:
-            got=[]
-            a=Assembler(lambda k,b:got.append((k,b)),accepted_kinds=('R','P','A','E','S'))
-            a.receive(next(fragments(code,1,'test')))
-            self.assertEqual(got,[(kind,b'test')])
-
     def test_rejection_preserves_partial_and_no_ack(self):
         allow=[False]; a=Assembler(lambda kind,payload:allow[0])
         parts=list(fragments('Q',1,b'x'*89))

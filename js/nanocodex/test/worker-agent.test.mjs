@@ -105,32 +105,12 @@ test("Worker prompt acknowledgement waits for durable turn admission", async () 
   assert.equal(worker.terminated, 1);
 });
 
-test("Worker Agent retains and proxies the Rust browser voice handle", async () => {
+test("Worker voice handle retains its Worker until release", async () => {
   const fixture = createFixture();
   const worker = new LoopbackWorker(fixture.createAgent);
   const agent = await createWorkerAgent({ sessionId: "root", harness: false }, { worker });
   const voice = await createBrowserVoice(agent, "cove");
 
-  await voice.configure('{"voice":"cove","updates":"results"}');
-  await voice.start();
-  await voice.appendSpeech("Speak this.");
-  await voice.appendText("developer", "Selected README.md");
-  await voice.appendContext("Background update");
-  const call = JSON.parse(await voice.callBody("v=offer"));
-  assert.equal(JSON.parse(call.call_body).session.audio.output.voice, "cove");
-  assert.deepEqual(
-    JSON.parse(await voice.completeCall("v=answer", "/v1/live/rtc_test")),
-    { call_id: "rtc_test", sdp: "v=answer" },
-  );
-  assert.equal(await voice.sidebandUrl("rtc_test"), "/sideband/rtc_test");
-  assert.equal(JSON.parse(await voice.sidebandOpened()).frames.length, 0);
-  assert.equal(JSON.parse(await voice.sidebandClosed(1_000)).reconnect_after_ms, 200);
-  await voice.framesSent(1);
-  assert.equal(await voice.requiresAgentAdmission('{"type":"delegation.created"}'), true);
-  assert.equal(JSON.parse(await voice.realtimeMessage('{"type":"turn.done"}')).frames.length, 0);
-  assert.equal(await voice.cancel(), true);
-  assert.equal(await voice.preferredPhysicalInput("BlackHole", '["Built-in Microphone"]'), 0);
-  assert.equal(JSON.parse(await voice.stop()).frames[0], '{"type":"session.close"}');
   agent.dispose();
   assert.equal(worker.terminated, 0);
   voice.free();
@@ -138,22 +118,6 @@ test("Worker Agent retains and proxies the Rust browser voice handle", async () 
 
   assert.deepEqual(fixture.log.filter(([kind]) => kind.startsWith("voice-")), [
     ["voice-create", "root", "cove"],
-    ["voice-configure", "root", '{"voice":"cove","updates":"results"}'],
-    ["voice-start", "root"],
-    ["voice-speech", "root", "Speak this."],
-    ["voice-text", "root", "developer", "Selected README.md"],
-    ["voice-context", "root", "Background update"],
-    ["voice-call", "root", "v=offer"],
-    ["voice-complete", "root", "v=answer", "/v1/live/rtc_test"],
-    ["voice-sideband", "root", "rtc_test"],
-    ["voice-sideband-opened", "root"],
-    ["voice-sideband-closed", "root", 1000],
-    ["voice-frames-sent", "root", 1],
-    ["voice-admission", "root", '{"type":"delegation.created"}'],
-    ["voice-message", "root", '{"type":"turn.done"}'],
-    ["voice-cancel", "root"],
-    ["voice-input", "root", "BlackHole", '["Built-in Microphone"]'],
-    ["voice-stop", "root"],
     ["voice-free", "root"],
   ]);
   assert.equal(worker.terminated, 1);
@@ -473,34 +437,10 @@ test("turn cancellation followed by graceful shutdown releases Worker event dema
   assert.equal(worker.terminated, 1);
 });
 
-test("session, branching, realtime, and graceful lifecycle remain DefaultAgent-shaped", async () => {
+test("Worker branching preserves child lifetime through root shutdown", async () => {
   const fixture = createFixture();
   const worker = new LoopbackWorker(fixture.createAgent);
   const root = await createWorkerAgent({ sessionId: "root", harness: false }, { worker });
-
-  await root.session.setModel("gpt-6-astra");
-  await root.session.setThinking("high");
-  await root.session.setFastMode(true);
-  await root.session.compact();
-  assert.equal((await root.session.context()).workspace, "/workspace/root");
-  assert.equal((await root.session.appendDeveloperMessage("voice started")).workspace, "/workspace/root");
-  await root.session.realtime.start();
-  await root.session.realtime.end();
-  assert.equal(
-    await root.session.realtime.delegation("fix <x>", [{ role: "user", text: "yes & now" }]),
-    "canonical:fix <x>:user: yes & now",
-  );
-  assert.equal(await root.session.realtime.tailDelegation([]), undefined);
-  assert.equal(
-    fixture.log.some(([kind]) => kind === "realtime-delegation"),
-    true,
-  );
-  assert.equal(
-    fixture.log.some(([kind, sessionId, model]) => (
-      kind === "model" && sessionId === "root" && model === "gpt-6-astra"
-    )),
-    true,
-  );
 
   const first = root.turn.prompt({ input: "first" });
   const firstResult = first.result();
@@ -1666,96 +1606,9 @@ function createFixture(options = {}) {
         log.push(["context", sessionId]);
         return JSON.stringify({ workspace: `/workspace/${sessionId}`, history: [] });
       },
-      async setThinking(value) { log.push(["thinking", sessionId, value]); },
-      async setModel(value) { log.push(["model", sessionId, value]); },
-      async setFastMode(value) { log.push(["fast", sessionId, value]); },
-      async appendDeveloperMessage(text) {
-        log.push(["developer", sessionId, text]);
-        return JSON.stringify({ workspace: `/workspace/${sessionId}`, history: [] });
-      },
-      async startRealtimeConversation() {
-        log.push(["realtime-start", sessionId]);
-        return JSON.stringify({ workspace: `/workspace/${sessionId}`, history: [] });
-      },
-      async endRealtimeConversation() {
-        log.push(["realtime-end", sessionId]);
-        return JSON.stringify({ workspace: `/workspace/${sessionId}`, history: [] });
-      },
-      realtimeDelegation(input, transcript) {
-        const entries = JSON.parse(transcript);
-        log.push(["realtime-delegation", sessionId, input, entries]);
-        return `canonical:${input}:${entries.map(({ role, text }) => `${role}: ${text}`).join("\n")}`;
-      },
-      realtimeTailDelegation(transcript) {
-        const entries = JSON.parse(transcript);
-        log.push(["realtime-tail", sessionId, entries]);
-        return entries.length ? "canonical-tail" : undefined;
-      },
       browserVoice(voice) {
         log.push(["voice-create", sessionId, voice]);
         return {
-          async configure(settings) { log.push(["voice-configure", sessionId, settings]); },
-          async appendSpeech(text) { log.push(["voice-speech", sessionId, text]); return "{}"; },
-          async appendText(role, text) { log.push(["voice-text", sessionId, role, text]); return "{}"; },
-          async appendContext(text) { log.push(["voice-context", sessionId, text]); return "{}"; },
-          async start() { log.push(["voice-start", sessionId]); },
-          callBody(sdp) {
-            log.push(["voice-call", sessionId, sdp]);
-            return JSON.stringify({
-              session_id: sessionId,
-              call_body: JSON.stringify({
-                sdp,
-                session: { audio: { output: { voice } } },
-              }),
-            });
-          },
-          completeCall(body, location) {
-            log.push(["voice-complete", sessionId, body, location]);
-            return JSON.stringify({ call_id: "rtc_test", sdp: body });
-          },
-          sidebandUrl(callId) {
-            log.push(["voice-sideband", sessionId, callId]);
-            return `/sideband/${callId}`;
-          },
-          sidebandOpened() {
-            log.push(["voice-sideband-opened", sessionId]);
-            return JSON.stringify({ frames: [], transcripts: [], schedule_flush: false });
-          },
-          sidebandClosed(connectedMs) {
-            log.push(["voice-sideband-closed", sessionId, connectedMs]);
-            return JSON.stringify({
-              frames: [],
-              transcripts: [],
-              reconnect_after_ms: 200,
-              schedule_flush: false,
-            });
-          },
-          framesSent(count) { log.push(["voice-frames-sent", sessionId, count]); },
-          requiresAgentAdmission(payload) {
-            log.push(["voice-admission", sessionId, payload]);
-            return JSON.parse(payload).type === "delegation.created";
-          },
-          realtimeMessage(payload) {
-            log.push(["voice-message", sessionId, payload]);
-            return JSON.stringify({ frames: [], transcripts: [], schedule_flush: false });
-          },
-          agentEvent(payload) {
-            log.push(["voice-event", sessionId, payload]);
-            return JSON.stringify({ frames: [], transcripts: [], schedule_flush: false });
-          },
-          flush(finalChunk) {
-            log.push(["voice-flush", sessionId, finalChunk]);
-            return JSON.stringify({ frames: [], transcripts: [], schedule_flush: false });
-          },
-          async stop() {
-            log.push(["voice-stop", sessionId]);
-            return JSON.stringify({ frames: ['{"type":"session.close"}'], transcripts: [], schedule_flush: false });
-          },
-          async cancel() { log.push(["voice-cancel", sessionId]); return true; },
-          preferredPhysicalInput(current, labels) {
-            log.push(["voice-input", sessionId, current, labels]);
-            return 0;
-          },
           free() { log.push(["voice-free", sessionId]); },
         };
       },

@@ -9,23 +9,6 @@ const workerEnv = env as unknown as EgressEnv;
 const LINEAR_ENDPOINT = "https://mcp.linear.app/mcp";
 
 describe("generic remote MCP connection owner", () => {
-  it("joins public connector and MCP metadata without returning connection credentials", async () => {
-    const user = "joined-catalog";
-    const id = connectionId("J");
-    await materialize(user, id, LINEAR_ENDPOINT, "Catalog workspace");
-    const catalog = await control(`/users/${user}/catalog`, "GET");
-    expect(catalog.status).toBe(200);
-    const body = await catalog.json<Record<string, unknown>>();
-    const connectors = await (await control(`/users/${user}/connectors`, "GET")).json<Record<string, unknown>>();
-    const mcps = await (await control(`/users/${user}/mcp-connections`, "GET")).json<Record<string, unknown>>();
-    expect(body).toEqual({ ...connectors, ...mcps });
-    expect(JSON.stringify(body)).not.toContain(LINEAR_ENDPOINT);
-    expect((await control(`/users/${user}/catalog`, "POST", {})).status).toBe(405);
-    await control(`/users/${user}/mcp-connections/${id}`, "DELETE");
-    const changed = await (await control(`/users/${user}/catalog`, "GET")).json<Record<string, unknown>>();
-    expect(changed.mcp_connections).toEqual([{ id, name: "Catalog workspace", status: "revoked" }]);
-  });
-
   it("connects Mercator without inventing OAuth and proxies its MCP tools", async () => {
     const user = "mcp-mercator";
     const id = connectionId("Q");

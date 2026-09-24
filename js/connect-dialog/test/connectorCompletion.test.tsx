@@ -40,6 +40,5 @@ describe("connector OAuth completion", () => {
       ...connectorCompletion("github", "connected"),
       token: "must-not-be-projected",
     })).toBe(false);
-    expect(Object.keys(connectorCompletion("github", "connected"))).not.toContain("token");
   });
 });

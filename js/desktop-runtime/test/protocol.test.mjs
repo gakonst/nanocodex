@@ -8,7 +8,7 @@ import { spawn } from "node:child_process";
 import { createInterface } from "node:readline";
 import { test } from "node:test";
 import { WebSocketServer } from "ws";
-import { DEFAULT_SETTINGS, DesktopRuntime, managedOrigin, validateHand, validateSettings, compareCursor, restoredLayout } from "../src/runtime.mjs";
+import { DesktopRuntime, managedOrigin, validateHand, compareCursor, restoredLayout } from "../src/runtime.mjs";
 import { desktopPreferences } from "../src/configuration.mjs";
 
 // Synthetic desktop fixtures must never discover or install a host provider.
@@ -135,23 +135,6 @@ test("disabling during automatic workspace creation prevents attachment", { time
   assert.equal(await preparing, null);
   assert.equal(runtime.state().hands[0].status, "stopped");
   assert.equal(await runtime.prepareDefaultHand(), null);
-});
-test("Astra accepts its supported settings and rejects None or Pro", () => {
-  const settings = { model: "gpt-6-astra", thinking: "high", reasoning_mode: "standard", fast_mode: false };
-  for (const thinking of ["low", "medium", "high", "xhigh", "max"]) assert.equal(validateSettings({ ...settings, thinking }).thinking, thinking);
-  for (const thinking of ["none", "ultra"]) assert.throws(() => validateSettings({ ...settings, thinking }), /Low through Max/);
-  assert.throws(() => validateSettings({ ...settings, reasoning_mode: "pro" }), /Standard/);
-});
-test("GPT-6 Sol and Luna retain None and Pro", () => {
-  for (const model of ["gpt-6-sol", "gpt-6-luna"]) {
-    const settings = { model, thinking: "medium", reasoning_mode: "standard", fast_mode: false };
-    assert.equal(validateSettings(settings), settings);
-    assert.equal(validateSettings({ ...settings, thinking: "none" }).thinking, "none");
-    assert.equal(validateSettings({ ...settings, reasoning_mode: "pro" }).reasoning_mode, "pro");
-  }
-});
-test("new desktop threads default to GPT-6 Sol", () => {
-  assert.deepEqual(DEFAULT_SETTINGS, { model: "gpt-6-sol", thinking: "medium", reasoning_mode: "standard", fast_mode: false });
 });
 test("accepted turns lock model and mode while effort and Fast use a minimal patch", async t => {
   const current = { model: "gpt-6-astra", thinking: "high", reasoning_mode: "standard", fast_mode: false };

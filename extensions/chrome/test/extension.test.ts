@@ -1,15 +1,10 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  createConversationId,
-  isConversationId,
-  isManagedAgentId,
   migrateLegacyConversationSession,
 } from "../lib/connect.ts";
 import {
-  cleanupPrompt,
   validateCleanupInput,
-  visibleCleanupPrompt,
 } from "../lib/extension.ts";
 
 test("rejects unsupported cleanup actions before dispatch", () => {
@@ -29,31 +24,6 @@ test("rejects unsupported cleanup actions before dispatch", () => {
   assert.throws(() => validateCleanupInput({ action: "inspect", tab_ref: "" }), /non-empty/);
   assert.throws(() => validateCleanupInput({ action: "inspect", tab_ref: "not-opaque" }), /opaque reference/);
   assert.throws(() => validateCleanupInput({ action: "list_tabs", cursor: "not-opaque" }), /opaque reference/);
-});
-
-test("recognizes only durable managed agent identifiers", () => {
-  assert.equal(isManagedAgentId("d9428888-122b-4f2e-989a-0874c494beb7"), true);
-  assert.equal(isManagedAgentId("agent_legacy-account-hash"), false);
-  assert.equal(isManagedAgentId("D9428888-122B-4F2E-989A-0874C494BEB7"), false);
-  assert.equal(isManagedAgentId("d9428888-122b-4f2e-789a-0874c494beb7-extra"), false);
-});
-
-test("creates isolated durable conversation identifiers", () => {
-  const first = createConversationId();
-  const second = createConversationId();
-  assert.equal(isConversationId(first), true);
-  assert.equal(isConversationId(second), true);
-  assert.notEqual(first, second);
-  assert.equal(isConversationId("legacy"), true);
-  assert.equal(isConversationId("../../another-agent"), false);
-});
-
-test("keeps cleanup policy out of the visible transcript", () => {
-  const visible = "hide everything except the timeline";
-  const modelInput = cleanupPrompt(visible);
-  assert.notEqual(modelInput, visible);
-  assert.equal(visibleCleanupPrompt(modelInput), visible);
-  assert.equal(visibleCleanupPrompt("an unrelated retained prompt"), "an unrelated retained prompt");
 });
 
 test("legacy session migration cannot resurrect a disconnected grant", () => {

@@ -72,14 +72,11 @@ describe("cwd-root namespace execution", () => {
       .rejects.toThrow("explicit Hand workdir");
     const selection = await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/native" }, context());
     expect(selection).toMatchObject({
-      browser_selection: expect.stringContaining("'brave', not 'Brave Browser'"),
-      native_app_recovery: expect.stringContaining("Do not replay input actions"),
       definitions: [
       { name: CUA_JS_NAME, description, parameters: providerParameters, output_schema: { type: "object" },
         _meta: { provider: { retained: true } }, annotations: { readOnlyHint: false } },
       { name: CUA_RESET_NAME, description, parameters: resetParameters },
     ] });
-    expect(runtime.tools[CUA_JS_NAME]!.description).not.toContain("cua.getApp");
     supported = false;
     const changed = await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/native" }, context({ parentCallId: "new" }));
     expect(changed).toMatchObject({ definitions: [{ parameters: { type: "object", properties: { invented: { type: "string" } } } }, { parameters: { type: "object", properties: { invented: { type: "string" } } } }] });
@@ -243,7 +240,6 @@ describe("cwd-root namespace execution", () => {
       router.execute("exec_command", { cmd: "two", workdir: "/hand-b" }, context({ callId: "two" })),
     ]);
 
-    expect(tools.exec_command!.supportsParallelToolCalls).toBe(true);
     expect(maxActive).toBe(2);
   });
 

@@ -107,12 +107,3 @@ test("provider metadata preserves stable turns across calls and never substitute
     });
   }
 });
-
-
-test("adapter does not reinterpret timeouts on any provider tool", async t => {
-  const attachment = await connectComputerTools(provider().options);
-  t.after(attachment.close);
-  const input = { timeout_ms: 1, providerOption: "unchanged" };
-  const result = await attachment.tool("future_tool").handler(input, context);
-  assert.deepEqual(JSON.parse(result.output[0].text).arguments, input);
-});

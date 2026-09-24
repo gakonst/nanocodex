@@ -6,5 +6,5 @@ Native iPhone simulator captures using synthetic demo conversations.
 - `after-light.png` and `after-dark.png`: revised typography and layout.
 
 The current-work sentences are deterministic UI-test fixtures, not a live-model evaluation.
-Captured by `InboxUITests.testSidebarShowsStatusAndGeneratedCurrentWork`.
-The drawer swipe/draft preservation test runs alongside it.
+These historical captures came from the sidebar-status UI test, later removed
+as duplicate coverage.
