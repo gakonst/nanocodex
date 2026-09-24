@@ -338,10 +338,6 @@ jobs:
           cache-on-failure: false
       - run: cargo fmt --all -- --check
         if: matrix.check == 'workspace-clippy'
-      - name: Check Linux Hand installation boundaries
-        # Temporarily disabled: CI tests are paused.
-        if: ${{ false }}
-        run: python3 bin/nanocodex/src/hand_setup/test_install.py
       - name: Clippy workspace targets
         if: matrix.check == 'workspace-clippy'
         run: cargo clippy --locked --workspace --all-targets --all-features --exclude nanocodex-bin -- -D warnings -A clippy::missing_const_for_fn

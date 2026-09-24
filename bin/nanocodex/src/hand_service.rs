@@ -21,7 +21,7 @@ pub(crate) struct ServiceStatus {
 fn supported() -> Result<()> {
     if !cfg!(target_os = "macos") {
         bail!(
-            "Local Hand service commands currently support macOS only; use hand add for SSH Linux setup"
+            "This local Hand service command requires macOS; install a Linux Hand with `nanocodex hand install [--target HOST]`"
         );
     }
     Ok(())

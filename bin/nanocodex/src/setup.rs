@@ -29,20 +29,6 @@ pub(crate) struct Setup {
     /// Skip the persistent local Hand service.
     #[arg(long)]
     skip_hand: bool,
-    /// Also install or update a Linux Hand over SSH.
-    #[arg(
-        long,
-        value_name = "USER@HOST",
-        value_parser = crate::hand_setup::ssh_target,
-        conflicts_with = "skip_hand"
-    )]
-    hand_target: Option<String>,
-    /// SSH port for --hand-target; otherwise use normal SSH configuration.
-    #[arg(long, requires = "hand_target")]
-    hand_port: Option<u16>,
-    /// Do not offer optional Linux Hand enrollment during interactive setup.
-    #[arg(long)]
-    no_remote_hand_prompt: bool,
 }
 
 fn extension_present(root: &Path, id: &str) -> bool {
@@ -58,7 +44,7 @@ fn extension_present(root: &Path, id: &str) -> bool {
 }
 
 fn browser_extension_installed(home: &Path) -> bool {
-    [
+    let macos = [
         (
             "Library/Application Support/Google/Chrome",
             CHROME_EXTENSION_ID,
@@ -76,9 +62,32 @@ fn browser_extension_installed(home: &Path) -> bool {
             "Library/Application Support/Microsoft Edge",
             EDGE_EXTENSION_ID,
         ),
-    ]
-    .into_iter()
-    .any(|(root, id)| extension_present(&home.join(root), id))
+    ];
+    let linux = [
+        (".config/google-chrome", CHROME_EXTENSION_ID),
+        (".config/chromium", CHROME_EXTENSION_ID),
+        (".config/BraveSoftware/Brave-Browser", CHROME_EXTENSION_ID),
+        (".config/microsoft-edge", EDGE_EXTENSION_ID),
+    ];
+    let windows = [
+        ("AppData/Local/Google/Chrome/User Data", CHROME_EXTENSION_ID),
+        (
+            "AppData/Local/BraveSoftware/Brave-Browser/User Data",
+            CHROME_EXTENSION_ID,
+        ),
+        ("AppData/Local/Microsoft/Edge/User Data", EDGE_EXTENSION_ID),
+    ];
+    let roots: &[_] = if cfg!(target_os = "linux") {
+        &linux
+    } else if cfg!(target_os = "windows") {
+        &windows
+    } else {
+        &macos
+    };
+    roots
+        .iter()
+        .copied()
+        .any(|(root, id)| extension_present(&home.join(root), id))
 }
 
 fn prompt_open_extension() -> Result<bool> {
@@ -92,32 +101,10 @@ fn prompt_open_extension() -> Result<bool> {
     ))
 }
 
-fn remote_hand_answer(answer: &str) -> Result<Option<String>> {
-    let answer = answer.trim();
-    if answer.is_empty() {
-        return Ok(None);
-    }
-    crate::hand_setup::ssh_target(answer)
-        .map(Some)
-        .map_err(eyre::Report::msg)
-}
-
-fn prompt_remote_hand() -> Result<Option<String>> {
-    loop {
-        eprint!("Optional Linux Hand SSH target (user@host, blank to skip): ");
-        io::stderr().flush()?;
-        let mut answer = String::new();
-        io::stdin().read_line(&mut answer)?;
-        match remote_hand_answer(&answer) {
-            Ok(target) => return Ok(target),
-            Err(error) => eprintln!("Invalid SSH target: {error}"),
-        }
-    }
-}
-
 impl Setup {
     pub(crate) async fn run(self) -> Result<()> {
         eprintln!("Setting up Nanocodex…");
+        let mut upstream_computer = false;
         if !self.skip_account {
             if nanocodex_cli_auth::has_default_login() {
                 eprintln!("✓ Nanocodex account login found");
@@ -132,57 +119,55 @@ impl Setup {
             let receipt = nanocodex_computer::provision::provision_upstream(self.refresh)
                 .await
                 .map_err(eyre::Report::msg)?;
-            if receipt["status"] != "installed" && cfg!(target_os = "macos") {
-                bail!("Computer Use setup did not install a runtime");
-            }
-            if cfg!(target_os = "macos") {
-                nanocodex_computer::provision::configure_browser_bridge()
-                    .await
-                    .map_err(eyre::Report::msg)?;
-            }
-            eprintln!("✓ Computer Use and its browser bridge are ready");
-            if cfg!(target_os = "macos") {
-                eprintln!(
-                    "  macOS may request Screen Recording and Accessibility on first Computer Use."
-                );
+            match receipt["status"].as_str() {
+                Some("installed") => {
+                    upstream_computer = true;
+                    if cfg!(target_os = "macos") {
+                        nanocodex_computer::provision::configure_browser_bridge()
+                            .await
+                            .map_err(eyre::Report::msg)?;
+                    }
+                    eprintln!("✓ Computer Use is ready");
+                    if cfg!(target_os = "macos") {
+                        eprintln!(
+                            "  macOS may request Screen Recording and Accessibility on first Computer Use."
+                        );
+                    }
+                }
+                Some("unsupported") if cfg!(target_os = "linux") && !self.skip_hand => eprintln!(
+                    "• OpenAI does not publish a Linux CUA bundle; this machine's native Hand screen will provide computer use."
+                ),
+                Some("unsupported") => eprintln!(
+                    "• OpenAI does not publish an automatically provisioned CUA runtime for {}.",
+                    std::env::consts::OS
+                ),
+                _ => bail!("Computer Use setup did not install a runtime"),
             }
         }
 
-        if !self.skip_hand && cfg!(target_os = "macos") {
+        if !self.skip_hand {
             if !nanocodex_cli_auth::has_default_login() {
                 bail!(
                     "Hand needs an account login; rerun without --skip-account or run `nanocodex account login`"
                 );
             }
-            eprintln!("Ensuring the local Hand daemon is current and connected…");
-            let _lock = crate::update::lock_service_operation()?;
-            crate::hand_service::ensure(None, None).await?;
-            eprintln!("✓ Local Hand is connected");
-        }
-
-        if !self.skip_hand {
-            let target = match self.hand_target {
-                Some(target) => Some(target),
-                None if self.no_remote_hand_prompt => None,
-                None => prompt_remote_hand()?,
-            };
-            if let Some(target) = target {
-                if !nanocodex_cli_auth::has_default_login() {
-                    bail!(
-                        "Linux Hand enrollment needs an account login; rerun without --skip-account or run `nanocodex account login`"
-                    );
-                }
-                eprintln!("Installing the Linux Hand and VM factory on {target}…");
-                crate::hand_setup::add_default(target.clone(), self.hand_port)
-                    .await
-                    .wrap_err_with(|| format!("Could not set up the Linux Hand on {target}"))?;
-                eprintln!("✓ Linux Hand on {target} is connected");
+            eprintln!("Installing or repairing the Hand on this machine…");
+            crate::hand_setup::install_default(None, None, None, None).await?;
+            eprintln!("✓ This machine's Hand is connected");
+            if cfg!(target_os = "linux") && !self.skip_computer && !upstream_computer {
+                eprintln!("✓ Native screen computer use is ready");
             }
         }
 
-        if cfg!(target_os = "macos") {
+        if cfg!(any(
+            target_os = "macos",
+            target_os = "linux",
+            target_os = "windows"
+        )) {
             let home = PathBuf::from(
-                std::env::var_os("HOME").ok_or_else(|| eyre::eyre!("HOME is unset"))?,
+                std::env::var_os("HOME")
+                    .or_else(|| std::env::var_os("USERPROFILE"))
+                    .ok_or_else(|| eyre::eyre!("home directory is unset"))?,
             );
             if browser_extension_installed(&home) {
                 eprintln!("✓ Official browser extension found");
@@ -208,13 +193,6 @@ impl Setup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use clap::Parser;
-
-    #[derive(Parser)]
-    struct TestCli {
-        #[command(flatten)]
-        setup: Setup,
-    }
 
     #[test]
     fn detects_extension_in_any_profile() {
@@ -227,46 +205,5 @@ mod tests {
         fs::create_dir_all(version).unwrap();
         assert!(extension_present(temp.path(), CHROME_EXTENSION_ID));
         assert!(!extension_present(temp.path(), EDGE_EXTENSION_ID));
-    }
-
-    #[test]
-    fn optional_remote_hand_target_is_bounded_and_shell_safe() {
-        assert_eq!(remote_hand_answer("\n").unwrap(), None);
-        assert_eq!(
-            remote_hand_answer(" ubuntu@hand.example \n").unwrap(),
-            Some("ubuntu@hand.example".into())
-        );
-        for answer in ["-oProxyCommand=evil", "host;id", "host path", "$(id)"] {
-            assert!(remote_hand_answer(answer).is_err(), "{answer}");
-        }
-    }
-
-    #[test]
-    fn remote_hand_flags_are_explicit_and_consistent() {
-        let parsed = TestCli::try_parse_from([
-            "setup",
-            "--hand-target",
-            "ubuntu@hand.example",
-            "--hand-port",
-            "2222",
-            "--no-remote-hand-prompt",
-        ])
-        .unwrap();
-        assert_eq!(
-            parsed.setup.hand_target.as_deref(),
-            Some("ubuntu@hand.example")
-        );
-        assert_eq!(parsed.setup.hand_port, Some(2222));
-        assert!(parsed.setup.no_remote_hand_prompt);
-        assert!(TestCli::try_parse_from(["setup", "--hand-port", "2222"]).is_err());
-        assert!(
-            TestCli::try_parse_from([
-                "setup",
-                "--skip-hand",
-                "--hand-target",
-                "ubuntu@hand.example"
-            ])
-            .is_err()
-        );
     }
 }

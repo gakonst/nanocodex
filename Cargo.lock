@@ -6386,6 +6386,7 @@ dependencies = [
  "dotenvy",
  "fs2",
  "futures-util",
+ "hex",
  "image",
  "kvm-ioctls",
  "nanocodex",

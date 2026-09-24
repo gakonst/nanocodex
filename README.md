@@ -116,10 +116,14 @@ nanocodex
 ```
 
 With an interactive terminal, the installer immediately runs `nanocodex setup`:
-account SMS login, exact upstream Computer Use components, the persistent Hand,
-an optional Linux Hand over SSH, and the official browser-extension prompt. The
-flow is idempotent and resumable. Pass `--hand-target user@host` to enroll a
-Linux Hand directly, or leave the interactive SSH target prompt blank to skip it.
+account SMS login, platform CUA setup, the persistent Hand on that machine, and
+the official browser-extension prompt where applicable. The flow is idempotent
+and resumable.
+
+The curl script only selects and checksum-verifies one platform bootstrap.
+Native Rust then installs the matching CLI, Hand, and voice bundle, updates the
+shell PATH, configures supported native automatic updates, and owns every setup
+step.
 
 Release bundles include the native voice helper, libraries, and plugins.
 Installation and updates verify and install them with the matching CLI version;
@@ -131,7 +135,9 @@ automatically on first voice use.
 On macOS and Windows, current native CLIs and Hands automatically provision
 OpenAI's signed CUA runtime and select its upstream MCP tools. macOS range-fetches
 only the signed upstream CUA and browser-bridge components; Windows uses its official Microsoft Store package.
-Linux requires an explicitly installed upstream MCP provider; no custom CUA backend is bundled.
+Every macOS, Linux, or Windows Hand also publishes a native controllable screen.
+When no upstream provider is attached, VM and Cloudflare desktop Hands expose
+that native action schema through the same workdir-routed CUA entry point.
 Use `nanocodex2 computer setup --refresh`
 to update or repair the runtime, or `NANOCODEX_COMPUTER=off` to disable it.
 See [runtime installation and platform limits](docs/computer/upstream-provider.md).
@@ -197,43 +203,38 @@ agent (including `Agent.create` / `Agent.createAndPrompt` in JavaScript). Rust
 callers can use `ManagedClient::create_with_chatgpt_account(settings, account_id)`.
 
 
-### Linux Hands and VM factories
+### Native Linux Hands
 
-From a host already signed in to your Nanocodex account:
-
-```sh
-nanocodex hand add ubuntu@your-server
-# SSH configuration aliases and --port work too.
-```
-
-Or install and authenticate directly on the Linux device:
+Install or repair the Hand on the current Linux machine after the curl login:
 
 ```sh
-curl -fsSL https://nanocodex.paradigm.xyz | bash
-nanocodex update --nightly
-nanocodex account login # existing SMS OTP flow
-nanocodex hand setup
+nanocodex hand install
 ```
 
-Both commands install the same native Hand, private desktop, and account-scoped
-VM factory. Setup currently supports x86-64 Debian/Ubuntu with systemd and
-sudo. On-device setup can prompt for your administrator password; SSH enrollment
-uses your existing SSH keys/configuration and requires passwordless sudo.
-KVM is required for a factory. Use `--native-only` for a native Hand on a host
-without KVM. The default factory selector is `linux-<hostname>`; override it
-with `--factory-name`. The default pool has four VMs, each with two vCPUs,
-4 GiB RAM, and a retained 16 GiB root disk. `--max-vms`, `--vm-cpus`, and
-`--vm-memory-mib` configure physical capacity.
+Or enroll a remote Linux machine from an already authenticated host. The remote
+machine does not perform account login:
 
-The installer verifies release checksums, keeps credentials out of command
-arguments, and waits for remote registration and the native desktop catalog.
-`nanocodex-hand.service` and `nanocodex-factory.service` start at boot and
-reconnect independently of SSH. Re-running setup reuses identities and private
-VM roots under `/srv/nanocodex`; it never replaces a retained workspace. A setup
-already enrolled to another account or origin is rejected. `--artifacts DIR`
-accepts matching locally built Linux `nanocodex2` and `nanocodex-vm-guest`
-executables for development. Computer use in a guest requires an explicitly
-configured upstream MCP provider; no custom CUA runtime is built into the image.
+```sh
+nanocodex hand install --target ubuntu@your-server
+nanocodex hand install --target ubuntu@your-server --port 2222
+```
+
+Both commands install the same native Hand and private controllable desktop.
+Setup currently supports x86-64 Debian/Ubuntu with systemd and sudo. On-device
+setup can prompt for your administrator password; SSH enrollment uses your
+existing SSH keys/configuration and requires passwordless sudo.
+
+The client verifies the release checksum, uploads only the native Rust
+`nanocodex2` binary, and passes the account credential privately over stdin.
+The binary installs itself and waits for both Hand registration and its screen
+catalog; no Python, Bash installer, or remote interactive login is involved.
+`nanocodex-hand.service` starts at boot and reconnects independently of SSH.
+Re-running setup reuses the identity and private workspace under
+`/srv/nanocodex`; an installation enrolled to another account or origin is
+rejected.
+
+The same lifecycle commands work for the local launchd or systemd service:
+`nanocodex hand status`, `start`, `stop`, and `restart`.
 
 ### Windows Hand
 

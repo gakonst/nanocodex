@@ -653,6 +653,6 @@ closes the factory's parent pipe so it drains and stops its VMs, including acros
 WSL. See [Microsoft's WSL configuration reference](https://learn.microsoft.com/en-us/windows/wsl/wsl-config)
 for `nestedVirtualization` and supported Windows configurations.
 
-Linux servers installed with `nanocodex hand setup` keep their existing systemd
-services and retained identities. The installer links the native computer to its
-factory using `hand --vm-provider NAME`; re-run setup to update existing units.
+Linux servers installed with `nanocodex hand install` keep their systemd service,
+private workspace, and machine identity across idempotent repairs. VM factories
+remain a separate `nanocodex2 host` capability and are not installed implicitly.

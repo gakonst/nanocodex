@@ -151,8 +151,9 @@ replacing the selected runtime does not overwrite a running host.
 Linux and Linux VM/container guests require an explicitly configured upstream
 MCP provider. No custom CUA runtime, background-input plugin, or legacy fallback
 is bundled. Automatic `computer setup` currently supports macOS and Windows;
-without a provider, guests report CUA unavailable. Remote screen streaming is
-a separate feature and does not imply an installed CUA provider.
+without a provider, guests use their native controllable screen action contract
+through the workdir-routed CUA entry point. This fallback does not emulate or
+claim to install OpenAI's JavaScript provider.
 
 ## Selection and updates
 

@@ -80,7 +80,7 @@ pub(super) struct Reply {
     pub success: bool,
     pub stdout: String,
 }
-const INSTALL: &str = "The computer Hand OS service is not installed. On macOS, install it once with `nanocodex hand install`; on Linux, use scripts/install-hand-service.py (see docs/architecture/hands.md), then retry. To use the CLI without a local Hand, set NANOCODEX_DISABLE_HAND=1.";
+const INSTALL: &str = "The computer Hand OS service is not installed. Install it once with `nanocodex hand install`, then retry. To use the CLI without a local Hand, set NANOCODEX_DISABLE_HAND=1.";
 
 pub(super) async fn ensure_with<F, Fut>(
     platform: Platform,

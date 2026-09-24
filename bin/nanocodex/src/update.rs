@@ -42,29 +42,29 @@ const READ_TIMEOUT: Duration = Duration::from_secs(30);
 const MAX_ARCHIVE_BYTES: u64 = 256 * 1024 * 1024;
 const MAX_BINARY_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Resolve one immutable release for remote installation. The target verifies
-/// the same manifest hashes as the local updater before activating any binary.
-pub(crate) async fn linux_hand_artifacts() -> Result<serde_json::Value> {
+/// Resolve one immutable Linux Hand binary for local or SSH installation.
+/// The controller verifies the release manifest before any credential is sent.
+pub(crate) async fn linux_hand_binary() -> Result<Vec<u8>> {
     let client = Client::builder()
         .user_agent(format!("nanocodex/{}", version::SEMVER_VERSION))
         .connect_timeout(CONNECT_TIMEOUT)
         .read_timeout(READ_TIMEOUT)
         .build()?;
-    let pointer = fetch_release(&client, NIGHTLY_RELEASE_API, "nightly release").await?;
-    let release = fetch_immutable_nightly(&client, &pointer).await?;
+    let release = if version::IS_NIGHTLY {
+        let pointer = fetch_release(&client, NIGHTLY_RELEASE_API, "nightly release").await?;
+        fetch_immutable_nightly(&client, &pointer).await?
+    } else {
+        fetch_release(
+            &client,
+            &format!("{TAGGED_RELEASE_API}/v{}", env!("CARGO_PKG_VERSION")),
+            "matching Nanocodex release",
+        )
+        .await?
+    };
     let manifest = download(&client, find_asset(&release, CHECKSUMS_ASSET)?, false).await?;
-    let mut artifacts = Vec::new();
-    for (name, asset_name) in [
-        ("nanocodex2", NANOCODEX2_LINUX_ASSET),
-        ("nanocodex-vm-guest", VM_GUEST_ASSET),
-    ] {
-        let (asset, compressed) = find_preferred_asset(&release, asset_name)?;
-        artifacts.push(
-            serde_json::json!({"name": name, "url": asset.download_url()?.as_str(),
-            "sha256": checksum_for(&manifest, &asset.name)?, "gzip": compressed}),
-        );
-    }
-    Ok(serde_json::json!({"release": release.tag_name, "artifacts": artifacts}))
+    let (asset, compressed) = find_preferred_asset(&release, NANOCODEX2_LINUX_ASSET)?;
+    let archive = download_verified(&client, asset, &manifest, true).await?;
+    unpack_release_asset(archive, &asset.name, compressed)
 }
 
 /// Older updater binaries install executables without their voice archive.
@@ -447,6 +447,28 @@ impl Update {
             Cow::Borrowed("latest stable Nanocodex release")
         }
     }
+}
+
+/// Turn one verified standalone CLI into a complete managed installation.
+/// The curl bootstrap downloads only that CLI; this native updater owns every
+/// companion binary, voice resource, activation, and automatic-update detail.
+pub(crate) async fn install_latest() -> Result<PathBuf> {
+    Update {
+        version: None,
+        nightly: false,
+        pr: None,
+        path: None,
+        force: false,
+        hand_binary: None,
+        voice_archive: None,
+        auto: None,
+        apply: false,
+        background: false,
+        restart_hand: false,
+    }
+    .run()
+    .await?;
+    Ok(VersionStore::discover()?.root().to_path_buf())
 }
 
 pub(crate) fn lock_service_operation() -> Result<fs::File> {

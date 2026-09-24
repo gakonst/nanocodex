@@ -73,9 +73,9 @@ pub async fn configure_browser_bridge() -> Result<serde_json::Value, String> {
     #[cfg(target_os = "macos")]
     {
         let root = runtime_root()?;
-        return tokio::task::spawn_blocking(move || mac::configure_browser(&root))
+        tokio::task::spawn_blocking(move || mac::configure_browser(&root))
             .await
-            .map_err(|e| format!("Browser bridge setup task failed: {e}"))?;
+            .map_err(|e| format!("Browser bridge setup task failed: {e}"))?
     }
     #[cfg(not(target_os = "macos"))]
     Ok(serde_json::json!({"status":"unsupported","platform":std::env::consts::OS}))
@@ -191,6 +191,7 @@ async fn windows_provision(refresh: bool) -> Result<serde_json::Value, String> {
 }
 
 #[cfg(any(target_os = "macos", all(test, unix)))]
+#[cfg_attr(all(test, not(target_os = "macos")), allow(dead_code))]
 mod mac {
     use base64::Engine as _;
     use fs2::FileExt as _;
@@ -439,10 +440,8 @@ mod mac {
             .collect();
         elements
             .chunks_exact(2)
-            .filter_map(|pair| {
-                (pair[0].tag_name().name() == "key")
-                    .then(|| (pair[0].text().unwrap_or_default(), pair[1]))
-            })
+            .filter(|pair| pair[0].tag_name().name() == "key")
+            .map(|pair| (pair[0].text().unwrap_or_default(), pair[1]))
             .collect()
     }
 
@@ -528,7 +527,7 @@ mod mac {
             .replace('\\', "/");
         match (seals.get(&name), metadata.file_type().is_symlink()) {
             (Some(Seal::Symlink(expected)), true)
-                if io(fs::read_link(&path))? == PathBuf::from(expected) =>
+                if io(fs::read_link(&path))? == Path::new(expected) =>
             {
                 Ok(())
             }
@@ -1458,6 +1457,7 @@ mod mac {
             .read(true)
             .write(true)
             .create(true)
+            .truncate(false)
             .open(root.join("provision.lock")))?;
         io(lock.lock_exclusive())?;
         commands.check_cancelled()?;
