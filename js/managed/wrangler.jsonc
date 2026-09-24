@@ -8,6 +8,9 @@
   "alias": {
     "node-rsa": "../nanocodex/tools/browser/unsupportedNodeRsa.mjs"
   },
+  "find_additional_modules": true,
+  "base_dir": ".shell-module",
+  "rules": [{ "type": "ESModule", "globs": ["**/just-bash-lazy.mjs"] }],
   "workers_dev": false,
   "triggers": { "crons": [] },
   "ai": { "binding": "AI" },

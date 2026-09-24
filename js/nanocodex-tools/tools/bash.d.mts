@@ -77,6 +77,10 @@ export function justBash(options: {
   filesystem: Workspace;
   /** Refresh metadata before each serialized command; defer the initial scan until a command or filesystem mutation. */
   refreshFilesystemBeforeExec?: boolean | undefined;
+  /** Defer interpreter module evaluation and construction until the first command. */
+  lazyInitialize?: boolean | undefined;
+  /** Host-specific standalone module loader; defaults to the package entry. */
+  loadInterpreter?: (() => Promise<Pick<typeof import("just-bash/browser"), "Bash" | "defineCommand">>) | undefined;
   executionTimeoutMs?: number | undefined;
   maxEntries?: number | undefined;
   maxOutputTokens?: number | undefined;

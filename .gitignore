@@ -72,3 +72,6 @@ __pycache__/
 
 # Local measurements and review evidence; publish shared runs as CI artifacts.
 /output/
+
+# Standalone Wrangler ES module generated from the pinned just-bash/browser package.
+/js/managed/.shell-module/
