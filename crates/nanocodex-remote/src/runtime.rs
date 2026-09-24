@@ -11,7 +11,6 @@ use futures_util::{SinkExt, StreamExt, future::BoxFuture};
 use serde_json::{Value, json};
 use std::{
     collections::{HashMap, HashSet},
-    net::SocketAddr,
     sync::Arc,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -162,7 +161,6 @@ impl Publisher {
         let task = tokio::spawn(async move {
             let mut ready = Some(ready);
             let mut authorized_at = Instant::now();
-            let mut cached_addresses = None;
             loop {
                 if authorized_at.elapsed() > Duration::from_secs(25) {
                     broadcast.stop().await;
@@ -177,7 +175,7 @@ impl Publisher {
                         let _ = call(&backend, json!({"action":"release"}), Duration::from_secs(3)).await;
                         continue;
                     },
-                    result = session(&target, &machine, &backend, video.as_ref(), audio.as_ref(), microphone_factory.clone(), dimensions, &capabilities, input_keepalive, require_video, &mut ready, &providers, &mut broadcast, &mut authorized_at, &mut cached_addresses) => result,
+                    result = session(&target, &machine, &backend, video.as_ref(), audio.as_ref(), microphone_factory.clone(), dimensions, &capabilities, input_keepalive, require_video, &mut ready, &providers, &mut broadcast, &mut authorized_at) => result,
                 };
                 if let Err(error) = &result {
                     tracing::warn!(target: "nanocodex2", stage = "screen.session.exit", reason = error.category(), http_status = error.http_status(), close_code = error.close_code(), elapsed_ms = session_started.elapsed().as_millis() as u64);
@@ -528,7 +526,6 @@ async fn session(
     providers: &Option<Arc<dyn Observation>>,
     broadcast: &mut Box<dyn Broadcast>,
     last_authorized: &mut Instant,
-    cached_addresses: &mut Option<(String, Vec<SocketAddr>)>,
 ) -> Result<(), SessionError> {
     let started = Instant::now();
     let base = endpoint(target).map_err(|_| SessionError::Closed)?;
@@ -552,12 +549,13 @@ async fn session(
     let config = tokio_tungstenite::tungstenite::protocol::WebSocketConfig::default()
         .max_message_size(Some(750_000))
         .max_frame_size(Some(750_000));
-    let connected = tokio::time::timeout(
+    let (wire, _) = tokio::time::timeout(
         Duration::from_secs(10),
         async {
             // Keep DNS/TCP separate from TLS + HTTP upgrade in startup traces.
-            let (addresses, cached) = screen_addresses(&host, cached_addresses).await?;
-            tracing::info!(target: "nanocodex2", stage = "screen.socket.resolved", machine_id = machine.id(), cached, elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
+            let address = format!("{}:{}", host.host_str().ok_or(SessionError::Closed)?, host.port_or_known_default().ok_or(SessionError::Closed)?);
+            let addresses: Vec<_> = tokio::net::lookup_host(address).await.map_err(|_| SessionError::Closed)?.collect();
+            tracing::info!(target: "nanocodex2", stage = "screen.socket.resolved", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
             let stream = tokio::net::TcpStream::connect(addresses.as_slice()).await.map_err(|_| SessionError::Closed)?;
             stream.set_nodelay(true).map_err(|_| SessionError::Closed)?;
             tracing::info!(target: "nanocodex2", stage = "screen.socket.tcp", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
@@ -568,16 +566,9 @@ async fn session(
             tokio_tungstenite::client_async_tls_with_config(request, stream, Some(config), connector).await.map_err(|_| SessionError::Closed)
         },
     )
-    .await;
-    let (wire, _) = match connected {
-        Ok(Ok(connected)) => connected,
-        _ => {
-            // Reuse a working address after a media restart, but resolve again
-            // if the transport itself failed or timed out.
-            *cached_addresses = None;
-            return Err(SessionError::Closed);
-        }
-    };
+    .await
+    .map_err(|_| SessionError::Closed)?
+    .map_err(|_| SessionError::Closed)?;
     tracing::info!(target: "nanocodex2", stage = "screen.socket.connected", machine_id = machine.id(), elapsed_ms = started.elapsed().as_secs_f64() * 1000.0);
     let video = match video {
         Some(source) => match Video::start_with_microphone(source, audio, microphone_factory).await
@@ -921,29 +912,6 @@ async fn session(
         }
     }
 }
-
-async fn screen_addresses(
-    host: &Url,
-    cached: &mut Option<(String, Vec<SocketAddr>)>,
-) -> Result<(Vec<SocketAddr>, bool), SessionError> {
-    let name = host.host_str().ok_or(SessionError::Closed)?;
-    let port = host.port_or_known_default().ok_or(SessionError::Closed)?;
-    let key = format!("{name}:{port}");
-    if let Some((previous, addresses)) = cached.as_ref()
-        && previous == &key
-    {
-        return Ok((addresses.clone(), true));
-    }
-    let addresses: Vec<_> = tokio::net::lookup_host((name, port))
-        .await
-        .map_err(|_| SessionError::Closed)?
-        .collect();
-    if addresses.is_empty() {
-        return Err(SessionError::Closed);
-    }
-    *cached = Some((key, addresses.clone()));
-    Ok((addresses, false))
-}
 // Provider deadlines are independent of image capture and finish before the
 // agent envelope expires, preserving a successful screenshot when a provider stalls.
 async fn observe_agent(
@@ -1094,31 +1062,6 @@ fn steps(action: &Value) -> Result<Vec<(Duration, Value)>, ()> {
 }
 #[cfg(test)]
 mod tests {
-    #[tokio::test]
-    async fn screen_retry_reuses_last_resolved_address() {
-        let address = "127.0.0.1:443".parse().unwrap();
-        let mut cached = Some(("unresolvable.invalid:443".to_owned(), vec![address]));
-        let host = Url::parse("wss://unresolvable.invalid/v1/hands/host").unwrap();
-
-        let (addresses, reused) = tokio::time::timeout(
-            Duration::from_millis(100),
-            screen_addresses(&host, &mut cached),
-        )
-        .await
-        .unwrap()
-        .unwrap();
-        assert!(reused);
-        assert_eq!(addresses, vec![address]);
-
-        let changed = Url::parse("ws://127.0.0.1:8080/v1/hands/host").unwrap();
-        let (addresses, reused) = screen_addresses(&changed, &mut cached).await.unwrap();
-        assert!(!reused);
-        assert_eq!(
-            addresses,
-            vec!["127.0.0.1:8080".parse::<SocketAddr>().unwrap()]
-        );
-    }
-
     #[test]
     fn broker_transport_cannot_inject_webrtc_input() {
         for kind in ["input", "control", "frame_request"] {
