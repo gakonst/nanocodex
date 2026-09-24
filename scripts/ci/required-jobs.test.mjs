@@ -50,27 +50,6 @@ test('paused Rust test job must be explicitly skipped', () => {
   }
 });
 
-test('affected-family outputs gate producers, consumers and every final prerequisite', () => {
-  const jobs = Object.fromEntries([...workflow.matchAll(/^  ([a-z-]+):\n([\s\S]*?)(?=^  [a-z-]+:|$(?![\s\S]))/gm)]
-    .map(([, name, body]) => [name, body]));
-  for (const [job, family] of Object.entries({ quality: 'rust', policy: 'policy', 'wasm-build': 'wasm',
-    bindings: 'bindings', apps: 'apps', 'js-preview': 'preview', codeql: 'codeql' })) {
-    assert.ok(jobs[job].includes(`needs.changes.outputs.${family} == 'true'`), job);
-    assert.match(jobs.changes, new RegExp(`      ${family}:`));
-    assert.ok(jobs['ci-success'].includes(job), `gate dependency ${job}`);
-  }
-  for (const job of ['bindings', 'apps', 'js-preview']) {
-    assert.match(jobs[job], /needs: \[changes, wasm-build\]/);
-  }
-  assert.match(jobs['wasm-quality'], /needs: changes/);
-  assert.ok(jobs['wasm-quality'].includes("if: needs.changes.outputs.rust == 'true' && needs.changes.outputs.bindings == 'true'"));
-  assert.ok(jobs['ci-success'].includes('needs.wasm-quality.result'));
-  const policySteps = jobs.policy.split('      - ');
-  for (const step of policySteps.filter(step => /cargo-deny|cargo deny|check-(?:experimental|crate|rustls)/.test(step))) {
-    assert.ok(step.includes("if: needs.changes.outputs.rust == 'true'"), step);
-  }
-});
-
 test('WASM quality is required only for Rust changes with WASM consumers', () => {
   for (const rust of [false, true]) for (const bindings of [false, true]) {
     const env = { ...environment(false), RUST_REQUIRED: String(rust),

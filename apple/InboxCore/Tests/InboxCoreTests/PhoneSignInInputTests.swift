@@ -29,14 +29,6 @@ final class PhoneSignInInputTests: XCTestCase {
         }
     }
 
-    func testDefaultCountryUsesRegionRatherThanLanguage() {
-        XCTAssertEqual(PhoneNumberInput.defaultRegion(locale: Locale(identifier: "en_GR")), "GR")
-        XCTAssertEqual(PhoneNumberInput.defaultRegion(locale: Locale(identifier: "el_US")), "US")
-        XCTAssertEqual(PhoneNumberInput.defaultRegion(locale: Locale(identifier: "en_GB")), "GB")
-        XCTAssertEqual(PhoneNumberInput.defaultRegion(locale: Locale(identifier: "en_001")), "US")
-        XCTAssertEqual(PhoneNumberInput.countries.first { $0.id == "GR" }?.callingCode, "+30")
-        XCTAssertGreaterThan(PhoneNumberInput.countries.count, 200)
-    }
 
     func testCompleteCodeSubmitsOnceAndAllowsChangedCodeOrFreshChallenge() {
         var input = SMSCodeInput()

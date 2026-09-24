@@ -52,14 +52,3 @@ test('wrong revision, run, output list, and archive corruption fail closed', () 
   assert.throws(() => transfer('restore', { cwd: destination, revision, runId }), /archive is corrupt/);
   assert.throws(() => readFileSync(join(destination, files[0])), { code: 'ENOENT' });
 }));
-
-test('production and Worker readiness never depend on container builds', () => {
-  const workflow = readFileSync(new URL('../../.github/workflows/cloudflare.yml', import.meta.url), 'utf8');
-  const job = name => workflow.split('\n  ' + name + ':\n')[1].split(/\n  [\w-]+:\n/)[0];
-  const production = job('production');
-  assert.doesNotMatch(production, /needs:|needs\.image-plan|needs\.managed-images/);
-  assert.doesNotMatch(job('worker-build'), /\n    needs:|secrets\.|CLOUDFLARE_API_TOKEN|environment:|github.event_name == 'push'/);
-  assert.doesNotMatch(production, /worker-build\.mjs|cloudflare-worker-build/);
-  const action = readFileSync(new URL('../../.github/actions/deploy-workers/action.yml', import.meta.url), 'utf8');
-  assert.match(action, /!cancelled\(\) && steps\.release\.outputs\.wasm-built == 'true'/);
-});

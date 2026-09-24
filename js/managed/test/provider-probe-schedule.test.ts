@@ -1,19 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { configuredProbeTargets, probeDailyLimit, probeSlotAllocation, PROBE_INTERVAL_MS, PROBE_SCHEDULE } from "../src/provider-probe-schedule";
+import { configuredProbeTargets, probeDailyLimit, probeSlotAllocation, PROBE_INTERVAL_MS } from "../src/provider-probe-schedule";
 
 describe("deployment probe schedule", () => {
-  it("covers every configured API model and effort without a global subscription identity", () => {
-    const targets = configuredProbeTargets({ AI: { run: async () => ({}) }, OPENROUTER_API_KEY: "fixture-openrouter", AI_GATEWAY_API_KEY: "fixture-vercel" });
-    expect(targets).toHaveLength(25);
-    expect(new Set(targets.map(t => JSON.stringify([t.backend, t.model, t.effort]))).size).toBe(25);
-    expect(targets.filter(t => t.backend === "workers_ai")).toHaveLength(3);
-    expect(targets.filter(t => t.backend === "openrouter")).toHaveLength(11);
-    expect(targets.filter(t => t.backend === "vercel")).toHaveLength(11);
-    expect(configuredProbeTargets({})).toEqual([]);
-    expect(configuredProbeTargets({ OPENROUTER_API_KEY: " " })).toEqual([]);
-    expect(PROBE_SCHEDULE).toBe("*/30 * * * *");
-    expect(probeDailyLimit({})).toBe(1600); // Rotating allocation preserves the budget as the catalog grows.
-  });
   it("adds nine frontier probes only with the explicit gate and binding", () => {
     const env = { AI: { run: async () => ({}) }, OPENROUTER_API_KEY: "fixture-openrouter", AI_GATEWAY_API_KEY: "fixture-vercel", NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED: "true" };
     const targets = configuredProbeTargets(env);

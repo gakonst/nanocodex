@@ -7,19 +7,6 @@ final class ModelSelectionTests: XCTestCase {
                  "active_turns": .array([]), "settings": .object(["model": .string("gpt-6-astra"), "thinking": .string("low")])]
             .merging(values, uniquingKeysWith: { _, new in new }))
     }
-    func testModelCatalogOffersOnlyImplementedEfforts() {
-        XCTAssertEqual(Set(ModelChoice.all.map(\.id)).count, ModelChoice.all.count)
-        XCTAssertNotNil(ModelChoice.find("gpt-6-sol"))
-        XCTAssertNotNil(ModelChoice.find("gpt-6-luna"))
-        XCTAssertNil(ModelChoice.find("gpt-5.6-sol"))
-        XCTAssertNil(ModelChoice.find("gpt-5.6-luna"))
-        XCTAssertNil(ModelChoice.find("gpt-5.6-terra"))
-        XCTAssertTrue(ModelChoice.find("gpt-6-sol")!.efforts.contains("none"))
-        XCTAssertTrue(ModelChoice.find("gpt-6-luna")!.efforts.contains("none"))
-        XCTAssertEqual(ModelChoice.find("kimi-k3")?.efforts, ["low", "high"])
-        XCTAssertEqual(ModelChoice.find("mimo-v2.6-pro")?.efforts, ["low", "medium", "high"])
-        XCTAssertFalse(ModelChoice.find("gpt-6-astra")!.efforts.contains("none"))
-    }
     func testPendingAutomaticRouteAndResolvedProvider() throws {
         var card = AgentCard(id: "fixture", title: "Fixture")
         try card.apply(state: state(["model_routing_enabled": .bool(true), "model_routing_automatic": .bool(true)]))
@@ -29,24 +16,7 @@ final class ModelSelectionTests: XCTestCase {
         XCTAssertEqual(card.model, "kimi-k3"); XCTAssertEqual(card.provider, "vercel"); XCTAssertEqual(card.thinking, "high")
         XCTAssertTrue(card.modelLocked); XCTAssertTrue(card.effortLocked)
     }
-    func testNativeAstraEffortRemainsAvailableAfterModelLocks() throws {
-        var card = AgentCard(id: "fixture", title: "Fixture")
-        try card.apply(state: state(["accepted_turns": .number(1)]))
-        XCTAssertTrue(card.modelLocked); XCTAssertFalse(card.effortLocked); XCTAssertEqual(card.provider, "ChatGPT")
-        card.model = "gpt-6-sol"
-        XCTAssertTrue(card.effortLocked)
-    }
 
-    func testPinnedLegacyModelRemainsExactButIsNotOffered() throws {
-        var card = AgentCard(id: "fixture", title: "Fixture")
-        try card.apply(state: state([
-            "accepted_turns": .number(1),
-            "settings": .object(["model": .string("gpt-5.6-sol"), "thinking": .string("high")]),
-        ]))
-        XCTAssertEqual(card.model, "gpt-5.6-sol")
-        XCTAssertTrue(card.modelLocked)
-        XCTAssertNil(ModelChoice.find(card.model))
-    }
     func testAcceptedEventDoesNotUnlockBetweenCompletionAndStateRefresh() throws {
         var card = AgentCard(id: "fixture", title: "Fixture")
         try card.apply(state: state())

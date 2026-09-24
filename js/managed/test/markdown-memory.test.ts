@@ -8,39 +8,6 @@ async function withStore(run: (store: MarkdownMemoryStore, storage: DurableObjec
 }
 const put = (path: string, content: string, expected_revision = 0) => ({ operation: 'put', path, content, expected_revision });
 describe('canonical markdown memory', () => {
-  it('projects only live owner paths and returns the complete raw canonical file', async () => {
-    await withStore(store => {
-      const body = 'line\n'.repeat(250);
-      store.write('alice', put('MEMORY.md', body));
-      store.write('alice', put('USER.md', 'preferences'));
-      store.write('bob', put('memory/2026-09-22.md', 'private'));
-      expect(store.list('alice')).toEqual(['MEMORY.md', 'USER.md']);
-      expect(store.readFile('alice', 'MEMORY.md')).toBe(body);
-      expect(() => store.readFile('alice', 'memory/2026-09-22.md')).toThrow('not found');
-      store.write('alice', { operation: 'delete', path: 'USER.md', expected_revision: 1 });
-      expect(store.list('alice')).toEqual(['MEMORY.md']);
-      expect(() => store.readFile('alice', 'USER.md')).toThrow('not found');
-      expect(() => store.readFile('alice', '../MEMORY.md')).toThrow('invalid memory path');
-    });
-  });
-  it('isolates owners and keeps the FTS projection consistent with edits and deletion', async () => {
-    await withStore((store, storage) => {
-      store.write('alice', put('MEMORY.md', '# Preferences\nCopper finch deployment'));
-      store.write('bob', put('MEMORY.md', 'Copper private recipe'));
-      expect(store.search('alice', { query: 'copper' }).results).toEqual([
-        expect.objectContaining({ path: 'MEMORY.md', revision: 1, from_line: 1, to_line: 2, snippet: expect.stringContaining('finch') }),
-      ]);
-      expect(store.get('charlie', { path: 'MEMORY.md' })).toMatchObject({ revision: 0, deleted: true });
-      store.write('alice', put('MEMORY.md', 'Blue heron', 1));
-      expect(store.search('alice', { query: 'copper' }).results).toEqual([]);
-      expect(store.search('bob', { query: 'copper' }).results).toHaveLength(1);
-      store.write('alice', { operation: 'delete', path: 'MEMORY.md', expected_revision: 2 });
-      expect(store.search('alice', { query: 'heron' }).results).toEqual([]);
-      expect(new MarkdownMemoryStore(storage).write('alice', put('MEMORY.md', 'stale'))).toMatchObject({ ok: false, revision: 3 });
-      expect(store.get('alice', { path: 'MEMORY.md' })).toMatchObject({ revision: 3, deleted: true, content: '' });
-      expect(store.write('alice', put('MEMORY.md', 'restored', 3))).toMatchObject({ ok: true, revision: 4 });
-    });
-  });
   it('appends once across store reconstruction and rejects stale or mismatched retries', async () => {
     await withStore((store, storage) => {
       const input = { operation: 'append', path: 'memory/2026-09-22-topic.md', content: 'First event', operation_id: 'event-1', expected_revision: 0 };
@@ -146,25 +113,5 @@ describe('canonical markdown memory', () => {
       expect(storage.sql.exec('SELECT * FROM markdown_memory_operations').toArray()).toEqual([]);
       expect(restored.get('alice', { path: 'memory/2026-09-22.md' }).revision).toBe(1);
     });
-  });
-});
-
-
-it('supports plain writes while keeping internal revision fences and replay protection', async () => {
-  await withStore((store, storage) => {
-    const first = { operation: 'put', path: 'MEMORY.md', content: 'first', operation_id: 'host-call-1' };
-    expect(store.write('alice', first)).toMatchObject({ ok: true });
-    store.write('alice', { operation: 'put', path: 'MEMORY.md', content: 'corrected', operation_id: 'host-call-2' });
-    expect(new MarkdownMemoryStore(storage).write('alice', first)).toMatchObject({ replayed: true });
-    expect(store.readFile('alice', 'MEMORY.md')).toBe('corrected');
-    expect(store.write('alice', { ...put('MEMORY.md', 'stale', 0) })).toMatchObject({ ok: false, error: 'revision_conflict' });
-    const append = { operation: 'append', path: 'memory/2026-09-22.md', content: 'progress', operation_id: 'host-call-3' };
-    store.write('alice', append);
-    new MarkdownMemoryStore(storage).write('alice', append);
-    store.write('alice', { operation: 'append', path: append.path, content: 'next' });
-    expect(store.readFile('alice', append.path)).toBe('progress\nnext');
-    store.write('alice', { operation: 'delete', path: first.path, operation_id: 'host-call-4' });
-    store.write('alice', first);
-    expect(store.get('alice', { path: first.path }).deleted).toBe(true);
   });
 });

@@ -57,8 +57,8 @@ The target remains frozen, has no prototype, and enumerates only registered
 names. An absent `then` or Symbol property stays absent to avoid accidental
 thenable/iteration behavior. Explicitly registered names remain callable.
 
-This factory is shared across evaluator implementations; its package-local
-assets are checked for equivalence so Rust and npm releases stay self-contained.
+This factory is shared across evaluator implementations; package-local assets
+keep Rust and npm releases self-contained.
 
 Nanocodex also records terminal receipts for every started nested call. When the
 cell ends before a result arrives, the receipt says `CODE_MODE_CALL_INTERRUPTED`
@@ -83,7 +83,6 @@ storage, multimodal helpers and generated browser bundles.
 ```sh
 node --test js/nanocodex/test/code-{runtime,mode-parity,mode-upstream,tools-conformance,mode-lifecycle-parity}.test.mjs
 node --test js/nanocodex/test/{quickjs-evaluator,worker-evaluator,quickjs-bundle,code-mode-browser-bundle,browser-compiler-worker}.test.mjs
-node --test js/nanocodex-tools/test/code-tools-asset.test.mjs
 cargo test -p nanocodex-tools --lib code_mode
 ```
 

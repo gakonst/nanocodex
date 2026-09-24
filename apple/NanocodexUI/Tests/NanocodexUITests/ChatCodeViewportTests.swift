@@ -2,36 +2,7 @@ import XCTest
 @testable import NanocodexUI
 
 final class ChatCodeViewportTests: XCTestCase {
-    func testOffscreenFenceUsesVerticalChatInsteadOfNestedHorizontalScroll() {
-        let code = CGSize(width: 1200, height: 700)
-        let horizontal = CGRect(x: 0, y: 0, width: 320, height: 700)
-        let chatAboveCode = CGRect(x: 0, y: -1600, width: 360, height: 800)
-        XCTAssertFalse(ChatCodeViewport.isNear(size: code, vertical: chatAboveCode, horizontal: horizontal))
-        let chatApproachingCode = CGRect(x: 0, y: -900, width: 360, height: 800)
-        XCTAssertTrue(ChatCodeViewport.isNear(size: code, vertical: chatApproachingCode, horizontal: horizontal))
-    }
 
-    func testVeryTallCodeStillHighlightsWhenOnlyTinyFractionIsVisible() {
-        let code = CGSize(width: 320, height: 1_000_000)
-        XCTAssertTrue(ChatCodeViewport.isNear(size: code,
-            vertical: CGRect(x: 0, y: 500_000, width: 360, height: 800), horizontal: nil))
-        XCTAssertFalse(ChatCodeViewport.isNear(size: code,
-            vertical: CGRect(x: 0, y: 1_001_000, width: 360, height: 800), horizontal: nil))
-    }
-
-    func testStandaloneCodeAndHorizontalOnlyConsumersRemainSupported() {
-        let code = CGSize(width: 1200, height: 700)
-        XCTAssertTrue(ChatCodeViewport.isNear(size: code, vertical: nil, horizontal: nil))
-        XCTAssertTrue(ChatCodeViewport.isNear(size: code, vertical: nil,
-            horizontal: CGRect(x: 900, y: 0, width: 320, height: 700)))
-        XCTAssertFalse(ChatCodeViewport.isNear(size: code, vertical: nil,
-            horizontal: CGRect(x: 1600, y: 0, width: 320, height: 700)))
-    }
-
-    func testUnmeasuredGeometryDoesNotLaunchColdWork() {
-        XCTAssertFalse(ChatCodeViewport.isNear(size: .zero, vertical: nil, horizontal: nil))
-        XCTAssertFalse(ChatCodeViewport.isNear(size: CGSize(width: 320, height: 700), vertical: .zero, horizontal: nil))
-    }
 }
 
 #if os(macOS)

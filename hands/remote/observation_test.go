@@ -15,12 +15,6 @@ import (
 	"time"
 )
 
-func TestObservationHelperParity(t *testing.T) {
-	b, e := os.ReadFile("../../bin/nanocodex/src/nanocodex2/observation_providers/helper.py")
-	if e != nil || string(b) != observationHelper {
-		t.Fatal("helper drift", e)
-	}
-}
 func TestObservationContextValidation(t *testing.T) {
 	for _, raw := range []string{`null`, `{}`, `{"app":"a","window":"b","path":"x"}`, `{"app":"a","window":"b\n"}`, `{"app":1,"window":"b"}`} {
 		if _, e := (agentInput{Action: "observe", Context: json.RawMessage(raw)}).steps(""); e == nil {

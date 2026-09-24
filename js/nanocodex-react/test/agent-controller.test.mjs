@@ -546,32 +546,6 @@ test("hidden controllers reduce bursts and publish one visible catch-up snapshot
   }
 });
 
-test("AgentController exposes the same stable controls through a render prop", async () => {
-  const frames = fakeAnimationFrames();
-  const source = fakeAgent();
-  let first;
-  let latest;
-  let root;
-  try {
-    await act(async () => {
-      root = create(createElement(AgentController, {
-        agent: source.agent,
-        children(snapshot) {
-          first ??= snapshot;
-          latest = snapshot;
-          return null;
-        },
-      }));
-    });
-    await flushFrames(frames);
-    assert.equal(first.submit, latest.submit);
-    assert.equal(first.cancel, latest.cancel);
-    await act(async () => root.unmount());
-  } finally {
-    frames.restore();
-  }
-});
-
 function fakeAgent() {
   let eventListener = () => {};
   let historyListener = () => {};

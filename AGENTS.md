@@ -11,6 +11,14 @@
   they catch concrete bugs the E2E coverage misses, such as protocol violations,
   authorization failures, races, or recovery errors. Remove tests that merely
   mirror implementation details, incidental source spelling, or mock setup.
+- Prefer a small set of behavioral scenarios over parallel suites for every
+  helper or wrapper. When a journey or protocol test covers the same failure,
+  remove the redundant lower-level cases and their fixtures.
+- Do not test source text, private layouts, method presence, fixed prompt/UI
+  copy, or a mock's own behavior. A security or regression label does not make
+  these checks evidence of runtime behavior. Use compiler, lint, and package
+  checks for static contracts; test authorization and recovery by exercising
+  the boundary and observing the result.
 
 - `macos/` owns the desktop app and native tiled workspace; `js/desktop-runtime`
   owns its runtime. `apple/NanocodexInbox` targets iPhone and iPad.

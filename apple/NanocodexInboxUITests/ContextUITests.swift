@@ -302,23 +302,6 @@ final class ContextUITests: XCTestCase {
         XCTAssertTrue(app.scrollViews["conversation"].staticTexts.matching(NSPredicate(format: "label CONTAINS %@", "Message Contains")).firstMatch.waitForExistence(timeout: 5))
         attach(app, name: "context-live-message-provenance")
     }
-    func testMessagingSetupExplainsCaptureAndPhoneQueries() {
-        let app = launch()
-        openContext(app)
-        for source in ["Messages", "WhatsApp", "Instagram", "Signal"] {
-            let setup = app.buttons["context-setup-" + source]
-            for _ in 0..<3 {
-                if setup.isHittable { break }
-                app.swipeUp()
-            }
-            setup.tap()
-            let instructions = source == "Messages" ? "Run Immediately" : "cannot read"
-            XCTAssertTrue(app.staticTexts.matching(NSPredicate(format: "label CONTAINS %@", instructions)).firstMatch.waitForExistence(timeout: 5))
-            XCTAssertTrue(app.staticTexts["Phone Hand"].exists)
-            attach(app, name: "context-setup-" + source)
-            app.navigationBars.buttons["BackButton"].tap()
-        }
-    }
     private func attach(_ app: XCUIApplication, name: String) {
         let attachment = XCTAttachment(screenshot: app.screenshot())
         attachment.name = name; attachment.lifetime = .keepAlways; add(attachment)

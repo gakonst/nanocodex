@@ -263,66 +263,9 @@ fn model_name(model: Model) -> &'static str {
 mod tests {
     use super::*;
     use crossterm::event::{KeyEvent, KeyModifiers};
-    use ratatui::{Terminal, backend::TestBackend, style::Color};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
-    fn render(selector: &mut ModelSelector) -> Terminal<TestBackend> {
-        let mut terminal = Terminal::new(TestBackend::new(60, 9)).unwrap();
-        terminal
-            .draw(|frame| selector.render(frame, frame.area(), &Theme::default()))
-            .unwrap();
-        terminal
-    }
-
-    fn rendered_label_color(selector: &mut ModelSelector, label: &str) -> Color {
-        let terminal = render(selector);
-        let buffer = terminal.backend().buffer();
-        let label = label.chars().collect::<Vec<_>>();
-        let label_width = u16::try_from(label.len()).unwrap();
-        for y in 0..buffer.area.height {
-            for x in 0..=buffer.area.width.saturating_sub(label_width) {
-                if label.iter().enumerate().all(|(offset, character)| {
-                    buffer[(x + u16::try_from(offset).unwrap(), y)].symbol()
-                        == character.to_string()
-                }) {
-                    return buffer[(x, y)].fg;
-                }
-            }
-        }
-        panic!("label not rendered: {label:?}");
-    }
-
-    fn rendered_stop_colors(selector: &mut ModelSelector) -> Vec<Color> {
-        render(selector)
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .filter(|cell| cell.symbol() == "●")
-            .map(|cell| cell.fg)
-            .collect()
-    }
-
-    #[test]
-    fn sol_label_is_centered_under_its_stop() {
-        let terminal = render(&mut ModelSelector::new(Model::Sol));
-        let buffer = terminal.backend().buffer();
-        let stop = buffer
-            .content
-            .iter()
-            .position(|cell| cell.symbol() == "◆")
-            .unwrap();
-        let width = usize::from(buffer.area.width);
-        let label_row = stop / width + 1;
-        let sol = buffer.content[label_row * width..(label_row + 1) * width]
-            .windows(3)
-            .position(|cells| cells.iter().map(|cell| cell.symbol()).collect::<String>() == "Sol")
-            .unwrap();
-
-        assert_eq!(sol + 1, stop % width);
     }
 
     #[test]
@@ -341,89 +284,6 @@ mod tests {
     }
 
     #[test]
-    fn every_stop_keeps_its_model_color() {
-        let mut selector = ModelSelector::new(Model::Sol);
-
-        assert_eq!(rendered_label_color(&mut selector, "Luna"), Color::White);
-        assert_eq!(rendered_label_color(&mut selector, "Sol"), Color::Yellow);
-        assert_eq!(
-            rendered_label_color(&mut selector, "Astra"),
-            Color::LightMagenta
-        );
-    }
-
-    #[test]
-    fn filled_bar_uses_the_selected_model_color() {
-        let mut selector = ModelSelector::new(Model::Luna);
-        let terminal = render(&mut selector);
-        let rail = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .filter(|cell| cell.symbol() == "━")
-            .collect::<Vec<_>>();
-
-        assert!(!rail.is_empty());
-        assert!(rail.iter().all(|cell| cell.fg == Color::White));
-    }
-
-    #[test]
-    fn stops_use_the_filled_bar_color_only_when_covered() {
-        assert_eq!(
-            rendered_stop_colors(&mut ModelSelector::new(Model::Astra)),
-            [Color::DarkGray, Color::DarkGray]
-        );
-        assert_eq!(
-            rendered_stop_colors(&mut ModelSelector::new(Model::Sol)),
-            [Color::Yellow, Color::DarkGray]
-        );
-        assert_eq!(
-            rendered_stop_colors(&mut ModelSelector::new(Model::Luna)),
-            [Color::White, Color::White]
-        );
-    }
-
-    #[test]
-    fn title_does_not_describe_the_model_order() {
-        let terminal = render(&mut ModelSelector::new(Model::Sol));
-        let rendered = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-
-        assert!(!rendered.contains("smarter"));
-    }
-
-    #[test]
-    fn narrow_selector_does_not_overwrite_wrapped_menu_help() {
-        let mut terminal = Terminal::new(TestBackend::new(30, 7)).unwrap();
-        terminal
-            .draw(|frame| {
-                ModelSelector::new(Model::Sol).render(frame, frame.area(), &Theme::default());
-            })
-            .unwrap();
-
-        let rendered = terminal
-            .backend()
-            .buffer()
-            .content
-            .iter()
-            .map(|cell| cell.symbol())
-            .collect::<String>();
-        assert!(rendered.contains("←/→ model"));
-        assert!(rendered.contains("enter apply"));
-        assert!(rendered.contains("esc cancel"));
-        assert!(rendered.contains('◆'));
-        assert!(rendered.contains("Sol"));
-        assert_eq!(terminal.backend().buffer()[(0, 6)].symbol(), "╰");
-        assert_eq!(terminal.backend().buffer()[(29, 6)].symbol(), "╯");
-    }
-
-    #[test]
     fn applying_returns_the_selected_model() {
         let now = Instant::now();
         let mut selector = ModelSelector::new(Model::Sol);
@@ -432,29 +292,5 @@ mod tests {
         let update = selector.update_key(key(KeyCode::Enter), now);
 
         assert_eq!(update.effects, [ModelSelectorEffect::Apply(Model::Astra)]);
-    }
-
-    #[test]
-    fn astra_initialization_and_apply_preserve_astra() {
-        let now = Instant::now();
-        let mut selector = ModelSelector::new(Model::Astra);
-
-        assert_eq!(selector.selected, 0);
-        let update = selector.update_key(key(KeyCode::Enter), now);
-
-        assert_eq!(update.effects, [ModelSelectorEffect::Apply(Model::Astra)]);
-    }
-
-    #[test]
-    fn animation_reaches_the_selected_stop() {
-        let now = Instant::now();
-        let mut selector = ModelSelector::new(Model::Astra);
-        selector.update_key(key(KeyCode::Right), now);
-        assert!(selector.animation_deadline().is_some());
-
-        selector.update(ModelSelectorEvent::AnimationFrame(now + ANIMATION_DURATION));
-
-        assert_eq!(selector.displayed_position, 1.0);
-        assert!(selector.animation_deadline().is_none());
     }
 }

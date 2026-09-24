@@ -58,50 +58,6 @@ test("browser Code Mode fails closed when an evaluator Worker is unavailable", a
   assert.match(execution.output, /requires a child Worker or an explicit codeEvaluator/);
 });
 
-test("browser host carries ordered frames and application tools", async () => {
-  const events = [];
-  const host = createBrowserHost({
-    WebSocketImpl: FakeWebSocket,
-    onEvent: (event) => events.push(event),
-    tools: {
-      double: {
-        description: "Double a number.",
-        parameters: { type: "object" },
-        handler: ({ value }) => value * 2,
-      },
-      numericText: {
-        parameters: { type: "object" },
-        handler: () => "42",
-      },
-    },
-  });
-  const connecting = host.connect("ws://example.test", "not-forwarded", "session");
-  const socket = FakeWebSocket.instances.at(-1);
-  socket.open();
-  assert.equal(JSON.parse(await connecting).status, 101);
-  socket.message('{"type":"one"}');
-  socket.message('{"type":"two"}');
-  assert.equal(JSON.parse(await host.next(1)).text, '{"type":"one"}');
-  assert.equal(JSON.parse(await host.next(1)).text, '{"type":"two"}');
-
-  const execution = JSON.parse(await host.executeCode(
-    "text(await tools.double({ value: 21 })); text(await tools.numericText({}));",
-    "session",
-    "call-exec",
-  ));
-  assert.equal(execution.success, true);
-  assert.match(JSON.stringify(execution.output), /42/);
-  assert.equal(execution.nested_calls[0].name, "double");
-  assert.equal(execution.nested_calls[0].call_id, "call-exec/code-1");
-  assert.equal(execution.nested_calls[0].structured_result, 42);
-  assert.equal(execution.nested_calls[1].structured_result, "42");
-  assert.equal(Number.isSafeInteger(execution.nested_calls[0].started_after_ns), true);
-  assert.ok(execution.nested_calls[0].started_after_ns >= 0);
-  assert.equal(JSON.parse(host.toolDefinitions())[0].name, "double");
-  host.emitEvent("event");
-  assert.deepEqual(events, ["event"]);
-});
-
 test("browser host composes an isolate-owned dynamic tool provider", async () => {
   let ready = false;
   let attached = true;
@@ -205,28 +161,6 @@ test("browser host keeps late pure-attached definitions callable after discovery
     source: "private-host",
     echoed: { value: 42 },
   });
-});
-
-test("browser host directly dispatches tools without dynamic code evaluation", async () => {
-  const host = createBrowserHost({
-    toolMode: "direct",
-    tools: {
-      runtimeInfo: {
-        parameters: { type: "object", additionalProperties: false },
-        handler: (_input, context) => ({ runtime: "worker", call_id: context.callId }),
-      },
-    },
-  });
-  assert.equal(host.toolMode(), "direct");
-  const result = JSON.parse(await host.executeTool(
-    "runtimeInfo",
-    "{}",
-    "session-1",
-    "call-1",
-  ));
-  assert.equal(result.success, true);
-  assert.deepEqual(JSON.parse(result.output), { runtime: "worker", call_id: "call-1" });
-  assert.deepEqual(result.structured_result, { runtime: "worker", call_id: "call-1" });
 });
 
 test("browser host gives inherited tools the Rust-owned subagent descriptor", async () => {
@@ -1154,32 +1088,6 @@ test("browser host keeps zero-argument tool calls wire-complete", async () => {
   assert.deepEqual(JSON.parse(execution.nested_calls[0].output), {
     runtime: "browser",
   });
-});
-
-test("browser host passes session context and emits generated images", async () => {
-  let context;
-  const host = createBrowserHost({
-    WebSocketImpl: FakeWebSocket,
-    tools: {
-      makeImage: {
-        handler: (_input, received) => {
-          context = received;
-          return { image_url: "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAAC0lEQVR4nGNgAAIAAAUAAXpeqz8AAAAASUVORK5CYII=" };
-        },
-      },
-    },
-  });
-
-  const execution = JSON.parse(await host.executeCode(
-    "generatedImage(await tools.makeImage({ prompt: 'demo' }));",
-    "session-image",
-    "call-image",
-  ));
-  assert.equal(execution.success, true);
-  assert.equal(context.sessionId, "session-image");
-  assert.equal(context.parentCallId, "call-image");
-  assert.equal(context.callId, "call-image/code-1");
-  assert.equal(execution.output[1].type, "input_image");
 });
 
 test("Code Mode snapshots definitions, inputs, outputs, and handlers at its boundary", async () => {

@@ -24,7 +24,7 @@ use nanocodex_tools::{ToolContext, ToolDefinition, ToolOutput, runtime::DynamicT
 use serde_json::Value;
 use tempfile::tempdir;
 use tokio::sync::mpsc;
-use tower::{Service, ServiceBuilder, limit::ConcurrencyLimitLayer, timeout::TimeoutLayer};
+use tower::Service;
 
 #[derive(Clone)]
 struct NeverCalled;

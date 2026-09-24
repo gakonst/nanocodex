@@ -1,14 +1,9 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  DEFAULT_MANAGED_MCP_CATALOG,
   connectedManagedAccountMcps,
-  createDefaultManagedTools,
   managedAccountMcpServerName,
   managedAccountMcpServers,
 } from "../src/default-mcp";
-import { memorySessionTools } from "../src/memory-session-tools";
-import { createCronTool, cronManagementTools } from "../src/cron-tool";
-import { browseX } from "nanocodex-tools/x";
 
 describe("durable managed default MCP catalog", () => {
   it("strictly selects connected account MCP metadata", async () => {
@@ -77,125 +72,4 @@ describe("durable managed default MCP catalog", () => {
     expect(request.headers.has("authorization")).toBe(false);
     expect(request.headers.has("cookie")).toBe(false);
   });
-
-  it("prepares cloud and MCP tools behind one server-owned search catalog", async () => {
-    const mcp = Object.fromEntries(
-      Object.keys(DEFAULT_MANAGED_MCP_CATALOG).map((server) => [
-        server,
-        {
-          client: {
-            async listTools() {
-              return {
-                tools: [{
-                  name: "search",
-                  description: `Search ${server}`,
-                  inputSchema: { type: "object", additionalProperties: false },
-                }],
-              };
-            },
-            async callTool() {
-              return { content: [] };
-            },
-          },
-        },
-      ]),
-    );
-    const tools = await createDefaultManagedTools([
-      browseX({ fetch: async () => Response.json({ markdown: "public X post" }) }),
-      {
-        name: "accountInfo",
-        description: "Account information.",
-        parameters: { type: "object", additionalProperties: false },
-        handler: () => ({ ready: true }),
-      },
-      ...memorySessionTools({
-        findSessions: async () => ({ query: "", results: [], citations: [] }),
-        readSession: async () => ({ turns: [], citations: [] }),
-        requireCapability() {},
-        recordCitations() {},
-      }),
-      createCronTool(async () => { throw new Error("not called during discovery"); }),
-      ...cronManagementTools(async () => { throw new Error("not called during discovery"); }),
-    ], mcp);
-    const socket = new CatalogSocket();
-    const connector = tools.attach({
-      endpoint: "wss://managed.test/tools",
-      transport: { connect: async () => socket },
-    });
-
-    try {
-      const connecting = connector.connect();
-      await waitFor(() => socket.frames.some((frame) => frame.type === "catalog"));
-      const catalog = socket.frames.find((frame) => frame.type === "catalog");
-      expect(catalog?.tools?.map((entry) => entry.definition.name).sort()).toEqual([
-        "accountInfo",
-        "create_cron",
-        "list_crons",
-        "update_cron",
-        "delete_cron",
-        "find_session",
-        "browseX",
-        "find_sessions",
-        "mcp__cloudflare__search",
-        "mcp__openaiDeveloperDocs__search",
-        "mcp__tempo__search",
-        "mcp__viem__search",
-        "mcp__vocs__search",
-        "read_session",
-      ].sort());
-      socket.receive({ type: "ready" });
-      const client = await connecting;
-      const closing = client.close();
-      await waitFor(() => socket.frames.some((frame) => frame.type === "drain"));
-      socket.receive({ type: "draining" });
-      await closing;
-    } finally {
-      await tools.close();
-    }
-  }, 10_000);
 });
-
-type AttachmentFrame = {
-  type: string;
-  tools?: { definition: { name: string } }[];
-};
-
-class CatalogSocket {
-  readyState = 1;
-  frames: AttachmentFrame[] = [];
-  listeners = new Map<string, ((event: { data?: string; code?: number; reason?: string }) => void)[]>();
-
-  send(value: string) {
-    this.frames.push(JSON.parse(value) as AttachmentFrame);
-  }
-
-  close(code?: number, reason?: string) {
-    this.readyState = 3;
-    this.emit("close", { code, reason });
-  }
-
-  addEventListener(
-    type: string,
-    listener: (event: { data?: string; code?: number; reason?: string }) => void,
-  ) {
-    const listeners = this.listeners.get(type) ?? [];
-    listeners.push(listener);
-    this.listeners.set(type, listeners);
-  }
-
-  receive(frame: AttachmentFrame) {
-    this.emit("message", { data: JSON.stringify(frame) });
-  }
-
-  emit(type: string, event: { data?: string; code?: number; reason?: string }) {
-    for (const listener of this.listeners.get(type) ?? []) listener(event);
-  }
-}
-
-async function waitFor(predicate: () => boolean): Promise<void> {
-  for (let attempt = 0; attempt < 100; attempt += 1) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 0));
-  }
-  throw new Error("condition did not become true");
-}

@@ -28,16 +28,6 @@ const PACKAGE_VERSION = JSON.parse(
   await readFile(new URL("../package.json", import.meta.url), "utf8"),
 ).version;
 
-async function waitForToolDefinition(host, name) {
-  const deadline = performance.now() + 1_000;
-  while (performance.now() < deadline) {
-    const definitions = JSON.parse(host.toolDefinitions());
-    if (definitions.some((definition) => definition.name === name)) return definitions;
-    await new Promise((resolve) => setImmediate(resolve));
-  }
-  throw new Error(`MCP discovery did not publish ${name}`);
-}
-
 test("quiet model reads survive six minutes and release on cancellation", async (t) => {
   const socket = new ManagedSocket();
   const host = createNodeHost({ mpp: { async ws() { return socket; } } });
@@ -173,62 +163,6 @@ test("Node host readiness preserves MCP construction failures", async () => {
   const host = createNodeHost({ mcpServers: {} });
   await assert.rejects(host.ready());
   await assert.rejects(host.dispose());
-});
-
-test("Node host loads and calls deferred Mercator MCP tools", async () => {
-  const calls = [];
-  const host = createNodeHost({
-    mcpServers: {
-      mercator: {
-        description: "Deterministic Mercator fixture.",
-        client: {
-          async listTools() {
-            return {
-              tools: [{
-                name: "search_services",
-                description: "Search paid services.",
-                inputSchema: {
-                  type: "object",
-                  properties: { query: { type: "string" } },
-                  required: ["query"],
-                },
-              }],
-            };
-          },
-          async callTool(input) {
-            calls.push(input);
-            return { content: [{ type: "text", text: "node-mercator-ok" }] };
-          },
-        },
-      },
-    },
-  });
-
-  try {
-    await host.ready();
-    const definitions = await waitForToolDefinition(
-      host,
-      "mcp__mercator__search_services",
-    );
-    assert.deepEqual(definitions.map((definition) => definition.name ?? definition.type), [
-      "tool_search",
-      "mcp__mercator__search_services",
-    ]);
-    assert.equal(definitions[1].defer_loading, true);
-    const execution = JSON.parse(await host.executeCode(
-      "text(await tools.mcp__mercator__search_services({ query: 'weather' }));",
-      "node-session",
-      "node-exec",
-    ));
-    assert.equal(execution.success, true);
-    assert.match(JSON.stringify(execution.output), /node-mercator-ok/);
-    assert.deepEqual(calls, [{
-      name: "search_services",
-      arguments: { query: "weather" },
-    }]);
-  } finally {
-    await host.dispose();
-  }
 });
 
 test("Node host preserves structured WebSocket handshake rejection detail", async () => {

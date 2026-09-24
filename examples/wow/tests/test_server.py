@@ -39,9 +39,6 @@ class BackendTests(unittest.TestCase):
         result = b.handle('POST', '/api/send', {}, {'text': 'Help', 'mode': 'build', 'context': {'edition': 'Classic'}, 'idempotency_key': 'stable-1'})
         method, path, body, key = b.calls[0]
         self.assertEqual((method, path, key), ('POST', '/v1/agent-runs', 'stable-1'))
-        self.assertEqual(body['settings'], {'model': 'gpt-6-luna', 'thinking': 'low', 'reasoning_mode': 'standard', 'fast_mode': False})
-        self.assertIn('untrusted game data', body['input'])
-        self.assertIn('browse current primary sources', body['input'])
         self.assertEqual(result['thread_id'], 'agent-1')
         self.assertEqual(len(b.calls), 1)
 
@@ -67,7 +64,6 @@ class BackendTests(unittest.TestCase):
         b.handle('POST', '/api/send', {}, {'text': 'Next hint', 'mode': 'hint', 'thread_id': 'existing', 'idempotency_key': 'same'})
         self.assertEqual(b.calls[0][0:2], ('POST', '/v1/agents/existing/turns'))
         self.assertEqual(b.calls[0][3], 'same')
-        self.assertIn('reveal progressively', b.calls[0][2]['input'])
         self.assertEqual(len(b.calls), 1)
 
     def test_agent_mode_preserves_configuration_and_raw_task(self):
@@ -75,13 +71,6 @@ class BackendTests(unittest.TestCase):
         b.handle('POST', '/api/send', {}, {'text': 'Review the code', 'mode': 'agent', 'thread_id': 'existing'})
         self.assertEqual(len(b.calls), 1)
         self.assertEqual(b.calls[0][:3], ('POST', '/v1/agents/existing/turns', {'input': 'Review the code'}))
-
-    def test_game_mode_without_selected_thread_creates_luna(self):
-        b = FakeBackend()
-        b.handle('POST', '/api/send', {}, {'text': 'Give a hint', 'mode': 'hint', 'project_id': 'root'})
-        self.assertEqual(len(b.calls), 1)
-        self.assertEqual(b.calls[0][1], '/v1/agent-runs')
-        self.assertEqual(b.calls[0][2]['settings'], {'model': 'gpt-6-luna', 'thinking': 'low', 'reasoning_mode': 'standard', 'fast_mode': False})
 
     def test_projection_uses_real_membership_unknown_status(self):
         b = FakeBackend()

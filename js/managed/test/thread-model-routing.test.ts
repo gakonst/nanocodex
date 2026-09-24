@@ -1,13 +1,5 @@
-import { URL as NodeURL } from "node:url";
-import { readFileSync } from "node:fs";
-const preferenceObservations = JSON.parse(readFileSync(new NodeURL("./fixtures/thread-routing-preferences-20260921.json", import.meta.url), "utf8")) as {
-  cases: Array<{id:string; catalog:number; prompt:string; preferences:Record<string,unknown>;
-    answers:{candidate:{choice:string; confidence:number}}; expected_choice:string; expected_selection:string}>;
-};
 import { describe, expect, it, vi } from "vitest";
-import { DatabaseSync } from "node:sqlite";
-import { resolveThreadRoute, routingPolicySchema, ThreadRoutePin, ROUTING_CANDIDATES, OSS_MODEL, FRONTIER_MODEL, projectThreadRouteDiagnostics, taskFamily } from "../src/thread-model-routing";
-import { initializeManagedAgentSettingsSchema } from "../src/agent-settings-schema";
+import { resolveThreadRoute, routingPolicySchema, ThreadRoutePin, OSS_MODEL, FRONTIER_MODEL, projectThreadRouteDiagnostics, taskFamily } from "../src/thread-model-routing";
 import { parseAgentCreateBody, validateAgentSettings } from "../src/agent-settings";
 import { parseConfiguration } from "../src/agent-configuration";
 
@@ -111,24 +103,6 @@ describe("eval-informed thread routing", () => {
     const pin = new ThreadRoutePin({ read: () => undefined, commit });
     await expect(pin.resolve(() => resolveThreadRoute(ai, "task", policy()))).rejects.toThrow("storage failure");
     expect(commit).toHaveBeenCalledOnce();
-  });
-  it("migrates an existing Astra settings table without changing its row", () => {
-    const db = new DatabaseSync(":memory:");
-    db.exec(`CREATE TABLE managed_agent_settings (singleton INTEGER PRIMARY KEY, model TEXT CHECK(model IN ('gpt-6-astra')), thinking TEXT, reasoning_mode TEXT, fast_mode INTEGER);
-      INSERT INTO managed_agent_settings VALUES (1,'gpt-6-astra','high','standard',0);`);
-    const storage = {
-      sql: { exec(sql: string, ...args: unknown[]) {
-        if (/^\s*(SELECT|PRAGMA)/.test(sql)) { const rows = db.prepare(sql).all(...args as never[]); return { one: () => rows[0], toArray: () => rows }; }
-        db.exec(sql); return { toArray: () => [] };
-      } },
-      transactionSync(fn: () => void) { db.exec("BEGIN"); try { fn(); db.exec("COMMIT"); } catch (e) { db.exec("ROLLBACK"); throw e; } },
-    };
-    initializeManagedAgentSettingsSchema(storage as never);
-    expect(db.prepare("SELECT model FROM managed_agent_settings").get()?.model).toBe(FRONTIER_MODEL);
-    db.prepare("UPDATE managed_agent_settings SET model = ?").run(OSS_MODEL);
-    initializeManagedAgentSettingsSchema(storage as never);
-    expect(db.prepare("SELECT model FROM managed_agent_settings").get()?.model).toBe(OSS_MODEL);
-    db.close();
   });
 });
 
@@ -251,42 +225,6 @@ describe("cross-provider candidate routing", () => {
   } })) });
   const openrouter = "openrouter:openai/gpt-6-astra:high";
   const vercel = "vercel:openai/gpt-6-astra:high";
-  it("offers unique candidates supported by the managed tools contract", async () => {
-    expect(ROUTING_CANDIDATES).toHaveLength(43);
-    expect(new Set(ROUTING_CANDIDATES.map(c => c.id)).size).toBe(43);
-    const p = routingPolicySchema.parse({ candidates: ROUTING_CANDIDATES.map(c => c.id) });
-    const ai = choose(vercel);
-    const route = await resolveThreadRoute(ai, "task", p, available);
-    expect(route.audit?.eligible_candidates).toHaveLength(34);
-    expect(route).toMatchObject({ backend: "vercel", model: FRONTIER_MODEL, provider_model: "openai/gpt-6-astra" });
-    expect(Object.keys((ai.run.mock.calls[0][1] as {questions:{candidate:{criteria:object}}}).questions.candidate.criteria)).toHaveLength(34);
-  });
-  it.each(["gpt-6-sol", "gpt-6-luna"])("keeps %s tools on native and Responses routes", model => {
-    for (const effort of ["low", "medium", "high"]) {
-      for (const backend of ["openrouter", "vercel"]) {
-        expect(() => routingPolicySchema.parse({ candidates: [`${backend}:openai/${model}:${effort}`] })).toThrow();
-      }
-      expect(ROUTING_CANDIDATES.some(c => c.id === `${model}:${effort}`)).toBe(true);
-      expect(ROUTING_CANDIDATES.some(c => c.id === `cloudflare:openai/${model}:${effort}`)).toBe(true);
-    }
-  });
-  it("sends dated provider token rates separately from measured task costs", async () => {
-    const ai = choose(vercel);
-    const route = await resolveThreadRoute(ai, "compare cost", routingPolicySchema.parse({}), available);
-    const state = JSON.parse((ai.run.mock.calls[0][1] as {state:string}).state);
-    const hint = (id: string) => { const c = ROUTING_CANDIDATES.find(c => c.id === id)!; return state.catalog_price_hints[`${c.backend}/${c.model}`]; };
-    expect(ROUTING_CANDIDATES.some(candidate => candidate.id === "vercel:openai/gpt-6-sol:low")).toBe(false);
-    expect(ROUTING_CANDIDATES.some(candidate => candidate.id === "vercel:openai/gpt-6-luna:low")).toBe(false);
-    expect(hint("openrouter:z-ai/glm-5.3:low")).toMatchObject({input:.91,output:2.86,cached_input:.169});
-    expect(hint("vercel:zai/glm-5.3:low")).toMatchObject({input:1.4,output:4.4,cached_input:.14});
-    expect(hint("gpt-6-astra:high")).toBeNull();
-    expect(state.uncertainty).toContain("dated base token rates");
-    expect(hint(vercel)).not.toHaveProperty("expected_duration_ms");
-    expect(hint(vercel)).not.toHaveProperty("expected_cost_usd");
-    expect(state.measurements).toEqual([]);
-    expect(route.estimate).toBeNull();
-    expect(route.selection).toBe("prior");
-  });
   it.each([
     [undefined, 12], [{openrouter:true,vercel:false},23], [{openrouter:false,vercel:true},23], [available,34], [{...available,cloudflare:true},43], [{openrouter:false,vercel:false,cloudflare:true},21],
   ])("filters unavailable providers before Jev: %j", async (availability, count) => {
@@ -388,24 +326,6 @@ describe("preference-preserving confidence fallback", () => {
     expect(await new ThreadRoutePin(store).resolve(create)).toBe(a);
     expect(a.audit?.fallback_basis).toBe("valid_proposal");
     expect(ai.run).toHaveBeenCalledOnce();
-  });
-});
-
-describe("captured preference-distribution policy replay (not accuracy labels)", () => {
-  it.each(preferenceObservations.cases)("replays historical $catalog/$id against the supported catalog", async observation => {
-    const ai = {run:vi.fn(async()=>({state:"Completed",result:{answers:observation.answers}}))};
-    const route = await resolveThreadRoute(ai,observation.prompt,routingPolicySchema.parse({preferences:observation.preferences, candidates: ROUTING_CANDIDATES.filter(c => !["kimi-k3", "mimo-v2.6-pro"].includes(c.model)).map(c => c.id)}),
-      {openrouter:observation.catalog===45,vercel:observation.catalog===45});
-    const retired = observation.answers.candidate.choice.includes("gpt-5.6");
-    expect(route.audit?.candidate_choice).toBe(retired ? "gpt-6-astra:high" : observation.expected_choice);
-    expect(route.audit?.candidate_confidence).toBe(retired ? 0 : observation.answers.candidate.confidence);
-    expect(route.selection).toBe(retired ? "fallback" : observation.expected_selection);
-    if (retired) expect(route.audit?.confidence_status).toBe("unavailable_or_invalid");
-    expect(route.estimate).toBeNull();
-    expect(ai.run).toHaveBeenCalledOnce();
-    const state = JSON.parse((ai.run.mock.calls[0] as unknown as [string,{state:string}])[1].state);
-    expect(state.preferences).toEqual(observation.preferences);
-    expect(Object.keys((ai.run.mock.calls[0] as unknown as [string,{questions:{candidate:{criteria:object}}}])[1].questions.candidate.criteria)).toHaveLength(observation.catalog === 45 ? 24 : 12);
   });
 });
 

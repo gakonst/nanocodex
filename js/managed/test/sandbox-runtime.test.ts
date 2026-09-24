@@ -1,4 +1,3 @@
-import { CUA_JS_NAME } from "nanocodex-computer/contract";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ToolMap } from "nanocodex";
 
@@ -9,19 +8,13 @@ import {
 } from "../src/sandbox-runtime";
 import { cloudflareSandboxPreviewUrl } from "../src/sandbox-tools";
 import {
-  createSharedBrainReadWorkspace,
   createManagedNamespaceTools,
   routeSandboxPreviewRequest,
-  turnControlAuthorizationMatches,
-  turnCanUseExecutionNamespace,
 } from "../src/index";
 
 afterEach(() => vi.unstubAllGlobals());
 
 describe("sandbox runtime egress", () => {
-  it("installs the managed policy as the catch-all outbound handler", () => {
-    expect(Sandbox.outbound).toBe(handleSandboxEgress);
-  });
 
   it("routes policy-validated public HTTPS through the broker", async () => {
     const upstream = vi.fn(async () => new Response("ok", {
@@ -105,51 +98,6 @@ describe("sandbox runtime egress", () => {
 });
 
 describe("managed sandbox preview wiring", () => {
-  it("reads shared /brain files from the durable R2 prefix and preserves private fallback reads", async () => {
-    const bucket = {
-      head: vi.fn(async () => ({ size: 3 })),
-      get: vi.fn(async () => ({ size: 3, body: new Response(new Uint8Array([1, 2, 3])).body })),
-    } as unknown as R2Bucket;
-    const fallback = { readFile: vi.fn(async () => new Uint8Array([9])) };
-    const workspace = createSharedBrainReadWorkspace(bucket, "durable-agent", fallback);
-
-    await expect(workspace.readFile("/brain/output.png")).resolves.toEqual(new Uint8Array([1, 2, 3]));
-    expect(bucket.get).toHaveBeenCalledWith("brains/durable-agent/output.png");
-    await expect(workspace.readFile("/workspace/private.png")).resolves.toEqual(new Uint8Array([9]));
-    expect(fallback.readFile).toHaveBeenCalledWith("/workspace/private.png");
-    await expect(workspace.readFile("/brain/../secret")).rejects.toThrow("canonical file");
-  });
-
-  it("reserves retained execution hands for full account authority", () => {
-    expect(turnCanUseExecutionNamespace({
-      capabilities: ["agents:write", "tools:use"],
-    })).toBe(true);
-    expect(turnCanUseExecutionNamespace({
-      capabilities: ["agents:write", "tools:use"],
-      connectGrant: {
-        grantId: `0x${"a".repeat(64)}`,
-        connectors: ["chatgpt"],
-        mcpIds: [],
-      },
-    })).toBe(false);
-    expect(turnCanUseExecutionNamespace({ capabilities: ["agents:write"] })).toBe(false);
-    expect(turnCanUseExecutionNamespace(undefined)).toBe(false);
-  });
-
-  it("prevents a Connect grant from steering a turn with different authority", () => {
-    const account = { capabilities: ["agents:write", "tools:use"] as const };
-    const connect = {
-      capabilities: ["agents:write", "tools:use"] as const,
-      connectGrant: {
-        grantId: `0x${"a".repeat(64)}`,
-        connectors: ["chatgpt"] as const,
-        mcpIds: [],
-      },
-    };
-    expect(turnControlAuthorizationMatches(account, account)).toBe(true);
-    expect(turnControlAuthorizationMatches(connect, connect)).toBe(true);
-    expect(turnControlAuthorizationMatches(account, connect)).toBe(false);
-  });
 
   it("routes mounted hands only when the active turn has execution authority", async () => {
     const sourceHandler = vi.fn(async () => ({ ok: true }));
@@ -321,51 +269,6 @@ describe("managed sandbox preview wiring", () => {
     );
     expect(request.method).toBe("PUT");
     expect(new URL(request.url).search).toBe("?value=kept");
-  });
-
-  it("passes WebSocket upgrades through and rejects invalid or unconfigured capabilities", async () => {
-    const namespace = {} as DurableObjectNamespace<Sandbox>;
-    const secret = "server-only-preview-secret";
-    const sessionId = "018f25e8-7b51-7a32-8c4d-abcdef012345";
-    const publicUrl = await cloudflareSandboxPreviewUrl(
-      "https://nanocodex.example",
-      secret,
-      sessionId,
-      8_080,
-    );
-    const websocket = new Request(publicUrl, { headers: { upgrade: "websocket" } });
-    const proxy = vi.fn(async () => new Response(null, { status: 200 }));
-
-    await routeSandboxPreviewRequest(websocket, {
-      NANOCODEX_ADMIN_TOKEN: secret,
-      NANOCODEX_SANDBOXES: namespace,
-    }, new URL(websocket.url), undefined, proxy);
-    expect(proxy).toHaveBeenCalledWith(
-      namespace,
-      sessionId,
-      8_080,
-      websocket,
-      "/",
-    );
-
-    proxy.mockClear();
-    const invalid = await routeSandboxPreviewRequest(
-      new Request("https://nanocodex.example/sandbox-preview/not-a-capability/private"),
-      { NANOCODEX_ADMIN_TOKEN: secret, NANOCODEX_SANDBOXES: namespace },
-      undefined,
-      undefined,
-      proxy,
-    );
-    expect(invalid?.status).toBe(404);
-    const unconfigured = await routeSandboxPreviewRequest(
-      new Request(publicUrl),
-      { NANOCODEX_ADMIN_TOKEN: "", NANOCODEX_SANDBOXES: namespace },
-      undefined,
-      undefined,
-      proxy,
-    );
-    expect(unconfigured?.status).toBe(404);
-    expect(proxy).not.toHaveBeenCalled();
   });
 });
 

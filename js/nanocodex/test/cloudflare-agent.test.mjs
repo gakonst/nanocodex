@@ -373,46 +373,6 @@ test("Cloudflare Agent owns credentials, transport, and durability options", asy
   );
 });
 
-test("Cloudflare Agent accepts complete hosted policy only through its internal configuration", async () => {
-  const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
-  const owner = durableOwner(new MemoryStorage());
-  let captured;
-  const configured = bindAgent(module, {
-    async create(options) {
-      captured = options;
-      return HostAgent.create(options);
-    },
-  });
-  const agent = await configured.create(owner, {
-    additionalInstructions: "Keep the host's account boundaries.",
-    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { rawApiEvents: false },
-    [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: {
-      model: "gpt-6-astra",
-      thinking: "xhigh",
-      reasoning_mode: "standard",
-      fast_mode: true,
-    },
-  });
-
-  assert.equal(captured.model, "gpt-6-astra");
-  assert.equal(captured.instructions, undefined);
-  assert.equal(captured.additionalInstructions, "Keep the host's account boundaries.");
-  assert.equal(captured.thinking, "xhigh");
-  assert.equal(captured.reasoningMode, "standard");
-  assert.equal(captured.fastMode, true);
-  assert.equal(captured.rawApiEvents, false);
-  await agent.session.shutdown();
-
-  await assert.rejects(configured.create(owner, {
-    [Symbol.for("nanocodex.cloudflare.internalConfiguration")]: {
-      model: "gpt-5.6-terra",
-      thinking: "xhigh",
-      reasoning_mode: "pro",
-      fast_mode: "true",
-    },
-  }), /internal configuration is invalid/);
-});
-
 test("host delegation prohibition reaches Rust and overrides caller subagent extensions", async () => {
   const module = await readFile(new URL("../pkg-web/nanocodex_bg.wasm", import.meta.url));
   for (const tools of [[], [...Subagents.create({ maxConcurrency: 2 })]]) {
@@ -1598,24 +1558,6 @@ test("Cloudflare SDK sibling shutdown preserves live siblings without child chec
     await retained.session.shutdown();
     await agent.session.shutdown();
   }
-});
-
-test("Cloudflare beforeCompaction option reaches the host unchanged and is omitted by default", async () => {
-  const creationStopped = new Error("stop before initializing WASM");
-  const captured = [];
-  const adapter = bindAgent(new Uint8Array(), {
-    async create(options) {
-      captured.push(options);
-      throw creationStopped;
-    },
-  });
-  const beforeCompaction = async () => ({ receiptId: "synthetic-cloudflare-commit" });
-  for (const options of [{ beforeCompaction }, {}]) {
-    await assert.rejects(adapter.create(durableOwner(new MemoryStorage()), options),
-      error => error === creationStopped);
-  }
-  assert.equal(captured[0].beforeCompaction, beforeCompaction);
-  assert.equal(Object.hasOwn(captured[1], "beforeCompaction"), false);
 });
 
 test("manual GPT root keeps WebSockets while a Kimi child uses gateway HTTP across continuation", { timeout: 30_000 }, async () => {

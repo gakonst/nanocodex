@@ -4,74 +4,7 @@ import NanocodexRemote
 @testable import Nanocodex
 
 final class ProtocolTests: XCTestCase {
-    @MainActor
-    func testKeyboardLookupVisitsEachAncestorOnce() {
-        final class CountingView: NSView {
-            var reads = 0
-            override var subviews: [NSView] {
-                get { reads += 1; return super.subviews }
-                set { super.subviews = newValue }
-            }
-        }
-        let ancestors = (0..<16).map { _ in CountingView() }
-        for index in 0..<(ancestors.count - 1) { ancestors[index].addSubview(ancestors[index + 1]) }
-        let keyboard = WorkspaceKeyboardView()
-        ancestors.last?.addSubview(keyboard)
-        ancestors.forEach { $0.reads = 0 }
-        XCTAssertTrue(WorkspaceKeyboardView.find(in: ancestors[0]) === keyboard)
-        XCTAssertEqual(ancestors.reduce(0) { $0 + $1.reads }, ancestors.count,
-                       "Nested native hosts must not multiply keyboard-focus search work")
-    }
 
-    @MainActor
-    func testConversationColumnStaysCenteredAcrossWindowSizes() async throws {
-        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-column-fixture")
-        model.runtime.requestOverride = { _, _ in .null }
-        model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
-        model.tabs = [WorkspaceTab(id: "column", threadId: "column-thread", title: "Desktop layout")]
-        model.activeTabID = "column"; model.workspaceFilter = .all
-        model.snapshots["column-thread"] = ThreadSnapshot(id: "column-thread", events: [], hasMore: false, connected: true, activeTurns: [], settings: AgentSettings())
-        model.messages["column-thread"] = [
-            MessageEntry(id: "column-user", turnId: "column-turn", kind: .user, text: "Keep this conversation balanced."),
-            MessageEntry(id: "column-reply", turnId: "column-turn", kind: .assistant, text: "The conversation and composer should share one centered column, with balanced margins at every window size.")
-        ]
-        let host = NSHostingView(rootView: ContentView().environmentObject(model)); host.sizingOptions = []
-        let window = EvidenceWindow(contentRect: NSRect(x: 0, y: 0, width: 1600, height: 900), styleMask: [.titled, .closable, .resizable, .fullSizeContentView], backing: .buffered, defer: false)
-        window.toolbar = NSToolbar(identifier: "column-fixture-toolbar")
-        window.toolbarStyle = .unified
-        window.isReleasedWhenClosed = false; window.contentView = host; window.makeKeyAndOrderFront(nil)
-        defer { model.shutdown(); window.close() }
-        func find<T: NSView>(_ type: T.Type, in view: NSView) -> [T] {
-            ((view as? T).map { [$0] } ?? []) + view.subviews.flatMap { find(type, in: $0) }
-        }
-        var retainedEditor: ComposerTextView?
-        for (width, position) in [(CGFloat(1600), "top"), (1600, "left"), (1200, "left"), (820, "left"), (1200, "top"), (1600, "top")] {
-            model.setTabPosition(position)
-            window.setContentSize(NSSize(width: width, height: 900))
-            try await Task.sleep(for: .milliseconds(400)); host.layoutSubtreeIfNeeded()
-            let input = try XCTUnwrap(find(ComposerTextView.self, in: host).first)
-            if let retainedEditor { XCTAssertTrue(input === retainedEditor) } else { retainedEditor = input }
-            let marker = try XCTUnwrap(find(TranscriptItemAnchor.MarkerView.self, in: host).first { $0.itemID == "column-reply" })
-            let firstTurn = try XCTUnwrap(find(TranscriptItemAnchor.MarkerView.self, in: host).first { $0.itemID == "column-user" })
-            XCTAssertLessThanOrEqual(firstTurn.convert(firstTurn.bounds, to: nil).maxY, window.contentLayoutRect.maxY,
-                                     "The first user message stays below the native toolbar")
-            let row = marker.convert(marker.bounds, to: host)
-            let editor = input.convert(input.bounds, to: host)
-            if position == "left", let sidebar = find(NSTableView.self, in: host).first, !sidebar.visibleRect.isEmpty {
-                let sidebarBounds = sidebar.convert(sidebar.bounds, to: host)
-                XCTAssertEqual(row.midX, (sidebarBounds.maxX + host.bounds.maxX) / 2, accuracy: 12,
-                               "The transcript is centered beside the native sidebar")
-            } else {
-                XCTAssertEqual(row.midX, host.bounds.midX, accuracy: 2, "The transcript has balanced outer margins")
-            }
-            XCTAssertEqual(row.midX, editor.midX, accuracy: 2, "The composer and transcript share a center line")
-            XCTAssertLessThanOrEqual(row.width, 820)
-            XCTAssertGreaterThanOrEqual(row.minX, 24)
-            let scroll = try XCTUnwrap(marker.enclosingScrollView)
-            XCTAssertLessThanOrEqual(scroll.documentView?.bounds.height ?? .infinity, scroll.contentView.bounds.height + 2,
-                                     "A fully visible first reply must not create an empty screen of scrollable space")
-        }
-    }
 
     @MainActor
     func testTabOrientationRetainsEditorSelectionAndLayout() async throws {
@@ -306,29 +239,6 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(model.backTabs.count, count, "Typing must not add duplicate navigation entries")
     }
 
-    @MainActor
-    func testTabOverviewRendersSplitGroupsAndDrafts() async throws {
-        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-overview-fixture")
-        model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
-        model.runtime.requestOverride = { _, _ in .null }; model.workspaceFilter = .all
-        model.tabs = [WorkspaceTab(id: "a", title: "Polish the desktop", draft: "Keep the remote screen open while we work"),
-                      WorkspaceTab(id: "b", title: "Review mobile parity"),
-                      WorkspaceTab(id: "c", title: "Explore the code", draft: "Check keyboard navigation")]
-        model.activeTabID = "a"; model.openBeside("b")
-        let content = NSHostingView(rootView: TabOverviewView().environmentObject(model).environment(\.colorScheme, .dark))
-        let window = EvidenceWindow(contentRect: NSRect(x: 0, y: 0, width: 728, height: 568), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; window.contentView = content; window.appearance = NSAppearance(named: .darkAqua); window.makeKeyAndOrderFront(nil)
-        defer { model.shutdown(); window.close() }
-        try await Task.sleep(for: .milliseconds(200))
-        XCTAssertEqual(model.browserTabs.count, 2)
-        XCTAssertEqual(model.activeTab?.id, "b")
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("build/evidence")
-        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
-        content.layoutSubtreeIfNeeded(); content.displayIfNeeded()
-        let bitmap = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
-        content.cacheDisplay(in: content.bounds, to: bitmap)
-        try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).write(to: root.appendingPathComponent("native-tab-overview.png"))
-    }
 
     @MainActor
     func testScreenPaneResizesWithoutReplacingConversation() async throws {
@@ -1709,38 +1619,6 @@ final class ProtocolTests: XCTestCase {
         let metrics: [String: Any] = ["phase": phase, "firstNativeViewLayoutMs": firstLayoutMs, "nativeEditorInputMs": inputMs, "tabSwitchMedianMs": tabMs.sorted()[10], "tabSwitchP95Ms": tabMs.sorted()[18], "unchanged800EventSnapshotMs": snapshotMs, "longStreamingSnapshotMedianMs": streamingMs.sorted()[10], "longStreamingSnapshotP95Ms": streamingMs.sorted()[18], "network": "none; isolated native view and protocol evidence"]
         try JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys]).write(to: evidence.appendingPathComponent("native-performance-\(phase).json"))
     }
-    @MainActor
-    func testNativePhoneAndCodeScreensRenderWithoutNetwork() async throws {
-        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-isolated-protocol")
-        model.isStarting = false
-        model.runtime.requestOverride = { method, _ in
-            guard method == "startSignIn" else { throw RuntimeFailure(message: "Unexpected network request") }
-            let now = Date().timeIntervalSince1970 * 1000
-            return .object(["phone": .string("+15555550100"), "resendAt": .number(now + 30_000), "expiresAt": .number(now + 300_000)])
-        }
-        let content = NSHostingView(rootView: ContentView().environmentObject(model).frame(width: 1200, height: 840))
-        content.sizingOptions = []
-        let window = EvidenceWindow(contentRect: NSRect(x: 0, y: 0, width: 1200, height: 840), styleMask: [.titled, .closable], backing: .buffered, defer: false)
-        window.isReleasedWhenClosed = false; window.contentView = content; window.setContentSize(NSSize(width: 1200, height: 840)); window.orderFront(nil)
-        defer { window.close() }
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent()
-        let evidence = root.appendingPathComponent("build/evidence")
-        try FileManager.default.createDirectory(at: evidence, withIntermediateDirectories: true)
-        func fields(_ view: NSView) -> [NSTextField] { (view as? NSTextField).map { [$0] } ?? view.subviews.flatMap(fields) }
-        func capture(_ name: String) throws {
-            content.layoutSubtreeIfNeeded(); content.displayIfNeeded()
-            let rep = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
-            content.cacheDisplay(in: content.bounds, to: rep)
-            try XCTUnwrap(rep.representation(using: .png, properties: [:])).write(to: evidence.appendingPathComponent(name))
-        }
-        try await Task.sleep(for: .milliseconds(150))
-        XCTAssertTrue(fields(content).contains { $0.placeholderString == "+1 415 555 0123" || $0.placeholderString == "Phone number" })
-        try capture("native-sign-in-phone.png")
-        _ = try await model.startPhoneSignIn(phone: "+15555550100", baseUrl: "https://example.invalid")
-        try await Task.sleep(for: .milliseconds(150))
-        XCTAssertTrue(fields(content).contains { $0.placeholderString == "6-digit code" })
-        try capture("native-sign-in-code.png")
-    }
     func testSignInChallengeUsesMillisecondsAndAcceptsPastedCode() throws {
         let challenge = try JSONValue.object([
             "phone": .string("+15555550100"), "resendAt": .number(1_780_000_030_000), "expiresAt": .number(1_780_000_300_000)
@@ -1752,18 +1630,6 @@ final class ProtocolTests: XCTestCase {
         XCTAssertTrue(challenge.isExpired(at: now.addingTimeInterval(300)))
         XCTAssertEqual(SignInChallenge.normalizedCode("123 456\n"), "123456")
         XCTAssertEqual(SignInChallenge.normalizedCode("１２３abc1234567"), "123456")
-    }
-    func testAcceptedTurnLocksModelBeforeCompletionAndDecodesOlderSnapshots() throws {
-        var value: [String: JSONValue] = [
-            "id": .string("thread"), "events": .array([]), "hasMore": .bool(false), "connected": .bool(true),
-            "activeTurns": .array([]), "settings": try .encoded(AgentSettings())
-        ]
-        XCTAssertFalse(try JSONValue.object(value).decode(ThreadSnapshot.self).hasAcceptedTurn)
-        value["acceptedTurns"] = .number(1)
-        XCTAssertTrue(try JSONValue.object(value).decode(ThreadSnapshot.self).hasAcceptedTurn)
-        value.removeValue(forKey: "acceptedTurns")
-        value["activeTurns"] = .array([.string("first-turn")])
-        XCTAssertTrue(try JSONValue.object(value).decode(ThreadSnapshot.self).hasAcceptedTurn)
     }
     @MainActor
     func testPhoneOnboardingWaitsForCommitAndRetriesWithoutConsumingCodeAgain() async throws {
@@ -1824,59 +1690,6 @@ final class ProtocolTests: XCTestCase {
         "connected": .bool(true), "baseUrl": .string("https://example.invalid"), "threads": .array([]), "hands": .array([]),
         "defaults": .object([:]), "platform": .string("darwin"), "version": .string("0.1.0")
     ]) }
-    func testAstraSelectionNormalizesUnsupportedSettings() throws {
-        var settings = AgentSettings(model: "gpt-6-sol", thinking: "none", reasoning_mode: "pro", fast_mode: true)
-        settings.selectModel("gpt-6-astra")
-
-        XCTAssertEqual(settings.modelName, "Astra")
-        XCTAssertEqual(settings.thinking, "high")
-        XCTAssertEqual(settings.reasoning_mode, "standard")
-        XCTAssertFalse(settings.supportsNoReasoning)
-        XCTAssertFalse(settings.supportsProReasoning)
-        XCTAssertEqual(try JSONValue.encoded(settings), .object([
-            "model": .string("gpt-6-astra"), "thinking": .string("high"),
-            "reasoning_mode": .string("standard"), "fast_mode": .bool(true),
-        ]))
-    }
-    func testAstraRetainsSupportedEffortsAndExistingDefaults() throws {
-        for effort in ["low", "medium", "high", "xhigh", "max"] {
-            var settings = AgentSettings(model: "gpt-6-luna", thinking: effort, reasoning_mode: "pro", fast_mode: false)
-            settings.selectModel("gpt-6-astra")
-            XCTAssertEqual(settings.thinking, effort)
-            XCTAssertEqual(settings.reasoning_mode, "standard")
-            XCTAssertFalse(settings.fast_mode)
-            let retained = try JSONValue.encoded(settings).decode(AgentSettings.self)
-            XCTAssertEqual(retained, settings)
-        }
-    }
-    func testGPT6SolAndLunaRetainNoneAndPro() {
-        for model in ["gpt-6-sol", "gpt-6-luna"] {
-            var settings = AgentSettings(model: "legacy", thinking: "none", reasoning_mode: "pro", fast_mode: false)
-            settings.selectModel(model)
-            XCTAssertEqual(settings.thinking, "none")
-            XCTAssertEqual(settings.reasoning_mode, "pro")
-            XCTAssertTrue(settings.supportsNoReasoning)
-            XCTAssertTrue(settings.supportsProReasoning)
-        }
-    }
-    func testLegacyPinnedSettingsDecodeWithoutMigration() throws {
-        let legacy = AgentSettings(model: "gpt-5.6-sol", thinking: "high", reasoning_mode: "standard", fast_mode: false)
-        let restored = try JSONValue.encoded(legacy).decode(AgentSettings.self)
-        XCTAssertEqual(restored.model, "gpt-5.6-sol")
-        XCTAssertEqual(restored.modelName, "gpt-5.6-sol")
-    }
-    func testDurableReplayDoesNotDuplicateOutput() throws {
-        let events: [ManagedEvent] = [
-            .init(cursor: "1", turnId: "turn", data: .object(["type": .string("turn_accepted"), "id": .string("turn"), "input": .string("hello")])),
-            .init(cursor: "2", turnId: "turn", data: .object(["type": .string("event"), "event": .object(["type": .string("assistant.delta"), "payload": .object(["text": .string("Hello")])])])),
-            .init(cursor: "3", turnId: "turn", data: .object(["type": .string("event"), "event": .object(["type": .string("assistant.message"), "payload": .object(["text": .string("Hello there")])])])),
-            .init(cursor: "4", turnId: "turn", data: .object(["type": .string("turn_completed"), "id": .string("turn"), "final_message": .string("Hello there")]))
-        ]
-        let projected = projectTimeline(events + events)
-        XCTAssertEqual(projected.count, 2)
-        XCTAssertEqual(projected.last?.text, "Hello there")
-        XCTAssertFalse(projected.last?.streaming ?? true)
-    }
     @MainActor
     func testAcceptedAndFinalMessagesKeepTheirIdentity() throws {
         let model = AppModel(runtimeDirectory: "/tmp/nanocodex-isolated-continuity")
@@ -2149,16 +1962,6 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(requests.filter { $0.0 == "queuePrompt" }.count, 4, "Steer now never resubmits the queued message")
     }
 
-    func testToolResultUpdatesCallAndPreservesExactOutput() {
-        let events: [ManagedEvent] = [
-            .init(cursor: "90071992547409930", turnId: "turn", data: .object(["type": .string("event"), "event": .object(["type": .string("tool.call"), "payload": .object(["call_id": .string("c"), "tool": .string("exec_command"), "arguments": .object(["cmd": .string("pwd")])])])])),
-            .init(cursor: "90071992547409931", turnId: "turn", data: .object(["type": .string("event"), "event": .object(["type": .string("tool.result"), "payload": .object(["call_id": .string("c"), "status": .string("completed"), "result": .string("/workspace")])])]))
-        ]
-        let projected = projectTimeline(events)
-        XCTAssertEqual(projected.count, 1)
-        XCTAssertEqual(projected.first?.status, "completed")
-        XCTAssertEqual(projected.first?.output, "/workspace")
-    }
 
     func testGeneratedCodeOutputsPreserveBothResultsAndDeduplicateNestedMedia() throws {
         let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9ZQmcAAAAASUVORK5CYII="
@@ -2278,35 +2081,12 @@ final class ProtocolTests: XCTestCase {
         let metrics: [String: Any] = ["retainedToolOutputsMedianMs": retainedMs.sorted()[12], "reparsedToolOutputsMedianMs": rebuiltMs.sorted()[12], "pngBytes": png.utf8.count, "snapshots": 24, "network": "none; actual code-mode wire shape, hosted native window"]
         try JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys]).write(to: evidence.appendingPathComponent("native-generated-output-performance.json"))
     }
-    func testSubagentStreamsRemainSeparate() {
-        func delta(_ cursor: String, _ agent: String, _ text: String) -> ManagedEvent {
-            .init(cursor: cursor, turnId: "turn", data: .object(["type": .string("event"), "agent_id": .string(agent), "event": .object(["type": .string("assistant.delta"), "payload": .object(["text": .string(text)])])]))
-        }
-        let result = projectTimeline([delta("1", "researcher", "Research"), delta("2", "coder", "Code"), delta("3", "coder", " change")])
-        XCTAssertEqual(result.map(\.text), ["Research", "Code change"])
-        XCTAssertNotEqual(result[0].agent, result[1].agent)
-    }
-    func testSharedStateAndLayoutContractDecodes() throws {
-        let fixture = #"{"connected":true,"hasCredentials":true,"baseUrl":"https://example.test","threads":[],"hands":[{"id":"mac-1","name":"This Mac","kind":"local","workspace":"/tmp/work","status":"connected","calls":0,"activeCalls":0,"logs":[]}],"defaults":{"workspace":"/tmp/default"},"platform":"darwin","version":"0.1.0","layout":{"tabs":[{"id":"tab-1","draft":"unfinished","target":"mac-1","folder":""}],"activeTabId":"tab-1","tabPosition":"top","theme":"system"}}"#
-        let state = try JSONDecoder().decode(DesktopState.self, from: Data(fixture.utf8))
-        XCTAssertEqual(state.hands.first?.status, "connected")
-        XCTAssertEqual(state.layout?.tabs.first?.draft, "unfinished")
-        XCTAssertEqual(state.layout?.tabPosition, "top")
-        XCTAssertEqual(state.defaults["workspace"].string, "/tmp/default")
-    }
 }
 
 import AppKit
 import SwiftUI
 
 final class BackgroundHandTests: XCTestCase {
-    func testNativeHostRemainsConnectedWhileVMFactoryIsUnavailable() throws {
-        let data = Data(#"{"id":"mac","name":"My Mac","kind":"local","workspace":"/workspace","status":"connected","factory":{"status":"unavailable","error":"No VM image configured"}}"#.utf8)
-        let hand = try JSONDecoder().decode(Hand.self, from: data)
-        XCTAssertTrue(hand.isRunning)
-        XCTAssertEqual(hand.factory?.status, "unavailable")
-        XCTAssertEqual(hand.factory?.error, "No VM image configured")
-    }
 
     @MainActor
     func testNativeControlPanelRendering() async throws {
@@ -2351,17 +2131,6 @@ final class BackgroundHandTests: XCTestCase {
         }
     }
 
-    @MainActor
-    func testSleepPolicyOnlyPreventsIdleSleepWhenEnabledAndRunning() throws {
-        XCTAssertNil(HandBackgroundActivity.options(running: false, keepAwake: false))
-        XCTAssertNil(HandBackgroundActivity.options(running: false, keepAwake: true))
-        let normal = try XCTUnwrap(HandBackgroundActivity.options(running: true, keepAwake: false))
-        XCTAssertFalse(normal.contains(.idleSystemSleepDisabled))
-        XCTAssertTrue(normal.contains(.automaticTerminationDisabled))
-        let awake = try XCTUnwrap(HandBackgroundActivity.options(running: true, keepAwake: true))
-        XCTAssertTrue(awake.contains(.idleSystemSleepDisabled))
-        XCTAssertFalse(awake.contains(.idleDisplaySleepDisabled))
-    }
 
     @MainActor
     func testPreferenceAndActivityFollowHandLifecycle() throws {

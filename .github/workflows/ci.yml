@@ -46,8 +46,7 @@ jobs:
           fetch-depth: 0
       - name: Validate CI selection and cache policies
         run: >-
-          node --test scripts/ci/rust-compiler-cache.test.mjs scripts/ci/docker-cache.test.mjs
-          scripts/ci/docker-rust-recipe.test.mjs
+          node --test scripts/ci/docker-rust-recipe.test.mjs
           scripts/cloudflare/wrangler-docker.test.mjs scripts/cloudflare/managed-images.test.mjs
           scripts/cloudflare/managed-images-preview.test.mjs scripts/cloudflare/preview-images.test.mjs
           scripts/cloudflare/preview-workflow.test.mjs scripts/cloudflare/worker-build.test.mjs

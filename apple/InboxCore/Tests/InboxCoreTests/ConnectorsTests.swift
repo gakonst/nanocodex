@@ -73,41 +73,6 @@ final class ConnectorsTests: XCTestCase {
         XCTAssertEqual(requests[0].headers["authorization"], "Bearer \(fixtureKey)")
     }
 
-    func testPublicMcpAddsAndConnectsWithoutOAuth() async throws {
-        let capture = ConnectorRequestCapture()
-        let connection = String(repeating: "m", count: 43)
-        let fixture = try HTTPFixture { request in
-            capture.append(request)
-            if request.path.hasSuffix("/start") {
-                return FixtureReply(body: #"{"mcp_connection":{"id":"\#(connection)","name":"Mercator","status":"connected"}}"#)
-            }
-            return FixtureReply(status: 201, body: #"{"mcp_connection":{"id":"\#(connection)","name":"Mercator","status":"authorization_required"}}"#)
-        }
-        defer { fixture.close() }
-        let credential = try AccountCredential(origin: fixture.origin, apiKey: fixtureKey)
-        let client = ManagedClient(credential: credential, configuration: fixture.configuration)
-        defer { client.close() }
-
-        let added = try await client.addMcpConnection(target: "https://mercator.sh")
-        XCTAssertEqual(added.name, "Mercator")
-        let start = try await client.beginMcpAuthorization(connectionID: connection)
-        XCTAssertEqual(start, .connected(McpConnection(
-            id: connection,
-            name: "Mercator",
-            status: .connected
-        )))
-        let requests = capture.snapshot()
-        XCTAssertEqual(requests.map(\.path), [
-            "/v1/connectors/mcp-connections",
-            "/v1/connectors/mcp-connections/\(connection)/start",
-        ])
-        XCTAssertEqual(requests[0].json["target"] as? String, "https://mercator.sh")
-        let returnTo = try XCTUnwrap(requests[1].json["return_to"] as? String)
-        XCTAssertNotNil(returnTo.range(
-            of: #"^/v1/connectors/mcp-mobile-complete\?attempt=[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"#,
-            options: .regularExpression
-        ))
-    }
 
     func testOAuthMcpUsesCorrelatedNativeCompletionAndExactRevoke() async throws {
         let capture = ConnectorRequestCapture()

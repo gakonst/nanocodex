@@ -1,4 +1,4 @@
-import { env, runInDurableObject } from "cloudflare:test";
+import { env } from "cloudflare:test";
 import { describe, expect, it, vi } from "vitest";
 import {
   EXEC_COMMAND_PARAMETERS,
@@ -8,7 +8,6 @@ import {
 import { HOSTED_TOOLS_PRE_ADMISSION_UNAVAILABLE } from "nanocodex-tools/hosted";
 // @ts-expect-error The runtime subpath is intentionally JavaScript-only.
 import { ToolRouter, toolMapSource } from "nanocodex-tools/runtime/tool-router";
-import { SqlHostedToolsPersistence } from "../src/hosted-tools-broker";
 import { createNamespaceExecutionTools } from "../src/namespace-tools";
 import { screenTool } from "../src/hand-remote-agent";
 
@@ -55,20 +54,6 @@ const snapshot = {
 };
 
 describe("account Hosted Tools provider", () => {
-  it("retains a machine provider declaration across account discovery", async () => {
-    const definition = { type: "function" as const, name: "mcp__cua_repl__js",
-      description: "Provider startup: await desktop.connect()", strict: false,
-      parameters: { type: "object", properties: { code: { type: "string" } }, required: ["code"] },
-      defer_loading: true as const };
-    const catalog = { tools: [], machines: [{ ...snapshot.machines[0], tools: [{
-      name: "mcp__cua_repl__js", parallel_safe: true, route_token: "cua-route", definition,
-    }] }] };
-    const provider = new AccountHostedToolsProvider(fakeNamespace(new Map([
-      [ACCOUNT_A, async () => Response.json(catalog)],
-    ])), ACCOUNT_A, () => true);
-    await provider.refresh();
-    expect(provider.machineTool("laptop", "mcp__cua_repl__js")?.definition).toEqual(definition);
-  });
   it("joins screen discovery by machine identity without promoting an offline factory", async () => {
     const target = { machine_id: "laptop", machine_name: "Build laptop", id: "desktop", name: "Desktop",
       kind: "desktop", generation: "screen-generation", width: 1280, height: 800, controllable: true, agent_tools: true };
@@ -103,31 +88,6 @@ describe("account Hosted Tools provider", () => {
     expect(provider.screenTool(target.machine_id)).toBeDefined();
     expect(provider.definitions()).toEqual([]);
     expect(provider.resolve(published.definition.name)).toBeUndefined();
-  });
-  it("returns transitioned SQL rows without a second SELECT and retains failed transitions", async () => {
-    const namespace = (env as unknown as {
-      NANOCODEX_ACCOUNT_TOOLS: DurableObjectNamespace<AccountHostedTools>;
-    }).NANOCODEX_ACCOUNT_TOOLS;
-    await runInDurableObject(namespace.getByName(crypto.randomUUID()), async (_instance, context) => {
-      const persistence = new SqlHostedToolsPersistence(context.storage);
-      persistence.initialize(Date.now());
-      const row = { call_id: "transport", session_id: "agent", source_call_id: "source", turn_id: "agent:7", host_id: "host",
-        lease_id: "lease", generation: 1, model: "fixture", name: "exec_command", input_json: "{}",
-        output_token_budget: 100, output_byte_budget: 1024, deadline_at: Date.now() + 60_000,
-        cancel_requested: 0, state: "admitted" as const, result_json: null, receipt_json: null };
-      persistence.insertCall(row, Date.now());
-      const read = vi.spyOn(persistence, "call");
-      expect(persistence.transitionCall("transport", ["admitted"], "dispatched", "", Date.now()))
-        .toEqual({ ...row, state: "dispatched" });
-      const result = JSON.stringify({ status: "completed", output: "receipt" });
-      expect(persistence.transitionCall("transport", ["dispatched"], "completed", result, Date.now()))
-        .toEqual({ ...row, state: "completed", result_json: result });
-      expect(read).not.toHaveBeenCalled();
-      expect(persistence.transitionCall("transport", ["dispatched"], "ambiguous", "conflict", Date.now()))
-        .toEqual({ ...row, state: "completed", result_json: result });
-      expect(read).toHaveBeenCalledExactlyOnceWith("transport");
-      expect(persistence.transitionCall("missing", ["dispatched"], "cancelled", "", Date.now())).toBeUndefined();
-    });
   });
 
   it("settles an offline VM probe through the real broker and tool router, then recovers after reconnect", async () => {

@@ -3768,42 +3768,6 @@ mod tests {
     }
 
     #[test]
-    fn matches_codex_voice_catalog_and_defaults() {
-        assert_eq!(CHATGPT_REALTIME_MODEL, "gpt-live-1-codex");
-        assert_eq!(CHATGPT_REALTIME_VOICE, RealtimeVoice::Cove);
-        assert_eq!(PLATFORM_REALTIME_VOICE, RealtimeVoice::Marin);
-        assert_eq!(
-            CHATGPT_REALTIME_VOICES,
-            &[
-                RealtimeVoice::Juniper,
-                RealtimeVoice::Maple,
-                RealtimeVoice::Spruce,
-                RealtimeVoice::Ember,
-                RealtimeVoice::Vale,
-                RealtimeVoice::Breeze,
-                RealtimeVoice::Arbor,
-                RealtimeVoice::Sol,
-                RealtimeVoice::Cove,
-            ]
-        );
-        assert_eq!(
-            PLATFORM_REALTIME_VOICES,
-            &[
-                RealtimeVoice::Alloy,
-                RealtimeVoice::Ash,
-                RealtimeVoice::Ballad,
-                RealtimeVoice::Coral,
-                RealtimeVoice::Echo,
-                RealtimeVoice::Sage,
-                RealtimeVoice::Shimmer,
-                RealtimeVoice::Verse,
-                RealtimeVoice::Marin,
-                RealtimeVoice::Cedar,
-            ]
-        );
-    }
-
-    #[test]
     fn session_update_uses_pcm_and_background_agent_tool() {
         let value =
             serde_json::to_value(session_update("delegate coding work", RealtimeVoice::Cove))

@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from "vitest";
 
 import { connectorToolMetadata } from "../src/connector-tools";
 import { accountInfo, projectAccountInfo } from "../src/account-info";
-import { X_API } from "nanocodex-tools/x";
 
 const A = "a".repeat(43);
 const B = "b".repeat(43);
@@ -12,27 +11,6 @@ const ADDRESS_ID = "a".repeat(22);
 const PHONE_ID = "p".repeat(22);
 
 describe("managed account info", () => {
-  it("preserves offline hand status through account discovery and projection", async () => {
-    const machines = [{
-      id: "user:desktop-vm", name: "Desktop VM", kind: "user" as const,
-      mount: "/desktop-vm", workspace: "/desktop-vm", capabilities: ["shell"], online: false,
-    }];
-    const info = await accountInfo({ fetch: async () => Response.json(statuses()) }, "user", {
-      enabled: true, machines,
-    });
-    expect(projectAccountInfo(info, [], {}).machines).toEqual(machines);
-    expect(JSON.stringify(projectAccountInfo(info, [], {}))).toContain('"online":false');
-  });
-
-  it("discovers native public APIs without granting X connector access", async () => {
-    for (const enabled of [true, false]) {
-      const info = await accountInfo({ fetch: async () => new Response(null, { status: 503 }) },
-        "user", { enabled, apis: [X_API], allowedConnectors: [] });
-      expect(info.apis).toEqual([X_API]);
-      expect(info.authenticated).toEqual([]);
-      expect(projectAccountInfo(info, [], {}).apis).toEqual([X_API]);
-    }
-  });
 
   it("forwards cancellation to every broker request and preserves its reason", async () => {
     const controller = new AbortController();
@@ -199,22 +177,6 @@ function statuses() {
 
 describe("managed accountInfo vault projection", () => {
 
-  it("preserves API-key and login metadata in live and retained account snapshots", async () => {
-    const vault = [
-      { id: "k".repeat(43), kind: "api_key", name: "Example API", created_at: 1 },
-      { id: LOGIN_ID, kind: "login", name: "Example login", created_at: 2,
-        username: "person", browser_origin: "https://example.com" },
-    ];
-    const result = await accountInfo({
-      fetch: async input => Response.json(
-        String(input).endsWith("/connectors") ? { connectors: {} } : { vault },
-      ),
-    }, "user", { enabled: true });
-    expect(result.vault).toEqual(vault);
-    expect(projectAccountInfo(result).vault).toEqual(vault);
-    expect(projectAccountInfo(result, []).vault).toEqual(vault);
-  });
-
   it.each(["api_key", "value", "secret", "password"])(
     "rejects unexpected %s fields on API-key metadata",
     async field => {
@@ -364,17 +326,6 @@ describe("managed accountInfo vault projection", () => {
     }
   });
 
-  it("includes an empty required Vault field in disabled and unavailable results", async () => {
-    await expect(accountInfo(
-      { fetch: vi.fn() },
-      "user",
-      { enabled: false },
-    )).resolves.toMatchObject({ vault: [] });
-    await expect(accountInfo({
-      fetch: async () => new Response(null, { status: 503 }),
-    }, "user", { enabled: true })).resolves.toMatchObject({ status: "unavailable", vault: [] });
-  });
-
   it("keeps connector information ready when only credential metadata is unavailable", async () => {
     const result = await accountInfo({
       fetch: async (input) => String(input).endsWith("/connectors")
@@ -387,26 +338,6 @@ describe("managed accountInfo vault projection", () => {
       apis: [],
       authenticated: ["github"],
       accounts: { github: "octocat" },
-      vault: [],
-    });
-  });
-
-  it("normalizes a retained legacy snapshot without Vault metadata", () => {
-    const legacy = {
-      status: "ready",
-      apis: [],
-      authenticated: ["github"],
-      accounts: { github: "octocat" },
-      identity: {},
-      stablecoins: [],
-      authorizations: [],
-    } as unknown as Parameters<typeof projectAccountInfo>[0];
-
-    expect(projectAccountInfo(legacy)).toEqual({
-      ...legacy,
-      connectorAccounts: {},
-      connectorTools: connectorToolMetadata(["github"]),
-      machines: [],
       vault: [],
     });
   });

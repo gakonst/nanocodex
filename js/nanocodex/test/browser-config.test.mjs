@@ -70,25 +70,6 @@ test("the resolved default identity is canonical and stable across remounts", as
   await config.destroy();
 });
 
-test("disabled consumers stay cold without creating an Agent", async () => {
-  const calls = [];
-  const config = createAgentConfig({}, {
-    async create(options) { calls.push(["create", options]); },
-    async prepare(options) { calls.push(["prepare", options]); },
-  });
-  const unsubscribe = config.subscribeAgent({ enabled: false, threadId: "demo" }, () => {});
-  await tick();
-
-  assert.deepEqual(config.getAgent({ enabled: false, threadId: "demo" }), {
-    data: undefined,
-    error: undefined,
-    status: "idle",
-  });
-  assert.deepEqual(calls, []);
-  unsubscribe();
-  await config.destroy();
-});
-
 test("preparation deduplicates and shares the exact stable descriptor with creation", async () => {
   const prepared = [];
   const created = [];

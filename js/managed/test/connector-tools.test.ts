@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 // @ts-expect-error ToolRouter is a shared JavaScript runtime module.
 import { ToolRouter, providerSource } from "nanocodex-tools/runtime/tool-router";
-import { connectorToolsProvider, CONNECTOR_TOOL_CATALOG } from "../src/connector-tools";
+import { connectorToolsProvider } from "../src/connector-tools";
 import { CONNECTOR_CAPABILITY_IDS } from "../src/connector-status";
 import { accountInfo, projectAccountInfo } from "../src/account-info";
 import { exactConnectorAccess, handleManagedEgress } from "../src/managed-egress";
@@ -71,20 +71,6 @@ describe("connected service discovery and requests", () => {
     expect(await router.execute("spotify_request", { path: "/api/token" }, context)).toMatchObject({ status: 403 });
     expect(await router.execute("gdrive_request", { path: "/calendar/v3/users/me/calendarList" }, context)).toMatchObject({ status: 403 });
     expect(fetch).not.toHaveBeenCalled();
-  });
-
-  it("routes every documented example through its own connector boundary", async () => {
-    const { router, fetch } = setup();
-    for (const [id, spec] of Object.entries(CONNECTOR_TOOL_CATALOG)) {
-      const result = await router.execute(`${id}_request`, { path: spec.example }, context);
-      expect(result).toMatchObject({ status: 200 });
-      expect(fetch.mock.calls.at(-1)![0].url).toBe(spec.origin + spec.example);
-    }
-    await router.execute("spotify_request", { path: "/v1/me/player/recently-played?limit=1" }, context);
-    expect(fetch.mock.calls.at(-1)![0].url).toBe("https://api.spotify.com/v1/me/player/recently-played?limit=1");
-    for (const [id, path] of [["gdocs", "/v1/documents"], ["gsheets", "/v4/spreadsheets"], ["gslides", "/v1/presentations"]]) {
-      expect(await router.execute(`${id}_request`, { method: "POST", path, body: {} }, context)).toMatchObject({ status: 200 });
-    }
   });
 
   it("rejects unsupported provider verbs and Contacts writes before dispatch", async () => {

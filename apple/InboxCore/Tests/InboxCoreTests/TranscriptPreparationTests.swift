@@ -12,17 +12,6 @@ final class TranscriptPreparationTests: XCTestCase {
         }
     }
 
-    @MainActor
-    func testProjectionAndByteAccountingPreserveCanonicalHistory() async throws {
-        let events = try history()
-        let expected = transcript(events)
-        let expectedBytes = try events.map { try JSONEncoder().encode($0.data).count }
-        async let rows = TranscriptPreparation.rows(events)
-        async let bytes = TranscriptPreparation.byteCounts(events)
-        let actual = try await (rows, bytes)
-        XCTAssertEqual(actual.0, expected)
-        XCTAssertEqual(actual.1, expectedBytes)
-    }
 
     @MainActor
     func testCancelledProjectionCannotPublishRows() async throws {

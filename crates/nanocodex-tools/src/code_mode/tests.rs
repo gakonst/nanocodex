@@ -2601,31 +2601,6 @@ async fn nested_tool_start_does_not_extend_the_outer_yield() {
     cell.join().await;
 }
 
-#[test]
-fn model_description_uses_codex_style_declarations() {
-    let workspace = temporary_workspace("code-mode-description")
-        .expect("temporary test workspace should be available");
-    let tools = test_tools(&workspace);
-    let specs = tools
-        .model_specs("test-session")
-        .into_iter()
-        .map(|spec| serde_json::to_value(spec).unwrap())
-        .collect::<Vec<_>>();
-    let description = specs[0]["description"]
-        .as_str()
-        .expect("exec should have a description");
-    assert!(description.contains("// @exec:"));
-    assert!(description.contains("should be a base64-encoded `data:` URL"));
-    assert!(description.contains("apply_patch(input: string): Promise<unknown>"));
-    assert!(description.contains("exec_command(args: {"));
-    assert!(!description.contains("Input schema:"));
-    assert_eq!(
-        specs[1]["parameters"]["properties"]["max_tokens"]["type"],
-        "number"
-    );
-    std::fs::remove_dir_all(workspace).expect("temporary workspace should be removable");
-}
-
 fn emitted_text(execution: &CodeModeExecution) -> Result<&str> {
     let ToolOutputBody::Content(content) = &execution.output else {
         return Err(eyre!("code-mode execution did not emit content"));

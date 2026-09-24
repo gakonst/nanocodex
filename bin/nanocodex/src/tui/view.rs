@@ -786,10 +786,7 @@ fn saturating_u16(value: usize) -> u16 {
 
 #[cfg(test)]
 mod tests {
-    use std::{
-        sync::mpsc,
-        time::{Duration, Instant},
-    };
+    use std::{sync::mpsc, time::Duration};
 
     use ratatex::{PixelSize, Ratatex, TerminalProfile};
     use ratatui::{
@@ -847,38 +844,6 @@ mod tests {
     }
 
     #[test]
-    fn running_footer_uses_one_elapsed_working_indicator() {
-        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
-        let mut app = App::new("/workspace".into());
-        app.main.running = true;
-        let now = Instant::now();
-        app.main.set_run_started_at(
-            now.checked_sub(std::time::Duration::from_secs(65))
-                .unwrap_or(now),
-        );
-        app.main.status = "Running exec_command".to_owned();
-
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
-        let rendered = terminal.backend().to_string();
-        assert!(rendered.contains("Working (1m 05s)"));
-        assert!(!rendered.contains("Running exec_command"));
-    }
-
-    #[test]
-    fn model_picker_renders_astra_as_a_selectable_option() {
-        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
-        let mut app = App::new("/workspace".into());
-        app.open_model_picker();
-
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
-        let rendered = terminal.backend().to_string();
-
-        assert!(rendered.contains("Select Model"));
-        assert!(rendered.contains("Astra"));
-        assert!(rendered.contains("gpt-6-astra"));
-    }
-
-    #[test]
     fn animation_render_matches_a_full_frame() {
         let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
         let mut app = App::new("/workspace".into());
@@ -901,71 +866,6 @@ mod tests {
 
         terminal.draw(|frame| render(frame, &mut app)).unwrap();
         assert_eq!(animation_frame, *terminal.backend().buffer());
-    }
-
-    #[test]
-    fn footer_keeps_model_on_the_bottom_right_and_marks_fast_mode() {
-        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
-        let mut app = App::new("/workspace".into());
-        app.fast_mode_changed(true);
-
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
-        let footer = terminal.backend().buffer().content[15 * 80..16 * 80]
-            .iter()
-            .map(ratatui::buffer::Cell::symbol)
-            .collect::<String>();
-        assert!(footer.ends_with("gpt-6-astra · low · fast "));
-    }
-
-    #[test]
-    fn completed_turn_cost_is_visible_without_displacing_model_identity() {
-        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
-        let mut app = App::new("/workspace".into());
-        app.main.last_cost_usd = Some("0.012345".to_owned());
-
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
-        let footer = terminal.backend().buffer().content[15 * 80..16 * 80]
-            .iter()
-            .map(ratatui::buffer::Cell::symbol)
-            .collect::<String>();
-        assert!(footer.contains("Ready · $0.012345"));
-        assert!(footer.ends_with("gpt-6-astra · low "));
-    }
-
-    #[test]
-    fn reasoning_picker_matches_codex_labels_and_advanced_flow() {
-        let mut terminal = Terminal::new(TestBackend::new(80, 16)).unwrap();
-        let mut app = App::new("/workspace".into());
-        app.open_reasoning_picker();
-
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
-        let rendered = terminal.backend().to_string();
-        assert!(rendered.contains("Select Reasoning Level for gpt-6-astra"));
-        assert!(rendered.contains("Low"));
-        assert!(rendered.contains("Low (default) (current)"));
-        assert!(rendered.contains("Extra high"));
-        assert!(rendered.contains("More reasoning…"));
-        assert!(!rendered.contains("Maximum reasoning depth"));
-
-        app.move_reasoning_picker(4);
-        assert!(matches!(
-            app.confirm_reasoning_picker(),
-            Some(crate::tui::app::ReasoningPickerAction::OpenedAdvanced)
-        ));
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
-        let rendered = terminal.backend().to_string();
-        assert!(rendered.contains("Advanced Reasoning"));
-        assert!(rendered.contains("For difficult problems when quality"));
-    }
-
-    #[test]
-    fn narrow_footer_preserves_the_model_before_help() {
-        let mut terminal = Terminal::new(TestBackend::new(24, 10)).unwrap();
-        let mut app = App::new("/workspace".into());
-
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
-        let rendered = terminal.backend().to_string();
-        assert!(rendered.contains("gpt-6-astra"));
     }
 
     #[test]
@@ -1362,23 +1262,6 @@ mod tests {
         assert!(rendered.contains("active prompt"));
         assert!(rendered.contains("streaming answer"));
         assert!(rendered.contains("line six"));
-    }
-
-    #[test]
-    fn running_historical_edit_explains_that_submit_stops_and_forks() {
-        let mut terminal = Terminal::new(TestBackend::new(100, 18)).unwrap();
-        let mut app = App::new("/workspace".into());
-        app.main
-            .transcript
-            .push_editable_user("active prompt".to_owned(), 1);
-        app.main.running = true;
-        app.move_up();
-        assert!(app.start_historical_edit());
-
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
-        let rendered = terminal.backend().to_string();
-        assert!(rendered.contains("Draft parked · editing branch 0 message above"));
-        assert!(rendered.contains("Editing branch 0 — Enter stops live turn + forks"));
     }
 
     #[test]

@@ -332,11 +332,6 @@ impl Conversation {
             .unwrap_or_default()
     }
 
-    #[cfg(test)]
-    pub(super) const fn set_run_started_at(&mut self, started_at: Instant) {
-        self.run_started_at = Some(started_at);
-    }
-
     fn queue_prompt(&mut self, id: u64, prompt: String) {
         let display_immediately = !self.running && self.queued_prompts.is_empty();
         if display_immediately {

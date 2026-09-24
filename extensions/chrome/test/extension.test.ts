@@ -1,44 +1,16 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
-  CHROME_CONNECT_REQUEST,
-  CHROME_CONNECT_TOOLS,
   createConversationId,
   isConversationId,
   isManagedAgentId,
   migrateLegacyConversationSession,
 } from "../lib/connect.ts";
 import {
-  CLEANUP_PARAMETERS,
   cleanupPrompt,
-  createCleanupTool,
   validateCleanupInput,
   visibleCleanupPrompt,
 } from "../lib/extension.ts";
-import { acquireCleanupHost } from "../lib/host-lock.ts";
-
-const backgroundSource = await readFile(new URL("../entrypoints/background.ts", import.meta.url), "utf8");
-const connectSource = await readFile(new URL("../lib/connect.ts", import.meta.url), "utf8");
-const configSource = await readFile(new URL("../wxt.config.ts", import.meta.url), "utf8");
-
-test("exposes one narrow direct cleanup tool", async () => {
-  const calls: unknown[] = [];
-  const tool = createCleanupTool((input) => {
-    calls.push(input);
-    return { ok: true };
-  });
-  assert.equal(tool.name, "cleanup");
-  assert.equal(tool.parameters, CLEANUP_PARAMETERS);
-  assert.deepEqual(await tool.handler({ action: "inspect" }, {
-    callId: "call-1",
-    parentCallId: "",
-    sessionId: "session-1",
-    model: "gpt-6-sol",
-    signal: new AbortController().signal,
-  }), { ok: true });
-  assert.deepEqual(calls, [{ action: "inspect" }]);
-});
 
 test("rejects unsupported cleanup actions before dispatch", () => {
   assert.throws(() => validateCleanupInput({ action: "click", selector: "button" }), /Unsupported cleanup action/);
@@ -66,22 +38,6 @@ test("recognizes only durable managed agent identifiers", () => {
   assert.equal(isManagedAgentId("d9428888-122b-4f2e-789a-0874c494beb7-extra"), false);
 });
 
-test("requests ChatGPT-only hosted authorization with one exact browser tool", () => {
-  assert.equal(CHROME_CONNECT_REQUEST.authorization, "hosted");
-  assert.deepEqual(CHROME_CONNECT_REQUEST.capabilities.cloudAccounts, { chatgpt: true });
-  assert.equal(CHROME_CONNECT_REQUEST.tools, CHROME_CONNECT_TOOLS);
-  assert.deepEqual(CHROME_CONNECT_TOOLS.map(({ name }) => name), ["cleanup"]);
-});
-
-test("asks explicitly for replies, history, actions, and thinking traces", () => {
-  assert.deepEqual(CHROME_CONNECT_REQUEST.capabilities.agent, {
-    finalMessages: true,
-    actionSummaries: true,
-    conversationHistory: true,
-    rawTraces: true,
-  });
-});
-
 test("creates isolated durable conversation identifiers", () => {
   const first = createConversationId();
   const second = createConversationId();
@@ -100,40 +56,6 @@ test("keeps cleanup policy out of the visible transcript", () => {
   assert.equal(visibleCleanupPrompt("an unrelated retained prompt"), "an unrelated retained prompt");
 });
 
-test("lazy claims remain bound to one exact side-panel-owned document", () => {
-  assert.match(backgroundSource, /selection_id: selectionId/);
-  assert.match(backgroundSource, /owner_document_id: ownerDocumentId/);
-  assert.match(backgroundSource, /document_id: exact\.document_id/);
-  assert.match(backgroundSource, /tab\.url !== target\.url/);
-  assert.match(backgroundSource, /documentIds: \[target\.document_id\]/);
-  assert.match(backgroundSource, /probe\?\.documentId !== target\.document_id/);
-  assert.match(backgroundSource, /SELECTION_MAX_AGE_MS/);
-  assert.match(backgroundSource, /page-selection-set:/);
-});
-
-test("named open tabs use safe opaque inventory with profile-wide HTTP access", () => {
-  assert.match(backgroundSource, /title: boundedTabTitle/);
-  assert.match(backgroundSource, /url: visibleTabUrl/);
-  assert.match(backgroundSource, /tab_ref: selectionId/);
-  assert.match(backgroundSource, /active: tab\.active/);
-  assert.match(backgroundSource, /same_window: tab\.windowId === ownerWindowId/);
-  assert.doesNotMatch(configSource, /\s"tabs",?\s/);
-  assert.match(configSource, /"http:\/\/\*\/\*"/);
-  assert.match(configSource, /"https:\/\/\*\/\*"/);
-  assert.match(backgroundSource, /chrome\.tabs\.query\(\{ active: true, windowId: ownerWindowId \}\)/);
-  assert.doesNotMatch(backgroundSource, /lastFocusedWindow/);
-  assert.doesNotMatch(backgroundSource, /toolbarTabSnapshot/);
-});
-
-test("retained conversations reject replacement agents and restore their session", () => {
-  assert.match(connectSource, /connectionMatchesIdentity\(connection, expected\)/);
-  assert.match(connectSource, /connection\.accountAddress\.toLowerCase\(\) === expected\.accountAddress\.toLowerCase\(\)/);
-  assert.match(connectSource, /restoreConversationStorage\(conversationId, snapshot/);
-  assert.match(connectSource, /session: conversationStorage\(conversationId\)/);
-  assert.match(connectSource, /migrateLegacyConversationSession\(\)/);
-  assert.match(connectSource, /belongs to a different Nanocodex account/);
-});
-
 test("legacy session migration cannot resurrect a disconnected grant", () => {
   const oldKey = "nanocodex:connect:nanocodex-chrome:session";
   const migratedKey = `nanocodex:chrome:conversation:legacy:${oldKey}`;
@@ -149,23 +71,4 @@ test("legacy session migration cannot resurrect a disconnected grant", () => {
   values.delete(migratedKey);
   migrateLegacyConversationSession(storage);
   assert.equal(values.has(migratedKey), false);
-});
-
-test("allows only one side panel to own the cleanup host", async () => {
-  let occupied = false;
-  const locks = {
-    request(_name: string, _options: LockOptions, callback: (lock: Lock | null) => Promise<void>) {
-      if (occupied) return callback(null);
-      occupied = true;
-      return callback({ name: "nanocodex-cleanup-host-v1", mode: "exclusive" } as Lock)
-        .finally(() => { occupied = false; });
-    },
-  };
-  const first = await acquireCleanupHost(locks as Pick<LockManager, "request">);
-  assert.ok(first);
-  assert.equal(await acquireCleanupHost(locks as Pick<LockManager, "request">), undefined);
-  await first.release();
-  const next = await acquireCleanupHost(locks as Pick<LockManager, "request">);
-  assert.ok(next);
-  await next.release();
 });

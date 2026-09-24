@@ -8,51 +8,6 @@ const origin = "https://managed.example";
 const agentId = "0198d3f0-8844-7000-8000-000000000001";
 const apiKey = `ncx_live_${"a".repeat(12)}_${"b".repeat(43)}`;
 
-
-
-test("managed organization reads and updates frozen metadata without client-side auth policy", async () => {
-  const organizationId = "11111111-1111-4111-8111-111111111111";
-  const teamId = "22222222-2222-4222-8222-222222222222";
-  const requests = [];
-  const fetch = async (input, init) => {
-    const request = new Request(input, init);
-    requests.push(request);
-    const name = request.method === "PATCH" ? (await request.json()).name : null;
-    return Response.json({
-      id: organizationId,
-      name,
-      rootTeam: { id: teamId, name: null },
-      authorizationEpoch: 3,
-      createdAt: 10,
-      updatedAt: 20,
-    });
-  };
-  const browserOptions = { baseUrl: origin, fetch };
-  const current = await Agent.getOrganization(browserOptions);
-  const updated = await Agent.updateOrganization({ name: "Research" }, browserOptions);
-
-  assert.equal(current.name, null);
-  assert.equal(updated.name, "Research");
-  assert.equal(Object.isFrozen(current), true);
-  assert.equal(Object.isFrozen(current.rootTeam), true);
-  assert.deepEqual(requests.map((request) => [request.method, request.credentials]), [
-    ["GET", "include"],
-    ["PATCH", "include"],
-  ]);
-
-  let apiKeyRequest;
-  await assert.rejects(Agent.updateOrganization({ name: null }, {
-    baseUrl: origin,
-    apiKey,
-    fetch: async (input, init) => {
-      apiKeyRequest = new Request(input, init);
-      return Response.json({ error: "forbidden" }, { status: 403 });
-    },
-  }), (error) => error instanceof ManagedError && error.code === "forbidden" && error.status === 403);
-  assert.equal(apiKeyRequest.method, "PATCH");
-  assert.equal(apiKeyRequest.headers.get("authorization"), `Bearer ${apiKey}`);
-});
-
 test("managed organization validates updates and response shape", async () => {
   const options = {
     baseUrl: origin,
@@ -64,145 +19,6 @@ test("managed organization validates updates and response shape", async () => {
     Agent.getOrganization(options),
     (error) => error instanceof ManagedError && error.code === "invalid_response",
   );
-});
-
-test("managed account clients expose findSessions and readSession over the same bearer", async () => {
-  assert.equal("searchHistory" in Agent, false);
-  assert.equal("findThreads" in Agent, false);
-  assert.equal("readThread" in Agent, false);
-  const requests = [];
-  const fetch = async (input, init) => {
-    const request = new Request(input, init);
-    requests.push(request);
-    const path = new URL(request.url).pathname;
-    if (path === "/v1/history/sessions/search") {
-      assert.deepEqual(await request.json(), { query: "copper", limit: 4 });
-      return Response.json({
-        query: "copper",
-        results: [{
-          session_id: agentId,
-          title: "Copper notes",
-          turn_id: "turn-1",
-          cursor: "7",
-          score: 0.9,
-          snippet: "remember copper",
-        }],
-        citations: [{
-          thread_id: agentId,
-          title: "Copper notes",
-          sources: [{ turn_id: "turn-1", cursor: "7" }],
-        }],
-      });
-    }
-    if (path === `/v1/history/sessions/${agentId}/read`) {
-      assert.deepEqual(await request.json(), { turn_ids: ["turn-1"] });
-      return Response.json({
-        turns: [{
-          session_id: agentId,
-          title: "Copper notes",
-          turn_id: "turn-1",
-          cursor: "7",
-          user: "remember copper",
-          assistant: "remembered",
-        }],
-        citations: [{
-          thread_id: agentId,
-          title: "Copper notes",
-          sources: [{ turn_id: "turn-1", cursor: "7" }],
-        }],
-      });
-    }
-    return Response.json({ error: "not_found" }, { status: 404 });
-  };
-  const options = { baseUrl: origin, apiKey, fetch };
-  const found = await Agent.findSessions({ query: "copper", limit: 4 }, options);
-  const read = await Agent.readSession({ session_id: agentId, turn_ids: ["turn-1"] }, options);
-
-  assert.equal(found.results[0].session_id, agentId);
-  assert.equal(read.turns[0].assistant, "remembered");
-  assert.deepEqual(read.citations[0].sources, [{ turn_id: "turn-1", cursor: "7" }]);
-  for (const request of requests) {
-    assert.equal(request.method, "POST");
-    assert.equal(request.credentials, "omit");
-    assert.equal(request.headers.get("authorization"), `Bearer ${apiKey}`);
-  }
-});
-
-
-test("managed Agent covers account-scoped create, list, get, and delete", async () => {
-  const calls = [];
-  const fetch = async (input, init) => {
-    const request = new Request(input, init);
-    calls.push(request);
-    const path = new URL(request.url).pathname;
-    if (request.method === "POST" && path === "/v1/agents") {
-      return Response.json({ agent_id: agentId, events_url: "private", websocket_url: "private" }, { status: 201 });
-    }
-    if (request.method === "GET" && path === "/v1/agents") {
-      return Response.json({
-        data: [agentId],
-        summaries: {
-          [agentId]: { title: "First task", created_at: 10, updated_at: 20, turn_count: 3 },
-        },
-      });
-    }
-    if (request.method === "GET" && path === `/v1/agents/${agentId}`) {
-      return Response.json(agentState());
-    }
-    if (request.method === "DELETE" && path === `/v1/agents/${agentId}`) {
-      return new Response(null, { status: 204 });
-    }
-    return Response.json({ error: "not_found" }, { status: 404 });
-  };
-  const clientOptions = { baseUrl: origin, fetch };
-  const options = {
-    ...clientOptions,
-    settings: {
-      model: "gpt-6-astra",
-      thinking: "max",
-      reasoningMode: "standard",
-      fastMode: false,
-    },
-  };
-
-  const created = await Agent.create(options);
-  assert.equal(created.type, "managed");
-  assert.equal(created.id, agentId);
-  assert.equal(Object.hasOwn(created, "websocket_url"), false);
-  assert.equal(created.toolsTarget().endpoint.href, `wss://managed.example/v1/agents/${agentId}/tool-host`);
-  assert.equal(Object.isFrozen(created), true);
-  assert.match(calls[0].headers.get("idempotency-key"), /^managed-create:[0-9a-f-]{36}$/);
-  assert.deepEqual(await calls[0].json(), {
-    settings: {
-      model: "gpt-6-astra",
-      thinking: "max",
-      reasoning_mode: "standard",
-      fast_mode: false,
-    },
-  });
-
-  const listed = await Agent.list(clientOptions);
-  assert.deepEqual(listed.map((agent) => agent.id), [agentId]);
-  assert.deepEqual(listed[0].summary, {
-    title: "First task", createdAt: 10, updatedAt: 20, turnCount: 3, lastUserMessageAt: 20,
-  });
-  assert.equal(Agent.open(agentId, clientOptions).id, agentId);
-  assert.equal((await Agent.get(agentId, clientOptions)).id, agentId);
-  const state = await created.state();
-  assert.equal(state.latest_event_cursor, "4");
-  assert.equal(state.capabilities.execution_environments, true);
-  assert.equal(state.capabilities.execution_namespace, "cwd-root-v1");
-  assert.equal(state.capabilities.native_cross_mounts, false);
-  await created.delete();
-  await Agent.delete(agentId, clientOptions);
-
-  for (const request of calls) {
-    assert.equal(request.credentials, "include");
-    assert.equal(request.headers.has("authorization"), false);
-  }
-  assert.equal(calls.filter((request) =>
-    request.method === "GET" && new URL(request.url).pathname === `/v1/agents/${agentId}`
-  ).length, 2, "open constructs a handle without adding a state probe");
 });
 
 test("managed tools target retains bearer only in the injected handshake", async () => {
@@ -308,43 +124,6 @@ test("managed Agent rejects incomplete, retired, and Astra-incompatible creation
       settings: { model, thinking: "medium", reasoningMode: "standard", fastMode: false },
     }), /creation settings are invalid/);
   }
-});
-
-test("managed Agent reads and updates model, thinking, and Fast settings", async () => {
-  const requests = [];
-  const settings = {
-    model: "gpt-6-astra",
-    thinking: "max",
-    reasoning_mode: "standard",
-    fast_mode: true,
-  };
-  const agent = Agent.open(agentId, {
-    baseUrl: origin,
-    fetch: async (input, init) => {
-      const request = new Request(input, init);
-      requests.push(request);
-      if (request.method === "PATCH") {
-        assert.deepEqual(await request.json(), {
-          model: "gpt-6-astra",
-          thinking: "max",
-          fast_mode: true,
-        });
-        return Response.json({ settings });
-      }
-      return Response.json({ settings });
-    },
-  });
-
-  assert.deepEqual(await agent.settings.read(), {
-    model: "gpt-6-astra", thinking: "max", reasoningMode: "standard", fastMode: true,
-  });
-  assert.deepEqual(await agent.settings.update({
-    model: "gpt-6-astra", thinking: "max", fastMode: true,
-  }), {
-    model: "gpt-6-astra", thinking: "max", reasoningMode: "standard", fastMode: true,
-  });
-  assert.equal(new URL(requests[1].url).pathname, `/v1/agents/${agentId}/settings`);
-  await assert.rejects(agent.settings.update({ model: "unknown" }), /settings patch is invalid/);
 });
 
 test("managed server authentication sends only an ncx_live bearer and omits cookies", async () => {
@@ -1910,29 +1689,6 @@ test("managed result recovery retries a nonsettling authoritative turn read", as
   }
 });
 
-function agentState() {
-  return {
-    agent_id: agentId,
-    session_id: agentId,
-    has_snapshot: false,
-    completed_turns: 0,
-    last_active: 1,
-    active_turns: [],
-    agent_loaded: false,
-    connected_clients: 0,
-    capabilities: {
-      durable_turns: true,
-      resumable_events: true,
-      workspace: "cloudflare-computer",
-      execution_environments: true,
-      execution_namespace: "cwd-root-v1",
-      native_cross_mounts: false,
-    },
-    latest_event_cursor: "4",
-    stream_error: null,
-  };
-}
-
 function eventStream(parts) {
   return new Response(parts.join(""), {
     headers: { "content-type": "text/event-stream; charset=utf-8" },
@@ -2081,25 +1837,6 @@ test("identified steer withdrawal waits for admission and preserves the receipt"
 });
 
 
-
-test("conversation preparation is explicit, bodyless, and resolves on acceptance", async () => {
-  const requests = [];
-  const controller = new AbortController();
-  const agent = Agent.open(agentId, { baseUrl: origin, apiKey, fetch: async (input, init) => {
-    const request = new Request(input, init);
-    requests.push(request);
-    return Response.json({ state: "preparing" }, { status: 202 });
-  } });
-  assert.equal(requests.length, 0);
-  await agent.prepare({ signal: controller.signal });
-  assert.equal(requests.length, 1);
-  assert.equal(new URL(requests[0].url).pathname, `/v1/agents/${agentId}/prepare`);
-  assert.equal(requests[0].method, "POST");
-  assert.equal(requests[0].body, null);
-});
-
-
-
 test("managed clients freeze and send explicit Hand attribution separately from authentication", async () => {
   const reported = { client: "desktop", hand: "user:laptop", cwd: "/laptop/repo", timezone: "America/Los_Angeles" };
   let captured;
@@ -2162,40 +1899,6 @@ test("a failed different-payload steer cannot reuse an earlier ID receipt", asyn
     assert.equal(posts, 2, "neither ambiguous POST is replayed");
     assert.equal(reads, 1);
   }
-});
-
-test("managed client carries a bounded optional location in the existing context header", async () => {
-  const location = { latitude: 37.5, longitude: -122.5, accuracy_meters: 25, timestamp_ms: Date.now(), approximate: false };
-  let captured;
-  await Agent.list({ baseUrl: origin, apiKey, requestOrigin: { client: "iphone", location }, fetch: async (_url, init) => {
-    captured = new Headers(init.headers);
-    return Response.json({ data: [] });
-  } });
-  assert.deepEqual(JSON.parse(captured.get("x-nanocodex-client-context")), { client: "iphone", location });
-});
-
-test("atomic create-and-prompt forwards caller location at first admission", async () => {
-  const location = { latitude: 37.5, longitude: -122.5, accuracy_meters: 25, timestamp_ms: Date.now(), approximate: true };
-  let captured;
-  const result = await Agent.createAndPrompt({ baseUrl: origin, apiKey, idempotencyKey: "location-start", input: "hello",
-    requestOrigin: { client: "iphone", location }, fetch: async (url, init) => {
-      assert.equal(new URL(url).pathname, "/v1/agent-runs");
-      captured = new Headers(init.headers);
-      return Response.json({ agent_id: agentId, turn_id: "turn-location", turn_idempotency_key: "turn-location", accepted_cursor: "1" });
-    } });
-  assert.equal(result.agent.id, agentId);
-  assert.deepEqual(JSON.parse(captured.get("x-nanocodex-client-context")), { client: "iphone", location });
-});
-
-test("agent listings retain bounded sidebar metadata and tolerate legacy summaries", async () => {
-  const presentation = { revision: 2, status: "running", activeTurnIds: ["turn"], activityTurnId: "turn", activity: "I'm checking sidebar state", lastUserPrompt: "Show my running agents", updatedAt: 30 };
-  const fetch = async () => Response.json({ data: [agentId], summaries: {
-    [agentId]: { title: "Fix sidebar", created_at: 10, updated_at: 20, turn_count: 1, last_user_message_at: 15, presentation },
-  } });
-  const agents = await Agent.list({ baseUrl: "https://example.test", apiKey, fetch });
-  assert.equal(agents[0].summary.lastUserMessageAt, 15);
-  assert.deepEqual(agents[0].summary.presentation, presentation);
-  assert.equal(Object.isFrozen(agents[0].summary.presentation.activeTurnIds), true);
 });
 
 

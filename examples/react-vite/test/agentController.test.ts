@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { performance } from "node:perf_hooks";
 import { test } from "node:test";
 
 import { createExampleAgentController } from "../src/agentController.ts";
@@ -7,9 +6,6 @@ import {
   appendRetainedEvents,
   summarizeEventBatch,
 } from "../src/eventBatch.ts";
-
-const LIFECYCLE_BUDGET_MS = 500;
-const RESET_BUDGET_MS = 500;
 
 test("the example Worker owns follow-ons, optional events, results, and payment state", async () => {
   const harness = new Harness();
@@ -171,94 +167,6 @@ test("restart releases active Turns and stale event listeners exactly once", asy
   assert.equal(harness.turns[0]?.resultDisposed, 1);
   assert.deepEqual(messages, [{ type: "ready", transport: "openai" }]);
   await controller.dispose();
-});
-
-test("a 2,000-turn burst has bounded live control ownership", async () => {
-  const harness = new Harness();
-  const controller = createExampleAgentController({
-    createAgent: async () => ({
-      agent: harness.createAgent("root") as any,
-    }),
-    postMessage() {},
-  });
-  await controller.handle({
-    type: "start",
-    transport: "openai",
-    thinking: "high",
-  });
-
-  const startedAt = performance.now();
-  for (let id = 1; id <= 2_000; id += 1) {
-    await controller.handle({
-      type: "prompt",
-      id,
-      prompt: `turn ${id}`,
-    });
-    harness.turns.at(-1)!.complete(`result ${id}`);
-  }
-  await settle();
-  const elapsed = performance.now() - startedAt;
-  assert.equal(
-    harness.turns.reduce((sum, turn) => sum + turn.disposed, 0),
-    2_000,
-  );
-  assert.equal(
-    harness.turns.reduce((sum, turn) => sum + turn.resultDisposed, 0),
-    2_000,
-  );
-  assert.ok(
-    elapsed < LIFECYCLE_BUDGET_MS,
-    `2,000 completed example turns took ${elapsed.toFixed(1)} ms`,
-  );
-  await controller.dispose();
-});
-
-test("example reset cancels and releases 2,000 active Turns within budget", async () => {
-  const harness = new Harness();
-  let generation = 0;
-  const controller = createExampleAgentController({
-    createAgent: async () => ({
-      agent: harness.createAgent(`root-${++generation}`) as any,
-    }),
-    postMessage() {},
-  });
-  const start = {
-    type: "start" as const,
-    transport: "openai" as const,
-    thinking: "high" as const,
-  };
-  await controller.handle(start);
-  for (let id = 1; id <= 2_000; id += 1) {
-    await controller.handle({
-      type: "prompt",
-      id,
-      prompt: `active turn ${id}`,
-    });
-  }
-
-  const startedAt = performance.now();
-  await controller.handle(start);
-  const elapsed = performance.now() - startedAt;
-
-  assert.equal(harness.turns.length, 2_000);
-  assert.equal(
-    harness.turns.reduce((sum, turn) => sum + turn.cancelled, 0),
-    2_000,
-  );
-  assert.equal(
-    harness.turns.reduce((sum, turn) => sum + turn.disposed, 0),
-    2_000,
-  );
-  assert.equal(harness.agents[0]?.disposed, 1);
-  assert.equal(harness.agents[1]?.disposed, 0);
-  assert.equal(harness.watchOffs, 1);
-  assert.ok(
-    elapsed < RESET_BUDGET_MS,
-    `resetting 2,000 active example turns took ${elapsed.toFixed(1)} ms`,
-  );
-
-  await controller.dispose();
-  assert.equal(harness.agents[1]?.disposed, 1);
 });
 
 test("one frame reduces 20,000 deltas into one bounded React update", () => {

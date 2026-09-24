@@ -41,21 +41,6 @@ test('empty and API-only selections avoid WASM and unrelated installation/build 
   assert.deepEqual(commands(buildSelected, ['email']), []);
 });
 
-test('WASM consumers deduplicate targets and prepare selected managed and Astra assets', () => {
-  const selected = ['egress', 'managed', 'astra'];
-  assert.equal(releaseNeeds({ selected }).wasm, true);
-  assert.deepEqual(commands(buildSelected, selected), [
-    ['pnpm', ['exec', 'turbo', 'run', 'build', '--only', '--filter', 'nanocodex-tools', '--filter', 'nanocodex-connect-protocol', '--filter', 'nanocodex'], { stdio: 'inherit' }],
-    [process.execPath, ['js/managed/scripts/prepare-code-evaluator.mjs'], { stdio: 'inherit' }],
-    ['npm', ['run', 'build:client', '--prefix', 'examples/astra-mpp-trial'], { stdio: 'inherit' }],
-  ]);
-  assert.deepEqual(commands(installSelected, ['astra']), [
-    ['pnpm', ['install', '--frozen-lockfile', '--filter', 'nanocodex-monorepo', '--filter', 'nanocodex...'], { stdio: 'inherit' }],
-    ['npm', ['ci', '--prefix', 'examples/astra-mpp-trial'], { stdio: 'inherit' }],
-  ]);
-  assert.throws(() => buildSelected({ selected: ['managed'] }, () => { throw Error('build failed'); }), /build failed/);
-});
-
 test('JS-only services and dialog never schedule Cargo or the nanocodex WASM build', () => {
   const selected = ['egress', 'dialog', 'connect-api', 'astra', 'chief-of-staff'];
   assert.equal(releaseNeeds({ selected }).wasm, false);
@@ -80,14 +65,4 @@ test('release phases reuse successfully completed targets and never cache failed
     if (args.includes('nanocodex-terminal')) throw Error('second tier failed');
   }, failed), /second tier failed/);
   assert.deepEqual([...failed], ['nanocodex-tools', 'nanocodex-connect-protocol', 'nanocodex']);
-});
-
-
-test('pipelined installation defers only Astra npm dependencies to its own phase', () => {
-  const calls = [];
-  installSelected({ selected: ['managed', 'astra'] }, (...args) => calls.push(args), { deferAstra: true });
-  assert.equal(calls.length, 1);
-  assert.equal(calls[0][0], 'pnpm');
-  assert.ok(calls[0][1].includes('nanocodex-managed-service...'));
-  assert.ok(calls[0][1].includes('nanocodex...'));
 });

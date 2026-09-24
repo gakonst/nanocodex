@@ -17,4 +17,4 @@ Refresh loads the actual roster. Select an existing chat or create one, then Ask
 
 ## Tests
 
-Run `bun run test:lua` for the adapter lifecycle checks and `python3 -m unittest discover -s ../tests -p test_preview_backend.py` for the backend boundaries. After building, `node parallel-browser.test.cjs` exercises independent chats using synthetic requests without contacting an account. These checks do not establish native WoW rendering or keyboard-carrier behavior.
+Run `python3 -m unittest discover -s ../tests -p test_preview_backend.py` for the backend boundaries. After building, `node parallel-browser.test.cjs` exercises independent chats using synthetic requests without contacting an account. These checks do not establish native WoW rendering or keyboard-carrier behavior.

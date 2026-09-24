@@ -1736,24 +1736,6 @@ test("Connect account logout clears the local session before remote wallet clean
   await logout;
 });
 
-test("the mock Connect transport preserves X in requested connector permissions", async () => {
-  const transport = Transport.mock({ appName: "Test Workspace" }).setup({ appId: "x-workspace" });
-  const prepared = await transport.request({
-    method: "POST",
-    path: "/v1/connections/prepare",
-    body: {
-      permission: "agent.run",
-      resources: ["urn:nanocodex:connector:x"],
-    },
-  });
-
-  assert.deepEqual(prepared.permission.connectors.at(-1), {
-    id: "x",
-    name: "X",
-    detail: "Use the connected X account through the grant",
-  });
-});
-
 test("Nanocodex Connect signs one witness-bound access key and enforces its MPP permission", async () => {
   const expiry = Math.floor(Date.now() / 1_000) + 30 * 86_400;
   const keyId = "0x1111111111111111111111111111111111111111";

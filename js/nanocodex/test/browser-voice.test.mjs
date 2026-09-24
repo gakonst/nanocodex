@@ -18,15 +18,6 @@ import { Agent as ManagedAgent } from "../managed/index.mjs";
 import { registerManagedAgent } from "../managed/internal.mjs";
 import { initializeBrowserEngine } from "../browser/engine.mjs";
 
-test("browser voice exposes Codex's ChatGPT V3 catalog and default", () => {
-  assert.deepEqual(Voice.voices, [
-    "juniper", "maple", "spruce", "ember", "vale", "breeze", "arbor", "sol", "cove",
-  ]);
-  assert.equal(Voice.defaultVoice, "cove");
-  assert.equal(Voice.VoiceError, VoiceError);
-  assert.throws(() => Voice.create({}), /Nanocodex Agent/);
-});
-
 test("mute applies before capture resolves and is exposed through the public resource", async () => {
   const fixture = installBrowserVoiceFixture();
   const calls = [];
@@ -499,71 +490,6 @@ test("both transcript rows stream while delegation admission is blocked", async 
     releaseAdmission();
     await voice.destroy();
     agent.dispose();
-    fixture.restore();
-  }
-});
-
-test("the public resource is a thin binding over the Rust voice controller", async () => {
-  const fixture = installBrowserVoiceFixture();
-  try {
-    const calls = [];
-    const core = fakeVoiceCore(calls);
-    const { agent, emitAgentEvent } = await testAgent(core, calls);
-    const voice = Actions.voice.create(agent, {
-      beforeAgentTurn: async () => { calls.push(["fence"]); },
-      captureMicrophone: async () => {
-        calls.push(["microphone"]);
-        return fakeMicrophone(calls);
-      },
-    });
-
-    await Actions.voice.start(voice, { voice: "juniper" });
-    assert.equal(Actions.voice.getSnapshot(voice).status, "active");
-    assert.deepEqual(calls.slice(0, 6), [
-      ["microphone"],
-      ["browserVoice", "juniper"],
-      ["configure", { voice: "juniper" }],
-      ["fence"],
-      ["start"],
-      ["callBody", "v=offer"],
-    ]);
-    assert.equal(calls.some(([kind]) => kind === "completeCall"), true);
-    assert.equal(calls.some(([kind]) => kind === "sidebandUrl"), true);
-    assert.equal(fixture.request.session_id, "agent-session");
-    assert.deepEqual(JSON.parse(fixture.request.call_body), {
-      sdp: "v=offer",
-      session: { delegation: { type: "client" } },
-    });
-
-    fixture.sideband.message({ type: "delegation.created" });
-    await waitFor(() => fixture.sideband.sent.includes('{"type":"rust.frame"}'));
-    assert.equal(calls.filter(([kind]) => kind === "fence").length, 2);
-    emitAgentEvent({ type: "assistant.message", payload: { text: "done" } });
-    await waitFor(() => calls.some(([kind]) => kind === "agentEvent"));
-    assert.deepEqual(JSON.parse(calls.find(([kind]) => kind === "agentEvent")[1]), {
-      type: "event",
-      target: { pane: "main", branchId: "agent-session" },
-      event: { type: "assistant.message", payload: { text: "done" } },
-    });
-
-    const firstSideband = fixture.sideband;
-    firstSideband.close();
-    await waitFor(() => calls.some(([kind]) => kind === "sidebandClosed"));
-    await new Promise((resolve) => setTimeout(resolve, 210));
-    await waitFor(() => fixture.sideband !== firstSideband);
-    assert.equal(
-      calls.filter(([kind]) => kind === "sidebandOpened").length,
-      2,
-    );
-
-    await Actions.voice.stop(voice);
-    assert.equal(Actions.voice.getSnapshot(voice).status, "idle");
-    assert.equal(calls.filter(([kind]) => kind === "fence").length, 3);
-    assert.equal(calls.some(([kind]) => kind === "stop"), true);
-    assert.equal(calls.some(([kind]) => kind === "free"), true);
-    assert.equal(fixture.sideband.sent.includes('{"type":"session.close"}'), true);
-    agent.dispose();
-  } finally {
     fixture.restore();
   }
 });

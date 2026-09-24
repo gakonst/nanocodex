@@ -2,12 +2,9 @@ import os
 import unittest
 
 from nanocodex import (
-    AgentEvent,
     Nanocodex,
     SessionSnapshot,
-    Turn,
     TurnResult,
-    __version__,
 )
 
 
@@ -31,7 +28,6 @@ class BindingTests(unittest.TestCase):
         self.assertEqual(events.request_id, agent.session_id)
         agent.set_thinking("high")
         agent.set_fast_mode(True)
-        self.assertRegex(__version__, r"^\d+\.\d+\.\d+")
         agent.shutdown()
         drain(events)
 
@@ -114,13 +110,6 @@ class BindingTests(unittest.TestCase):
     def test_snapshot_rejects_invalid_json(self) -> None:
         with self.assertRaises(ValueError):
             SessionSnapshot.from_json('{"version": 1}')
-
-    def test_internal_transport_and_turn_ids_are_not_public_properties(self) -> None:
-        for public_type in (Nanocodex, Turn, TurnResult, SessionSnapshot, AgentEvent):
-            names = dir(public_type)
-            self.assertNotIn("response_id", names)
-            self.assertNotIn("previous_response_id", names)
-            self.assertNotIn("turn_id", names)
 
     @unittest.skipUnless(
         os.environ.get("OPENAI_API_KEY"), "live API key not configured"

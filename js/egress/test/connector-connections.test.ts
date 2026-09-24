@@ -3,11 +3,6 @@ import { runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
 import { GOOGLE_CAPABILITIES } from "../src/connectors/google";
-import {
-  SLACK_PROVIDER,
-  buildSlackAuthorizationUrl,
-  decodeSlackTokenResponse,
-} from "../src/connectors/slack";
 import type { EgressEnv } from "../src/egress";
 import { UserConnectorBroker } from "../src/connector-broker";
 import { CredentialVault, type EncryptedEnvelope } from "../src/credential-vault";
@@ -291,22 +286,6 @@ describe("provider-neutral connector identities", () => {
     const after = await connectorStatus(user);
     expect(after.gmail).toEqual({ connected: false, connections: [] });
     expect(after.gdrive).toEqual({ connected: false, connections: [] });
-  });
-
-  it("builds and validates Slack user OAuth responses", () => {
-    const authorization = buildSlackAuthorizationUrl({
-      clientId: "client", redirectUri, state: "state",
-    });
-    expect(authorization.searchParams.get("scope")).toBeNull();
-    expect(authorization.searchParams.get("user_scope")).toBe(SLACK_PROVIDER.userScopes.join(","));
-    expect(decodeSlackTokenResponse({
-      ok: true,
-      team: { id: "T123", name: "Workspace" },
-      authed_user: {
-        id: "U456", access_token: "xoxp-secret", token_type: "user",
-        scope: SLACK_PROVIDER.userScopes.join(","),
-      },
-    })).toMatchObject({ teamId: "T123", userId: "U456" });
   });
 });
 

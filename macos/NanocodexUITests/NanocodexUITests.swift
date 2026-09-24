@@ -20,34 +20,6 @@ final class NanocodexUITests: XCTestCase {
         XCTAssertEqual(composer.value as? String, "Keep this schedule draft")
     }
 
-    @MainActor
-    func testBrowserChromeStaysBelowNativeToolbar() throws {
-        let app = fixture(theme: "light")
-        app.launch(); defer { app.terminate() }
-        let toggle = app.descendants(matching: .any).matching(identifier: "toggle-tab-sidebar").firstMatch
-        XCTAssertTrue(toggle.waitForExistence(timeout: 10))
-        let toolbar = app.toolbars.firstMatch
-        let horizontal = app.buttons["new-tab-in-strip"]
-        if !horizontal.exists { toggle.click() }
-        XCTAssertTrue(horizontal.waitForExistence(timeout: 3))
-        XCTAssertGreaterThanOrEqual(horizontal.frame.minY, toolbar.frame.maxY - 1, "The real title bar must not cover horizontal tabs")
-        XCTAssertGreaterThanOrEqual(app.staticTexts["user-message"].firstMatch.frame.minY, toolbar.frame.maxY,
-                                    "The first conversation turn stays below the toolbar")
-        XCTAssertFalse(app.radioButtons["workspace-filter-Inbox"].exists)
-        capture(app, name: "native-browser-horizontal")
-        toggle.click()
-        let vertical = app.buttons["new-tab-in-sidebar"]
-        XCTAssertTrue(vertical.waitForExistence(timeout: 3))
-        XCTAssertGreaterThanOrEqual(vertical.frame.minY, toolbar.frame.maxY - 1, "The real title bar must not cover the sidebar header")
-        XCTAssertTrue(app.textViews["message-input"].exists)
-        XCTAssertGreaterThanOrEqual(app.staticTexts["user-message"].firstMatch.frame.minY, toolbar.frame.maxY,
-                                    "Vertical tabs must not move the first turn beneath the title bar")
-        let sidebar = app.otherElements["sidebar-tabs"]
-        let detailCenter = (sidebar.frame.maxX + app.windows.firstMatch.frame.maxX) / 2
-        XCTAssertEqual(app.textViews["message-input"].frame.midX, detailCenter, accuracy: 12,
-                       "The composer is centered in the remaining detail column")
-        capture(app, name: "native-browser-vertical")
-    }
 
     @MainActor
     func testNativeTabsComposerAndHandsNavigation() throws {

@@ -521,15 +521,11 @@ mod tests {
         definition_reads: Arc<AtomicUsize>,
     }
 
-    struct ExecHost;
-
     struct LocalAlpha;
 
     struct LocalPrivate;
 
     struct DirectHost;
-
-    struct WebHost;
 
     #[derive(Clone)]
     struct CancelHost {
@@ -720,80 +716,6 @@ mod tests {
         }
     }
 
-    impl CodeModeHost for ExecHost {
-        fn tool_definitions(
-            &self,
-            _session_id: &str,
-        ) -> Result<Vec<ToolDefinition>, CodeModeHostError> {
-            Ok(vec![
-                ToolDefinition::function(
-                    "exec_command",
-                    "Run a command.",
-                    json!({
-                        "type": "object",
-                        "properties": { "cmd": { "type": "string" } },
-                        "required": ["cmd"]
-                    }),
-                )
-                .with_output_schema(json!({
-                    "type": "object",
-                    "properties": {
-                        "output": { "type": "string" },
-                        "wall_time_seconds": { "type": "number" }
-                    },
-                    "required": ["output", "wall_time_seconds"]
-                })),
-            ])
-        }
-
-        fn execute<'a>(
-            &'a self,
-            _source: &'a str,
-            _context: ToolContext<'a>,
-        ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
-            Box::pin(async { unreachable!("this test only inspects the model contract") })
-        }
-    }
-
-    impl CodeModeHost for WebHost {
-        fn tool_definitions(
-            &self,
-            _session_id: &str,
-        ) -> Result<Vec<ToolDefinition>, CodeModeHostError> {
-            Ok(vec![ToolDefinition::function(
-                "web__run",
-                "Search the public internet.",
-                json!({
-                    "type": "object",
-                    "properties": {
-                        "search_query": {
-                            "type": "array",
-                            "items": {
-                                "type": "object",
-                                "properties": { "q": { "type": "string" } },
-                                "required": ["q"],
-                                "additionalProperties": false
-                            }
-                        },
-                        "response_length": {
-                            "type": "string",
-                            "enum": ["short", "medium", "long"]
-                        }
-                    },
-                    "additionalProperties": false
-                }),
-            )])
-        }
-
-        fn execute<'a>(
-            &'a self,
-            _source: &'a str,
-            _context: ToolContext<'a>,
-        ) -> HostFuture<'a, Result<CodeModeExecution, CodeModeHostError>> {
-            Box::pin(async { unreachable!("this test only inspects the model contract") })
-        }
-    }
-
     impl CodeModeHost for CancelHost {
         fn tool_definitions(
             &self,
@@ -822,43 +744,6 @@ mod tests {
                 Ok(())
             })
         }
-    }
-
-    #[test]
-    fn model_description_orders_host_definitions() {
-        let tools = bound_tools(EchoHost).for_session("session-1");
-        tools.start_providers();
-        let specs =
-            EmbeddedToolRuntime::new_with_tools(".", None, None, &tools).model_specs("session-1");
-        let description = specs[0].description();
-        assert!(description.find("tools.alpha").unwrap() < description.find("tools.zeta").unwrap());
-    }
-
-    #[test]
-    fn model_description_includes_embedded_tool_argument_shapes() {
-        let tools = bound_tools(WebHost);
-        let specs =
-            EmbeddedToolRuntime::new_with_tools(".", None, None, &tools).model_specs("session-1");
-        let description = specs[0].description();
-
-        assert!(description.contains("web__run(args:"));
-        assert!(description.contains("search_query?: Array<{ q: string; }>"));
-        assert!(description.contains("response_length?: \"short\" | \"medium\" | \"long\""));
-    }
-
-    #[test]
-    fn direct_workspace_tool_describes_its_code_mode_return_shape() {
-        let tools = bound_tools(ExecHost);
-        let specs =
-            EmbeddedToolRuntime::new_with_tools(".", None, None, &tools).model_specs("session-1");
-        let exec_command = specs
-            .iter()
-            .find(|definition| definition.name() == "exec_command")
-            .unwrap();
-
-        assert!(exec_command.description().contains(
-            "exec_command(args: { cmd: string; }): Promise<{ output: string; wall_time_seconds: number; }>"
-        ));
     }
 
     #[tokio::test]

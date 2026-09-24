@@ -5,13 +5,9 @@ import { join, delimiter } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
 import test from 'node:test';
-import { releasePhases } from './release-workers.mjs';
 
 const guard = fileURLToPath(new URL('./current-production-release.mjs', import.meta.url));
 const workspace = fileURLToPath(new URL('../../', import.meta.url));
-const workflow = readFileSync(new URL('../../.github/workflows/cloudflare.yml', import.meta.url), 'utf8');
-const production = workflow.split('\n  production:\n')[1].split(/\n  [\w-]+:\n/)[0];
-const deployAction = readFileSync(new URL('../../.github/actions/deploy-workers/action.yml', import.meta.url), 'utf8');
 const oldSha = 'a'.repeat(40), newSha = 'b'.repeat(40);
 
 function fixture(t) {
@@ -56,17 +52,6 @@ function fixture(t) {
       cwd: workspace, env: { ...env, ...overrides }, encoding: 'utf8', input: '',
     }),
   };
-}
-
-function steps() {
-  const normalized = deployAction.split('  steps:\n')[1].split('\n').map(line => '  ' + line).join('\n');
-  return normalized.split(/(?=^      - (?:name|uses):)/m).slice(1).map(source => {
-    const name = /^      - name: (.+)$/m.exec(source)?.[1];
-    const run = /^        run: (.+)$/m.exec(source)?.[1];
-    const body = run === '|' ? source.split('        run: |\n')[1].split('\n')
-      .filter(line => line.startsWith('          ')).map(line => line.slice(10)).join('\n') : run;
-    return { name, source, run: body };
-  });
 }
 
 test('matching master authorizes command and preserves literal argv, cwd and stdin', t => {
@@ -149,23 +134,6 @@ test('command failure propagates and missing command cannot report success', t =
   assert.equal(f.run(['--']).status, 1);
   assert.equal(f.run(['deploy']).status, 1);
   assert.equal(f.rows(f.deployments).length, 1);
-});
-
-test('workflow gates selective same-runner deployment and retains serialized production guard', () => {
-  const all = steps();
-  const deploy = all.filter(step => step.name?.startsWith('Deploy '));
-  assert.equal(deploy.length, 1);
-  assert.equal(deploy[0].run, 'node scripts/cloudflare/release-workers.mjs');
-  assert.match(deploy[0].source, /if: steps\.plan\.outputs\.any == 'true'/);
-  const plan = all.find(step => step.run === 'node scripts/cloudflare/release-plan.mjs plan');
-  assert.match(plan.source, /if: steps\.current-release\.outputs\.active == 'true'/);
-  assert.ok(all.findIndex(step => step.run === 'node scripts/cloudflare/current-production-release.mjs') < all.indexOf(plan));
-  assert.deepEqual(releasePhases, [['egress', 'x'], ['managed'],
-    ['email', 'dialog', 'connect-api', 'astra', 'chief-of-staff', 'playground'], ['account']]);
-  assert.match(production, /group: cloudflare-production\n      cancel-in-progress: false/);
-  assert.match(production, /GH_TOKEN: \$\{\{ github\.token \}\}/);
-  assert.match(production, /DEPLOY_TARGET: \$\{\{ inputs\.target \}\}/);
-  assert.doesNotMatch(production, /actions\/workflows\/cloudflare\.yml\/runs/);
 });
 
 test('stale piped mutation drains large input so pipefail remains a successful skip', t => {

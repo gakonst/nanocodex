@@ -1,5 +1,4 @@
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
 import test from "node:test";
 import {
   assertCookieJarFence,
@@ -9,12 +8,6 @@ import {
   validateCookieJar,
 } from "../lib/cookie-sync.ts";
 import { createAuthenticatedCookieSyncTransport } from "../lib/cookie-sync-client.ts";
-
-const backgroundSource = await readFile(new URL("../entrypoints/background.ts", import.meta.url), "utf8");
-const panelSource = await readFile(new URL("../entrypoints/sidepanel/App.tsx", import.meta.url), "utf8");
-const configSource = await readFile(new URL("../wxt.config.ts", import.meta.url), "utf8");
-const connectSource = await readFile(new URL("../lib/connect.ts", import.meta.url), "utf8");
-
 const fence = {
   origin: "https://app.example",
   profile_id: "4d82df92-c273-410b-9dd3-f2e97377990c",
@@ -128,11 +121,6 @@ test("rejects cross-origin, cross-store, inconsistent session, and unsupported p
   }), /unsupported fields/);
 });
 
-test("Connect requests agent-run and browser-cookie-sync resources", () => {
-  assert.match(connectSource, /"urn:nanocodex:agent:run"/);
-  assert.match(connectSource, /"urn:nanocodex:browser-cookies:sync"/);
-});
-
 test("maps cookie sync only through the injected authenticated Connect fetch", async () => {
   const calls: Array<{ input: string; init: RequestInit | undefined }> = [];
   const jar = createCookieJar(fence, [persistentCookie]);
@@ -163,43 +151,3 @@ test("maps cookie sync only through the injected authenticated Connect fetch", a
   assert.equal(calls[0]?.init?.cache, "no-store");
   assert.equal(calls[0]?.init?.redirect, "error");
 });
-
-test("keeps cookie permission optional and requests it only from explicit panel actions", () => {
-  assert.match(configSource, /optional_permissions:\s*\[\s*"cookies"\s*\]/);
-  assert.match(configSource, /incognito:\s*"not_allowed"/);
-  assert.doesNotMatch(configSource, /\n    permissions:\s*\[[^\]]*"cookies"/s);
-  const action = sourceSection(panelSource, "async function captureCurrentSiteCookies(", "async function restoreCurrentSiteCookies(");
-  assert.match(action, /chrome\.permissions\.request\(\{ permissions: \["cookies"\] \}\)/);
-  const restore = sourceSection(panelSource, "async function restoreCurrentSiteCookies(", "function recordConversationActivity(");
-  assert.match(restore, /chrome\.permissions\.request\(\{ permissions: \["cookies"\] \}\)/);
-  assert.match(panelSource, /onClick=\{\(\) => void captureCurrentSiteCookies\(\)\}/);
-  assert.doesNotMatch(backgroundSource, /permissions\.request/);
-});
-
-test("holds values only in background memory and fences two-phase destructive restore", () => {
-  const cookieSection = sourceSection(backgroundSource, "async function captureCookies(", "async function forgetRecipe(");
-  assert.match(cookieSection, /heldCookieJars\.set\(captureId, held\)/);
-  assert.doesNotMatch(cookieSection, /chrome\.storage/);
-  assert.match(backgroundSource, /requireSidePanelSender\(sender\)/);
-  assert.match(cookieSection, /requireActiveCookieLease/);
-  assert.match(cookieSection, /tab\.incognito/);
-  assert.match(cookieSection, /assertCookieJarFence/);
-  assert.match(cookieSection, /getAllCookieStores/);
-  assert.match(cookieSection, /cookieRestoreChallenges/);
-  assert.match(cookieSection, /stageCookieRestore/);
-  assert.match(panelSource, /const transport = cookieSyncTransport\(activeConnection\)/);
-  assert.match(panelSource, /await transport\.list/);
-  assert.match(panelSource, /await transport\.replace/);
-  assert.match(panelSource, /cookieSyncTransport\(activeConnection\)\.materialize/);
-  assert.match(backgroundSource, /message\.confirmed !== true/);
-  assert.match(panelSource, /window\.confirm/);
-  assert.doesNotMatch(panelSource, /\.value\b/);
-});
-
-function sourceSection(source: string, start: string, end: string): string {
-  const from = source.indexOf(start);
-  const to = source.indexOf(end, from + start.length);
-  assert.notEqual(from, -1, `missing ${start}`);
-  assert.notEqual(to, -1, `missing ${end}`);
-  return source.slice(from, to);
-}

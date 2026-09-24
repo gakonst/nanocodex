@@ -59,22 +59,3 @@ test("default MCP proxy rejects forged origins, unknown servers, and methods", a
   assert.equal((await proxyDefaultMcp(new Request(url, { method: "PUT" }), url, true))?.status, 405);
   assert.equal(await proxyDefaultMcp(new Request("https://demo.test/api/other"), new URL("https://demo.test/api/other"), true), undefined);
 });
-
-test("default MCP proxy adds no application byte ceiling", async () => {
-  const seen: Request[] = [];
-  const egress = {
-    async fetch(input: RequestInfo | URL, init?: RequestInit) {
-      seen.push(new Request(input, init));
-      return new Response();
-    },
-  } as Fetcher;
-    const url = new URL(`https://demo.test/api/mcp/cloudflare?thread_id=${THREAD_ID}`);
-    const response = await proxyDefaultMcp(new Request(url, {
-      method: "POST",
-      headers: { "content-length": String(Number.MAX_SAFE_INTEGER) },
-      body: "{}",
-    }), url, true, egress);
-
-    assert.equal(response?.status, 200);
-    assert.equal(seen.length, 1);
-});

@@ -125,21 +125,6 @@ describe("cwd-root namespace execution", () => {
     await expect(runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/missing", code: "1" }, context())).rejects.toThrow();
   });
 
-  it("needs no inherited selection and never guesses a Hand", async () => {
-    const first = vi.fn();
-    const second = vi.fn();
-    const runtime = createNamespaceExecutionRuntime(
-      () => [{ id: "one", workspace: "/workspace" }, { id: "two", workspace: "/workspace" }],
-      (id, name) => name === CUA_JS_NAME || name === CUA_RESET_NAME ? cuaTool(name, id === "one" ? first : second) : undefined,
-    );
-    await expect(runtime.tools[CUA_JS_NAME]!.handler({ code: "1" }, context())).rejects.toThrow("explicit Hand workdir");
-    await expect(runtime.tools[CUA_RESET_NAME]!.handler({}, context())).rejects.toThrow("explicit Hand workdir");
-    await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/two", code: "parent" }, context());
-    await runtime.tools[CUA_JS_NAME]!.handler({ workdir: "/one", code: "child" }, context({ sessionId: "child" }));
-    expect(first).toHaveBeenCalledWith({ code: "child" }, expect.objectContaining({ sessionId: "child" }));
-    expect(second).toHaveBeenCalledWith({ code: "parent" }, expect.objectContaining({ sessionId: "root-session" }));
-  });
-
   it("runs two Hands concurrently through QuickJS Code Mode and orders JS/reset per Hand", async () => {
     const events: string[] = [];
     let active = 0;
@@ -204,32 +189,6 @@ describe("cwd-root namespace execution", () => {
 
     await expect(tools.exec_command!.handler({ cmd: "pwd" }, context()))
       .rejects.toThrow("namespace cwd /brain lacks process.exec");
-  });
-
-  it("keeps canonical schemas and routes an explicit logical cwd to a sandbox hand", async () => {
-    const sandboxExec = vi.fn(async () => ({
-      output: "/workspace\n",
-      wall_time_seconds: 0.01,
-      exit_code: 0,
-    }));
-    const tools = createNamespaceExecutionTools(sandboxTools(sandboxExec), () => []);
-
-    expect(tools.exec_command!.parameters).toMatchObject({
-      required: ["cmd"],
-      additionalProperties: false,
-    });
-    expect(JSON.stringify(tools.exec_command!.parameters)).not.toContain("environment");
-    expect(tools.write_stdin!.parameters).toMatchObject({
-      required: ["session_id"],
-      additionalProperties: false,
-    });
-    expect(JSON.stringify(tools.write_stdin!.parameters)).not.toMatch(/environment|host/);
-
-    await tools.exec_command!.handler({ cmd: "pwd", workdir: "/sandbox" }, context());
-    expect(sandboxExec).toHaveBeenCalledWith(
-      { cmd: "pwd", workdir: "/workspace" },
-      expect.objectContaining({ sessionId: "root-session" }),
-    );
   });
 
   it("routes by a portable machine mount and translates only the workdir", async () => {

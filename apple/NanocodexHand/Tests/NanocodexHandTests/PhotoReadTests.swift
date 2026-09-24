@@ -67,21 +67,6 @@ final class PhotoReadTests: XCTestCase {
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: outside.path).isEmpty)
     }
 
-    @MainActor
-    func testLargestPhotoReceiptFitsHostedSQLiteRow() throws {
-        // The service reparses JSON and persists JSON.stringify(output), which
-        // does not escape slashes. Include both image representations.
-        let data = Data(repeating: 255, count: HandPhotoRendition.maxBytes)
-        let result = try HandPhotoRendition.result(data, id: String(repeating: "a", count: 1024),
-            path: "/workspace/photos/00000000-0000-4000-8000-000000000000.jpg", width: 2048, height: 2048)
-        let output = try HandSession.toolOutput(result, success: true, name: "read_photo")
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = [.sortedKeys, .withoutEscapingSlashes]
-        let receipt: JSON = .object(["type": .string("result"), "outcome": .object([
-            "status": .string("completed"), "output": output])])
-        XCTAssertLessThan(try encoder.encode(receipt).count, 1_500_000,
-            "Reserve at least 500 KB of the 2 MB row limit for call metadata")
-    }
 
     @MainActor
     func testPublishedImagesSurviveDraftRemovalAndProduceTypedOutput() async throws {

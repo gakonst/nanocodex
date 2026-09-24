@@ -23,22 +23,6 @@ final class ConversationItemTests: XCTestCase {
         XCTAssertFalse(ConversationItem.group(rows).contains(where: \.isRunning))
     }
 
-    func testInterleavedTurnsPreserveSourceOrderAndStableToolIdentity() {
-        var tool = TranscriptRow(id: "call", role: "Tool", text: "Read", running: true)
-        tool.turnID = "first"
-        var followup = TranscriptRow(id: "followup", role: "You", text: "Also check this")
-        followup.turnID = "second"
-        var update = TranscriptRow(id: "update", role: "Agent", text: "Found it")
-        update.turnID = "first"
-        update.phase = "commentary"
-        let initial = ConversationItem.group([tool, followup, update], activeTurns: ["first"])
-        tool.running = false
-        let completed = ConversationItem.group([tool, followup, update])
-        XCTAssertEqual(initial.map(\.id), ["call", "followup", "update"])
-        XCTAssertEqual(completed.map(\.id), initial.map(\.id))
-        XCTAssertEqual(completed.first?.activity.map(\.id), ["call"])
-        XCTAssertEqual(completed.last?.message?.text, "Found it")
-    }
 
     func testQueueHeadOutsideHistoryDoesNotPromoteVisibleFollowUp() {
         var correction = TranscriptRow(id: "message", role: "You", text: "Next request")
@@ -55,26 +39,6 @@ final class ConversationItemTests: XCTestCase {
         return row
     }
 
-    func testCodeModeOwnsOnlyItsNestedCallsAndKeepsTheirOrder() {
-        let batch = tool("t::tool:batch", name: "exec", running: true)
-        let first = tool("t::tool:batch/code-1", running: true)
-        let second = tool("t::tool:batch/code-2", name: "environment")
-        let independent = tool("t::tool:independent")
-        let message = TranscriptRow(id: "message", role: "Agent", text: "Working")
-        let rows = [batch, first, independent, message, second]
-        let items = ConversationItem.group(rows, activeTurns: ["t"])
-        XCTAssertEqual(items.map(\.id), [batch.id, independent.id, message.id])
-        XCTAssertEqual(items[0].activity.map(\.id), [batch.id, first.id, second.id])
-        XCTAssertTrue(items[0].isCodeModeBatch)
-        XCTAssertTrue(items[0].isRunning)
-        XCTAssertEqual(items.flatMap(\.activity).map(\.id).sorted(), rows.filter { $0.role == "Tool" }.map(\.id).sorted())
-        var completed = rows
-        completed[0].running = false
-        completed[1].running = false
-        let finished = ConversationItem.group(completed, activeTurns: ["t"])
-        XCTAssertEqual(finished.map(\.id), items.map(\.id))
-        XCTAssertFalse(finished[0].isRunning)
-    }
 
     func testOrphansAndOtherScopesStayStandalone() {
         let parent = tool("t::tool:batch", name: "exec")

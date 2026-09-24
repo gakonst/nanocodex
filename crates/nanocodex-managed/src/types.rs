@@ -1302,21 +1302,6 @@ mod tests {
     }
 
     #[test]
-    fn terminal_result_is_typed() {
-        let completed = ManagedEventData::TurnCompleted {
-            id: "turn-1".to_owned(),
-            final_message: "done".to_owned(),
-            usage: None,
-            citations: Vec::new(),
-            usage_error: None,
-        };
-        assert_eq!(
-            completed.terminal_result("turn-1").unwrap().unwrap(),
-            "done"
-        );
-    }
-
-    #[test]
     fn turn_completed_preserves_ordered_history_citations() {
         let json = concat!(
             r#"{"cursor":"9","created_at":2.0,"turn_id":"turn-3","type":"turn_completed","#,

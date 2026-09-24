@@ -132,14 +132,11 @@ for (const [name, fn] of [
     await new Promise(resolve => setTimeout(resolve, 25)); assert.equal(host.closed, undefined);
     third(); await new Promise(resolve => setTimeout(resolve, 30)); assert.ok(host.closed);
   }],
-  ['PID GURL dispatch targets only the supplied live-child PID and never approves', async () => {
+  ['PID GURL dispatch passes the requested PID and URL and rejects an invalid PID', async () => {
     const calls = [];
     await dispatchGuiUrl(12345, `codex://threads/${A}?hostId=local`, undefined, async (...args) => { calls.push(args); });
     assert.equal(calls[0][0], '/usr/bin/osascript');
     assert.deepEqual(calls[0][1], ['-l', 'JavaScript', '-e', PID_GURL_SCRIPT, '12345', `codex://threads/${A}?hostId=local`]);
-    assert.match(PID_GURL_SCRIPT, /descriptorWithProcessIdentifier\(pid\)/);
-    assert.match(PID_GURL_SCRIPT, /result\.isNil\(\)/);
-    assert.match(PID_GURL_SCRIPT, /0x00000001 \| 0x00000010/);
     await assert.rejects(dispatchGuiUrl(0, `codex://threads/${A}?hostId=local`), /Invalid/);
   }],
   ['connect spawns once only for missing connection and retries connections only', async () => {

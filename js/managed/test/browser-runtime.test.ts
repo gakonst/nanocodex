@@ -11,78 +11,12 @@ import {
   browserToolInputAllowed,
   createManagedBrowserRuntime,
   CredentialSafeBrowserBinding,
-  managedBrowserProvider,
   sanitizeBrowserToolResult,
 } from "../src/browser-runtime";
 
 const API_KEY = "bb_live_do_not_project_this_value";
 const SESSION_ID = "session_123";
 const CONNECT_URL = "wss://connect.browserbase.com/devtools?token=signed-secret";
-
-describe("managed browser deployment policy", () => {
-  it("accepts only host-selected providers", () => {
-    expect(managedBrowserProvider(undefined)).toBe("cloudflare");
-    expect(managedBrowserProvider("browserbase")).toBe("browserbase");
-    expect(() => managedBrowserProvider("model-choice")).toThrow(
-      "MANAGED_BROWSER_PROVIDER must be cloudflare or browserbase",
-    );
-  });
-
-  it("configures the official runtime for durable provider-scoped reuse", async () => {
-    let received: Record<string, unknown> | undefined;
-    const swept = vi.fn(async () => ({ swept: [] }));
-    const closed = vi.fn(async () => undefined);
-    const expired = vi.fn(async () => []);
-    const createRuntime = vi.fn((options) => {
-      received = options as unknown as Record<string, unknown>;
-      return {
-        runtime: { expirePaused: expired },
-        connector: { sweep: swept, closeSession: closed },
-        tools: {
-          browser_execute: tool({
-            description: "Run browser code.",
-            inputSchema: jsonSchema({
-              type: "object",
-              properties: { code: { type: "string" } },
-              required: ["code"],
-              additionalProperties: false,
-            }),
-            execute: async () => ({ ok: true }),
-          }),
-        },
-      } as unknown as BrowserRuntime;
-    });
-    const binding = { fetch: vi.fn(async () => new Response()) };
-    const runtime = await createManagedBrowserRuntime({
-      ctx: { storage: {} } as DurableObjectState,
-      env: {
-        BROWSER: binding,
-        LOADER: {} as WorkerLoader,
-        MANAGED_BROWSER_PROVIDER: "cloudflare",
-      },
-      sessionId: "agent-a",
-      createRuntime,
-    });
-
-    expect(runtime.provider).toBe("cloudflare");
-    expect(runtime.tools.map(({ name }) => name)).toEqual(["browser_execute"]);
-    expect(received?.browser).toBeInstanceOf(CredentialSafeBrowserBinding);
-    expect(received?.loader).toBeDefined();
-    expect(received?.quickActions).toBe(false);
-    expect(received?.session).toEqual({
-      mode: "reuse",
-      key: "primary",
-      keepAliveMs: 600_000,
-    });
-    expect(received?.name).toBe("managed-browser-cloudflare");
-
-    await runtime.expireAndSweep();
-    await runtime.close();
-    expect(expired).toHaveBeenCalledOnce();
-    expect(swept).toHaveBeenCalledWith({ maxIdleMs: 600_000 });
-    expect(closed).toHaveBeenCalledOnce();
-  });
-});
 
 describe("Browserbase session factory", () => {
   it("stops reading chunked responses at the byte limit", async () => {
@@ -260,59 +194,6 @@ describe("AI SDK browser tool adapter", () => {
     expect(JSON.stringify(adapted)).not.toContain(API_KEY);
     expect(JSON.stringify(result)).not.toContain("raw-cookie");
     expect(execute).toHaveBeenCalledOnce();
-  });
-
-  it("replaces the foreign codemode prompt with the Rust Code Mode tool contract", async () => {
-    const upstreamDescription = [
-      "Execute JavaScript in a sandbox with access to connector SDKs.",
-      "## Workflow",
-      "Call `codemode.search(query)` before using the `cdp` connector.",
-    ].join("\n");
-    const tools = await adaptAiSdkTools({
-      browser_execute: tool({
-        description: upstreamDescription,
-        inputSchema: jsonSchema({
-          type: "object",
-          properties: { code: { type: "string" } },
-          required: ["code"],
-          additionalProperties: false,
-        }),
-        execute: async () => ({ ok: true }),
-      }),
-      browser_markdown: tool({
-        description: "Read a page as Markdown.",
-        inputSchema: jsonSchema({ type: "object", additionalProperties: false }),
-        execute: async () => "page",
-      }),
-    });
-    const adapted = tools.find(({ name }) => name === "browser_execute");
-    const ordinary = tools.find(({ name }) => name === "browser_markdown");
-
-    expect(adapted?.description).toContain(
-      "Outer contract (Nanocodex Rust/WASM Code Mode)",
-    );
-    expect(adapted?.description).toContain(
-      "nested tools exist only on `tools.*`; `cdp` and `codemode` are not globals",
-    );
-    expect(adapted?.description).toContain("`await tools.browser_execute({ code })`");
-    expect(adapted?.description).toContain(
-      "only host globals are `cdp` and `codemode`",
-    );
-    expect(adapted?.description).toContain(
-      '`await codemode.search("short intent")`',
-    );
-    expect(adapted?.description).toContain(
-      '`await codemode.describe("cdp.method")`',
-    );
-    expect(adapted?.description).toContain(
-      '`await cdp.send({ method: "Target.getTargets" })`',
-    );
-    expect(adapted?.description).toContain("including `Runtime.evaluate`");
-    expect(adapted?.description).toContain("`Target.getTargetInfo` is not available");
-    expect(adapted?.description).toContain("use `tools.web__run(...)`");
-    expect(adapted?.description).not.toContain(upstreamDescription);
-    expect(adapted?.description).not.toContain("## Workflow");
-    expect(ordinary?.description).toBe("Read a page as Markdown.");
   });
 
   it("redacts provider URLs and scalar cookie material", () => {
