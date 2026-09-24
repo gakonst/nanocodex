@@ -1,6 +1,6 @@
 import type { McpPayment, McpServers, MppSession } from "../types.mjs";
 
-export declare const DEFAULT_MERCATOR_MCP_URL = "https://mercator.tempo.xyz/mcp";
+export declare const DEFAULT_MERCATOR_MCP_URL = "https://mercator.sh/mcp";
 
 export type TempoProvider<Session extends MppSession = MppSession> = MppSession & Readonly<{
   kind: "tempo";

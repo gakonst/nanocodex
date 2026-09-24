@@ -748,8 +748,8 @@ of its wallet adapter, and constructs both payment paths from that provider's
 adapter-neutral `getMppxParameters()` contract. The lower-level
 `createTempoProvider({ session, payment })` remains available when the
 application constructs MPPx itself. Both explicitly select Tempo provider mode.
-In that mode Nanocodex automatically adds its built-in Mercator MCP and wraps it
-with the same wallet and payment policy. The provider also exposes an MPP-aware
+In that mode Nanocodex automatically adds its built-in Mercator MCP at
+`https://mercator.sh/mcp` and wraps it with the same wallet and payment policy. The provider also exposes an MPP-aware
 `fetch`; Mercator's paid REST handoffs use that same method rather than a second
 wallet or payment configuration. Its MCP transport remains wrapped at the MCP
 protocol layer, so browser requests do not need an `Accept-Payment` CORS header.

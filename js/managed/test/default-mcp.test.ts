@@ -17,7 +17,7 @@ describe("durable managed default MCP catalog", () => {
     await tools.close();
   });
 
-  it("matches the canonical five public MCP servers", () => {
+  it("matches the canonical six public MCP servers", () => {
     expect(DEFAULT_MANAGED_MCP_CATALOG).toEqual({
       openaiDeveloperDocs: {
         url: "https://developers.openai.com/mcp",
@@ -28,6 +28,11 @@ describe("durable managed default MCP catalog", () => {
         url: "https://mcp.tempo.xyz",
         description: "Tempo network and protocol tools.",
         parallelTools: ["code", "search"],
+      },
+      mercator: {
+        url: "https://mercator.sh/mcp",
+        description: "Discover and quote Mercator API workflows; paid execution needs separate authorization.",
+        parallelTools: ["get_suggested_queries", "get_connection_status", "search_services"],
       },
       cloudflare: {
         url: "https://docs.mcp.cloudflare.com/mcp",
@@ -54,10 +59,17 @@ describe("durable managed default MCP catalog", () => {
     expect(Object.keys(configured)).toEqual([
       "openaiDeveloperDocs",
       "tempo",
+      "mercator",
       "cloudflare",
       "viem",
       "vocs",
     ]);
+    expect(configured.mercator).toMatchObject({
+      url: "https://mercator.sh/mcp",
+      fetch: fetcher,
+    });
+    expect(configured.mercator).not.toHaveProperty("payment");
+    expect(configured.mercator).not.toHaveProperty("headers");
     for (const server of Object.values(configured)) {
       expect(typeof server).toBe("object");
       expect((server as { fetch?: typeof fetch }).fetch).toBe(fetcher);
@@ -190,6 +202,7 @@ describe("durable managed default MCP catalog", () => {
         "browseX",
         "find_sessions",
         "mcp__cloudflare__search",
+        "mcp__mercator__search",
         "mcp__openaiDeveloperDocs__search",
         "mcp__tempo__search",
         "mcp__viem__search",

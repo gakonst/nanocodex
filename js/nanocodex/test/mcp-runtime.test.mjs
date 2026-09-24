@@ -29,6 +29,7 @@ test("Mercator is a paid default only for explicit Tempo provider mode", () => {
   assert.equal(provider.session, session);
 
   const defaults = resolveMcpServers(provider, undefined);
+  assert.equal(DEFAULT_MERCATOR_MCP_URL, "https://mercator.sh/mcp");
   assert.equal(defaults.mercator.url, DEFAULT_MERCATOR_MCP_URL);
   assert.equal(defaults.mercator.payment, payment);
 
