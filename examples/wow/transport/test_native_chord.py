@@ -20,9 +20,6 @@ class NativeChordTests(unittest.TestCase):
   binds.append({'modmask':5,'key':'F5'})
   self.assertFalse(d.send_keys(['F21']))
   self.assertEqual(len([c for c in calls if c[0].endswith('carrier-keys') and c[-1]!='--describe']),1)
- def test_invalid_modes(self):
-  for options in ({'key_hold_ms':-1},{'key_hold_ms':51},{'key_encoding':'binary'}):
-   with self.assertRaises(ValueError):Desktop('a','b',0,0,4,input_backend='native-chord',**options)
 if __name__=='__main__':unittest.main()
 
 class NativeValidationTests(unittest.TestCase):

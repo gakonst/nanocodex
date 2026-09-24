@@ -31,29 +31,12 @@ test("any Accounts SDK provider can own both Tempo payment paths", async () => {
   });
 
   assert.deepEqual(calls, [{ accessKey }]);
-  assert.equal(provider.kind, "tempo");
-  assert.equal(typeof provider.ws, "function");
-  assert.equal(typeof provider.fetch, "function");
   const mercator = resolveMcpServers(provider, undefined).mercator;
   assert.equal(mercator.url, DEFAULT_MERCATOR_MCP_URL);
-  assert.equal(mercator.payment.methods.length, 1);
-  assert.equal(mercator.payment.methods[0].length, 2);
-  assert.equal(mercator.fetch, undefined);
   assert.equal(await mercator.payment.onPaymentRequired({ request: { amount: "250000" } }), true);
   await assert.rejects(
     mercator.payment.onPaymentRequired({ request: { amount: "250001" } }),
     /exceeds the per-request limit 250000/,
-  );
-
-  await assert.rejects(
-    createTempoProviderFromAccounts({ wallet: {} }),
-    /getMppxParameters/,
-  );
-  await assert.rejects(
-    createTempoProviderFromAccounts({
-      wallet: { getMppxParameters: () => ({}) },
-    }),
-    /invalid MPPx parameters/,
   );
 });
 

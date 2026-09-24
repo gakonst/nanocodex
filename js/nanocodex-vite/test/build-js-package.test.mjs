@@ -39,11 +39,6 @@ test("concurrent cold WASM package builds are serialized", async () => {
     for (const artifact of generatedArtifacts) {
       assert((await readFile(join(fixture.packageRoot, artifact))).length > 0, artifact);
     }
-    for (const artifact of ["pkg-web/nanocodex.js", "pkg-web/nanocodex_bg.js", "pkg-node/nanocodex.js"]) {
-      const glue = await readFile(join(fixture.packageRoot, artifact), "utf8");
-      assert.ok(glue.includes("new Uint8Array(wasm.memory.buffer, ptr, len)"), artifact);
-      assert.ok(!glue.includes("getUint8ArrayMemory0().subarray("), artifact);
-    }
   } finally {
     await fixture.close();
   }

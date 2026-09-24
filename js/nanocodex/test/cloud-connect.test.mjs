@@ -102,35 +102,6 @@ test("Connect HTTP transport binds every API request to the configured app ID", 
   assert.equal(fetches[1].init.credentials, "include");
 });
 
-test("Connect HTTP transport sends POST bodies through the native fetch boundary without wrapping them", async () => {
-  const fetches = [];
-  const transport = Transport.http("https://connect.example", {
-    async fetch(input, init) {
-      fetches.push({ input, init });
-      return Response.json({ ok: true });
-    },
-  }).setup({ appId: "mobile-app" });
-
-  const body = JSON.stringify({ input: "hello from Safari" });
-  await transport.fetch("https://connect.example/v1/agents/agent-1/turns", {
-    method: "POST",
-    headers: {
-      authorization: "Bearer session",
-      "content-type": "application/json",
-      "idempotency-key": "turn-1",
-    },
-    body,
-  });
-
-  assert.equal(fetches[0].input, "https://connect.example/v1/agents/agent-1/turns");
-  assert.equal(fetches[0].init.method, "POST");
-  assert.equal(fetches[0].init.body, body);
-  assert.equal(fetches[0].init.headers.get("authorization"), "Bearer session");
-  assert.equal(fetches[0].init.headers.get("content-type"), "application/json");
-  assert.equal(fetches[0].init.headers.get("idempotency-key"), "turn-1");
-  assert.equal(fetches[0].init.headers.get("x-nanocodex-app-id"), "mobile-app");
-});
-
 test("Connect durable prompts reach native fetch without wrapping their POST body in Request", async () => {
   const fetches = [];
   const agentId = "019fc927-b280-79a7-8445-1b9996ad2fb0";

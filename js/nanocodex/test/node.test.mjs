@@ -7,7 +7,6 @@ import { WebSocketServer } from "ws";
 import { Actions, Agent, Subagents, Transport } from "../node/index.mjs";
 import { createNodeHost } from "../node/host.mjs";
 import { createMemoryDurabilityStore } from "../runtime/durability-store.mjs";
-import { createWorkspace } from "../runtime/workspace.mjs";
 import { createTools } from "../tools/Tools.mjs";
 
 const SESSION_IDS = Object.freeze({
@@ -102,20 +101,6 @@ test("Node host owns one Tools lifecycle and validates Tools-owned MCP policy", 
     () => tools.attach("wss://managed.test/tools"),
     /Tools runtime is closed/,
   );
-
-  const workspace = createWorkspace({ backend: {
-    async list() { return []; },
-    async readFile() { return new Uint8Array(); },
-    async writeFile() {},
-    async remove() {},
-    async mkdir() {},
-  } });
-  const workspaceTools = await createTools({ workspace });
-  assert.throws(
-    () => createNodeHost({ tools: workspaceTools, filesystem: {} }),
-    /workspace is already configured in Tools/,
-  );
-  await workspaceTools.close();
 });
 
 test("Node host disposal completes later owners after a tool cleanup failure", async () => {

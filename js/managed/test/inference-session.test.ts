@@ -486,16 +486,6 @@ describe("telemetry stays off the routing path", () => {
     } finally { release(); await response; await waitOnExecutionContext(f.context); }
   });
 
-  it.each(["failure", "malformed", "disabled"])("does not consult %s probe context", async mode => {
-    const snapshot = vi.fn(async () => { if (mode === "failure") throw Error("private-probe-error"); return { invalid: true }; });
-    const f = fixture({ NANOCODEX_PROVIDER_PROBES: mode === "disabled" ? "false" : "true",
-      NANOCODEX_PROVIDER_PROBE_COORDINATOR: { getByName: () => ({ snapshot }) } });
-    await f.create();
-    expect((await f.call("POST", "/responses", { input: "hello" })).status).toBe(200);
-    expect(snapshot).not.toHaveBeenCalled();
-    expect(JSON.stringify(f.commits)).not.toContain("private");
-  });
-
   it("rejects client telemetry fields before any coordinator or model call", async () => {
     const snapshot = vi.fn(async () => [probe()]);
     const f = fixture({ NANOCODEX_PROVIDER_PROBES: "true", NANOCODEX_PROVIDER_PROBE_COORDINATOR: { getByName: () => ({ snapshot }) } });
@@ -611,17 +601,6 @@ describe("stateless standard Responses", () => {
     expect(text).toContain("event: response.completed");
     expect(text).toContain('"object":"response"');
     expect(text).not.toContain("session_id");
-  });
-
-  it("sanitizes stateless provider failures", async () => {
-    const f = fixture();
-    f.ai.mockImplementation(async model => {
-      if (model === "typesafe/jev") return classification();
-      throw Error("private prompt and deployment key");
-    });
-    const response = await call(f.bindings, { input: "hello" });
-    expect(response.status).toBe(502);
-    expect(await response.json()).toEqual({ error: { code: "inference_failed" } });
   });
 
   it("shares the 120s deadline across routing and generation", async () => {

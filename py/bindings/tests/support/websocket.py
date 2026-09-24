@@ -17,7 +17,6 @@ JsonObject = dict[str, Any]
 @dataclass(frozen=True)
 class RequestRecord:
     connection_id: int
-    request_index: int
     body: JsonObject
 
 
@@ -138,11 +137,6 @@ class MockResponsesServer:
         self._acceptor.start()
 
     @property
-    def requests(self) -> list[RequestRecord]:
-        with self._condition:
-            return list(self._requests)
-
-    @property
     def connection_count(self) -> int:
         with self._condition:
             return self._next_connection_id
@@ -181,8 +175,6 @@ class MockResponsesServer:
         connection: WebSocketConnection,
         text: str = "done",
         response_id: str | None = None,
-        *,
-        usage: bool = True,
     ) -> str:
         response_id = response_id or self.next_response_id("final")
         response: JsonObject = {
@@ -195,17 +187,13 @@ class MockResponsesServer:
                     "content": [{"type": "output_text", "text": text}],
                 }
             ],
-            "usage": (
-                {
-                    "input_tokens": 10,
-                    "input_tokens_details": {"cached_tokens": 5},
-                    "output_tokens": 2,
-                    "output_tokens_details": {"reasoning_tokens": 1},
-                    "total_tokens": 12,
-                }
-                if usage
-                else None
-            ),
+            "usage": {
+                "input_tokens": 10,
+                "input_tokens_details": {"cached_tokens": 5},
+                "output_tokens": 2,
+                "output_tokens_details": {"reasoning_tokens": 1},
+                "total_tokens": 12,
+            },
         }
         connection.send_json({"type": "response.completed", "response": response})
         return response_id
@@ -301,13 +289,11 @@ class MockResponsesServer:
             with self._condition:
                 self._connections[connection_id] = connection
                 self._condition.notify_all()
-            request_index = 0
             while not self._stopping.is_set():
                 body = connection.recv_json()
                 if body is None:
                     return
-                request_index += 1
-                record = RequestRecord(connection_id, request_index, body)
+                record = RequestRecord(connection_id, body)
                 with self._condition:
                     self._requests.append(record)
                     self._condition.notify_all()

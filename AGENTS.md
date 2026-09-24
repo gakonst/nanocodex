@@ -17,6 +17,9 @@
   obsolete runner references. Prune mock methods and setup that no surviving
   scenario uses; a fixture should support the behavior being checked, not
   reproduce the full production interface.
+- Choose representative inputs for distinct behavior and failure paths. Avoid
+  repeating the same journey for every configuration value or cosmetic variant
+  unless the variation exercises a different failure mode.
 - Do not test source text, private layouts, method presence, fixed prompt/UI
   copy, or a mock's own behavior. A security or regression label does not make
   these checks evidence of runtime behavior. Use compiler, lint, and package

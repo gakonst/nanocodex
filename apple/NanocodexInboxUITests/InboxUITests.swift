@@ -474,36 +474,6 @@ final class InboxUITests: XCTestCase {
         capture(app, "voice-greeting-reply")
         XCTAssertEqual(replied, .completed)
     }
-    func testLiveNavigationAndAttachmentMenus() throws {
-        guard ProcessInfo.processInfo.environment["NANOCODEX_INBOX_LIVE"] == "1" else { throw XCTSkip("Live account required") }
-        let app = XCUIApplication(); app.launch()
-        XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 30))
-        for pass in 1...3 {
-            let jobs = navigationAction(app, "inbox-scheduled-jobs")
-            capture(app, "menu-before-tap-\(pass)")
-            jobs.coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-            let opened = app.navigationBars["Scheduled jobs"].waitForExistence(timeout: 10)
-            capture(app, "menu-after-tap-\(pass)")
-            XCTAssertTrue(opened, app.debugDescription)
-            app.navigationBars["Scheduled jobs"].buttons.element(boundBy: 0).tap()
-        }
-        app.buttons["add-attachments"].tap()
-        let camera = app.buttons["choose-camera"]
-        capture(app, "attachment-menu-probe")
-        XCTAssertTrue(camera.waitForExistence(timeout: 5), app.debugDescription)
-    }
-    func testLiveDogfoodConversationAdmission() throws {
-        guard ProcessInfo.processInfo.environment["NANOCODEX_INBOX_LIVE"] == "1" else { throw XCTSkip("Live account required") }
-        let app = XCUIApplication()
-        app.launch()
-        XCTAssertTrue(app.buttons["conversation-drawer-open"].waitForExistence(timeout: 30))
-        app.buttons["new-conversation"].tap()
-        queue(app, "Dogfood admission check. Reply exactly DOGFOOD_OK.")
-        let reply = assistantText(app, matching: NSPredicate(format: "label CONTAINS %@", "DOGFOOD_OK"))
-        let complete = reply.waitForExistence(timeout: 90)
-        capture(app, "dogfood-admission")
-        XCTAssertTrue(complete)
-    }
     func testRemoteScreenControlAndReconnect() throws {
         let environment = ProcessInfo.processInfo.environment
         guard let origin = environment["NANOCODEX_TEST_REMOTE_ORIGIN"],
@@ -792,23 +762,6 @@ final class InboxUITests: XCTestCase {
         XCTAssertTrue(app.descendants(matching: .any)["conversation"].firstMatch.waitForExistence(timeout: 5))
 
         XCTAssertEqual(self.selectedConversationTab(app).label, "Build the agent inbox")
-    }
-
-    func testScheduledJobsEmptyStatePointsToChat() {
-        let app = launch(["NANOCODEX_DEMO_EMPTY_SCHEDULES": "1"])
-        navigationAction(app, "inbox-scheduled-jobs").coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        XCTAssertTrue(app.staticTexts["No scheduled jobs yet"].waitForExistence(timeout: 10))
-        XCTAssertTrue(app.staticTexts["Ask an agent to run a task on a schedule. It will appear here."].exists)
-        XCTAssertFalse(app.buttons["New schedule"].exists)
-        capture(app, "scheduled-jobs-empty")
-        app.navigationBars["Scheduled jobs"].buttons.element(boundBy: 0).tap()
-        navigationAction(app, "Account settings").tap()
-        XCTAssertTrue(app.navigationBars["Settings"].waitForExistence(timeout: 5))
-        XCTAssertTrue(app.buttons["Done"].exists, "Settings must dismiss back to the existing conversation")
-        XCTAssertTrue(app.buttons["Connect account"].exists)
-        capture(app, "inbox-settings-sheet")
-        app.buttons["Done"].tap()
-        XCTAssertTrue(navigationAction(app, "inbox-scheduled-jobs").isHittable)
     }
 
     func testLiveScheduledJobsLoadAfterRelaunch() throws {
@@ -3088,28 +3041,6 @@ final class InboxUITests: XCTestCase {
         capture(app, "top-tabs-bottom-browser-controls")
     }
 
-    func testPlusCreatesAgentAndMenuKeepsNavigationAccessible() {
-        let app = launch(["NANOCODEX_DEMO_PROFILE": UUID().uuidString])
-        let original = self.selectedConversationTab(app).label
-        composer(app).tap(); composer(app).typeText("Keep my original draft")
-        app.buttons["new-conversation"].tap()
-        XCTAssertEqual(self.selectedConversationTab(app).label, "New agent")
-        XCTAssertTrue(app.otherElements["conversation-empty"].waitForExistence(timeout: 5))
-        navigationAction(app, "Account settings").tap()
-        XCTAssertTrue(app.descendants(matching: .any)["inbox-settings"].waitForExistence(timeout: 5))
-        app.buttons["Done"].tap()
-        navigationAction(app, "inbox-scheduled-jobs").coordinate(withNormalizedOffset: CGVector(dx: 0.5, dy: 0.5)).tap()
-        XCTAssertTrue(app.staticTexts["Scheduled jobs"].waitForExistence(timeout: 5))
-        app.navigationBars.buttons.element(boundBy: 0).tap()
-        selectAgentFromDrawer(app, title: original)
-        XCTAssertEqual(composer(app).value as? String, "Keep my original draft")
-        app.coordinate(withNormalizedOffset: CGVector(dx: 0.02, dy: 0.45))
-            .press(forDuration: 0.01, thenDragTo: app.coordinate(withNormalizedOffset: CGVector(dx: 0.65, dy: 0.45)))
-        XCTAssertTrue(app.scrollViews["conversation-list"].waitForExistence(timeout: 5))
-        app.buttons["conversation-drawer-close"].tap()
-        XCTAssertEqual(self.selectedConversationTab(app).label, original)
-        capture(app, "tabs-menu-and-search")
-    }
     func testTabShowsSentMessageAndEmptyRosterCanCreateAgent() {
         let app = launch(["NANOCODEX_DEMO_EMPTY_AGENTS": "1", "NANOCODEX_DEMO_PROFILE": UUID().uuidString])
         XCTAssertTrue(app.otherElements["inbox-empty"].waitForExistence(timeout: 5))

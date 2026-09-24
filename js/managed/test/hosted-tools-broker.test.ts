@@ -1427,61 +1427,12 @@ function cleanupEntry(remoteName = "cleanup", strict = false): HostedToolCatalog
     definition: {
       type: "function",
       name: "cleanup",
-      description: "List open web tabs, inspect one exact tab, and preview or revert one declarative CSS cleanup recipe.",
+      description: "Synthetic app tool",
       strict,
       parameters: {
         oneOf: [
-          {
-            type: "object",
-            properties: {
-              action: { const: "list_tabs" },
-              cursor: { type: "string", minLength: 1, maxLength: 80 },
-            },
-            required: ["action"],
-            additionalProperties: false,
-          },
-          {
-            type: "object",
-            properties: {
-              action: { const: "inspect" },
-              tab_ref: { type: "string", minLength: 1, maxLength: 80 },
-            },
-            required: ["action"],
-            additionalProperties: false,
-          },
-          {
-            type: "object",
-            properties: {
-              action: { const: "preview" },
-              document_revision: { type: "string" },
-              recipe: {
-                type: "object",
-                properties: {
-                  schema_version: { const: 1 },
-                  name: { type: "string", minLength: 1, maxLength: 80 },
-                  css: { type: "string", maxLength: 32768 },
-                  hide_selectors: {
-                    type: "array",
-                    maxItems: 64,
-                    items: { type: "string", minLength: 1, maxLength: 512 },
-                  },
-                },
-                required: ["name", "css", "hide_selectors"],
-                additionalProperties: false,
-              },
-            },
-            required: ["action", "document_revision", "recipe"],
-            additionalProperties: false,
-          },
-          {
-            type: "object",
-            properties: {
-              action: { const: "revert_preview" },
-              preview_id: { type: "string" },
-            },
-            required: ["action", "preview_id"],
-            additionalProperties: false,
-          },
+          { type: "object", properties: { action: { const: "inspect" } } },
+          { type: "object", properties: { action: { const: "preview" } } },
         ],
       },
     },

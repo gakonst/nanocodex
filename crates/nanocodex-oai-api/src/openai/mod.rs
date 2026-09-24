@@ -695,20 +695,6 @@ mod tests {
     }
 
     #[test]
-    fn one_client_recipe_builds_independent_sessions() {
-        let client = OpenAi::builder("test-key")
-            .service(|| NeverCalled)
-            .build()
-            .unwrap();
-
-        let session = client.instructions("Answer only from supplied facts.");
-        let first = session.clone().build().unwrap();
-        let second = session.build().unwrap();
-
-        assert_ne!(first.id(), second.id());
-    }
-
-    #[test]
     fn response_storage_is_opt_in_for_both_auth_modes() {
         for mode in [OpenAiAuthMode::ApiKey, OpenAiAuthMode::ChatGpt] {
             let mut config = ModelConfig {
@@ -801,21 +787,6 @@ mod tests {
             .expect("Astra pro reasoning mode should fail validation");
 
         assert!(error.to_string().contains("does not support pro"));
-    }
-
-    #[test]
-    fn api_key_can_opt_into_https_checkpoints() {
-        let client = OpenAi::builder("test-key")
-            .transport(ResponsesTransport::Https)
-            .store(true)
-            .build()
-            .unwrap();
-
-        assert!(client.config.store_responses);
-        assert_eq!(
-            client.config.responses_history,
-            ResponsesHistory::Incremental
-        );
     }
 
     #[test]

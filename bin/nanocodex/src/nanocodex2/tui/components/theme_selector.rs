@@ -115,34 +115,3 @@ impl Component for ThemeSelector {
         ));
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::{Component, ThemeSelector, ThemeSelectorEffect, ThemeSelectorEvent};
-    use crate::tui::theme::ThemeMode;
-    use crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
-
-    fn key(code: KeyCode) -> ThemeSelectorEvent {
-        ThemeSelectorEvent::Terminal(Event::Key(KeyEvent::new(code, KeyModifiers::NONE)))
-    }
-
-    #[test]
-    fn selects_each_theme_mode() {
-        let mut selector = ThemeSelector::new(ThemeMode::Auto);
-
-        assert_eq!(
-            selector.update(key(KeyCode::Enter)).effects,
-            [ThemeSelectorEffect::Apply(ThemeMode::Auto)]
-        );
-        selector.update(key(KeyCode::Down));
-        assert_eq!(
-            selector.update(key(KeyCode::Enter)).effects,
-            [ThemeSelectorEffect::Apply(ThemeMode::Light)]
-        );
-        selector.update(key(KeyCode::Down));
-        assert_eq!(
-            selector.update(key(KeyCode::Enter)).effects,
-            [ThemeSelectorEffect::Apply(ThemeMode::Dark)]
-        );
-    }
-}

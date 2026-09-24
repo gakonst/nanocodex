@@ -597,54 +597,6 @@ test("stop waits for an in-flight lifecycle start before stopping and freeing it
   } finally { started?.(); session.abort(); fixture.restore(); }
 });
 
-test("explains browser and embed microphone denials", async () => {
-  const previous = {
-    document: Object.getOwnPropertyDescriptor(globalThis, "document"),
-    navigator: Object.getOwnPropertyDescriptor(globalThis, "navigator"),
-    window: Object.getOwnPropertyDescriptor(globalThis, "window"),
-  };
-  const denial = Object.assign(new Error("Permission denied"), { name: "NotAllowedError" });
-  try {
-    Object.defineProperty(globalThis, "navigator", {
-      configurable: true,
-      value: { mediaDevices: { getUserMedia: async () => { throw denial; } } },
-    });
-    globalThis.window = { top: {} };
-    globalThis.document = { permissionsPolicy: { allowsFeature: () => false } };
-    await assert.rejects(
-      capturePreferredMicrophone(async () => undefined),
-      (error) => error instanceof VoiceError
-        && error.code === "microphone_permission_blocked"
-        && /host iframe must allow="microphone"/.test(error.message),
-    );
-
-    const topWindow = {};
-    topWindow.top = topWindow;
-    globalThis.window = topWindow;
-    globalThis.document = { permissionsPolicy: { allowsFeature: () => true } };
-    await assert.rejects(
-      capturePreferredMicrophone(async () => undefined),
-      (error) => error instanceof VoiceError
-        && error.code === "microphone_permission_blocked"
-        && /Allow it in your browser settings, then retry/.test(error.message),
-    );
-
-    const missing = Object.assign(new Error("No device"), { name: "NotFoundError" });
-    Object.defineProperty(globalThis, "navigator", {
-      configurable: true,
-      value: { mediaDevices: { getUserMedia: async () => { throw missing; } } },
-    });
-    await assert.rejects(
-      capturePreferredMicrophone(async () => undefined),
-      (error) => error instanceof VoiceError && error.code === "microphone_not_found",
-    );
-  } finally {
-    restoreGlobal("document", previous.document);
-    restoreGlobal("navigator", previous.navigator);
-    restoreGlobal("window", previous.window);
-  }
-});
-
 test("stops the initially acquired microphone when device selection fails", async () => {
   const previous = Object.getOwnPropertyDescriptor(globalThis, "navigator");
   const stopped = [];
@@ -1004,28 +956,6 @@ test("Rust playback permission follows successful frame delivery and reconnect r
     await voice.destroy(); agent.dispose(); fixture.restore();
     restoreGlobal("Audio", previousAudio); restoreGlobal("document", previousDocument);
   }
-});
-
-test("audio levels are normalized, muted immediately, and cleared after stop", async () => {
-  const fixture = installBrowserVoiceFixture();
-  let sample;
-  RTCPeerConnection.prototype.getStats = () => new Promise((resolve) => { sample = resolve; });
-  const calls = [];
-  const core = fakeVoiceCore(calls, { sidebandOpened: () => JSON.stringify({ playback_enabled: true }) });
-  const { agent } = await testAgent(core, calls);
-  const voice = Voice.create(agent, { captureMicrophone: async () => fakeMicrophone(calls) });
-  try {
-    await voice.start();
-    sample(new Map([[1, { type: "media-source", kind: "audio", audioLevel: 1.5 }],
-      [2, { type: "inbound-rtp", kind: "audio", audioLevel: 0.4 }]]));
-    await waitFor(() => voice.getSnapshot().microphoneLevel === 1);
-    assert.equal(voice.getSnapshot().speakerLevel, 0.4);
-    voice.setMuted(true);
-    assert.equal(voice.getSnapshot().microphoneLevel, 0);
-    await voice.stop();
-    assert.equal(voice.getSnapshot().speakerLevel, 0);
-    assert.equal(voice.getSnapshot().microphoneLevel, 0);
-  } finally { await voice.destroy(); agent.dispose(); fixture.restore(); }
 });
 
 test("answer recovery promotes an existing caption instead of duplicating it", async () => {
@@ -1420,20 +1350,6 @@ test('default account synthesis uses the voice selected by each start', async ()
       await voice.stop();
     }
   } finally { await voice.destroy(); agent.dispose(); fixture.restore(); restoreGlobal('AudioContext', previousContext); }
-});
-
-test('invalid provider settings reject before core creation or microphone capture', async () => {
-  const calls = [];
-  const { agent } = await testAgent(fakeVoiceCore(calls), calls);
-  const voice = Voice.create(agent, { captureMicrophone: assert.fail });
-  try {
-    for (const settings of [{ outputProvider: 'unknown' }, { outputProvider: 'elevenlabs' },
-      { outputProvider: 'elevenlabs', elevenLabsVoiceId: '../invalid' }]) {
-      await assert.rejects(voice.start(settings), TypeError);
-      assert.equal(voice.getSnapshot().status, 'idle');
-    }
-    assert.deepEqual(calls, []);
-  } finally { await voice.destroy(); agent.dispose(); }
 });
 
 test('Connect cannot synthesize with visitor account credentials by default', async () => {

@@ -837,47 +837,6 @@ function rawAgent(sessionId) {
         ? `${sessionId}:${input}`
         : `${sessionId}:${id}:${input}`);
     },
-    promptContent(input, id) {
-      const text = JSON.parse(input)[0].text;
-      return rawTurn(id === undefined ? `${sessionId}:${text}` : `${sessionId}:${id}:${text}`);
-    },
-    async fork() {
-      return rawAgent(`${sessionId}-fork`);
-    },
-    async forkFrom() {
-      return rawAgent(`${sessionId}-fork`);
-    },
-    async spawn() {
-      return rawAgent(`${sessionId}-spawn`);
-    },
-    async compact() {},
-    async context() {
-      return JSON.stringify({
-        workspace: "/workspace",
-        history: [{ type: "message", role: "developer" }],
-      });
-    },
-    async appendDeveloperMessage() {
-      return JSON.stringify({
-        workspace: "/workspace",
-        history: [{ type: "message", role: "developer" }],
-      });
-    },
-    async startRealtimeConversation() {
-      return this.appendDeveloperMessage();
-    },
-    async endRealtimeConversation() {
-      return this.appendDeveloperMessage();
-    },
-    realtimeDelegation(input, transcript) {
-      return `delegated:${input}:${JSON.parse(transcript).map(({ role, text }) => `${role}: ${text}`).join("\n")}`;
-    },
-    realtimeTailDelegation(transcript) {
-      const entries = JSON.parse(transcript);
-      return entries.length
-        ? `tail:${entries.map(({ role, text }) => `${role}: ${text}`).join("\n")}`
-        : undefined;
-    },
     free() {},
   };
 }
@@ -887,35 +846,11 @@ function rawTurn(value) {
     async result() {
       return {
         finalMessage: value,
-        snapshot() {
-          return JSON.stringify({
-            version: 1,
-            model: "gpt-6-sol",
-            lineage_id: "test-lineage",
-            prompt_cache_key: "test-cache-key",
-            workspace: ".",
-            canonical_context: {},
-            history: [],
-          });
-        },
-        usage() {
-          return JSON.stringify({
-            input_tokens: 0,
-            cached_input_tokens: 0,
-            cache_write_input_tokens: 0,
-            output_tokens: 0,
-            reasoning_output_tokens: 0,
-            total_tokens: 0,
-            estimated_cost: null,
-            cost_status: "usage_not_reported",
-          });
-        },
+        snapshot() {},
+        usage() {},
         free() {},
       };
     },
-    async steer() {},
-    async steerContent() {},
-    async cancel() {},
     free() {},
   };
 }

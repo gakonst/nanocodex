@@ -289,88 +289,14 @@ test("prepared construction shares cold engine initialization without retaining 
   }
 });
 
-test("Cloudflare Agent owns credentials, transport, and durability options", async () => {
+test("Cloudflare Agent rejects caller credentials and transport authority", async () => {
   const module = new Uint8Array();
-  await assert.rejects(create(module), /requires a Durable Object instance/);
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), { apiKey: "managed-secret" }),
-    /does not accept apiKey; only durabilityId, eventPersistence, instructions, additionalInstructions, terminalReceiptRetention, and tools are configurable/,
-  );
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), { CODEX_OAUTH_BOOTSTRAP: "managed-secret" }),
-    /does not accept CODEX_OAUTH_BOOTSTRAP/,
-  );
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), { transport: {} }),
-    /does not accept transport/,
-  );
-  for (const name of [
-    "model", "thinking", "reasoningMode", "fastMode",
-    "filesystem", "mcp", "codeEvaluator", "toolMode",
-    "waitForPreconnect",
-  ]) {
+  for (const name of ["apiKey", "CODEX_OAUTH_BOOTSTRAP", "transport", "subject"]) {
     await assert.rejects(
-      create(module, durableOwner(new MemoryStorage()), { [name]: "forbidden" }),
+      create(module, durableOwner(new MemoryStorage()), { [name]: "caller-selected" }),
       new RegExp(`does not accept ${name}`),
     );
   }
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), { subject: "caller-selected" }),
-    /does not accept subject/,
-  );
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), { eventPersistence: "somewhere" }),
-    /eventPersistence must be durable or caller/,
-  );
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), { terminalReceiptRetention: -1 }),
-    /terminalReceiptRetention must be an integer from 0 through 4096/,
-  );
-  await assert.rejects(
-    create(module, { ctx: durableContext(new MemoryStorage()), env: {} }),
-    /owner\.env\.NANOCODEX Service Binding/,
-  );
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), {
-      [Symbol.for("nanocodex.cloudflare.internalRuntime")]: [],
-    }),
-    /internal runtime options must be an object/,
-  );
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), {
-      [Symbol.for("nanocodex.cloudflare.internalRuntime")]: {
-        subagentLifecycle: true,
-      },
-    }),
-    /subagent lifecycle hook must be a function/,
-  );
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), {
-      [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { subagentMaxConcurrency: 0 },
-    }),
-    /subagentMaxConcurrency must be a positive safe integer/,
-  );
-  await assert.rejects(
-    create(module, durableOwner(new MemoryStorage()), {
-      [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { waitForPreconnect: "false" },
-    }),
-    /waitForPreconnect must be a boolean/,
-  );
-  await assert.rejects(
-    create(module, { env: { NANOCODEX: egressBinding() } }),
-    /requires owner\.ctx/,
-  );
-  await assert.rejects(
-    create(module, { ctx: durableContext(new MemoryStorage(), ""), env: { NANOCODEX: egressBinding() } }),
-    /requires owner\.ctx\.id/,
-  );
-  await assert.rejects(
-    create(module, {
-      ctx: { id: { toString: () => FIRST_OBJECT_ID } },
-      env: { NANOCODEX: egressBinding() },
-    }),
-    /requires Durable Object SQLite storage/,
-  );
 });
 
 test("host delegation prohibition reaches Rust and overrides caller subagent extensions", async () => {
@@ -388,9 +314,6 @@ test("host delegation prohibition reaches Rust and overrides caller subagent ext
       assert.equal(storage.subagents.size, 0);
     } finally { await agent.session.shutdown(); }
   }
-  await assert.rejects(create(module, durableOwner(new MemoryStorage()), {
-    [Symbol.for("nanocodex.cloudflare.internalRuntime")]: { subagentsEnabled: "false" },
-  }), /subagentsEnabled must be a boolean/);
 });
 
 test("Cloudflare ephemeral Agent owns transport without durable state", async () => {

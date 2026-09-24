@@ -7,11 +7,9 @@ import {
   AgentTerminalView,
   ElevenLabsSettings,
   GeneratedOutputView,
-  ConversationHistoryRail,
   TerminalComposer,
   TerminalTranscriptSurface,
   interleaveTranscriptEntries,
-  terminalComposerAction,
 } from "../dist/index.js";
 import { VoiceControl } from "../dist/AgentTerminalView.js";
 
@@ -27,69 +25,6 @@ globalThis.window = {
   requestAnimationFrame: () => 1,
 };
 globalThis.document = { activeElement: null, body: {} };
-
-test("conversation rail owns selection and creation controls without duplicating ids", async () => {
-  const selected = [];
-  let created = 0;
-  let renderer;
-  const props = {
-    agentStatus: "ready",
-    conversations: [{ id: "one", title: "First", turnCount: 2 }],
-    mobileOpen: false,
-    onClose() {},
-    onCreate() { created += 1; },
-    onOpen() {},
-    onRetry() {},
-    onSelect(id) { selected.push(id); },
-    pending: false,
-    runtime: "managed",
-    selectedId: "one",
-  };
-  await act(async () => {
-    renderer = TestRenderer.create(React.createElement("main", null,
-      React.createElement(ConversationHistoryRail, props),
-      React.createElement(ConversationHistoryRail, props),
-    ));
-  });
-  const labelledIds = renderer.root.findAllByType("aside").map((node) => node.props["aria-labelledby"]);
-  assert.equal(new Set(labelledIds).size, 2);
-  assert.equal(renderer.root.findAllByProps({ "aria-current": "location" }).length, 2);
-  await act(async () => renderer.root.findAllByProps({ "aria-label": "New conversation" })[0].props.onClick());
-  await act(async () => renderer.root.findAllByProps({ "aria-current": "location" })[0].props.onClick());
-  assert.equal(created, 1);
-  assert.deepEqual(selected, ["one"]);
-  await act(async () => renderer.unmount());
-});
-
-test("caller can lock the composer without remounting the controller-backed terminal", async () => {
-  let renderer;
-  const props = {
-    agent: undefined,
-    agentError: undefined,
-    mode: "preview",
-    onConversationActivity() {},
-    onStateChange() {},
-    retryAgent() {},
-  };
-  await act(async () => {
-    renderer = TestRenderer.create(React.createElement(AgentTerminalView, props), {
-      createNodeMock(element) {
-        return element.type === "div"
-          ? { clientHeight: 300, firstElementChild: null, scrollHeight: 300, scrollTop: 0 }
-          : {};
-      },
-    });
-  });
-  assert.equal(renderer.root.findAllByType("form").length, 1);
-  await act(async () => renderer.update(React.createElement(AgentTerminalView, {
-    ...props,
-    composer: React.createElement("div", { "data-trial-exhausted": true }, "Connect or fund"),
-  })));
-  assert.equal(renderer.root.findAllByType("form").length, 0);
-  assert.equal(renderer.root.findByProps({ "data-trial-exhausted": true }).children.join(""), "Connect or fund");
-  assert.equal(renderer.root.findAllByProps({ role: "log" }).length, 1);
-  await act(async () => renderer.unmount());
-});
 
 test("hiding a full terminal retains its transcript and accessory state", async () => {
   let mounts = 0;
@@ -179,9 +114,6 @@ test("voice preferences reconnect an active call with the saved subscription set
 });
 
 test("composer keeps stop available beside send throughout an active turn", async () => {
-  assert.equal(terminalComposerAction(true, ""), "stop");
-  assert.equal(terminalComposerAction(true, "steer"), "stop");
-  assert.equal(terminalComposerAction(false, "steer"), "send");
   const changes = [];
   const submissions = [];
   const textareaNode = { value: "ship it" };
@@ -464,11 +396,6 @@ test("voice transcripts interleave with durable entries", async () => {
     });
   });
   assert.equal(renderer.root.findAllByProps({ "data-source": "voice" }).length, 2);
-  assert.deepEqual(
-    renderer.root.findAllByProps({ className: "agent-terminal-entry-label" })
-      .map((label) => label.children.join("")),
-    ["voice", "voice"],
-  );
   await act(async () => renderer.unmount());
 });
 

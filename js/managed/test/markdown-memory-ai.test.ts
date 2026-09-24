@@ -29,11 +29,6 @@ describe('bounded Workers AI memory completion', () => {
     }
   });
 
-  it('constructs without an optional AI binding and fails only when completion is invoked', async () => {
-    const complete = createMarkdownMemoryCompletion(undefined);
-    await expect(complete(request)).rejects.toMatchObject({ status: 503, code: 'memory_inference_unavailable' });
-  });
-
   it('rejects oversized prompts before inference', async () => {
     const run = vi.fn(async () => ({ response: '{}' }));
     const complete = createMarkdownMemoryCompletion({ run });

@@ -95,22 +95,24 @@ function expectedBuild(image, testsEnabled = 'true') {
 
 const commands = calls => calls.map(({ kind, args }) => ({ kind, args }));
 
-for (const image of ['phone', 'sandbox']) {
-  for (const testsEnabled of ['false', 'true', undefined]) {
-    test(`${image} preview with CI_TESTS_ENABLED=${testsEnabled ?? '(unset)'}`, t => {
-      const overrides = testsEnabled === undefined ? {} : { CI_TESTS_ENABLED: testsEnabled };
-      const result = fixture(t).run(image, overrides);
-      assert.equal(result.status, 0, result.stderr);
-      assert.deepEqual(commands(result.calls), [
-        ...(image === 'sandbox' ? [{ kind: 'prepare', args: [] }] : []),
-        expectedBuild(image, testsEnabled ?? 'true'),
-      ]);
-      const build = result.calls.find(call => call.kind === 'build');
-      assert.equal(build.cacheWrite, 'false', 'master cache write permission must be overridden');
-      assert.equal(build.testsEnabled, testsEnabled ?? null, 'explicit false must survive the build environment');
-      assert.ok(result.calls.every(call => call.account === null), 'preview requires no Cloudflare account');
-    });
-  }
+for (const [image, testsEnabled] of [
+  ['phone', 'false'],
+  ['sandbox', 'false'],
+  ['sandbox', undefined],
+]) {
+  test(`${image} preview with CI_TESTS_ENABLED=${testsEnabled ?? '(unset)'}`, t => {
+    const overrides = testsEnabled === undefined ? {} : { CI_TESTS_ENABLED: testsEnabled };
+    const result = fixture(t).run(image, overrides);
+    assert.equal(result.status, 0, result.stderr);
+    assert.deepEqual(commands(result.calls), [
+      ...(image === 'sandbox' ? [{ kind: 'prepare', args: [] }] : []),
+      expectedBuild(image, testsEnabled ?? 'true'),
+    ]);
+    const build = result.calls.find(call => call.kind === 'build');
+    assert.equal(build.cacheWrite, 'false', 'master cache write permission must be overridden');
+    assert.equal(build.testsEnabled, testsEnabled ?? null, 'explicit false must survive the build environment');
+    assert.ok(result.calls.every(call => call.account === null), 'preview requires no Cloudflare account');
+  });
 }
 
 for (const scenario of [

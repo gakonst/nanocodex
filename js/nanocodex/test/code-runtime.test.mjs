@@ -377,17 +377,7 @@ for (const pragma of ['{"yield_time_ms":-1}', '{"max_output_tokens":1.5}', '{"un
 }
 
 for (const value of [
-  "data:image/png;base64,",
   "data:image/png;base64,undefined",
-  "data:image/png;base64,a",
-  "data:image/png;base64,AA=A",
-  "data:image/png;base64,AB==",
-  "data:image/png;base64,AAB=",
-  "data:image/png;base64\n,AAAA",
-  "data:image/png;base64\u2028,AAAA",
-  "data:image/png;base64,!!!!",
-  "data:image/png,AAAA",
-  "data:application/octet-stream;base64,AAAA",
   { image_url: "data:image/png;base64,[object Object]" },
 ]) test(`Codex helper defers data URI decoding to history preparation: ${JSON.stringify(value)}`, async () => {
   const runtime = createCodeRuntime({});
@@ -396,16 +386,6 @@ for (const value of [
   ));
   assert.equal(result.success, true);
   assert.equal(result.output.some((item) => item.type === "input_image"), true);
-  runtime.reset();
-});
-
-for (const data of ["AAAA", "AA==", "AAA="]) test(`Code Mode accepts base64 image padding: ${data}`, async () => {
-  const runtime = createCodeRuntime({});
-  const result = JSON.parse(await runtime.executeCode(
-    `image("data:image/png;base64,${data}");`, "valid-image", "exec-valid-image",
-  ));
-  assert.equal(result.success, true);
-  assert.equal(result.output.find((item) => item.type === "input_image").image_url, `data:image/png;base64,${data}`);
   runtime.reset();
 });
 

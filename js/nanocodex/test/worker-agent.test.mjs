@@ -1602,10 +1602,6 @@ function createFixture(options = {}) {
         log.push(["compact", sessionId]);
         return options.holdCompaction ? new Promise(() => {}) : Promise.resolve();
       },
-      async context() {
-        log.push(["context", sessionId]);
-        return JSON.stringify({ workspace: `/workspace/${sessionId}`, history: [] });
-      },
       browserVoice(voice) {
         log.push(["voice-create", sessionId, voice]);
         return {

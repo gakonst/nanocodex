@@ -427,19 +427,14 @@ pub async fn serve_overlay_guest(
     )
 ))]
 mod tests {
-    use std::sync::Mutex;
-
-    use nanocodex_tools::{Tool, ToolContext, ToolInput, ToolOutput, standard::StandardTool};
+    use nanocodex_tools::{Tool, ToolContext, ToolInput, standard::StandardTool};
 
     use super::{VmToolClient, VmTools};
 
-    #[derive(Default)]
-    struct RecordingClient {
-        calls: Mutex<Vec<StandardTool>>,
-    }
+    struct CatalogClient;
 
     #[async_trait::async_trait]
-    impl VmToolClient for RecordingClient {
+    impl VmToolClient for CatalogClient {
         async fn computer_catalog(
             &self,
         ) -> Result<Vec<nanocodex_computer::ProviderTool>, nanocodex_tools::contract::ToolError>
@@ -451,18 +446,17 @@ mod tests {
         }
         async fn execute(
             &self,
-            tool: StandardTool,
+            _tool: StandardTool,
             _input: ToolInput,
             _context: ToolContext<'_>,
         ) -> nanocodex_tools::ToolResult {
-            self.calls.lock().unwrap().push(tool);
-            Ok(ToolOutput::text(tool.name()))
+            unreachable!("catalog tests do not execute tools")
         }
     }
 
     #[tokio::test]
     async fn composes_vm_workspace_tools_with_the_host_plan_tool() {
-        let vm = VmTools::new(RecordingClient::default());
+        let vm = VmTools::new(CatalogClient);
         let tools = vm
             .tools_builder()
             .await
@@ -479,7 +473,7 @@ mod tests {
 
     #[tokio::test]
     async fn attachment_selection_excludes_host_owned_defaults() {
-        let tools = VmTools::new(RecordingClient::default())
+        let tools = VmTools::new(CatalogClient)
             .attachment_tools_builder()
             .await
             .unwrap()
@@ -493,7 +487,7 @@ mod tests {
 
     #[tokio::test]
     async fn computer_tools_use_discovered_catalog_and_filter_private_hooks() {
-        let vm = VmTools::new(RecordingClient::default());
+        let vm = VmTools::new(CatalogClient);
         let computer = vm.computer_tools().await.unwrap();
         assert_eq!(computer.catalog().len(), 2);
         let visible = computer.tools().collect::<Vec<_>>();
@@ -537,25 +531,8 @@ mod tests {
     }
 
     #[test]
-    fn definitions_are_the_upstream_standard_contracts() {
-        let vm = VmTools::new(RecordingClient::default());
-        for (tool, standard) in [
-            (vm.exec_command_tool(), StandardTool::ExecCommand),
-            (vm.write_stdin_tool(), StandardTool::WriteStdin),
-            (vm.apply_patch_tool(), StandardTool::ApplyPatch),
-            (vm.view_image_tool(), StandardTool::ViewImage),
-        ] {
-            assert_eq!(tool.definition().name(), standard.name());
-            assert_eq!(
-                serde_json::to_value(tool.definition()).unwrap(),
-                serde_json::to_value(standard.definition()).unwrap()
-            );
-        }
-    }
-
-    #[test]
     fn preserves_standard_workspace_tool_parallel_safety() {
-        let vm = VmTools::new(RecordingClient::default());
+        let vm = VmTools::new(CatalogClient);
 
         assert!(vm.exec_command_tool().supports_parallel_tool_calls());
         assert!(vm.write_stdin_tool().supports_parallel_tool_calls());

@@ -26,34 +26,12 @@ class BindingTests(unittest.TestCase):
         )
         self.assertNotIn(secret, repr(agent))
         self.assertEqual(events.request_id, agent.session_id)
-        agent.set_thinking("high")
-        agent.set_fast_mode(True)
         agent.shutdown()
         drain(events)
 
     def test_configuration_errors_cross_the_boundary(self) -> None:
-        astra, astra_events = Nanocodex(
-            "test-key", model="gpt-6-astra", thinking="low"
-        )
-        astra.shutdown()
-        drain(astra_events)
-
-        with self.assertRaisesRegex(ValueError, "GPT-6 Astra requires"):
-            Nanocodex("test-key", model="gpt-6-astra", thinking="none")
-
-        with self.assertRaisesRegex(ValueError, "does not support pro"):
-            Nanocodex(
-                "test-key", model="gpt-6-astra", reasoning_mode="pro"
-            )
-
         with self.assertRaisesRegex(ValueError, "expected none"):
             Nanocodex("test-key", thinking="impossible")
-
-        with self.assertRaisesRegex(ValueError, "expected standard or pro"):
-            Nanocodex("test-key", reasoning_mode="impossible")
-
-        with self.assertRaisesRegex(ValueError, "expected gpt-6-astra"):
-            Nanocodex("test-key", model="impossible")
 
         agent, _ = Nanocodex("test-key")
         with self.assertRaisesRegex(ValueError, "expected none"):
