@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 // @ts-expect-error ToolRouter is a shared JavaScript runtime module.
 import { ToolRouter, providerSource } from "nanocodex-tools/runtime/tool-router";
 import { connectorToolsProvider, CONNECTOR_TOOL_CATALOG } from "../src/connector-tools";
-import { CONNECTOR_CAPABILITY_IDS, CONNECTOR_PROVIDER_IDS, CONNECTOR_PROVIDER_CATALOG } from "../src/connector-status";
+import { CONNECTOR_CAPABILITY_IDS } from "../src/connector-status";
 import { accountInfo, projectAccountInfo } from "../src/account-info";
 import { exactConnectorAccess, handleManagedEgress } from "../src/managed-egress";
 
@@ -32,9 +32,6 @@ describe("connected service discovery and requests", () => {
     expect(request.headers.get("x-nanocodex-connector-connection")).toBe(ID);
     expect(await router.execute("link_request", { method: "POST", path: "/spend_requests/create_delegated" }, context)).toMatchObject({ status: 403 });
     expect(fetch).toHaveBeenCalledTimes(1);
-  });
-  it("advertises every supported provider in the native connector catalog", () => {
-    expect(CONNECTOR_PROVIDER_CATALOG.map(provider => provider.id)).toEqual(CONNECTOR_PROVIDER_IDS);
   });
   it("makes every connector discoverable with tool_search and calls Spotify through authenticated egress", async () => {
     const { router, fetch } = setup();

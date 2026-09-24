@@ -280,15 +280,6 @@ mod tests {
 
         assert_eq!(spec["name"], "web__run");
         assert_eq!(spec["strict"], false);
-        assert_eq!(
-            spec.pointer("/parameters/properties/time/description"),
-            Some(&json!("Get time for the given UTC offsets."))
-        );
-        assert!(
-            spec["description"]
-                .as_str()
-                .is_some_and(|description| description.contains("turn2search5"))
-        );
     }
 
     #[test]

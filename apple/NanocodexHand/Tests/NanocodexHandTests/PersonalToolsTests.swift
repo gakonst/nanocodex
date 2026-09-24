@@ -54,13 +54,4 @@ final class PersonalToolsTests: XCTestCase {
         XCTAssertEqual(fix().json["accuracy_meters"], .number(15))
         XCTAssertEqual(fix().json["approximate"], .bool(false))
     }
-    func testToolCatalogMatchesDispatchAndBounds() {
-        let catalog = HandPersonalTools.catalog { name, _, properties, required in
-            .object(["name": .string(name), "properties": .object(properties), "required": .array(required.map(JSON.string))])
-        }
-        XCTAssertEqual(Set(catalog.map { $0["name"].string }), HandPersonalTools.names)
-        XCTAssertEqual(catalog[0]["properties"]["limit"]["maximum"], .number(50))
-        XCTAssertEqual(catalog[3]["properties"]["timeoutSeconds"]["maximum"], .number(10))
-        XCTAssertEqual(catalog[2]["required"], .array([.string("id")]))
-    }
 }

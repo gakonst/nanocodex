@@ -83,18 +83,6 @@ final class PhotoReadTests: XCTestCase {
             "Reserve at least 500 KB of the 2 MB row limit for call metadata")
     }
 
-    func testCatalogProvidesStrictAssetIDOnlyAndExplainsRendition() {
-        let catalog = HandPersonalTools.catalog { name, description, properties, required in
-            .object(["name": .string(name), "description": .string(description), "properties": .object(properties), "required": .array(required.map(JSON.string))])
-        }
-        let read = catalog.first { $0["name"].string == "read_photo" }
-        XCTAssertNotNil(read)
-        XCTAssertEqual(read?["required"], .array([.string("id")]))
-        XCTAssertTrue(read?["description"].string.contains("image(result.content[1])") == true)
-        XCTAssertThrowsError(try PersonalToolRequest(["id": .string("photo"), "path": .string("../outside")], allowed: ["id"]))
-        XCTAssertThrowsError(try PersonalToolRequest([:], allowed: ["id"]).text("id", required: true))
-    }
-
     @MainActor
     func testPublishedImagesSurviveDraftRemovalAndProduceTypedOutput() async throws {
         let root = try directory(), drafts = try directory()

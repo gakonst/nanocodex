@@ -953,7 +953,7 @@ fn agent_status_schema() -> Value {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentTask, SendAgentMessage, SpawnAgentTask, SubmitResult, WaitAgent, prepare_batch,
+        AgentTask, SendAgentMessage, SpawnAgentTask, SubmitResult, prepare_batch,
         spawn_agent_parameters,
     };
     use crate::runtime::Registry;
@@ -1090,8 +1090,6 @@ mod tests {
 
         assert_eq!(priority["enum"], json!(["deferred", "urgent"]));
         assert_eq!(priority["default"], json!("deferred"));
-        assert!(definition.description().contains("do not wait"));
-        assert!(definition.description().contains("finish the turn"));
     }
 
     #[test]
@@ -1113,13 +1111,6 @@ mod tests {
         ] {
             assert!(validator.is_valid(&json!({ "output": output })));
         }
-        assert_eq!(
-            parameters["properties"]["output"]["anyOf"]
-                .as_array()
-                .unwrap()
-                .len(),
-            6
-        );
         assert_eq!(parameters["required"], json!(["output"]));
         assert_eq!(parameters["additionalProperties"], json!(false));
         assert_eq!(parameters["properties"].as_object().unwrap().len(), 1);
@@ -1133,30 +1124,5 @@ mod tests {
                 .description()
                 .contains("unavailable to the root agent")
         );
-    }
-
-    #[test]
-    fn wait_agent_only_refers_to_clean_spawns() {
-        let definition = WaitAgent {
-            registry: Weak::<Registry>::new(),
-        }
-        .definition();
-        let description =
-            &definition.parameters().unwrap().as_value()["properties"]["agent_ids"]["description"];
-
-        assert!(description.as_str().unwrap().contains("spawn_agent"));
-        assert!(!description.as_str().unwrap().contains("fork_agent"));
-    }
-
-    #[test]
-    fn wait_agent_definition_requires_callers_to_preserve_nonterminal_agents() {
-        let definition = WaitAgent {
-            registry: Weak::<Registry>::new(),
-        }
-        .definition();
-
-        assert!(definition.description().contains("every requested agent"));
-        assert!(definition.description().contains("preserve"));
-        assert!(definition.description().contains("nonterminal"));
     }
 }

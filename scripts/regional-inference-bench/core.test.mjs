@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {measure,promptFor,quantile,summarize} from './core.mjs';
+import {measure} from './core.mjs';
 const wait=ms=>new Promise(r=>setTimeout(r,ms));
 test('first meaningful excludes created, reasoning and empty deltas; parses split UTF8 and CRLF',async()=>{
   const encoder=new TextEncoder();
@@ -23,10 +23,6 @@ test('buffered JSON observes output only after body completes',async()=>{
 test('no text or creation event does not invent meaningful output',async()=>{
   const r=await measure({url:'https://example.test',key:'test',body:{},fetchImpl:async()=>new Response('data: {"type":"response.created"}\n\n',{headers:{'content-type':'text/event-stream'}})});
   assert.equal(r.first_meaningful_ms,null);assert.equal(r.error,'missing_terminal');
-});
-test('prompt families preserve long prefix and quantiles include sample caution',()=>{
-  const a=promptFor('long-prefix','test',0),b=promptFor('long-prefix','test',1);assert.equal(a.slice(0,a.indexOf('\nQuestion')),b.slice(0,b.indexOf('\nQuestion')));assert.notEqual(a,b);assert.ok(a.length>20000);assert.equal(quantile([1,2,3,4],.95),4);assert.equal(quantile([],.5),null);
-  const s=summarize([{status:'completed',first_meaningful_ms:12,total_ms:20,error:null}]);assert.equal(s[0].meaningful_p50_ms,12);assert.equal(s[0].p95_caution,'fewer_than_20_samples');
 });
 
 import {run} from './run.mjs';

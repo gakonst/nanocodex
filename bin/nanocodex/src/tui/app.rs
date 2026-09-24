@@ -4021,13 +4021,6 @@ mod tests {
     }
 
     #[test]
-    fn configured_fast_mode_seeds_the_tui_state() {
-        let app = App::new(std::path::PathBuf::from("/worktree")).with_fast_mode(true);
-
-        assert!(app.fast_mode());
-    }
-
-    #[test]
     fn code_mode_and_multiline_shell_arguments_preserve_line_structure() {
         let code = "const tasks = inputs.map(run);\nawait Promise.all(tasks);";
         assert_eq!(summarize_tool_arguments("exec", &json!(code)), code);

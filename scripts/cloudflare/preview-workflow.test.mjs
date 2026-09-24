@@ -31,14 +31,6 @@ function block(source, name) {
   return match[1];
 }
 
-function runs(source) {
-  return [...source.matchAll(/^        run: (.*)$/gm)].map(match => match[1]);
-}
-
-function uses(source) {
-  return [...source.matchAll(/^      - uses: ([^@\n]+)@/gm)].map(match => match[1]);
-}
-
 const worker = job('worker-build');
 const plan = job('preview-image-plan');
 const images = job('preview-images');
@@ -59,21 +51,6 @@ test('preview images are explicit opt-in and independent of Worker readiness', (
   assert.equal(field(images, 'needs'), 'preview-image-plan');
   assert.equal(field(images, 'if'), "needs.preview-image-plan.outputs.required == 'true'");
   assert.equal(field(preview, 'needs'), 'worker-build');
-  assert.equal(block(images, 'strategy'),
-    '      fail-fast: false\n' +
-    '      matrix: ${{ fromJSON(needs.preview-image-plan.outputs.matrix) }}\n');
-});
-
-test('the plan exposes required and matrix outputs without credentials', () => {
-  assert.equal(block(plan, 'outputs'),
-    '      required: ${{ steps.plan.outputs.required }}\n' +
-    '      matrix: ${{ steps.plan.outputs.matrix }}\n');
-  assert.deepEqual(uses(plan), ['actions/checkout', 'actions/setup-node']);
-  assert.match(plan, /^          fetch-depth: 0$/m);
-  assert.match(plan, /^          node-version: 24$/m);
-  assert.match(plan, /^        id: plan$/m);
-  assert.match(plan, /^          BASE_SHA: \$\{\{ github\.event\.pull_request\.base\.sha \|\| github\.event\.before \}\}$/m);
-  assert.deepEqual(runs(plan), ['node scripts/cloudflare/preview-images.mjs']);
 });
 
 test('preview image jobs can only plan and build without publishing or credentials', () => {
@@ -85,44 +62,14 @@ test('preview image jobs can only plan and build without publishing or credentia
     assert.doesNotMatch(source, /^\s+CI_TESTS_ENABLED:/m, 'retain the sandbox Dockerfile default');
     assert.doesNotMatch(source, /WRANGLER_DOCKER_CACHE_WRITE|cache\/save|login-action|--push|--cache-to/);
     assert.match(source, /^          persist-credentials: false$/m);
-    assert.match(source, /^          node-version: 24$/m);
     assert.doesNotMatch(source, /continue-on-error:/);
   }
-  assert.deepEqual(uses(images), ['actions/checkout', 'actions/setup-node', 'docker/setup-buildx-action']);
-  assert.deepEqual(runs(images), ['node scripts/cloudflare/managed-images.mjs preview "$IMAGE"']);
-  assert.match(images, /^        id: builder$/m);
-  assert.match(images, /^          IMAGE: \$\{\{ matrix\.image \}\}$/m);
-  assert.match(images, /^          BUILDX_BUILDER: \$\{\{ steps\.builder\.outputs\.name \}\}$/m);
 });
 
 test('Worker previews retain validation and asset uploads but do not build containers', () => {
   assert.doesNotMatch(preview, /preview-images\.mjs|managed-images\.mjs|setup-buildx-action|WRANGLER_DOCKER_BIN|BUILDX_BUILDER|managed-container/);
   assert.match(preview,
     /      - name: Validate managed Worker\n        working-directory: js\/managed\n        run: npx wrangler deploy --dry-run --config wrangler\.jsonc --containers-rollout none\n/);
-  for (const name of [
-    'Restore same-revision Worker outputs',
-    'Validate egress Worker',
-    'Validate email Worker',
-    'Validate X Worker',
-    'Validate Connect API Worker',
-    'Validate Astra trial Worker',
-    'Validate Chief of Staff Worker',
-    'Validate account Worker',
-    'Upload Connect dialog preview version',
-    'Upload Connect playground preview version',
-  ]) assert.ok(preview.includes('      - name: ' + name + '\n'), 'missing preview step: ' + name);
-  assert.equal((preview.match(/run: npx wrangler versions upload /g) ?? []).length, 2);
-  const restore = preview.indexOf('- name: Restore same-revision Worker outputs');
-  const dialog = preview.indexOf('- name: Upload Connect dialog preview version');
-  const upload = preview.indexOf('- name: Upload Connect playground preview version');
-  assert.ok(restore >= 0 && restore < dialog && dialog < upload);
-  for (const name of ['Validate egress Worker', 'Prepare managed evaluator asset', 'Install Astra trial package', 'Validate account Worker']) {
-    assert.ok(upload < preview.indexOf('- name: ' + name), 'upload must precede ' + name);
-  }
-  for (const source of [worker, preview]) {
-    assert.match(source,
-      /      - name: Test Wrangler image cache boundary\n        # Temporarily disabled; re-enable when CI test coverage resumes\.\n        if: false\n/);
-  }
 });
 
 test('the Worker gate never depends on optional image jobs', () => {

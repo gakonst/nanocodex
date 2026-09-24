@@ -787,7 +787,6 @@ fn saturating_u16(value: usize) -> u16 {
 #[cfg(test)]
 mod tests {
     use std::{
-        io,
         sync::mpsc,
         time::{Duration, Instant},
     };
@@ -795,9 +794,8 @@ mod tests {
     use ratatex::{PixelSize, Ratatex, TerminalProfile};
     use ratatui::{
         Terminal,
-        backend::{Backend, ClearType, TestBackend, WindowSize},
-        buffer::Cell,
-        layout::{Position, Rect, Size},
+        backend::TestBackend,
+        layout::{Position, Rect},
         style::{Color, Modifier},
     };
 
@@ -1462,32 +1460,6 @@ mod tests {
     }
 
     #[test]
-    fn empty_main_layout_snapshot() {
-        let mut terminal = Terminal::new(TestBackend::new(48, 12)).unwrap();
-        let mut app = App::new("/workspace".into());
-
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
-
-        assert_eq!(
-            terminal.backend().to_string(),
-            concat!(
-                "\" nanocodex   /workspace                         \"\n",
-                "\"┌ Main ────────────────────────────────────────┐\"\n",
-                "\"│                                              │\"\n",
-                "\"│  Ask Nanocodex to inspect, edit, run, or     │\"\n",
-                "\"│explain this workspace.                       │\"\n",
-                "\"│                                              │\"\n",
-                "\"│                                              │\"\n",
-                "\"└──────────────────────────────────────────────┘\"\n",
-                "\"┌ Message → Main ──────────────────────────────┐\"\n",
-                "\"│                                              │\"\n",
-                "\"└──────────────────────────────────────────────┘\"\n",
-                "\" Ready  /simplify [           gpt-6-astra · low \"\n",
-            )
-        );
-    }
-
-    #[test]
     fn cursor_tracks_multiline_unicode_input_exactly() {
         let mut terminal = Terminal::new(TestBackend::new(48, 12)).unwrap();
         let mut app = App::new("/workspace".into());
@@ -1556,84 +1528,5 @@ mod tests {
 
         assert_eq!(terminal.backend().buffer().area, Rect::new(0, 0, 32, 10));
         assert_eq!(terminal.get_cursor_position().unwrap(), Position::new(4, 7));
-    }
-
-    #[test]
-    fn ratatui_draws_only_changed_cells_after_the_first_frame() {
-        let backend = CountingBackend::new(48, 12);
-        let mut terminal = Terminal::new(backend).unwrap();
-        let mut app = App::new("/workspace".into());
-
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
-        assert!(terminal.backend().draw_counts[0] > 0);
-
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
-        assert_eq!(terminal.backend().draw_counts[1], 0);
-
-        app.input.push('x');
-        app.cursor = app.input.len();
-        terminal.draw(|frame| render(frame, &mut app)).unwrap();
-        assert_eq!(terminal.backend().draw_counts[2], 1);
-    }
-
-    struct CountingBackend {
-        inner: TestBackend,
-        draw_counts: Vec<usize>,
-    }
-
-    impl CountingBackend {
-        fn new(width: u16, height: u16) -> Self {
-            Self {
-                inner: TestBackend::new(width, height),
-                draw_counts: Vec::new(),
-            }
-        }
-    }
-
-    impl Backend for CountingBackend {
-        fn draw<'a, I>(&mut self, content: I) -> io::Result<()>
-        where
-            I: Iterator<Item = (u16, u16, &'a Cell)>,
-        {
-            let content = content.collect::<Vec<_>>();
-            self.draw_counts.push(content.len());
-            self.inner.draw(content.into_iter())
-        }
-
-        fn hide_cursor(&mut self) -> io::Result<()> {
-            self.inner.hide_cursor()
-        }
-
-        fn show_cursor(&mut self) -> io::Result<()> {
-            self.inner.show_cursor()
-        }
-
-        fn get_cursor_position(&mut self) -> io::Result<Position> {
-            self.inner.get_cursor_position()
-        }
-
-        fn set_cursor_position<P: Into<Position>>(&mut self, position: P) -> io::Result<()> {
-            self.inner.set_cursor_position(position)
-        }
-
-        fn clear(&mut self) -> io::Result<()> {
-            self.inner.clear()
-        }
-
-        fn clear_region(&mut self, clear_type: ClearType) -> io::Result<()> {
-            self.inner.clear_region(clear_type)
-        }
-
-        fn size(&self) -> io::Result<Size> {
-            self.inner.size()
-        }
-
-        fn window_size(&mut self) -> io::Result<WindowSize> {
-            self.inner.window_size()
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            self.inner.flush()
-        }
     }
 }

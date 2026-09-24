@@ -1,22 +1,11 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  ASTRA_SETTINGS,
   paymentAmount,
   publicTrialState,
   reservePrompt,
   type TrialState,
 } from "../src/policy.ts";
-
-test("locks the sponsor model policy to supported Astra max settings", () => {
-  assert.deepEqual(ASTRA_SETTINGS, {
-    model: "gpt-6-astra",
-    thinking: "max",
-    reasoningMode: "standard",
-    fastMode: false,
-  });
-  assert.equal(Object.isFrozen(ASTRA_SETTINGS), true);
-});
 
 test("charges only a wallet proof outside production", () => {
   assert.equal(paymentAmount("development"), "0");

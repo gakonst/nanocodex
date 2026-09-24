@@ -7,7 +7,6 @@ import {
   cookieSetDetails,
   createCookieJar,
   validateCookieJar,
-  type CookieSyncTransport,
 } from "../lib/cookie-sync.ts";
 import { createAuthenticatedCookieSyncTransport } from "../lib/cookie-sync-client.ts";
 
@@ -129,22 +128,7 @@ test("rejects cross-origin, cross-store, inconsistent session, and unsupported p
   }), /unsupported fields/);
 });
 
-test("declares a narrow transport without implementing bearer or automatic upload policy", () => {
-  const transport: CookieSyncTransport = {
-    list: async () => [],
-    replace: async (jarId, jar) => ({
-      id: jarId,
-      origin: jar.origin,
-      profile_id: jar.profile_id,
-      store_id: jar.store_id,
-      cookie_count: jar.cookies.length,
-      revision: jar.revision + 1,
-    }),
-    materialize: async () => createCookieJar(fence, [persistentCookie], 1),
-    delete: async () => {},
-  };
-  assert.equal(typeof transport.replace, "function");
-  assert.equal(typeof transport.materialize, "function");
+test("Connect requests agent-run and browser-cookie-sync resources", () => {
   assert.match(connectSource, /"urn:nanocodex:agent:run"/);
   assert.match(connectSource, /"urn:nanocodex:browser-cookies:sync"/);
 });

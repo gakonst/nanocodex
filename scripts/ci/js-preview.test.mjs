@@ -80,9 +80,6 @@ test('absent or empty artifacts select the complete standalone build path', () =
       assert.ok(enabled(publish, fixture));
     }
   }
-  assert.match(buildSteps[0], /targets: wasm32-unknown-unknown/);
-  assert.match(buildSteps[2], /tool: wasm-bindgen-cli@/);
-  assert.match(build, /build-js-package\.sh --release/);
 });
 
 test('shared outputs come from this run and are installed before either publish path', () => {
@@ -93,7 +90,6 @@ test('shared outputs come from this run and are installed before either publish 
   assert.ok(steps.indexOf(download) < steps.indexOf(publish));
   assert.ok(steps.indexOf(build) < steps.indexOf(publish));
   assert.equal(field(publish, 'working-directory'), 'js/nanocodex');
-  assert.match(publish, /pkg-pr-new publish --previewVersion --compact\s+--commentWithSha \. \.\.\/nanocodex-vite/);
 });
 
 test('publishing retains its repository guard', () => {

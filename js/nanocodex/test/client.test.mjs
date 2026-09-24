@@ -6,7 +6,6 @@ import {
   createMemoryDurabilityStore,
   createSqliteDurabilityStore,
   durabilityRevision,
-  sqliteDurabilitySchema,
 } from "nanocodex/durability";
 import {
   activateHost,
@@ -170,7 +169,6 @@ test("the SQLite durability store owns revision validation and compare-and-repla
   const store = createSqliteDurabilityStore({
     transaction: (callback) => callback(query),
   });
-  assert.equal(sqliteDurabilitySchema.length, 3);
 
   assert.deepEqual(store.load("state-1"), { revision: "0", payload: null });
   const firstOwner = store.acquire("state-1", { ownerId: "owner-1" });

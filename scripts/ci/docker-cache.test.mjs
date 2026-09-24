@@ -17,22 +17,9 @@ test('only master push, manual, and scheduled jobs export Docker cache', () => {
   }
 });
 
-test('VM cache uses scoped public registry tags without replacing the local image', () => {
-  assert.match(vm, /CACHE_ARCH: \$\{\{ matrix.arch \}\}/);
-  assert.ok(vm.includes('ghcr.io/${GITHUB_REPOSITORY,,}-hand:buildcache-ci-hand-$CACHE_ARCH'));
-  assert.ok(vm.includes('echo "from=type=registry,ref=$cache_ref"'));
+test('cache publication requires the trusted write policy and a successful registry login', () => {
   assert.ok(vm.includes('if [ "$CACHE_WRITE" = true ]; then'));
-  assert.ok(vm.includes('echo "to=type=registry,ref=$cache_ref,mode=max,ignore-error=true"'));
   assert.ok(vm.includes("if: steps.hand-cache.outputs.to != ''"));
-  assert.ok(vm.includes('cache-from: ${{ steps.hand-cache.outputs.from }}'));
   assert.ok(vm.includes("cache-to: ${{ steps.cache-login.outcome == 'success' && steps.hand-cache.outputs.to || '' }}"));
-  assert.ok(vm.includes('id: cache-login\n        continue-on-error: true'));
-  assert.ok(vm.includes('docker buildx imagetools inspect "$CACHE_REF"'));
-  assert.ok(vm.includes('::notice title=Docker registry cache::verified $CACHE_REF'));
-  assert.ok(vm.includes('::warning title=Docker registry cache::Cache export unavailable; future runs will build normally.'));
-  assert.ok(!vm.includes('type=gha'));
-  assert.match(vm, /load: true\n          tags: nanocodex-hand:ci/);
   assert.ok(!vm.includes('push: true'));
-  assert.ok(vm.includes('--entrypoint sh nanocodex-hand:ci'));
-  assert.ok(vm.includes('NANOCODEX_DOCKER_TEST_IMAGE: nanocodex-hand:ci'));
 });

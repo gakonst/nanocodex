@@ -18,8 +18,6 @@ import {
 } from "../lib/extension.ts";
 import { acquireCleanupHost } from "../lib/host-lock.ts";
 
-const panelSource = await readFile(new URL("../entrypoints/sidepanel/App.tsx", import.meta.url), "utf8");
-const panelStyleSource = await readFile(new URL("../entrypoints/sidepanel/style.css", import.meta.url), "utf8");
 const backgroundSource = await readFile(new URL("../entrypoints/background.ts", import.meta.url), "utf8");
 const connectSource = await readFile(new URL("../lib/connect.ts", import.meta.url), "utf8");
 const configSource = await readFile(new URL("../wxt.config.ts", import.meta.url), "utf8");
@@ -100,32 +98,6 @@ test("keeps cleanup policy out of the visible transcript", () => {
   assert.notEqual(modelInput, visible);
   assert.equal(visibleCleanupPrompt(modelInput), visible);
   assert.equal(visibleCleanupPrompt("an unrelated retained prompt"), "an unrelated retained prompt");
-  assert.match(modelInput, /Respond normally to\s+ordinary conversation/);
-  assert.match(modelInput, /cleanup tool is optional/);
-  assert.match(modelInput, /user does not\s+specify a tab, inspect without tab_ref/);
-  assert.match(modelInput, /my X timeline/);
-  assert.match(modelInput, /Do not ask the user to switch tabs/);
-  assert.match(panelStyleSource, /\.conversation-workspace \{ flex: 1 1 0; min-height: 0; \}/);
-  assert.match(panelStyleSource, /\.chat \{ flex: 1 1 0; min-height: 0; \}/);
-  assert.match(panelStyleSource, /\.chat \.agent-terminal-shell \{ width: 100%; height: 100%; min-height: 0; \}/);
-  assert.match(panelStyleSource, /grid-template-rows: minmax\(0, 1fr\) auto/);
-});
-
-test("ordinary chat stays independent from the optional selected-page lease", () => {
-  const claim = sourceSection("async function claimSelectedPage(", "async function dispatchCleanup(");
-  const dispatch = sourceSection("async function dispatchCleanup(", "function startPanelTurn(");
-  const start = sourceSection("function startPanelTurn(", "async function finishPanelTurn(");
-  assert.match(dispatch, /input\.action === "list_tabs"/);
-  assert.match(dispatch, /const pending = listOpenPageTabs\(windowId, continuation\?\.offset \?\? 0, continuation\?\.catalogId\)/);
-  assert.match(backgroundSource, /const TAB_PAGE_SIZE = 50/);
-  assert.match(backgroundSource, /candidates\.slice\(offset, offset \+ TAB_PAGE_SIZE\)/);
-  assert.match(backgroundSource, /optionalString\(message, "catalog_id"\)/);
-  assert.match(dispatch, /operation\.ready \?\?= claimSelectedPage\(operation, requestedTabRef\)/);
-  assert.doesNotMatch(start, /claimSelectedPage/);
-  assert.match(claim, /operation\.selection \?\?= selectedPageSelection\(windowId\)/);
-  assert.doesNotMatch(start, /selectedPageSelection/);
-  assert.doesNotMatch(start, /setPreview\(undefined\)/);
-  assert.match(panelSource, /disabled=\{operationActive \|\| connecting\}/);
 });
 
 test("lazy claims remain bound to one exact side-panel-owned document", () => {
@@ -197,11 +169,3 @@ test("allows only one side panel to own the cleanup host", async () => {
   assert.ok(next);
   await next.release();
 });
-
-function sourceSection(start: string, end: string): string {
-  const from = panelSource.indexOf(start);
-  const to = panelSource.indexOf(end, from + start.length);
-  assert.notEqual(from, -1, `missing ${start}`);
-  assert.notEqual(to, -1, `missing ${end}`);
-  return panelSource.slice(from, to);
-}

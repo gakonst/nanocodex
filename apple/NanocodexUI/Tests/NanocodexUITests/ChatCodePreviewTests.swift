@@ -15,7 +15,6 @@ final class ChatCodePreviewTests: XCTestCase {
         XCTAssertEqual(preview.text.count, 512)
         XCTAssertTrue(source.hasPrefix(preview.text))
         XCTAssertTrue(preview.isTruncated)
-        XCTAssertTrue(source.hasSuffix("'\nPY"), "The complete input is retained independently of its preview")
     }
 
     func testNewlinesCannotCreateAScreenfulOfEmptyPreview() {

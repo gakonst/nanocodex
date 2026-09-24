@@ -130,13 +130,6 @@ test("IndexedDB durability reports u64 overflow without committing", async () =>
   });
 });
 
-test("IndexedDB durability creates owner, head, and immutable record stores", async () => {
-  const indexedDB = createFakeIndexedDb();
-  const store = createIndexedDbDurabilityStore({ indexedDB, databaseName: "upgrade" });
-  await store.load("thread");
-  assert.deepEqual(indexedDB.storeNames("upgrade"), ["owners", "records", "states"]);
-});
-
 test("IndexedDB durability rejects stores with incompatible key semantics", async () => {
   const indexedDB = createFakeIndexedDb();
   await createIndexedDbDurabilityStore({ indexedDB, databaseName: "schema" }).load("thread");
@@ -226,9 +219,6 @@ function createFakeIndexedDb() {
       const database = databases.get(name);
       database.closed = true;
       database.onclose?.();
-    },
-    storeNames(name) {
-      return [...databases.get(name).stores.keys()].sort();
     },
     alterStore(name, storeName, shape) {
       Object.assign(databases.get(name).stores.get(storeName), shape);

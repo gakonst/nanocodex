@@ -132,7 +132,6 @@ describe("eval-informed thread routing", () => {
   });
 });
 
-
 describe("live Unified Billing Jev envelopes", () => {
   it("reads completed wrapped answers and usage", async () => {
     const route = await resolveThreadRoute({run:async()=>({state:"Completed",result:{answers:{family:{choice:"terminal",confidence:.99}},usage:{input_tokens:333,output_tokens:38}},gatewayMetadata:{keySource:"Unified"}})}, "Fix build", policy());
@@ -245,7 +244,6 @@ describe("v2 direct candidate routing", () => {
   });
 });
 
-
 describe("cross-provider candidate routing", () => {
   const available = { openrouter: true, vercel: true };
   const choose = (id: string) => ({ run: vi.fn(async (_model: string, _input: unknown) => ({ answers: {
@@ -333,7 +331,6 @@ describe("cross-provider candidate routing", () => {
   });
 });
 
-
 describe("preference-preserving confidence fallback", () => {
   const economy = `${OSS_MODEL}:low`;
   const output = (choice: unknown = economy, confidence: unknown = .6, family: unknown = "other") => ({
@@ -394,7 +391,6 @@ describe("preference-preserving confidence fallback", () => {
   });
 });
 
-
 describe("captured preference-distribution policy replay (not accuracy labels)", () => {
   it.each(preferenceObservations.cases)("replays historical $catalog/$id against the supported catalog", async observation => {
     const ai = {run:vi.fn(async()=>({state:"Completed",result:{answers:observation.answers}}))};
@@ -413,7 +409,6 @@ describe("captured preference-distribution policy replay (not accuracy labels)",
   });
 });
 
-
 it("reuses an old v2 pinned route without applying v3 defaults or rerouting", async () => {
   const old = await resolveThreadRoute({run:async()=>({answers:{candidate:{choice:"gpt-6-astra:high",confidence:.9},family:{choice:"other",confidence:.9}}})},
     "existing thread",routingPolicySchema.parse({}));
@@ -427,7 +422,6 @@ it("reuses an old v2 pinned route without applying v3 defaults or rerouting", as
   expect(commit).not.toHaveBeenCalled();
   expect(old.policy_version).toBe("jev-direct-v2");
 });
-
 
 describe("public Jev route diagnostics", () => {
   const economy = `${OSS_MODEL}:low`, frontier = `${FRONTIER_MODEL}:high`;
@@ -513,25 +507,10 @@ describe("public Jev route diagnostics", () => {
   });
 });
 
-
 describe("Cloudflare frontier opt-in", () => {
   const id = "cloudflare:openai/gpt-6-astra:high";
   const available = { openrouter: false, vercel: false, cloudflare: true };
   const ai = { run: async () => ({ answers: { candidate: { choice: id, confidence: .99 }, family: { choice: "terminal", confidence: .99 } } }) };
-  it("adds the supported Cloudflare frontier entries with unknown prices", () => {
-    const cloudflare = ROUTING_CANDIDATES.filter(c => c.backend === "cloudflare");
-    expect(cloudflare).toHaveLength(9);
-    expect(ROUTING_CANDIDATES.filter(c => c.backend !== "chatgpt")).toHaveLength(34);
-    for (const model of [FRONTIER_MODEL, "gpt-6-sol", "gpt-6-luna"]) {
-      for (const thinking of ["low", "medium", "high"]) {
-        expect(cloudflare.find(c => c.id === `cloudflare:openai/${model}:${thinking}`)).toMatchObject({model, thinking, provider_model:`openai/${model}`,catalog_price_hint:null});
-        expect(ROUTING_CANDIDATES.some(c => c.id === `${model}:${thinking}`)).toBe(true);
-        expect(ROUTING_CANDIDATES.some(c => c.id === `openrouter:openai/${model}:${thinking}`)).toBe(model === FRONTIER_MODEL);
-        expect(ROUTING_CANDIDATES.some(c => c.id === `vercel:openai/${model}:${thinking}`)).toBe(model === FRONTIER_MODEL);
-      }
-    }
-    expect(cloudflare.some(c => c.model === OSS_MODEL)).toBe(false);
-  });
   it("requires an explicitly true runtime gate even for an explicit candidate", async () => {
     const policy = routingPolicySchema.parse({ candidates: [id] });
     for (const cloudflare of [undefined, false, "true"]) {

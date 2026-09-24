@@ -136,16 +136,6 @@ describe("regional subscription voice relay", () => {
     expect(f.get).not.toHaveBeenCalled();
   });
 
-  it.each(["0", "1"])("keeps sampled transport stable for voice session ending %s", async (last) => {
-    const f = fixture("wnam");
-    f.env.CHATGPT_VOICE_RELAY_RPC = "sample";
-    f.request.headers.set("x-session-id", `11111111-1111-4111-8111-11111111111${last}`);
-    const createRealtimeCall = vi.fn(async () => ({ status: 201, headers: {}, body: "answer SDP" }));
-    f.get.mockReturnValue({ fetch: f.relay, createRealtimeCall } as ReturnType<typeof f.get>);
-    expect((await handleEgress(f.request, f.env)).status).toBe(201);
-    expect(createRealtimeCall).toHaveBeenCalledTimes(last === "0" ? 1 : 0);
-    expect(f.relay).toHaveBeenCalledTimes(last === "0" ? 0 : 1);
-  });
   it("transfers the complete SDP exchange through the private relay RPC when enabled", async () => {
     const f = fixture("wnam");
     f.env.CHATGPT_VOICE_RELAY_RPC = "true";

@@ -93,24 +93,6 @@ mod tests {
     const FRAME: Duration = STREAM_FRAME_INTERVAL;
 
     #[test]
-    fn streaming_frame_budget_is_thirty_per_second() {
-        assert_eq!(
-            Duration::from_secs(1).as_nanos().div_ceil(FRAME.as_nanos()),
-            30
-        );
-    }
-
-    #[test]
-    fn animation_tick_budget_is_thirteen_per_second() {
-        assert_eq!(
-            Duration::from_secs(1)
-                .as_nanos()
-                .div_ceil(super::ANIMATION_TICK_INTERVAL.as_nanos()),
-            13
-        );
-    }
-
-    #[test]
     fn initial_frame_is_due_immediately() {
         let now = Instant::now();
         let scheduler = RenderScheduler::new(FRAME, now);
@@ -134,22 +116,6 @@ mod tests {
         assert_eq!(scheduler.scope(), Some(RenderScope::Full));
         assert!(!scheduler.is_due(start + Duration::from_millis(8)));
         assert!(scheduler.is_due(start + FRAME));
-    }
-
-    #[test]
-    fn peak_codex_trace_burst_coalesces_to_one_frame() {
-        // Sanitized from the retained 2026-07-19 long Codex rollout: the
-        // densest 33 ms bucket contained 590 display-affecting records.
-        let start = Instant::now();
-        let mut scheduler = RenderScheduler::new(FRAME, start);
-        scheduler.presented(start);
-
-        for event in 0..590 {
-            let offset = Duration::from_micros(event * 50 + 1);
-            scheduler.request_streaming(start + offset);
-        }
-
-        assert_eq!(scheduler.deadline(), Some(start + FRAME));
     }
 
     #[test]

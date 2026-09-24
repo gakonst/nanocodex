@@ -165,7 +165,6 @@ mod prompt_tests {
                 ..ModelConfig::default()
             };
             assert_eq!(config.system_prompt(), expected);
-            assert!(config.system_prompt().starts_with("You are Codex,"));
             config.additional_instructions = Some(Arc::from("Host instructions"));
             assert_eq!(
                 config.system_prompt(),
@@ -177,7 +176,5 @@ mod prompt_tests {
                 "Explicit override\n\nHost instructions"
             );
         }
-        assert!(ASTRA_SYSTEM_PROMPT.starts_with("You are Codex, an agent based on GPT-6."));
-        assert!(!ASTRA_SYSTEM_PROMPT.contains("As Nanocodex,"));
     }
 }

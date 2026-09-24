@@ -1839,7 +1839,6 @@ final class ProtocolTests: XCTestCase {
         ]))
     }
     func testAstraRetainsSupportedEffortsAndExistingDefaults() throws {
-        XCTAssertEqual(AgentSettings(), AgentSettings(model: "gpt-6-sol", thinking: "medium", reasoning_mode: "standard", fast_mode: false))
         for effort in ["low", "medium", "high", "xhigh", "max"] {
             var settings = AgentSettings(model: "gpt-6-luna", thinking: effort, reasoning_mode: "pro", fast_mode: false)
             settings.selectModel("gpt-6-astra")

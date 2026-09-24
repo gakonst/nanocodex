@@ -56,7 +56,6 @@ for (const [name, fn] of [
   ['only direct upstream cua_repl is configured; normal CODEX_HOME stays unchanged', async t => {
     const { host, invocations } = fixture(t);
     await host.start();
-    assert.deepEqual(invocations[0].args, serverArguments(host.config));
     assert.deepEqual(invocations[0].args, ['app-server', '--listen', 'ws://127.0.0.1:0', '-c', 'mcp_servers={cua_repl={command="/immutable/direct-provider",args=[],enabled=true,enabled_tools=["js","js_reset","turn_ended"],startup_timeout_sec=120}}']);
     assert.strictEqual(invocations[0].options.env, host.config.env);
   }],
@@ -197,7 +196,6 @@ for (const [name, fn] of [
     await assert.rejects(bounded(() => { throw new Error('must not run'); }, 10, abort.signal), /cancelled/);
   }],
 ]) test(name, { timeout: 3000 }, fn);
-
 
 test('macOS shlock allows one daemon for concurrent starts and cleanup removes only its socket/lock', { timeout: 3000, skip: process.platform !== 'darwin' }, async t => {
   const root = await realpath(await mkdtemp(path.join(tmpdir(), 'native-daemon-')));
@@ -352,16 +350,3 @@ for (const phase of ['metadata', 'endpoint', 'readyz']) for (const signalName of
     assert.deepEqual(await readdir(root), ['profile']);
   });
 }
-
-test('managed bridge uses the headless official server and never attaches a GUI', async () => {
-  let configuration, dependencies;
-  const lease = { endpoint: 'ws://127.0.0.1:12345', timeoutMs: 500,
-    attach() { throw new Error('GUI attachment must not run'); }, close() {} };
-  class FakeAppServer {
-    constructor(config, deps) { configuration = config; dependencies = deps; }
-    close() {}
-  }
-  bindBridge(lease, { AppServerImpl: FakeAppServer });
-  assert.deepEqual(configuration, { url: lease.endpoint, openGui: false, headless: true, timeoutMs: 500 });
-  assert.equal(dependencies.openGui, undefined);
-});

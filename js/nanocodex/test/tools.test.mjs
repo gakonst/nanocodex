@@ -56,8 +56,6 @@ test("web forwards the complete command object through a caller-owned host adapt
   assert.equal(requests[0].init.headers.authorization, "Bearer host");
   assert.equal(requests[0].init.redirect, "manual");
   assert.equal(requests[0].init.signal, context.signal);
-  assert.deepEqual(tool.parameters.properties.search_query.items.required, ["q"]);
-  assert.deepEqual(tool.parameters.properties.response_length.enum, ["short", "medium", "long"]);
 });
 
 test("web rejects host redirects without forwarding credentials", async () => {
@@ -311,7 +309,6 @@ function memoryWorkspace() {
     async mkdir(path) { directories.add(path); },
   };
 }
-
 
 test("standard shared definitions match the compiled upstream contract fixture", async () => {
   const fixture = JSON.parse(await readFile(new URL("../../../crates/nanocodex-tools/tests/fixtures/codex-parity/shared-tools.json", import.meta.url), "utf8"));

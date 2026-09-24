@@ -347,17 +347,6 @@ mod tests {
 
         let description = exec_description(&definitions, &[], false, false);
 
-        assert!(
-            description.contains(
-                "All nested tools are available on the global `tools` object, for example"
-            )
-        );
-        assert!(description.contains(
-            "`ALL_TOOLS`: metadata for the enabled nested tools as `{ name, description }` entries."
-        ));
-        assert!(description.contains(
-            "A tool exposed separately by the host is not necessarily callable through `tools`"
-        ));
         assert!(!description.contains("### `update_plan`"));
         assert!(!description.contains("declare const tools"));
     }
@@ -372,7 +361,6 @@ mod tests {
         let description = exec_description(&[], &summaries, false, true);
 
         assert!(description.contains("`tools.browser`: Control the host-managed browser session."));
-        assert!(description.contains("Inspect the matching `ALL_TOOLS` entry"));
         assert!(!description.contains("declare const tools: { browser"));
     }
 }

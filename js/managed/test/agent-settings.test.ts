@@ -11,16 +11,6 @@ import {
 } from "../src/agent-settings";
 
 describe("managed agent settings", () => {
-  it("uses the canonical durable defaults", () => {
-    expect(parseAgentSettingsQuery(new URLSearchParams())).toEqual({
-      model: "gpt-6-astra",
-      thinking: "low",
-      reasoning_mode: "standard",
-      fast_mode: false,
-    });
-    expect(DEFAULT_AGENT_SETTINGS).toEqual(parseAgentSettingsQuery(new URLSearchParams()));
-  });
-
   it("strictly parses and forwards every live creation setting", () => {
     const settings = parseAgentSettingsQuery(new URLSearchParams(
       "model=gpt-6-astra&thinking=max&reasoning_mode=standard&fast_mode=true",

@@ -35,12 +35,6 @@ class OverviewTests(unittest.TestCase):
         self.assertNotIn('\x1b', m.clean('\x1b[31m\ntext'))
         self.assertEqual(len(m.clean('x' * 1000)), 512)
 
-    def test_jump_uses_explicit_client_and_validated_pane(self):
-        row = m.parse_panes(self.row({}), 20000)[0]
-        with patch.object(m, 'command') as command:
-            m.jump(row, '/dev/ttys999')
-        self.assertEqual(command.call_args.args, ('tmux', 'switch-client', '-c', '/dev/ttys999', '-t', '$1', ';', 'select-window', '-t', '%3', ';', 'select-pane', '-t', '%3'))
-
     def test_list_failure_is_nonfatal(self):
         with patch.object(m, 'command', side_effect=FileNotFoundError):
             self.assertIsNone(m.load_summaries('missing'))

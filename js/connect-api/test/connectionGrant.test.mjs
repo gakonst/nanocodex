@@ -19,12 +19,6 @@ test("grant exchange completes the approval snapshot with exact live identities"
   assert.match(managedGrant, /x-nanocodex-connect-connector-connections/);
 });
 
-test("connector execution uses only the provider-neutral selector header", () => {
-  assert.match(source, /applyConnectorConnectionSelector\(\s*headers,\s*grant\.legacyConnectorCapabilities\?\.includes\(connector\)[\s\S]*?: grant\.connectorConnections,\s*connector,/);
-  assert.match(source, /"x-nanocodex-connector-connection"/);
-  assert.doesNotMatch(`${source}\n${managedGrant}`, /x-nanocodex-connector-instance/i);
-});
-
 test("signed browser cookie sync consent enters the retained grant capability set", () => {
   assert.match(
     source,

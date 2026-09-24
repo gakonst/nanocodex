@@ -2,7 +2,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { Agent, Transport } from "../host/index.mjs";
-import { toWasmConfig } from "../internal.mjs";
 
 function modelFixture(totalTokens = 110) {
   const requests = [];
@@ -33,11 +32,6 @@ function modelFixture(totalTokens = 110) {
   return { requests, transport: Transport.openAi({ apiKey: "fixture", websocketWarmup: false,
     createWebSocket: () => ({ socket: new ModelSocket(), reasoningIncluded: true }) }) };
 }
-
-test("the raw event option preserves the SDK default", () => {
-  assert.equal(toWasmConfig({ apiKey: "fixture" }).raw_api_events, undefined);
-  assert.equal(toWasmConfig({ apiKey: "fixture", rawApiEvents: false }).raw_api_events, false);
-});
 
 for (const rawApiEvents of [undefined, false]) {
   test(`real WASM large generation and full-history compaction, rawApiEvents=${rawApiEvents}`, { timeout: 60_000 }, async t => {

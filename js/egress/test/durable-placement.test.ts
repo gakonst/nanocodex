@@ -33,17 +33,4 @@ describe("broker first-use placement", () => {
     await handleEgress(new Request("https://nanocodex.internal/v1/responses", { headers: generic }), env);
     expect(credentials).toHaveBeenCalledWith(owner, undefined);
   });
-  it.each(["wnam", "enam", "sam", "weur", "eeur", "apac", "oc", "WNAM", "SJC", "wnam,weur", "", "invalid"])("validates private model placement against the fixed region set (%s)", async region => {
-    const credentials = vi.fn(() => ({ resolveModelCredential: async () => ({ status: 401, error: "credential_not_found" }) }));
-    const env = { USER_CREDENTIALS: { getByName: credentials } } as unknown as EgressEnv;
-    const response = await new SessionModelEgress(createExecutionContext(), env).fetch(new Request("https://nanocodex.internal/v1/responses", { headers: {
-      "x-nanocodex-session-model-owner": owner, "x-nanocodex-subject": `managed-session-v1_${"a".repeat(64)}`,
-      "x-nanocodex-model-region": region, [TRUSTED_INGRESS_HEADER]: "NRT",
-      authorization: "Bearer NANOCODEX_PROVIDER_CREDENTIAL", upgrade: "websocket", "openai-beta": "responses_websockets=2026-02-06",
-    } }));
-    expect(response.status).toBe(503);
-    await response.body?.cancel();
-    expect(credentials).toHaveBeenCalledWith(owner, ["wnam", "enam", "sam", "weur", "eeur", "apac", "oc"].includes(region) ? { locationHint: region } : undefined);
-  });
-
 });

@@ -2301,11 +2301,7 @@ mod tests {
         let contract = OutputContract::compile(&schema).unwrap();
         let instructions = completion_instructions(&contract.schema);
 
-        assert!(instructions.contains("actual tool catalog"));
-        assert!(instructions.contains("unless that catalog exposes it"));
         assert!(!instructions.contains("turn_token"));
-        assert!(instructions.contains("Finish after acceptance"));
-        assert!(instructions.contains("Pass objects and arrays directly as JSON values"));
         assert!(instructions.contains("\"report\""));
         assert!(contract.validator.is_valid(&json!({ "report": "done" })));
     }

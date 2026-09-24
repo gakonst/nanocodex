@@ -955,16 +955,6 @@ mod tests {
     }
 
     #[test]
-    fn default_mcp_servers_build() {
-        assert!(
-            args()
-                .build(Path::new("/missing"), None, None)
-                .unwrap()
-                .is_some()
-        );
-    }
-
-    #[test]
     fn managed_mcp_config_uses_exact_proxy_url_and_scoped_headers() {
         let origin = reqwest::Url::parse("https://connect.example/").unwrap();
         let grant_id = format!("0x{}", "33".repeat(32));

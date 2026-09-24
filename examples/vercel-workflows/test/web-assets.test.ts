@@ -17,23 +17,6 @@ describe("browser demo", () => {
     expect(source).not.toContain("cloud_api_");
   });
 
-  it("renders the agent stream through wterm instead of the bundled TUI", async () => {
-    const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-    const terminal = await readFile(
-      new URL("../app/agent-terminal.tsx", import.meta.url),
-      "utf8",
-    );
-    expect(page).toContain("<AgentTerminal />");
-    expect(page).toContain('htmlFor="prompt"');
-    expect(page).toContain('strategy="afterInteractive"');
-    expect(page).not.toContain('id="transcript"');
-    expect(terminal).toContain('from "@wterm/react"');
-    expect(terminal).toContain("mounted ? (");
-    expect(terminal).toContain("renderAgentTerminal");
-    expect(terminal).toContain("labelWtermInput");
-    expect(terminal).not.toContain("nanocodex-tui-react");
-  });
-
   it("nonces the Next bootstrap so the terminal islands can hydrate", async () => {
     const proxy = await readFile(new URL("../proxy.ts", import.meta.url), "utf8");
     const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
@@ -57,15 +40,4 @@ describe("browser demo", () => {
     expect(terminal).not.toContain("stream_event");
   });
 
-  it("keeps model credentials behind the server-side workflow step", async () => {
-    const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
-    const workflow = await readFile(
-      new URL("../workflows/nanocodex-actor.ts", import.meta.url),
-      "utf8",
-    );
-    expect(page).toContain("Model credentials remain");
-    expect(workflow).toContain('"use workflow"');
-    expect(workflow).toContain('"use step"');
-    expect(workflow).toContain("getWritable<SessionEvent>");
-  });
 });

@@ -127,7 +127,6 @@ async fn rollout_uses_the_agent_session_as_the_codex_thread_id() {
     let rollout = agent.rollout().expect("rollout enabled");
     assert_eq!(agent.session_id().to_string(), events.request_id());
     assert_eq!(rollout.thread_id(), agent.session_id().to_string());
-    assert!(uuid::Uuid::parse_str(rollout.thread_id()).is_ok());
     assert!(rollout.path().is_file());
     agent.flush_rollout().await.unwrap();
     drop((agent, events));

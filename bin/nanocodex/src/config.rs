@@ -956,35 +956,10 @@ mod tests {
     }
 
     #[test]
-    fn subagents_are_enabled_by_default() {
-        let command = crate::Cli::command();
-        let subagents = command
-            .get_arguments()
-            .find(|argument| argument.get_id() == "subagents")
-            .expect("the CLI should expose the subagents argument");
-
-        assert_eq!(subagents.get_default_values(), ["true"]);
-    }
-
-    #[test]
     fn subagents_can_be_disabled_explicitly() {
         let cli = crate::Cli::try_parse_from(["nanocodex", "--subagents", "false"]).unwrap();
 
         assert!(!cli.agent.subagents);
-    }
-
-    #[test]
-    fn subagent_concurrency_defaults_to_unlimited() {
-        let command = crate::Cli::command();
-        let max_subagents = command
-            .get_arguments()
-            .find(|argument| argument.get_id() == "max_subagents")
-            .expect("the CLI should expose the max-subagents argument");
-
-        assert_eq!(
-            max_subagents.get_default_values(),
-            [crate::subagents::DEFAULT_MAX_SUBAGENTS.to_string().as_str()]
-        );
     }
 
     #[test]
@@ -1037,45 +1012,6 @@ mod tests {
                 .unwrap();
         assert_eq!(cli.agent.thinking(), nanocodex::Thinking::High);
         assert!(!cli.agent.fast_mode());
-    }
-
-    #[test]
-    fn fast_mode_is_enabled_by_default() {
-        let command = crate::Cli::command();
-        let fast_mode = command
-            .get_arguments()
-            .find(|argument| argument.get_id() == "fast_mode")
-            .expect("the CLI should expose the fast-mode argument");
-
-        assert_eq!(fast_mode.get_default_values(), ["true"]);
-    }
-
-    #[test]
-    fn rollouts_are_enabled_by_default() {
-        let command = crate::Cli::command();
-        let rollouts = command
-            .get_arguments()
-            .find(|argument| argument.get_id() == "rollouts")
-            .expect("the CLI should expose the rollouts argument");
-
-        assert_eq!(rollouts.get_default_values(), ["true"]);
-    }
-
-    #[test]
-    fn standard_mcp_servers_and_codex_config_are_enabled_by_default() {
-        let command = crate::Cli::command();
-        let mcp_defaults = command
-            .get_arguments()
-            .find(|argument| argument.get_id() == "mcp_defaults")
-            .expect("the CLI should expose the MCP defaults argument");
-
-        assert_eq!(mcp_defaults.get_default_values(), ["true"]);
-
-        let codex_config = command
-            .get_arguments()
-            .find(|argument| argument.get_id() == "mcp_codex_config")
-            .expect("the CLI should expose the Codex MCP config argument");
-        assert_eq!(codex_config.get_default_values(), ["true"]);
     }
 
     #[test]

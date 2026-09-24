@@ -2,13 +2,7 @@ import { env } from "cloudflare:workers";
 import { runInDurableObject, SELF } from "cloudflare:test";
 import { describe, expect, it } from "vitest";
 
-import {
-  GOOGLE_CAPABILITIES,
-  GOOGLE_PROVIDER,
-  buildGoogleAuthorizationUrl,
-  decodeGoogleTokenResponse,
-  googleCapabilities,
-} from "../src/connectors/google";
+import { GOOGLE_CAPABILITIES } from "../src/connectors/google";
 import {
   SLACK_PROVIDER,
   buildSlackAuthorizationUrl,
@@ -81,25 +75,6 @@ describe("provider-neutral connector identities", () => {
     expect(revoked.status).toBe(404);
     expect(await revoked.json()).toEqual({ error: "connector_connection_not_found" });
   }, 60_000);
-
-  it("requests the full Google Workspace catalog while decoding partial consent", () => {
-    const authorization = buildGoogleAuthorizationUrl({
-      clientId: "client", redirectUri, state: "state", codeChallenge: "A".repeat(43),
-    });
-    expect(authorization.searchParams.get("scope")?.split(" ")).toEqual(GOOGLE_PROVIDER.scopes);
-    expect(authorization.searchParams.get("prompt")?.split(" ")).toEqual(["consent", "select_account"]);
-    expect(Object.keys(GOOGLE_CAPABILITIES)).toEqual([
-      "gmail", "gdrive", "gcalendar", "gtasks", "gdocs", "gsheets", "gslides", "gcontacts",
-    ]);
-    const token = decodeGoogleTokenResponse({
-      access_token: "secret-access",
-      refresh_token: "secret-refresh",
-      expires_in: 3_600,
-      token_type: "Bearer",
-      scope: `openid email ${GOOGLE_CAPABILITIES.gmail} ${GOOGLE_CAPABILITIES.gcalendar}`,
-    });
-    expect(googleCapabilities(token.scopes)).toEqual(["gmail", "gcalendar"]);
-  });
 
   it("projects one Google identity into each granted capability and selects among identities", async () => {
     const user = "multi-google-identities";

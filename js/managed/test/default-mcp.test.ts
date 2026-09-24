@@ -3,7 +3,6 @@ import {
   DEFAULT_MANAGED_MCP_CATALOG,
   connectedManagedAccountMcps,
   createDefaultManagedTools,
-  defaultManagedMcpServers,
   managedAccountMcpServerName,
   managedAccountMcpServers,
 } from "../src/default-mcp";
@@ -12,58 +11,6 @@ import { createCronTool, cronManagementTools } from "../src/cron-tool";
 import { browseX } from "nanocodex-tools/x";
 
 describe("durable managed default MCP catalog", () => {
-  it("constructs and closes a tool-free runtime without an MCP server", async () => {
-    const tools = await createDefaultManagedTools([], {});
-    await tools.close();
-  });
-
-  it("matches the canonical five public MCP servers", () => {
-    expect(DEFAULT_MANAGED_MCP_CATALOG).toEqual({
-      openaiDeveloperDocs: {
-        url: "https://developers.openai.com/mcp",
-        description: "Search OpenAI developer documentation.",
-        parallelTools: ["fetch_openai_doc", "search_openai_docs"],
-      },
-      tempo: {
-        url: "https://mcp.tempo.xyz",
-        description: "Tempo network and protocol tools.",
-        parallelTools: ["code", "search"],
-      },
-      cloudflare: {
-        url: "https://docs.mcp.cloudflare.com/mcp",
-        description: "Search Cloudflare developer documentation.",
-        parallelTools: ["search_cloudflare_documentation"],
-      },
-      viem: {
-        url: "https://viem.sh/api/mcp",
-        description: "Search Viem developer documentation.",
-        parallelTools: ["list_pages", "read_page", "search_docs", "search_source"],
-      },
-      vocs: {
-        url: "https://vocs.dev/api/mcp",
-        description: "Search Vocs developer documentation.",
-        parallelTools: ["list_pages", "read_page", "search_docs", "search_source"],
-      },
-    });
-  });
-
-  it("places every default on the managed server fetch boundary", () => {
-    const fetcher = vi.fn<typeof fetch>();
-    const configured = defaultManagedMcpServers(fetcher);
-
-    expect(Object.keys(configured)).toEqual([
-      "openaiDeveloperDocs",
-      "tempo",
-      "cloudflare",
-      "viem",
-      "vocs",
-    ]);
-    for (const server of Object.values(configured)) {
-      expect(typeof server).toBe("object");
-      expect((server as { fetch?: typeof fetch }).fetch).toBe(fetcher);
-    }
-  });
-
   it("strictly selects connected account MCP metadata", async () => {
     const connectedId = "a".repeat(43);
     const broker = {

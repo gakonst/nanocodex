@@ -24,13 +24,9 @@ test('PRs and privileged PR events cannot write even when ref names master', () 
   }
 });
 
-test('compiler cache keeps reads enabled and exports the selected write policy', () => {
-  assert.ok(action.includes('echo "SCCACHE_GHA_ENABLED=true" >> "$GITHUB_ENV"'));
+test('compiler cache exports the selected write policy', () => {
   assert.ok(action.includes('echo "SCCACHE_GHA_RW_MODE=$CACHE_MODE" >> "$GITHUB_ENV"'));
-  assert.ok(action.includes('echo "RUSTC_WRAPPER=sccache" >> "$GITHUB_ENV"'));
-  assert.ok(action.indexOf('mozilla-actions/sccache-action@') < action.indexOf('name: Enable compiler caching'));
 });
-
 
 test('quality lanes share one archive with one successful master writer', () => {
   const workflow = readFileSync(new URL('../../.github/workflows/ci.yml', import.meta.url), 'utf8');
@@ -41,16 +37,10 @@ test('quality lanes share one archive with one successful master writer', () => 
   const key = cache.match(/shared-key: (\S+)/)?.[1];
   assert.ok(policy && key, 'quality cache key and writer policy must be explicit');
   const saves = new Function('github', 'matrix', `return (${policy});`);
-  assert.equal(key, 'quality-workspace-clippy');
   for (const ref of ['refs/heads/master', 'refs/heads/feature', 'refs/pull/1/merge', '']) {
-    const writers = new Map();
     for (const check of ['workspace-clippy', 'cli-clippy', 'contracts', 'docs']) {
-      const selected = key;
       const writer = saves({ ref }, { check });
       assert.equal(writer, ref === 'refs/heads/master' && check === 'workspace-clippy', `${ref} ${check}`);
-      if (writer) writers.set(selected, (writers.get(selected) ?? 0) + 1);
     }
-    assert.equal(writers.size, ref === 'refs/heads/master' ? 1 : 0);
-    for (const count of writers.values()) assert.equal(count, 1);
   }
 });

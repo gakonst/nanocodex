@@ -110,14 +110,6 @@ test("shared configuration, Rust sources, and unknown paths fail open in either 
   }
 });
 
-test("every selected JS consumer has a WASM artifact producer", () => {
-  for (const paths of [[], ["README.md"], ["apple/app.swift"], ["js/account/src/app.tsx"],
-    ["js/managed/src/memory.ts"], ["js/nanocodex/index.mjs"], ["Cargo.lock"], cua485]) {
-    const jobs = selectJobs(paths);
-    if (jobs.bindings || jobs.apps || jobs.preview) assert.equal(jobs.wasm, true);
-  }
-});
-
 function repo(t) {
   const cwd = mkdtempSync(join(tmpdir(), "ci-selector-"));
   t.after(() => rmSync(cwd, { recursive: true, force: true }));
