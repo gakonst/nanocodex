@@ -50,7 +50,9 @@ jobs:
           scripts/ci/docker-rust-recipe.test.mjs
           scripts/cloudflare/wrangler-docker.test.mjs scripts/cloudflare/managed-images.test.mjs
           scripts/cloudflare/managed-images-preview.test.mjs scripts/cloudflare/preview-images.test.mjs
-          scripts/cloudflare/preview-workflow.test.mjs
+          scripts/cloudflare/preview-workflow.test.mjs scripts/cloudflare/worker-build.test.mjs
+          scripts/cloudflare/release-plan.test.mjs scripts/cloudflare/release-workers.test.mjs
+          scripts/cloudflare/current-production-release.test.mjs
       - id: select
         run: node scripts/ci/select-jobs.mjs
 

@@ -40,12 +40,12 @@ export function releaseNeeds(plan) {
   return {any:plan.selected.length>0,wasm:plan.selected.some(name=>workerSpecs[name].needsWasm),
     workspace:plan.selected.length>0,astra:plan.selected.includes('astra'),managed:plan.selected.includes('managed'),account:plan.selected.includes('account')};
 }
-export function installSelected(plan, run=execFileSync) {
+export function installSelected(plan, run=execFileSync, {deferAstra=false}={}) {
   const packages=[...new Set([...plan.selected.filter(name=>name!=='astra').map(name=>workerSpecs[name].package),...(plan.selected.includes('astra')?['nanocodex']:[]),...(releaseNeeds(plan).wasm?['nanocodex','nanocodex-vite']:[])])];
   if(packages.length)run('pnpm',['install','--frozen-lockfile','--filter','nanocodex-monorepo',...packages.flatMap(name=>['--filter',`${name}...`])],{stdio:'inherit'});
-  if(plan.selected.includes('astra'))run('npm',['ci','--prefix','examples/astra-mpp-trial'],{stdio:'inherit'});
+  if(plan.selected.includes('astra')&&!deferAstra)run('npm',['ci','--prefix','examples/astra-mpp-trial'],{stdio:'inherit'});
 }
-export function buildSelected(plan, run=execFileSync) {
+export function buildSelected(plan, run=execFileSync, completedTargets=new Set()) {
   const targets=[...new Set(plan.selected.flatMap(name=>workerSpecs[name].buildTargets ?? []))];
   // Explicit tiers keep JS-only SDK users away from nanocodex's WASM build,
   // while retaining compiled dependency ordering from a clean checkout.
@@ -55,8 +55,11 @@ export function buildSelected(plan, run=execFileSync) {
     ['@nanocodex/connect-api', '@nanocodex/connect-dialog', '@nanocodex/connect-playground', 'nanocodex-web'],
   ];
   for (const tier of tiers) {
-    const selected = tier.filter(name => targets.includes(name));
-    if (selected.length) run('pnpm', ['exec','turbo','run','build','--only',...selected.flatMap(name=>['--filter',name])], {stdio:'inherit'});
+    const selected = tier.filter(name => targets.includes(name) && !completedTargets.has(name));
+    if (selected.length) {
+      run('pnpm', ['exec','turbo','run','build','--only',...selected.flatMap(name=>['--filter',name])], {stdio:'inherit'});
+      for (const name of selected) completedTargets.add(name);
+    }
   }
   if(plan.selected.includes('managed'))run(process.execPath,['js/managed/scripts/prepare-code-evaluator.mjs'],{stdio:'inherit'});
   if(plan.selected.includes('astra'))run('npm',['run','build:client','--prefix','examples/astra-mpp-trial'],{stdio:'inherit'});
@@ -73,7 +76,11 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
     const needs=releaseNeeds(plan);
     if(process.env.GITHUB_OUTPUT)appendFileSync(process.env.GITHUB_OUTPUT,Object.entries(needs).map(([key,value])=>`${key}=${value}\n`).join(''));
     console.log(plan.selected.length?`Selected Workers: ${plan.selected.join(', ')}`:'No Worker changes since their last successful deployments');
-  }else if(command==='install')installSelected(readPlan());
+  }else if(command==='install'){
+    const args=process.argv.slice(3);
+    assert.ok(args.length===0||(args.length===1&&args[0]==='--defer-astra'));
+    installSelected(readPlan(),execFileSync,{deferAstra:args.includes('--defer-astra')});
+  }
   else if(command==='build')buildSelected(readPlan());
   else throw new Error('Usage: release-plan.mjs plan|install|build');
 }

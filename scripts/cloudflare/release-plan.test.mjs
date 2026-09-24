@@ -65,3 +65,29 @@ test('JS-only services and dialog never schedule Cargo or the nanocodex WASM bui
   const filters = builds.filter(([command]) => command === 'pnpm').map(([, args]) => args.filter((_, i) => args[i-1] === '--filter'));
   assert.deepEqual(filters, [['nanocodex-tools', 'nanocodex-connect-protocol'], ['nanocodex-connect-ui'], ['@nanocodex/connect-api', '@nanocodex/connect-dialog']]);
 });
+
+test('release phases reuse successfully completed targets and never cache failed tiers', () => {
+  const completed = new Set(), calls = [];
+  for (const selected of [['egress'], ['managed'], ['account']]) {
+    buildSelected({ selected }, (command, args) => calls.push([command, args]), completed);
+  }
+  const filters = calls.filter(([command]) => command === 'pnpm')
+    .flatMap(([, args]) => args.filter((_, i) => args[i - 1] === '--filter'));
+  assert.equal(new Set(filters).size, filters.length);
+  assert.ok(filters.indexOf('nanocodex') < filters.indexOf('nanocodex-web'));
+  const failed = new Set();
+  assert.throws(() => buildSelected({ selected: ['account'] }, (_, args) => {
+    if (args.includes('nanocodex-terminal')) throw Error('second tier failed');
+  }, failed), /second tier failed/);
+  assert.deepEqual([...failed], ['nanocodex-tools', 'nanocodex-connect-protocol', 'nanocodex']);
+});
+
+
+test('pipelined installation defers only Astra npm dependencies to its own phase', () => {
+  const calls = [];
+  installSelected({ selected: ['managed', 'astra'] }, (...args) => calls.push(args), { deferAstra: true });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], 'pnpm');
+  assert.ok(calls[0][1].includes('nanocodex-managed-service...'));
+  assert.ok(calls[0][1].includes('nanocodex...'));
+});

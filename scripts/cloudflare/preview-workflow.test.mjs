@@ -44,14 +44,16 @@ const plan = job('preview-image-plan');
 const images = job('preview-images');
 const preview = job('preview');
 const success = job('preview-success');
+const imageSuccess = job('preview-images-success');
 
-test('preview planning and image builds run independently of Worker builds', () => {
+test('preview images are explicit opt-in and independent of Worker readiness', () => {
   const eligibility = "vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' && " +
     "((github.event_name == 'pull_request' && " +
     'github.event.pull_request.head.repo.full_name == github.repository) || ' +
     "(github.event_name == 'workflow_dispatch' && inputs.target == 'preview'))";
   assert.equal(field(worker, 'if'), eligibility);
-  assert.equal(field(plan, 'if'), eligibility);
+  assert.equal(field(plan, 'if'), "vars.CLOUDFLARE_DEPLOY_ENABLED == 'true' && github.event_name == 'workflow_dispatch' && inputs.target == 'preview' && inputs.validate_images");
+  assert.match(workflow, /validate_images:\n        description: [^\n]+\n        type: boolean\n        default: false/);
   assert.equal(field(preview, 'if'), eligibility);
   assert.doesNotMatch(plan, /^    needs:/m);
   assert.equal(field(images, 'needs'), 'preview-image-plan');
@@ -110,36 +112,33 @@ test('Worker previews retain validation and asset uploads but do not build conta
     'Upload Connect playground preview version',
   ]) assert.ok(preview.includes('      - name: ' + name + '\n'), 'missing preview step: ' + name);
   assert.equal((preview.match(/run: npx wrangler versions upload /g) ?? []).length, 2);
+  const restore = preview.indexOf('- name: Restore same-revision Worker outputs');
+  const dialog = preview.indexOf('- name: Upload Connect dialog preview version');
+  const upload = preview.indexOf('- name: Upload Connect playground preview version');
+  assert.ok(restore >= 0 && restore < dialog && dialog < upload);
+  for (const name of ['Validate egress Worker', 'Prepare managed evaluator asset', 'Install Astra trial package', 'Validate account Worker']) {
+    assert.ok(upload < preview.indexOf('- name: ' + name), 'upload must precede ' + name);
+  }
   for (const source of [worker, preview]) {
     assert.match(source,
       /      - name: Test Wrangler image cache boundary\n        # Temporarily disabled; re-enable when CI test coverage resumes\.\n        if: false\n/);
   }
 });
 
-test('the final check runs for eligible previews even when dependencies fail or skip', () => {
+test('the Worker gate never depends on optional image jobs', () => {
   assert.equal(field(success, 'name'), 'Cloudflare preview success');
-  assert.equal(field(success, 'needs'), '[worker-build, preview-image-plan, preview-images, preview]');
+  assert.equal(field(success, 'needs'), '[worker-build, preview]');
   assert.equal(field(success, 'if'), 'always() && ' + field(worker, 'if'));
   assert.equal(field(success, 'permissions'), '{}');
-  assert.doesNotMatch(success, /continue-on-error:|environment:|secrets\./);
-  assert.match(success, /^        shell: bash$/m);
-  for (const [variable, expression] of Object.entries({
-    WORKER_BUILD_RESULT: 'needs.worker-build.result',
-    IMAGE_PLAN_RESULT: 'needs.preview-image-plan.result',
-    PREVIEW_IMAGES_RESULT: 'needs.preview-images.result',
-    PREVIEW_RESULT: 'needs.preview.result',
-    IMAGES_REQUIRED: 'needs.preview-image-plan.outputs.required',
-  })) {
-    assert.ok(success.includes('          ' + variable + ': ${{ ' + expression + ' }}\n'),
-      'missing gate input: ' + variable);
-  }
+  assert.doesNotMatch(success, /continue-on-error:|environment:|secrets\.|needs\.preview-image/);
+  assert.equal(field(imageSuccess, 'needs'), '[preview-image-plan, preview-images]');
+  assert.equal(field(imageSuccess, 'if'), 'always() && ' + field(plan, 'if'));
 });
 
-const gateMatch = success.match(/^        run: \|\n((?:^          .*\n|^\n)+)/m);
-assert.ok(gateMatch, 'missing executable preview gate');
-const gate = gateMatch[1].split('\n').map(line => line.replace(/^          /, '')).join('\n');
-
-function runGate(env) {
+function runGate(source, env) {
+  const match = source.match(/^        run: \|\n((?:^          .*\n|^\n)+)/m);
+  assert.ok(match, 'missing executable gate');
+  const gate = match[1].split('\n').map(line => line.replace(/^          /, '')).join('\n');
   const result = spawnSync('bash', ['--noprofile', '--norc', '-e', '-o', 'pipefail', '-c', gate], {
     env, encoding: 'utf8', timeout: 5_000,
   });
@@ -148,50 +147,33 @@ function runGate(env) {
   return result;
 }
 
-test('the actual Bash gate accepts only complete successful previews', () => {
-  const complete = {
-    WORKER_BUILD_RESULT: 'success',
-    IMAGE_PLAN_RESULT: 'success',
-    PREVIEW_IMAGES_RESULT: 'success',
-    PREVIEW_RESULT: 'success',
-    IMAGES_REQUIRED: 'true',
-  };
-  const check = (env, expected) => {
-    const result = runGate(env);
-    assert.equal(result.status === 0, expected,
-      JSON.stringify(env) + '\n' + result.stdout + result.stderr);
-  };
-  // Cover each prerequisite independently for both valid image plans. Crossing
-  // every failing prerequisite creates thousands of redundant Bash processes.
-  for (const [required, imageResult] of [['true', 'success'], ['false', 'skipped']]) {
-    const valid = { ...complete, IMAGES_REQUIRED: required, PREVIEW_IMAGES_RESULT: imageResult };
-    check(valid, true);
-    for (const key of ['WORKER_BUILD_RESULT', 'IMAGE_PLAN_RESULT', 'PREVIEW_RESULT']) {
-      for (const result of ['failure', 'cancelled', 'skipped', '']) {
-        check({ ...valid, [key]: result }, false);
-      }
-    }
+test('the actual Worker gate requires successful builds/uploads but ignores image outcomes', () => {
+  const complete = { WORKER_BUILD_RESULT: 'success', PREVIEW_RESULT: 'success' };
+  for (const image of ['success', 'failure', 'cancelled', 'skipped', '', 'in_progress']) {
+    assert.equal(runGate(success, { ...complete, PREVIEW_IMAGES_RESULT: image }).status, 0);
   }
-  for (const required of ['true', 'false', '', 'unexpected']) {
-    for (const imageResult of ['success', 'failure', 'cancelled', 'skipped', '']) {
-      check({ ...complete, IMAGES_REQUIRED: required, PREVIEW_IMAGES_RESULT: imageResult },
-        (required === 'true' && imageResult === 'success') ||
-        (required === 'false' && imageResult === 'skipped'));
+  for (const key of Object.keys(complete)) {
+    for (const value of ['failure', 'cancelled', 'skipped', '']) {
+      assert.notEqual(runGate(success, { ...complete, [key]: value }).status, 0);
     }
+    const missing = { ...complete }; delete missing[key];
+    assert.notEqual(runGate(success, missing).status, 0);
   }
 });
 
-test('the actual Bash gate fails if any required environment input is missing', () => {
-  const complete = {
-    WORKER_BUILD_RESULT: 'success',
-    IMAGE_PLAN_RESULT: 'success',
-    PREVIEW_IMAGES_RESULT: 'success',
-    PREVIEW_RESULT: 'success',
-    IMAGES_REQUIRED: 'true',
-  };
+test('explicit image validation retains a separate strict failure signal', () => {
+  const complete = { IMAGE_PLAN_RESULT: 'success', PREVIEW_IMAGES_RESULT: 'success', IMAGES_REQUIRED: 'true' };
+  for (const required of ['true', 'false', '', 'unexpected']) {
+    for (const result of ['success', 'failure', 'cancelled', 'skipped', '']) {
+      const expected = (required === 'true' && result === 'success') || (required === 'false' && result === 'skipped');
+      assert.equal(runGate(imageSuccess, { ...complete, IMAGES_REQUIRED: required, PREVIEW_IMAGES_RESULT: result }).status === 0, expected);
+    }
+  }
+  for (const result of ['failure', 'cancelled', 'skipped', '']) {
+    assert.notEqual(runGate(imageSuccess, { ...complete, IMAGE_PLAN_RESULT: result }).status, 0);
+  }
   for (const key of Object.keys(complete)) {
-    const env = { ...complete };
-    delete env[key];
-    assert.notEqual(runGate(env).status, 0, 'missing gate input must fail: ' + key);
+    const missing = { ...complete }; delete missing[key];
+    assert.notEqual(runGate(imageSuccess, missing).status, 0);
   }
 });
