@@ -5,6 +5,50 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.5](https://github.com/gakonst/nanocodex/releases/tag/v0.6.5) - 2026-09-24
+
+### Bug Fixes
+
+- Keep generated browser bridge configuration outside the signed CUA bundle
+- [computer] Collapse nested provision test condition
+- [computer] Enable upstream CUA discovery and turn metadata in Linux VMs ([#520](https://github.com/gakonst/nanocodex/issues/520))
+- Let official CUA own execution deadlines ([#491](https://github.com/gakonst/nanocodex/issues/491))
+- Preserve CUA execution budgets and explain native recovery ([#489](https://github.com/gakonst/nanocodex/issues/489))
+- [cua] Bound provider calls by their requested deadline
+- Fix official browser accessibility in CUA launchers ([#462](https://github.com/gakonst/nanocodex/issues/462))
+- Fix Windows Sky decline probe launcher ([#459](https://github.com/gakonst/nanocodex/issues/459))
+- [cua] Run the official Linux Sky helper on the desktop host ([#454](https://github.com/gakonst/nanocodex/issues/454))
+- [computer] Host official Windows Sky through native pipe ([#437](https://github.com/gakonst/nanocodex/issues/437))
+- [computer] Hash Windows bootstrap without module functions ([#432](https://github.com/gakonst/nanocodex/issues/432))
+
+### Features
+
+- [computer] Manage the official macOS CUA host lifecycle
+
+### Other
+
+- Make CUA and Hand setup native, seamless, and cross-platform ([#571](https://github.com/gakonst/nanocodex/issues/571))
+- Merge remote-tracking branch 'origin/master' into perf/screen-latency-20260923
+- Restore unchanged repository files omitted from frontier REST publication
+- Support configured Cloudflare REST transport for frontier inference ([#495](https://github.com/gakonst/nanocodex/issues/495))
+- Run macOS CUA headlessly with official Codex approval policy ([#485](https://github.com/gakonst/nanocodex/issues/485))
+- Merge master into thread routing, preserving voice controls and typed subagent diagnostics
+- Merge pull request [#476](https://github.com/gakonst/nanocodex/issues/476) from gakonst/feat/managed-native-openai-host
+- Merge master photo UI and conversation controls into PR469
+- Merge branch 'feat/elevenlabs-voice-cloning' into feat/mobile-elevenlabs-voices
+- Merge remote-tracking branch 'origin/master' into feat/elevenlabs-voice-cloning
+- Merge latest master and retain voice lifecycle controls
+- Merge pull request [#460](https://github.com/gakonst/nanocodex/issues/460) from gakonst/fix/cua-deadline-current
+- Remove custom CUA consent UI and handlers ([#456](https://github.com/gakonst/nanocodex/issues/456))
+- Merge remote-tracking branch 'origin/master' into finish/thread-routing-20260921
+- Remove custom CUA and use the official Sky MCP provider ([#448](https://github.com/gakonst/nanocodex/issues/448))
+- Forward Codex turn metadata and surface Sky consent in foreground Hands ([#429](https://github.com/gakonst/nanocodex/issues/429))
+
+### Performance
+
+- [cli] Cache computer startup and cancel background work on exit
+
+
 ## [0.6.4](https://github.com/gakonst/nanocodex/releases/tag/v0.6.4) - 2026-09-19
 
 ### Bug Fixes

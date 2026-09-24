@@ -13,7 +13,7 @@ include = ["src/**", "tests/**", "README.md", "CHANGELOG.md", "Cargo.toml"]
 async-trait.workspace = true
 base64.workspace = true
 fs2.workspace = true
-nanocodex-oai-api = { version = "0.6.4", path = "../../nanocodex-oai-api", default-features = false }
+nanocodex-oai-api = { version = "0.6.5", path = "../../nanocodex-oai-api", default-features = false }
 roxmltree.workspace = true
 sha2.workspace = true
 serde.workspace = true

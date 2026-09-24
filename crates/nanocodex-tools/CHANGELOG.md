@@ -5,6 +5,53 @@ All notable changes to Nanocodex are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.5](https://github.com/gakonst/nanocodex/releases/tag/v0.6.5) - 2026-09-24
+
+### Bug Fixes
+
+- [hand] Retry attachment failures on the current lease
+- [tools] Tolerate WebSocket pong control frames
+- [cli] Wait for Hand unload before activating an update
+- [tools] Queue attachment calls and retain process runtime routes
+- Fix WASM image gate and removal lint regressions
+- [hand] Preserve opaque hosted model metadata
+- [runtime] Prevent image replay crashes and reconcile steering delivery ([#435](https://github.com/gakonst/nanocodex/issues/435))
+- [subagents] Make result revisions runtime-owned ([#484](https://github.com/gakonst/nanocodex/issues/484))
+- Fix child transcript leakage and harden error recovery boundaries ([#471](https://github.com/gakonst/nanocodex/issues/471))
+
+### Features
+
+- [tui] Opt into Mercator before first thread prompt
+
+### Other
+
+- Make CUA and Hand setup native, seamless, and cross-platform ([#571](https://github.com/gakonst/nanocodex/issues/571))
+- Keep Mercator default-on with Tempo Wallet onboarding
+- Merge remote-tracking branch 'origin/master' into perf/inference-master-20260922
+- Merge pull request [#551](https://github.com/gakonst/nanocodex/issues/551) from gakonst/perf/screen-direct-latency-20260923
+- Merge remote-tracking branch 'origin/master' into perf/screen-latency-20260923
+- Merge remote-tracking branch 'origin/master' into remove-legacy-memory
+- Remove legacy memory storage and personalization
+- Merge pull request [#532](https://github.com/gakonst/nanocodex/issues/532) from gakonst/fix/code-mode-upstream-parity
+- Align Code Mode helpers and terminal receipts across runtimes
+- Merge pull request [#533](https://github.com/gakonst/nanocodex/issues/533) from gakonst/fix/native-hand-opaque-model-20260923
+- Merge remote-tracking branch 'origin/master' into fix/turn-controls-merge
+- Integrate GPT-6 Sol and Luna across Nanocodex ([#526](https://github.com/gakonst/nanocodex/issues/526))
+- Restore unchanged repository files omitted from frontier REST publication
+- Support configured Cloudflare REST transport for frontier inference ([#495](https://github.com/gakonst/nanocodex/issues/495))
+- Run one persistent Hand daemon per machine ([#483](https://github.com/gakonst/nanocodex/issues/483))
+- Merge master into thread routing, preserving voice controls and typed subagent diagnostics
+- Merge master photo UI and conversation controls into PR469
+- Merge latest master and retain voice lifecycle controls
+- Merge remote-tracking branch 'origin/master' into finish/thread-routing-20260921
+- Unify remote publishing and repair native input and duplex audio ([#438](https://github.com/gakonst/nanocodex/issues/438))
+- Forward Codex turn metadata and surface Sky consent in foreground Hands ([#429](https://github.com/gakonst/nanocodex/issues/429))
+
+### Performance
+
+- [cli] Cache computer startup and cancel background work on exit
+
+
 ## [0.6.4](https://github.com/gakonst/nanocodex/releases/tag/v0.6.4) - 2026-09-19
 
 ### Bug Fixes

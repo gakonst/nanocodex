@@ -20,8 +20,8 @@ chrono.workspace = true
 vergen = { workspace = true, features = ["build", "git", "gitcl"] }
 
 [dependencies]
-nanocodex-tui-control = { path = "../tui-control", version = "0.6.4" }
-nanocodex-remote = { path = "../../../crates/nanocodex-remote", version = "0.6.4" }
+nanocodex-tui-control = { path = "../tui-control", version = "0.6.5" }
+nanocodex-remote = { path = "../../../crates/nanocodex-remote", version = "0.6.5" }
 anyhow.workspace = true
 async-trait.workspace = true
 nanocodex-computer.workspace = true
@@ -35,14 +35,14 @@ dotenvy.workspace = true
 futures-util.workspace = true
 hex.workspace = true
 image.workspace = true
-nanocodex = { path = "../../../crates/nanocodex", version = "0.6.4", default-features = false }
-nanocodex-agent = { path = "../../../crates/nanocodex-agent", version = "0.6.4", default-features = false }
-nanocodex-managed = { path = "../../../crates/nanocodex-managed", version = "0.6.4", default-features = false, features = ["tools", "voice"] }
+nanocodex = { path = "../../../crates/nanocodex", version = "0.6.5", default-features = false }
+nanocodex-agent = { path = "../../../crates/nanocodex-agent", version = "0.6.5", default-features = false }
+nanocodex-managed = { path = "../../../crates/nanocodex-managed", version = "0.6.5", default-features = false, features = ["tools", "voice"] }
 nanocodex-voice-native.workspace = true
 nanocodex-voice-protocol.workspace = true
 nanocodex-cli-auth.workspace = true
 nanocodex-observability = { workspace = true, features = ["cli"] }
-nanocodex-tools = { path = "../../../crates/nanocodex-tools", version = "0.6.4", default-features = false, features = ["attachment", "workspace-runtime"] }
+nanocodex-tools = { path = "../../../crates/nanocodex-tools", version = "0.6.5", default-features = false, features = ["attachment", "workspace-runtime"] }
 png = "0.18.1"
 percent-encoding.workspace = true
 pulldown-cmark = { version = "0.13.4", default-features = false }
@@ -58,7 +58,7 @@ serde_json.workspace = true
 shlex.workspace = true
 sha2.workspace = true
 syntect.workspace = true
-nanocodex-subagents = { path = "../../../crates/nanocodex-subagents", version = "0.6.4" }
+nanocodex-subagents = { path = "../../../crates/nanocodex-subagents", version = "0.6.5" }
 tempfile.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["io-std", "io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
@@ -78,7 +78,7 @@ fs2.workspace = true
 nanocodex-vm.workspace = true
 
 [target.'cfg(any(target_os = "macos", target_os = "windows"))'.dependencies]
-nanocodex-hand = { version = "0.6.4", path = "../../../crates/nanocodex-hand" }
+nanocodex-hand = { version = "0.6.5", path = "../../../crates/nanocodex-hand" }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 kvm-ioctls = "0.24.0"
