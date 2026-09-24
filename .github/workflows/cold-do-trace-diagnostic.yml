@@ -30,7 +30,7 @@ jobs:
             tid=t.get('traceId'); result=query('events',{'datasets':['otel'],'filters':[{'key':'$metadata.traceId','operation':'eq','type':'string','value':tid}]})
             spans=[e.get('source') or {} for e in (result.get('events') or {}).get('events') or []]
             key=[s for s in spans if s.get('name')=='jsrpc' and (s.get('cloudflare') or {}).get('durable_object')]
-            print('trace',i,'duration',t.get('traceDurationMs'),'rpc DO',[( (s.get('cloudflare') or {}).get('colo'),s.get('durationMS')) for s in key[:10]],'nspans',len(spans))
+            print('trace',i,'duration',t.get('traceDurationMs'),'rpc DO',[( (s.get('cloudflare') or {}).get('colo'),str(((s.get('cloudflare') or {}).get('durable_object') or {}).get('id'))[:12],s.get('durationMS')) for s in key[:10]],'nspans',len(spans))
           PY
       - name: Surface sanitized summary
         if: always()
