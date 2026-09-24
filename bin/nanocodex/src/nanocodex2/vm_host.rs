@@ -2773,8 +2773,8 @@ mod supported {
                     {
                         ControlledOperationOutcome::Completed(Ok(_)) => {}
                         ControlledOperationOutcome::Completed(Err(error)) => {
-                            tracing::error!(target: "nanocodex2", error = %error, "VM host provision failed; reconnecting for durable redrive");
-                            return Ok(ConnectionOutcome::Reconnect { made_progress });
+                            tracing::error!(target: "nanocodex2", error = %error, "VM host provision failed; awaiting redrive on this lease");
+                            continue;
                         }
                         ControlledOperationOutcome::Terminal { result, terminal } => {
                             return finish_deferred_control_outcome(

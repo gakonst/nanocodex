@@ -72,7 +72,7 @@ pub(crate) async fn run(
         let connect_started = Instant::now();
         let connected = tokio::select! {
             command = commands.recv() => match command { Some(Command::Detach) | None => break Ok(()) },
-            connected = async {
+            connected = tokio::time::timeout(Duration::from_secs(5), async {
                 let connector = if request.uri().scheme_str() == Some("wss") {
                     Some(tokio_tungstenite::Connector::Rustls(nanocodex_oai_api::tls::native_client_config().await?))
                 } else { None };
@@ -97,10 +97,10 @@ pub(crate) async fn run(
                     elapsed_ms = connect_started.elapsed().as_secs_f64() * 1000.0,
                     "attachment TCP connected");
                 client_async_tls_with_config(request, stream, None, connector).await
-            } => connected,
+            }) => connected,
         };
         let socket = match connected {
-            Ok((socket, response)) => {
+            Ok(Ok((socket, response))) => {
                 tracing::info!(target: "nanocodex_tools::attachment",
                     stage = "attachment.websocket_connected",
                     duration_ms = connect_started.elapsed().as_secs_f64() * 1000.0,
@@ -108,14 +108,19 @@ pub(crate) async fn run(
                     "attachment WebSocket connected");
                 socket
             }
-            Err(tokio_tungstenite::tungstenite::Error::Http(response))
+            Ok(Err(tokio_tungstenite::tungstenite::Error::Http(response)))
                 if matches!(response.status().as_u16(), 401 | 403) =>
             {
                 break Err(AttachmentError::Authentication(
                     "endpoint rejected the bearer credential".into(),
                 ));
             }
-            Err(_) => {
+            other => {
+                if other.is_err() {
+                    tracing::warn!(target: "nanocodex_tools::attachment",
+                        stage = "attachment.socket.timeout",
+                        "attachment connection attempt timed out");
+                }
                 let _ = status.send(AttachmentStatus::Disconnected);
                 if wait_backoff(&mut commands, backoff).await {
                     break Ok(());

@@ -146,6 +146,29 @@ async fn fast_ready_disconnects_keep_exponential_reconnect_backoff() {
 }
 
 #[tokio::test]
+async fn stalled_websocket_handshake_retries_before_provision_deadline() {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let endpoint = format!("ws://{}/tools", listener.local_addr().unwrap());
+    let tools = Tools::builder()
+        .without_defaults()
+        .tool(EchoTool)
+        .build()
+        .unwrap();
+    let (attachment, _) = tools
+        .attach(AttachmentTarget::new(endpoint, "bearer").unwrap())
+        .start()
+        .unwrap();
+    let (first, _) = listener.accept().await.unwrap();
+    // Leave the HTTP upgrade unanswered; the driver should retry the socket.
+    let (second, _) = tokio::time::timeout(Duration::from_secs(8), listener.accept())
+        .await
+        .expect("attachment remained stuck in the first handshake")
+        .unwrap();
+    drop((first, second));
+    attachment.detach().await.unwrap();
+}
+
+#[tokio::test]
 async fn catalog_call_result_and_drain_use_exact_frames() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let endpoint = format!("ws://{}/tools", listener.local_addr().unwrap());
