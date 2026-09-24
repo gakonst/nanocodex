@@ -1,0 +1,18 @@
+{
+  "name": "nanocodex-media-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "wrangler deploy --dry-run --outdir dist --config wrangler.jsonc"
+  },
+  "dependencies": {
+    "nanocodex-tools": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20260730.1",
+    "typescript": "5.9.3",
+    "wrangler": "4.127.1"
+  }
+}

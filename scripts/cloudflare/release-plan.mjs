@@ -36,6 +36,17 @@ export function readPlan(cwd=process.cwd(), revision=process.env.GITHUB_SHA) {
   for(const name of plan.selected){assert(Object.hasOwn(workerSpecs,name));assert.match(plan.fingerprints[name],/^[a-f0-9]{64}$/);}
   return plan;
 }
+export function scopedRelease(selected, only) {
+  if (!only) return selected;
+  const components=only.split(',');
+  assert.ok(components.every(name=>['managed','account'].includes(name)));
+  const scope=new Set(components);
+  // A forced managed release also refreshes its private service dependency.
+  if(scope.has('managed'))scope.add('media');
+  const included=new Set(selected.filter(name=>scope.has(name)));
+  if(included.has('managed'))included.add('media');
+  return Object.keys(workerSpecs).filter(name=>included.has(name));
+}
 export function releaseNeeds(plan) {
   return {any:plan.selected.length>0,wasm:plan.selected.some(name=>workerSpecs[name].needsWasm),
     workspace:plan.selected.length>0,astra:plan.selected.includes('astra'),managed:plan.selected.includes('managed'),account:plan.selected.includes('account')};
@@ -68,10 +79,8 @@ if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
   const command=process.argv[2];
   if(command==='plan'){
     const only=process.env.RELEASE_ONLY;
-    const components=only?only.split(','):[];
-    assert.ok(components.every(name=>['managed','account'].includes(name)));
     const plan=await selectRelease(await releaseFingerprints(),{force:Boolean(only)||process.env.GITHUB_EVENT_NAME==='workflow_dispatch'});
-    if(only)plan.selected=plan.selected.filter(name=>components.includes(name));
+    plan.selected=scopedRelease(plan.selected,only);
     writeFileSync(planPath,JSON.stringify(plan,null,2)+'\n');
     const needs=releaseNeeds(plan);
     if(process.env.GITHUB_OUTPUT)appendFileSync(process.env.GITHUB_OUTPUT,Object.entries(needs).map(([key,value])=>`${key}=${value}\n`).join(''));

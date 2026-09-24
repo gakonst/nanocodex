@@ -102,6 +102,7 @@ test('Worker previews retain validation and asset uploads but do not build conta
   for (const name of [
     'Restore same-revision Worker outputs',
     'Validate egress Worker',
+    'Validate private media Worker',
     'Validate email Worker',
     'Validate X Worker',
     'Validate Connect API Worker',
@@ -112,6 +113,8 @@ test('Worker previews retain validation and asset uploads but do not build conta
     'Upload Connect playground preview version',
   ]) assert.ok(preview.includes('      - name: ' + name + '\n'), 'missing preview step: ' + name);
   assert.equal((preview.match(/run: npx wrangler versions upload /g) ?? []).length, 2);
+  assert.match(preview, /      - name: Validate private media Worker\n        working-directory: js\/media\n        run: npx wrangler deploy --dry-run --config wrangler\.jsonc\n/);
+  assert.ok(preview.indexOf('- name: Validate private media Worker') < preview.indexOf('- name: Validate managed Worker'));
   const restore = preview.indexOf('- name: Restore same-revision Worker outputs');
   const dialog = preview.indexOf('- name: Upload Connect dialog preview version');
   const upload = preview.indexOf('- name: Upload Connect playground preview version');
