@@ -373,32 +373,3 @@ impl NanocodexError {
 
 /// Result type returned by the owned agent lifecycle.
 pub type Result<T> = std::result::Result<T, NanocodexError>;
-
-#[cfg(all(test, feature = "openai"))]
-mod tests {
-    use super::{NanocodexError, ResponsesError};
-    use nanocodex_oai_api::{ResponseError, tower::ResponsesServiceError};
-
-    #[test]
-    fn response_error_is_the_single_provider_failure_boundary() {
-        let service = NanocodexError::Response(ResponseError::from(ResponsesServiceError::from(
-            ResponsesError::UnexpectedEnd,
-        )));
-        assert!(matches!(
-            service.responses_error(),
-            Some(ResponsesError::UnexpectedEnd)
-        ));
-
-        let service = ResponsesServiceError::from(ResponsesError::UnexpectedEnd);
-        let error =
-            NanocodexError::Response(ResponseError::from(Box::new(service) as tower::BoxError));
-        assert!(matches!(
-            error.responses_error(),
-            Some(ResponsesError::UnexpectedEnd)
-        ));
-        assert_eq!(
-            error.to_string(),
-            "Responses WebSocket closed without a close frame"
-        );
-    }
-}

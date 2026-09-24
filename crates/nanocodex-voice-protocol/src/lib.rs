@@ -150,29 +150,6 @@ mod tests {
     };
 
     #[test]
-    fn canonical_realtime_prompts_render_exact_markers_and_literal_names() {
-        use super::*;
-        assert_eq!(
-            REALTIME_START_INSTRUCTIONS,
-            format!(
-                "<realtime_conversation>\n{}\n</realtime_conversation>",
-                include_str!("realtime_start.md").trim(),
-            )
-        );
-        assert_eq!(
-            REALTIME_END_INSTRUCTIONS,
-            "<realtime_conversation>\nRealtime conversation ended.\n\nSubsequent user input will return to typed text rather than transcript-style text. Do not assume recognition errors or missing punctuation once realtime has ended. Resume normal chat behavior.\n</realtime_conversation>"
-        );
-        let name = "Synthetic {{ user_first_name }} & <name>";
-        let rendered = chatgpt_realtime_instructions(name);
-        let (before, after) = CHATGPT_REALTIME_BACKEND_PROMPT_TEMPLATE
-            .split_once("{{ user_first_name }}")
-            .unwrap();
-        assert_eq!(rendered, format!("{before}{name}{after}"));
-        assert!(!REALTIME_END_INSTRUCTIONS.contains("Reason: inactive"));
-    }
-
-    #[test]
     fn delegation_escapes_structured_input() {
         assert_eq!(
             realtime_delegation(

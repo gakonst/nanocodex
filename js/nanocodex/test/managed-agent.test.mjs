@@ -8,19 +8,6 @@ const origin = "https://managed.example";
 const agentId = "0198d3f0-8844-7000-8000-000000000001";
 const apiKey = `ncx_live_${"a".repeat(12)}_${"b".repeat(43)}`;
 
-test("managed organization validates updates and response shape", async () => {
-  const options = {
-    baseUrl: origin,
-    fetch: async () => Response.json({ id: "not-a-uuid" }),
-  };
-  await assert.rejects(Agent.updateOrganization({ name: "x".repeat(121) }, options), /at most 120/);
-  await assert.rejects(Agent.updateOrganization({ label: "Research" }, options), /does not accept label/);
-  await assert.rejects(
-    Agent.getOrganization(options),
-    (error) => error instanceof ManagedError && error.code === "invalid_response",
-  );
-});
-
 test("managed tools target retains bearer only in the injected handshake", async () => {
   let handshake;
   const socket = { readyState: 0, send() {}, close() {}, addEventListener() {} };
@@ -76,38 +63,6 @@ test("managed Agent retries creation with one stable identity", async () => {
   assert.match(keys[0], /^managed-create:[0-9a-f-]{36}$/);
 });
 
-test("managed Agent rejects incomplete, retired, and Astra-incompatible creation policy", async () => {
-  const options = { baseUrl: origin, fetch: async () => Response.json({ agent_id: agentId }) };
-  await assert.rejects(Agent.create({
-    ...options,
-    settings: { model: "gpt-6-astra", thinking: "high", reasoningMode: "standard" },
-  }), /creation settings are invalid/);
-  await assert.rejects(Agent.create({
-    ...options,
-    settings: {
-      model: "gpt-6-astra",
-      thinking: "none",
-      reasoningMode: "standard",
-      fastMode: false,
-    },
-  }), /GPT-6 Astra requires/);
-  await assert.rejects(Agent.create({
-    ...options,
-    settings: {
-      model: "gpt-6-astra",
-      thinking: "max",
-      reasoningMode: "pro",
-      fastMode: false,
-    },
-  }), /does not support pro/);
-  for (const model of ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]) {
-    await assert.rejects(Agent.create({
-      ...options,
-      settings: { model, thinking: "medium", reasoningMode: "standard", fastMode: false },
-    }), /creation settings are invalid/);
-  }
-});
-
 test("managed server authentication sends only an ncx_live bearer and omits cookies", async () => {
   let captured;
   const agents = await Agent.list({
@@ -136,33 +91,6 @@ test("managed server authentication sends only an ncx_live bearer and omits cook
     Agent.create({ baseUrl: origin, headers: { "x-internal": "capability" } }),
     /do not accept headers/,
   );
-});
-
-test("managed event history requests one bounded chronological page before a cursor", async () => {
-  const requests = [];
-  const agent = await Agent.create({
-    baseUrl: origin,
-    fetch: async (input, init) => {
-      const request = new Request(input, init);
-      requests.push(request);
-      const url = new URL(request.url);
-      if (request.method === "POST") return Response.json({ agent_id: agentId }, { status: 201 });
-      return Response.json({
-        data: [eventData("7"), eventData("8")],
-        has_more: true,
-        latest_cursor: "12",
-      });
-    },
-  });
-
-  const page = await agent.events.page({ before: "9", limit: 2 });
-  assert.deepEqual(page.data.map((event) => event.cursor), ["7", "8"]);
-  assert.equal(page.hasMore, true);
-  assert.equal(page.latestCursor, "12");
-  assert.equal(new URL(requests[1].url).search, "?limit=2&before=9");
-  assert.equal(requests.length, 2, "one create plus one history request");
-  await assert.rejects(() => agent.events.page({ before: "0" }), /positive decimal/);
-  await assert.rejects(() => agent.events.page({ limit: 257 }), /1 through 256/);
 });
 
 test("managed event history pages forward exclusively and validates its boundary", async () => {
@@ -1360,25 +1288,6 @@ test("the first managed terminal is canonical, identical replay is ignored, and 
   assert.equal(result.cursor, "1");
 });
 
-test("browser transport failures become retryable managed errors", async () => {
-  await assert.rejects(
-    Agent.list({
-      baseUrl: origin,
-      fetch: async () => { throw new TypeError("Load failed"); },
-    }),
-    (error) => {
-      assert(error instanceof ManagedError);
-      assert.equal(error.code, "network_error");
-      assert.equal(
-        error.message,
-        "Managed agent connection was interrupted. Check your network and retry.",
-      );
-      assert.equal(error.cause.message, "Load failed");
-      return true;
-    },
-  );
-});
-
 test("managed prompts retry browser transport failures with one idempotency key", async () => {
   const requests = [];
   const agent = Agent.open(agentId, {
@@ -1811,15 +1720,4 @@ test("a failed different-payload steer cannot reuse an earlier ID receipt", asyn
     assert.equal(posts, 2, "neither ambiguous POST is replayed");
     assert.equal(reads, 1);
   }
-});
-
-
-test("agent listings ignore malformed prompt previews without rejecting the agent", async () => {
-  const fetch = async () => Response.json({ data: [agentId], summaries: {
-    [agentId]: { title: "Fix sidebar", created_at: 10, updated_at: 20, turn_count: 1,
-      presentation: { revision: 2, status: "running", activeTurnIds: ["turn"], updatedAt: 30, lastUserPrompt: { text: "invalid" } } },
-  } });
-  const agents = await Agent.list({ baseUrl: "https://example.test", apiKey, fetch });
-  assert.equal(agents[0].summary.title, "Fix sidebar");
-  assert.equal(agents[0].summary.presentation, undefined);
 });

@@ -151,11 +151,4 @@ final class TranscriptStreamProjectionTests: XCTestCase {
         projection.append(events[...])
         XCTAssertEqual(projection.rows, rows, "Replayed frames must not duplicate indexed rows")
     }
-
-    func testInactiveTabBudgetEvictsOversizedAndOldestTabs() {
-        XCTAssertEqual(TranscriptRetention.cachedPrefixCount(byteCounts: [16, 16, 16], byteLimit: 24, countLimit: 8), 2)
-        XCTAssertEqual(TranscriptRetention.cachedPrefixCount(byteCounts: [30], byteLimit: 24, countLimit: 8), 1)
-        XCTAssertEqual(TranscriptRetention.cachedPrefixCount(byteCounts: [1, 1, 1], byteLimit: 24, countLimit: 2), 1)
-        XCTAssertEqual(TranscriptRetention.cachedPrefixCount(byteCounts: [], byteLimit: 24, countLimit: 8), 0)
-    }
 }

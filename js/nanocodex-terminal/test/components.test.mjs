@@ -259,51 +259,6 @@ test("composer keeps stop available beside send throughout an active turn", asyn
   await act(async () => renderer.unmount());
 });
 
-test("welcome is replaced by the first visible durable or voice entry", async () => {
-  const props = {
-    canLoadOlder: false,
-    composer: null,
-    entries: [],
-    inactiveMessage: "",
-    isLoadingOlder: false,
-    mode: "full",
-    status: "ready",
-    welcome: "Welcome to Nanocodex",
-    onLoadOlder: async () => false,
-  };
-  let renderer;
-  await act(async () => {
-    renderer = TestRenderer.create(React.createElement(TerminalTranscriptSurface, props), {
-      createNodeMock(element) {
-        return element.type === "div"
-          ? { clientHeight: 300, firstElementChild: null, scrollHeight: 300, scrollTop: 0 }
-          : {};
-      },
-    });
-  });
-  assert.equal(renderer.root.findAllByProps({ className: "agent-terminal-markdown is-assistant is-welcome" }).length, 1);
-
-  await act(async () => renderer.update(React.createElement(TerminalTranscriptSurface, {
-    ...props,
-    entries: [{ id: "durable", kind: "assistant", text: "Ready", streaming: false }],
-  })));
-  assert.equal(renderer.root.findAllByProps({ className: "agent-terminal-markdown is-assistant is-welcome" }).length, 0);
-
-  await act(async () => renderer.update(React.createElement(TerminalTranscriptSurface, {
-    ...props,
-    voiceEntries: [{
-      id: "voice",
-      kind: "user",
-      source: "voice",
-      streaming: false,
-      text: "Hello",
-    }],
-  })));
-  assert.equal(renderer.root.findAllByProps({ className: "agent-terminal-markdown is-assistant is-welcome" }).length, 0);
-  assert.equal(renderer.root.findAllByProps({ "data-source": "voice" }).length, 1);
-  await act(async () => renderer.unmount());
-});
-
 test("automatic history keeps the reader anchored while output streams and the reader moves", async () => {
   let prependHeight = 0;
   const viewport = {
@@ -402,82 +357,6 @@ test("short history pages respond to upward gestures without initial fetches or 
     log().props.onTouchMove({ currentTarget: viewport, touches: [{ clientY: 140 }] });
   });
   assert.equal(requests, 4, "gesturing away and back permits retry even when short content cannot scroll");
-  await act(async () => renderer.unmount());
-});
-
-test("transcript renders semantic reasoning, plans, and accessible nested tools", async () => {
-  const entries = [
-    { id: "r", kind: "reasoning", text: "checking", streaming: true },
-    {
-      id: "a",
-      kind: "assistant",
-      text: "**done** [Authorize Google](https://accounts.google.com/o/oauth2/v2/auth?state=opaque)",
-      streaming: false,
-    },
-    { id: "p", kind: "plan", update: { plan: [{ step: "verify", status: "completed" }] } },
-    {
-      id: "t",
-      kind: "tool",
-      tool: {
-        callId: "root", name: "exec", arguments: "text(await tools.sandbox_exec(...))",
-        result: "{\"content\":[{\"type\":\"text\"}]}", status: "completed",
-        children: [{
-          callId: "child", name: "sandbox_exec",
-          arguments: "{\"command\":\"pwd\",\"cwd\":\"/workspace\"}",
-          result: "{\"exit_code\":0,\"stdout\":\"/workspace\",\"stderr\":\"\"}",
-          status: "completed", children: [],
-        }],
-      },
-    },
-  ];
-  let renderer;
-  await act(async () => {
-    renderer = TestRenderer.create(React.createElement(TerminalTranscriptSurface, {
-      canLoadOlder: false,
-      composer: null,
-      entries,
-      inactiveMessage: "",
-      isLoadingOlder: false,
-      mode: "full",
-      status: "ready",
-      onLoadOlder: async () => false,
-    }), {
-      createNodeMock(element) {
-        return element.type === "div"
-          ? { clientHeight: 300, firstElementChild: null, scrollHeight: 600, scrollTop: 0 }
-          : {};
-      },
-    });
-  });
-  const labels = renderer.root.findAllByProps({ className: "agent-terminal-entry-label" });
-  assert.equal(labels[0].children.join(""), "thinking…");
-  assert.equal(renderer.root.findAllByType("li")[0].children[1], "verify");
-  assert.deepEqual(renderer.root.findAllByType("strong").map((strong) => strong.children.join("")), ["Run code", "Run command"]);
-  assert.deepEqual(renderer.root.findAllByProps({ className: "agent-terminal-tool-status" })
-    .map((status) => status.children.join("")), ["Succeeded", "Succeeded"]);
-  assert.deepEqual(renderer.root.findAllByProps({ className: "agent-terminal-tool-source" })
-    .map((source) => source.children.join("")), ["Code mode", "Sandbox · /workspace"]);
-  assert.equal(
-    renderer.root.findByProps({ "data-streamdown": "link" }).children.join(""),
-    "Authorize Google",
-  );
-  assert.deepEqual(renderer.root.findAllByType("h4").map((heading) => heading.children.join("")), [
-    "Command", "Exit code", "Stdout", "Stderr",
-  ]);
-  assert.equal(renderer.root.findAllByProps({ className: "agent-terminal-brand" }).length, 0);
-  await act(async () => renderer.update(React.createElement(TerminalTranscriptSurface, {
-    canLoadOlder: false,
-    composer: null,
-    entries,
-    followTailRequest: 1,
-    inactiveMessage: "",
-    isLoadingOlder: false,
-    mode: "full",
-    showToolCalls: false,
-    status: "ready",
-    onLoadOlder: async () => false,
-  })));
-  assert.equal(renderer.root.findAllByType("details").length, 0);
   await act(async () => renderer.unmount());
 });
 

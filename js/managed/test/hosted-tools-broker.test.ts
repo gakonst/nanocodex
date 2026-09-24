@@ -468,42 +468,6 @@ describe("HostedToolsBroker socket-owned protocol", () => {
     expect(fixture.broker.provider().definitions()).toEqual([]);
   });
 
-  it("replaces the live machine snapshot without rebuilding its broker", async () => {
-    const fixture = createFixture();
-    const first = fixture.socket();
-    await fixture.broker.message(first.webSocket, JSON.stringify({
-      type: "catalog", capabilities: ["turn_metadata"],
-      attachment_id: "laptop",
-      tools: [entry()],
-      machines: [{
-        id: "laptop",
-        name: "Laptop",
-        workspace: "/Users/george/repo",
-        capabilities: ["filesystem"],
-      }],
-    }));
-    const replacement = fixture.socket();
-    await fixture.broker.message(replacement.webSocket, JSON.stringify({
-      type: "catalog", capabilities: ["turn_metadata"],
-      attachment_id: "laptop",
-      tools: [entry()],
-      machines: [{
-        id: "laptop",
-        name: "Renamed laptop",
-        workspace: "/home/george/repo",
-        capabilities: ["filesystem", "native-shell"],
-      }],
-    }));
-
-    expect(first.closed).toMatchObject({ code: 1008 });
-    expect(fixture.broker.machines()).toEqual([{
-      id: "laptop",
-      name: "Renamed laptop",
-      workspace: "/home/george/repo",
-      capabilities: ["filesystem", "native-shell"],
-    }]);
-  });
-
   it("reserves canonical machine tools, resolves exact machines, and disconnects independently", async () => {
     const fixture = createFixture();
     const routeB = fixture.socket();

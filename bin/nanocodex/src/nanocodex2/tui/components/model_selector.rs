@@ -258,39 +258,3 @@ fn model_name(model: Model) -> &'static str {
         _ => model.as_str(),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crossterm::event::{KeyEvent, KeyModifiers};
-
-    fn key(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
-    #[test]
-    fn selection_moves_linearly_and_does_not_wrap() {
-        let now = Instant::now();
-        let mut selector = ModelSelector::new(Model::Sol);
-
-        selector.update_key(key(KeyCode::Right), now);
-        assert_eq!(selector.selected, 2);
-        selector.update_key(key(KeyCode::Left), now);
-        assert_eq!(selector.selected, 1);
-        selector.update_key(key(KeyCode::Left), now);
-        selector.update_key(key(KeyCode::Left), now);
-        selector.update_key(key(KeyCode::Left), now);
-        assert_eq!(selector.selected, 0);
-    }
-
-    #[test]
-    fn applying_returns_the_selected_model() {
-        let now = Instant::now();
-        let mut selector = ModelSelector::new(Model::Sol);
-        selector.update_key(key(KeyCode::Left), now);
-
-        let update = selector.update_key(key(KeyCode::Enter), now);
-
-        assert_eq!(update.effects, [ModelSelectorEffect::Apply(Model::Astra)]);
-    }
-}

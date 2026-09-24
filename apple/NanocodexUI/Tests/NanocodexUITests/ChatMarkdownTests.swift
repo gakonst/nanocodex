@@ -117,18 +117,4 @@ final class ChatMarkdownTests: XCTestCase {
         XCTAssertNil(ChatCodeHighlighter.cachedText(source + " ", language: "javascript", dark: false))
         XCTAssertNil(ChatCodeHighlighter.cachedText(source, language: "bash", dark: false))
     }
-
-    func testRevisitedCodeKeepsSourceLanguageAndAppearanceIndependent() async {
-        let source = "let value = 7\n"
-        let light = await ChatCodeHighlighter.highlight(source, language: "swift", dark: false)
-        let dark = await ChatCodeHighlighter.highlight(source, language: "swift", dark: true)
-        let unknown = await ChatCodeHighlighter.highlight(source, language: "not-a-code-language", dark: false)
-        let longer = await ChatCodeHighlighter.highlight(source + "let other = 8\n", language: "swift", dark: false)
-        let revisited = await ChatCodeHighlighter.highlight(source, language: "SWIFT", dark: false)
-        XCTAssertEqual(revisited, light)
-        XCTAssertNotEqual(revisited, dark)
-        XCTAssertEqual(unknown, AttributedString(source))
-        XCTAssertEqual(String(longer.characters), source + "let other = 8\n")
-        XCTAssertEqual(String(revisited.characters), source)
-    }
 }

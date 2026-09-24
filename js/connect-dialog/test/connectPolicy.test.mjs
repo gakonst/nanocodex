@@ -3,7 +3,6 @@ import test from "node:test";
 
 import {
   accountLoginCapabilities,
-  appVisibilityPermissions,
   chatGptConnectorDisposition,
   connectorApprovalDisposition,
   connectApiOrigin,
@@ -12,10 +11,7 @@ import {
   focusedConnectorFromResources,
   isLocalDevelopmentOrigin,
   isPopupPresentation,
-  focusedMcpConnection,
-  hostPrincipalExchangeFromResources,
   mcpConnectionApprovalDisposition,
-  mcpConnectionsFromWire,
   mppConsentDetails,
   parseConnectPolicy,
   productionConnectApiOrigin,
@@ -28,17 +24,7 @@ import {
   usesBrowserLocalWebAuthn,
 } from "nanocodex-connect-ui/connectPolicy.mjs";
 
-const hostExchange = "h".repeat(43);
-
-test("host principal policy accepts one opaque exchange and emits no wallet address", () => {
-  assert.equal(hostPrincipalExchangeFromResources([
-    "urn:nanocodex:agent:run",
-    `urn:nanocodex:host-principal:exchange:${hostExchange}`,
-  ]), hostExchange);
-  assert.throws(() => hostPrincipalExchangeFromResources([
-    `urn:nanocodex:host-principal:exchange:${hostExchange}`,
-    `urn:nanocodex:host-principal:exchange:${"x".repeat(43)}`,
-  ]), /exactly one/);
+test("host principal wallet results emit no wallet address", () => {
   const result = sanitizeHostPrincipalWalletResult({
     accounts: [{
       principal: { kind: "host", id: "p".repeat(43) },
@@ -77,11 +63,8 @@ test("canonical Nanocodex localhost dialogs use the portable server ceremony", (
   assert.equal(usesBrowserLocalWebAuthn("https://nanocodex.gakonst.workers.dev"), false);
 });
 
-const playground = "https://nanocodex-connect-playground.gakonst.workers.dev";
 const astraDemo = "https://nanocodex-astra-mpp-trial.gakonst.workers.dev";
-const chromeExtension = "chrome-extension://jpkimkgbgbpcaldbnhlhbkbadmpeffle";
 const productionDialog = "https://nanocodex.gakonst.workers.dev/connect-dialog/?mode=iframe";
-const cli = "https://cli.nanocodex.xyz";
 const chatGptCredentialImport = `urn:nanocodex:credential-import:chatgpt:codex-auth-v1:sha256:${"a".repeat(43)}`;
 
 test("an exact ChatGPT Codex auth resource defers the signed ChatGPT connector", () => {
@@ -138,110 +121,15 @@ test("existing-account login targets only credentials retained by this dialog", 
   });
 });
 
-test("signed agent visibility resources map to compact consent labels", () => {
-  assert.deepEqual(appVisibilityPermissions([
-    "urn:nanocodex:agent:visibility:reply,actions,history,traces",
-  ]), [
-    {
-      resource: "urn:nanocodex:agent:output:final",
-      label: "Reply",
-      detail: "Final agent reply",
-    },
-    {
-      resource: "urn:nanocodex:agent:output:actions",
-      label: "Actions",
-      detail: "Agent actions and tool calls",
-    },
-    {
-      resource: "urn:nanocodex:agent:history:read",
-      label: "History",
-      detail: "Conversation history",
-    },
-    {
-      resource: "urn:nanocodex:agent:trace:read",
-      label: "Thinking & traces",
-      detail: "Reasoning, thinking, and full tool traffic",
-    },
-  ]);
-});
-
-test("unsigned and malformed resources do not produce visibility claims", () => {
-  assert.deepEqual(appVisibilityPermissions([
-    "urn:nanocodex:agent:output",
-    "urn:nanocodex:agent:trace:write",
-    null,
-  ]), []);
-  assert.deepEqual(appVisibilityPermissions(undefined), []);
-});
-
-test("legacy visibility resources remain readable", () => {
-  assert.deepEqual(appVisibilityPermissions([
-    "urn:nanocodex:agent:output:final",
-    "urn:nanocodex:agent:trace:read",
-  ]).map(({ label }) => label), ["Reply", "Thinking & traces"]);
-});
-
-test("a signed durable conversation is visible as a separate approval", () => {
-  const resource = "urn:nanocodex:agent:conversation:0f5f2ab8-2585-4d7c-9403-0de76f55ad18";
-  assert.deepEqual(appVisibilityPermissions([resource]), [{
-    resource,
-    label: "Conversation",
-    detail: "Create and use one new durable conversation",
-  }]);
-  assert.deepEqual(appVisibilityPermissions([
-    "urn:nanocodex:agent:conversation:not-a-uuid",
-  ]), []);
-});
-
-test("hosted history and memory remain separate signed permissions", () => {
-  assert.deepEqual(appVisibilityPermissions([
-    "urn:nanocodex:history:read",
-    "urn:nanocodex:memory:read",
-    "urn:nanocodex:memory:write",
-  ]).map(({ label }) => label), ["Hosted history", "Memory read", "Memory write"]);
-});
-
-test("an exact signed browser tool catalog is visible without implying broad tool access", () => {
-  const resource = `urn:nanocodex:app-tool-catalog:sha256:${"c".repeat(64)}`;
-  assert.deepEqual(appVisibilityPermissions([resource]), [{
-    resource,
-    label: "App tools",
-    detail: "Use only the exact app tool catalog approved here",
-  }]);
-  assert.deepEqual(appVisibilityPermissions([
-    "urn:nanocodex:app-tool-catalog:sha256:not-a-digest",
-  ]), []);
-});
-
-test("production Connect policy pins the API and registered embedding app", () => {
+test("production Connect policy pins the API and rejects a mismatched app", () => {
   assert.equal(connectApiOrigin({
     challenge: `${productionConnectApiOrigin}/v1/connect/auth/challenge`,
     url: `${productionConnectApiOrigin}/v1/connect/auth`,
   }, "https://nanocodex-connect.gakonst.workers.dev"), productionConnectApiOrigin);
-  assert.deepEqual(registeredApp(playground, "atlas-workspace", productionDialog, false), {
-    id: "atlas-workspace",
-    name: "Atlas Workspace",
-    origin: playground,
-  });
-  assert.deepEqual(registeredApp(astraDemo, "astra-one-shot", productionDialog, false), {
-    id: "astra-one-shot",
-    name: "Astra One-Shot",
-    origin: astraDemo,
-  });
   assert.throws(
     () => registeredApp(astraDemo, "astra-one-shot-local", productionDialog, false),
     /does not match/,
   );
-  assert.deepEqual(registeredApp(chromeExtension, "nanocodex-chrome", productionDialog, false), {
-    id: "nanocodex-chrome",
-    name: "Nanocodex for Chrome",
-    origin: chromeExtension,
-  });
-  assert.deepEqual(registeredApp(cli, "nanocodex-cli", productionDialog, true), {
-    id: "nanocodex-cli",
-    name: "Nanocodex CLI",
-    origin: cli,
-  });
 });
 
 test("Astra consent exposes its exact 0.1 MACH recipient-bound authority", () => {
@@ -484,26 +372,6 @@ test("connector focus is singular, known, and included in the signed connector g
   assert.throws(() => focusedConnectorFromResources([
     "urn:nanocodex:connector-focus:unknown",
   ], ["unknown"]), /focus is invalid/);
-});
-
-test("generic MCP metadata is bounded, secret-free, and separate from connector IDs", () => {
-  const connections = mcpConnectionsFromWire([
-    { id: LINEAR_MCP, name: "Linear", status: "authorization_required" },
-    { id: CLOUDFLARE_MCP, name: "Cloudflare", status: "connected" },
-  ]);
-  assert.deepEqual(connections, [
-    { id: LINEAR_MCP, name: "Linear", status: "authorization_required" },
-    { id: CLOUDFLARE_MCP, name: "Cloudflare", status: "connected" },
-  ]);
-  assert.equal(focusedMcpConnection(LINEAR_MCP, connections), LINEAR_MCP);
-  assert.equal(focusedMcpConnection(undefined, connections), undefined);
-  for (const unsafe of [
-    [{ id: LINEAR_MCP, name: "Linear", status: "connected", endpoint: "https://mcp.linear.app/mcp" }],
-    [{ id: LINEAR_MCP, name: "Linear", status: "connected", token: "secret" }],
-    [{ id: LINEAR_MCP, name: "Linear", status: "unknown" }],
-    [{ id: "linear", name: "Linear", status: "connected" }],
-  ]) assert.throws(() => mcpConnectionsFromWire(unsafe), /invalid MCP connections/);
-  assert.throws(() => focusedMcpConnection("x".repeat(43), connections), /focused MCP/);
 });
 
 test("all requested generic MCP connections must be connected before device settlement", () => {

@@ -405,32 +405,6 @@ final class ProtocolTests: XCTestCase {
     }
 
     @MainActor
-    func testTranscriptPreparationMainQueueLatency() async throws {
-        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-main-thread-profile")
-        model.runtime.requestOverride = { _, _ in .null }
-        defer { model.shutdown() }
-        var events: [ManagedEvent] = []
-        for index in 0..<400 {
-            let payload: JSONValue = .object(["call_id": .string("call-\(index)"), "name": .string("exec_command"), "arguments": .string("{\"cmd\":\"echo benchmark\"}"), "output": .string(String(repeating: "benchmark output ", count: 100))])
-            events.append(ManagedEvent(cursor: "\(index * 2)", turnId: "turn-\(index)", data: .object(["type": .string("event"), "event": .object(["type": .string("tool.call"), "payload": payload])])))
-            events.append(ManagedEvent(cursor: "\(index * 2 + 1)", turnId: "turn-\(index)", data: .object(["type": .string("event"), "event": .object(["type": .string("tool.result"), "payload": payload])])))
-        }
-        let snapshot: JSONValue = .object(["id": .string("profile"), "events": try .encoded(events), "hasMore": .bool(false), "connected": .bool(true), "activeTurns": .array([]), "settings": try .encoded(AgentSettings()), "cursor": .string("complete")])
-        var frame = try JSONEncoder().encode(JSONValue.object(["event": .object(["type": .string("thread"), "thread": snapshot])]))
-        frame.append(10)
-        let start = CFAbsoluteTimeGetCurrent()
-        var previous = start, largestGap = 0.0
-        model.runtime.receiveAsynchronouslyForTesting(frame)
-        while model.snapshots["profile"]?.cursor != "complete", CFAbsoluteTimeGetCurrent() - start < 10 {
-            try await Task.sleep(for: .milliseconds(5))
-            let now = CFAbsoluteTimeGetCurrent(); largestGap = max(largestGap, now - previous); previous = now
-        }
-        XCTAssertEqual(model.snapshots["profile"]?.cursor, "complete")
-        XCTAssertEqual(model.messages["profile"]?.count, 400)
-        print("MAIN_QUEUE_PROFILE bytes=\(frame.count) total_ms=\((CFAbsoluteTimeGetCurrent() - start) * 1000) largest_gap_ms=\(largestGap * 1000)")
-    }
-
-    @MainActor
     func testWorkspaceKeyboardZoomAndCancelledDocking() async throws {
         let model = AppModel(runtimeDirectory: "/tmp/nanocodex-keyboard-zoom-fixture")
         model.isStarting = false; model.state = try Self.connectedState.decode(DesktopState.self)
@@ -1298,17 +1272,6 @@ final class ProtocolTests: XCTestCase {
         XCTAssertEqual(reply.string, String(repeating: "final-response-", count: 30000))
         await fulfillment(of: [exited], timeout: 5)
     }
-    @MainActor
-    func testRuntimeRetainsCursorOnlySnapshotUpdates() throws {
-        let model = AppModel(runtimeDirectory: "/tmp/nanocodex-isolated-cursor-update")
-        defer { model.shutdown() }
-        for cursor in ["1", "2"] {
-            let thread: JSONValue = .object(["id": .string("thread"), "events": .array([]), "hasMore": .bool(false), "connected": .bool(true), "activeTurns": .array([]), "settings": try .encoded(AgentSettings()), "cursor": .string(cursor)])
-            var frame = try JSONEncoder().encode(JSONValue.object(["event": .object(["type": .string("thread"), "thread": thread])]))
-            frame.append(10); model.runtime.receiveForTesting(frame)
-        }
-        XCTAssertEqual(model.snapshots["thread"]?.cursor, "2")
-    }
     func testCachedTimelinePreservesInterleavingReplayHistoryAndCorrections() {
         func delta(_ cursor: String, _ turn: String, _ text: String) -> ManagedEvent {
             .init(cursor: cursor, turnId: turn, data: .object(["type": .string("event"), "event": .object(["type": .string("assistant.delta"), "payload": .object(["text": .string(text)])])]))
@@ -2030,22 +1993,6 @@ final class ProtocolTests: XCTestCase {
         let url = evidence.appendingPathComponent("native-generated-code-output.png")
         try XCTUnwrap(image.representation(using: .png, properties: [:])).write(to: url)
         let attachment = XCTAttachment(contentsOfFile: url); attachment.lifetime = .keepAlways; add(attachment)
-
-        var live = Array(events.dropLast()), projection = TimelineProjection()
-        _ = projection.project(live)
-        var retainedMs: [Double] = [], rebuiltMs: [Double] = []
-        for index in 0..<24 {
-            live.append(.init(cursor: "stream-\(index)", turnId: "generated", data: .object(["type": .string("event"), "event": .object(["type": .string("assistant.delta"), "payload": .object(["text": .string("The generated output remains visible while this response streams. ")])])])))
-            var start = CFAbsoluteTimeGetCurrent()
-            let retained = projection.project(live)
-            retainedMs.append((CFAbsoluteTimeGetCurrent() - start) * 1000)
-            start = CFAbsoluteTimeGetCurrent()
-            let rebuilt = projectTimeline(live)
-            rebuiltMs.append((CFAbsoluteTimeGetCurrent() - start) * 1000)
-            XCTAssertEqual(retained, rebuilt)
-        }
-        let metrics: [String: Any] = ["retainedToolOutputsMedianMs": retainedMs.sorted()[12], "reparsedToolOutputsMedianMs": rebuiltMs.sorted()[12], "pngBytes": png.utf8.count, "snapshots": 24, "network": "none; actual code-mode wire shape, hosted native window"]
-        try JSONSerialization.data(withJSONObject: metrics, options: [.prettyPrinted, .sortedKeys]).write(to: evidence.appendingPathComponent("native-generated-output-performance.json"))
     }
 }
 

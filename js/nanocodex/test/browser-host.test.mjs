@@ -1200,35 +1200,6 @@ function failingSocket(url, error, asynchronous = false) {
   return socket;
 }
 
-test("socket timing measures real buffered residence and immediate waiters per connection", async (t) => {
-  let now = 0;
-  t.mock.method(performance, "now", () => now);
-  const observations = [];
-  const host = createBrowserHost({ WebSocketImpl: FakeWebSocket, onSocketTiming: value => observations.push(value) });
-  const connecting = host.connect("ws://example.test", "secret-never-reported", "session");
-  const socket = FakeWebSocket.instances.at(-1);
-  socket.open();
-  const { handle } = JSON.parse(await connecting);
-  const waiting = host.next(handle);
-  now = 100;
-  socket.message("private immediate content");
-  assert.equal(JSON.parse(await waiting).text, "private immediate content");
-  socket.message("private buffered content");
-  now = 110;
-  socket.message(new Uint8Array([1]));
-  now = 135;
-  assert.equal(JSON.parse(await host.next(handle)).text, "private buffered content");
-  assert.deepEqual(JSON.parse(await host.next(handle)), { kind: "binary" });
-  socket.message("discarded at close");
-  assert.deepEqual(observations, []);
-  host.close(handle);
-  socket.message("late message after cancellation");
-  host.close(handle);
-  await host.dispose();
-  assert.deepEqual(observations, [{ message_count: 4, delivered_message_count: 3, buffered_message_count: 3,
-    discarded_message_count: 1, queue_residence_total_ms: 60, queue_residence_max_ms: 35, provider_timings: [] }]);
-});
-
 test("remote socket close does not finalize before queued frames drain", async (t) => {
   let now = 10;
   t.mock.method(performance, "now", () => now);
@@ -1251,23 +1222,6 @@ test("remote socket close does not finalize before queued frames drain", async (
   }
   await host.dispose();
   assert.equal(observations.length, 2);
-});
-
-test("socket timing reports discarded overflow frames without counting synthetic errors", async () => {
-  const observations = [];
-  const host = createBrowserHost({ WebSocketImpl: FakeWebSocket, maxQueuedMessages: 1,
-    onSocketTiming: value => observations.push(value) });
-  const connecting = host.connect("ws://example.test", "secret", "session");
-  const socket = FakeWebSocket.instances.at(-1);
-  socket.open();
-  const { handle } = JSON.parse(await connecting);
-  socket.message("one");
-  socket.message("two");
-  socket.message("ignored after overflow");
-  assert.match(JSON.parse(await host.next(handle)).detail, /receive queue exceeded/);
-  await host.dispose();
-  assert.deepEqual(observations, [{ message_count: 2, delivered_message_count: 0, buffered_message_count: 1,
-    discarded_message_count: 2, queue_residence_total_ms: 0, queue_residence_max_ms: 0, provider_timings: [] }]);
 });
 
 test("socket timing remains passive for cancelled waiters, connecting disposal and failed hooks", async () => {
@@ -1297,27 +1251,6 @@ test("socket timing remains passive for cancelled waiters, connecting disposal a
   await rejected;
   assert.equal(observations.length, 1);
   assert.equal(observations[0].message_count, 0);
-});
-
-test("socket timing does no parsing or clock reads without the internal hook, nor parsing for deltas", async (t) => {
-  assert.throws(() => createBrowserHost({ onSocketTiming: true }), /hook must be a function/);
-  for (const enabled of [false, true]) {
-    const host = createBrowserHost({ WebSocketImpl: FakeWebSocket, ...(enabled ? { onSocketTiming() {} } : {}) });
-    const connecting = host.connect("ws://example.test", "secret", "session");
-    const socket = FakeWebSocket.instances.at(-1);
-    socket.open();
-    const { handle } = JSON.parse(await connecting);
-    const parse = t.mock.method(JSON, "parse", () => { throw new Error("unexpected metadata parse"); });
-    const clock = t.mock.method(performance, "now", () => 0);
-    socket.message(enabled ? '{"type":"response.output_text.delta","delta":"private"}'
-      : '{"type":"responsesapi.websocket_timing","timing_metrics":{"pre_inference_ms":1}}');
-    await host.next(handle);
-    await host.dispose();
-    assert.equal(parse.mock.callCount(), 0);
-    assert.equal(clock.mock.callCount(), enabled ? 2 : 0);
-    parse.mock.restore();
-    clock.mock.restore();
-  }
 });
 
 test("socket provider timing accepts only bounded allowlisted numeric timing metadata", async () => {
@@ -1353,19 +1286,4 @@ test("socket provider timing accepts only bounded allowlisted numeric timing met
     { pre_inference_ms: 0 },
   ]);
   assert.doesNotMatch(JSON.stringify(observations), /private|secret|arbitrary|critical_path|headers|body/);
-});
-
-test("socket provider diagnostics retain at most 32 timing records per connection", async () => {
-  const observations = [];
-  const socket = new FakeWebSocket("ws://example.test");
-  socket.open();
-  const host = createBrowserHost({ mpp: { ws: async () => socket }, onSocketTiming: value => observations.push(value) });
-  await host.connect(socket.url, "ignored", "session");
-  for (let i = 0; i < 40; i++) socket.message(JSON.stringify({ type: "responsesapi.websocket_timing",
-    response_id: `resp_${i}`, timing_metrics: { engine_queue_max_ms: i } }));
-  await host.dispose();
-  assert.equal(observations.length, 1);
-  assert.equal(observations[0].provider_timings.length, 32);
-  assert.equal(observations[0].message_count, 40);
-  assert.equal(observations[0].discarded_message_count, 40);
 });

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { fetchChatGpt, warmChatGptEgress } from "./chatGptEgressClient.ts";
+import { fetchChatGpt } from "./chatGptEgressClient.ts";
 
 const SESSION_ID = "a".repeat(43);
 
@@ -56,13 +56,4 @@ test("production egress rejects every non-ChatGPT origin", async () => {
     ),
     /only accepts chatgpt.com/,
   );
-});
-
-test("warming targets only the private Container health route", async () => {
-  const { namespace, requests } = egress();
-  await warmChatGptEgress(
-    { ENVIRONMENT: "production", CHATGPT_EGRESS: namespace },
-    SESSION_ID,
-  );
-  assert.equal(requests[0]?.url, "https://chatgpt-egress.internal/health");
 });

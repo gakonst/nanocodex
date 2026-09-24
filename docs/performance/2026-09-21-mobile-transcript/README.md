@@ -42,10 +42,6 @@ including configurations held offscreen by UIKit, rather than just visible cells
   to leave the accessibility tree, then return expanded after jumping to latest.
 - Existing streaming, pagination, drawer, keyboard, tool expansion, generated-media
   and local-photo journeys exercise the native collection view.
-- `python3 apple/Tests/InboxModelTests/test_row_geometry.py` validates the geometry
-  index with variable-height rows and viewport boundaries.
-- `swift test -c release -j 2 --package-path apple/InboxCore --filter
-  TranscriptPublication` checks publication preparation and stale-input rejection.
 
 ## Measurement scope
 

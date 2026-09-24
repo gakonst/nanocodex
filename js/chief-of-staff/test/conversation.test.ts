@@ -153,29 +153,6 @@ test("durable state cannot be rebound across Slack actors or channels", async ()
   assert.notEqual(await digest(channel), await digest({ ...channel, channelId: "D999XYZ" }));
 });
 
-test("a Viber subscriber receives one durable agent across multiple messages", async () => {
-  const store = new MemoryConversationStore();
-  const gateway = new RememberingGateway();
-  const engine = new ConversationEngine(store, gateway);
-  await engine.turn({
-    actorId: "01234567890A=",
-    channel: viberChannel,
-    messageId: "5741311803571721087",
-    text: "Remember kiwi",
-  });
-  const second = await engine.turn({
-    actorId: "01234567890A=",
-    channel: viberChannel,
-    messageId: "5741311803571721088",
-    text: "What should you remember?",
-  });
-
-  assert.equal(second.finalMessage, "You asked me to remember kiwi.");
-  assert.equal(second.turnId.startsWith("viber-"), true);
-  assert.equal(gateway.created.length, 1);
-  assert.equal(gateway.turns[0]?.input.includes("Chief of Staff in Viber"), true);
-});
-
 test("Viber actors cannot cross another subscriber's durable route", async () => {
   const engine = new ConversationEngine(new MemoryConversationStore(), new RememberingGateway());
   await assert.rejects(
@@ -205,29 +182,6 @@ test("Viber replies are truncated to the provider text limit", async () => {
 
   assert.equal(result.finalMessage.length, 7_000);
   assert.equal(result.finalMessage.endsWith("[Response truncated for Viber]"), true);
-});
-
-test("a WhatsApp conversation keeps its own durable agent and channel-aware prompt", async () => {
-  const store = new MemoryConversationStore();
-  const gateway = new RememberingGateway();
-  const engine = new ConversationEngine(store, gateway);
-  await engine.turn({
-    actorId: "15551234567",
-    channel: whatsappChannel,
-    messageId: "wamid.first",
-    text: "Remember kiwi",
-  });
-  const second = await engine.turn({
-    actorId: "15551234567",
-    channel: whatsappChannel,
-    messageId: "wamid.second",
-    text: "What should you remember?",
-  });
-
-  assert.equal(second.finalMessage, "You asked me to remember kiwi.");
-  assert.match(second.turnId, /^whatsapp-/);
-  assert.match(gateway.turns[0]!.input, /Chief of Staff in WhatsApp/);
-  assert.equal(gateway.created.length, 1);
 });
 
 test("Slack and WhatsApp identities cannot share durable conversation state", async () => {

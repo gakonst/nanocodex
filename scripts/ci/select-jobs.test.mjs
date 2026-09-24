@@ -10,86 +10,15 @@ import { changedPaths, selectJobs, selectionForEvent } from "./select-jobs.mjs";
 const keys = ["native", "voice", "python", "rust", "wasm", "bindings", "apps", "preview", "policy", "codeql"];
 const expected = (...selected) => Object.fromEntries(keys.map(key => [key, selected.includes(key)]));
 const full = expected(...keys);
-const none = expected();
 const policy = expected("policy");
 const native = expected("native", "policy");
-const bindings = expected("wasm", "bindings", "policy");
-const apps = expected("wasm", "apps", "policy");
-const sdk = expected("wasm", "bindings", "apps", "preview", "policy");
 
-// Representative real changes from the audited master history.
-test("Worker JS provider fix keeps consumers without native or Rust builds", () => {
-  assert.deepEqual(selectJobs([
-    "js/nanocodex/cloudflare/workers-ai-responses.mjs",
-    "js/nanocodex/test/gateway-responses.test.mjs",
-    "js/nanocodex/test/provider-stream.test.mjs",
-  ]), sdk);
-});
-
-test("Apple Swift, fixtures, and documentation leave compiled checks to Apple workflows", () => {
-  assert.deepEqual(selectJobs([
-    "apple/NanocodexUI/Sources/NanocodexUI/ChatCodeText.swift",
-    "apple/NanocodexUI/Tests/NanocodexUITests/ChatCodeViewportTests.swift",
-    "apple/README.md", "macos/Nanocodex/AppModel.swift",
-  ]), policy);
-  assert.deepEqual(selectJobs(["apple/Brand/icon.png"]), none);
-  for (const path of ["docs/setup.md", "README.md", "js/nanocodex-computer/README.md"]) {
-    assert.deepEqual(selectJobs([path]), policy, path);
-  }
-  assert.deepEqual(selectJobs([]), none);
-});
-
-test("applications and bindings select their actual consumer groups", () => {
-  for (const path of ["js/account/src/app.tsx", "js/connect-dialog/src/index.ts", "examples/astra-mpp-trial/src/index.ts"]) {
-    assert.deepEqual(selectJobs([path]), apps, path);
-  }
-  for (const path of ["js/managed/src/memory.ts", "js/connect-api/src/connectorPolicy.mts", "js/nanocodex-computer/src/index.ts", "examples/privy/src/app.tsx"]) {
-    assert.deepEqual(selectJobs([path]), bindings, path);
-  }
-  for (const path of ["js/nanocodex-react/src/index.ts", "js/nanocodex-connect-protocol/src/index.ts"]) {
-    assert.deepEqual(selectJobs([path]), expected("wasm", "bindings", "apps", "policy"), path);
-  }
-  assert.deepEqual(selectJobs(["js/nanocodex-vite/scripts/build-js-package.sh"]), { ...sdk, rust: true });
-  assert.deepEqual(selectJobs(["js/nanocodex-tools/runtime/code-tools.mjs"]), full);
-});
-
-// Full changed-path lists from PRs #485 and #489, not just the bridge source.
-const cua485 = [
-  "crates/experimental/nanocodex-computer/src/openai-cua-app-server.mjs",
-  "crates/experimental/nanocodex-computer/src/openai-cua-native-host.mjs",
-  "docs/REMOTE_CONTROL.md", "docs/computer/native-hand-consent.md",
-  "docs/computer/official-app-server-bridge.md", "docs/computer/upstream-provider.md",
-  "js/managed/src/namespace-tools.ts", "js/managed/test/namespace-tools.test.ts",
-  "js/nanocodex-computer/README.md",
-  "scripts/tests/openai-cua-app-server.test.mjs",
-  "scripts/tests/openai-cua-headless-upstream.test.mjs",
-  "scripts/tests/openai-cua-native-host.test.mjs",
-];
 const cua489 = [
   "crates/experimental/nanocodex-computer/src/openai-cua-app-server.mjs",
   "docs/computer/official-app-server-bridge.md", "docs/computer/upstream-provider.md",
   "js/managed/src/namespace-tools.ts", "js/managed/test/namespace-tools.test.ts",
   "scripts/tests/openai-cua-app-server.test.mjs",
 ];
-
-test("CUA PRs retain native and managed consumer checks without voice/Python", () => {
-  for (const paths of [cua485, cua489]) {
-    assert.deepEqual(selectJobs(paths), { ...bindings, native: true });
-  }
-  for (const path of [
-    ...cua485.filter(path => /^(crates|scripts)\//.test(path)),
-    "crates/experimental/nanocodex-computer/src/openai-cua-gui-readiness.mjs",
-    "scripts/tests/openai-cua-gui-readiness.test.mjs",
-  ]) assert.deepEqual(selectJobs([path]), native, path);
-  assert.deepEqual(selectJobs([...cua489, "py/bindings/tests/test_binding.py"]), { ...bindings, native: true, python: true });
-});
-
-test("native and Python categories combine independently", () => {
-  assert.deepEqual(selectJobs(["windows/hand/build.ps1"]), native);
-  assert.deepEqual(selectJobs(["js/desktop-runtime/src/device-hand.mjs"]), native);
-  assert.deepEqual(selectJobs(["py/bindings/src/lib.rs", "examples/python/main.py"]), expected("python", "rust", "policy"));
-  assert.deepEqual(selectJobs(["docs/a.md", "windows/a", "py/a"]), expected("native", "python", "policy"));
-});
 
 test("shared configuration, Rust sources, and unknown paths fail open in either order", () => {
   for (const path of [

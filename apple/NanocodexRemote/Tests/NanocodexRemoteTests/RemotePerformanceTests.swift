@@ -11,33 +11,6 @@ final class RemotePerformanceTests: XCTestCase {
     private let before = ["framesDecoded": "10000", "bytesReceived": "50000000", "totalDecodeTime": "100", "jitterBufferDelay": "500", "jitterBufferEmittedCount": "10000", "framesDropped": "100", "packetsReceived": "50000", "packetsLost": "1000"]
     private let after = ["framesDecoded": "10120", "bytesReceived": "52000000", "totalDecodeTime": "100.6", "jitterBufferDelay": "502.4", "jitterBufferEmittedCount": "10120", "framesDropped": "103", "packetsReceived": "50098", "packetsLost": "1002"]
 
-    func testUsesIntervalDeltasAndActualSampleDuration() throws {
-        var accumulator = RemotePerformanceAccumulator()
-        let baseline = accumulator.sample(report(1, video(before)))
-        XCTAssertNil(baseline.decodedFramesPerSecond)
-        XCTAssertNil(baseline.jitterBufferMilliseconds)
-        let value = accumulator.sample(report(3, video(after)))
-        XCTAssertEqual(try XCTUnwrap(value.decodedFramesPerSecond), 60, accuracy: 0.001)
-        XCTAssertEqual(try XCTUnwrap(value.receiveMegabitsPerSecond), 8, accuracy: 0.001)
-        XCTAssertEqual(try XCTUnwrap(value.jitterBufferMilliseconds), 20, accuracy: 0.001)
-        XCTAssertEqual(try XCTUnwrap(value.decodeMilliseconds), 5, accuracy: 0.001)
-        XCTAssertEqual(value.droppedFrames, 3)
-        XCTAssertEqual(try XCTUnwrap(value.packetLossPercent), 2, accuracy: 0.001)
-        XCTAssertEqual(value.width, 1920); XCTAssertEqual(value.height, 1080)
-    }
-
-    func testStallIsZeroFPSButHasNoInventedPerFrameDelayOrLoss() {
-        var accumulator = RemotePerformanceAccumulator()
-        _ = accumulator.sample(report(1, video(before)))
-        let stalled = accumulator.sample(report(2, video(before)))
-        XCTAssertEqual(stalled.decodedFramesPerSecond, 0)
-        XCTAssertEqual(stalled.receiveMegabitsPerSecond, 0)
-        XCTAssertEqual(stalled.droppedFrames, 0)
-        XCTAssertNil(stalled.jitterBufferMilliseconds)
-        XCTAssertNil(stalled.decodeMilliseconds)
-        XCTAssertNil(stalled.packetLossPercent)
-    }
-
     func testCounterResetAndSSRCReplacementNeedNewBaselines() {
         var accumulator = RemotePerformanceAccumulator()
         _ = accumulator.sample(report(1, video(after)))

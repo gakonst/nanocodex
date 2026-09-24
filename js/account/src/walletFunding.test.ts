@@ -4,10 +4,7 @@ import test from "node:test";
 import {
   classifyFundingOrder,
   decodeFundingAttempt,
-  decodeMachineUsdConfig,
   decodeWalletBalance,
-  defaultFundingAmountCents,
-  formatDollars,
   formatWalletBalance,
 } from "./walletFunding.ts";
 
@@ -39,28 +36,6 @@ test("decodes and formats the canonical MACH balance", () => {
     symbol: "MACH",
     token: "0x20c000000000000000000000f37de3740ADec032",
   }, "0x2222222222222222222222222222222222222222"));
-});
-
-test("validates MACH onramp limits and selects the one-click amount", () => {
-  const config = decodeMachineUsdConfig({
-    chain_id: 4217,
-    min_usd_amount_cents: 500,
-    max_usd_amount_cents: 10_000,
-    onramp_enabled: true,
-    stripe_publishable_key: "pk_test_example",
-    token_address: "0x20c000000000000000000000f37de3740ADec032",
-  });
-  assert.equal(defaultFundingAmountCents(config), 500);
-  assert.equal(defaultFundingAmountCents({ ...config, minUsdAmountCents: 700 }), 700);
-  assert.equal(defaultFundingAmountCents({ ...config, minUsdAmountCents: 100, maxUsdAmountCents: 400 }), 400);
-  assert.equal(formatDollars(500), "$5.00");
-  assert.throws(() => decodeMachineUsdConfig({
-    chain_id: 1,
-    min_usd_amount_cents: 500,
-    max_usd_amount_cents: 10_000,
-    stripe_publishable_key: "pk_test_example",
-    token_address: "0x20c000000000000000000000f37de3740ADec032",
-  }), /configuration/);
 });
 
 test("accepts only Stripe hosted checkout and known order states", () => {

@@ -13,7 +13,8 @@
   mirror implementation details, incidental source spelling, or mock setup.
 - Prefer a small set of behavioral scenarios over parallel suites for every
   helper or wrapper. When a journey or protocol test covers the same failure,
-  remove the redundant lower-level cases and their fixtures.
+  remove the redundant lower-level cases, unused fixtures, test-only APIs, and
+  obsolete runner references.
 - Do not test source text, private layouts, method presence, fixed prompt/UI
   copy, or a mock's own behavior. A security or regression label does not make
   these checks evidence of runtime behavior. Use compiler, lint, and package

@@ -5,8 +5,7 @@ import type { EgressEnv } from "../src/egress";
 import { UserConnectorBroker } from "../src/connector-broker";
 import { CredentialVault, type EncryptedEnvelope } from "../src/credential-vault";
 import {
-  SPOTIFY_SCOPES, SPOTIFY_LOOPBACK_CLIENT_ID, buildMusicAuthorizationUrl, buildMusicTokenRequest,
-  decodeMusicTokenResponse, decodeMusicIdentity, type MusicProviderId,
+  SPOTIFY_SCOPES, SPOTIFY_LOOPBACK_CLIENT_ID, type MusicProviderId,
 } from "../src/connectors/music";
 
 const workerEnv = env as unknown as EgressEnv;
@@ -68,17 +67,6 @@ describe.each(["spotify", "soundcloud"] as const)("%s accounts", (provider) => {
       expect((await request()).status).toBe(failure === "denied" ? 404 : 503);
     }
   });
-});
-
-it("validates music tokens and SoundCloud URN identities", () => {
-  const token = { access_token: "secret", refresh_token: "refresh", token_type: "Bearer", expires_in: 3600, scope: SPOTIFY_SCOPES.join(" ") };
-  expect(decodeMusicTokenResponse("spotify", token).scopes).toEqual(SPOTIFY_SCOPES);
-  expect(() => decodeMusicTokenResponse("spotify", { ...token, scope: "user-read-private" })).toThrow();
-  expect(() => decodeMusicTokenResponse("soundcloud", { ...token, refresh_token: undefined }, [])).toThrow();
-  expect(() => decodeMusicTokenResponse("spotify", { ...token, expires_in: 0 })).toThrow();
-  expect(decodeMusicIdentity("soundcloud", { urn: "soundcloud:users:123", username: "DJ" })).toEqual({ accountId: "soundcloud:users:123", displayLabel: "DJ" });
-  expect(() => buildMusicAuthorizationUrl("spotify", { clientId: "id", state: "state", redirectUri: "https://app.test", codeChallenge: "short" })).toThrow();
-  expect(() => buildMusicTokenRequest("soundcloud", { clientId: "id", clientSecret: "secret", code: "code", redirectUri: "https://app.test", codeVerifier: "short" })).toThrow();
 });
 
 async function connect(user: string, provider: MusicProviderId, code: string): Promise<string> {

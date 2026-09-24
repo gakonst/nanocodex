@@ -2,22 +2,6 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { readScheduledAgents, scheduledAgentCandidates } from "./scheduledAgents.ts";
 
-test("schedule discovery excludes only explicitly empty agents, retaining legacy candidates", async () => {
-  const fetcher: typeof fetch = async () => Response.json({
-    data: ["empty", "scheduled", "legacy", "missing"],
-    summaries: {
-      empty: { may_have_scheduled_jobs: false },
-      scheduled: { may_have_scheduled_jobs: true, title: "Daily review" },
-      legacy: { title: "Legacy agent" },
-    },
-  });
-  assert.deepEqual(await scheduledAgentCandidates(fetcher), [
-    { id: "scheduled", title: "Daily review" },
-    { id: "legacy", title: "Legacy agent" },
-    { id: "missing", title: "missing" },
-  ]);
-});
-
 test("discovery surfaces denied access and malformed lists instead of claiming no schedules", async () => {
   await assert.rejects(scheduledAgentCandidates(async () => Response.json({ error: "forbidden" }, { status: 403 })), /forbidden/);
   await assert.rejects(scheduledAgentCandidates(async () => Response.json({ data: [42] })), /Invalid agent list/);

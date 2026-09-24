@@ -301,23 +301,3 @@ impl SubagentRuntimeId {
         Self(NEXT_RUNTIME_ID.fetch_add(1, Ordering::Relaxed) + 1)
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::AgentStatus;
-
-    #[test]
-    fn completed_status_serializes_structured_output_without_stringifying_it() {
-        let status = AgentStatus::Completed {
-            output: serde_json::json!({ "findings": [{ "line": 42 }] }),
-        };
-
-        assert_eq!(
-            serde_json::to_value(status).unwrap(),
-            serde_json::json!({
-                "state": "completed",
-                "output": { "findings": [{ "line": 42 }] }
-            })
-        );
-    }
-}

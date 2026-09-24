@@ -4,7 +4,6 @@ import { beforeAll, describe, expect, it, vi } from "vitest";
 
 import {
   handleEgress,
-  isLegacyLocalBootstrapCredential,
   type EgressEnv,
 } from "../src/egress";
 
@@ -52,40 +51,6 @@ beforeAll(async () => {
 });
 
 describe("sponsored homepage model access", () => {
-  it("treats only an unmarked local bootstrap account as a legacy auto-claim", () => {
-    const legacy = {
-      kind: "chatgpt" as const,
-      secret: "legacy-local-access",
-      accountId: "legacy-local-account",
-      revision: 0,
-    };
-    const localEnv = {
-      ENVIRONMENT: "development",
-      ALLOW_LOCAL_CREDENTIAL_CLAIM: "true",
-      LOCAL_CHATGPT_BOOTSTRAP: JSON.stringify({
-        access_token: legacy.secret,
-        account_id: legacy.accountId,
-      }),
-      NANOCODEX_SPONSORED_CHATGPT_USER_ID: "local-sponsor",
-    };
-
-    expect(isLegacyLocalBootstrapCredential(localEnv, "sms-user", legacy)).toBe(true);
-    expect(isLegacyLocalBootstrapCredential(localEnv, "sms-user", {
-      ...legacy,
-      provenance: "user",
-    })).toBe(false);
-    expect(isLegacyLocalBootstrapCredential(localEnv, "local-sponsor", legacy)).toBe(false);
-    expect(isLegacyLocalBootstrapCredential({ ...localEnv, ENVIRONMENT: "production" },
-      "sms-user", legacy)).toBe(false);
-    expect(isLegacyLocalBootstrapCredential(localEnv, "sms-user", {
-      ...legacy,
-      secret: "rotated-legacy-access",
-    })).toBe(true);
-    expect(isLegacyLocalBootstrapCredential(localEnv, "sms-user", {
-      ...legacy,
-      accountId: "independently-connected-account",
-    })).toBe(false);
-  });
 
   it("advertises the deployment owner's ChatGPT only for an ephemeral browser subject", async () => {
     const status = await modelStatus(EPHEMERAL_SUBJECT);

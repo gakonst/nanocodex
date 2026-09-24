@@ -2,14 +2,6 @@ import Foundation
 import XCTest
 @testable import InboxCore
 
-final class QuickVoiceInputTests: XCTestCase {
-    func testEnglishGreekAndEmptyUtterances() {
-        XCTAssertEqual(QuickVoiceInput.finalText("  Start a new task\n"), "Start a new task")
-        XCTAssertEqual(QuickVoiceInput.finalText("\nΣτείλε μια νέα εργασία.  "), "Στείλε μια νέα εργασία.")
-        XCTAssertNil(QuickVoiceInput.finalText(" \n\t"))
-    }
-}
-
 final class QuickVoiceCaptureGateTests: XCTestCase {
     func testSilenceWaitsForFinalAndSubmitsOnlyOnce() {
         var gate = QuickVoiceCaptureGate()

@@ -365,12 +365,10 @@ Generated code-mode output is rendered inline outside Activity, using the shared
 emitted text, images, audio, video, and file links remain visible, while embedded
 binary data is removed from diagnostics. Stable content identities deduplicate
 nested tool results and their outer exec copies. Parsed output is retained per
-result while the same turn streams; the native fixture measured 0.11 ms median
-with retained output versus 4.34 ms when reparsing it on each of 24 snapshots.
-The protocol and hosted-window fixtures exercise the actual JSON-string
-`input_text`/`input_image` shape plus MCP images and structured file links;
-`native-generated-code-output.png` and `native-generated-output-performance.json`
-record the visible result and local projection measurements without network use.
+result while the same turn streams. The protocol and hosted-window fixtures
+exercise the actual JSON-string `input_text`/`input_image` shape plus MCP images
+and structured file links; `native-generated-code-output.png` records the visible
+result without network use.
 
 ```sh
 xcodebuild -project macos/Nanocodex.xcodeproj -scheme Nanocodex -configuration Debug -destination 'platform=macOS,arch=arm64' -derivedDataPath macos/build -only-testing:NanocodexTests -parallel-testing-enabled NO test

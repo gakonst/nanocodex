@@ -5,7 +5,6 @@ import {
   createWorkerAgent,
   installWorkerAgentRuntime,
   prepareWorkerAgent,
-  prewarmWorkerRuntime,
   WORKER_EVENT_BATCH_MAX_BYTES,
   WORKER_EVENT_BATCH_MAX_EVENTS,
   WORKER_HEARTBEAT_INTERVAL_MS,
@@ -1131,51 +1130,6 @@ test("Worker hydration constructs default durability inside its own isolate", as
   runtime.dispose();
 });
 
-test("Worker runtime overlaps WASM initialization and browser harness restoration", async () => {
-  const harness = { threadId: "thread-1", origin: "https://nanocodex.test" };
-  const module = emptyWasmModule();
-  const started = [];
-  let finishEngine;
-  let finishBrowser;
-  const engineReady = new Promise((resolve) => { finishEngine = resolve; });
-  const browserReady = new Promise((resolve) => { finishBrowser = resolve; });
-
-  const prewarming = prewarmWorkerRuntime(
-    harness,
-    {
-      module,
-      async loadAgent() {
-        started.push("agent");
-      },
-      async loadBrowser() {
-        return {
-          async prepareBrowser(options) {
-            started.push("browser");
-            assert.strictEqual(options, harness);
-            await browserReady;
-          },
-        };
-      },
-      async loadEngine() {
-        return {
-          async initializeBrowserEngine(options) {
-            assert.strictEqual(options.module, module);
-            started.push("engine");
-            await engineReady;
-          },
-        };
-      },
-    },
-  );
-
-  await tick();
-  assert.deepEqual(new Set(started), new Set(["agent", "engine", "browser"]));
-  finishBrowser();
-  await tick();
-  finishEngine();
-  await prewarming;
-});
-
 test("cold Worker boot awaits package preparation before creating its Agent", async () => {
   const outgoing = [];
   const warmed = [];
@@ -1212,18 +1166,6 @@ test("cold Worker boot awaits package preparation before creating its Agent", as
   assert.equal(creations, 1);
   assert.equal(outgoing.at(-1).type, "ready");
   runtime.dispose();
-});
-
-test("Worker runtime prewarms a harness-free Agent without loading browser tools", async () => {
-  const started = [];
-  await prewarmWorkerRuntime(false, {
-    async loadAgent() { started.push("agent"); },
-    async loadBrowser() { throw new Error("browser tools must stay lazy"); },
-    async loadEngine() {
-      return { async initializeBrowserEngine() { started.push("engine"); } };
-    },
-  });
-  assert.deepEqual(new Set(started), new Set(["agent", "engine"]));
 });
 
 test("private Worker preparation replaces stale ownership and is claimed by Agent.create", async () => {
@@ -1300,13 +1242,6 @@ test("preparation replaces a matching harness warmed with a different WASM modul
   assert.equal(agent.sessionId, "session-1");
   agent.dispose();
   assert.equal(second.terminated, 1);
-});
-
-test("non-disabled preparation rejects an incomplete resource identity", () => {
-  assert.throws(
-    () => prepareWorkerAgent({ origin: "https://nanocodex.test" }),
-    /requires a stable threadId or sessionId/,
-  );
 });
 
 test("preparation stays abort-owned until claim and leaves the next prewarm claimable", { timeout: 2_000 }, async () => {

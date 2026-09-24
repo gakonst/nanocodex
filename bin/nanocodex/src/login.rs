@@ -3196,30 +3196,6 @@ mod tests {
     }
 
     #[test]
-    fn connector_catalog_matches_the_account_service() {
-        let policy = include_str!("../../../js/connect-api/src/connectorPolicy.mts");
-        let (_, catalog) = policy
-            .split_once("connectorCapabilities = Object.freeze([")
-            .unwrap();
-        let (catalog, _) = catalog.split_once("] as const)").unwrap();
-        let server: HashSet<&str> = catalog
-            .lines()
-            .map(|line| line.trim().trim_end_matches(',').trim_matches('"'))
-            .filter(|line| !line.is_empty())
-            .collect();
-        assert_eq!(
-            server,
-            CONNECTOR_NAMES.iter().copied().collect::<HashSet<_>>()
-        );
-        for name in server {
-            let ConnectTarget::Connector(connector) = ConnectTarget::from_str(name).unwrap() else {
-                panic!("service parsed as MCP host");
-            };
-            assert_eq!(connector.id(), name);
-        }
-    }
-
-    #[test]
     fn new_connector_scopes_are_preserved_and_require_explicit_authority() {
         for name in [
             "gcalendar",
