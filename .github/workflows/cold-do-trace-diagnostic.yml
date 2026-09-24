@@ -49,16 +49,16 @@ jobs:
           if traces is not None:
               summaries=traces.get('traces') or []
               print('matching trace summaries:',len(summaries))
-              for trace in summaries[:3]:
+              for trace in summaries[:8]:
                   print('trace root:',json.dumps({'name':trace.get('rootSpanName'),'duration':trace.get('traceDurationMs'),'services':trace.get('service'),'spans':trace.get('spans')},sort_keys=True))
           trace_ids=[]
-          if traces is not None: trace_ids.extend([t['traceId'] for t in (traces.get('traces') or [])[:2] if t.get('traceId')])
+          if traces is not None: trace_ids.extend([t['traceId'] for t in (traces.get('traces') or []) if t.get('traceId') and t.get('rootSpanName')=='POST' and (t.get('traceDurationMs') or 0)<10000][:3])
           for item in events[:10]:
               meta=item.get('$metadata') or {}; w=item.get('$workers') or {}
               tid=meta.get('traceId') or w.get('traceId')
               if tid and tid not in trace_ids: trace_ids.append(tid)
               print('constructor event:',json.dumps({'timestamp':item.get('timestamp'),'service':meta.get('service'),'duration':meta.get('duration'),'colo':meta.get('colo')},sort_keys=True))
-          for i,tid in enumerate(trace_ids[:2]):
+          for i,tid in enumerate(trace_ids[:3]):
               found=query('events',{'datasets':['cloudflare-workers'],'filters':[{'key':'$metadata.traceId','operation':'eq','type':'string','value':tid}]})
               if found is None: continue
               spans=(found.get('events') or {}).get('events') or []
@@ -67,14 +67,14 @@ jobs:
                   meta=item.get('$metadata') or {}; w=item.get('$workers') or {}
                   print('span:',json.dumps({'timestamp':item.get('timestamp'),'service':meta.get('service'),'name':meta.get('spanName'),'duration':meta.get('duration'),'colo':meta.get('colo'),'execution_model':w.get('executionModel'),'event_type':w.get('eventType')},sort_keys=True))
           PY
-      - name: Surface sanitized summary as GitHub check annotations
+      - name: Surface sanitized summary as one GitHub check annotation
         if: always()
         shell: bash
         run: |
-          if test -s "$RUNNER_TEMP/cold-trace-summary.txt"; then
-            head -n 25 "$RUNNER_TEMP/cold-trace-summary.txt" | while IFS= read -r line; do
-              printf '::notice file=.github/workflows/cold-do-trace-diagnostic.yml,line=1,title=Cold DO trace::%s\n' "$line"
-            done
-          else
-            echo '::warning file=.github/workflows/cold-do-trace-diagnostic.yml,line=1::No diagnostic output'
-          fi
+          python3 - <<'PYCODE'
+          import os
+          p=os.path.join(os.environ['RUNNER_TEMP'],'cold-trace-summary.txt')
+          content=open(p).read()[:16000] if os.path.exists(p) else 'No diagnostic output'
+          content=content.replace('%','%25').replace('\r','%0D').replace('\n','%0A')
+          print('::notice file=.github/workflows/cold-do-trace-diagnostic.yml,line=1,title=Cold DO trace::'+content)
+          PYCODE
