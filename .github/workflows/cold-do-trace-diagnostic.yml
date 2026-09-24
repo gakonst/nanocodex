@@ -6,64 +6,45 @@ permissions:
 jobs:
   inspect:
     runs-on: ubuntu-latest
-    timeout-minutes: 8
+    timeout-minutes: 5
     env:
-      NANOCODEX_PROBE_API_KEY: ${{ secrets.NANOCODEX_ASTRA_MANAGED_API_KEY }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
-      - name: Measure twelve create, replay and cleanup pairs against deployed API
+      - name: Aggregate bounded production Durable Object trace colos
         shell: bash
         run: |
-          node --input-type=module <<'JS' > "$RUNNER_TEMP/cold-create-summary.txt"
-          import { randomUUID } from 'node:crypto';
-          import { performance } from 'node:perf_hooks';
-          const key = process.env.NANOCODEX_PROBE_API_KEY;
-          if (!key) throw new Error('Live-test API key unavailable');
-          const origin = 'https://nanocodex.gakonst.workers.dev';
-          const body = JSON.stringify({settings:{model:'gpt-6-luna',thinking:'low',reasoning_mode:'standard',fast_mode:false}});
-          const records=[];
-          const metricNames=new Set(['managed_auth','managed_create','managed_session_create','managed_session_pre_handler','managed_session_before_constructor','managed_session_constructor','managed_session_constructor_base','managed_session_handler','managed_session_after_constructor','managed_session_return','managed_session_attach']);
-          const timing = headers => {
-            const output={}; const raw=headers.get('server-timing')||'';
-            for(const match of raw.matchAll(/([a-zA-Z_]+)(?:;[^,]*?)?;dur=([\d.]+)/g)) if(metricNames.has(match[1])) output[match[1]]=Number(match[2]);
-            return output;
-          };
-          const request=async (method,path,body,key) => {
-            const started=performance.now();
-            const response=await fetch(origin+path,{method,headers:{authorization:'Bearer '+process.env.NANOCODEX_PROBE_API_KEY,'content-type':'application/json',...(key?{'idempotency-key':key}:{})},...(body?{body}:{}),signal:AbortSignal.timeout(16000)});
-            const text=await response.text();
-            return {status:response.status,elapsed:Math.round(performance.now()-started),metrics:timing(response.headers),colo:(response.headers.get('cf-ray')||'').split('-').at(-1),text};
-          };
-          for(let i=0;i<12;i++) {
-            const idem='cold-do-followup-'+process.env.GITHUB_RUN_ID+'-'+randomUUID();
-            let id; let deletion='not-created';
-            try {
-              const fresh=await request('POST','/v1/agents',body,idem);
-              if(fresh.status<200||fresh.status>=300) throw new Error('create status '+fresh.status);
-              id=JSON.parse(fresh.text).id ?? JSON.parse(fresh.text).agent_id;
-              if(typeof id!=='string') throw new Error('create response missing id');
-              const replay=await request('POST','/v1/agents',body,idem);
-              if(replay.status<200||replay.status>=300) throw new Error('replay status '+replay.status);
-              const replayId=JSON.parse(replay.text).id ?? JSON.parse(replay.text).agent_id;
-              if(replayId!==id) throw new Error('idempotency mismatch');
-              records.push({index:i,fresh:{status:fresh.status,elapsed:fresh.elapsed,colo:fresh.colo,metrics:fresh.metrics},replay:{status:replay.status,elapsed:replay.elapsed,colo:replay.colo,metrics:replay.metrics}});
-            } finally {
-              if(id) {
-                const removed=await request('DELETE','/v1/agents/'+encodeURIComponent(id));
-                deletion=removed.status;
-              }
-              console.log('trial',i,JSON.stringify(records.at(-1)||{}),'delete_status',deletion);
-            }
-          }
-          console.log('completed',records.length);
-          JS
+          python3 - <<'PY' > "$RUNNER_TEMP/cold-colo-summary.txt"
+          import json,os,urllib.request,collections
+          a=os.environ['CLOUDFLARE_ACCOUNT_ID']; t=os.environ['CLOUDFLARE_API_TOKEN']
+          u=f'https://api.cloudflare.com/client/v4/accounts/{a}/workers/observability/telemetry/query'
+          for service in ['nanocodex-cold-slim-probe','nanocodex-durable-agent']:
+            body={'queryId':'cold-colo-20260924','timeframe':{'from':1790275680000,'to':1790275920000},'view':'events','dry':True,'limit':1000,'parameters':{'datasets':['otel'],'filters':[{'key':'$metadata.service','operation':'eq','type':'string','value':service}]}}
+            req=urllib.request.Request(u,data=json.dumps(body).encode(),headers={'Authorization':'Bearer '+t,'Content-Type':'application/json'},method='POST')
+            with urllib.request.urlopen(req,timeout=35) as r: response=json.load(r)
+            assert response.get('success'),[e.get('code') for e in response.get('errors',[])]
+            events=(response.get('result') or {}).get('events',{}).get('events') or []
+            print('service',service,'otel count',len(events))
+            counts=collections.Counter()
+            samples=[]
+            for e in events:
+              s=e.get('source') or {}; cf=s.get('cloudflare') or {}
+              if not isinstance(cf,dict): continue
+              kind='do' if cf.get('durable_object') else 'worker'
+              counts[(kind,str(s.get('name')),str(cf.get('colo')))] += 1
+              if kind=='do' and s.get('name') in ('POST','jsrpc','jsRpcCall','jsRpcSession'):
+                samples.append((str(cf.get('colo')),str(s.get('name')),s.get('durationMS')))
+            print('spans',counts.most_common(40))
+            print('DO representative',samples[:20])
+          PY
       - name: Surface bounded sanitized summary as one annotation
         if: always()
         shell: bash
         run: |
           python3 - <<'PYCODE'
           import os
-          p=os.path.join(os.environ['RUNNER_TEMP'],'cold-create-summary.txt')
+          p=os.path.join(os.environ['RUNNER_TEMP'],'cold-colo-summary.txt')
           content=open(p).read()[:16000] if os.path.exists(p) else 'No diagnostic output'
           content=content.replace('%','%25').replace('\r','%0D').replace('\n','%0A')
-          print('::notice file=.github/workflows/cold-do-trace-diagnostic.yml,line=1,title=Cold create sample::'+content)
+          print('::notice file=.github/workflows/cold-do-trace-diagnostic.yml,line=1,title=Cold DO colo summary::'+content)
           PYCODE
