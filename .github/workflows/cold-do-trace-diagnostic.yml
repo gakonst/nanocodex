@@ -37,7 +37,22 @@ jobs:
           if result is None: raise SystemExit(1)
           events=(result.get('events') or {}).get('events') or []
           print('Bounded constructor events:',len(events))
+          if events:
+              sample=events[0]
+              print('event keys:', sorted(sample.keys()))
+              print('metadata keys:', sorted((sample.get('$metadata') or {}).keys()))
+              print('worker keys:', sorted((sample.get('$workers') or {}).keys()))
+              print('source type:', type(sample.get('source')).__name__)
+              if isinstance(sample.get('source'),dict): print('source keys:',sorted(sample['source'].keys()))
+              print('trace-related metadata keys:',[k for k in (sample.get('$metadata') or {}) if 'trace' in k.lower() or 'span' in k.lower()])
+          traces=query('traces',params)
+          if traces is not None:
+              summaries=traces.get('traces') or []
+              print('matching trace summaries:',len(summaries))
+              for trace in summaries[:3]:
+                  print('trace root:',json.dumps({'name':trace.get('rootSpanName'),'duration':trace.get('traceDurationMs'),'services':trace.get('service'),'spans':trace.get('spans')},sort_keys=True))
           trace_ids=[]
+          if traces is not None: trace_ids.extend([t['traceId'] for t in (traces.get('traces') or [])[:2] if t.get('traceId')])
           for item in events[:10]:
               meta=item.get('$metadata') or {}; w=item.get('$workers') or {}
               tid=meta.get('traceId') or w.get('traceId')
