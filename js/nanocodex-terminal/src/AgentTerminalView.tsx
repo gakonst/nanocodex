@@ -48,6 +48,7 @@ export function AgentTerminalView({
   composerPlaceholder,
   controls,
   inactiveMessage,
+  initialDraft,
   maxEntries,
   mode,
   onConversationActivity,
@@ -74,6 +75,8 @@ export function AgentTerminalView({
     agentStatus: AgentStatus;
   }>): string | undefined;
   maxEntries?: number;
+  /** Restores an optimistic creation draft when the actual agent mounts. */
+  initialDraft?: string;
   mode: AgentTerminalMode;
   onConversationActivity(input: string): void;
   onTerminalEvent?(event: AgentControllerEvent): void;
@@ -88,7 +91,7 @@ export function AgentTerminalView({
   voiceOptions?: Omit<UseVoiceParameters, "enabled">;
   welcome?: string;
 }) {
-  const [touchDraft, setTouchDraft] = useState("");
+  const [touchDraft, setTouchDraft] = useState(initialDraft ?? "");
   const [pendingTouchSubmission, setPendingTouchSubmission] = useState<{
     input: string;
     submittedAt: number;

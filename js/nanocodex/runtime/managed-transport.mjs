@@ -47,11 +47,19 @@ export async function createManagedAgent(options) {
     throw new TypeError("managed Agent tools must be created by createTools()");
   }
   tools?.[toolRuntimeLifecycle].available();
+  let creationReceipt;
   const managed = setup.identity.kind === "create"
-    ? await ManagedAgent.create(setup.client)
+    ? await ManagedAgent.create(setup.client, (receipt) => { creationReceipt = receipt; })
     : ManagedAgent.open(setup.identity.id, setup.client);
   void managed.prepare().catch(() => {});
-  const managedState = await managed.state();
+  // The creation receipt identifies the retained session without a second read.
+  // Old or malformed receipts must still be verified against the actual state.
+  // In particular, never use initial_state: keyed replays can carry a synthetic
+  // fresh snapshot even when the retained session already has turns.
+  const managedState = creationReceipt?.agent_id === managed.id
+    && MANAGED_AGENT_ID.test(managed.id)
+    && creationReceipt.session_id === managed.id
+    ? creationReceipt : await managed.state();
   if (managedState.agent_id !== managed.id
       || typeof managedState.session_id !== "string"
       || !MANAGED_AGENT_ID.test(managedState.session_id)) {

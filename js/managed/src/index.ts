@@ -1342,6 +1342,17 @@ const SAFE_OBSERVATION_FIELDS = new Set([
   "session_prepare_ms",
   "session_initialize_ms",
   "session_commit_ms",
+  "session_commit_attach_ms",
+  "session_commit_activate_ms",
+  "session_commit_alarm_ms",
+  "session_pre_handler_ms",
+  "session_before_constructor_ms",
+  "session_constructor_ms",
+  "session_constructor_sql_ms",
+  "session_constructor_restore_read_ms",
+  "session_after_constructor_ms",
+  "session_handler_ms",
+  "session_return_ms",
   "error_code",
   "error_kind",
   "initialization_ms",
@@ -1984,6 +1995,8 @@ async function managedFetchRoute(
       if (durabilityArchive === undefined) {
         let created: Response;
         const sessionCreationStartedAt = performance.now();
+        let sessionDispatchAt = Date.now();
+        let sessionAttempts = 0;
         try {
           created = await fetchCreateStage(stub, "https://session.internal/create", {
             method: "POST", headers: forwardManagedIngress(new Headers({ "content-type": "application/json" }), clientIngressColo),
@@ -1993,7 +2006,10 @@ async function managedFetchRoute(
               authorization_epoch: principal.authorizationEpoch, public_origin: url.origin,
               settings: creationSettings, configuration: creationConfiguration,
             }),
-          }, ownershipTimeoutMs, "agent creation", 5);
+          }, ownershipTimeoutMs, "agent creation", 5, (attempt) => {
+            sessionAttempts = attempt;
+            sessionDispatchAt = Date.now();
+          });
         } catch {
           if (requestKey === null) await requestSessionCleanup(stub, ownershipTimeoutMs);
           return json({ error: "agent creation failed" }, { status: 503 });
@@ -2003,15 +2019,66 @@ async function managedFetchRoute(
           return created;
         }
         const phases = await created.json<Record<string, number>>();
+        const sessionReceivedAt = Date.now();
+        const sessionCreateMs = roundMilliseconds(performance.now() - sessionCreationStartedAt);
+        const createMs = roundMilliseconds(performance.now() - creationStartedAt);
+        // Timestamp pairs are wall-clock estimates (clock skew can affect the
+        // boundary), while the per-isolate durations below are monotonic.
+        const hasBoundaryTimes = Number.isFinite(phases.handler_entered_at_ms)
+          && Number.isFinite(phases.response_ready_at_ms)
+          && phases.handler_entered_at_ms >= sessionDispatchAt
+          && sessionReceivedAt >= phases.response_ready_at_ms;
+        const preHandlerMs = hasBoundaryTimes
+          ? phases.handler_entered_at_ms - sessionDispatchAt : undefined;
+        const handlerMs = Number.isFinite(phases.handler_ms) ? phases.handler_ms : undefined;
+        const hasConstructorTimes = hasBoundaryTimes
+          && Number.isFinite(phases.constructor_entered_at_ms)
+          && Number.isFinite(phases.constructor_ready_at_ms)
+          && phases.constructor_entered_at_ms >= sessionDispatchAt
+          && phases.constructor_ready_at_ms >= phases.constructor_entered_at_ms
+          && phases.handler_entered_at_ms >= phases.constructor_ready_at_ms;
+        const beforeConstructorMs = hasConstructorTimes
+          ? phases.constructor_entered_at_ms - sessionDispatchAt : undefined;
+        const afterConstructorMs = hasConstructorTimes
+          ? phases.handler_entered_at_ms - phases.constructor_ready_at_ms : undefined;
+        const returnMs = hasBoundaryTimes
+          ? sessionReceivedAt - phases.response_ready_at_ms : undefined;
         observeManagedPrincipal(env, "managed.agent.created", principal, {
           agent_id: agentId, thread_id: agentId, outcome: "success",
           auth_ms: roundMilliseconds(authenticatedAt - creationStartedAt),
-          session_create_ms: roundMilliseconds(performance.now() - sessionCreationStartedAt),
+          session_create_ms: sessionCreateMs,
+          attempt_count: sessionAttempts,
+          session_pre_handler_ms: preHandlerMs,
+          session_before_constructor_ms: beforeConstructorMs,
+          session_constructor_ms: phases.constructor_ms,
+          session_constructor_sql_ms: phases.constructor_sql_ms,
+          session_constructor_restore_read_ms: phases.constructor_restore_read_ms,
+          session_after_constructor_ms: afterConstructorMs,
+          session_handler_ms: handlerMs,
+          session_return_ms: returnMs,
           session_prepare_ms: phases.prepare_ms,
           session_initialize_ms: phases.initialize_ms, session_commit_ms: phases.commit_ms,
-          create_ms: roundMilliseconds(performance.now() - creationStartedAt),
+          session_commit_attach_ms: phases.commit_attach_ms,
+          session_commit_activate_ms: phases.commit_activate_ms,
+          session_commit_alarm_ms: phases.commit_alarm_ms,
+          create_ms: createMs,
         });
-        return agentCreationResponse(url, agentId, creationSettings, true);
+        const response = agentCreationResponse(url, agentId, creationSettings, true);
+        response.headers.append("server-timing", `managed_create;dur=${createMs}, managed_session_create;dur=${sessionCreateMs}`);
+        if (preHandlerMs !== undefined) response.headers.append("server-timing", `managed_session_pre_handler;dur=${preHandlerMs}`);
+        if (beforeConstructorMs !== undefined) response.headers.append("server-timing", `managed_session_before_constructor;dur=${beforeConstructorMs}`);
+        if (Number.isFinite(phases.constructor_ms)) response.headers.append("server-timing", `managed_session_constructor;dur=${phases.constructor_ms}`);
+        if (afterConstructorMs !== undefined) response.headers.append("server-timing", `managed_session_after_constructor;dur=${afterConstructorMs}`);
+        if (handlerMs !== undefined) response.headers.append("server-timing", `managed_session_handler;dur=${handlerMs}`);
+        if (returnMs !== undefined) response.headers.append("server-timing", `managed_session_return;dur=${returnMs}`);
+        for (const [name, duration] of [
+          ["managed_session_attach", phases.commit_attach_ms],
+          ["managed_session_activate", phases.commit_activate_ms],
+          ["managed_session_alarm", phases.commit_alarm_ms],
+        ] as const) {
+          if (Number.isFinite(duration)) response.headers.append("server-timing", `${name};dur=${duration}`);
+        }
+        return response;
       }
       let prepared: Response;
       const credentialPreparationStartedAt = performance.now();
@@ -3154,9 +3221,16 @@ export class DurableAgentSession extends DurableComputerSession {
   #deletionGeneration = 0;
   #runtimeOwnershipGeneration = 0;
   readonly #commandReceipts: CommandReceipts;
+  readonly #constructorEnteredAtMs = Date.now();
+  #constructorReadyAtMs?: number;
+  #constructorMs = 0;
+  #constructorSqlMs = 0;
+  #constructorRestoreReadMs = 0;
+  #createConstructorPending = true;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    const constructorStartedAt = performance.now();
     ctx = this.ctx;
     this.#commandReceipts = new CommandReceipts(ctx.storage);
     initializeTurnInputs(ctx.storage, "managed_history_projection_chunks");
@@ -3165,6 +3239,7 @@ export class DurableAgentSession extends DurableComputerSession {
     this.#goalRuntime = new GoalRuntime(ctx.storage, this.#goals);
     this.#startupContext = new ManagedStartupContext(ctx.storage);
     this.#handPaths = new HandPaths(ctx.storage);
+    const schemaStartedAt = performance.now();
     this.ctx.storage.sql.exec(`
       CREATE TABLE IF NOT EXISTS session_state (
         singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
@@ -3318,6 +3393,7 @@ export class DurableAgentSession extends DurableComputerSession {
         citations_json TEXT NOT NULL
       );
     `);
+    this.#constructorSqlMs = roundMilliseconds(performance.now() - schemaStartedAt);
     initializeManagedAgentSettingsSchema(this.ctx.storage);
     initializeVmHostScopeSchema(this.ctx.storage);
     this.#operations = new SessionOperations(this.ctx.storage);
@@ -3370,15 +3446,21 @@ export class DurableAgentSession extends DurableComputerSession {
       this.ctx.id.toString(),
     );
     this.#deleted = this.#initializationOwnership()?.state === "deleted";
-    this.#streamError = this.#session()?.stream_error ?? undefined;
+    const retainedSession = this.#session();
+    this.#streamError = retainedSession?.stream_error ?? undefined;
+    const constructorSyncMs = roundMilliseconds(performance.now() - constructorStartedAt);
+    const restoreStartedAt = performance.now();
     performanceSyncScope(this.ctx.id.toString(), "session.constructor.restore", () => {
       // SQLite KV reads restore lifecycle fences before the constructor returns.
       const retained = this.ctx.storage.kv;
+      const readStartedAt = performance.now();
+
       this.#deleting = retained.get(SESSION_DELETING_KEY) === true;
       this.#credentialBinding = retained.get<CredentialBindingOwnership>(CREDENTIAL_BINDING_KEY);
       this.#deletionGeneration = retained.get<number>(SESSION_DELETION_GENERATION_KEY) ?? 0;
       this.#durabilityExported = retained.get(DURABILITY_EXPORTED_KEY) === true;
       this.#durabilityImportState = retained.get<"pending" | "complete">(DURABILITY_IMPORT_STATE_KEY);
+      this.#constructorRestoreReadMs = roundMilliseconds(performance.now() - readStartedAt);
       // Durable state and SSE replay are immediately usable after eviction.
       // Re-admission or deletion may load external resources, so neither sits
       // on the object's request-readiness boundary.
@@ -3391,6 +3473,15 @@ export class DurableAgentSession extends DurableComputerSession {
         this.#resumeClientReplays();
       }
     });
+    this.#constructorReadyAtMs = Date.now();
+    this.#constructorMs = roundMilliseconds(performance.now() - constructorStartedAt);
+    if (!retainedSession || this.#constructorMs >= 100) {
+      console.info({ type: "managed.session.constructor", fresh: !retainedSession,
+        constructor_ms: this.#constructorMs,
+        constructor_sync_ms: constructorSyncMs,
+        constructor_restore_read_ms: this.#constructorRestoreReadMs,
+        constructor_sql_ms: this.#constructorSqlMs });
+    }
   }
 
   /** Private RPC: live ownership without serializing a streamed HTTP body. */
@@ -4422,16 +4513,27 @@ export class DurableAgentSession extends DurableComputerSession {
     return new Response(null, { status: this.#deleting || this.#deleted ? 409 : 204 });
   }
 
-  async #commitPreparedCredential(): Promise<Response> {
+  async #commitPreparedCredential(
+    freshDirectCreate = false,
+    timing?: { attach_ms?: number; activate_ms?: number; alarm_ms?: number },
+  ): Promise<Response> {
     if (this.#deleting || this.#deleted) return new Response(null, { status: 409 });
     if (this.#durabilityImportState === "pending") return new Response(null, { status: 409 });
-    const ownership = await this.#refreshCredentialPreparation();
+    // /create has just persisted the direct credential lease. Re-reading and
+    // extending it twice before registration adds durable transactions but no
+    // safety: the original lease outlives the bounded downstream attachment.
+    // Staged imports and legacy broker bindings must still refresh normally.
+    const retained = this.#credentialBinding;
+    const ownership = freshDirectCreate && retained?.strategy === "session_v1"
+      && retained.cleanup_at > Date.now() + this.#ownershipIoTimeoutMs()
+      ? retained : await this.#refreshCredentialPreparation();
     const session = this.#session();
     if (!ownership || !session
       || ownership.owner_id !== session.owner_id
       || ownership.session_id !== session.session_id) {
       return new Response(null, { status: 409 });
     }
+    const attachStartedAt = performance.now();
     try {
       await this.#track(attachAgent(
         this.env,
@@ -4443,17 +4545,26 @@ export class DurableAgentSession extends DurableComputerSession {
     } catch {
       return new Response(null, { status: 503 });
     }
+    if (timing) timing.attach_ms = roundMilliseconds(performance.now() - attachStartedAt);
     if (this.#deleting || this.#deleted) return new Response(null, { status: 409 });
+    const activateStartedAt = performance.now();
     if (ownership.state !== "active") {
       const active = { ...ownership, state: "active" as const };
       await this.ctx.storage.put(CREDENTIAL_BINDING_KEY, active);
       this.#credentialBinding = active;
     }
+    if (timing) timing.activate_ms = roundMilliseconds(performance.now() - activateStartedAt);
+    const alarmStartedAt = performance.now();
     await this.#scheduleNextAlarm();
+    if (timing) timing.alarm_ms = roundMilliseconds(performance.now() - alarmStartedAt);
     return new Response(null, { status: 204 });
   }
 
   async #createHttp(request: Request): Promise<Response> {
+    const handlerEnteredAt = Date.now();
+    const handlerStartedAt = performance.now();
+    const includeConstructor = this.#createConstructorPending;
+    this.#createConstructorPending = false;
     if (this.#deleting || this.#deleted) return new Response(null, { status: 409 });
     const body = await request.text();
     if (body.length > 2048) return new Response(null, { status: 400 });
@@ -4478,20 +4589,40 @@ export class DurableAgentSession extends DurableComputerSession {
     if (!prepared.ok) return json({ error: prepared.status === 409
       ? "agent_creation_expired" : "agent cleanup initialization failed" }, { status: prepared.status });
     const preparedAt = performance.now();
+    // A direct session credential was durably prepared above; bind is a no-op.
+    // Avoid its otherwise redundant lease refresh while preserving the broker
+    // path and the initialize/credential parallelism for legacy sessions.
+    const directCredential = this.#credentialBinding?.strategy === "session_v1";
     const [binding, initialized] = await Promise.allSettled([
-      this.#bindPreparedCredential(), Promise.resolve().then(() => this.#initializeSession(initialization, normalizeProviderColo(request.headers.get(MANAGED_INGRESS_COLO)))),
+      directCredential ? Promise.resolve(new Response(null, { status: 204 }))
+        : this.#bindPreparedCredential(),
+      Promise.resolve().then(() => this.#initializeSession(initialization, normalizeProviderColo(request.headers.get(MANAGED_INGRESS_COLO)))),
     ]);
     if (initialized.status === "fulfilled" && initialized.value.status === 409) return json({ error: "agent_initialization_conflict",
       message: "The retained agent has different settings or configuration." }, { status: 409 });
     if (binding.status === "rejected" || !binding.value.ok) return json({ error: "credential_broker_unavailable" }, { status: 503 });
     if (initialized.status === "rejected" || !initialized.value.ok) return json({ error: "agent initialization failed" }, { status: 503 });
     const initializedAt = performance.now();
-    const committed = await this.#commitPreparedCredential();
+    const commitTiming: { attach_ms?: number; activate_ms?: number; alarm_ms?: number } = {};
+    const committed = await this.#commitPreparedCredential(directCredential, commitTiming);
     if (!committed.ok) return json({ error: "agent cleanup commit failed" }, { status: 503 });
     return json({
       prepare_ms: roundMilliseconds(preparedAt - started),
       initialize_ms: roundMilliseconds(initializedAt - preparedAt),
       commit_ms: roundMilliseconds(performance.now() - initializedAt),
+      commit_attach_ms: commitTiming.attach_ms,
+      commit_activate_ms: commitTiming.activate_ms,
+      commit_alarm_ms: commitTiming.alarm_ms,
+      handler_ms: roundMilliseconds(performance.now() - handlerStartedAt),
+      handler_entered_at_ms: handlerEnteredAt,
+      response_ready_at_ms: Date.now(),
+      ...(includeConstructor && this.#constructorReadyAtMs !== undefined ? {
+        constructor_entered_at_ms: this.#constructorEnteredAtMs,
+        constructor_ready_at_ms: this.#constructorReadyAtMs,
+        constructor_ms: this.#constructorMs,
+        constructor_sql_ms: this.#constructorSqlMs,
+        constructor_restore_read_ms: this.#constructorRestoreReadMs,
+      } : {}),
     });
   }
 
@@ -11618,10 +11749,12 @@ async function fetchCreateStage(
   timeoutMs: number,
   operation: string,
   attempts = 2,
+  onAttemptStart?: (attempt: number) => void,
 ): Promise<Response> {
   let failure: unknown;
   for (let attempt = 0; attempt < attempts; attempt += 1) {
     try {
+      onAttemptStart?.(attempt + 1);
       const response = await fetchWithDeadline(binding, input, init, timeoutMs, operation);
       if (response.status !== 408 && response.status !== 429 && response.status < 500) {
         return response;
