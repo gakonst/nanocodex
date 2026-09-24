@@ -45,7 +45,7 @@ jobs:
                   if caller.get('name')!='durable_object_subrequest': continue
                   hstart=handler.get('startTime') or 0; cstart=caller.get('startTime') or 0
                   candidates.append((handler,fetch,caller))
-              for h,f,c in candidates[:3]:
+              for h,f,c in sorted(candidates,key=lambda x:x[0].get("durationMS") or 0,reverse=True)[:2]:
                   hc=h.get('cloudflare') or {}; cc=c.get('cloudflare') or {}
                   print('  root=%s/%s caller=%s/%s %s+%s callee=%s/%s %s+%s residual=%s fetch=%s constructor_logs=%s' % (next((str((s.get('cloudflare') or {}).get('script_name'))+'/'+str((s.get('cloudflare') or {}).get('colo')) for s in spans if s.get('name')=='POST' and not (s.get('cloudflare') or {}).get('durable_object')),'none'),str((byid.get(c.get('parentSpanId')) or {}).get('name')),cc.get('script_name'),cc.get('colo'),(c.get('startTime') or 0)-root,c.get('durationMS'),hc.get('script_name'),hc.get('colo'),(h.get('startTime') or 0)-root,h.get('durationMS'),(c.get('durationMS') or 0)-(h.get('durationMS') or 0),f.get('durationMS'),[(e.get('timestamp',0)-(h.get('startTime') or 0), (e.get('source') or {}).get('constructor_ms')) for e in constructors]))
           PY
