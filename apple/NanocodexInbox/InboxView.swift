@@ -44,6 +44,7 @@ struct InboxView: View {
     @State private var showScheduledJobs = false
     @State private var showConnectors = false
     @State private var showSettings = false
+    @State private var showMeeting = false
     @StateObject private var appUpdates = NativeAppUpdateModel()
     @Environment(\.scenePhase) private var updateScenePhase
     @State private var showScreens = false
@@ -110,6 +111,8 @@ struct InboxView: View {
             }
         }
         .sheet(isPresented: $model.showContext) { ContextInboxView(model: model).tint(Ink.accent) }
+        .sheet(isPresented: $showMeeting) { MeetingView(model: model).tint(Ink.accent) }
+        .onAppear { MeetingLockedCoordinator.shared.recoverOutstanding() }
         .onChange(of: model.screenScope) { _, _ in
             screenThreads.removeAll(); screenExpanded = false; showScreens = false; controlsScreen = nil
         }
@@ -270,6 +273,11 @@ struct InboxView: View {
             } label: {
                 Label(screenThreads.contains(model.focusedConversationIdentity ?? "") ? "Hide screen" : "Screen", systemImage: "display")
             }.disabled(model.remoteService == nil || model.focused == nil).accessibilityIdentifier("conversation-remote-screens")
+            if !model.isDemo {
+                Button { composerFocused = false; showMeeting = true } label: {
+                    Label("Listen to a meeting", systemImage: "waveform")
+                }.accessibilityIdentifier("inbox-meeting")
+            }
             Button { composerFocused = false; model.showContext = true } label: {
                 Label("Context from other apps", systemImage: "tray")
             }.accessibilityIdentifier("conversation-context")

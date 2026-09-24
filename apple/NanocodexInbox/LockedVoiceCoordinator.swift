@@ -30,10 +30,15 @@ final class LockedVoiceCoordinator {
         let account: String
         let generation: UUID?
         let language: String
-        let recorder = LockedAudioRecorder()
+        let recorder: QuickVoiceRecorder = {
+            let recorder = QuickVoiceRecorder()
+            recorder.finalizationTimeout = 20
+            return recorder
+        }()
         let completion = LockedVoiceCompletion()
         var activity: Activity<LockedVoiceActivityAttributes>?
         var phase = "preparing"
+        var failure: String?
         var restore: Task<Void, Error>?
         var delivery: Task<Void, Never>?
         var heartbeat: Task<Void, Never>?
@@ -71,6 +76,9 @@ final class LockedVoiceCoordinator {
             capture = nil
             throw CaptureError.unavailable
         }
+        // Begin recognizing immediately in the background app process. A completed
+        // utterance submits itself; Send remains an explicit finish control for
+        // people who prefer not to wait for the speech pause.
         current.recorder.onStatus = { [weak self, weak current] phase in
             guard let self, let current, self.capture === current else { return }
             self.update(current, phase: phase)
@@ -79,8 +87,10 @@ final class LockedVoiceCoordinator {
             guard let self, let current, self.capture === current else { return }
             self.beginCompletion(current)
         }
-        current.recorder.onError = { [weak self, weak current] _ in
+        current.recorder.onError = { [weak self, weak current] message in
             guard let self, let current, self.capture === current else { return }
+            current.failure = LockedVoiceFailure.description(for: message)
+            self.log.error("Capture \(current.id, privacy: .public) stopped: \(message, privacy: .public)")
             self.end(current, phase: self.failurePhase(current), preserve: true)
         }
         current.recorder.onFinal = { [weak self, weak current] text in
@@ -92,20 +102,27 @@ final class LockedVoiceCoordinator {
         current.observations.append(center.publisher(for: AVAudioSession.interruptionNotification).sink { [weak self] notification in
             guard let value = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   value == AVAudioSession.InterruptionType.began.rawValue else { return }
-            Task { @MainActor in self?.interrupt(captureID: captureID) }
+            Task { @MainActor in
+                self?.log.warning("Audio interruption began for capture \(captureID, privacy: .public)")
+                self?.interrupt(captureID: captureID)
+            }
         })
         current.observations.append(center.publisher(for: AVAudioSession.routeChangeNotification).sink { [weak self] notification in
             guard let value = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
                   value == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue else { return }
-            Task { @MainActor in self?.interrupt(captureID: captureID) }
+            Task { @MainActor in
+                self?.log.warning("Audio input route lost for capture \(captureID, privacy: .public)")
+                self?.interrupt(captureID: captureID)
+            }
         })
+        // Restore in parallel, never before or instead of microphone startup. An
+        // unusually fast final callback still has a task to await for delivery.
+        current.restore = Task { try await model.restoreLockedVoiceAccount(scope: account) }
         await current.recorder.start(locale: language, permissions: .alreadyGranted)
         guard capture === current, current.recorder.recording else {
             if capture === current { end(current, phase: failurePhase(current), preserve: true) }
             throw CaptureError.unavailable
         }
-        // Network restoration starts only after audio is running, and never opens UI.
-        current.restore = Task { try await model.restoreLockedVoiceAccount(scope: account) }
         current.heartbeat = Task { [weak self, weak current] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(30)) } catch { return }
@@ -117,7 +134,7 @@ final class LockedVoiceCoordinator {
 
     func finish(captureID: String) async throws {
         guard let current = capture, current.id == captureID else { throw CaptureError.staleCapture }
-        // Finish stops the microphone and starts asynchronous file recognition.
+        // Finish ends streaming input and waits for the recognizer final result.
         // Keep the system's Send execution alive through transcription and cloud
         // admission; duplicate taps join this capture instead of returning early.
         if current.recorder.recording { current.recorder.finish() }
@@ -189,7 +206,7 @@ final class LockedVoiceCoordinator {
     }
 
     private func content(_ current: Capture, phase: String) -> ActivityContent<LockedVoiceActivityAttributes.ContentState> {
-        ActivityContent(state: .init(phase: phase, language: current.language), staleDate: ["preparing", "listening", "transcribing", "sending"].contains(phase) ? Date().addingTimeInterval(90) : nil)
+        ActivityContent(state: .init(phase: phase, language: current.language, failure: current.failure), staleDate: ["preparing", "listening", "transcribing", "sending"].contains(phase) ? Date().addingTimeInterval(90) : nil)
     }
 
     private func update(_ current: Capture, phase: String) {
@@ -219,6 +236,9 @@ final class LockedVoiceCoordinator {
         current.recorder.onAudioEnded = nil
         current.recorder.onFinal = nil
         current.recorder.onError = nil
+        // Begin recognizing immediately in the background app process. A completed
+        // utterance submits itself; Send remains an explicit finish control for
+        // people who prefer not to wait for the speech pause.
         current.recorder.onStatus = nil
         current.recorder.stop()
         current.heartbeat?.cancel()
