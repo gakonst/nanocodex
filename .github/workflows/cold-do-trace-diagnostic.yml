@@ -11,86 +11,44 @@ jobs:
       CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
       CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
     steps:
-      - name: Query bounded telemetry with no raw source or credentials
+      - name: Summarize one bounded production trace without raw telemetry
         shell: bash
         run: |
           python3 - <<'PY' > "$RUNNER_TEMP/cold-trace-summary.txt"
-          import json, os, urllib.request, urllib.error
+          import json, os, urllib.request
           account=os.environ['CLOUDFLARE_ACCOUNT_ID']; token=os.environ['CLOUDFLARE_API_TOKEN']
-          assert account and token, 'Missing Cloudflare deployment context'
           endpoint=f'https://api.cloudflare.com/client/v4/accounts/{account}/workers/observability/telemetry/query'
-          timeframe={'from':1790273220000,'to':1790273760000} # 2026-09-24 18:07–18:16 UTC
+          timeframe={'from':1790273220000,'to':1790273760000}
           def query(view, parameters):
-              body={'queryId':'cold-do-20260924','timeframe':timeframe,'view':view,'dry':True,'limit':200,'parameters':parameters}
+              body={'queryId':'cold-do-focus-20260924','timeframe':timeframe,'view':view,'dry':True,'limit':200,'parameters':parameters}
               req=urllib.request.Request(endpoint,data=json.dumps(body).encode(),headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'},method='POST')
-              try:
-                  with urllib.request.urlopen(req,timeout=35) as r: result=json.load(r)
-              except urllib.error.HTTPError as e:
-                  print('Cloudflare telemetry HTTP status:', e.code)
-                  return None
-              if not result.get('success'):
-                  print('Cloudflare telemetry error codes:', [e.get('code') for e in result.get('errors',[])])
-                  return None
-              return result.get('result') or {}
+              with urllib.request.urlopen(req,timeout=35) as r: response=json.load(r)
+              assert response.get('success'), [x.get('code') for x in response.get('errors',[])]
+              return response.get('result') or {}
           params={'datasets':['cloudflare-workers'],'filters':[{'key':'$metadata.service','operation':'eq','type':'string','value':'nanocodex-durable-agent'}], 'needle':{'value':'managed.session.constructor'}}
-          result=query('events',params)
-          if result is None: raise SystemExit(1)
-          events=(result.get('events') or {}).get('events') or []
-          print('Bounded constructor events:',len(events))
-          if events:
-              sample=events[0]
-              print('event keys:', sorted(sample.keys()))
-              print('metadata keys:', sorted((sample.get('$metadata') or {}).keys()))
-              print('worker keys:', sorted((sample.get('$workers') or {}).keys()))
-              print('source type:', type(sample.get('source')).__name__)
-              if isinstance(sample.get('source'),dict): print('source keys:',sorted(sample['source'].keys()))
-              print('trace-related metadata keys:',[k for k in (sample.get('$metadata') or {}) if 'trace' in k.lower() or 'span' in k.lower()])
-          traces=query('traces',params)
-          if traces is not None:
-              summaries=traces.get('traces') or []
-              print('matching trace summaries:',len(summaries))
-              for trace in summaries[:8]:
-                  print('trace root:',json.dumps({'name':trace.get('rootSpanName'),'duration':trace.get('traceDurationMs'),'services':trace.get('service'),'spans':trace.get('spans')},sort_keys=True))
-          trace_ids=[]
-          if traces is not None: trace_ids.extend([t['traceId'] for t in (traces.get('traces') or []) if t.get('traceId') and t.get('rootSpanName')=='POST' and (t.get('traceDurationMs') or 0)<4000][:3])
-          for item in events[:10]:
-              meta=item.get('$metadata') or {}; w=item.get('$workers') or {}
-              tid=meta.get('traceId') or w.get('traceId')
-              if tid and tid not in trace_ids: trace_ids.append(tid)
-              print('constructor event:',json.dumps({'timestamp':item.get('timestamp'),'service':meta.get('service'),'duration':meta.get('duration'),'colo':meta.get('colo')},sort_keys=True))
-          for i,tid in enumerate(trace_ids[:1]):
-              found=query('events',{'datasets':[],'filters':[{'key':'$metadata.traceId','operation':'eq','type':'string','value':tid}]})
-              if found is None: continue
-              spans=(found.get('events') or {}).get('events') or []
-              print('trace',i+1,'event count:',len(spans))
-              print('trace datasets:',{dataset:sum(1 for item in spans if item.get('dataset')==dataset) for dataset in set(item.get('dataset') for item in spans)})
-              if spans:
-                  print('trace sample metadata:',{k:v for k,v in (spans[0].get('$metadata') or {}).items() if k in ('type','origin','trigger','service')})
-                  print('trace sample source keys:',sorted((spans[0].get('source') or {}).keys()) if isinstance(spans[0].get('source'),dict) else type(spans[0].get('source')).__name__)
-              otel=[item for item in spans if item.get('dataset')=='otel']
-              if otel:
-                  print('otel metadata keys:',sorted((otel[0].get('$metadata') or {}).keys()))
-                  sample=otel[0].get('source') or {}
-                  print('otel source keys:',sorted(sample.keys()) if isinstance(sample,dict) else type(sample).__name__)
-                  attrs=sample.get('attributes') if isinstance(sample,dict) else None
-                  print('otel attribute keys:',sorted(attrs.keys())[:60] if isinstance(attrs,dict) else type(attrs).__name__)
-              if otel:
-                  from collections import Counter
-                  counts=Counter(str((item.get('source') or {}).get('name')) for item in otel)
-                  print('span names:',counts.most_common(25))
-                  print('cloudflare keys:',sorted(((otel[0].get('source') or {}).get('cloudflare') or {}).keys()))
-                  print('faas keys:',sorted(((otel[0].get('source') or {}).get('faas') or {}).keys()))
-              focus=[]
-              for item in otel:
-                  src=item.get('source') or {}; name=str(src.get('name') or '')
-                  if any(x in name.lower() for x in ('subrequest','handler','rpc','fetch','http','post','get')) and 'storage' not in name.lower(): focus.append(item)
-              focus.sort(key=lambda x:(x.get('source') or {}).get('startTime') or 0)
-              print('focused spans:',len(focus))
-              for item in focus[:35]:
-                  meta=item.get('$metadata') or {}; src=item.get('source') or {}; cf=src.get('cloudflare') or {}
-                  print('otel:',json.dumps({'name':str(src.get('name') or '')[:80],'start':src.get('startTime'),'end':src.get('endTime'),'duration_ms':src.get('durationMS'),'colo':cf.get('colo'),'script':cf.get('script_name'),'span_id_index':next((j for j,x in enumerate(focus) if (x.get('source') or {}).get('spanId')==src.get('spanId')),None),'parent_name':next(((x.get('source') or {}).get('name') for x in otel if (x.get('source') or {}).get('spanId')==src.get('parentSpanId')),None),'cf_keys':sorted(cf.keys())[:20]},sort_keys=True))
+          summaries=query('traces',params).get('traces') or []
+          selected=next(t for t in summaries if t.get('rootSpanName')=='POST' and 3000<(t.get('traceDurationMs') or 0)<4000)
+          tid=selected['traceId']; found=query('events',{'datasets':[],'filters':[{'key':'$metadata.traceId','operation':'eq','type':'string','value':tid}]})
+          events=(found.get('events') or {}).get('events') or []
+          otel=[e.get('source') or {} for e in events if e.get('dataset')=='otel']
+          byid={s.get('spanId'):s for s in otel if s.get('spanId')}
+          root=min((s.get('startTime') or 0) for s in otel)
+          print('selected duration',selected.get('traceDurationMs'),'otel spans',len(otel),'root ms',root)
+          print('relative start/end; duration; script/colo; span <- parent; subrequest metadata')
+          focus=[s for s in otel if s.get('name') in ('POST','fetch','durable_object_subrequest','jsRpcCall','jsrpc','jsRpcSession')]
+          focus.sort(key=lambda s:(s.get('startTime') or 0,s.get('endTime') or 0))
+          for s in focus:
+              cf=s.get('cloudflare') or {}; dobj=cf.get('durable_object') or {}
+              parent=byid.get(s.get('parentSpanId')) or {}
+              kind=str(cf.get('handler_type') or cf.get('invocation',{}).get('type') if isinstance(cf.get('invocation'),dict) else '')[:30]
+              print('%5s..%5s %5s %-9s %-4s %-26s <- %-26s [%s] dobj=%s' % ((s.get('startTime') or 0)-root,(s.get('endTime') or 0)-root,s.get('durationMS'),str(cf.get('script_name') or '')[:9],str(cf.get('colo') or '')[:4],s.get('name'),parent.get('name'),kind,str(dobj)[:140]))
+          print('constructor events in trace:')
+          for e in events:
+              src=e.get('source') or {}
+              if isinstance(src,dict) and src.get('type')=='managed.session.constructor':
+                  print('constructor log relative',e.get('timestamp',0)-root,'base',src.get('constructor_base_ms'),'sync',src.get('constructor_sync_ms'),'sql',src.get('constructor_sql_ms'))
           PY
-      - name: Surface sanitized summary as one GitHub check annotation
+      - name: Surface bounded sanitized summary as one annotation
         if: always()
         shell: bash
         run: |
