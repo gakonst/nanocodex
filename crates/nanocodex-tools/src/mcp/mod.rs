@@ -94,6 +94,7 @@ pub struct McpBuilder {
     servers: BTreeMap<String, McpServer>,
     oauth_store: Option<Arc<dyn McpOAuthStore>>,
     duplicate: Option<String>,
+    initially_hidden: std::collections::BTreeSet<String>,
 }
 
 /// Cheap control handle for reconnecting and authorizing a running MCP provider.
@@ -264,6 +265,13 @@ impl McpBuilder {
         self
     }
 
+    /// Defer discovery of an opt-in server until explicitly enabled.
+    #[must_use]
+    pub fn initially_hidden(mut self, name: impl Into<String>) -> Self {
+        self.initially_hidden.insert(name.into());
+        self
+    }
+
     /// Validates configuration without connecting; handshakes begin with the agent driver.
     ///
     /// # Errors
@@ -298,10 +306,11 @@ impl McpBuilder {
         let state = Arc::new(ProviderState::new(
             servers.iter().map(|server| server.name.clone()),
             discovery_timeout,
+            self.initially_hidden,
         ));
         let search = Arc::new(McpSearch {
             state: Arc::clone(&state),
-            description: search_description(&servers),
+            servers: Arc::clone(&servers),
         });
         Ok(Mcp {
             servers,
@@ -316,6 +325,25 @@ impl McpBuilder {
 }
 
 impl McpHandle {
+    /// Returns None for ordinary (explicitly configured) servers, which are never gated.
+    pub async fn set_opt_in_enabled(
+        &self,
+        name: &str,
+        enabled: bool,
+    ) -> Result<Option<usize>, McpControlError> {
+        if !self.state.is_opt_in(name) {
+            return Ok(None);
+        }
+        if enabled && !self.state.is_connected(name) {
+            let count = self.reload(name).await?;
+            self.state.set_opt_in_enabled(name, true);
+            Ok(Some(count))
+        } else {
+            self.state.set_opt_in_enabled(name, enabled);
+            Ok(Some(0))
+        }
+    }
+
     /// Reconnects one configured server and atomically replaces its discovered tools.
     ///
     /// # Errors
@@ -532,6 +560,9 @@ impl DynamicToolProvider for Mcp {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         for server in &*self.servers {
+            if self.state.is_opt_in(&server.name) {
+                continue;
+            }
             let name = server.name.clone();
             let model_namespace = server.model_namespace.clone();
             let config = server.config.clone();
@@ -814,7 +845,7 @@ fn image_detail(meta: &Option<rmcp::model::MetaObject>) -> nanocodex_oai_api::Im
 
 struct McpSearch {
     state: Arc<ProviderState>,
-    description: String,
+    servers: Arc<[NamedServer]>,
 }
 
 #[derive(Deserialize)]
@@ -828,9 +859,15 @@ struct SearchInput {
 #[async_trait]
 impl Tool for McpSearch {
     fn definition(&self) -> ToolDefinition {
+        let hidden = self.state.hidden_servers();
+        let visible = self
+            .servers
+            .iter()
+            .filter(|server| !hidden.contains(&server.name))
+            .collect::<Vec<_>>();
         ToolDefinition::tool_search(
             "client",
-            self.description.clone(),
+            search_description(&visible),
             json!({
                 "type": "object",
                 "properties": {
@@ -939,7 +976,7 @@ fn validate_server(name: &str, server: &McpServer) -> Result<(), McpBuildError> 
     Ok(())
 }
 
-fn search_description(servers: &[NamedServer]) -> String {
+fn search_description(servers: &[&NamedServer]) -> String {
     let reserved_name_bytes = servers
         .iter()
         .fold(servers.len().saturating_sub(1), |reserved, server| {
@@ -1362,6 +1399,65 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[tokio::test]
+    async fn opt_in_server_is_cold_and_invisible_until_enabled_then_can_be_hidden() {
+        let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/mcp-stdio-server.mjs");
+        let mcp = Mcp::builder()
+            .server(
+                "opt-in",
+                McpServer::stdio("node").arg(fixture.to_string_lossy()),
+            )
+            .initially_hidden("opt-in")
+            .build()
+            .unwrap();
+        let handle = mcp.handle();
+        mcp.start();
+        assert!(
+            !mcp.state.is_connected("opt-in"),
+            "startup must not contact opt-in servers"
+        );
+        assert!(mcp.available_definitions().is_empty());
+        assert!(!mcp.search.definition().description().contains("- opt-in"));
+        assert!(!mcp.contains("mcp__opt_in__echo"));
+        assert_eq!(
+            mcp.state.search("echo", None).await.unwrap().tool_count(),
+            0
+        );
+        assert_eq!(
+            handle.set_opt_in_enabled("opt-in", true).await.unwrap(),
+            Some(1)
+        );
+        assert!(mcp.contains("mcp__opt_in__echo"));
+        assert_eq!(
+            mcp.state.search("echo", None).await.unwrap().tool_count(),
+            1
+        );
+        assert_eq!(
+            handle.set_opt_in_enabled("opt-in", false).await.unwrap(),
+            Some(0)
+        );
+        assert!(!mcp.contains("mcp__opt_in__echo"));
+        assert_eq!(
+            mcp.state.search("echo", None).await.unwrap().tool_count(),
+            0
+        );
+        assert!(
+            mcp.execute(
+                "mcp__opt_in__echo",
+                json!({"message":"hidden"}),
+                test_context("test-session", "hidden-call")
+            )
+            .await
+            .is_none()
+        );
+        assert_eq!(
+            handle.set_opt_in_enabled("opt-in", true).await.unwrap(),
+            Some(0)
+        );
+        assert!(mcp.contains("mcp__opt_in__echo"));
     }
 
     #[tokio::test]

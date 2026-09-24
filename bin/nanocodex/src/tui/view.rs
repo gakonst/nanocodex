@@ -648,6 +648,12 @@ fn render_footer(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Style::default().fg(Color::LightYellow),
         ));
     }
+    if app.mercator() {
+        model.push(Span::styled(
+            " · mercator",
+            Style::default().fg(Color::Green),
+        ));
+    }
     model.push(Span::raw(" "));
     frame.render_widget(
         Paragraph::new(Line::from(model)).alignment(Alignment::Right),
