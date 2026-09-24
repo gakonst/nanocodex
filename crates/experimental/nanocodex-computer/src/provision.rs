@@ -218,6 +218,7 @@ mod mac {
     const TEAM: &str = "2DC432GLL2";
     const BUNDLE: &str = "com.openai.codex";
     const REQUIREMENT: &str = "=identifier \"com.openai.codex\" and anchor apple generic and certificate leaf[subject.OU] = \"2DC432GLL2\"";
+    const BROWSER_PLUGIN: &str = "plugins/openai-bundled/plugins/chrome";
     const TEAM_REQUIREMENT: &str =
         "=anchor apple generic and certificate leaf[subject.OU] = \"2DC432GLL2\"";
     const APP: &str = "Codex.app";
@@ -507,6 +508,78 @@ mod mac {
         Ok(seals)
     }
 
+    fn browser_architecture() -> &'static str {
+        if cfg!(target_arch = "aarch64") {
+            "arm64"
+        } else {
+            "x64"
+        }
+    }
+
+    fn browser_extension_host() -> PathBuf {
+        PathBuf::from(format!(
+            "extension-host/macos/{}/ChatGPT for Chrome",
+            browser_architecture()
+        ))
+    }
+
+    fn browser_assets(version: &Path) -> Vec<(PathBuf, PathBuf)> {
+        let plugin = version.join(APP).join(RESOURCES).join(BROWSER_PLUGIN);
+        let extension_host = browser_extension_host();
+        [
+            PathBuf::from("scripts/installManifest.mjs"),
+            PathBuf::from("scripts/browser-client.mjs"),
+            extension_host,
+        ]
+        .into_iter()
+        .map(|relative| {
+            (
+                plugin.join(&relative),
+                PathBuf::from("browser").join(relative),
+            )
+        })
+        .collect()
+    }
+
+    fn legacy_browser_config_relative() -> PathBuf {
+        PathBuf::from("Resources")
+            .join(BROWSER_PLUGIN)
+            .join(browser_extension_host().parent().unwrap())
+            .join("extension-host-config.json")
+    }
+
+    fn remove_unsealed_legacy_browser_config(
+        app: &Path,
+        seals: &HashMap<String, Seal>,
+    ) -> Result<(), String> {
+        let relative = legacy_browser_config_relative();
+        let name = relative
+            .to_str()
+            .ok_or("OpenAI browser config path is not UTF-8")?
+            .replace('\\', "/");
+        let path = app.join("Contents").join(&relative);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error.to_string()),
+        };
+        // Newer upstream builds may eventually ship a sealed default. Preserve
+        // it. Only remove the small unsealed file written by our old bridge
+        // setup, never a directory, symlink, or unexpectedly large payload.
+        if seals.contains_key(&name) {
+            return Ok(());
+        }
+        if !metadata.is_file() || metadata.len() > 64 * 1024 {
+            return Err("Legacy OpenAI browser config is not a bounded regular file".into());
+        }
+        io(fs::remove_file(path))
+    }
+
+    fn remove_legacy_browser_config(app: &Path) -> Result<(), String> {
+        let seals = signed_seals(app)?;
+        remove_unsealed_legacy_browser_config(app, &seals)
+    }
+
     fn verify_tree(
         contents: &Path,
         relative: &Path,
@@ -636,13 +709,9 @@ mod mac {
                 ));
             }
         }
-        let architecture = if cfg!(target_arch = "aarch64") {
-            "arm64"
-        } else {
-            "x64"
-        };
         let extension_host = format!(
-            "plugins/openai-bundled/plugins/chrome/extension-host/macos/{architecture}/ChatGPT for Chrome"
+            "{BROWSER_PLUGIN}/extension-host/macos/{}/ChatGPT for Chrome",
+            browser_architecture()
         );
         if !resources.join(&extension_host).is_file() {
             return Err("OpenAI browser bridge is missing its native host".into());
@@ -784,8 +853,9 @@ mod mac {
             Ok(version)
         };
         let result = validate().and_then(|version| {
-            let (build, fingerprint) =
-                verified_cached(root, &version.join(APP), commands, refresh)?;
+            let app = version.join(APP);
+            remove_legacy_browser_config(&app)?;
+            let (build, fingerprint) = verified_cached(root, &app, commands, refresh)?;
             commands.check_cancelled()?;
             let host = ensure_host(root, &version, HOST_MODULES)?;
             commands.check_cancelled()?;
@@ -835,6 +905,7 @@ mod mac {
         modules: &[(&str, &str)],
     ) -> Result<PathBuf, String> {
         let direct = launcher(version)?;
+        let browser_assets = browser_assets(version);
         let mut digest = Sha256::new();
         for content in modules
             .iter()
@@ -846,6 +917,13 @@ mod mac {
         {
             digest.update((content.len() as u64).to_le_bytes());
             digest.update(content.as_bytes());
+        }
+        for (source, relative) in &browser_assets {
+            let bytes = io(fs::read(source))?;
+            digest.update((relative.as_os_str().len() as u64).to_le_bytes());
+            digest.update(relative.as_os_str().as_encoded_bytes());
+            digest.update((bytes.len() as u64).to_le_bytes());
+            digest.update(bytes);
         }
         // Include the wrapper template too; placeholders avoid a circular hash.
         digest.update(host_launcher(
@@ -892,6 +970,25 @@ mod mac {
                     }
                 }
             }
+            for (source, relative) in &browser_assets {
+                let path = host.join(relative);
+                let metadata = io(fs::symlink_metadata(&path))?;
+                if !metadata.is_file() || io(fs::read(&path))? != io(fs::read(source))? {
+                    return Err(format!(
+                        "managed browser host asset is modified: {}",
+                        path.display()
+                    ));
+                }
+                if relative == &PathBuf::from("browser").join(browser_extension_host()) {
+                    use std::os::unix::fs::PermissionsExt;
+                    if metadata.permissions().mode() & 0o111 == 0 {
+                        return Err(format!(
+                            "managed browser host is not executable: {}",
+                            path.display()
+                        ));
+                    }
+                }
+            }
             Ok(())
         };
         match fs::symlink_metadata(&host) {
@@ -918,6 +1015,13 @@ mod mac {
                     fs::Permissions::from_mode(0o755),
                 ))?;
             }
+        }
+        for (source, relative) in &browser_assets {
+            let path = stage.path.join(relative);
+            io(fs::create_dir_all(
+                path.parent().ok_or("Invalid browser host asset path")?,
+            ))?;
+            io(fs::copy(source, path))?;
         }
         if let Err(error) = fs::rename(&stage.path, &host) {
             // Another setup may have published this hash first. Never replace
@@ -1513,9 +1617,13 @@ mod mac {
         {
             return Err("No managed OpenAI CUA runtime is selected".into());
         }
-        let resources = root.join(target).join(APP).join(RESOURCES);
+        let version = root.join(target);
+        let resources = version.join(APP).join(RESOURCES);
         let runtime = resources.join("cua_node");
-        let plugin = resources.join("plugins/openai-bundled/plugins/chrome");
+        // The official installer writes extension-host-config.json beside its
+        // native host. Run it against our verified copy so setup never mutates
+        // the signed sparse OpenAI bundle.
+        let plugin = ensure_host(root, &version, HOST_MODULES)?.join("browser");
         let installer = plugin.join("scripts/installManifest.mjs");
         for path in [
             &installer,

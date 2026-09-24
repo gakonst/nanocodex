@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bug Fixes
 
+- [computer] Keep generated browser bridge configuration outside the signed CUA bundle
 - Gate public bootstrap on stable release
 - Fix probe telemetry query variable shadowing
 - [nanocodex2] Include Mercator in local managed tool runtime

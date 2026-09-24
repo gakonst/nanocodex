@@ -63,6 +63,66 @@ fn node_path_delimiters_are_rejected() {
 }
 
 #[test]
+fn removes_only_the_unsealed_legacy_browser_config() {
+    let directory = Staging {
+        path: std::env::temp_dir().join(format!("nanocodex-browser-config-test-{}", nonce())),
+        cleanup: true,
+    };
+    let app = directory.path.join("Codex.app");
+    let relative = legacy_browser_config_relative();
+    let config = app.join("Contents").join(&relative);
+    fs::create_dir_all(config.parent().unwrap()).unwrap();
+    fs::write(&config, b"{\"generated\":true}").unwrap();
+
+    remove_unsealed_legacy_browser_config(&app, &HashMap::new()).unwrap();
+    assert!(!config.exists());
+
+    fs::write(&config, b"{\"upstream\":true}").unwrap();
+    let mut seals = HashMap::new();
+    seals.insert(
+        relative.to_string_lossy().replace('\\', "/"),
+        Seal::Hash([0; 32]),
+    );
+    remove_unsealed_legacy_browser_config(&app, &seals).unwrap();
+    assert!(config.is_file());
+}
+
+#[test]
+fn browser_bridge_uses_an_immutable_host_copy() {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let directory = Staging {
+        path: std::env::temp_dir().join(format!("nanocodex-browser-host-test-{}", nonce())),
+        cleanup: true,
+    };
+    let root = directory.path.join("runtime");
+    let version = directory.path.join("version");
+    for (source, relative) in browser_assets(&version) {
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, relative.to_string_lossy().as_bytes()).unwrap();
+        if relative == PathBuf::from("browser").join(browser_extension_host()) {
+            fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
+        }
+    }
+
+    let host = ensure_host(&root, &version, &[("host.mjs", "export default true;")]).unwrap();
+    for (source, relative) in browser_assets(&version) {
+        assert_eq!(fs::read(source).unwrap(), fs::read(host.join(relative)).unwrap());
+    }
+    assert!(!version
+        .join(APP)
+        .join("Contents")
+        .join(legacy_browser_config_relative())
+        .exists());
+
+    let copied_installer = host.join("browser/scripts/installManifest.mjs");
+    fs::write(&copied_installer, b"modified").unwrap();
+    let error = ensure_host(&root, &version, &[("host.mjs", "export default true;")])
+        .unwrap_err();
+    assert!(error.contains("managed browser host asset is modified"), "{error}");
+}
+
+#[test]
 fn system_drains_both_full_pipes_and_reports_exit_status() {
     let cancellation = Cancellation::new();
     let mut system = System::new(cancellation.flag());

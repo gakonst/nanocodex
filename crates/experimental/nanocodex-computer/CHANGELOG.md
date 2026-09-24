@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Bug Fixes
 
+- Keep generated browser bridge configuration outside the signed CUA bundle
 - [computer] Collapse nested provision test condition
 - [computer] Enable upstream CUA discovery and turn metadata in Linux VMs ([#520](https://github.com/gakonst/nanocodex/issues/520))
 - Let official CUA own execution deadlines ([#491](https://github.com/gakonst/nanocodex/issues/491))
