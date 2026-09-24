@@ -68,7 +68,20 @@ struct Setup {
     artifacts: Option<PathBuf>,
 }
 
-fn ssh_target(value: &str) -> std::result::Result<String, String> {
+impl Default for Setup {
+    fn default() -> Self {
+        Self {
+            factory_name: None,
+            native_only: false,
+            max_vms: 4,
+            vm_cpus: 2,
+            vm_memory_mib: 4096,
+            artifacts: None,
+        }
+    }
+}
+
+pub(crate) fn ssh_target(value: &str) -> std::result::Result<String, String> {
     if value.is_empty()
         || value.starts_with('-')
         || !value
@@ -78,6 +91,16 @@ fn ssh_target(value: &str) -> std::result::Result<String, String> {
         return Err("Expected an SSH alias, IP, hostname, or user@host".into());
     }
     Ok(value.into())
+}
+
+/// Enroll a Linux Hand using the safe defaults from `nanocodex hand add`.
+/// The guided setup owns only target discovery; SSH, account verification,
+/// artifact verification, credential transport, and readiness remain here.
+pub(crate) async fn add_default(target: String, port: Option<u16>) -> Result<()> {
+    let target = ssh_target(&target).map_err(eyre::Report::msg)?;
+    Setup::default()
+        .run(Destination::Ssh { target, port })
+        .await
 }
 
 enum Destination {

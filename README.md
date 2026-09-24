@@ -117,7 +117,9 @@ nanocodex
 
 With an interactive terminal, the installer immediately runs `nanocodex setup`:
 account SMS login, exact upstream Computer Use components, the persistent Hand,
-and the official browser-extension prompt. The flow is idempotent and resumable.
+an optional Linux Hand over SSH, and the official browser-extension prompt. The
+flow is idempotent and resumable. Pass `--hand-target user@host` to enroll a
+Linux Hand directly, or leave the interactive SSH target prompt blank to skip it.
 
 Release bundles include the native voice helper, libraries, and plugins.
 Installation and updates verify and install them with the matching CLI version;

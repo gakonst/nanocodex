@@ -29,6 +29,20 @@ pub(crate) struct Setup {
     /// Skip the persistent local Hand service.
     #[arg(long)]
     skip_hand: bool,
+    /// Also install or update a Linux Hand over SSH.
+    #[arg(
+        long,
+        value_name = "USER@HOST",
+        value_parser = crate::hand_setup::ssh_target,
+        conflicts_with = "skip_hand"
+    )]
+    hand_target: Option<String>,
+    /// SSH port for --hand-target; otherwise use normal SSH configuration.
+    #[arg(long, requires = "hand_target")]
+    hand_port: Option<u16>,
+    /// Do not offer optional Linux Hand enrollment during interactive setup.
+    #[arg(long)]
+    no_remote_hand_prompt: bool,
 }
 
 fn extension_present(root: &Path, id: &str) -> bool {
@@ -78,6 +92,29 @@ fn prompt_open_extension() -> Result<bool> {
     ))
 }
 
+fn remote_hand_answer(answer: &str) -> Result<Option<String>> {
+    let answer = answer.trim();
+    if answer.is_empty() {
+        return Ok(None);
+    }
+    crate::hand_setup::ssh_target(answer)
+        .map(Some)
+        .map_err(eyre::Report::msg)
+}
+
+fn prompt_remote_hand() -> Result<Option<String>> {
+    loop {
+        eprint!("Optional Linux Hand SSH target (user@host, blank to skip): ");
+        io::stderr().flush()?;
+        let mut answer = String::new();
+        io::stdin().read_line(&mut answer)?;
+        match remote_hand_answer(&answer) {
+            Ok(target) => return Ok(target),
+            Err(error) => eprintln!("Invalid SSH target: {error}"),
+        }
+    }
+}
+
 impl Setup {
     pub(crate) async fn run(self) -> Result<()> {
         eprintln!("Setting up Nanocodex…");
@@ -85,13 +122,13 @@ impl Setup {
             if nanocodex_cli_auth::has_default_login() {
                 eprintln!("✓ Nanocodex account login found");
             } else {
-                eprintln!("1/4 Sign in to the account used by nanocodex2 and Hand.");
+                eprintln!("Sign in to the account used by nanocodex2 and Hand.");
                 nanocodex_cli_auth::login_default().await?;
             }
         }
 
         if !self.skip_computer {
-            eprintln!("2/4 Installing the signed upstream Computer Use components…");
+            eprintln!("Installing the signed upstream Computer Use components…");
             let receipt = nanocodex_computer::provision::provision_upstream(self.refresh)
                 .await
                 .map_err(eyre::Report::msg)?;
@@ -117,10 +154,30 @@ impl Setup {
                     "Hand needs an account login; rerun without --skip-account or run `nanocodex account login`"
                 );
             }
-            eprintln!("3/4 Ensuring the local Hand daemon is current and connected…");
+            eprintln!("Ensuring the local Hand daemon is current and connected…");
             let _lock = crate::update::lock_service_operation()?;
             crate::hand_service::ensure(None, None).await?;
-            eprintln!("✓ Hand is connected");
+            eprintln!("✓ Local Hand is connected");
+        }
+
+        if !self.skip_hand {
+            let target = match self.hand_target {
+                Some(target) => Some(target),
+                None if self.no_remote_hand_prompt => None,
+                None => prompt_remote_hand()?,
+            };
+            if let Some(target) = target {
+                if !nanocodex_cli_auth::has_default_login() {
+                    bail!(
+                        "Linux Hand enrollment needs an account login; rerun without --skip-account or run `nanocodex account login`"
+                    );
+                }
+                eprintln!("Installing the Linux Hand and VM factory on {target}…");
+                crate::hand_setup::add_default(target.clone(), self.hand_port)
+                    .await
+                    .wrap_err_with(|| format!("Could not set up the Linux Hand on {target}"))?;
+                eprintln!("✓ Linux Hand on {target} is connected");
+            }
         }
 
         if cfg!(target_os = "macos") {
@@ -128,10 +185,10 @@ impl Setup {
                 std::env::var_os("HOME").ok_or_else(|| eyre::eyre!("HOME is unset"))?,
             );
             if browser_extension_installed(&home) {
-                eprintln!("4/4 ✓ Official browser extension found");
+                eprintln!("✓ Official browser extension found");
             } else {
                 eprintln!(
-                    "4/4 Install the official ChatGPT browser extension to control browser tabs."
+                    "Install the official ChatGPT browser extension to control browser tabs."
                 );
                 let open = !self.no_open_browser && prompt_open_extension()?;
                 if open {
@@ -151,6 +208,14 @@ impl Setup {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use clap::Parser;
+
+    #[derive(Parser)]
+    struct TestCli {
+        #[command(flatten)]
+        setup: Setup,
+    }
+
     #[test]
     fn detects_extension_in_any_profile() {
         let temp = tempfile::tempdir().unwrap();
@@ -162,5 +227,46 @@ mod tests {
         fs::create_dir_all(version).unwrap();
         assert!(extension_present(temp.path(), CHROME_EXTENSION_ID));
         assert!(!extension_present(temp.path(), EDGE_EXTENSION_ID));
+    }
+
+    #[test]
+    fn optional_remote_hand_target_is_bounded_and_shell_safe() {
+        assert_eq!(remote_hand_answer("\n").unwrap(), None);
+        assert_eq!(
+            remote_hand_answer(" ubuntu@hand.example \n").unwrap(),
+            Some("ubuntu@hand.example".into())
+        );
+        for answer in ["-oProxyCommand=evil", "host;id", "host path", "$(id)"] {
+            assert!(remote_hand_answer(answer).is_err(), "{answer}");
+        }
+    }
+
+    #[test]
+    fn remote_hand_flags_are_explicit_and_consistent() {
+        let parsed = TestCli::try_parse_from([
+            "setup",
+            "--hand-target",
+            "ubuntu@hand.example",
+            "--hand-port",
+            "2222",
+            "--no-remote-hand-prompt",
+        ])
+        .unwrap();
+        assert_eq!(
+            parsed.setup.hand_target.as_deref(),
+            Some("ubuntu@hand.example")
+        );
+        assert_eq!(parsed.setup.hand_port, Some(2222));
+        assert!(parsed.setup.no_remote_hand_prompt);
+        assert!(TestCli::try_parse_from(["setup", "--hand-port", "2222"]).is_err());
+        assert!(
+            TestCli::try_parse_from([
+                "setup",
+                "--skip-hand",
+                "--hand-target",
+                "ubuntu@hand.example"
+            ])
+            .is_err()
+        );
     }
 }
