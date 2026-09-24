@@ -1,6 +1,5 @@
 import { networkAllows, type NetworkPolicy } from "./agent-configuration";
 import {
-  createComputerRuntime,
   createMediaCommands,
   createWorkspaceFilesystem,
   type ComputerRuntime,
@@ -8,6 +7,9 @@ import {
   type Workspace,
   type WorkspaceStorageClient,
 } from "nanocodex-tools";
+import { createComputerRuntimeWithoutPdf } from "nanocodex-tools/computer-runtime-core";
+import { createPdfTextCommandWithExtractor } from "nanocodex-tools/pdf-command";
+import { extractPdfTextFromMediaService } from "./pdf-runtime";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { ToolContext } from "nanocodex";
 
@@ -65,7 +67,7 @@ export async function createManagedComputerRuntime(options: Readonly<{
       () => options.vaultAllowed?.(calls.getStore()) ?? true,
       options.networkPolicy,
     );
-    const runtime = await createComputerRuntime({
+    const runtime = await createComputerRuntimeWithoutPdf({
       filesystem,
       refreshFilesystemBeforeExec: options.filesystem !== undefined,
       fetch,
@@ -73,6 +75,8 @@ export async function createManagedComputerRuntime(options: Readonly<{
         ? "public-http-only"
         : "connector-http-gateway",
       commands: ({ filesystem: mountedFilesystem }) => [
+        ...(options.mediaService ? [createPdfTextCommandWithExtractor(mountedFilesystem, (data, pdfOptions, signal) =>
+          extractPdfTextFromMediaService(options.mediaService!, data, pdfOptions, signal))] : []),
         ...(options.mediaService ? createMediaCommands({
           filesystem: mountedFilesystem,
           execute: createMediaExecutor(options.mediaService),

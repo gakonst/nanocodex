@@ -5,6 +5,18 @@
   "type": "module",
   "sideEffects": false,
   "exports": {
+    "./computer-runtime-core": {
+      "types": "./dist/runtime-core.d.ts",
+      "import": "./dist/runtime-core.js"
+    },
+    "./pdf-command": {
+      "types": "./dist/pdf-command.d.ts",
+      "import": "./dist/pdf-command.js"
+    },
+    "./pdf-extract": {
+      "types": "./dist/pdf-extract.d.ts",
+      "import": "./dist/pdf-extract.js"
+    },
     "./node": {
       "types": "./tools/nodeProcess.d.mts",
       "import": "./tools/nodeProcess.mjs"

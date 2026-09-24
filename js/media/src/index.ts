@@ -1,5 +1,7 @@
 import { WorkerEntrypoint } from "cloudflare:workers";
 import type { MediaRequest } from "nanocodex-tools";
+import { extractPdfText } from "nanocodex-tools/pdf-extract";
+import type { PdfExtractionOptions } from "nanocodex-tools/pdf-command";
 import { createMediaExecutor } from "./media-runtime";
 
 type Env = { LOADER: WorkerLoader };
@@ -7,6 +9,7 @@ type Env = { LOADER: WorkerLoader };
 /** Service-binding-only endpoint: no default fetch handler, route, or workers.dev URL. */
 export class MediaService extends WorkerEntrypoint<Env> {
   async fetch(request: Request): Promise<Response> {
+    if (new URL(request.url).pathname === "/pdf-text") return runPdfTextRequest(request);
     return runMediaRequest(request, this.env.LOADER);
   }
 }
@@ -50,3 +53,28 @@ export async function runMediaRequest(request: Request, loader: WorkerLoader): P
 
 /** Explicitly deny public/default fetch; callers must bind the MediaService entrypoint. */
 export default { fetch(): Response { return new Response("Not found", { status: 404 }); } };
+
+/** Private PDF endpoint: no workspace path, credentials, or outbound access crosses the binding. */
+export async function runPdfTextRequest(request: Request): Promise<Response> {
+  if (request.method !== "POST" || new URL(request.url).pathname !== "/pdf-text") return new Response("Not found", { status: 404 });
+  let form: FormData;
+  try { form = await request.formData(); }
+  catch { return new Response("Invalid PDF request", { status: 400 }); }
+  const input = form.get("input"), raw = form.get("options");
+  if (!(input instanceof File) || typeof raw !== "string") return new Response("Invalid PDF request", { status: 400 });
+  let options: PdfExtractionOptions;
+  try { options = JSON.parse(raw) as PdfExtractionOptions; }
+  catch { return new Response("Invalid PDF options", { status: 400 }); }
+  if (!options || !Number.isSafeInteger(options.first) || options.first < 1
+    || (options.last !== undefined && (!Number.isSafeInteger(options.last) || options.last < options.first))
+    || typeof options.layout !== "boolean" || typeof options.raw !== "boolean"
+    || typeof options.pageBreaks !== "boolean" || options.layout && options.raw) {
+    return new Response("Invalid PDF options", { status: 400 });
+  }
+  try {
+    return new Response(await extractPdfText(new Uint8Array(await input.arrayBuffer()), options, request.signal),
+      { headers: { "content-type": "text/plain; charset=utf-8" } });
+  } catch (error) {
+    return new Response(error instanceof Error ? error.message : String(error), { status: 422 });
+  }
+}
