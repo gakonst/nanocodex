@@ -91,7 +91,7 @@ describe("first-activation probe", () => {
     const runtime = { ...env, NANOCODEX_ADMIN_USER_ID: "other-admin",
       NANOCODEX_SESSIONS: { idFromName: () => { allocations++; return "named"; },
         newUniqueId: () => { allocations++; return "unique"; } } } as unknown as Env;
-    const response = await worker.fetch(new Request("https://nanocodex.example/v1/internal/activation-probe", {
+    const response = await worker.fetch(new Request("https://nanocodex.example/v1/agents/activation-probe", {
       method: "POST", headers: { "x-nanocodex-probe-kind": "unique" },
     }), runtime, createExecutionContext(), principal);
     expect(response.status).toBe(404);
@@ -113,7 +113,7 @@ describe("first-activation probe", () => {
         },
       },
     } as unknown as Env;
-    const response = await worker.fetch(new Request("https://nanocodex.example/v1/internal/activation-probe", {
+    const response = await worker.fetch(new Request("https://nanocodex.example/v1/agents/activation-probe", {
       method: "POST", headers: { "x-nanocodex-probe-kind": kind },
     }), runtime, createExecutionContext(), principal);
     expect(response.status).toBe(200);

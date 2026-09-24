@@ -1799,7 +1799,7 @@ async function managedFetchRoute(
     }
     // Admin-only, bounded first-use diagnostic. It never creates a managed
     // agent, account registry entry, credential, or externally addressable ID.
-    if (request.method === "POST" && url.pathname === "/v1/internal/activation-probe") {
+    if (request.method === "POST" && url.pathname === "/v1/agents/activation-probe") {
       if (url.search !== "" || await hasRequestBody(request)) return json({ error: "invalid_request" }, { status: 400 });
       const principal = trustedAgentPrincipal ?? await authenticate(request, env, url);
       if (!principal || principal.kind !== "api_key"
