@@ -87,5 +87,16 @@ describe("actual workerd UserCredentials + compiled Rust subscription", () => {
       expect(swapped.secret).toBe(replacement);
       expect(swapped.revision).not.toBe(recovered.revision);
     }
+    const rejected = await runInDurableObject(stub, async instance => {
+      try {
+        await instance.putChatGptCredential({ access_token: replacement, refresh_token: "bad-replacement",
+          account_id: "wrong-account", expires_at: futureExpiry - 60_000, fedramp: false });
+        return false;
+      } catch { return true; }
+    });
+    expect(rejected).toBe(true);
+    const afterRejection = await stub.getActiveCredential();
+    expect(afterRejection?.kind).toBe("chatgpt");
+    if (afterRejection?.kind === "chatgpt") expect(afterRejection.secret).toBe(replacement);
   });
 });
