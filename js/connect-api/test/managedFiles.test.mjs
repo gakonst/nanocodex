@@ -92,6 +92,26 @@ test("Connect durable files preserve scoped authority and exact artifact bytes",
     ]) assert.ok((await run(suffix, method)).status >= 400, `${method} ${suffix}`);
     assert.equal(forwarded.length, count, "rejected requests never reach account storage");
   });
+  await t.test("live checkpoints require final plus action visibility and preserve coherent opaque bundles", async () => {
+    const bundle = { turn_id: "turn-1", revision: 1, files: [{ path: "r1/model.step", sha256: "a".repeat(64), size: 4, data_base64: "U1RFUA==" }] };
+    reply = () => Response.json(bundle, { headers: { "cache-control": "private, no-store" } });
+    for (const capabilities of [["agent.output.final"], ["agent.output.actions"], []]) {
+      grant = { ...base, capabilities };
+      assert.equal((await run("/checkpoints?turn_id=turn-1")).status, 403);
+    }
+    for (const capability of ["agent.output.actions", "agent.trace.read"]) {
+      grant = { ...base, capabilities: ["agent.output.final", capability] };
+      const response = await run("/checkpoints?turn_id=turn-1&after=0");
+      assert.equal(response.status, 200); assert.deepEqual(await response.json(), bundle);
+      assert.match(response.headers.get("cache-control"), /no-store/);
+      assert.equal(forwarded.at(-1).headers.get("x-nanocodex-connect-output-checkpoints"), "true");
+    }
+    assert.equal((await run("/checkpoints?turn_id=turn-1", "POST", {})).status, 405);
+    assert.equal((await run("/checkpoints/anything")).status, 405);
+    grant = { ...base };
+    await run("/artifacts?turn_id=turn-1", "GET", undefined, { "x-nanocodex-connect-output-checkpoints": "true" });
+    assert.equal(forwarded.at(-1).headers.has("x-nanocodex-connect-output-checkpoints"), false);
+  });
   await t.test("artifact content keeps bytes, media type and safe download headers", async () => {
     grant = { ...base };
     for (const [contentType, bytes] of [

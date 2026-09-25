@@ -40,6 +40,8 @@ export function managedGrantHeaders(assertion: ManagedGrantAssertion): Record<st
       "x-nanocodex-connect-connector-connections": JSON.stringify(assertion.connectorConnections),
     }),
     "x-nanocodex-connect-mcp-ids": JSON.stringify(assertion.mcpIds),
+    ...(granted.has("agent.output.final") && (granted.has("agent.output.actions") || granted.has("agent.trace.read"))
+      ? { "x-nanocodex-connect-output-checkpoints": "true" } : {}),
     ...(granted.has("agent.execution.sandbox") ? { "x-nanocodex-connect-sandbox-execution": "true" } : {}),
     ...(assertion.hostPrincipal === undefined
       ? {}

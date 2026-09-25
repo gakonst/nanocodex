@@ -1,3 +1,4 @@
+import { OutputCheckpoints } from "./output-checkpoints";
 import { turnCanUseExecutionNamespace, turnCanProvisionExecutionProvider, executionMountAllowed, executionMountPeers, executionMountOwner } from "./execution-policy";
 export { turnCanUseExecutionNamespace } from "./execution-policy";
 import { liveAgentSettings, liveAgentFailure, liveAgentRequest } from "nanocodex/cloudflare/managed-live";
@@ -985,6 +986,8 @@ function forwardedPrincipal(headers: Headers): Readonly<{
     const encodedConnectorConnections = headers.get(CONNECT_CONNECTOR_CONNECTIONS_ASSERTION);
     const encodedMcpIds = headers.get(CONNECT_MCP_IDS_ASSERTION);
     const appToolCatalogDigest = headers.get(CONNECT_APP_TOOL_CATALOG_DIGEST_ASSERTION);
+    const outputCheckpoints = headers.get("x-nanocodex-connect-output-checkpoints");
+    if (outputCheckpoints !== null && (grantId === null || outputCheckpoints !== "true")) return undefined;
     const sandboxExecution = headers.get("x-nanocodex-connect-sandbox-execution");
     if (sandboxExecution !== null && (grantId === null || sandboxExecution !== "true")) return undefined;
     const connectAssertions = [grantId, encodedConnectors, encodedMcpIds];
@@ -998,6 +1001,7 @@ function forwardedPrincipal(headers: Headers): Readonly<{
         connectGrant: {
           grantId,
           ...(sandboxExecution === "true" ? { sandboxExecution: true } : {}),
+          ...(outputCheckpoints === "true" ? { outputCheckpoints: true } : {}),
           connectors: JSON.parse(encodedConnectors!),
           ...(encodedConnectorConnections === null ? {} : {
             connectorConnections: JSON.parse(encodedConnectorConnections),
@@ -1291,8 +1295,9 @@ function isConnectGrantSlice(value: unknown): value is ConnectGrantSlice {
   const grant = value as Partial<ConnectGrantSlice>;
   return Object.keys(value).every((key) => (
     key === "grantId" || key === "connectors" || key === "connectorConnections"
-    || key === "mcpIds" || key === "appToolCatalogDigest" || key === "sandboxExecution"
+    || key === "mcpIds" || key === "appToolCatalogDigest" || key === "sandboxExecution" || key === "outputCheckpoints"
   ))
+    && (grant.outputCheckpoints === undefined || grant.outputCheckpoints === true)
     && (grant.sandboxExecution === undefined || grant.sandboxExecution === true)
     && typeof grant.grantId === "string" && /^0x[0-9a-f]{64}$/.test(grant.grantId)
     && isUniqueStringArray(grant.connectors)
@@ -2484,6 +2489,11 @@ async function managedFetchRoute(
         method: request.method, headers: sessionHeaders, body: request.body, signal: request.signal,
       });
     }
+    if (resource === "checkpoints" || resource.startsWith("checkpoints/")) {
+      if (!principal.capabilities.includes("agents:read") || (principal.connectGrant && principal.connectGrant.outputCheckpoints !== true))
+        return json({ error: "forbidden" }, { status: 403 });
+      return stub.fetch(`https://session.internal/${resource}${url.search}`, { method: request.method, headers: sessionHeaders, signal: request.signal });
+    }
     if (resource === "artifacts" || resource.startsWith("artifacts/")) {
       if (request.method !== "GET") return json({ error: "method_not_allowed" }, { status: 405 });
       if (!principal.capabilities.includes("agents:read")) return json({ error: "forbidden" }, { status: 403 });
@@ -3490,6 +3500,7 @@ export class DurableAgentSession extends DurableComputerObject {
     initializeManagedAgentSettingsSchema(this.ctx.storage);
     initializeVmHostScopeSchema(this.ctx.storage);
     this.#operations = new SessionOperations(this.ctx.storage);
+    new OutputCheckpoints(this.ctx.storage);
     this.#connectInputs = new ConnectInputs(this.ctx.storage);
     discardObsoleteManagedSubagents(this.ctx.storage);
     // A pending realtime mutation belonged to the previous in-memory owner.
@@ -3850,6 +3861,7 @@ export class DurableAgentSession extends DurableComputerObject {
       }
       if (Object.keys(this.#configuration()).length || this.ctx.storage.sql.exec("SELECT singleton FROM managed_webhook").toArray().length
         || this.ctx.storage.sql.exec("SELECT id FROM managed_artifacts LIMIT 1").toArray().length
+        || this.ctx.storage.sql.exec("SELECT turn_id FROM managed_output_checkpoints LIMIT 1").toArray().length
         || this.ctx.storage.sql.exec("SELECT name FROM managed_connect_inputs LIMIT 1").toArray().length)
         return json({ error: "session_resources_not_portable", message: "Configured sessions, webhooks and published artifacts are not yet portable." }, { status: 409 });
       if (this.#goals.get()) return json({ error: "goal_present", message: "Clear the goal with /goal clear before exporting; goals are not portable yet." }, { status: 409 });
@@ -3928,6 +3940,16 @@ export class DurableAgentSession extends DurableComputerObject {
       const generation = this.#deletionGeneration;
       return this.#connectInputs.put(request, turnAuthorization.connectGrant.grantId,
         createBrainWorkspace(this.#brainBucket(), this.#sessionId()!),
+        () => !this.#deleting && !this.#deleted && this.#deletionGeneration === generation);
+    }
+    if (url.pathname === "/checkpoints" || url.pathname.startsWith("/checkpoints/")) {
+      if (!ownerAssertion || !turnAuthorization.capabilities.includes("agents:read")
+        || (turnAuthorization.connectGrant && turnAuthorization.connectGrant.outputCheckpoints !== true))
+        return json({ error: "forbidden" }, { status: 403 });
+      if (!this.#sessionId() || this.#deleting || this.#deleted) return json({ error: "not_found" }, { status: 404 });
+      const generation = this.#deletionGeneration;
+      return new OutputCheckpoints(this.ctx.storage).get(request, turnAuthorization.connectGrant?.grantId,
+        this.#brainBucket(), this.#sessionId()!,
         () => !this.#deleting && !this.#deleted && this.#deletionGeneration === generation);
     }
     if (url.pathname === "/artifacts" || url.pathname.startsWith("/artifacts/")) {
@@ -7643,7 +7665,7 @@ export class DurableAgentSession extends DurableComputerObject {
     this.#assertDeletionGeneration(generation);
     CloudflareAgent.destroy(this);
     this.ctx.storage.transactionSync(() => {
-      for (const table of ["managed_configuration", "managed_environment_setup", "managed_webhook", "managed_webhook_deliveries", "managed_turn_usage", "managed_model_usage", "managed_artifacts", "managed_artifact_publications", "managed_turn_file_owners", "managed_connect_inputs"]) this.ctx.storage.sql.exec(`DELETE FROM ${table}`);
+      for (const table of ["managed_configuration", "managed_environment_setup", "managed_webhook", "managed_webhook_deliveries", "managed_turn_usage", "managed_model_usage", "managed_artifacts", "managed_artifact_publications", "managed_output_checkpoints", "managed_output_checkpoint_chunks", "managed_turn_file_owners", "managed_connect_inputs"]) this.ctx.storage.sql.exec(`DELETE FROM ${table}`);
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_dispatch_chunks");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_input_chunks");
       this.ctx.storage.sql.exec("DELETE FROM managed_turn_terminal_chunks");

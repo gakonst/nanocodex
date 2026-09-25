@@ -100,10 +100,15 @@ export class SessionOperations {
       if (grantId && (!/^0x[0-9a-f]{64}$/.test(grantId) || !/^[A-Za-z0-9._:-]{1,128}$/.test(turnId) || turnId === "." || turnId === ".."))
         throw new Error("invalid Connect publication identity");
       const root = grantId ? `/brain/connect/${grantId}/outputs/${turnId}` : "/brain/outputs";
-      const all = await workspace.list(root, { recursive: true, maxEntries: 100 }).catch(error => {
+      const direct = await workspace.list(root, { maxEntries: 100 }).catch(error => {
         if (error?.code === "ENOENT") return [];
         throw error;
       });
+      const all = [...direct.filter(f => f.kind === "file")];
+      for (const directory of direct.filter(f => f.kind === "directory" && f.path !== `${root}/checkpoints`)) {
+        all.push(...await workspace.list(directory.path, { recursive: true, maxEntries: 100 }));
+        if (all.length > 100) throw new Error("publication exceeds entry limit");
+      }
       const files = all.filter(f => f.kind === "file" && f.path.startsWith(`${root}/`));
       if (files.length > 50 || files.some(f => (f.size ?? Infinity) > 1_000_000)) throw new Error("publication allows 50 files, up to 1 MB each");
       let total = 0;

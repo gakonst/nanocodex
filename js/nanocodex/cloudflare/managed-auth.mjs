@@ -78,10 +78,12 @@ export function forwardPrincipalAssertions(headers, principal) {
         CONNECT_MCP_IDS_HEADER,
         CONNECT_APP_TOOL_CATALOG_DIGEST_HEADER,
         "x-nanocodex-connect-sandbox-execution",
+        "x-nanocodex-connect-output-checkpoints",
     ]) {
         headers.delete(name);
     }
     if (principal.connectGrant) {
+        if (principal.connectGrant.outputCheckpoints === true) headers.set("x-nanocodex-connect-output-checkpoints", "true");
         if (principal.connectGrant.sandboxExecution === true) {
             headers.set("x-nanocodex-connect-sandbox-execution", "true");
         }
