@@ -86,8 +86,14 @@ and total handshake time without owner IDs, prompts, or response contents.
 
 The durable `GET /v1/agents/:id/turns/:turnId` response also includes a
 `timing` object with a random `trace_id`, `agent_init_ms` duration, and elapsed
-milliseconds since admission started for `accepted_ms`, `first_delta_ms`,
-`first_answer_delta_ms`, and `result_ms`. Missing milestones remain `null`;
+milliseconds since admission started for `accepted_ms`, `model_send_ms`,
+`first_provider_event_ms`, `first_delta_ms`, `first_answer_delta_ms`, and
+`result_ms`. The model-send observation runs just after the persistent socket
+sends `response.create`. The first provider event is the first inbound
+`api.event` seen by the Agent, not a raw socket-read timestamp; the difference
+approximates upstream wait plus frame parsing. If concurrent turns make socket
+attribution ambiguous, `model_send_ms` stays null. The content-free send
+observer remains active past 32 turns on a persistent socket. Missing milestones remain `null`;
 rehydration may prevent a first-delta observation. The first-delta clock is
 server-side emission, **not** client receipt. On a cold agent `agent_init_ms`
 includes WASM restore/startup and the persistent Responses socket preconnect;
@@ -95,7 +101,8 @@ it cannot separate them from this public Agent boundary. A warm turn can reuse
 that socket without a new Egress fetch. Client-to-server residuals include
 network, edge dispatch, and Worker activation, not just platform startup.
 
-`managed2.model_route`, `managed2.agent_ready`, `managed2.turn_first_delta`,
+`managed2.model_route`, `managed2.agent_ready`, `managed2.model_send`,
+`managed2.first_provider_event`, `managed2.turn_first_delta`,
 `managed2.turn_first_answer_delta`, and `managed2.turn_result` share the trace
 ID. The initial model-route log is a socket **preconnect**, not a per-turn
 model request. Egress2 logs the same validated trace ID, its own relay request
@@ -103,9 +110,10 @@ ID, credential cache/lookup, upstream handshake, and one 401 recovery/retry
 when applicable. The account-owned `ChatGptEgress` log links that relay request
 ID to its locally generated relay ID; the relay-container log reports DNS,
 TCP, TLS and upstream upgrade timings for the same relay ID. Egress `101`
-timing exists in logs, not headers. Egress header time ends at WebSocket
-handshake or HTTP response headers; none of these spans isolate model inference
-or first upstream token/frame on an already-open socket. Do not subtract an
+timing exists in logs, not headers. Egress header time ends at WebSocket handshake or HTTP response headers.
+The new per-turn send/first-inbound-event spans separate local turn preparation
+from upstream wait but still do **not** isolate provider inference, queueing,
+network, or raw first-frame transit within that upstream interval. Do not subtract an
 Egress preconnect span from a warm turn or claim these spans are all additive.
 
 No log contains keys, owner/account IDs, prompts, message text, upstream

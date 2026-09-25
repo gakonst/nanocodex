@@ -147,7 +147,8 @@ export class Session extends DurableObject<Env> {
     )`);
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS turn_timing (
       id TEXT PRIMARY KEY, trace_id TEXT NOT NULL, started_at INTEGER NOT NULL,
-      agent_init_ms REAL, accepted_ms INTEGER, first_delta_ms INTEGER,
+      agent_init_ms REAL, accepted_ms INTEGER, model_send_ms INTEGER,
+      first_provider_event_ms INTEGER, first_delta_ms INTEGER,
       first_answer_delta_ms INTEGER, result_ms INTEGER
     )`);
     this.#constructorMs = performance.now() - constructorStart;
@@ -192,6 +193,8 @@ export class Session extends DurableObject<Env> {
       return turn ? reply(200, { turn_id: turnId, state: turn.state,
         ...(timing ? { timing: { trace_id: timing.trace_id,
           agent_init_ms: timing.agent_init_ms, accepted_ms: timing.accepted_ms,
+          model_send_ms: timing.model_send_ms,
+          first_provider_event_ms: timing.first_provider_event_ms,
           first_delta_ms: timing.first_delta_ms,
           first_answer_delta_ms: timing.first_answer_delta_ms, result_ms: timing.result_ms } } : {}),
         ...(turn.message === null ? {} : { message: turn.message }),
@@ -241,7 +244,8 @@ export class Session extends DurableObject<Env> {
       `INSERT INTO turn_timing (id, trace_id, started_at) VALUES (?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET trace_id = excluded.trace_id,
        started_at = excluded.started_at, agent_init_ms = NULL,
-       accepted_ms = NULL, first_delta_ms = NULL,
+       accepted_ms = NULL, model_send_ms = NULL,
+       first_provider_event_ms = NULL, first_delta_ms = NULL,
        first_answer_delta_ms = NULL, result_ms = NULL`,
       turnId, trace, Date.now(),
     );
@@ -295,9 +299,24 @@ export class Session extends DurableObject<Env> {
   #timing(id: string) {
     return this.ctx.storage.sql.exec<{ trace_id: string; started_at: number;
       agent_init_ms: number | null; accepted_ms: number | null;
+      model_send_ms: number | null; first_provider_event_ms: number | null;
       first_delta_ms: number | null; first_answer_delta_ms: number | null; result_ms: number | null }>(
-      "SELECT trace_id, started_at, agent_init_ms, accepted_ms, first_delta_ms, first_answer_delta_ms, result_ms FROM turn_timing WHERE id = ?", id,
+      "SELECT trace_id, started_at, agent_init_ms, accepted_ms, model_send_ms, first_provider_event_ms, first_delta_ms, first_answer_delta_ms, result_ms FROM turn_timing WHERE id = ?", id,
     ).toArray()[0];
+  }
+
+  #modelSent(): void {
+    // The existing transport observer runs after response.create was sent.
+    // When turns overlap, attribution is ambiguous and stays null instead.
+    if (this.#activeTraces.size !== 1) return;
+    const external = this.#activeTraces.keys().next().value!;
+    const timing = this.#timing(external);
+    if (!timing || timing.model_send_ms !== null) return;
+    const elapsed = Math.max(0, Date.now() - timing.started_at);
+    this.ctx.storage.sql.exec(
+      "UPDATE turn_timing SET model_send_ms = ? WHERE id = ? AND model_send_ms IS NULL", elapsed, external,
+    );
+    console.info({ event: "managed2.model_send", trace_id: timing.trace_id, model_send_ms: elapsed });
   }
 
   #observeEvent(event: { type: string; payload: Record<string, unknown> }): void {
@@ -309,14 +328,25 @@ export class Session extends DurableObject<Env> {
       }
       return;
     }
-    if (event.type !== "assistant.delta"
-      || typeof event.payload.text !== "string" || !event.payload.text) return;
     const internal = event.payload.turn_id;
     const external = typeof internal === "string" ? this.#eventTurns.get(internal) : undefined;
     if (!external) return;
     const timing = this.#timing(external);
     if (!timing) return;
     const elapsed = Math.max(0, Date.now() - timing.started_at);
+    if (event.type === "api.event" && event.payload.direction === "inbound") {
+      if (timing.first_provider_event_ms === null) {
+        this.ctx.storage.sql.exec(
+          "UPDATE turn_timing SET first_provider_event_ms = ? WHERE id = ? AND first_provider_event_ms IS NULL",
+          elapsed, external,
+        );
+        console.info({ event: "managed2.first_provider_event", trace_id: timing.trace_id,
+          first_provider_event_ms: elapsed });
+      }
+      return;
+    }
+    if (event.type !== "assistant.delta"
+      || typeof event.payload.text !== "string" || !event.payload.text) return;
     if (timing.first_delta_ms === null) {
       this.ctx.storage.sql.exec(
         "UPDATE turn_timing SET first_delta_ms = ? WHERE id = ? AND first_delta_ms IS NULL", elapsed, external,
@@ -354,6 +384,7 @@ export class Session extends DurableObject<Env> {
         ? { waitForPreconnect: true }
         : { inferenceForSession: () => ({ model: "gpt-6-sol", thinking: "low" }) }),
       subagentsEnabled: false,
+      onResponseCreateSent: () => this.#modelSent(),
     } });
     return this.#agent = Agent.create({ ctx: this.ctx, env: { NANOCODEX: {
       fetch: (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -436,6 +467,8 @@ export class Session extends DurableObject<Env> {
           const observed = this.#timing(id);
           console.info({ event: "managed2.turn_result", trace_id: timing.trace_id,
             outcome: result ? "completed" : "failed", result_ms: resultMs,
+            model_send_ms: observed?.model_send_ms ?? null,
+            first_provider_event_ms: observed?.first_provider_event_ms ?? null,
             first_delta_ms: observed?.first_delta_ms ?? null,
             first_answer_delta_ms: observed?.first_answer_delta_ms ?? null,
             accepted_ms: observed?.accepted_ms ?? null });

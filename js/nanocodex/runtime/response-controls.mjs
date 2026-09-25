@@ -1,18 +1,21 @@
 /** Apply stable managed response policy at the provider wire boundary, including replay. */
-export function responseControlsSocket(socket, controls = {}, onRequestShape) {
+export function responseControlsSocket(socket, controls = {}, onRequestShape, onResponseCreateSent) {
   validateResponseControls(controls);
   if (onRequestShape !== undefined && typeof onRequestShape !== "function") {
     throw new TypeError("request shape observer must be a function");
   }
+  if (onResponseCreateSent !== undefined && typeof onResponseCreateSent !== "function") {
+    throw new TypeError("response.create sent observer must be a function");
+  }
   const controlled = hasResponseControls(controls);
-  if (!controlled && onRequestShape === undefined) return socket;
+  if (!controlled && onRequestShape === undefined && onResponseCreateSent === undefined) return socket;
   let remainingObservations = 32;
   return new Proxy({}, {
     get(_target, property) {
       const target = socket;
       if (property === "send") return (data, ...args) => {
         let body;
-        if (typeof data === "string" && (controlled || remainingObservations > 0)) {
+        if (typeof data === "string" && (controlled || (onRequestShape !== undefined && remainingObservations > 0) || onResponseCreateSent !== undefined)) {
           // Reuse the policy parse. Observation alone never rejects an opaque frame.
           if (controlled) body = JSON.parse(data);
           else { try { body = JSON.parse(data); } catch { /* Pass through unchanged. */ } }
@@ -21,6 +24,14 @@ export function responseControlsSocket(socket, controls = {}, onRequestShape) {
           if (controlled) applyResponseControls(body, controls);
           const encoded = controlled ? JSON.stringify(body) : data;
           const result = target.send(encoded, ...args);
+          if (onResponseCreateSent !== undefined) {
+            // Every model request, not the bounded shape-sampling subset. The
+            // callback receives no request body, ID, headers, or credentials.
+            try {
+              const observation = onResponseCreateSent();
+              if (observation?.then) void Promise.resolve(observation).catch(() => {});
+            } catch { /* Passive timing cannot change transport success. */ }
+          }
           if (onRequestShape !== undefined && remainingObservations > 0) {
             remainingObservations -= 1;
             // Send first; diagnostics retain only fixed enums, booleans and counts.

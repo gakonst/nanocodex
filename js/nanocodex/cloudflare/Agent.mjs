@@ -368,6 +368,10 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
     && typeof internalRuntime.onSocketTiming !== "function") {
     throw new TypeError("Cloudflare Agent socket timing hook must be a function");
   }
+  if (internalRuntime?.onResponseCreateSent !== undefined
+    && typeof internalRuntime.onResponseCreateSent !== "function") {
+    throw new TypeError("Cloudflare Agent response.create sent hook must be a function");
+  }
   if (internalRuntime?.onRequestShape !== undefined
     && typeof internalRuntime.onRequestShape !== "function") {
     throw new TypeError("Cloudflare Agent request shape hook must be a function");
@@ -500,7 +504,7 @@ async function createOwned(module, resolved, options, hostAgent, lifecycle, prep
         const opened = await (preparation === undefined
           ? endpoint.createWebSocket(url, id, request) : preparation.take(url, id, request));
         if (request.authorization === "preconnect") startup.resolve();
-        return { ...opened, socket: responseControlsSocket(opened.socket, internalRuntime?.responseControls, internalRuntime?.onRequestShape) };
+        return { ...opened, socket: responseControlsSocket(opened.socket, internalRuntime?.responseControls, internalRuntime?.onRequestShape, internalRuntime?.onResponseCreateSent) };
       } catch (error) {
         if (request.authorization === "preconnect") startup.reject(error);
         throw error;
