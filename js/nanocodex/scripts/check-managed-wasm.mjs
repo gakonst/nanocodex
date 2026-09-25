@@ -80,6 +80,8 @@ export async function verifyManagedWasmArtifact(revision, {
   const wasm = await readFile(new URL("nanocodex_bg.wasm", directory));
   const glue = await import(new URL(`nanocodex.js?attestation=${artifacts["nanocodex.js"]}`, directory));
   await glue.default({ module_or_path: wasm });
+  assert.equal(glue.nativeSpawnContractVersion?.(), 1,
+    "managed WASM must support the host native child-route contract");
   await assert.rejects(
     glue.Nanocodex.create(JSON.stringify({
       api_key: "production-abi-check",
