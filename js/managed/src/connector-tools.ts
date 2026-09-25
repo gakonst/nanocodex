@@ -24,7 +24,7 @@ export const CONNECTOR_TOOL_CATALOG = {
     docs: "https://developers.google.com/workspace/gmail/api/reference/rest",
     operations: "GET /gmail/v1/users/me/messages?q=QUERY; GET /gmail/v1/users/me/messages/MESSAGE_ID; POST /gmail/v1/users/me/messages/send with {raw: base64url-encoded MIME}.",
     origin: "https://gmail.googleapis.com",
-    summary: "Gmail search, read messages and threads, labels, drafts and send email.",
+    summary: "Gmail search, read messages and threads, labels, drafts, send email, and filters. Filter writes require gmail.settings.basic in the connection scopes; reconnect Google and grant that permission if missing.",
     example: "/gmail/v1/users/me/messages?maxResults=20",
   },
   gdrive: {

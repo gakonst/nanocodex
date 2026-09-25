@@ -26,6 +26,7 @@ export type ConnectorConnection = Readonly<{
   label: string;
   account_id?: string;
   capabilities?: readonly ConnectorCapability[];
+  scopes?: readonly string[];
 }>;
 export type ConnectorStatus = Readonly<{
   connected: boolean;
@@ -428,11 +429,16 @@ function publicConnectorConnection(value: unknown): ConnectorConnection {
     }
     capabilities = Object.freeze([...value.capabilities]);
   }
+  if (value.scopes !== undefined && (!Array.isArray(value.scopes) || value.scopes.length > 64
+    || value.scopes.some((scope) => typeof scope !== "string" || scope.length === 0
+      || scope.length > 512 || /\s/.test(scope))
+    || new Set(value.scopes).size !== value.scopes.length)) invalidBrokerMetadata();
   return Object.freeze({
     id: value.id,
     label,
     ...(accountId ? { account_id: accountId } : {}),
     ...(capabilities ? { capabilities } : {}),
+    ...(value.scopes === undefined ? {} : { scopes: Object.freeze([...value.scopes as string[]]) }),
   });
 }
 

@@ -332,6 +332,10 @@ export default defineConfig({
               if (body.get("refresh_token") === "gmail-revoked-refresh") {
                 return Response.json({ error: "invalid_grant" }, { status: 400 });
               }
+              if (body.get("refresh_token") === "google-reduced-refresh") {
+                return Response.json({ access_token: "gmail-refreshed-access", expires_in: 3_600,
+                  token_type: "Bearer", scope: "openid email https://mail.google.com/" });
+              }
               const drive = body.get("refresh_token") === "gdrive-connector-refresh";
               return Response.json({
                 access_token: drive ? "gdrive-refreshed-access" : "gmail-refreshed-access",
@@ -340,6 +344,16 @@ export default defineConfig({
               });
             }
             const code = String(body.get("code") ?? "");
+            if (code.startsWith("google-scope-")) {
+              return Response.json({
+                access_token: "google-alpha-access",
+                ...(code.includes("omit") ? {} : { refresh_token: code.includes("reduced")
+                  ? "google-reduced-refresh" : "google-alpha-refresh" }),
+                expires_in: code.includes("expiring") ? 1 : 3_600,
+                token_type: "Bearer",
+                scope: "openid email https://mail.google.com/ https://www.googleapis.com/auth/gmail.settings.basic arbitrary-provider-value",
+              });
+            }
             if (code.startsWith("google-")) {
               const account = code.includes("routes") ? "routes"
                 : code.includes("beta") ? "beta" : "alpha";

@@ -96,6 +96,8 @@ export function connectorConnectionsForCapabilities(statuses, capabilities) {
           ? { account_id: current?.account_id ?? connection.account_id }
           : {}),
         capabilities: Object.freeze(connectorCapabilityIds.filter((id) => granted.has(id))),
+        ...((connection.scopes ?? current?.scopes) === undefined
+          ? {} : { scopes: connection.scopes ?? current.scopes }),
       }));
     }
   }
@@ -155,6 +157,10 @@ function decodeStatus(value, capability) {
     || Object.keys(value).some((key) => !["connected", "connections", "accounts", "account_id", "connection_id", "label"].includes(key))
     || typeof value.connected !== "boolean"
     || (value.account_id !== undefined && !shortText(value.account_id))
+    || (value.scopes !== undefined && (!Array.isArray(value.scopes) || value.scopes.length > 64
+      || value.scopes.some((scope) => typeof scope !== "string" || scope.length === 0
+        || scope.length > 512 || /\s/.test(scope))
+      || new Set(value.scopes).size !== value.scopes.length))
     || (value.connection_id !== undefined && (typeof value.connection_id !== "string" || !connectionId.test(value.connection_id)))
     || (value.label !== undefined && !displayLabel(value.label))
     || (value.connections !== undefined && (!Array.isArray(value.connections)
@@ -204,10 +210,14 @@ function decodeAccounts(value) {
 
 function decodeConnection(value, capability) {
   if (!isRecord(value)
-    || Object.keys(value).some((key) => !["id", "label", "account_id", "capabilities"].includes(key))
+    || Object.keys(value).some((key) => !["id", "label", "account_id", "capabilities", "scopes"].includes(key))
     || typeof value.id !== "string" || !connectionId.test(value.id)
     || !displayLabel(value.label)
     || (value.account_id !== undefined && !shortText(value.account_id))
+    || (value.scopes !== undefined && (!Array.isArray(value.scopes) || value.scopes.length > 64
+      || value.scopes.some((scope) => typeof scope !== "string" || scope.length === 0
+        || scope.length > 512 || /\s/.test(scope))
+      || new Set(value.scopes).size !== value.scopes.length))
     || (value.capabilities !== undefined && (!Array.isArray(value.capabilities)
       || value.capabilities.length > connectorCapabilityIds.length
       || value.capabilities.some((item) => typeof item !== "string" || !capabilityIds.has(item))
@@ -221,6 +231,7 @@ function decodeConnection(value, capability) {
     label: value.label.trim(),
     ...(value.account_id === undefined ? {} : { account_id: value.account_id.trim() }),
     capabilities: Object.freeze([...capabilities]),
+    ...(value.scopes === undefined ? {} : { scopes: Object.freeze([...value.scopes]) }),
   });
 }
 

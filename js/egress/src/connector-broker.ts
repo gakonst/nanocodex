@@ -30,6 +30,7 @@ import {
   decodeGoogleIdentity,
   decodeGoogleTokenResponse,
   googleCapabilities,
+  GOOGLE_PROVIDER,
   type GoogleCapabilityId,
 } from "./connectors/google";
 import { canonicalConnectorPath } from "./connector-path";
@@ -930,6 +931,9 @@ export class UserConnectorBroker extends DurableObject<ConnectorBrokerEnv> {
           label: connector.label,
           account_id: connector.accountId,
           capabilities: capabilitiesFor(provider, connector.scopes),
+          ...(provider === "google" ? {
+            scopes: GOOGLE_PROVIDER.scopes.filter((scope) => connector.scopes.includes(scope)),
+          } : {}),
         }));
       return { connected: connections.length > 0, connections };
     };

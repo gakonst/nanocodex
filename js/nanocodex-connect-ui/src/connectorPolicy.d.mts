@@ -21,6 +21,7 @@ export type ConnectorConnection = Readonly<{
   label: string;
   account_id?: string | undefined;
   capabilities: readonly ConnectorCapability[];
+  scopes?: readonly string[] | undefined;
 }>;
 
 export type ConnectorAccountStatus = Readonly<{

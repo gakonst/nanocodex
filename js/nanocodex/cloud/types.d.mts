@@ -22,6 +22,7 @@ export type ConnectorConnection = Readonly<{
   label: string;
   accountId?: string | undefined;
   capabilities?: readonly CloudAccount[] | undefined;
+  scopes?: readonly string[] | undefined;
 }>;
 
 /** Provider-neutral status for a connector service capability. */

@@ -183,3 +183,25 @@ test("account status metadata remains bounded and rejects credentials or malform
     [{ ...valid, limited_until: 1.5 }], [{ ...valid, token: "secret" }],
   ]) assert.throws(() => connectorStatusesFromWire({ chatgpt: { connected: true, accounts } }), /invalid connector statuses/);
 });
+
+// The broker projection must survive both public API and UI boundaries.
+test("scope diagnostics survive the public status and Google identity merge", () => {
+  const scopes = ["openid", "https://mail.google.com/"];
+  const wire = publicConnectorStatus({ connected: true, connections: [{
+    id: GOOGLE_ID, label: "person@example.test", capabilities: ["gmail"], scopes,
+    access_token: "secret",
+  }] });
+  const statuses = connectorStatusesFromWire({ gmail: wire });
+  const [connection] = connectorConnectionsForCapabilities(statuses, ["gmail"]);
+  assert.deepEqual(connection.scopes, scopes);
+  assert.equal(statuses.gmail.connected, true);
+  assert.equal(JSON.stringify(connection).includes("secret"), false);
+  for (const invalid of ["openid", [42], Array(65).fill("openid")]) {
+    assert.throws(() => publicConnectorStatus({ connected: true, connections: [{
+      id: GOOGLE_ID, label: "person@example.test", scopes: invalid,
+    }] }));
+    assert.throws(() => connectorStatusesFromWire({ gmail: { connected: true, connections: [{
+      id: GOOGLE_ID, label: "person@example.test", scopes: invalid,
+    }] } }));
+  }
+});
