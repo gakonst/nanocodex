@@ -906,6 +906,45 @@ export async function attachAgent(
   );
 }
 
+/**
+ * A speculative ingress hint. It is deliberately absent from agent_registry:
+ * account discovery must never see an agent before Session commits ownership.
+ * A lost/late hint does not authorize publication; only Session calls publish.
+ */
+export async function prepareAgentRegistration(
+  env: AccountAuthEnv, userId: string, agentId: string,
+  timeoutMs = DEFAULT_OWNERSHIP_IO_TIMEOUT_MS,
+): Promise<void> {
+  await fetchResponseWithDeadline(
+    env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)),
+    `https://user.internal/agents/${agentId}/prepare`,
+    { method: "POST" }, timeoutMs, "agent registration preparation",
+    (response) => { if (!response.ok) throw new Error(`agent registration preparation failed: ${response.status}`); },
+  );
+}
+
+/** Publication is idempotent, including when the speculative hint is lost or late. */
+export async function publishAgentRegistration(
+  env: AccountAuthEnv, userId: string, agentId: string,
+  timeoutMs = DEFAULT_OWNERSHIP_IO_TIMEOUT_MS, hasCronTriggers?: boolean,
+): Promise<void> {
+  const result = await fetchResponseWithDeadline(
+    env.NANOCODEX_USERS.getByName(userId, durablePlacementOptions(env.trustedClientIngressColo)),
+    `https://user.internal/agents/${agentId}/publish`,
+    { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ hasCronTriggers }) },
+    timeoutMs, "agent registration publication",
+    (response) => {
+      // During a rolling deployment an old account DO may not have /publish
+      // yet. Legacy attachment still runs only after Session's durable commit;
+      // unlike speculative prepare it cannot expose an uninitialized agent.
+      if (response.status === 404) return "legacy" as const;
+      if (!response.ok) throw new Error(`agent registration publication failed: ${response.status}`);
+      return "published" as const;
+    },
+  );
+  if (result === "legacy") await attachAgent(env, userId, agentId, timeoutMs, hasCronTriggers);
+}
+
 /** Presence is monotonic: a late empty read cannot hide a concurrently saved cron. */
 export async function recordAgentCronPresence(
   env: AccountAuthEnv,
@@ -1716,6 +1755,11 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
       CREATE INDEX IF NOT EXISTS agent_registry_active_created
         ON agent_registry (created_at, id) WHERE deleted_at IS NULL;
     `);
+    // Separate storage makes pending entries invisible to every existing account
+    // discovery path, not merely to the GET /agents projection.
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS agent_registry_pending (
+      id TEXT PRIMARY KEY, expires_at INTEGER NOT NULL
+    )`);
     retireAccountProjects(ctx.storage);
     // Existing agents stay candidates until their first schedule read. New
     // registrations supply their actual presence; omitted legacy values stay unknown.
@@ -1724,6 +1768,14 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
     if (!columns.has("cron_candidate")) {
       ctx.storage.sql.exec("ALTER TABLE agent_registry ADD COLUMN cron_candidate INTEGER CHECK (cron_candidate IN (0, 1))");
     }
+  }
+
+  async alarm(): Promise<void> {
+    this.ctx.storage.sql.exec("DELETE FROM agent_registry_pending WHERE expires_at <= ?", Date.now());
+    const next = this.ctx.storage.sql.exec<{ expires_at: number }>(
+      "SELECT MIN(expires_at) AS expires_at FROM agent_registry_pending",
+    ).toArray()[0]?.expires_at;
+    if (next !== null && next !== undefined) await this.ctx.storage.setAlarm(next);
   }
 
   // Live storage read in a single RPC reply, without a streamed HTTP body.
@@ -1823,6 +1875,54 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
         await this.ctx.storage.put("apiKeys", keys);
         return new Response(null, { status: 204 });
       }
+    }
+    const preparation = url.pathname.match(/^\/agents\/([0-9a-f-]{36})\/prepare$/);
+    if (preparation && request.method === "POST") {
+      const agentId = preparation[1]!;
+      const existing = this.ctx.storage.sql.exec<{ deleted_at: number | null }>(
+        "SELECT deleted_at FROM agent_registry WHERE id = ?", agentId,
+      ).toArray()[0];
+      if (existing && existing.deleted_at !== null) return json({ error: "agent_deleted" }, { status: 410 });
+      if (!existing) {
+        const expiresAt = Date.now() + 5 * 60_000;
+        this.ctx.storage.sql.exec(
+          `INSERT INTO agent_registry_pending (id, expires_at) VALUES (?, ?)
+           ON CONFLICT(id) DO UPDATE SET expires_at = MAX(expires_at, excluded.expires_at)`,
+          agentId, expiresAt,
+        );
+        const alarm = await this.ctx.storage.getAlarm();
+        if (alarm === null || alarm > expiresAt) await this.ctx.storage.setAlarm(expiresAt);
+      }
+      return new Response(null, { status: 204 });
+    }
+    const publication = url.pathname.match(/^\/agents\/([0-9a-f-]{36})\/publish$/);
+    if (publication && request.method === "POST") {
+      const agentId = publication[1]!;
+      const body = await request.json<{ hasCronTriggers?: unknown }>();
+      if (body.hasCronTriggers !== undefined && typeof body.hasCronTriggers !== "boolean") {
+        return json({ error: "invalid_agent" }, { status: 400 });
+      }
+      // Do not depend on the hint arriving first: a lost ingress response,
+      // cold account activation or a replay may reorder the two RPCs.
+      // The registry row/tombstone is the one authoritative publication fence.
+      this.ctx.storage.transactionSync(() => {
+        const now = Date.now();
+        this.ctx.storage.sql.exec(
+          `INSERT INTO agent_registry
+             (id, title, created_at, updated_at, turn_count, deleted_at, cron_candidate)
+           VALUES (?, '', ?, ?, 0, NULL, ?)
+           ON CONFLICT(id) DO UPDATE SET
+             cron_candidate = CASE WHEN agent_registry.deleted_at IS NULL AND excluded.cron_candidate = 1
+               THEN 1 ELSE agent_registry.cron_candidate END`,
+          agentId, now, now, typeof body.hasCronTriggers === "boolean" ? Number(body.hasCronTriggers) : null,
+        );
+        this.ctx.storage.sql.exec("DELETE FROM agent_registry_pending WHERE id = ?", agentId);
+      });
+      const row = this.ctx.storage.sql.exec<{ deleted_at: number | null }>(
+        "SELECT deleted_at FROM agent_registry WHERE id = ?", agentId,
+      ).toArray()[0];
+      return row?.deleted_at === null ? new Response(null, { status: 204 })
+        : json({ error: "agent_deleted" }, { status: 410 });
     }
     if (url.pathname === "/agents") {
       if (request.method === "GET") {
@@ -1935,6 +2035,7 @@ export class UserAccount extends DurableObject<AccountAuthEnv> {
         now,
         now,
       );
+      this.ctx.storage.sql.exec("DELETE FROM agent_registry_pending WHERE id = ?", agentId);
       return new Response(null, { status: 204 });
     }
     return json({ error: "not_found" }, { status: 404 });

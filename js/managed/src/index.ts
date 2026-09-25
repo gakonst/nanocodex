@@ -271,6 +271,8 @@ import {
 import { routeConnectorRequest } from "./connectors";
 import {
   attachAgent,
+  prepareAgentRegistration,
+  publishAgentRegistration,
   authenticate,
   detachAgent,
   forwardPrincipalAssertions,
@@ -2012,6 +2014,13 @@ async function managedFetchRoute(
       const stub = env.NANOCODEX_SESSIONS.getByName(agentId, durablePlacementOptions(clientIngressColo));
       const ownershipTimeoutMs = managedOwnershipTimeoutMs(env);
       if (durabilityArchive === undefined) {
+        // This untrusted, invisible account hint starts before Session cold
+        // activation; Session alone performs the later publication commit.
+        // Keep the work alive beyond an ingress timeout and consume failures:
+        // publication remains correct even if this speculative RPC fails.
+        const registrationPreparation = prepareAgentRegistration(env, principal.userId, agentId, ownershipTimeoutMs)
+          .catch((error) => console.warn({ type: "managed.agent_registration_prepare_failed", error_kind: errorKind(error) }));
+        ctx.waitUntil(registrationPreparation);
         let created: Response;
         const sessionCreationStartedAt = performance.now();
         let sessionDispatchAt = Date.now();
@@ -4602,6 +4611,7 @@ export class DurableAgentSession extends DurableComputerObject {
   async #commitPreparedCredential(
     freshDirectCreate = false,
     timing?: { attach_ms?: number; activate_ms?: number; alarm_ms?: number },
+    preparedRegistry = false,
   ): Promise<Response> {
     if (this.#deleting || this.#deleted) return new Response(null, { status: 409 });
     if (this.#durabilityImportState === "pending") return new Response(null, { status: 409 });
@@ -4621,7 +4631,7 @@ export class DurableAgentSession extends DurableComputerObject {
     }
     const attachStartedAt = performance.now();
     try {
-      await this.#track(attachAgent(
+      await this.#track((preparedRegistry ? publishAgentRegistration : attachAgent)(
         this.env,
         ownership.owner_id,
         ownership.session_id,
@@ -4746,7 +4756,7 @@ export class DurableAgentSession extends DurableComputerObject {
     if (initialized.status === "rejected" || !initialized.value.ok) return json({ error: "agent initialization failed" }, { status: 503 });
     const initializedAt = performance.now();
     const commitTiming: { attach_ms?: number; activate_ms?: number; alarm_ms?: number } = {};
-    const committed = await this.#commitPreparedCredential(directCredential, commitTiming);
+    const committed = await this.#commitPreparedCredential(directCredential, commitTiming, true);
     if (!committed.ok) return json({ error: "agent cleanup commit failed" }, { status: 503 });
     return json({
       prepare_ms: roundMilliseconds(preparedAt - started),
