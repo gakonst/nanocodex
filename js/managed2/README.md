@@ -91,7 +91,15 @@ milliseconds since admission started for `accepted_ms`, `model_send_ms`,
 `result_ms`. The tool increment also records `first_model_call_ms`,
 `first_tool_call_ms`, `first_tool_result_ms`, `post_tool_model_call_ms`,
 `post_tool_model_send_ms` (WebSocket only), `tool_calls`, and total
-`tool_duration_ms`. The model-call timestamps are logical Agent events, not
+`tool_duration_ms`. Each durable turn status also contains a `tool_timing` array
+with one content-free row per call: call ID, name, start wall-clock and elapsed
+turn time, result time/status, Rust-measured duration, and named handler phases
+with their measured durations and invocation counts. It never stores arguments
+or results. `managed2.tool_call` and `managed2.tool_result` logs carry the same
+trace ID and call ID to correlate a particular call without logging its input.
+A tool can record phases such as VFS hydrate, interpreter setup, execution,
+persist/flush, upstream dispatch, and result parsing. Missing phases are
+unknown, not zero. The model-call timestamps are logical Agent events, not
 wire-send observations. The post-tool send distinguishes local tool execution
 from the second provider round trip; null means unobserved, not zero.
 

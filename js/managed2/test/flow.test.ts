@@ -29,12 +29,13 @@ it("admits a turn through API-key auth and the standard WASM Session DO", async 
   }, { timeout: 10_000 }).toMatchObject({ state: "completed", message: "hello from test model" });
   const timingResponse = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${turn_id}`, { headers: { authorization } });
   const observed = await timingResponse.json<{ timing: { trace_id: string; agent_init_ms: number;
-    accepted_ms: number; first_delta_ms: number; first_answer_delta_ms: number | null; result_ms: number } }>();
+    accepted_ms: number; first_delta_ms: number; first_answer_delta_ms: number | null; result_ms: number }; tool_timing: unknown[] }>();
   expect(observed.timing.trace_id).toMatch(/^[0-9a-f-]{36}$/);
   expect(observed.timing.agent_init_ms).toBeGreaterThanOrEqual(0);
   expect(observed.timing.first_delta_ms).toBeGreaterThanOrEqual(observed.timing.accepted_ms);
   expect(observed.timing.result_ms).toBeGreaterThanOrEqual(observed.timing.first_delta_ms);
   expect(observed.timing.first_answer_delta_ms).toBeNull(); // Synthetic fixture has no final_answer phase.
+  expect(observed.tool_timing).toEqual([]);
   const repeat = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns`, {
     method: "POST", headers: { authorization, "idempotency-key": key },
     body: JSON.stringify({ input: "Say hello" }),
@@ -192,7 +193,10 @@ it("completes a real model-tool-model turn and reports separate tool and continu
   });
   expect(created.status).toBe(202);
   const { agent_id, turn_id } = await created.json<{ agent_id: string; turn_id: string }>();
-  let status: { state: string; message?: string; timing: Record<string, number | null> } | undefined;
+  let status: { state: string; message?: string; timing: Record<string, number | null>;
+    tool_timing: { call_id: string; tool: string; started_at: number; started_ms: number;
+      result_ms: number; duration_ms: number; status: string;
+      phases: Record<string, { duration_ms: number; count: number }> }[] } | undefined;
   await expect.poll(async () => {
     const response = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${turn_id}`, { headers: { authorization } });
     status = await response.json<typeof status>();
@@ -205,6 +209,18 @@ it("completes a real model-tool-model turn and reports separate tool and continu
   expect(status!.timing.post_tool_model_call_ms).toBeGreaterThanOrEqual(status!.timing.first_tool_result_ms!);
   expect(status!.timing.result_ms).toBeGreaterThanOrEqual(status!.timing.post_tool_model_call_ms!);
   expect(status!.timing.tool_duration_ms).toBeGreaterThanOrEqual(0);
+  expect(status!.tool_timing).toHaveLength(1);
+  const observedTool = status!.tool_timing[0]!;
+  expect(observedTool.tool).toBe("current_time");
+  expect(observedTool.started_at).toBeGreaterThan(0);
+  expect(observedTool.started_ms).toBeGreaterThanOrEqual(status!.timing.first_model_call_ms!);
+  expect(observedTool.result_ms).toBeGreaterThanOrEqual(observedTool.started_ms);
+  expect(observedTool.status).toBe("completed");
+  expect(observedTool.duration_ms).toBeGreaterThanOrEqual(0);
+  expect(observedTool.phases.handler.count).toBe(1);
+  expect(observedTool.phases.handler.duration_ms).toBeGreaterThanOrEqual(0);
+  expect(JSON.stringify(status!.tool_timing)).not.toContain("Use current_time");
+  expect(JSON.stringify(status!.tool_timing)).not.toContain("Current UTC:");
   const events = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/events?cursor=0`, {
     headers: { authorization, upgrade: "websocket" },
   });

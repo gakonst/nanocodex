@@ -134,6 +134,15 @@ async function main() {
     if (t.first_answer_delta_ms !== null && t.first_provider_event_ms !== null)
       console.log(`  Provider event → final text: ${ms(t.first_answer_delta_ms - t.first_provider_event_ms)}`);
   }
+  if (turn.tool_timing?.length) {
+    console.log('Per-tool timeline (server):');
+    for (const call of turn.tool_timing) {
+      console.log(`  ${call.tool} [${call.call_id}]: started ${call.started_ms ?? 'unobserved'} ms; `
+        + `result ${call.result_ms ?? 'unobserved'} ms; duration ${call.duration_ms?.toFixed(2) ?? 'unobserved'} ms; ${call.status ?? 'pending'}`);
+      for (const [phase, observed] of Object.entries(call.phases ?? {}))
+        console.log(`    ${phase}: ${observed.duration_ms.toFixed(2)} ms (${observed.count}x)`);
+    }
+  }
   if (stream.reply && stream.reply !== turn.message) throw new Error('Replayed text differs from the saved final reply');
 }
 
