@@ -60,7 +60,7 @@ struct StartLockedVoiceIntent: AudioRecordingIntent, LiveActivityIntent {
 }
 
 struct FinishLockedVoiceIntent: AudioRecordingIntent, LiveActivityIntent {
-    static var title: LocalizedStringResource = "Finish voice task"
+    static var title: LocalizedStringResource = "Stop recording"
     static var openAppWhenRun = false
     static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
     @available(iOS 26.0, *)
@@ -73,25 +73,6 @@ struct FinishLockedVoiceIntent: AudioRecordingIntent, LiveActivityIntent {
         throw LockedVoiceIntentError.appProcessRequired
         #else
         try await LockedVoiceCoordinator.shared.finish(captureID: captureID)
-        #endif
-        return .result()
-    }
-}
-
-struct CancelLockedVoiceIntent: AudioRecordingIntent, LiveActivityIntent {
-    static var title: LocalizedStringResource = "Cancel voice task"
-    static var openAppWhenRun = false
-    static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
-    @available(iOS 26.0, *)
-    static var supportedModes: IntentModes { .background }
-    @Parameter(title: "Recording") var captureID: String
-    init() {}
-    init(captureID: String) { self.captureID = captureID }
-    @MainActor func perform() async throws -> some IntentResult {
-        #if NANOCODEX_WIDGET_EXTENSION
-        throw LockedVoiceIntentError.appProcessRequired
-        #else
-        try await LockedVoiceCoordinator.shared.cancel(captureID: captureID)
         #endif
         return .result()
     }

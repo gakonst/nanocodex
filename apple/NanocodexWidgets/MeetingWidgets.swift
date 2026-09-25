@@ -49,27 +49,18 @@ struct MeetingLockedActivityWidget: Widget {
     @ViewBuilder private func actions(_ context: ActivityViewContext<MeetingLockedActivityAttributes>) -> some View {
         if !context.isStale {
             if context.state.phase == "listening" {
-                HStack {
-                    Button(intent: DiscardMeetingLockedIntent(captureID: context.attributes.captureID)) {
-                        Image(systemName: "xmark").accessibilityLabel("Cancel meeting")
-                    }
-                    Button(intent: FinishMeetingLockedIntent(captureID: context.attributes.captureID)) {
-                        Label("Finish & Send", systemImage: "arrow.up")
-                    }
-                }.buttonStyle(.bordered)
+                Button(intent: FinishMeetingLockedIntent(captureID: context.attributes.captureID)) {
+                    ZStack {
+                        Circle().fill(.white)
+                        Circle().stroke(.red, lineWidth: 2)
+                        RoundedRectangle(cornerRadius: 3).fill(.red).frame(width: 19, height: 19)
+                    }.frame(width: 52, height: 52)
+                }.buttonStyle(.plain)
+                    .accessibilityLabel("Stop Recording")
+                    .accessibilityHint("Stops the meeting recording and starts an agent with its transcript")
             } else if context.state.phase == "ready" {
-                HStack {
-                    Button(intent: DiscardMeetingLockedIntent(captureID: context.attributes.captureID)) {
-                        Image(systemName: "trash").accessibilityLabel("Discard meeting")
-                    }
-                    Button(intent: SendMeetingLockedIntent(captureID: context.attributes.captureID)) {
-                        Label("Send", systemImage: "arrow.up")
-                    }
-                }.buttonStyle(.bordered)
-            } else if context.state.phase == "failed" {
-                Button(intent: DiscardMeetingLockedIntent(captureID: context.attributes.captureID)) {
-                    Label("Dismiss", systemImage: "xmark")
-                }.buttonStyle(.bordered)
+                Button("Retry starting agent", intent: SendMeetingLockedIntent(captureID: context.attributes.captureID))
+                    .buttonStyle(.bordered)
             }
         }
     }

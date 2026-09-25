@@ -184,18 +184,6 @@ final class MeetingLockedCoordinator {
         try await task.value
     }
 
-    func discard(captureID: String) async throws {
-        if let current = capture, current.id == captureID {
-            guard sending?.id != captureID else { throw CaptureError.busy }
-            if savedSnapshot?.id == captureID { clearSnapshot(id: captureID) }
-            finishCapture(current, phase: "discarded")
-        } else if savedSnapshot?.id == captureID {
-            guard sending?.id != captureID else { throw CaptureError.busy }
-            clearSnapshot(id: captureID)
-            await activity(for: captureID)?.end(content(phase: "discarded", seconds: 0), dismissalPolicy: .immediate)
-        } else { throw CaptureError.stale }
-    }
-
     /// The scene's foreground entry hands an orphaned or failed Lock Screen
     /// capture to the ordinary account-scoped recovery draft. Never display it
     /// to a different account; the Live Activity itself contains no text.

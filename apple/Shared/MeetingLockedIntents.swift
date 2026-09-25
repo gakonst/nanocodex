@@ -58,25 +58,6 @@ struct SendMeetingLockedIntent: LiveActivityIntent {
     }
 }
 
-struct DiscardMeetingLockedIntent: AudioRecordingIntent, LiveActivityIntent {
-    static var title: LocalizedStringResource = "Discard meeting transcript"
-    static var openAppWhenRun = false
-    static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
-    @available(iOS 26.0, *)
-    static var supportedModes: IntentModes { .background }
-    @Parameter(title: "Recording") var captureID: String
-    init() {}
-    init(captureID: String) { self.captureID = captureID }
-    @MainActor func perform() async throws -> some IntentResult {
-        #if NANOCODEX_WIDGET_EXTENSION
-        throw MeetingIntentError.appProcessRequired
-        #else
-        try await MeetingLockedCoordinator.shared.discard(captureID: captureID)
-        #endif
-        return .result()
-    }
-}
-
 private enum MeetingIntentError: LocalizedError {
     case appProcessRequired
     var errorDescription: String? { "Meeting capture requires Nanocodex's background process. Open the app once to complete setup." }

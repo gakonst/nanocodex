@@ -361,13 +361,15 @@ final class LockedAudioRecorder: NSObject, AVAudioRecorderDelegate {
 
 struct QuickVoiceView: View {
     @ObservedObject var model: InboxModel
-    @StateObject private var recorder = QuickVoiceRecorder()
+    @StateObject private var recorder = MeetingRecorder()
     @AppStorage("quickVoice.locale") private var locale = "en-US"
     @Environment(\.dismiss) private var dismiss
     @Environment(\.scenePhase) private var scenePhase
     @State private var started = false
     @State private var submitted = false
+    @State private var stopRequested = false
     @State private var visible = true
+    @State private var localError: String?
     @State private var account: UUID?
     @State private var targetID: String?
 
@@ -378,48 +380,63 @@ struct QuickVoiceView: View {
                     Text("English").tag("en-US")
                     Text("Ελληνικά").tag("el-GR")
                 }.pickerStyle(.segmented)
+                    .disabled(recorder.working)
                     .onChange(of: locale) { _, _ in
-                        recorder.stop()
+                        recorder.discard()
                         Task { await start() }
                     }
-                Text(recorder.status).accessibilityIdentifier("quickVoiceStatus")
-                TextEditor(text: $recorder.transcript)
+                Text(localError ?? recorder.status).accessibilityIdentifier("quickVoiceStatus")
+                TextEditor(text: Binding(get: { recorder.transcript }, set: { recorder.edit($0) }))
                     .disabled(recorder.working)
                     .accessibilityIdentifier("quickVoiceTranscript")
                 if recorder.recording {
-                    Button("Finish speaking") { recorder.finish() }
+                    Button("Stop Recording") {
+                        stopRequested = true
+                        recorder.finish()
+                    }.accessibilityIdentifier("quickVoiceStopRecording")
                 } else if !recorder.working {
                     Button("Record again") { Task { await start() } }
                     Button("Send in new conversation") { submit(recorder.transcript) }
                         .disabled(QuickVoiceInput.finalText(recorder.transcript) == nil || !model.connected)
                 }
-                Text("Speech is transcribed by Apple in the selected language. A completed utterance starts a new conversation automatically.")
+                Text("Recording continues through pauses. Stop Recording transcribes and starts one new conversation.")
                     .font(.footnote).foregroundStyle(.secondary)
             }
             .padding()
             .navigationTitle("New voice task")
-            .toolbar { ToolbarItem(placement: .cancellationAction) {
-                Button("Cancel") { recorder.stop(); dismiss() }
-            } }
         }
         .interactiveDismissDisabled(recorder.working)
         .task { await startIfReady() }
         .onChange(of: scenePhase) { _, phase in
             if phase == .active { Task { await startIfReady() } }
-            else if phase == .background { recorder.interrupt() }
+            else if phase == .background { stopRequested = false; recorder.interrupt() }
+        }
+        .onChange(of: recorder.reviewing) { _, ready in
+            if ready && stopRequested { stopRequested = false; submit(recorder.transcript) }
         }
         .onChange(of: model.restoringAccount) { _, _ in Task { await startIfReady() } }
-        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in recorder.interrupt() }
+        .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { _ in
+            stopRequested = false; recorder.interrupt()
+        }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { notification in
             if let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
-               reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue { recorder.interrupt() }
+               reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue {
+                stopRequested = false; recorder.interrupt()
+            }
         }
-        .onDisappear { visible = false; recorder.stop() }
+        .onDisappear {
+            visible = false
+            if !submitted, let text = QuickVoiceInput.finalText(recorder.transcript),
+               let scope = try? model.lockedVoiceAccountScope() {
+                model.retainLockedVoiceRecovery(text, captureID: UUID().uuidString, accountScope: scope)
+            }
+            recorder.discard()
+        }
     }
 
     private func startIfReady() async {
         guard !started, scenePhase == .active else { return }
-        guard !model.restoringAccount else { recorder.status = "Connecting to your account…"; return }
+        guard !model.restoringAccount else { localError = "Connecting to your account…"; return }
         started = true
         await start()
     }
@@ -427,25 +444,30 @@ struct QuickVoiceView: View {
     private func start() async {
         guard visible, scenePhase == .active, !submitted else { return }
         guard model.connected, !model.isDemo else {
-            recorder.fail("Sign in and connect first, then tap Record again."); return
+            localError = "Sign in and connect first, then tap Record again."
+            return
         }
+        localError = nil
+        stopRequested = false
         LockedVoiceCoordinator.shared.yieldToForegroundRecording()
         account = model.quickVoiceGeneration
         model.voice.stop()
-        recorder.onFinal = { submit($0) }
         await recorder.start(locale: locale == "el-GR" ? "el-GR" : "en-US")
     }
 
     private func submit(_ text: String) {
         guard visible, scenePhase == .active else {
-            recorder.fail("Recording interrupted. Your words are preserved; edit and send or try again."); return
+            localError = "Recording interrupted. Your words are preserved; edit and send or try again."
+            return
         }
         guard !submitted, let text = QuickVoiceInput.finalText(text) else { return }
         guard model.connected, !model.isDemo, account == model.quickVoiceGeneration else {
-            recorder.fail("Your account changed or disconnected. Your words are preserved. Record again after signing in."); return
+            localError = "Your account changed or disconnected. Your words are preserved."
+            return
         }
         guard let account, model.sendQuickVoice(text, generation: account, targetID: &targetID) else {
-            recorder.fail(model.error ?? "Could not queue the task. Your words are preserved."); return
+            localError = model.error ?? "Could not queue the task. Your words are preserved."
+            return
         }
         submitted = true
         dismiss()

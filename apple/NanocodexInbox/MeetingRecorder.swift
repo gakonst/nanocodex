@@ -10,12 +10,33 @@ import Speech
 private final class MeetingAudioRouter: @unchecked Sendable {
     private let lock = NSLock()
     private var request: SFSpeechAudioBufferRecognitionRequest?
+    private var recentLevels: [UInt8] = []
+    private var lastLevelAt: TimeInterval = 0
 
     func append(_ buffer: AVAudioPCMBuffer) {
+        // Quantized amplitude only; no audio content is retained for Lock Screen UI.
+        let now = ProcessInfo.processInfo.systemUptime
+        var nextLevel: UInt8?
+        if let samples = buffer.floatChannelData?.pointee {
+            let frames = Int(buffer.frameLength)
+            var peak: Float = 0
+            for index in stride(from: 0, to: frames, by: max(1, frames / 64)) {
+                peak = max(peak, abs(samples[index]))
+            }
+            nextLevel = UInt8(min(15, max(1, Int(peak * 55))))
+        }
         lock.lock()
         request?.append(buffer)
+        if let nextLevel, now - lastLevelAt >= 0.12 {
+            recentLevels.append(nextLevel)
+            if recentLevels.count > 28 { recentLevels.removeFirst() }
+            lastLevelAt = now
+        }
         lock.unlock()
     }
+
+    func levels() -> [UInt8] { lock.withLock { recentLevels } }
+    func resetLevels() { lock.withLock { recentLevels.removeAll(); lastLevelAt = 0 } }
 
     func replace(with next: SFSpeechAudioBufferRecognitionRequest?) -> SFSpeechAudioBufferRecognitionRequest? {
         lock.lock()
@@ -38,6 +59,7 @@ final class MeetingRecorder: ObservableObject {
     @Published private(set) var working = false
     @Published private(set) var reviewing = false
     @Published private(set) var seconds = 0
+    @Published private(set) var waveform: [UInt8] = []
 
     private final class Segment {
         let index: Int
@@ -68,6 +90,7 @@ final class MeetingRecorder: ObservableObject {
 
     func start(locale: String, permissionsGranted: Bool = false) async {
         discard()
+        router.resetLevels()
         guard QuickVoiceRecorder.audioOwner == nil else {
             status = "Another voice recording is in progress. Finish it first."
             return
@@ -128,6 +151,7 @@ final class MeetingRecorder: ObservableObject {
                     do { try await Task.sleep(for: .seconds(1)) } catch { return }
                     guard let self, self.permissionRun == run, self.recording else { return }
                     self.seconds = Int(Date().timeIntervalSince(self.startedAt ?? Date()))
+                self.waveform = self.router.levels()
                 }
             }
         } catch {
@@ -290,6 +314,7 @@ final class MeetingRecorder: ObservableObject {
         transcript = ""
         status = "Ready to listen"
         seconds = 0
+        waveform = []
         startedAt = nil
         stopReason = nil
         reviewing = false

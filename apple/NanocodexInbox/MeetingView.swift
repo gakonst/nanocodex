@@ -11,6 +11,7 @@ struct MeetingView: View {
     @State private var account: UUID?
     @State private var targetID: String?
     @State private var submitted = false
+    @State private var stopRequested = false
     @State private var sendError: String?
     @State private var visible = true
 
@@ -40,56 +41,61 @@ struct MeetingView: View {
                     .overlay(RoundedRectangle(cornerRadius: 8).stroke(.secondary.opacity(0.3)))
                     .accessibilityIdentifier("meeting-transcript")
                 if recorder.recording {
-                    Button("Finish meeting") { recorder.finish() }
+                    Button("Stop Recording") { stopRequested = true; recorder.finish() }
                         .buttonStyle(.borderedProminent)
                         .accessibilityIdentifier("meeting-finish")
                 } else if !recorder.working {
-                    HStack {
-                        Button(recorder.reviewing ? "Record new meeting" : "Start listening") {
-                            Task { await start() }
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .accessibilityIdentifier("meeting-start")
-                        if recorder.reviewing {
-                            Button("Send in new conversation") { submit() }
-                                .disabled(QuickVoiceInput.finalText(recorder.transcript) == nil || !model.connected || model.isDemo || account != model.quickVoiceGeneration || scenePhase != .active)
-                                .accessibilityIdentifier("meeting-send")
-                        }
+                    if recorder.reviewing, QuickVoiceInput.finalText(recorder.transcript) != nil {
+                        Button(sendError == nil ? "Start agent with transcript" : "Retry starting agent") { submit() }
+                            .disabled(!model.connected || model.isDemo || account != model.quickVoiceGeneration || scenePhase != .active)
+                            .accessibilityIdentifier("meeting-send")
+                    } else {
+                        Button("Start listening") { Task { await start() } }
+                            .buttonStyle(.borderedProminent)
+                            .accessibilityIdentifier("meeting-start")
                     }
                 } else if !recorder.recording {
                     ProgressView("Finishing segments…")
                 }
-                Text("Recording can continue while the screen is locked. Speech is processed in short segments; it may require a network connection. Nothing is sent until you finish, review, and tap Send. If recording is interrupted, review the partial transcript for missing words.")
+                Text("Recording continues through pauses. Stop Recording transcribes and starts one agent thread. An interrupted transcript stays available for review; nothing partial sends automatically.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
             .padding()
             .navigationTitle("Meeting listening")
-            .toolbar {
-                ToolbarItem(placement: .cancellationAction) {
-                    Button("Cancel") { recorder.discard(); dismiss() }
-                }
-            }
         }
         .interactiveDismissDisabled(recorder.working)
+        .onChange(of: recorder.reviewing) { _, ready in
+            if ready && stopRequested { stopRequested = false; submit() }
+        }
         .onChange(of: model.connected) { _, connected in
-            if !connected { recorder.interrupt("Account disconnected. Review your partial transcript; sign in before sending.") }
+            if !connected { stopRequested = false; recorder.interrupt("Account disconnected. Review your partial transcript; sign in before sending.") }
         }
         .onChange(of: model.quickVoiceGeneration) { _, generation in
             if let account, generation != account {
+                stopRequested = false
                 recorder.interrupt("Account changed. This transcript cannot be sent from a different account.")
             }
         }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification)) { notification in
             guard let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   type == AVAudioSession.InterruptionType.began.rawValue else { return }
-            recorder.interrupt()
+            stopRequested = false; recorder.interrupt()
         }
         .onReceive(NotificationCenter.default.publisher(for: AVAudioSession.routeChangeNotification)) { notification in
             if let reason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
-               reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue { recorder.interrupt() }
+               reason == AVAudioSession.RouteChangeReason.oldDeviceUnavailable.rawValue {
+                stopRequested = false; recorder.interrupt()
+            }
         }
-        .onDisappear { visible = false; recorder.discard() }
+        .onDisappear {
+            visible = false
+            if !submitted, let text = QuickVoiceInput.finalText(recorder.transcript),
+               let scope = try? model.lockedVoiceAccountScope() {
+                model.retainLockedVoiceRecovery(text, captureID: UUID().uuidString, accountScope: scope)
+            }
+            recorder.discard()
+        }
     }
 
     private func start() async {
@@ -105,6 +111,7 @@ struct MeetingView: View {
         account = model.quickVoiceGeneration
         targetID = nil
         sendError = nil
+        stopRequested = false
         await recorder.start(locale: locale == "el-GR" ? "el-GR" : "en-US")
     }
 
