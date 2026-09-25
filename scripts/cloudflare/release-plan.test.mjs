@@ -40,6 +40,10 @@ test('release phases reuse successfully completed targets and never cache failed
     .flatMap(([, args]) => args.filter((_, i) => args[i - 1] === '--filter'));
   assert.equal(new Set(filters).size, filters.length);
   assert.ok(filters.indexOf('nanocodex') < filters.indexOf('nanocodex-web'));
+  assert.deepEqual(calls.filter(([, args]) => args[0]?.startsWith('js/managed/scripts/')), [
+    [process.execPath, ['js/managed/scripts/prepare-code-evaluator.mjs']],
+    [process.execPath, ['js/managed/scripts/prepare-just-bash-lazy.mjs']],
+  ]);
   const failed = new Set();
   assert.throws(() => buildSelected({ selected: ['account'] }, (_, args) => {
     if (args.includes('nanocodex-terminal')) throw Error('second tier failed');

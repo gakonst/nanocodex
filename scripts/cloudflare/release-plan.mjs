@@ -72,7 +72,12 @@ export function buildSelected(plan, run=execFileSync, completedTargets=new Set()
       for (const name of selected) completedTargets.add(name);
     }
   }
-  if(plan.selected.includes('managed'))run(process.execPath,['js/managed/scripts/prepare-code-evaluator.mjs'],{stdio:'inherit'});
+  if(plan.selected.includes('managed')){
+    run(process.execPath,['js/managed/scripts/prepare-code-evaluator.mjs'],{stdio:'inherit'});
+    // The production Wrangler deploy bypasses npm predeploy/prebuild; generate
+    // the standalone shell module before Wrangler resolves its dynamic import.
+    run(process.execPath,['js/managed/scripts/prepare-just-bash-lazy.mjs'],{stdio:'inherit'});
+  }
   if(plan.selected.includes('astra'))run('npm',['run','build:client','--prefix','examples/astra-mpp-trial'],{stdio:'inherit'});
 }
 if(process.argv[1]&&resolve(process.argv[1])===fileURLToPath(import.meta.url)) {
