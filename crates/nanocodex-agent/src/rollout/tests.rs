@@ -309,6 +309,90 @@ fn loads_codex_rollout_without_a_nanocodex_sidecar() {
 }
 
 #[test]
+fn moved_rollout_payload_preserves_tool_transcript_and_compacted_history() {
+    let home = tempdir().expect("temporary Codex home");
+    let thread_id = "019c0d31-c308-7d91-bff4-5dca82d15ac6";
+    let directory = home.path().join("sessions/2026/07/24");
+    std::fs::create_dir_all(&directory).expect("create rollout directory");
+    let path = directory.join(format!("rollout-2026-07-24T12-00-00-{thread_id}.jsonl"));
+    let mut file = File::create(path).expect("create Codex rollout");
+    for record in [
+        serde_json::json!({
+            "type": "session_meta",
+            "payload": {"id": thread_id, "cwd": home.path(), "history_mode": "legacy"}
+        }),
+        serde_json::json!({
+            "type": "response_item",
+            "payload": {"type": "function_call", "name": "search", "call_id": "call-1",
+                "arguments": "{\"query\":\"rust\"}"}
+        }),
+        serde_json::json!({
+            "type": "compacted",
+            "payload": {"replacement_history": [{
+                "type": "message", "role": "user",
+                "content": [{"type": "input_text", "text": "retained after compaction"}]
+            }]}
+        }),
+    ] {
+        write_line(&mut file, &record).expect("write rollout line");
+    }
+    file.flush().expect("flush rollout");
+
+    let session = RolloutConfig::new(home.path())
+        .load_session(thread_id)
+        .expect("load compacted rollout");
+    assert_eq!(
+        session.transcript(),
+        [RolloutTranscriptItem::Tool {
+            call_id: "call-1".to_owned(),
+            name: "search".to_owned(),
+            arguments: "{\"query\":\"rust\"}".to_owned(),
+        }]
+    );
+    let snapshot = serde_json::to_value(session.snapshot()).expect("encode snapshot");
+    assert_eq!(snapshot["history"].as_array().map(Vec::len), Some(1));
+    assert_eq!(
+        snapshot["history"][0]["content"][0]["text"],
+        "retained after compaction"
+    );
+}
+
+#[test]
+fn missing_compacted_history_still_reports_line_specific_error() {
+    let home = tempdir().expect("temporary Codex home");
+    let thread_id = "019c0d31-c308-7d91-bff4-5dca82d15ac6";
+    let directory = home.path().join("sessions/2026/07/24");
+    std::fs::create_dir_all(&directory).expect("create rollout directory");
+    let path = directory.join(format!("rollout-2026-07-24T12-00-00-{thread_id}.jsonl"));
+    let mut file = File::create(&path).expect("create Codex rollout");
+    write_line(
+        &mut file,
+        &serde_json::json!({
+            "type": "session_meta",
+            "payload": {"id": thread_id, "cwd": home.path(), "history_mode": "legacy"}
+        }),
+    )
+    .expect("write session metadata");
+    write_line(
+        &mut file,
+        &serde_json::json!({"type": "compacted", "payload": {}}),
+    )
+    .expect("write malformed compacted payload");
+    file.flush().expect("flush rollout");
+    let error = RolloutConfig::new(home.path())
+        .load_session(thread_id)
+        .expect_err("missing replacement history must be rejected");
+    assert_eq!(error.kind(), io::ErrorKind::InvalidData);
+    assert!(
+        error
+            .to_string()
+            .contains("failed to decode replacement history"),
+        "{error}"
+    );
+    assert!(error.to_string().contains("line 2"), "{error}");
+}
+
+#[test]
 fn loads_the_latest_supported_model_from_codex_turn_context() {
     let home = tempdir().expect("temporary Codex home");
     let thread_id = "019c0d31-c308-7d91-bff4-5dca82d15ac6";
