@@ -103,6 +103,11 @@ it("routes an explicitly scoped Connect turn only to its Cloudflare mounts", asy
           expect(last).not.toContain("fixture-native-boundary");
         }
       }
-    } finally { await state.storage.deleteAlarm(); }
+    } finally {
+      // Retire the live runtime before the Workers pool waits for background work.
+      state.storage.sql.exec("UPDATE session_state SET last_active=0");
+      await session.alarm();
+      await state.storage.deleteAlarm();
+    }
   });
 }, 60_000);

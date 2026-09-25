@@ -18,6 +18,7 @@ export class SessionOperations {
       CREATE INDEX IF NOT EXISTS managed_model_usage_agent_cursor ON managed_model_usage(agent_id,cursor);
       CREATE TABLE IF NOT EXISTS managed_turn_usage (cursor INTEGER PRIMARY KEY, turn_id TEXT, created_at INTEGER NOT NULL, type TEXT NOT NULL, usage TEXT);
       CREATE TABLE IF NOT EXISTS managed_artifacts (id TEXT PRIMARY KEY, turn_id TEXT NOT NULL, path TEXT NOT NULL, digest TEXT NOT NULL, size INTEGER NOT NULL, created_at INTEGER NOT NULL, body BLOB NOT NULL, UNIQUE(turn_id,path));
+      CREATE TABLE IF NOT EXISTS managed_turn_file_owners (turn_id TEXT PRIMARY KEY, grant_id TEXT);
       CREATE TABLE IF NOT EXISTS managed_artifact_publications (turn_id TEXT PRIMARY KEY, state TEXT NOT NULL, error TEXT);
     `);
     storage.sql.exec("UPDATE managed_environment_setup SET state='failed', error='Setup was interrupted; recreate the session to retry.' WHERE state='running'");
@@ -86,14 +87,24 @@ export class SessionOperations {
       return Response.json({ url: url.href, secret }, { status: 201, headers: { "cache-control": "no-store" } });
     } catch { return Response.json({ error: "invalid_webhook" }, { status: 400 }); }
   }
+  retainTurnOwner(turnId: string, grantId: string | null): void {
+    this.storage.sql.exec("INSERT OR IGNORE INTO managed_turn_file_owners VALUES (?,?)", turnId, grantId);
+  }
+  turnOwner(turnId: string): string | null | undefined {
+    return this.storage.sql.exec<{ grant_id: string | null }>("SELECT grant_id FROM managed_turn_file_owners WHERE turn_id=?", turnId).toArray()[0]?.grant_id;
+  }
   async publish(turnId: string, workspace: Workspace, isActive: () => boolean = () => true): Promise<void> {
     if (this.storage.sql.exec("SELECT turn_id FROM managed_artifact_publications WHERE turn_id=?", turnId).toArray().length) return;
     try {
-      const all = await workspace.list("/brain/outputs", { recursive: true, maxEntries: 100 }).catch(error => {
+      const grantId = this.turnOwner(turnId);
+      if (grantId && (!/^0x[0-9a-f]{64}$/.test(grantId) || !/^[A-Za-z0-9._:-]{1,128}$/.test(turnId) || turnId === "." || turnId === ".."))
+        throw new Error("invalid Connect publication identity");
+      const root = grantId ? `/brain/connect/${grantId}/outputs/${turnId}` : "/brain/outputs";
+      const all = await workspace.list(root, { recursive: true, maxEntries: 100 }).catch(error => {
         if (error?.code === "ENOENT") return [];
         throw error;
       });
-      const files = all.filter(f => f.kind === "file" && f.path.startsWith("/brain/outputs/"));
+      const files = all.filter(f => f.kind === "file" && f.path.startsWith(`${root}/`));
       if (files.length > 50 || files.some(f => (f.size ?? Infinity) > 1_000_000)) throw new Error("publication allows 50 files, up to 1 MB each");
       let total = 0;
       const captured: { path: string; bytes: Uint8Array; digest: string }[] = [];
@@ -104,6 +115,8 @@ export class SessionOperations {
       }
       if (!isActive()) return;
       this.storage.transactionSync(() => {
+        // A concurrent capture must never append paths to an already finalized turn.
+        if (this.storage.sql.exec("SELECT turn_id FROM managed_artifact_publications WHERE turn_id=?", turnId).toArray().length) return;
         for (const file of captured) this.storage.sql.exec("INSERT OR IGNORE INTO managed_artifacts VALUES (?, ?, ?, ?, ?, ?, ?)",
           createHash("sha256").update(`${turnId}\0${file.path}`).digest("hex"), turnId, file.path, file.digest, file.bytes.byteLength, Date.now(), file.bytes);
         this.storage.sql.exec("INSERT OR IGNORE INTO managed_artifact_publications VALUES (?, 'ready', NULL)", turnId);
@@ -113,20 +126,30 @@ export class SessionOperations {
       this.storage.sql.exec("INSERT OR IGNORE INTO managed_artifact_publications VALUES (?, 'failed', ?)", turnId, error instanceof Error ? error.message : "publication failed");
     }
   }
-  artifacts(request: Request): Response {
+  artifacts(request: Request, grantId?: string): Response {
     const url = new URL(request.url);
     const id = url.pathname.match(/^\/artifacts\/([a-f0-9]{64})\/content$/)?.[1];
     if (request.method !== "GET") return new Response(null, { status: 405 });
+    const missing = () => Response.json({ error: "not_found" }, { status: 404 });
     if (id) {
-      const row = this.storage.sql.exec<{ body: ArrayBuffer; digest: string; size: number }>("SELECT body,digest,size FROM managed_artifacts WHERE id=?", id).toArray()[0];
-      return row ? new Response(row.body, { headers: { "content-type": "application/octet-stream", "content-disposition": "attachment", "x-content-type-options": "nosniff", etag: `"${row.digest}"`, "cache-control": "private, no-store" } })
-        : Response.json({ error: "not_found" }, { status: 404 });
+      if (url.search) return Response.json({ error: "invalid_request" }, { status: 400 });
+      // Authorize metadata before fetching a potentially large immutable BLOB.
+      const metadata = this.storage.sql.exec<{ turn_id: string }>("SELECT turn_id FROM managed_artifacts WHERE id=?", id).toArray()[0];
+      if (!metadata || grantId !== undefined && this.turnOwner(metadata.turn_id) !== grantId) return missing();
+      const row = this.storage.sql.exec<{ body: ArrayBuffer; digest: string; size: number }>("SELECT body,digest,size FROM managed_artifacts WHERE id=?", id).one();
+      return new Response(row.body, { headers: { "content-type": "application/octet-stream", "content-length": String(row.size), "content-disposition": "attachment", "x-content-type-options": "nosniff", etag: `"${row.digest}"`, "cache-control": "private, no-store" } });
     }
-    if (url.pathname !== "/artifacts") return new Response(null, { status: 404 });
+    if (url.pathname !== "/artifacts") return missing();
     const turn = url.searchParams.get("turn_id");
+    if (grantId !== undefined) {
+      if (!turn || [...url.searchParams.keys()].length !== 1 || !/^[A-Za-z0-9._:-]{1,128}$/.test(turn))
+        return Response.json({ error: "invalid_request" }, { status: 400 });
+      if (this.turnOwner(turn) !== grantId) return missing();
+    }
     return Response.json({ data: turn ? this.storage.sql.exec("SELECT id,turn_id,path,digest,size,created_at FROM managed_artifacts WHERE turn_id=? ORDER BY path", turn).toArray()
       : this.storage.sql.exec("SELECT id,turn_id,path,digest,size,created_at FROM managed_artifacts ORDER BY created_at DESC LIMIT 256").toArray(),
-      publications: this.storage.sql.exec("SELECT turn_id,state,error FROM managed_artifact_publications ORDER BY rowid DESC LIMIT 256").toArray() });
+      publications: turn ? this.storage.sql.exec("SELECT turn_id,state,error FROM managed_artifact_publications WHERE turn_id=?", turn).toArray()
+        : this.storage.sql.exec("SELECT turn_id,state,error FROM managed_artifact_publications ORDER BY rowid DESC LIMIT 256").toArray() }, { headers: { "cache-control": "private, no-store" } });
   }
   requests(after: string, agentId: string | null): Response {
     if (!/^(0|[1-9][0-9]{0,17})$/.test(after) || agentId !== null && !/^(root|[0-9]{1,20})$/.test(agentId)) return Response.json({ error: "invalid_cursor_or_agent" }, { status: 400 });

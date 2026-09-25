@@ -2891,8 +2891,25 @@ async function proxyManagedAgent(
   const slash = resource.indexOf("/");
   const requestedAgentId = slash === -1 ? resource : resource.slice(0, slash);
   const suffix = slash === -1 ? "" : resource.slice(slash);
+  if (grant.status !== "active" || grant.expiresAt <= Math.floor(Date.now() / 1000)) {
+    throw new ApiFailure(401, "grant_inactive", "This connection has expired or was revoked.");
+  }
   if (requestedAgentId !== grant.agentId || request.method === "DELETE") {
     throw new ApiFailure(403, "agent_not_granted", "This durable agent is outside the signed Connect authorization.");
+  }
+  if (/^\/artifacts(?:\/|$)/.test(suffix)) {
+    const url = new URL(request.url);
+    const list = suffix === "/artifacts"
+      && url.searchParams.size === 1
+      && url.searchParams.has("turn_id")
+      && Boolean(url.searchParams.get("turn_id"));
+    const content = /^\/artifacts\/[^/]+\/content$/.test(suffix) && url.search === "";
+    if (request.method !== "GET" || (!list && !content)) {
+      throw new ApiFailure(405, "method_not_allowed", "Only exact artifact list and content reads are supported.");
+    }
+    if (!grant.capabilities.includes("agent.output.final")) {
+      throw new ApiFailure(403, "agent_output_not_granted", "Artifacts require access to final agent replies.");
+    }
   }
   if (/^\/durability(?:\/|$)/.test(suffix)) {
     if (suffix !== "/durability" || request.method !== "POST" || new URL(request.url).search !== "") {
@@ -2939,11 +2956,16 @@ async function projectManagedResponse(
   resource: string,
 ): Promise<Response> {
   const responseHeaders = new Headers();
-  for (const name of ["content-type", "retry-after", "x-nanocodex-realtime-location"]) {
+  // Downloaded JSON and event-stream files are opaque artifacts, not agent
+  // protocol messages. Rewriting either would corrupt the bytes and digest.
+  const artifactContent = /^\/artifacts\/[^/]+\/content$/.test(resource);
+  const headerNames = ["content-type", "retry-after", "x-nanocodex-realtime-location"];
+  if (artifactContent) headerNames.push("content-length", "etag", "cache-control", "x-content-type-options", "content-disposition");
+  for (const name of headerNames) {
     const value = upstream.headers.get(name);
     if (value) responseHeaders.set(name, value);
   }
-  if (!upstream.ok || !upstream.body) {
+  if (artifactContent || !upstream.ok || !upstream.body) {
     return new Response(upstream.body, {
       status: upstream.status,
       statusText: upstream.statusText,
@@ -6151,7 +6173,7 @@ function cors(response: Response, request: Request) {
     response.headers.set("access-control-max-age", "86400");
     response.headers.set(
       "access-control-expose-headers",
-      "mcp-session-id, payment-receipt, payment-response, payment-session, payment-session-snapshot, retry-after, link, x-ratelimit-limit, x-ratelimit-remaining, x-ratelimit-reset, x-ratelimit-resource, www-authenticate, x-nanocodex-realtime-location",
+      "content-disposition, content-length, etag, mcp-session-id, payment-receipt, payment-response, payment-session, payment-session-snapshot, retry-after, link, x-ratelimit-limit, x-ratelimit-remaining, x-ratelimit-reset, x-ratelimit-resource, www-authenticate, x-nanocodex-realtime-location",
     );
     response.headers.set("vary", "Origin");
   }
