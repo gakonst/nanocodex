@@ -73,7 +73,7 @@ export async function createManagedComputerRuntime(options: Readonly<{
       lazyInitialize: true,
       // Wrangler uploads this prebundled ES module independently; only shell
       // calls evaluate it, not chat-only Durable Object activations.
-      loadInterpreter: () => import("../.shell-module/just-bash-lazy.mjs"),
+      loadInterpreter: () => import("./just-bash-lazy.mjs"),
       fetch,
       networkMode: options.subject === undefined
         ? "public-http-only"
