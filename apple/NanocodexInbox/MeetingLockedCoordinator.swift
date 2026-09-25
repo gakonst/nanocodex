@@ -130,6 +130,7 @@ final class MeetingLockedCoordinator {
             throw CaptureError.unavailable
         }
         update(current, phase: "listening")
+        VoiceDiagnostic.note("meeting.coordinator.recording")
         current.ticker = Task { [weak self, weak current] in
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(10)) } catch { return }
@@ -254,6 +255,7 @@ final class MeetingLockedCoordinator {
         while settled.contains(index), finals[index]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false { index += 1 }
         current.previewNextIndex = index
         guard let delta = finals[index], !delta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        VoiceDiagnostic.note("meeting.preview.segmentReady")
         // Recognition segments are normally far below this limit. If a very long
         // result exceeds it, send bounded UTF-8 chunks under consecutive revisions.
         let pieces = boundedPreviewChunks(delta)
@@ -273,11 +275,14 @@ final class MeetingLockedCoordinator {
                     current.previewRevision = revision
                     current.previewRetryAt = .distantPast
                     current.previewPieceOffset += 1
+                    VoiceDiagnostic.note(result.summaryRevision > 0 && !result.summary.isEmpty
+                        ? "meeting.preview.summaryReceived" : "meeting.preview.pending")
                     if !result.summary.isEmpty, result.summaryRevision > 0 {
                         current.recap = String(result.summary.prefix(180))
                         self.update(current, phase: current.phase)
                     }
                 } catch {
+                    VoiceDiagnostic.note("meeting.preview.failed", error: error)
                     // Ambiguous admission: repeat this exact revision after a
                     // bounded delay. Never advance the cursor on uncertain write.
                     current.previewRetryAt = Date().addingTimeInterval(30)
@@ -421,6 +426,7 @@ final class MeetingLockedCoordinator {
         let final = content(phase: phase, seconds: elapsed)
         Task { await previous?.value; await activity?.end(final, dismissalPolicy: .after(Date().addingTimeInterval(15))) }
         releaseBackground(current)
+        VoiceDiagnostic.note("meeting.coordinator.ended.\(phase)")
         log.info("Meeting capture ended: \(phase, privacy: .public)")
     }
 }

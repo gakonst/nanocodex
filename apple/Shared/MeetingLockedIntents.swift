@@ -11,10 +11,14 @@ struct StartMeetingLockedIntent: AudioRecordingIntent, LiveActivityIntent {
     @available(iOS 26.0, *)
     static var supportedModes: IntentModes { .background }
     @MainActor func perform() async throws -> some IntentResult {
+        VoiceDiagnostic.note("meeting.intent.start.enter")
         #if NANOCODEX_WIDGET_EXTENSION
+        VoiceDiagnostic.note("meeting.intent.start.widgetRejected")
         throw MeetingIntentError.appProcessRequired
         #else
-        try await MeetingLockedCoordinator.shared.start()
+        do { try await MeetingLockedCoordinator.shared.start() }
+        catch { VoiceDiagnostic.note("meeting.intent.start.failed", error: error); throw error }
+        VoiceDiagnostic.note("meeting.intent.start.recording")
         #endif
         return .result()
     }
@@ -33,7 +37,10 @@ struct FinishMeetingLockedIntent: AudioRecordingIntent, LiveActivityIntent {
         #if NANOCODEX_WIDGET_EXTENSION
         throw MeetingIntentError.appProcessRequired
         #else
-        try await MeetingLockedCoordinator.shared.finishAndSend(captureID: captureID)
+        VoiceDiagnostic.note("meeting.intent.stop.enter")
+        do { try await MeetingLockedCoordinator.shared.finishAndSend(captureID: captureID) }
+        catch { VoiceDiagnostic.note("meeting.intent.stop.failed", error: error); throw error }
+        VoiceDiagnostic.note("meeting.intent.stop.sent")
         #endif
         return .result()
     }
