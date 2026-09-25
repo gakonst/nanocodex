@@ -1,5 +1,5 @@
-import { env, runInDurableObject, createExecutionContext } from "cloudflare:test";
-import { describe, expect, it } from "vitest";
+import { env, runInDurableObject, createExecutionContext, abortAllDurableObjects, applyD1Migrations } from "cloudflare:test";
+import { beforeAll, afterEach, describe, expect, it } from "vitest";
 import { ManagedAgentOwnership, type Env, type DurableAgentSession } from "../src/index";
 
 // Boundary failure modes: foreign ownership, invalid/unbounded payloads, duplicate
@@ -7,13 +7,33 @@ import { ManagedAgentOwnership, type Env, type DurableAgentSession } from "../sr
 const sessions = () => (env as unknown as {
   NANOCODEX_SESSIONS: DurableObjectNamespace<DurableAgentSession>;
 }).NANOCODEX_SESSIONS;
+const crmBindings = env as unknown as { NANOCODEX_CRM: D1Database; CRM_MIGRATIONS: Parameters<typeof applyD1Migrations>[1] };
+beforeAll(async () => applyD1Migrations(crmBindings.NANOCODEX_CRM, crmBindings.CRM_MIGRATIONS));
+const fixtureAgents = new Set<string>();
+afterEach(async () => {
+  for (const agentId of fixtureAgents) {
+    const stub = sessions().getByName(agentId);
+    await runInDurableObject(stub, async (_, state) => {
+      // This suite owns admission; terminate fixture retries before teardown.
+      state.storage.sql.exec("UPDATE managed_turns SET state='cancelled', retry_at=NULL WHERE state='accepted'");
+      await state.storage.deleteAlarm();
+    });
+  }
+  await abortAllDurableObjects();
+  fixtureAgents.clear();
+});
 const input = (agentId: string) => ({ userId: "gmail-fixture-owner", agentId,
   eventId: "gmail:connection:history:123", input: "A new message arrived. Summarize it." });
 function initialize(state: DurableObjectState, agentId: string, session: DurableAgentSession) {
-  // Keep model execution at its durable retry boundary: this suite owns admission.
+  fixtureAgents.add(agentId);
+  // Gate mandatory credential-subject startup, not optional account discovery.
+  // This suite owns admission and stops before model execution.
   const current = (session as unknown as {env:Env}).env;
-  Object.defineProperty(session,"env",{value:{...current,NANOCODEX_ACCOUNT_TOOLS:{getByName:()=>{
-    throw Object.assign(new Error("fixture unavailable"),{code:"retryable"});
+  Object.defineProperty(session,"env",{value:{...current,NANOCODEX:{fetch:async(request:RequestInfo | URL)=>{
+    if (new URL(request instanceof Request ? request.url : String(request)).pathname.startsWith("/subjects/")) {
+      throw Object.assign(new Error("fixture unavailable"),{code:"retryable"});
+    }
+    return Response.json({connectors:{},mcp_connections:[]});
   }}}});
   state.storage.sql.exec(`INSERT INTO session_state(singleton,session_id,owner_id,organization_id,team_id,
     authorization_epoch,public_origin,runtime_profile,last_active)
@@ -83,5 +103,47 @@ describe("private Gmail wake admission", () => {
       expect(rows).toHaveLength(1);
       expect(JSON.parse(rows[0].input_json)).toContain(input(agentId).input);
     });
+  });
+});
+
+// Opt-in ingestion must complete before admission; otherwise the broker retries
+// this event without an accepted turn that would strand its remaining messages.
+it("advances opted-in CRM mail in bounded wake retries before admitting a turn", async () => {
+  const agentId = crypto.randomUUID(); const connectionId = "C".repeat(43);
+  await runInDurableObject(sessions().getByName(agentId), async (session, state) => {
+    initialize(state, agentId, session);
+    let reads = 0;
+    const current = (session as unknown as {env:Env}).env;
+    Object.defineProperty(session,"env",{value:{...current,NANOCODEX:{fetch:async(value:RequestInfo | URL,init?:RequestInit)=>{
+      const request = value instanceof Request ? value : new Request(value,init);
+      if (new URL(request.url).pathname.startsWith("/subjects/")) return new Response(null,{status:204});
+      if (new URL(request.url).hostname === "gmail.googleapis.com") {
+        reads++;
+        expect(request.method).toBe("GET");
+        expect(request.headers.get("x-nanocodex-connector-connection")).toBe(connectionId);
+        return Response.json({id:new URL(request.url).pathname.split("/").at(-1),internalDate:"1",labelIds:["INBOX"],payload:{headers:[{name:"From",value:"unknown@example.test"}]}});
+      }
+      return current.NANOCODEX.fetch(request);
+    }}}});
+    const envelope = {...input(agentId),input:JSON.stringify({connectionId,email:"self@example.test",type:"gmail.history",startHistoryId:"1",historyId:"2",messageIds:Array.from({length:7},(_,i)=>`m${i}`),truncated:false,crm:true})};
+    expect(await session.gmailPushWake(envelope)).toEqual({status:"busy",progress:true});
+    expect(reads).toBe(5);
+    expect(state.storage.sql.exec("SELECT id FROM managed_turns").toArray()).toHaveLength(0);
+    expect(await session.gmailPushWake(envelope)).toMatchObject({status:"accepted"});
+    expect(reads).toBe(7);
+    expect(await session.gmailPushWake(envelope)).toMatchObject({status:"duplicate"});
+    expect(reads).toBe(7);
+  });
+});
+
+it("rejects opted-in wakes when CRM is unavailable while preserving legacy admission", async () => {
+  const agentId = crypto.randomUUID();
+  await runInDurableObject(sessions().getByName(agentId), async (session,state) => {
+    initialize(state,agentId,session);
+    const current = (session as unknown as {env:Env}).env;
+    Object.defineProperty(session,"env",{value:{...current,NANOCODEX_CRM:undefined}});
+    await expect(session.gmailPushWake({...input(agentId),input:JSON.stringify({crm:true})})).rejects.toThrow("gmail_push_crm_unavailable");
+    expect(state.storage.sql.exec("SELECT id FROM managed_turns").toArray()).toHaveLength(0);
+    expect(await session.gmailPushWake(input(agentId))).toMatchObject({status:"accepted"});
   });
 });

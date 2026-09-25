@@ -33,10 +33,21 @@ it("checks account ownership and bounded configuration before enabling Gmail pus
   expect((await call("PUT",{...principal,kind:"account_session"},undefined,"https://foreign.example")).status).toBe(403);
   expect((await call("PUT",principal,{email:"x".repeat(3000)})).status).toBe(413);
   expect((await call("PUT",principal,{email:"fixture@example.com",userId:"foreign"})).status).toBe(400);
+  expect((await call("PUT",principal,{email:"fixture@example.com",crm:"true"})).status).toBe(400);
   expect(calls).toHaveLength(0);
   expect((await call("PUT")).status).toBe(200);
   expect(calls.at(-1)).toEqual({url:"https://egress.internal/users/11111111-1111-4111-8111-111111111111/gmail-push/connection-1",method:"PUT",
     body:{email:"fixture@example.com",agentId}});
+  expect((await call("PUT",principal,{email:"fixture@example.com",crm:true})).status).toBe(200);
+  expect(calls.at(-1)?.body).toEqual({email:"fixture@example.com",crm:true,agentId});
+  await runInDurableObject(sessions.getByName(agentId), async session => {
+    const current = (session as unknown as {env:Env}).env;
+    Object.defineProperty(session,"env",{value:{...current,NANOCODEX_CRM:undefined}});
+  });
+  const beforeMissingCrm = calls.length;
+  expect((await call("PUT",principal,{email:"fixture@example.com",crm:true})).status).toBe(503);
+  expect(calls).toHaveLength(beforeMissingCrm);
+  expect((await call("PUT",principal,{email:"fixture@example.com",crm:false})).status).toBe(200);
   configuredAgent=crypto.randomUUID();
   expect((await call("GET")).status).toBe(404);
   expect((await call("DELETE")).status).toBe(404);

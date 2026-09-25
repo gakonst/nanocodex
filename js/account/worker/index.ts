@@ -161,6 +161,10 @@ export default {
       if (!env.GMAIL_PUSH_EGRESS) return json({ error: "gmail_push_unavailable" }, { status: 503 });
       return env.GMAIL_PUSH_EGRESS.fetch(new Request(new URL(url.pathname, "https://gmail-push.internal"), request));
     }
+    if (url.pathname === "/v1/calendar-push/callback" && !url.search) {
+      if (!env.NANOCODEX_BACKEND) return json({error:"calendar_push_unavailable"},{status:503});
+      return env.NANOCODEX_BACKEND.fetch(request);
+    }
     const elevenLabs = await routeElevenLabs(request, env, url);
     if (elevenLabs != null) return elevenLabs;
     const connectorCallbackReturn = await routeLocalConnectorCallbackReturn(request, env, url);

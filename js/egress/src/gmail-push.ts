@@ -5,7 +5,7 @@ export interface GmailPushEnv {
   GMAIL_PUSH_TOPIC: string;
 }
 
-type Config = { userId: string; connectionId: string; agentId: string; email: string };
+type Config = { crm?: true; userId: string; connectionId: string; agentId: string; email: string };
 type Event = { type: "gmail.history" | "gmail.resync"; startHistoryId: string; historyId: string; messageIds: string[]; truncated: boolean };
 type Pending = { eventId: string; event: Event };
 type Page = { type: Event["type"]; historyId: string; chunks: number; index: number; nextPageToken?: string; commitCursor?: string };
@@ -13,6 +13,7 @@ type Mailbox = {
   config: Config; cursor: string; target: string; renewAt: number; expiration: string;
   pageToken?: string; page?: Page; pending?: Pending; retry: number; lastError?: string;
   checkAt: number; reconcile: boolean; recentMessageIds: string[];
+  renewalRetry?: number; renewalError?: string;
 };
 const DAY = 86_400_000;
 const HOUR = 3_600_000;
@@ -39,7 +40,7 @@ export class GmailPushMailbox {
       let box = await this.state.storage.get<Mailbox>("mailbox");
       if (request.method === "GET" && (path === "/status" || path === "/configure")) {
         return Response.json(box ? { enabled: true, ...box.config, cursor: box.cursor, targetHistoryId: box.target,
-          pending: !!box.pending || !!box.page, renewAt: box.renewAt, expiration: box.expiration, lastError: box.lastError ?? null } : { enabled: false });
+          pending: !!box.pending || !!box.page, renewAt: box.renewAt, expiration: box.expiration, lastError: box.lastError ?? null, renewalError: box.renewalError ?? null } : { enabled: false });
       }
       if (path === "/configure" && request.method === "DELETE") {
         if (request.body !== null) {
@@ -85,9 +86,10 @@ export class GmailPushMailbox {
       }
       if (![body.userId, body.connectionId, body.agentId].every(v => typeof v === "string" && v.length > 0 && v.length <= 256)
         || typeof body.agentId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(body.agentId)
+        || (body.crm !== undefined && typeof body.crm !== "boolean")
         || !email(body.email)) return Response.json({ error: "invalid_config" }, { status: 400 });
       if (!/^projects\/[^/]+\/topics\/[^/]+$/.test(this.env.GMAIL_PUSH_TOPIC ?? "")) return Response.json({ error: "topic_unavailable" }, { status: 503 });
-      const config: Config = { userId: body.userId as string, connectionId: body.connectionId as string, agentId: body.agentId as string, email: body.email.toLowerCase() };
+      const config: Config = { userId: body.userId as string, connectionId: body.connectionId as string, agentId: body.agentId as string, email: body.email.toLowerCase(), ...(body.crm === true ? { crm: true as const } : {}) };
       // Reconfiguration cannot silently discard another mailbox's pending outbox.
       if (box && JSON.stringify(box.config) !== JSON.stringify(config)) return Response.json({ error: "disable_before_reconfigure" }, { status: 409 });
       try {
@@ -96,6 +98,7 @@ export class GmailPushMailbox {
         const watch = await this.watch(config);
         box ??= { config, cursor: watch.historyId, target: watch.historyId, renewAt: 0, expiration: watch.expiration, retry: 0, checkAt: Date.now() + HOUR, reconcile: false, recentMessageIds: [] };
         box.renewAt = Math.min(Date.now() + DAY, Number(watch.expiration) - 60_000); box.expiration = watch.expiration;
+        delete box.renewalRetry; delete box.renewalError;
         if (newer(watch.historyId, box.target)) box.target = watch.historyId;
         await this.schedule(box);
         await this.save(box);
@@ -111,10 +114,19 @@ export class GmailPushMailbox {
       await this.state.storage.setAlarm(Date.now() + 60_000);
       try {
         if (box.renewAt <= Date.now()) {
-          const watch = await this.watch(box.config);
-          box.renewAt = Math.min(Date.now() + DAY, Number(watch.expiration) - 60_000);
-          box.expiration = watch.expiration;
-          if (newer(watch.historyId, box.target)) box.target = watch.historyId;
+          // Watch availability must not gate the durable outbox or history reads.
+          // Persist a separate retry deadline so frequent deliveries cannot hammer watch.
+          try {
+            const watch = await this.watch(box.config);
+            box.renewAt = Math.min(Date.now() + DAY, Number(watch.expiration) - 60_000);
+            box.expiration = watch.expiration;
+            if (newer(watch.historyId, box.target)) box.target = watch.historyId;
+            delete box.renewalRetry; delete box.renewalError;
+          } catch {
+            box.renewalRetry = Math.min((box.renewalRetry ?? 0) + 1, 7);
+            box.renewalError = "gmail_watch_retry";
+            box.renewAt = Date.now() + Math.min(HOUR, 60_000 * 2 ** (box.renewalRetry - 1));
+          }
           await this.save(box);
         }
         if (box.checkAt <= Date.now()) {
@@ -147,7 +159,14 @@ export class GmailPushMailbox {
               await this.save(box);
             }
             if (delivered) break;
-            await this.deliver(box);
+            if (!await this.deliver(box)) {
+              // Trusted continuation means CRM made durable progress. Preserve
+              // the exact pending event and history cursor, without failure backoff.
+              box.retry = 0; delete box.lastError;
+              await this.save(box);
+              await this.state.storage.setAlarm(Date.now() + 1000);
+              return;
+            }
             delivered = true;
             box.recentMessageIds = [...new Set([...box.recentMessageIds, ...box.pending.event.messageIds])].slice(-512);
             delete box.pending;
@@ -172,7 +191,7 @@ export class GmailPushMailbox {
         box.retry = Math.min(box.retry + 1, 10);
         box.lastError = "gmail_or_wake_retry";
         await this.save(box);
-        await this.state.storage.setAlarm(Date.now() + Math.min(HOUR, 1000 * 2 ** box.retry));
+        await this.state.storage.setAlarm(Math.min(box.renewAt, Date.now() + Math.min(HOUR, 1000 * 2 ** box.retry)));
       }
     });
   }
@@ -265,15 +284,17 @@ export class GmailPushMailbox {
     const bytes = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(JSON.stringify([config, event])));
     return `gmail-${Array.from(new Uint8Array(bytes), byte => byte.toString(16).padStart(2, "0")).join("")}`;
   }
-  private async deliver(box: Mailbox): Promise<void> {
+  private async deliver(box: Mailbox): Promise<boolean> {
     const pending = box.pending!;
     const response = await this.env.MANAGED_AGENT_OWNERSHIP.fetch(new Request("https://managed-ownership.internal/v1/gmail-push/wake", {
       method: "POST", signal: AbortSignal.timeout(20_000), headers: { "content-type": "application/json" },
       body: JSON.stringify({ userId: box.config.userId, agentId: box.config.agentId, eventId: pending.eventId,
-        input: JSON.stringify({ connectionId: box.config.connectionId, email: box.config.email, ...pending.event }) }),
+        input: JSON.stringify({ connectionId: box.config.connectionId, email: box.config.email, ...(box.config.crm === true ? { crm: true } : {}), ...pending.event }) }),
     }));
     if (!response.ok) throw new Error("wake_retry");
-    const result = await response.json() as { status?: string };
+    const result = await response.json() as { status?: string; progress?: unknown };
+    if (box.config.crm === true && result.status === "busy" && result.progress === true) return false;
     if (result.status !== "accepted" && result.status !== "duplicate") throw new Error("wake_retry");
+    return true;
   }
 }

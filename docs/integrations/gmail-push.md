@@ -38,6 +38,10 @@ OAuth consent if it only grants other Workspace capabilities.
 
 ## Account API
 
+The assistant tool `gmail_watch` exposes `enable`, `status`, and `disable` for the
+current agent and exact `connection_id`. Enable also takes `email` and optional
+`crm`; it routes through the same authenticated API below.
+
 Use the authenticated account API to configure a mailbox's target agent:
 
 ```
@@ -47,11 +51,24 @@ DELETE /v1/agents/{agentId}/gmail-push/{connectionId}
 ```
 
 The agent must belong to the authenticated account. Connect grants cannot create
-these watches. PUT takes a JSON body `{"email":"mailbox@example.com"}`. The server verifies
+these watches. PUT takes a JSON body `{"email":"mailbox@example.com"}`. Add
+`"crm":true` to explicitly enable CRM email interactions. This reads only bounded
+inbox message metadata and appends sourced notes to an existing, unambiguous exact
+CRM email identity. It creates no contacts and never edits manual notes or sends mail.
+Each delivery processes at most five messages; durable receipts let broker retries
+continue through unmatched senders without duplicating notes. Resync hints do not
+trigger an inbox backfill. CRM defaults off; disable before changing the opt-in.
+The server verifies
 that address against the exact connection's Gmail profile. One mailbox has one target agent; disable before changing it. Enable only
 after the Pub/Sub subscription exists, then send a test message and inspect status
 and the resulting agent turn before disabling the old five-minute polling cron.
 The integration does not automatically remove existing account schedules.
+
+With CRM enabled, bounded metadata reads attach dated, sourced email interactions
+to existing contacts matched by exact sender address. They do not create a contact
+for every sender, read attachments, overwrite manual notes, or send replies. A
+durable receipt prevents duplicate notes when a delivery is replayed. Expired
+Gmail history is reported as a gap; it does not trigger an unbounded inbox import.
 
 The provisioning helper defaults to an offline dry run:
 
@@ -90,3 +107,11 @@ using the same OAuth project can replace or stop it.
 
 See Google's [Gmail push guide](https://developers.google.com/workspace/gmail/api/guides/push)
 and [authenticated Pub/Sub push documentation](https://docs.cloud.google.com/pubsub/docs/authenticate-push-subscriptions).
+
+## Current scope
+
+This integration delivers durable mailbox events and admits agent turns. It does
+not run a Jev classifier, supply native approval cards, or guarantee a remote
+push notification to the user. Agent output and Gmail drafts remain separate
+from authorization to send. A successful watch configuration or accepted turn
+is not evidence that an email response was prepared or sent.

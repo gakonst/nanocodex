@@ -8,6 +8,8 @@ export type GmailPushWake = Readonly<{
 export type GmailPushWakeResult = Readonly<{
   status: "accepted" | "duplicate" | "busy";
   turnId?: string;
+  /** Private receipt: durable CRM progress, retry soon without admitting a turn. */
+  progress?: true;
 }>;
 
 export function parseGmailPushWake(value: unknown): GmailPushWake {

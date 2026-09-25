@@ -1,5 +1,5 @@
-/** The public API accepts only a mailbox address; identity comes from the session. */
-export async function gmailPushConfig(request: Request): Promise<{email:string} | Response> {
+/** The public API accepts a mailbox address and explicit optional CRM opt-in; identity comes from the session. */
+export async function gmailPushConfig(request: Request): Promise<{email:string;crm?:boolean} | Response> {
   const reader = request.body?.getReader();
   if (!reader) return Response.json({error:"invalid_request"},{status:400});
   try {
@@ -15,9 +15,9 @@ export async function gmailPushConfig(request: Request): Promise<{email:string} 
     const value:unknown=JSON.parse(text+decoder.decode());
     if(!value || typeof value!=="object" || Array.isArray(value)) throw new Error();
     const body=value as Record<string,unknown>;
-    if(Object.keys(body).length!==1 || typeof body.email!=="string" || body.email.length>320
+    if(Object.keys(body).some(key=>key!=="email"&&key!=="crm") || (body.crm!==undefined && typeof body.crm!=="boolean") || typeof body.email!=="string" || body.email.length>320
       || !/^[^\s@]+@[^\s@]+$/.test(body.email)) throw new Error();
-    return {email:body.email};
+    return {email:body.email,...(body.crm===undefined?{}:{crm:body.crm as boolean})};
   } catch { return Response.json({error:"invalid_request"},{status:400}); }
   finally { reader.releaseLock(); }
 }

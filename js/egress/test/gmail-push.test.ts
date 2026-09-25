@@ -17,6 +17,7 @@ function fixture() {
   };
   const calls: Request[] = [], wakes: Record<string, unknown>[] = [];
   let history: (url: URL) => Response = () => Response.json({ historyId: "12", history: [{ id: "12", messagesAdded: [{ message: { id: "m1", threadId: "t1", labelIds: ["INBOX"] } }] }] });
+  let watchStatus = 200;
   let wakeStatus = 202;
   let wakeBody: unknown;
   const env = {
@@ -25,6 +26,7 @@ function fixture() {
       calls.push(request);
       const url = new URL(request.url);
       if (url.pathname.endsWith("/profile")) return Response.json({ emailAddress: "mail@example.test", historyId: "20" });
+      if (url.pathname.endsWith("/watch") && watchStatus !== 200) return new Response(null, { status: watchStatus });
       if (url.pathname.endsWith("/watch")) return Response.json({ historyId: "10", expiration: String(Date.now() + 7 * 86400000) });
       if (url.pathname.endsWith("/stop")) return new Response(null, { status: 204 });
       return history(url);
@@ -39,6 +41,7 @@ function fixture() {
   return {
     calls, wakes, env, get alarm() { return alarm; },
     history: (fn: typeof history) => { history = fn; },
+    watchStatus: (status: number) => { watchStatus = status; },
     wakeStatus: (status: number) => { wakeStatus = status; },
     wakeBody: (body: unknown) => { wakeBody = body; },
     restart: () => { object = new GmailPushMailbox(state, env); },
@@ -75,6 +78,39 @@ describe("Gmail push history protocol", () => {
     expect(await (await f.request("/status")).json()).toMatchObject({ cursor: "12", pending: false });
     await f.request("/notify", "POST", notify); await f.alarmRun();
     expect(f.wakes).toHaveLength(2);
+  });
+
+  it("drains pending wakes during renewal failure and persists independent renewal backoff", async () => {
+    const f = fixture();
+    await f.request("/configure", "POST", config);
+    f.wakeStatus(503);
+    await f.request("/notify", "POST", notify);
+    await f.alarmRun();
+    const originalWake = f.wakes[0];
+    const { vi } = await import("vitest");
+    let now = Date.now() + 86400001;
+    const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+    try {
+      f.watchStatus(403); f.wakeStatus(202); f.restart();
+      await f.alarmRun();
+      expect(f.wakes).toHaveLength(2);
+      expect(f.wakes[1]).toEqual(originalWake);
+      expect(await (await f.request("/status")).json()).toMatchObject({
+        cursor: "12", pending: false, lastError: null, renewalError: "gmail_watch_retry",
+      });
+      expect(f.alarm).toBe(now + 60000);
+      f.restart(); now += 1000;
+      await f.alarmRun();
+      expect(f.calls.filter(r => r.url.endsWith("/watch"))).toHaveLength(2);
+      now += 59000;
+      await f.alarmRun();
+      expect(f.calls.filter(r => r.url.endsWith("/watch"))).toHaveLength(3);
+      expect(f.alarm).toBe(now + 120000);
+      f.restart(); f.watchStatus(200); now += 120000;
+      await f.alarmRun();
+      expect(await (await f.request("/status")).json()).toMatchObject({ renewalError: null });
+      expect(f.alarm).toBeGreaterThan(now + 120000);
+    } finally { clock.mockRestore(); }
   });
 
   it("bounds each page, persists continuation, and advances only after all events are acknowledged", async () => {
@@ -205,4 +241,41 @@ it("treats a self-addressed delivery in INBOX as incoming even when also SENT", 
   await f.alarmRun();
   expect(f.wakes).toHaveLength(1);
   expect(JSON.parse(f.wakes[0]!.input as string).messageIds).toEqual(["selftest"]);
+});
+it("persists only explicit CRM opt-in and forwards it identically across busy retries", async () => {
+  const f = fixture();
+  expect((await f.request("/configure", "POST", { ...config, crm: "true" })).status).toBe(400);
+  expect(f.calls).toHaveLength(0);
+  expect((await f.request("/configure", "POST", { ...config, crm: true })).status).toBe(200);
+  f.wakeStatus(200);
+  await f.request("/notify", "POST", notify); await f.alarmRun();
+  expect(JSON.parse(f.wakes[0]!.input as string).crm).toBe(true);
+  f.restart(); f.wakeStatus(202); await f.alarmRun();
+  expect(f.wakes[1]).toEqual(f.wakes[0]);
+  expect(await (await f.request("/status")).json()).toMatchObject({ crm: true });
+  const generic = fixture();
+  await generic.request("/configure", "POST", config);
+  await generic.request("/notify", "POST", notify); await generic.alarmRun();
+  expect(JSON.parse(generic.wakes[0]!.input as string).crm).not.toBe(true);
+});
+it("continues bounded CRM work promptly without committing its event or increasing busy backoff", async () => {
+  const f = fixture();
+  await f.request("/configure", "POST", { ...config, crm: true });
+  f.history(() => Response.json({ historyId: "12", history: [{id:"12",messagesAdded:Array.from({length:100},(_,i)=>({message:{id:`m${i}`,labelIds:["INBOX"]}}))}] }));
+  await f.request("/notify", "POST", notify);
+  const { vi } = await import("vitest"); const now = Date.now();
+  const clock = vi.spyOn(Date,"now").mockReturnValue(now);
+  try {
+    f.wakeStatus(200); f.wakeBody({status:"busy",progress:true});
+    for (let i=0;i<19;i++) {
+      await f.alarmRun(); f.restart();
+      expect(f.alarm).toBe(now+1000);
+      expect(await (await f.request("/status")).json()).toMatchObject({cursor:"10",pending:true,lastError:null});
+    }
+    expect(f.wakes.every(wake=>JSON.stringify(wake)===JSON.stringify(f.wakes[0]))).toBe(true);
+    f.wakeBody({status:"busy"}); await f.alarmRun();
+    expect(f.alarm).toBe(now+2000);
+    f.wakeBody({status:"accepted"}); await f.alarmRun();
+    expect(await (await f.request("/status")).json()).toMatchObject({cursor:"12",pending:false});
+  } finally { clock.mockRestore(); }
 });
