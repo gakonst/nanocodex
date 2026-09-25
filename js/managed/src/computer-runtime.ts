@@ -70,6 +70,10 @@ export async function createManagedComputerRuntime(options: Readonly<{
     const runtime = await createComputerRuntimeWithoutPdf({
       filesystem,
       refreshFilesystemBeforeExec: options.filesystem !== undefined,
+      lazyInitialize: true,
+      // Wrangler uploads this prebundled ES module independently; only shell
+      // calls evaluate it, not chat-only Durable Object activations.
+      loadInterpreter: () => import("../.shell-module/just-bash-lazy.mjs"),
       fetch,
       networkMode: options.subject === undefined
         ? "public-http-only"

@@ -61,7 +61,16 @@ const UNLIMITED_EXECUTION_LIMITS = Object.freeze({
   maxSourceDepth: PRACTICALLY_UNBOUNDED,
 });
 
+const DEFAULT_INTERPRETER_SPECIFIER = "just-bash/browser";
+
 const DEVICES = new Set(["/dev/full", "/dev/null", "/dev/stderr", "/dev/stdout"]);
+
+// just-bash@3.4.0's built-in command registry (without the conditional curl
+// command). The parity test compares this manifest with Bash.commands so an
+// upstream dependency change cannot silently alter the advertised tool surface.
+const BUILTIN_COMMANDS = Object.freeze(
+  "alias awk base64 basename bash cat chmod clear column comm cp cut date diff dirname du echo egrep env expand expr false fgrep file find fold grep gunzip gzip head help history hostname html-to-markdown join jq ln ls md5sum mkdir mv nl od paste printenv printf pwd readlink rev rg rm rmdir sed seq sh sha1sum sha256sum sleep sort split stat strings tac tail tee time timeout touch tr tree true unalias unexpand uniq wc which whoami xargs zcat".split(" "),
+);
 
 export async function justBash(options) {
   if (!options || typeof options !== "object" || Array.isArray(options)) {
@@ -86,6 +95,8 @@ export async function justBash(options) {
   const filesystem = shellFilesystem.workspace();
   const runtime = await createJustBashRuntime({
     filesystem: shellFilesystem,
+    lazyInitialize: options.lazyInitialize === true,
+    loadInterpreter: options.loadInterpreter,
     cwd: filesystem.root,
     env: {
       HOME: filesystem.root,
@@ -151,37 +162,59 @@ export async function createJustBashRuntime(options) {
     throw new RangeError("defaultMaxOutputTokens cannot exceed maxOutputTokens");
   }
   const executionLimits = Object.freeze({ ...UNLIMITED_EXECUTION_LIMITS, ...options.executionLimits });
-  const { Bash, defineCommand } = await import("just-bash/browser");
-  const customCommands = typeof options.customCommands === "function"
-    ? await options.customCommands({ defineCommand })
-    : options.customCommands;
-  const bash = new Bash({
-    cwd,
-    env: options.env,
-    fs: options.filesystem,
-    ...(typeof options.fetch === "function"
-      ? { fetch: options.fetch }
-      : options.network === false || options.network === undefined
-        ? {}
-        : { network: options.network }),
-    ...(customCommands === undefined ? {} : { customCommands: [...customCommands] }),
-    executionLimitProfile: "normal",
-    // Allocation builders require safe integer capacities, even for tiny output.
-    // Keep the host's declared policy in the descriptor, while representing its
-    // unlimited buffer capacities with the largest supported integer internally.
-    executionLimits: {
-      ...executionLimits,
-      maxOutputSize: Math.min(executionLimits.maxOutputSize, Number.MAX_SAFE_INTEGER),
-      maxStringLength: Math.min(executionLimits.maxStringLength, Number.MAX_SAFE_INTEGER),
-    },
-  });
+  // Do not evaluate just-bash/browser on chat-only managed turns. Initialization
+  // is shared across concurrent first commands; the existing execution tail
+  // still serializes refresh + command execution after initialization.
+  const networkEnabled = typeof options.fetch === "function"
+    || options.network !== false && options.network !== undefined;
+  let bash;
+  let registeredCommands;
+  let initialization;
+  const initialize = () => {
+    if (initialization) return initialization;
+    const attempt = (async () => {
+    const { Bash, defineCommand } = await (options.loadInterpreter?.() ?? import(DEFAULT_INTERPRETER_SPECIFIER));
+    const customCommands = typeof options.customCommands === "function"
+      ? await options.customCommands({ defineCommand })
+      : options.customCommands;
+    registeredCommands = customCommands;
+    bash = new Bash({
+      cwd,
+      env: options.env,
+      fs: options.filesystem,
+      ...(typeof options.fetch === "function"
+        ? { fetch: options.fetch }
+        : options.network === false || options.network === undefined
+          ? {}
+          : { network: options.network }),
+      ...(customCommands === undefined ? {} : { customCommands: [...customCommands] }),
+      executionLimitProfile: "normal",
+      // Allocation builders require safe integer capacities, even for tiny output.
+      executionLimits: {
+        ...executionLimits,
+        maxOutputSize: Math.min(executionLimits.maxOutputSize, Number.MAX_SAFE_INTEGER),
+        maxStringLength: Math.min(executionLimits.maxStringLength, Number.MAX_SAFE_INTEGER),
+      },
+    });
+    return bash;
+    })();
+    initialization = attempt;
+    // A failed first import/build must not poison all later shell calls.
+    void attempt.catch(() => { if (initialization === attempt) initialization = undefined; });
+    return attempt;
+  };
+  if (!options.lazyInitialize || typeof options.customCommands === "function") await initialize();
   const descriptor = describeRuntime({
-    bash,
+    commands: bash ? [...bash.commands.keys()] : [
+      ...BUILTIN_COMMANDS,
+      ...(networkEnabled ? ["curl"] : []),
+      ...(options.customCommands ?? []),
+    ].map((command) => typeof command === "string" ? command : command.name),
     cwd,
-    customCommands,
+    customCommands: registeredCommands ?? options.customCommands,
     executionLimits,
     networkMode: options.networkMode,
-    networkEnabled: typeof options.fetch === "function" || options.network !== false && options.network !== undefined,
+    networkEnabled,
   });
   const instructions = typeof options.instructions === "function"
     ? options.instructions(descriptor)
@@ -196,18 +229,22 @@ export async function createJustBashRuntime(options) {
     parameters: EXEC_COMMAND_PARAMETERS,
     outputSchema: EXECUTION_OUTPUT_SCHEMA,
     handler(input, context) {
-      const execute = () => executeCommand({
-        bash,
-        input,
-        root: cwd,
-        signal: context?.signal,
-        executionTimeoutMs,
-        defaultMaxOutputTokens,
-        maxOutputTokens,
-        aroundExecute: options.aroundExecute,
-        outputTruncationNotice: options.outputTruncationNotice,
-        retainNoticeWithinLimit: options.retainNoticeWithinLimit,
-      });
+      const execute = async () => {
+        const startedAt = now();
+        return executeCommand({
+          bash: await initialize(),
+          startedAt,
+          input,
+          root: cwd,
+          signal: context?.signal,
+          executionTimeoutMs,
+          defaultMaxOutputTokens,
+          maxOutputTokens,
+          aroundExecute: options.aroundExecute,
+          outputTruncationNotice: options.outputTruncationNotice,
+          retainNoticeWithinLimit: options.retainNoticeWithinLimit,
+        });
+      };
       const result = executionTail.then(execute, execute);
       executionTail = result.then(() => undefined, () => undefined);
       return result;
@@ -219,6 +256,7 @@ export async function createJustBashRuntime(options) {
 
 async function executeCommand({
   bash,
+  startedAt,
   input,
   root,
   signal,
@@ -257,7 +295,6 @@ async function executeCommand({
     () => deadline.abort(new Error(`exec_command exceeded ${executionTimeoutMs} milliseconds`)),
     executionTimeoutMs,
   );
-  const startedAt = now();
   let result;
   try {
     const execute = () => bash.exec(input.cmd, { cwd: workdir, signal: deadline.signal });
@@ -287,7 +324,7 @@ async function executeCommand({
 }
 
 function describeRuntime({
-  bash,
+  commands,
   cwd,
   customCommands,
   executionLimits,
@@ -297,7 +334,7 @@ function describeRuntime({
   const customCommandNames = [...customCommands ?? []].map(({ name }) => name);
   return Object.freeze({
     shell: "nanocodex-just-bash",
-    commands: Object.freeze([...bash.commands.keys()].sort()),
+    commands: Object.freeze([...new Set(commands)].sort()),
     customCommands: Object.freeze(customCommandNames.sort()),
     cwd,
     limits: Object.freeze(Object.fromEntries(Object.entries(executionLimits).filter(

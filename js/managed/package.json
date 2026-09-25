@@ -12,7 +12,7 @@
     "predeploy": "npm run prepare:code-evaluator",
     "deploy": "wrangler deploy --env=\"\" --config wrangler.jsonc",
     "prebuild": "npm run prepare:code-evaluator",
-    "prepare:code-evaluator": "node scripts/prepare-code-evaluator.mjs && node scripts/prepare-hand-image.mjs",
+    "prepare:code-evaluator": "node scripts/prepare-code-evaluator.mjs && node scripts/prepare-hand-image.mjs && node scripts/prepare-just-bash-lazy.mjs",
     "test": "vitest run && npm run test:rpc-lifecycle && npm run test:discovery-cache && npm run test:routing",
     "test:discovery-cache": "node --test test/account-discovery-isolates.test.mjs",
     "test:rpc-lifecycle": "node --test test/rpc-lifecycle.test.mjs",
