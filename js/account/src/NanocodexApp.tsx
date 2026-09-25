@@ -26,27 +26,16 @@ import {
 } from "react";
 import { flushSync } from "react-dom";
 import { useLocation, useNavigate } from "react-router";
-import { DeviceConnect } from "./DeviceConnect";
 import { AgentExperience } from "./AgentExperience";
-import { Changelog, preloadChangelog } from "./Changelog";
-import { ChiefOfStaffDemo } from "./ChiefOfStaffDemo";
-import { CodeBrowser } from "./CodeBrowser";
-import { CommitCodeStream } from "./CommitCodeStream";
-import { Docs, preloadDocsRoute } from "./Docs";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "./DropdownMenu";
-const RouterDashboard = lazy(() => import("./RouterDashboard"));
-import { Evals, preloadEvalOverview } from "./Evals";
-import { HostedToolsDemo } from "./HostedToolsDemo";
-import { MonsterWorld } from "./MonsterWorld";
 import { lockDocumentScroll, useModalBoundary } from "./modalBoundary";
-import { Multiplayer } from "./Multiplayer";
-import { PierreWorkerProvider } from "./PierreWorkerProvider";
 import { VirtualCommitList } from "./VirtualCommitList";
+import { preloadChangelog, preloadDocsRoute, preloadEvalOverview } from "./routeModulePreloads";
 import type { CodeBrowserHandle } from "./CodeBrowser";
 import type { CommitCodeStreamHandle } from "./CommitCodeStream";
 import {
@@ -78,12 +67,22 @@ import type {
   PublishedRepositorySnapshot,
 } from "./publishedRepository";
 import type { HarnessCommit } from "./threadRepositorySnapshot";
-import { loadWorldAssets } from "./monsterWorldRenderer";
-import {
-  prepareRepositorySurface,
-  type PreparedDirectRoute,
-  type PreparedRepositorySurface,
-} from "./routeLoaders";
+import type { PreparedDirectRoute, PreparedRepositorySurface } from "./routeLoaders";
+
+// Route-only UI stays outside the initial home/agent bundle. Intent preloads
+// below fetch the same modules before navigation where useful.
+const DeviceConnect = lazy(() => import("./DeviceConnect").then((module) => ({ default: module.DeviceConnect })));
+const ChiefOfStaffDemo = lazy(() => import("./ChiefOfStaffDemo").then((module) => ({ default: module.ChiefOfStaffDemo })));
+const HostedToolsDemo = lazy(() => import("./HostedToolsDemo").then((module) => ({ default: module.HostedToolsDemo })));
+const Multiplayer = lazy(() => import("./Multiplayer").then((module) => ({ default: module.Multiplayer })));
+const MonsterWorld = lazy(() => import("./MonsterWorld").then((module) => ({ default: module.MonsterWorld })));
+const Changelog = lazy(() => import("./Changelog").then((module) => ({ default: module.Changelog })));
+const Docs = lazy(() => import("./Docs").then((module) => ({ default: module.Docs })));
+const CodeBrowser = lazy(() => import("./CodeBrowser").then((module) => ({ default: module.CodeBrowser })));
+const CommitCodeStream = lazy(() => import("./CommitCodeStream").then((module) => ({ default: module.CommitCodeStream })));
+const PierreWorkerProvider = lazy(() => import("./PierreWorkerProvider").then((module) => ({ default: module.PierreWorkerProvider })));
+const RouterDashboard = lazy(() => import("./RouterDashboard"));
+const Evals = lazy(() => import("./Evals").then((module) => ({ default: module.Evals })));
 
 export type Theme = "light" | "dark";
 type Scope = "all" | "eval" | "fix" | "docs" | "perf";
@@ -151,6 +150,16 @@ function isPlainProductNavigation(event: ReactMouseEvent<HTMLAnchorElement>): bo
 }
 
 type RepositorySurface = Extract<Surface, "code" | "commits">;
+
+// Only a repository interaction needs the repository data/worker module.
+function prepareRepositorySurface(
+  surface: RepositorySurface,
+  requestedCommit?: string,
+  adopt = false,
+): Promise<PreparedRepositorySurface> {
+  return import("./routeLoaders").then(({ prepareRepositorySurface }) =>
+    prepareRepositorySurface(surface, requestedCommit, adopt));
+}
 
 type RouteLoadFailure = {
   error: Error;
@@ -735,10 +744,30 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
       return;
     }
     if (nextSurface === "multiplayer") {
+      void import("./Multiplayer").catch(() => undefined);
+      return;
+    }
+    if (nextSurface === "connect") {
+      void import("./DeviceConnect").catch(() => undefined);
+      return;
+    }
+    if (nextSurface === "chief-of-staff") {
+      void import("./ChiefOfStaffDemo").catch(() => undefined);
+      return;
+    }
+    if (nextSurface === "tools") {
+      void import("./HostedToolsDemo").catch(() => undefined);
+      return;
+    }
+    if (nextSurface === "router") {
+      void import("./RouterDashboard").catch(() => undefined);
       return;
     }
     if (nextSurface === "world") {
-      void loadWorldAssets().catch(() => undefined);
+      void Promise.all([
+        import("./MonsterWorld"),
+        import("./monsterWorldRenderer").then(({ loadWorldAssets }) => loadWorldAssets()),
+      ]).catch(() => undefined);
       return;
     }
     if (nextSurface === "changelog") {
@@ -750,7 +779,11 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
       return;
     }
     if (nextSurface === "code" || nextSurface === "commits") {
-      void prepareRepositorySurface(nextSurface).catch(() => undefined);
+      void Promise.all([
+        prepareRepositorySurface(nextSurface),
+        import("./PierreWorkerProvider"),
+        nextSurface === "code" ? import("./CodeBrowser") : import("./CommitCodeStream"),
+      ]).catch(() => undefined);
       return;
     }
     if (nextSurface === "evals") {
@@ -1394,6 +1427,7 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
             }
             surface={surface}
           >
+          <Suspense fallback={<p role="status">Loading {surface}…</p>}>
           {surface === "connect" ? (
             <DeviceConnect />
           ) : surface === "chief-of-staff" ? (
@@ -1576,6 +1610,7 @@ function NanocodexShell({ preparedRoute }: Required<NanocodexAppProps>) {
           ) : (
             <Evals />
           )}
+          </Suspense>
           </RouteErrorBoundary>
           )}
         </main>

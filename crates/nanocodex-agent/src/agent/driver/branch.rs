@@ -78,7 +78,7 @@ where
         config.fast_mode = fast_mode;
         spawner.config = Arc::new(config);
         spawner.depth = self.depth.saturating_add(1);
-        let service = (spawner.service_factory)(Arc::clone(&spawner.config));
+        let service = (spawner.service_factory)(Arc::clone(&spawner.config), None);
         spawn_agent_driver(
             spawner,
             session_id,
@@ -142,7 +142,7 @@ where
             host_context,
             service_factory: Arc::clone(&self.service_factory),
         };
-        let service = (spawner.service_factory)(Arc::clone(&spawner.config));
+        let service = (spawner.service_factory)(Arc::clone(&spawner.config), None);
         spawn_agent_driver(
             spawner,
             session_id,
@@ -226,7 +226,7 @@ where
                 ))
             })
             .transpose()?;
-        let service = (spawner.service_factory)(Arc::clone(&spawner.config));
+        let service = (spawner.service_factory)(Arc::clone(&spawner.config), None);
         spawn_agent_driver(
             spawner,
             session_id,

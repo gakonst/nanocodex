@@ -103,7 +103,7 @@ where
             context_source.resolve_workspace(configured_workspace.as_deref())?,
         ))
     };
-    let service = service_factory(Arc::clone(&config));
+    let service = service_factory(Arc::clone(&config), Some((&lineage_id, &session_id_text)));
     let provider_session_id = Arc::clone(&lineage_id);
     spawn_agent_driver(
         BranchSpawner {

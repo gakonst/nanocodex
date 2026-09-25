@@ -1,0 +1,44 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nanocodex-egress2",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-29",
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+    "redact_query_string": false,
+    "logs": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "invocation_logs": true,
+      "persist": true
+    },
+    "traces": {
+      "enabled": true,
+      "head_sampling_rate": 1,
+      "persist": true
+    }
+  },
+  "workers_dev": false,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "USER_CREDENTIALS",
+        "class_name": "UserCredentials"
+      },
+      {
+        "name": "CHATGPT_EGRESS",
+        "class_name": "ChatGptEgress",
+        "script_name": "nanocodex"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "UserCredentials"
+      ]
+    }
+  ]
+}

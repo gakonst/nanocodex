@@ -908,6 +908,7 @@ where
                                         .spawner
                                         .service_factory)(
                                         Arc::clone(&self.spawner.config),
+                                        None,
                                     )));
                                     Err(NanocodexError::TurnCancelled)
                                 }
@@ -1587,6 +1588,7 @@ where
                     };
                     model.replace_client(ResponsesClient::new((self.spawner.service_factory)(
                         Arc::clone(&self.spawner.config),
+                        None,
                     )));
                     (
                         persisted.and(Err(NanocodexError::TurnCancelled)),
@@ -1871,7 +1873,7 @@ where
     S::Error: Into<ResponseError>,
     S::Future: AgentSend,
 {
-    let client = ResponsesClient::new((spawner.service_factory)(Arc::clone(&spawner.config)));
+    let client = ResponsesClient::new((spawner.service_factory)(Arc::clone(&spawner.config), None));
     let mut model = if let Some(checkpoint) = checkpoint {
         let prepared = prepare_checkpoint(
             checkpoint.model().clone(),

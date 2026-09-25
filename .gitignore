@@ -75,3 +75,5 @@ __pycache__/
 
 # Standalone Wrangler ES module generated from the pinned just-bash/browser package.
 /js/managed/.shell-module/
+/js/managed/src/just-bash-lazy.mjs
+/js/managed/src/just-bash-lazy.d.mts

@@ -15,6 +15,7 @@ pub struct NanocodexBuilder<F = StandardServiceFactory> {
     pub(super) codex: CodexCompatibility,
     pub(super) resume: Option<SessionSnapshot>,
     pub(super) factory: F,
+    pub(super) preconnect: bool,
 }
 
 impl<F> BuilderBackend for OpenAi<F>
@@ -34,6 +35,7 @@ where
             codex: CodexCompatibility::default(),
             resume: None,
             factory,
+            preconnect: false,
         }
     }
 }
@@ -52,6 +54,14 @@ pub(super) struct CodexCompatibility {
 }
 
 impl<F> NanocodexBuilder<F> {
+    /// Starts a non-generating WebSocket connection while the root agent is idle.
+    /// A prompt arriving during connection setup waits for the same attempt.
+    #[must_use]
+    pub const fn preconnect(mut self, enabled: bool) -> Self {
+        self.preconnect = enabled;
+        self
+    }
+
     /// Awaits durable host preservation before automatic or manual compaction.
     ///
     /// The host must deduplicate by boundary ID, return only after durable success,
@@ -358,7 +368,14 @@ where
     validate_execution_environment(builder.codex.context.execution_environment())?;
     let config = Arc::new(builder.config);
     let factory = builder.factory;
-    let service_factory: ServiceFactory<F::Service> = Arc::new(move |config| factory.make(config));
+    let preconnect = builder.preconnect;
+    let service_factory: ServiceFactory<F::Service> = Arc::new(move |config, identity| {
+        let service = factory.make(config);
+        if preconnect && let Some((session_id, thread_id)) = identity {
+            factory.preconnect(&service, session_id, thread_id);
+        }
+        service
+    });
     build_agent(
         config,
         builder.tools,
@@ -567,6 +584,7 @@ mod tests {
             factory: ObservingFactory {
                 model: Arc::clone(&observed_model),
             },
+            preconnect: false,
         };
 
         let (agent, events) = builder.build().expect("resumed agent");

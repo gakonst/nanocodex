@@ -1,7 +1,6 @@
-import { preloadChangelog } from "./Changelog";
-import { preloadDocsRoute } from "./Docs";
-import { preloadEvalOverview } from "./Evals";
 import { surfaceFromUrl, type Surface } from "./navigation";
+import { preloadChangelog, preloadDocsRoute, preloadEvalOverview } from "./routeModulePreloads";
+export { preloadEvalOverview } from "./routeModulePreloads";
 import {
   loadPublishedCommitHistory,
   loadPublishedRepositorySnapshot,
@@ -56,8 +55,6 @@ type PreparedRepositoryRequest = {
 };
 
 const repositorySurfaceRequests = new Map<string, PreparedRepositoryRequest>();
-
-export { preloadEvalOverview };
 
 export function prepareRepositorySurface(
   surface: Extract<Surface, "code" | "commits">,
@@ -129,6 +126,8 @@ function preparedRepositoryKey(
 }
 
 async function prepareCodeSurface(search?: string): Promise<PreparedCodeSurface> {
+  // Direct-route data and the corresponding UI chunk start loading together.
+  void Promise.all([import("./CodeBrowser"), import("./PierreWorkerProvider")]).catch(() => undefined);
   const snapshotRequest = loadRepositorySnapshot();
   preloadPierreWorker();
   const sourceFileRequest = snapshotRequest.then((snapshot) =>
@@ -152,6 +151,7 @@ async function prepareCommitSurface(
   requestedCommit?: string,
   adopted: Promise<void> = Promise.resolve(),
 ): Promise<PreparedCommitSurface> {
+  void Promise.all([import("./CommitCodeStream"), import("./PierreWorkerProvider")]).catch(() => undefined);
   const historyRequest = loadPublishedCommitHistory(
     requestedCommit,
     undefined,

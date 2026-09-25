@@ -22,6 +22,62 @@ pub struct ContextManager {
     pub(super) last_token_usage: Option<Usage>,
     pub(super) token_usage_is_estimate: bool,
     calls: CallIds,
+    token_counters: ContextTokenCounters,
+}
+
+/// Cached model-visible accounting over the retained, immutable history prefix.
+#[derive(Clone, Copy, Default)]
+struct ContextTokenCounters {
+    after_last_model_generated: Option<u64>,
+    reasoning_tokens: u64,
+    before_last_user: Option<u64>,
+}
+
+impl ContextTokenCounters {
+    fn from_items(items: &ResponseHistory) -> Self {
+        let mut counters = Self::default();
+        for item in items {
+            counters.record(item);
+        }
+        counters
+    }
+
+    fn record(&mut self, item: &ResponseItem) {
+        if is_model_generated_item(item) {
+            self.after_last_model_generated = Some(0);
+        } else if let Some(tokens) = &mut self.after_last_model_generated {
+            *tokens = tokens.saturating_add(compaction::estimate_item_tokens(item));
+        }
+        // A boundary captures reasoning *before* the item, matching the full scan.
+        if is_user_turn_boundary(item) {
+            self.before_last_user = Some(self.reasoning_tokens);
+        }
+        if matches!(
+            item,
+            ResponseItem::Reasoning {
+                encrypted_content: Some(_),
+                ..
+            }
+        ) {
+            self.reasoning_tokens = self
+                .reasoning_tokens
+                .saturating_add(compaction::estimate_item_tokens(item));
+        }
+    }
+
+    const fn local_tail(&self) -> u64 {
+        match self.after_last_model_generated {
+            Some(tokens) => tokens,
+            None => 0,
+        }
+    }
+
+    const fn non_last_reasoning(&self) -> u64 {
+        match self.before_last_user {
+            Some(tokens) => tokens,
+            None => 0,
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -45,6 +101,7 @@ impl ContextManager {
             last_token_usage: None,
             token_usage_is_estimate: false,
             calls: CallIds::default(),
+            token_counters: ContextTokenCounters::default(),
         };
         context.record_items(items);
         context
@@ -100,6 +157,7 @@ impl ContextManager {
             }
             assign_missing_response_item_id(&mut item);
             self.calls.track(&item);
+            self.token_counters.record(&item);
             if self.token_usage_is_estimate
                 && let Some(usage) = &mut self.last_token_usage
             {
@@ -213,6 +271,7 @@ impl ContextManager {
     pub fn replace_and_recompute(&mut self, mut items: Vec<ResponseItem>, prefix: &[ResponseItem]) {
         assign_missing_response_item_ids(&mut items);
         self.items.replace(items);
+        self.token_counters = ContextTokenCounters::from_items(&self.items);
         let total_tokens = prefix
             .iter()
             .chain(self.items.iter())
@@ -244,12 +303,12 @@ impl ContextManager {
         if self.token_usage_is_estimate {
             return reported;
         }
-        let local_tail = self.items_after_last_model_generated_tokens();
+        let local_tail = self.token_counters.local_tail();
         if server_reasoning_included {
             reported.saturating_add(local_tail)
         } else {
             reported
-                .saturating_add(self.non_last_reasoning_tokens())
+                .saturating_add(self.token_counters.non_last_reasoning())
                 .saturating_add(local_tail)
         }
     }
@@ -353,38 +412,7 @@ impl ContextManager {
         }
         self.items = items;
         self.calls = CallIds::from_items(self.items.iter());
-    }
-
-    fn items_after_last_model_generated_tokens(&self) -> u64 {
-        let mut tokens = None::<u64>;
-        for item in &self.items {
-            if is_model_generated_item(item) {
-                tokens = Some(0);
-            } else if let Some(tokens) = &mut tokens {
-                *tokens = tokens.saturating_add(compaction::estimate_item_tokens(item));
-            }
-        }
-        tokens.unwrap_or_default()
-    }
-
-    fn non_last_reasoning_tokens(&self) -> u64 {
-        let mut reasoning = 0_u64;
-        let mut before_last_user = None;
-        for item in &self.items {
-            if is_user_turn_boundary(item) {
-                before_last_user = Some(reasoning);
-            }
-            if matches!(
-                item,
-                ResponseItem::Reasoning {
-                    encrypted_content: Some(_),
-                    ..
-                }
-            ) {
-                reasoning = reasoning.saturating_add(compaction::estimate_item_tokens(item));
-            }
-        }
-        before_last_user.unwrap_or_default()
+        self.token_counters = ContextTokenCounters::from_items(&self.items);
     }
 }
 
@@ -793,6 +821,129 @@ fn truncate_output_content(items: &mut Vec<FunctionOutputContent>, token_limit: 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Keep the original full-history calculation as an independent correctness
+    // oracle for cached counters after every mutation and usage transition.
+    fn assert_cached_usage_matches_full_scan(context: &ContextManager) {
+        let mut local_tail = None::<u64>;
+        let mut reasoning = 0_u64;
+        let mut before_last_user = None::<u64>;
+        for item in context.iter() {
+            if is_model_generated_item(item) {
+                local_tail = Some(0);
+            } else if let Some(tokens) = &mut local_tail {
+                *tokens = tokens.saturating_add(compaction::estimate_item_tokens(item));
+            }
+            if is_user_turn_boundary(item) {
+                before_last_user = Some(reasoning);
+            }
+            if matches!(
+                item,
+                ResponseItem::Reasoning {
+                    encrypted_content: Some(_),
+                    ..
+                }
+            ) {
+                reasoning = reasoning.saturating_add(compaction::estimate_item_tokens(item));
+            }
+        }
+        let reported = context
+            .last_token_usage
+            .as_ref()
+            .map_or(0, |usage| usage.total_tokens);
+        for server_reasoning_included in [true, false] {
+            let expected = if context.token_usage_is_estimate {
+                reported
+            } else {
+                reported
+                    .saturating_add(if server_reasoning_included {
+                        0
+                    } else {
+                        before_last_user.unwrap_or_default()
+                    })
+                    .saturating_add(local_tail.unwrap_or_default())
+            };
+            assert_eq!(
+                context.active_context_tokens(server_reasoning_included),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn cached_usage_matches_full_scan_through_history_and_usage_transitions() {
+        let reasoning = || {
+            serde_json::from_value(serde_json::json!({
+                "type": "reasoning", "summary": [], "encrypted_content": "x".repeat(1200)
+            }))
+            .unwrap()
+        };
+        let assistant = || {
+            ResponseItem::message(
+                MessageRole::Assistant,
+                [ContentItem::output_text("a model response")],
+            )
+        };
+        let legacy_instruction = || {
+            ResponseItem::message(
+                MessageRole::Assistant,
+                [ContentItem::input_text(
+                    serde_json::json!({
+                        "author": "/root/peer", "recipient": "/root", "content": "new task",
+                        "trigger_turn": true
+                    })
+                    .to_string(),
+                )],
+            )
+        };
+        let mut context = ContextManager::new(vec![message("initial user"), reasoning()]);
+        assert_cached_usage_matches_full_scan(&context);
+        for item in [
+            message("ordinary user"),
+            assistant(),
+            reasoning(),
+            ResponseItem::message(
+                MessageRole::Developer,
+                [ContentItem::input_text("local instructions")],
+            ),
+            legacy_instruction(),
+            message("last user"),
+        ] {
+            context.record_items([item]);
+            assert_cached_usage_matches_full_scan(&context);
+        }
+        context.commit_tail();
+        assert_cached_usage_matches_full_scan(&context);
+        let mut clone = context.clone();
+        clone.update_token_info(Some(&Usage {
+            total_tokens: 123,
+            ..Usage::default()
+        }));
+        assert_cached_usage_matches_full_scan(&clone);
+        clone.record_items([reasoning(), message("after provider usage")]);
+        assert_cached_usage_matches_full_scan(&clone);
+        clone.replace_and_recompute(
+            vec![reasoning(), assistant(), message("replacement")],
+            &[message("request prefix")],
+        );
+        assert_cached_usage_matches_full_scan(&clone);
+        clone.record_items([message("estimated append")]);
+        assert_cached_usage_matches_full_scan(&clone);
+        clone.adopt_prompt_items(ResponseHistory::new(vec![
+            assistant(),
+            reasoning(),
+            legacy_instruction(),
+            message("adopted"),
+        ]));
+        assert_cached_usage_matches_full_scan(&clone);
+        clone.update_token_info(Some(&Usage {
+            total_tokens: u64::MAX,
+            ..Usage::default()
+        }));
+        clone.record_items([message("saturating tail")]);
+        assert_cached_usage_matches_full_scan(&clone);
+        assert_cached_usage_matches_full_scan(&context);
+    }
 
     #[test]
     fn recomputed_history_does_not_double_count_the_existing_local_tail() {

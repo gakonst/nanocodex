@@ -1,0 +1,27 @@
+{
+  "name": "nanocodex-egress2-service",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.13.0"
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:cloudflare": "vitest run --config vitest.cloudflare.config.ts",
+    "build": "wrangler deploy --dry-run --outdir dist --config wrangler.jsonc",
+    "deploy": "wrangler deploy --env=\"\" --config wrangler.jsonc"
+  },
+  "dependencies": {
+    "nanocodex": "workspace:*"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.19.0",
+    "@cloudflare/workers-types": "^5.20260730.1",
+    "@types/node": "^24.0.0",
+    "typescript": "5.9.3",
+    "vitest": "^4.0.18",
+    "wrangler": "4.137.0"
+  }
+}

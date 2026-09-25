@@ -24,6 +24,8 @@ const EVENT_CAPACITY: usize = 256;
 const RECONNECT_MIN: Duration = Duration::from_millis(100);
 const RECONNECT_MAX: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+const RECOVERY_TIMEOUT: Duration = Duration::from_secs(60);
+const SUBMIT_TIMEOUT: Duration = Duration::from_secs(90);
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(15);
 const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(45);
 
@@ -160,6 +162,7 @@ impl ManagedSocket {
             connected,
             command_rx,
             event_tx,
+            RECOVERY_TIMEOUT,
         ));
         (Self { commands }, ManagedSocketEvents { cursor, events })
     }
@@ -169,16 +172,30 @@ impl ManagedSocket {
         id: String,
         input: PromptInput,
     ) -> Result<TurnView, ManagedError> {
+        self.submit_with_timeout(id, input, SUBMIT_TIMEOUT).await
+    }
+
+    async fn submit_with_timeout(
+        &self,
+        id: String,
+        input: PromptInput,
+        timeout: Duration,
+    ) -> Result<TurnView, ManagedError> {
         validate_idempotency_key(&id)?;
         let id = websocket_turn_id(&id);
         let (result, receiver) = oneshot::channel();
-        self.commands
-            .send(Command::Submit { id, input, result })
+        let submission = async {
+            self.commands
+                .send(Command::Submit { id, input, result })
+                .await
+                .map_err(|_| live_error("managed WebSocket stopped before submission"))?;
+            receiver.await.map_err(|_| live_error("managed WebSocket stopped during submission; delivery is unknown; retry with the same request ID"))?
+        };
+        tokio::time::timeout(timeout, submission)
             .await
-            .map_err(|_| live_error("managed WebSocket stopped before submission"))?;
-        receiver
-            .await
-            .map_err(|_| live_error("managed WebSocket stopped during submission"))?
+            .map_err(|_| live_error(
+                "managed WebSocket submission acknowledgement timed out; delivery is unknown; retry with the same request ID",
+            ))?
     }
 }
 
@@ -227,21 +244,40 @@ async fn run(
     mut connected: Option<ConnectedSocket>,
     mut commands: mpsc::Receiver<Command>,
     events: mpsc::Sender<Result<ManagedEvent, ManagedError>>,
+    recovery_timeout: Duration,
 ) {
     let mut pending: Option<PendingSubmit> = None;
     let mut backoff = RECONNECT_MIN;
     let mut preparation_fallback_started = false;
+    let mut last_connect_error = String::from("connection repeatedly closed");
+    let mut recovery_deadline = tokio::time::Instant::now() + recovery_timeout;
     loop {
         if connected.is_none() {
-            let attempt = tokio::select! {
-                attempt = connect(&client, &agent_id, &cursor) => attempt,
-                () = events.closed() => return,
+            // Check explicitly: timeout_at can accept an immediately ready
+            // connection even after its deadline has elapsed.
+            let attempt = if tokio::time::Instant::now() >= recovery_deadline {
+                None
+            } else {
+                tokio::select! {
+                    attempt = tokio::time::timeout_at(recovery_deadline, connect(&client, &agent_id, &cursor)) => attempt.ok(),
+                    () = events.closed() => return,
+                }
+            };
+            let Some(attempt) = attempt else {
+                // Stop the command receiver before publishing failure. Queued
+                // submissions must not be delivered after recovery takes over.
+                commands.close();
+                drop(pending.take());
+                while commands.try_recv().is_ok() {}
+                let _ = events.send(Err(live_error(format!("managed WebSocket recovery timed out: {last_connect_error}; submission delivery may be unknown")))).await;
+                return;
             };
             match attempt {
                 Ok(socket) => connected = Some(socket),
-                Err(_) => {
+                Err(error) => {
+                    last_connect_error = error.to_string();
                     tokio::select! {
-                        () = tokio::time::sleep(backoff) => {},
+                        () = tokio::time::sleep_until((tokio::time::Instant::now() + backoff).min(recovery_deadline)) => {},
                         () = events.closed() => return,
                     }
                     backoff = (backoff * 2).min(RECONNECT_MAX);
@@ -272,11 +308,14 @@ async fn run(
         if !disconnected || events.is_closed() {
             return;
         }
+        if connected_at.elapsed() >= HEARTBEAT_INTERVAL {
+            recovery_deadline = tokio::time::Instant::now() + recovery_timeout;
+        }
         if connected_at.elapsed() >= Duration::from_millis(250) {
             backoff = RECONNECT_MIN;
         }
         tokio::select! {
-            () = tokio::time::sleep(backoff) => {}
+            () = tokio::time::sleep_until((tokio::time::Instant::now() + backoff).min(recovery_deadline)) => {}
             () = events.closed() => return,
         }
         backoff = (backoff * 2).min(RECONNECT_MAX);
@@ -296,6 +335,15 @@ async fn connection(
         tokio::time::interval_at(last_received + HEARTBEAT_INTERVAL, HEARTBEAT_INTERVAL);
     heartbeat.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     loop {
+        // A timed-out or cancelled caller no longer authorizes a future send.
+        // An already sent prompt may still have been admitted: never invent a
+        // replacement ID or describe cancellation as proof of non-delivery.
+        if pending
+            .as_ref()
+            .is_some_and(|submission| submission.result.is_closed())
+        {
+            pending.take();
+        }
         if let Some(submission) = pending.as_mut()
             && submission.sent_at.is_none()
             && !crate::sse::cursor_before(cursor, replay_through)
@@ -646,8 +694,221 @@ mod tests {
     use nanocodex_oai_api::{Model, ReasoningMode, Thinking};
     use serde_json::json;
 
-    use super::{ReadyMessage, append_create_settings};
+    use super::{Message, ReadyMessage, append_create_settings};
     use crate::AgentSettings;
+
+    #[tokio::test]
+    async fn unavailable_socket_fails_events_and_queued_submissions() {
+        use super::*;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let client = ManagedClient::new(
+            format!("http://{address}"),
+            crate::ManagedApiKey::parse(format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43)))
+                .unwrap(),
+        )
+        .unwrap();
+        let (commands, command_rx) = mpsc::channel(1);
+        let (events, mut event_rx) = mpsc::channel(1);
+        let socket = ManagedSocket { commands };
+        let worker = tokio::spawn(run(
+            client,
+            "agent-1".into(),
+            "0".into(),
+            None,
+            command_rx,
+            events,
+            Duration::from_millis(20),
+        ));
+        let submit = socket.submit("request-1".into(), PromptInput::Text("hello".into()));
+        let (result, event) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(submit, event_rx.recv())
+        })
+        .await
+        .unwrap();
+        assert!(result.is_err());
+        assert!(
+            event
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("recovery timed out")
+        );
+        worker.await.unwrap();
+        assert!(socket.commands.is_closed());
+    }
+
+    #[tokio::test]
+    async fn submission_timeout_covers_queue_wait_and_revokes_unsent_work() {
+        use super::*;
+        let (commands, mut queued) = mpsc::channel(1);
+        let socket = ManagedSocket { commands };
+        let result = socket
+            .submit_with_timeout(
+                "request-1".into(),
+                PromptInput::Text("hello".into()),
+                Duration::from_millis(10),
+            )
+            .await;
+        assert!(
+            result
+                .unwrap_err()
+                .to_string()
+                .contains("delivery is unknown")
+        );
+        // The occupied queue must not make subsequent submissions wait forever.
+        let result = socket
+            .submit_with_timeout(
+                "request-2".into(),
+                PromptInput::Text("hello".into()),
+                Duration::from_millis(10),
+            )
+            .await;
+        assert!(result.is_err());
+        let Command::Submit { id, result, .. } = queued.recv().await.unwrap();
+        assert_eq!(id, websocket_turn_id("request-1"));
+        assert!(result.is_closed());
+        assert!(queued.try_recv().is_err());
+    }
+
+    fn test_ready(cursor: &str) -> Message {
+        Message::Text(
+            json!({ "type": "ready", "session_id": "agent-1", "restored": true,
+            "active_turns": [], "latest_event_cursor": cursor,
+            "capabilities": { "durable_turns": true, "resumable_events": true,
+                "workspace": "cloud", "execution_environments": true,
+                "execution_namespace": "cwd-root-v1", "native_cross_mounts": false },
+            "settings": { "model": "gpt-6-astra", "thinking": "low",
+                "reasoning_mode": "standard", "fast_mode": false } })
+            .to_string()
+            .into(),
+        )
+    }
+
+    #[tokio::test]
+    async fn rapid_ready_close_cycles_exhaust_recovery_budget() {
+        use super::*;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let connections = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count = connections.clone();
+        let server = tokio::spawn(async move {
+            loop {
+                let (stream, _) = listener.accept().await.unwrap();
+                let mut socket = tokio_tungstenite::accept_hdr_async(
+                    stream,
+                    |_: &tokio_tungstenite::tungstenite::handshake::server::Request,
+                     mut response: tokio_tungstenite::tungstenite::handshake::server::Response| {
+                        response.headers_mut().insert(
+                            PREPARE_HEADER,
+                            tokio_tungstenite::tungstenite::http::HeaderValue::from_static(
+                                PREPARE_ACTIVE_CONVERSATION,
+                            ),
+                        );
+                        Ok(response)
+                    },
+                )
+                .await
+                .unwrap();
+                count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                socket.send(test_ready("0")).await.unwrap();
+                socket.close(None).await.unwrap();
+            }
+        });
+        let client = ManagedClient::new(
+            format!("http://{address}"),
+            crate::ManagedApiKey::parse(format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43)))
+                .unwrap(),
+        )
+        .unwrap();
+        let (_commands, command_rx) = mpsc::channel(1);
+        let (events, mut event_rx) = mpsc::channel(1);
+        let worker = tokio::spawn(run(
+            client,
+            "agent-1".into(),
+            "0".into(),
+            None,
+            command_rx,
+            events,
+            Duration::from_millis(350),
+        ));
+        // The third close starts a 400ms backoff; it must stop at 350ms,
+        // rather than complete that sleep at roughly 700ms.
+        let event = tokio::time::timeout(Duration::from_millis(600), event_rx.recv())
+            .await
+            .unwrap();
+        assert!(
+            event
+                .unwrap()
+                .unwrap_err()
+                .to_string()
+                .contains("recovery timed out")
+        );
+        worker.await.unwrap();
+        assert!(connections.load(std::sync::atomic::Ordering::SeqCst) >= 2);
+        server.abort();
+        let _ = server.await;
+    }
+
+    #[tokio::test]
+    async fn cancelled_unsent_submission_never_reaches_network() {
+        use super::*;
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
+            socket.send(test_ready("0")).await.unwrap();
+            let message = tokio::time::timeout(Duration::from_secs(2), socket.next())
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap();
+            let value: serde_json::Value =
+                serde_json::from_str(message.to_text().unwrap()).unwrap();
+            assert_eq!(value["id"], websocket_turn_id("live-request"));
+        });
+        let client = ManagedClient::new(
+            format!("http://{address}"),
+            crate::ManagedApiKey::parse(format!("ncx_live_{}_{}", "a".repeat(12), "b".repeat(43)))
+                .unwrap(),
+        )
+        .unwrap();
+        let (commands, command_rx) = mpsc::channel(2);
+        let (result, receiver) = oneshot::channel();
+        drop(receiver);
+        commands
+            .send(Command::Submit {
+                id: websocket_turn_id("cancelled-request"),
+                input: PromptInput::Text("cancelled".into()),
+                result,
+            })
+            .await
+            .unwrap();
+        let (result, _receiver) = oneshot::channel();
+        commands
+            .send(Command::Submit {
+                id: websocket_turn_id("live-request"),
+                input: PromptInput::Text("live".into()),
+                result,
+            })
+            .await
+            .unwrap();
+        let (events, _event_rx) = mpsc::channel(1);
+        let worker = tokio::spawn(run(
+            client,
+            "agent-1".into(),
+            "0".into(),
+            None,
+            command_rx,
+            events,
+            Duration::from_secs(1),
+        ));
+        server.await.unwrap();
+        worker.abort();
+        let _ = worker.await;
+    }
 
     #[tokio::test]
     async fn receives_event_above_default_frame_limit_and_the_following_frame() {

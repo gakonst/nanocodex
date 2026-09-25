@@ -1,0 +1,23 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nanocodex-egress2",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-07-29",
+  "workers_dev": false,
+  "durable_objects": {
+    "bindings": [
+      {
+        "name": "USER_CREDENTIALS",
+        "class_name": "UserCredentials"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "tag": "v1",
+      "new_sqlite_classes": [
+        "UserCredentials"
+      ]
+    }
+  ]
+}

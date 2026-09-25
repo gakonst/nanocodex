@@ -386,7 +386,11 @@ impl AgentArgs {
         let mut openai = OpenAi::builder(auth)
             .transport(responses_transport)
             .websocket_url(direct_websocket_url)
-            .websocket_warmup(self.websocket_warmup);
+            .websocket_warmup(self.websocket_warmup)
+            // The TUI consumes normalized model and tool events; forwarding
+            // entire provider frames only adds serialization and queue work.
+            // Headless JSONL retains the complete raw API event stream.
+            .raw_api_events(!tui);
         if let Some(prefix) = self.model_id_prefix.as_deref() {
             openai = openai.model_id_prefix(prefix);
         }
@@ -473,6 +477,7 @@ impl AgentArgs {
             .reasoning_mode(self.reasoning_mode)
             .thinking(thinking)
             .fast_mode(self.fast_mode)
+            .preconnect(tui)
             .workspace(session.workspace)
             .codex_home(codex_home);
         if let Some(session_id) = session.session_id {

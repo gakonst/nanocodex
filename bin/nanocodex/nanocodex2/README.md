@@ -188,7 +188,9 @@ Text and image attachments survive loading. Press Enter after connecting to send
 or steer; pressing it during loading does not start a parallel turn.
 
 If the connection fails, the terminal reconnects to the same agent and catches
-up on missed history. Your draft stays editable, queued input stays in order,
+up on missed history. Background socket recovery is bounded to 60 seconds, and
+prompt acknowledgement waits are bounded to 90 seconds, including queue time.
+Exhausting either limit surfaces a connection failure instead of waiting forever. Your draft stays editable, queued input stays in order,
 and remote work continues. A prompt whose delivery cannot be confirmed remains
 visible as **delivery unknown** for explicit retry or dismissal. If reconnecting
 fails or the replacement connection immediately fails again, press Enter to

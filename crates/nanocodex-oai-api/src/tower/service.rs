@@ -204,6 +204,48 @@ pub struct ResponsesService {
 }
 
 impl ResponsesService {
+    /// Opens an idle socket without sending a model request. The attempt path
+    /// shares this lock, so a prompt arriving during the handshake uses its
+    /// outcome instead of opening a second connection.
+    #[cfg(not(target_family = "wasm"))]
+    pub(crate) fn preconnect(&self, session_id: &str, thread_id: &str) {
+        if self.config.responses_transport != ResponsesTransport::WebSocket {
+            return;
+        }
+        let service = self.clone();
+        let session_id = session_id.to_owned();
+        let thread_id = thread_id.to_owned();
+        let Ok(runtime) = tokio::runtime::Handle::try_current() else {
+            return;
+        };
+        runtime.spawn(async move {
+            let mut connection = service.connection.lock().await;
+            if connection.socket.is_some() {
+                return;
+            }
+            let started = Instant::now();
+            match service
+                .connect_with_auth_recovery(&session_id, &thread_id, None)
+                .await
+            {
+                Ok((socket, metadata)) => {
+                    connection.generation += 1;
+                    connection.next_purpose = ConnectionPurpose::Reconnect;
+                    connection.server_reasoning_included = metadata.reasoning_included;
+                    connection.turn_state = metadata.turn_state;
+                    connection.socket = Some(socket);
+                    tracing::info!(target: "nanocodex_oai_api", stage = "responses.preconnect",
+                        elapsed_ms = started.elapsed().as_secs_f64() * 1000.0, status = "ready");
+                }
+                Err(error) => {
+                    tracing::info!(target: "nanocodex_oai_api", stage = "responses.preconnect",
+                        elapsed_ms = started.elapsed().as_secs_f64() * 1000.0,
+                        status = "failed", %error);
+                }
+            }
+        });
+    }
+
     /// Builds a stateful transport service with default retry limits.
     #[must_use]
     pub(crate) fn new(config: Arc<ModelConfig>) -> Self {

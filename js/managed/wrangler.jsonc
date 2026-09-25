@@ -9,7 +9,7 @@
     "node-rsa": "../nanocodex/tools/browser/unsupportedNodeRsa.mjs"
   },
   "find_additional_modules": true,
-  "base_dir": ".shell-module",
+  "base_dir": "src",
   "rules": [{ "type": "ESModule", "globs": ["**/just-bash-lazy.mjs"] }],
   "workers_dev": false,
   "triggers": { "crons": [] },

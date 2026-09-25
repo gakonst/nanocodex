@@ -517,6 +517,10 @@ pub trait ResponsesServiceFactory: Clone {
 
     /// Creates one independent service stack.
     fn make(&self, config: Arc<ResponsesServiceConfig>) -> Self::Service;
+
+    /// Optionally starts a non-generating connection for an idle native agent.
+    /// Custom services keep their existing on-demand connection behavior.
+    fn preconnect(&self, _service: &Self::Service, _session_id: &str, _thread_id: &str) {}
 }
 
 impl ResponsesServiceFactory for StandardServiceFactory {
@@ -528,6 +532,13 @@ impl ResponsesServiceFactory for StandardServiceFactory {
 
     fn make(&self, config: Arc<ModelConfig>) -> Self::Service {
         self.platform.make(config, self.max_attempts)
+    }
+
+    fn preconnect(&self, service: &Self::Service, session_id: &str, thread_id: &str) {
+        #[cfg(not(target_family = "wasm"))]
+        service.get_ref().preconnect(session_id, thread_id);
+        #[cfg(target_family = "wasm")]
+        let _ = (service, session_id, thread_id);
     }
 }
 

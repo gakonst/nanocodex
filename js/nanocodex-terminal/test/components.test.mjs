@@ -584,3 +584,34 @@ test("child JSON is disclosed separately while root JSON survives live and repla
     } finally { await act(async () => renderer.unmount()); }
   }
 });
+
+test("optimistic creation draft is editable before the agent attaches and survives readiness props", async () => {
+  let renderer;
+  const props = {
+    agent: undefined,
+    agentError: undefined,
+    initialDraft: "I have an idea",
+    mode: "preview",
+    onConversationActivity() {},
+    onStateChange() {},
+    retryAgent() {},
+  };
+  await act(async () => {
+    renderer = TestRenderer.create(React.createElement(AgentTerminalView, props), {
+      createNodeMock(element) {
+        return element.type === "div"
+          ? { clientHeight: 300, firstElementChild: null, scrollHeight: 300, scrollTop: 0 }
+          : {};
+      },
+    });
+  });
+  const input = () => renderer.root.findByType("textarea");
+  assert.equal(input().props.value, "I have an idea");
+  assert.equal(renderer.root.findByProps({ "aria-label": "Send message" }).props.disabled, true);
+  await act(async () => input().props.onChange({ currentTarget: { value: "I have a better idea" } }));
+  await act(async () => renderer.update(React.createElement(AgentTerminalView, {
+    ...props, initialDraft: "stale optimistic text",
+  })));
+  assert.equal(input().props.value, "I have a better idea", "the handoff never overwrites edits");
+  await act(async () => renderer.unmount());
+});

@@ -6,7 +6,7 @@ import { dirname, resolve } from "node:path";
 // Wrangler's ESModule rule uploads this file separately instead of evaluating
 // the interpreter inside the main worker on every chat-only activation.
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
-const output = resolve(root, ".shell-module/just-bash-lazy.mjs");
+const output = resolve(root, "src/just-bash-lazy.mjs");
 await mkdir(dirname(output), { recursive: true });
 await build({
   entryPoints: [resolve(root, "../nanocodex-tools/tools/just-bash-browser.mjs")],
