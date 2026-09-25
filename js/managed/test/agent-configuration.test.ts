@@ -106,7 +106,7 @@ it("authorizes operational routes before exposing another session or allowing a 
     expect((await call(resource)).status).toBe(200);
     expect((await call(resource, "GET", { ...principal, userId: "22222222-2222-4222-8222-222222222222" })).status).toBe(404);
     expect((await call(resource, "GET", { ...principal, capabilities: [] })).status).toBe(403);
-    expect((await call(resource, "GET", { ...principal, connectGrant: { grantId: `0x${"a".repeat(64)}`, connectors: ["chatgpt"], mcpIds: [] } })).status).toBe(403);
+    expect((await call(resource, "GET", { ...principal, connectGrant: { grantId: `0x${"a".repeat(64)}`, connectors: ["chatgpt"], mcpIds: [] } })).status).toBe(resource === "artifacts" ? 400 : 403);
   }
   expect((await call("webhook", "PUT", { ...principal, kind: "account_session" }, "https://evil.example")).status).toBe(403);
   expect((await call("webhook", "PUT")).status).toBe(201);

@@ -642,3 +642,32 @@ A Connect app can request `urn:nanocodex:agent:execution:sandbox` in its hosted 
 The verified grant can provision `cf_sandbox` execution hands owned by that approval. Discovery, command dispatch, process sessions, captured Code Mode cells, and native peer mounts remain in that authorization. Personal computers, VM factories, account-owned sandbox workspaces, and desktop enrollment are unavailable. Sandbox network traffic uses public egress without account connector or Vault injection; approved connector tools continue through the brain's existing grant checks.
 
 The durable agent's `/brain` remains shared across its conversations and authorization cohorts. Native workspace isolation does not make separate brain storage. Mount names and namespace slots remain agent-wide; another approval cannot adopt an existing approval's named mount.
+
+Connect apps with sandbox execution can upload durable inputs through
+`PUT /v1/grants/{grant}/agents/{agent}/inputs/{generationUUID}/{filename}`.
+The JSON body contains exactly `data_base64` (canonical base64) and `sha256`
+(lowercase SHA-256 hex). The server verifies the digest and derives the path
+`/brain/connect/{grant}/inputs/{generationUUID}/{filename}`. Generation IDs are
+UUIDs; filenames contain 1–128 ASCII letters, digits, dots, underscores or
+hyphens and start with a letter or digit. Paths and URL-encoded names are not
+accepted. The response is `{path,sha256,size}`: 201 on creation, 200 on an
+identical retry, and 409 if an immutable name is reused with different bytes.
+Retry an interrupted upload with the same body before admitting a turn.
+
+Uploads allow 600,000 decoded bytes and a 1,000,000-byte JSON body. Quotas are
+8 files/4.8 MB per generation, 256 files/30 MB per grant, and 1,024 files/120 MB
+per agent. Incomplete reservations count toward these quotas and remain
+retryable. Reservations and inputs are removed when the agent is deleted.
+
+Connect turns publish only `/brain/connect/{grant}/outputs/{turn_id}/`, with
+ownership derived from retained turn authorization. Apps should put this exact
+output directory in the turn prompt. The ordinary immutable artifact limits
+remain 50 files, 1 MB per file, 10 MB total. With `agent.output.final`, the app
+can request `GET /v1/grants/{grant}/agents/{agent}/artifacts?turn_id={turn_id}`
+and `GET /v1/grants/{grant}/agents/{agent}/artifacts/{artifact_id}/content`.
+The turn filter is required; metadata, publication status and bytes are
+restricted to that agent and grant, including after turn archival. Downloads
+retain digest ETags and content lengths. Revoked/expired grants cannot access
+these routes. Generic `/files`, attachments and configuration stay unavailable
+to Connect. These HTTP boundaries do not change the agent's shared `/brain`
+execution model described above.
