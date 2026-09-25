@@ -744,3 +744,31 @@ describe("independent VM readiness at cell capture", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 });
+
+it("does not restore a durable process for another owner or restore an ephemeral native handle", async () => {
+  const retained = new Map<number, import("../src/namespace-tools").DurableProcessBinding>();
+  const storage = { get: (id: number) => retained.get(id), put: (id: number, value: import("../src/namespace-tools").DurableProcessBinding) => { retained.set(id, value); }, delete: (id: number) => { retained.delete(id); } };
+  const poll = vi.fn(async () => ({ session_id: 7, output: "more" }));
+  let authority = "grant:1:epoch:1";
+  const create = () => createNamespaceExecutionRuntime(
+    () => [{ id: "cf", workspace: "/workspace" }, { id: "native", workspace: "/workspace" }],
+    (id, name) => name === "exec_command" ? { handler: async () => ({ session_id: 7 }) }
+      : name === "write_stdin" ? { handler: poll, ...(id === "cf" ? { processSessionKey: "cf-resource-1" } : {}) } : undefined,
+    undefined, undefined, () => authority, storage,
+  );
+  let runtime = create();
+  const started = await runtime.tools.exec_command!.handler({ cmd: "start", workdir: "/cf" }, context()) as { session_id: number };
+  const native = await runtime.tools.exec_command!.handler({ cmd: "start", workdir: "/native" }, context()) as { session_id: number };
+  runtime.tools.exec_command!.releaseSession?.("root-session");
+  await runtime.tools.exec_command!.dispose?.();
+  runtime = create();
+  await expect(runtime.tools.write_stdin!.handler({ session_id: started.session_id }, context({ sessionId: "child-session" })))
+    .rejects.toThrow("unknown or stale");
+  authority = "grant:1:epoch:2";
+  await expect(runtime.tools.write_stdin!.handler({ session_id: started.session_id }, context())).rejects.toThrow("unknown or stale");
+  authority = "grant:1:epoch:1";
+  await expect(runtime.tools.write_stdin!.handler({ session_id: native.session_id }, context())).rejects.toThrow("unknown or stale");
+  expect(poll).not.toHaveBeenCalled();
+  await expect(runtime.tools.write_stdin!.handler({ session_id: started.session_id }, context())).resolves.toMatchObject({ session_id: started.session_id });
+  expect(poll).toHaveBeenCalledTimes(1);
+});

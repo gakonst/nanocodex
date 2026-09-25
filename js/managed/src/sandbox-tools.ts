@@ -135,7 +135,7 @@ type SandboxToolClient = {
   };
 };
 
-type SandboxOutputCursorStorage = {
+export type SandboxOutputCursorStorage = {
   delete(key: string): void;
   get(key: string): unknown;
   put(key: string, value: unknown): void;
@@ -318,7 +318,7 @@ export function createCloudflareSandboxTools(
         context?.signal.throwIfAborted();
         await assertSandboxWorkdirAvailable(sandbox, cwd);
         context?.signal.throwIfAborted();
-        const sessionId = await availableSessionId(sandbox);
+        const sessionId = await availableSessionId(sandbox, outputCursorStorage);
         outputCursorStorage.put(`${OUTPUT_CURSOR_PREFIX}${sessionId}`, 0);
         let process: SandboxProcess | undefined;
         try {
@@ -1109,9 +1109,12 @@ function sandboxProcessId(sessionId: number): string {
   return `nanocodex-${sessionId}`;
 }
 
-async function availableSessionId(sandbox: SandboxToolClient): Promise<number> {
+async function availableSessionId(sandbox: SandboxToolClient, cursors: SandboxOutputCursorStorage): Promise<number> {
   for (let attempt = 0; attempt < 32; attempt += 1) {
     const sessionId = crypto.getRandomValues(new Uint32Array(1))[0]! || 1;
+    // A container restart may forget a process that still has a durable owner.
+    // Do not let a new command take that retained numeric provider ID.
+    if (cursors.get(`${OUTPUT_CURSOR_PREFIX}${sessionId}`) !== undefined) continue;
     if (await sandbox.getProcess(sandboxProcessId(sessionId)) === null) return sessionId;
   }
   throw new Error("could not allocate a sandbox command session");
