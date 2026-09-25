@@ -1,5 +1,5 @@
 import { build } from "esbuild";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 
@@ -19,4 +19,3 @@ await build({
   logLevel: "warning",
 });
 
-await writeFile(output.replace(/\.mjs$/, ".d.mts"), `export { Bash, defineCommand } from "just-bash/browser";\n`);
