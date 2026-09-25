@@ -63,8 +63,9 @@ final class QuickVoiceRecorder: ObservableObject {
         var stage = "sessionCategory"
         do {
             let session = AVAudioSession.sharedInstance()
-            // duckOthers is unsupported by the record-only category.
-            try session.setCategory(.record, mode: .measurement)
+            // A background AudioRecordingIntent cannot interrupt other audio. Use a mixable
+            // input category so activating the session does not require interruption.
+            try session.setCategory(.playAndRecord, mode: .measurement, options: [.mixWithOthers])
             stage = "sessionActivation"
             try session.setActive(true)
             VoiceDiagnostic.note("speak.recorder.sessionActivated")
@@ -235,7 +236,7 @@ final class LockedAudioRecorder: NSObject, AVAudioRecorderDelegate {
         do {
             let session = AVAudioSession.sharedInstance()
             stage = "sessionCategory"
-            try session.setCategory(.record, mode: .measurement)
+            try session.setCategory(.playAndRecord, mode: .measurement, options: [.mixWithOthers])
             stage = "sessionActivation"
             try session.setActive(true)
             sessionActive = true
