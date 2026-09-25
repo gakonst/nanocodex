@@ -98,8 +98,10 @@ final class MeetingRecorder: ObservableObject {
         self.recognizer = recognizer
         do {
             let session = AVAudioSession.sharedInstance()
-            try session.setCategory(.record, mode: .measurement)
+            try session.setCategory(.playAndRecord, mode: .measurement, options: [.mixWithOthers])
+            VoiceDiagnostic.note("meeting.recorder.sessionActivation")
             try session.setActive(true)
+            VoiceDiagnostic.note("meeting.recorder.sessionActivated")
             sessionActive = true
             let input = engine.inputNode
             let format = input.outputFormat(forBus: 0)
@@ -116,6 +118,7 @@ final class MeetingRecorder: ObservableObject {
             tapped = true
             engine.prepare()
             try engine.start()
+            VoiceDiagnostic.note("meeting.recorder.engineStarted")
             recording = true
             startedAt = Date()
             status = "Listening. Tap Finish meeting to review before sending."
@@ -129,6 +132,7 @@ final class MeetingRecorder: ObservableObject {
             }
         } catch {
             let failure = error as NSError
+            VoiceDiagnostic.note("meeting.recorder.audioStartFailed", error: error)
             log.error("Meeting audio start failed: domain=\(failure.domain, privacy: .public) code=\(failure.code)")
             stopWithWarning("Microphone could not start. Try again.")
         }
