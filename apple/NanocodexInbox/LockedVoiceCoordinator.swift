@@ -61,6 +61,13 @@ final class LockedVoiceCoordinator {
         guard !model.voice.isEngaged else { VoiceDiagnostic.note("speak.coordinator.otherVoiceBusy"); throw CaptureError.alreadyRecording }
         guard QuickVoiceRecorder.permissionsGranted else { VoiceDiagnostic.note("speak.coordinator.permissionsDenied"); throw CaptureError.permissions }
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { VoiceDiagnostic.note("speak.coordinator.activityDisabled"); throw CaptureError.unavailable }
+        // A prior app process may have died after publishing a terminal failure (or
+        // before ending an activity). Those cards can outlive the process and obscure
+        // a new successful capture on the Lock Screen.
+        for orphan in Activity<LockedVoiceActivityAttributes>.activities {
+            VoiceDiagnostic.note("speak.coordinator.retiringOrphan")
+            await orphan.end(nil, dismissalPolicy: .immediate)
+        }
         let account: String
         do { account = try model.lockedVoiceAccountScope() }
         catch { VoiceDiagnostic.note("speak.coordinator.accountUnavailable", error: error); throw CaptureError.account }
@@ -266,7 +273,9 @@ final class LockedVoiceCoordinator {
         Task {
             await current.delivery?.value
             await current.update?.value
+            VoiceDiagnostic.note("speak.coordinator.activityEndStarting.\(phase)")
             await current.activity?.end(content, dismissalPolicy: .after(Date().addingTimeInterval(15)))
+            VoiceDiagnostic.note("speak.coordinator.activityEndFinished.\(phase)")
             releaseBackground(current)
             current.completion.resolve(phase == "sent" ? .success(()) : .failure(
                 phase == "cancelled" ? CancellationError() : CaptureError.completionFailed))
