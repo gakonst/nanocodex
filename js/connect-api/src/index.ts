@@ -5852,6 +5852,7 @@ function resourceValues(resources: readonly string[], prefix: string): string[] 
 
 function approvedAgentCapabilities(resources: readonly string[]): string[] {
   const approved = new Set(resources);
+  const sandbox = approved.has("urn:nanocodex:agent:execution:sandbox") ? ["agent.execution.sandbox"] : [];
   const portability = approved.has(agentPortabilityResource)
     ? ["agent.durability.portability"]
     : [];
@@ -5859,7 +5860,7 @@ function approvedAgentCapabilities(resources: readonly string[]): string[] {
     .filter((resource) => resource.startsWith(AGENT_VISIBILITY_RESOURCE_PREFIX))
     .flatMap((resource) => resource.slice(AGENT_VISIBILITY_RESOURCE_PREFIX.length).split(",")));
   if (approved.has("urn:nanocodex:agent:trace:read") || compact.has("traces")) {
-    return [...new Set([...Object.values(AGENT_VISIBILITY_RESOURCES), ...portability])];
+    return [...new Set([...Object.values(AGENT_VISIBILITY_RESOURCES), ...portability, ...sandbox])];
   }
   const legacy = Object.entries(AGENT_VISIBILITY_RESOURCES)
     .filter(([resource]) => approved.has(resource))
@@ -5867,7 +5868,7 @@ function approvedAgentCapabilities(resources: readonly string[]): string[] {
   const combined = Object.entries(AGENT_VISIBILITY_NAMES)
     .filter(([name]) => compact.has(name))
     .map(([, capability]) => capability);
-  return [...new Set([...legacy, ...combined, ...portability])];
+  return [...new Set([...legacy, ...combined, ...portability, ...sandbox])];
 }
 
 function approvedAgentConversationId(resources: readonly string[]): string | undefined {

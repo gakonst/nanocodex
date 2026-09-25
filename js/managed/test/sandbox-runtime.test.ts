@@ -81,6 +81,33 @@ describe("sandbox runtime egress", () => {
     expect(requests).toHaveLength(3);
   });
 
+  it("binds grant sandboxes to public-only egress and cannot rebind their owner", async () => {
+    const values = new Map<string, unknown>();
+    const runtime = Object.create(Sandbox.prototype) as Sandbox;
+    const setOutboundHandler = vi.fn();
+    Object.assign(runtime, { ctx: {
+      blockConcurrencyWhile: (run: () => Promise<void>) => run(),
+      storage: { get: async (key: string) => values.get(key), put: async (key: string, value: unknown) => { values.set(key, value); } },
+    }, setOutboundHandler });
+    const subject = "s".repeat(43), grantId = `0x${"a".repeat(64)}`;
+    await runtime.bindAccountEgress(subject, grantId);
+    await runtime.bindAccountEgress(subject, grantId);
+    await expect(runtime.bindAccountEgress(subject)).rejects.toThrow();
+    await expect(runtime.bindAccountEgress(subject, `0x${"b".repeat(64)}`)).rejects.toThrow();
+    const params = setOutboundHandler.mock.calls[0]![1];
+    const broker = { fetch: vi.fn(async () => new Response("public")) } as unknown as Fetcher;
+    expect((await handleSandboxEgress(new Request("https://pypi.org/simple/"), { NANOCODEX: broker }, { params })).status).toBe(200);
+    for (const [url, headers] of [
+      ["https://api.github.com/user", {}],
+      ["https://pypi.org/simple/", { "x-nanocodex-vault-id": "v".repeat(32) }],
+      ["https://api.github.com/user", { "x-nanocodex-subject": subject }],
+      ["https://nanocodex-hand.internal/v1/hand-hosts/owner/id/hands/host", {}],
+    ] as const) {
+      expect((await handleSandboxEgress(new Request(url, { headers }), { NANOCODEX: broker }, { params })).status).toBe(403);
+    }
+    expect(broker.fetch).toHaveBeenCalledTimes(1);
+  });
+
   it("blocks the Sandbox SDK cross-binding copy prefix escape", () => {
     expect(isCrossBindingR2Copy(new Request(
       "http://r2.internal/NANOCODEX_WORKSPACES_0/authorized/destination",

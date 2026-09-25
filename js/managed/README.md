@@ -634,3 +634,11 @@ owner-only authorization and bounded payload policy as Spotify. The broker uses
 its configured SoundCloud app and the fixed `http://127.0.0.1:8788/callback`
 redirect. Both music providers' connection tools return native app links; no
 credentials or renewable tokens pass through the agent or phone API.
+
+## Connect sandbox execution
+
+A Connect app can request `urn:nanocodex:agent:execution:sandbox` in its hosted approval resources. The dialog displays **Cloud sandbox**; only the signed resource grants `agent.execution.sandbox`. Existing grants do not acquire this permission automatically.
+
+The verified grant can provision `cf_sandbox` execution hands owned by that approval. Discovery, command dispatch, process sessions, captured Code Mode cells, and native peer mounts remain in that authorization. Personal computers, VM factories, account-owned sandbox workspaces, and desktop enrollment are unavailable. Sandbox network traffic uses public egress without account connector or Vault injection; approved connector tools continue through the brain's existing grant checks.
+
+The durable agent's `/brain` remains shared across its conversations and authorization cohorts. Native workspace isolation does not make separate brain storage. Mount names and namespace slots remain agent-wide; another approval cannot adopt an existing approval's named mount.

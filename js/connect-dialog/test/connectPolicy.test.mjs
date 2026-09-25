@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   accountLoginCapabilities,
+  appVisibilityPermissions,
   chatGptConnectorDisposition,
   connectorApprovalDisposition,
   connectApiOrigin,
@@ -474,4 +475,13 @@ test("device callback continuation is short-lived, exact, account-bound, and sec
     requestedConnectors: input.requestedConnectors,
     requestedMcpConnections: input.requestedMcpConnections,
   }, now), /does not match/);
+});
+
+
+test("sandbox execution requires its exact signed consent resource", () => {
+  const resource = "urn:nanocodex:agent:execution:sandbox";
+  assert.equal(appVisibilityPermissions([resource]).some(permission => permission.resource === resource), true);
+  for (const resources of [[], ["urn:nanocodex:agent:run"], [resource + ":all"], ["urn:nanocodex:agent:visibility:sandbox"]]) {
+    assert.equal(appVisibilityPermissions(resources).some(permission => permission.resource === resource), false);
+  }
 });

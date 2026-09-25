@@ -11,7 +11,9 @@ const appOrigin = "https://djbooth-library.gakonst.workers.dev";
 const accountAddress = `0x${"1".repeat(40)}`;
 const agentId = "11111111-1111-4111-8111-111111111111";
 const digest = `0x${"a".repeat(64)}`;
+const sandboxResource = "urn:nanocodex:agent:execution:sandbox";
 const resources = [
+  sandboxResource,
   "urn:nanocodex:agent:run",
   `urn:nanocodex:app:${appId}`,
   `urn:nanocodex:origin:${encodeURIComponent(appOrigin)}`,
@@ -39,6 +41,7 @@ test("generic hosted apps exchange non-spending approvals into bound agent grant
   };
   const state = new ConnectNonceStorage({ storage });
   let exchanged = 0;
+  let expectedSandbox = "true";
   let rejectAccount = false;
   const env = {
     CONNECT_STATE: {
@@ -53,6 +56,8 @@ test("generic hosted apps exchange non-spending approvals into bound agent grant
         if (rejectAccount) return new Response(null, { status: 403 });
         return Response.json({ linked: true, user_id: accountAddress, account_address: accountAddress, resources: body.resources });
       }
+      assert.equal(request.headers.get("x-nanocodex-connect-sandbox-execution"), expectedSandbox);
+      if (url.pathname === `/v1/agents/${agentId}/_connect-existence`) return new Response(null, { status: 204 });
       assert.equal(url.pathname, "/v1/agents");
       return Response.json({ agent_id: agentId });
     } },
@@ -105,6 +110,7 @@ test("generic hosted apps exchange non-spending approvals into bound agent grant
   assert.equal(grant.accountAddress, accountAddress);
   assert.equal(grant.appToolCatalogDigest, digest);
   assert(grant.capabilities.includes("chatgpt"));
+  assert(grant.capabilities.includes("agent.execution.sandbox"));
   assert(!grant.capabilities.includes("mpp.mach"));
   assert(!grant.capabilities.includes("mercator.boost"));
   assert.equal(grant.accessKey, undefined);
@@ -121,6 +127,15 @@ test("generic hosted apps exchange non-spending approvals into bound agent grant
     assert.equal((await response.json()).error.code, code);
   }
   assert.equal(exchanged, 1, "invalid approvals never reach the account exchange");
+  expectedSandbox = null;
+  const unscoped = await (await authorize(resources.filter(r => r !== sandboxResource))).json();
+  const forged = await connect({ approval_id: unscoped.approval_id, capabilities: ["agent.execution.sandbox"], sandboxExecution: true });
+  assert.equal(forged.status, 400, "forged capability fields are rejected before grant creation");
+  const unscopedConnected = await connect({ approval_id: unscoped.approval_id });
+  assert.equal(unscopedConnected.status, 201, await unscopedConnected.clone().text());
+  const unscopedGrant = [...entries].filter(([key]) => key.startsWith("grant:")).map(([, record]) => record.value).find(value => value.id !== grant.id);
+  assert(unscopedGrant);
+  assert(!unscopedGrant.capabilities.includes("agent.execution.sandbox"), "caller fields cannot elevate the approved resource set");
   rejectAccount = true;
   assert.equal((await authorize()).status, 403, "account service still must approve the exact resources");
   await Promise.all(pending);
