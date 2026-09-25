@@ -66,7 +66,10 @@ struct MeetingView: View {
         }
         .interactiveDismissDisabled(recorder.working)
         .onChange(of: recorder.reviewing) { _, ready in
-            if ready && stopRequested { stopRequested = false; submit() }
+            if ready && stopRequested {
+                stopRequested = false
+                if !recorder.completedWithWarning { submit() }
+            }
         }
         .onChange(of: model.connected) { _, connected in
             if !connected { stopRequested = false; recorder.interrupt("Account disconnected. Review your partial transcript; sign in before sending.") }

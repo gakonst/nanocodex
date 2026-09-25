@@ -14,7 +14,7 @@ final class LockedVoiceCoordinator {
         case alreadyRecording, unavailable, permissions, account, staleCapture, completionFailed
         var errorDescription: String? {
             switch self {
-            case .alreadyRecording: "A voice task is already in progress. Finish or cancel it first."
+            case .alreadyRecording: "A voice task is already recording. Tap Stop Recording first."
             case .unavailable: "Recording could not start. Try again from the Lock Screen."
             case .permissions: "Open the app and allow Microphone and Speech Recognition before recording from the Lock Screen."
             case .account: "Sign in in the app before recording from the Lock Screen."
@@ -108,11 +108,13 @@ final class LockedVoiceCoordinator {
             Task { @MainActor in
                 guard let self, let current, self.capture === current else { return }
                 self.beginCompletion(current)
-                if current.stopRequested, let text = QuickVoiceInput.finalText(current.recorder.transcript) {
+                if current.stopRequested, !current.recorder.completedWithWarning,
+                   let text = QuickVoiceInput.finalText(current.recorder.transcript) {
                     VoiceDiagnostic.note("speak.coordinator.finalTextReady")
                     self.deliver(text, capture: current)
                 } else {
-                    current.failure = current.stopRequested ? "No speech heard" : "Recording stopped"
+                    current.failure = current.recorder.completedWithWarning ? current.recorder.status :
+                        (current.stopRequested ? "No speech heard" : "Recording interrupted")
                     self.end(current, phase: self.failurePhase(current), preserve: true)
                 }
             }

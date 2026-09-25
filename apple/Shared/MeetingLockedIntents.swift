@@ -5,7 +5,7 @@ import Foundation
 /// ultimately decides whether an AudioRecordingIntent can launch while locked.
 struct StartMeetingLockedIntent: AudioRecordingIntent, LiveActivityIntent {
     static var title: LocalizedStringResource = "Listen to a meeting"
-    static var description = IntentDescription("Record a meeting in short segments until Finish & Send. Grant permissions in the app first.")
+    static var description = IntentDescription("Record a meeting until you tap Stop Recording. Grant permissions in the app first.")
     static var openAppWhenRun = false
     static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
     @available(iOS 26.0, *)
@@ -21,7 +21,7 @@ struct StartMeetingLockedIntent: AudioRecordingIntent, LiveActivityIntent {
 }
 
 struct FinishMeetingLockedIntent: AudioRecordingIntent, LiveActivityIntent {
-    static var title: LocalizedStringResource = "Finish and send meeting"
+    static var title: LocalizedStringResource = "Stop recording and start agent"
     static var openAppWhenRun = false
     static var authenticationPolicy: IntentAuthenticationPolicy = .alwaysAllowed
     @available(iOS 26.0, *)

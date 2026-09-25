@@ -12,16 +12,17 @@ final class MeetingLockedCoordinator {
     static let shared = MeetingLockedCoordinator()
 
     enum CaptureError: LocalizedError {
-        case busy, permissions, account, unavailable, stale, notReady, empty
+        case busy, permissions, account, unavailable, stale, notReady, incomplete, empty
         var errorDescription: String? {
             switch self {
-            case .busy: "Finish or discard the current recording first."
+            case .busy: "Finish the current recording first."
             case .permissions: "Open Nanocodex once to grant Microphone and Speech Recognition access."
             case .account: "Sign in to Nanocodex before recording from the Lock Screen."
             case .unavailable: "The microphone or Live Activity is unavailable."
             case .stale: "That recording is no longer available."
             case .notReady: "Stop recording and wait for transcription before sending."
-            case .empty: "No speech was recognized. Discard and try recording again."
+            case .incomplete: "Only a partial transcript was recovered. Review it in Nanocodex, or explicitly retry starting an agent."
+            case .empty: "No speech was recognized. Try recording again."
             }
         }
     }
@@ -59,13 +60,26 @@ final class MeetingLockedCoordinator {
         // A killed app may leave a partial checkpoint but no active microphone.
         // Preserve it as an account-scoped draft and allow a fresh locked capture.
         if savedSnapshot?.ready == false { recoverOutstanding() }
-        guard capture == nil, sending == nil, savedSnapshot == nil,
-              QuickVoiceRecorder.audioOwner == nil, !model.voice.isEngaged else { throw CaptureError.busy }
+        guard sending == nil, QuickVoiceRecorder.audioOwner == nil,
+              !model.voice.isEngaged else { throw CaptureError.busy }
         guard QuickVoiceRecorder.permissionsGranted else { throw CaptureError.permissions }
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { throw CaptureError.unavailable }
         let account: String
         do { account = try model.lockedVoiceAccountScope() }
         catch { throw CaptureError.account }
+        // A completed transcript must not monopolize the recorder when delivery
+        // failed. Move it to its original account's recovery journal (or leave its
+        // existing pending turn in charge) before starting another capture. This
+        // is preservation, not a user-facing discard or an automatic retry.
+        if let snapshot = savedSnapshot, snapshot.ready {
+            model.retainLockedVoiceRecovery(snapshot.transcript, captureID: snapshot.id,
+                                            accountScope: snapshot.account)
+            if let current = capture, current.id == snapshot.id {
+                finishCapture(current, phase: "saved")
+            }
+            clearSnapshot(id: snapshot.id)
+        }
+        guard capture == nil, savedSnapshot == nil else { throw CaptureError.busy }
         // An OS termination may have left a stale recording activity with no
         // owning audio process. Do not display a second apparently live mic.
         for orphan in Activity<MeetingLockedActivityAttributes>.activities {
@@ -124,6 +138,12 @@ final class MeetingLockedCoordinator {
 
     func finishAndSend(captureID: String) async throws {
         try await stop(captureID: captureID)
+        // A recognizer interruption can settle the remaining segments with only
+        // partial text. Keep that snapshot for review/manual retry, never admit it
+        // as the result of the original Stop tap.
+        if let snapshot = savedSnapshot, snapshot.id == captureID, snapshot.warning {
+            throw CaptureError.incomplete
+        }
         try await send(captureID: captureID)
     }
 
@@ -269,7 +289,7 @@ final class MeetingLockedCoordinator {
         guard let current = capture, current.id == id,
               current.recorder.reviewing || force else { return }
         current.ticker?.cancel(); current.ticker = nil
-        let warning = current.recorder.status.contains("partial") || current.recorder.status.contains("timed out") || force
+        let warning = current.recorder.completedWithWarning || force
         if let text = QuickVoiceInput.finalText(current.recorder.transcript) {
             let snapshot = ReadySnapshot(id: id, account: current.account, transcript: text,
                                          warning: warning, ready: true)

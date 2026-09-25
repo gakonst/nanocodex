@@ -84,6 +84,9 @@ final class MeetingRecorder: ObservableObject {
     private var tapped = false
     private var startedAt: Date?
     private var stopReason: String?
+    /// Recognition may finish with a partial transcript after an interruption or
+    /// timeout. Never auto-submit that text on the ordinary Stop path.
+    var completedWithWarning: Bool { stopReason != nil }
     // Apple's Speech API documents a ~one-minute audio limit per recognition.
     // 45 seconds leaves headroom for scheduling and processing delays.
     static let segmentSeconds = MeetingSegmentPolicy.segmentSeconds
@@ -144,7 +147,7 @@ final class MeetingRecorder: ObservableObject {
             VoiceDiagnostic.note("meeting.recorder.engineStarted")
             recording = true
             startedAt = Date()
-            status = "Listening. Tap Finish meeting to review before sending."
+            status = "Recording. Tap Stop Recording to start an agent."
             scheduleRotation(run: run)
             clock = Task { [weak self] in
                 while !Task.isCancelled {

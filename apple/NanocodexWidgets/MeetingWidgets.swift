@@ -47,25 +47,23 @@ struct MeetingLockedActivityWidget: Widget {
     }
 
     @ViewBuilder private func actions(_ context: ActivityViewContext<MeetingLockedActivityAttributes>) -> some View {
-        if !context.isStale {
-            if context.state.phase == "listening" {
-                Button(intent: FinishMeetingLockedIntent(captureID: context.attributes.captureID)) {
-                    ZStack {
-                        Circle().fill(.white)
-                        Circle().stroke(.red, lineWidth: 2)
-                        RoundedRectangle(cornerRadius: 3).fill(.red).frame(width: 19, height: 19)
-                    }.frame(width: 52, height: 52)
-                }.buttonStyle(.plain)
-                    .accessibilityLabel("Stop Recording")
-                    .accessibilityHint("Stops the meeting recording and starts an agent with its transcript")
-            } else if context.state.phase == "ready" {
-                Button("Retry starting agent", intent: SendMeetingLockedIntent(captureID: context.attributes.captureID))
-                    .buttonStyle(.bordered)
-            }
+        if context.state.phase == "listening" {
+            Button(intent: FinishMeetingLockedIntent(captureID: context.attributes.captureID)) {
+                ZStack {
+                    Circle().fill(.white)
+                    Circle().stroke(.red, lineWidth: 2)
+                    RoundedRectangle(cornerRadius: 3).fill(.red).frame(width: 19, height: 19)
+                }.frame(width: 52, height: 52)
+            }.buttonStyle(.plain)
+                .accessibilityLabel("Stop Recording")
+                .accessibilityHint("Stops the meeting recording and starts an agent with its transcript")
+        } else if !context.isStale && context.state.phase == "ready" {
+            Button("Retry starting agent", intent: SendMeetingLockedIntent(captureID: context.attributes.captureID))
+                .buttonStyle(.bordered)
         }
     }
     private func label(_ context: ActivityViewContext<MeetingLockedActivityAttributes>) -> String {
-        if context.isStale { return "Meeting status unavailable" }
+        if context.isStale { return context.state.phase == "listening" ? "Meeting status delayed" : "Meeting status unavailable" }
         switch context.state.phase {
         case "preparing": return "Preparing microphone…"
         case "listening": return "Meeting recording"
@@ -73,6 +71,7 @@ struct MeetingLockedActivityWidget: Widget {
         case "ready": return context.state.warning ? "Not sent · transcript saved" : "Transcript ready to send"
         case "sending": return "Sending transcript…"
         case "sent": return "Meeting sent"
+        case "saved": return "Transcript saved"
         case "failed": return "Meeting stopped"
         default: return "Meeting ended"
         }
