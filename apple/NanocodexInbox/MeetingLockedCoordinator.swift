@@ -12,16 +12,17 @@ final class MeetingLockedCoordinator {
     static let shared = MeetingLockedCoordinator()
 
     enum CaptureError: LocalizedError {
-        case busy, permissions, account, unavailable, stale, notReady, empty
+        case busy, permissions, account, unavailable, stale, notReady, incomplete, empty
         var errorDescription: String? {
             switch self {
-            case .busy: "Finish or discard the current recording first."
+            case .busy: "Finish the current recording first."
             case .permissions: "Open Nanocodex once to grant Microphone and Speech Recognition access."
             case .account: "Sign in to Nanocodex before recording from the Lock Screen."
             case .unavailable: "The microphone or Live Activity is unavailable."
             case .stale: "That recording is no longer available."
             case .notReady: "Stop recording and wait for transcription before sending."
-            case .empty: "No speech was recognized. Discard and try recording again."
+            case .incomplete: "Only a partial transcript was recovered. Review it in Nanocodex, or explicitly retry starting an agent."
+            case .empty: "No speech was recognized. Try recording again."
             }
         }
     }
@@ -43,6 +44,12 @@ final class MeetingLockedCoordinator {
         var activity: Activity<MeetingLockedActivityAttributes>?
         var observers: [AnyCancellable] = []
         var ticker: Task<Void, Never>?
+        var previewTask: Task<Void, Never>?
+        var previewNextIndex = 0
+        var previewPieceOffset = 0
+        var previewRevision = 0
+        var previewRetryAt = Date.distantPast
+        var recap: String?
         var pendingUpdate: Task<Void, Never>?
         var background: UIBackgroundTaskIdentifier = .invalid
         var phase = "preparing"
@@ -59,13 +66,26 @@ final class MeetingLockedCoordinator {
         // A killed app may leave a partial checkpoint but no active microphone.
         // Preserve it as an account-scoped draft and allow a fresh locked capture.
         if savedSnapshot?.ready == false { recoverOutstanding() }
-        guard capture == nil, sending == nil, savedSnapshot == nil,
-              QuickVoiceRecorder.audioOwner == nil, !model.voice.isEngaged else { throw CaptureError.busy }
+        guard sending == nil, QuickVoiceRecorder.audioOwner == nil,
+              !model.voice.isEngaged else { throw CaptureError.busy }
         guard QuickVoiceRecorder.permissionsGranted else { throw CaptureError.permissions }
         guard ActivityAuthorizationInfo().areActivitiesEnabled else { throw CaptureError.unavailable }
         let account: String
         do { account = try model.lockedVoiceAccountScope() }
         catch { throw CaptureError.account }
+        // A completed transcript must not monopolize the recorder when delivery
+        // failed. Move it to its original account's recovery journal (or leave its
+        // existing pending turn in charge) before starting another capture. This
+        // is preservation, not a user-facing discard or an automatic retry.
+        if let snapshot = savedSnapshot, snapshot.ready {
+            model.retainLockedVoiceRecovery(snapshot.transcript, captureID: snapshot.id,
+                                            accountScope: snapshot.account)
+            if let current = capture, current.id == snapshot.id {
+                finishCapture(current, phase: "saved")
+            }
+            clearSnapshot(id: snapshot.id)
+        }
+        guard capture == nil, savedSnapshot == nil else { throw CaptureError.busy }
         // An OS termination may have left a stale recording activity with no
         // owning audio process. Do not display a second apparently live mic.
         for orphan in Activity<MeetingLockedActivityAttributes>.activities {
@@ -89,6 +109,9 @@ final class MeetingLockedCoordinator {
         current.observers.append(current.recorder.$transcript.dropFirst().sink { [weak self] text in
             Task { @MainActor in self?.checkpoint(id: id, text: text) }
         })
+        current.observers.append(current.recorder.$finalizedSegments.dropFirst().sink { [weak self] _ in
+            Task { @MainActor in self?.streamFinalizedText(id: id) }
+        })
         current.observers.append(NotificationCenter.default.publisher(for: AVAudioSession.interruptionNotification).sink { [weak self] notification in
             guard let type = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
                   type == AVAudioSession.InterruptionType.began.rawValue else { return }
@@ -111,7 +134,10 @@ final class MeetingLockedCoordinator {
             while !Task.isCancelled {
                 do { try await Task.sleep(for: .seconds(10)) } catch { return }
                 guard let self, let current, self.capture === current else { return }
-                if current.recorder.recording { self.update(current, phase: "listening") }
+                if current.recorder.recording {
+                    self.update(current, phase: "listening")
+                    self.streamFinalizedText(id: current.id)
+                }
                 else if current.recorder.reviewing { self.becameReady(id: current.id); return }
                 else if !current.stopping {
                     self.beginFinishing(current)
@@ -124,6 +150,12 @@ final class MeetingLockedCoordinator {
 
     func finishAndSend(captureID: String) async throws {
         try await stop(captureID: captureID)
+        // A recognizer interruption can settle the remaining segments with only
+        // partial text. Keep that snapshot for review/manual retry, never admit it
+        // as the result of the original Stop tap.
+        if let snapshot = savedSnapshot, snapshot.id == captureID, snapshot.warning {
+            throw CaptureError.incomplete
+        }
         try await send(captureID: captureID)
     }
 
@@ -184,18 +216,6 @@ final class MeetingLockedCoordinator {
         try await task.value
     }
 
-    func discard(captureID: String) async throws {
-        if let current = capture, current.id == captureID {
-            guard sending?.id != captureID else { throw CaptureError.busy }
-            if savedSnapshot?.id == captureID { clearSnapshot(id: captureID) }
-            finishCapture(current, phase: "discarded")
-        } else if savedSnapshot?.id == captureID {
-            guard sending?.id != captureID else { throw CaptureError.busy }
-            clearSnapshot(id: captureID)
-            await activity(for: captureID)?.end(content(phase: "discarded", seconds: 0), dismissalPolicy: .immediate)
-        } else { throw CaptureError.stale }
-    }
-
     /// The scene's foreground entry hands an orphaned or failed Lock Screen
     /// capture to the ordinary account-scoped recovery draft. Never display it
     /// to a different account; the Live Activity itself contains no text.
@@ -220,6 +240,70 @@ final class MeetingLockedCoordinator {
         let snapshot = ReadySnapshot(id: id, account: current.account, transcript: text,
                                      warning: true, ready: false)
         storeSnapshot(snapshot)
+    }
+
+    /// Speech partials revise in place and never enter the preview endpoint. Only
+    /// segments settled in capture order are streamed. Retries reuse the same
+    /// revision and text; a failed preview never gates Stop or agent admission.
+    private func streamFinalizedText(id: String) {
+        guard let current = capture, current.id == id, current.previewTask == nil,
+              Date() >= current.previewRetryAt, let captureID = UUID(uuidString: id) else { return }
+        let settled = Set(current.recorder.settledSegmentIndices)
+        let finals = Dictionary(uniqueKeysWithValues: current.recorder.finalizedSegments.map { ($0.index, $0.text) })
+        var index = current.previewNextIndex
+        while settled.contains(index), finals[index]?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty != false { index += 1 }
+        current.previewNextIndex = index
+        guard let delta = finals[index], !delta.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        // Recognition segments are normally far below this limit. If a very long
+        // result exceeds it, send bounded UTF-8 chunks under consecutive revisions.
+        let pieces = boundedPreviewChunks(delta)
+        guard !pieces.isEmpty else { return }
+        let expectedScope = current.account
+        let firstUnsent = current.previewPieceOffset
+        guard firstUnsent < pieces.count else { return }
+        current.previewTask = Task { [weak self, weak current] in
+            guard let self, let current else { return }
+            for piece in pieces.dropFirst(firstUnsent) {
+                guard self.capture === current, !Task.isCancelled else { return }
+                let revision = current.previewRevision + 1
+                do {
+                    let result = try await self.model.updateMeetingPreview(captureID: captureID,
+                        revision: revision, delta: piece, accountScope: expectedScope)
+                    guard self.capture === current, !Task.isCancelled else { return }
+                    current.previewRevision = revision
+                    current.previewRetryAt = .distantPast
+                    current.previewPieceOffset += 1
+                    if !result.summary.isEmpty, result.summaryRevision > 0 {
+                        current.recap = String(result.summary.prefix(180))
+                        self.update(current, phase: current.phase)
+                    }
+                } catch {
+                    // Ambiguous admission: repeat this exact revision after a
+                    // bounded delay. Never advance the cursor on uncertain write.
+                    current.previewRetryAt = Date().addingTimeInterval(30)
+                    break
+                }
+            }
+            if current.previewPieceOffset == pieces.count {
+                current.previewNextIndex = index + 1
+                current.previewPieceOffset = 0
+            }
+            current.previewTask = nil
+            if current.previewNextIndex > index { self.streamFinalizedText(id: id) }
+        }
+    }
+
+    private func boundedPreviewChunks(_ text: String) -> [String] {
+        var chunks: [String] = [], current = "", size = 0
+        for character in text {
+            let bytes = String(character).utf8.count
+            if size + bytes > 4096, !current.isEmpty {
+                chunks.append(current); current = ""; size = 0
+            }
+            current.append(character); size += bytes
+        }
+        if !current.isEmpty { chunks.append(current) }
+        return chunks
     }
 
     private var savedSnapshot: ReadySnapshot? {
@@ -281,7 +365,7 @@ final class MeetingLockedCoordinator {
         guard let current = capture, current.id == id,
               current.recorder.reviewing || force else { return }
         current.ticker?.cancel(); current.ticker = nil
-        let warning = current.recorder.status.contains("partial") || current.recorder.status.contains("timed out") || force
+        let warning = current.recorder.completedWithWarning || force
         if let text = QuickVoiceInput.finalText(current.recorder.transcript) {
             let snapshot = ReadySnapshot(id: id, account: current.account, transcript: text,
                                          warning: warning, ready: true)
@@ -310,7 +394,11 @@ final class MeetingLockedCoordinator {
         guard capture === current else { return }
         current.phase = phase
         let previous = current.pendingUpdate
-        let next = content(phase: phase, seconds: current.recorder.seconds, warning: warning)
+        let next = ActivityContent<MeetingLockedActivityAttributes.ContentState>(
+            state: .init(phase: phase, seconds: current.recorder.seconds, warning: warning,
+                         recap: phase == "listening" ? current.recap : nil),
+            staleDate: ["preparing", "listening", "transcribing", "sending"].contains(phase)
+                ? Date().addingTimeInterval(90) : nil)
         current.pendingUpdate = Task { [weak current] in
             await previous?.value
             await current?.activity?.update(next)
@@ -321,8 +409,12 @@ final class MeetingLockedCoordinator {
         guard capture === current else { return }
         capture = nil // Fence all recognizer callbacks before tearing down audio.
         current.ticker?.cancel()
+        current.previewTask?.cancel()
         current.observers.removeAll()
         let elapsed = current.recorder.seconds
+        if phase == "sent", let captureID = UUID(uuidString: current.id) {
+            Task { await model.closeMeetingPreview(captureID: captureID, accountScope: current.account) }
+        }
         current.recorder.discard()
         let previous = current.pendingUpdate
         let activity = current.activity

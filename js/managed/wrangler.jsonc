@@ -96,6 +96,7 @@
       { "name": "NANOCODEX_INFERENCE_KEYS", "class_name": "InferenceKey" },
       { "name": "NANOCODEX_INFERENCE_ACCOUNTS", "class_name": "InferenceAccount" },
       { "name": "NANOCODEX_INFERENCE_SESSIONS", "class_name": "InferenceSession" },
+      { "name": "NANOCODEX_MEETING_PREVIEWS", "class_name": "MeetingPreview" },
       { "name": "NANOCODEX_PROVIDER_PROBE_COORDINATOR", "class_name": "ProviderProbeCoordinator" },
       { "name": "NANOCODEX_PHONES", "class_name": "PhoneContainer" },
       {
@@ -181,11 +182,13 @@
     // Already applied in production. Retain this class and its SQLite state.
     { "tag": "v9", "new_sqlite_classes": ["PhoneContainer"] },
     { "tag": "v10", "new_sqlite_classes": ["ProviderProbeCoordinator"] },
-    { "tag": "v11", "new_sqlite_classes": ["InferenceKey", "InferenceAccount", "InferenceSession"] }
+    { "tag": "v11", "new_sqlite_classes": ["InferenceKey", "InferenceAccount", "InferenceSession"] },
+    { "tag": "v12", "new_sqlite_classes": ["MeetingPreview"] }
   ],
   "vars": {
     "NANOCODEX_THREAD_ROUTING": "true",
     "NANOCODEX_INFERENCE_ENABLED": "true",
+    "NANOCODEX_MEETING_PREVIEW_ENABLED": "true",
     "NANOCODEX_CLOUDFLARE_FRONTIER_ENABLED": "true",
     "NANOCODEX_PROVIDER_PROBES": "false",
     "NANOCODEX_PROVIDER_PROBE_DAILY_LIMIT": "0",

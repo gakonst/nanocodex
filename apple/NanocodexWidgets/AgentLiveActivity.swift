@@ -214,20 +214,51 @@ struct LockedVoiceControl: ControlWidget {
     }
 }
 
+/// Voice Memos-inspired recorder controls, adapted to ActivityKit's compact
+/// Lock Screen card. The red waveform is actual quantized microphone level.
 struct LockedVoiceActivity: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: LockedVoiceActivityAttributes.self) { context in
-            HStack(spacing: 12) {
-                Image(systemName: symbol(displayPhase(context))).font(.title2)
-                VStack(alignment: .leading, spacing: 4) {
-                    Text(headline(displayPhase(context), failure: context.state.failure)).font(.headline)
-                    Text(context.state.language == "el-GR" ? "Ελληνικά" : "English")
-                        .font(.caption).foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 9) {
+                HStack {
+                    Image(systemName: "waveform").foregroundStyle(.red)
+                    Text("Nanocodex").font(.subheadline.weight(.semibold))
+                    Spacer()
+                    if context.state.phase == "listening" {
+                        Text("RECORDING").font(.caption2.weight(.bold))
+                            .tracking(1).foregroundStyle(.red)
+                    }
                 }
-                Spacer()
-                controls(context)
+                if context.state.phase == "listening" {
+                    HStack(alignment: .center, spacing: 14) {
+                        VStack(alignment: .leading, spacing: 7) {
+                            if let startedAt = context.state.startedAt {
+                                Text(startedAt, style: .timer)
+                                    .font(.system(size: 29, weight: .medium, design: .rounded))
+                                    .monospacedDigit()
+                                    .accessibilityLabel("Recording duration")
+                            }
+                            RecordingWaveform(levels: context.state.waveform ?? [])
+                        }
+                        stopButton(captureID: context.attributes.captureID)
+                    }
+                    Text("Stop recording to start your agent")
+                        .font(.caption2).foregroundStyle(.secondary)
+                } else {
+                    HStack(spacing: 9) {
+                        Image(systemName: symbol(displayPhase(context)))
+                            .foregroundStyle(statusTint(displayPhase(context)))
+                        Text(headline(displayPhase(context), failure: context.state.failure))
+                            .font(.headline)
+                        Spacer()
+                        if ["recordingFailed", "transcriptionFailed"].contains(context.state.phase) {
+                            Button("Record again", intent: StartLockedVoiceIntent())
+                                .buttonStyle(.plain).foregroundStyle(.red)
+                        }
+                    }.frame(minHeight: 48)
+                }
             }
-            .padding()
+            .padding(.horizontal, 17).padding(.vertical, 13)
             .activityBackgroundTint(.black)
             .activitySystemActionForegroundColor(.white)
             .foregroundStyle(.white)
@@ -235,38 +266,49 @@ struct LockedVoiceActivity: Widget {
             DynamicIsland {
                 DynamicIslandExpandedRegion(.leading) {
                     Image(systemName: symbol(displayPhase(context)))
+                        .foregroundStyle(statusTint(displayPhase(context)))
                 }
                 DynamicIslandExpandedRegion(.center) {
-                    Text(headline(displayPhase(context), failure: context.state.failure)).font(.headline)
+                    if context.state.phase == "listening", let startedAt = context.state.startedAt {
+                        Text(startedAt, style: .timer).font(.title2).monospacedDigit()
+                    } else {
+                        Text(headline(displayPhase(context), failure: context.state.failure))
+                    }
                 }
-                DynamicIslandExpandedRegion(.bottom) { controls(context) }
+                DynamicIslandExpandedRegion(.bottom) {
+                    if context.state.phase == "listening" {
+                        HStack(spacing: 14) {
+                            RecordingWaveform(levels: context.state.waveform ?? [])
+                            stopButton(captureID: context.attributes.captureID)
+                        }.padding(.vertical, 5)
+                    }
+                }
             } compactLeading: {
                 Image(systemName: symbol(displayPhase(context)))
+                    .foregroundStyle(statusTint(displayPhase(context)))
             } compactTrailing: {
-                Text(displayPhase(context) == "sent" ? "Sent" : context.isStale ? "Ended" : "Voice").font(.caption2)
+                if context.state.phase == "listening", let startedAt = context.state.startedAt {
+                    Text(startedAt, style: .timer).monospacedDigit().font(.caption2)
+                } else {
+                    Text(displayPhase(context) == "sent" ? "Sent" : "Voice").font(.caption2)
+                }
             } minimal: {
-                Image(systemName: symbol(displayPhase(context)))
+                Image(systemName: "waveform").foregroundStyle(.red)
             }
         }
     }
 
-    @ViewBuilder private func controls(_ context: ActivityViewContext<LockedVoiceActivityAttributes>) -> some View {
-        if context.isStale {
-            EmptyView()
-        } else if ["preparing", "listening", "transcribing"].contains(context.state.phase) {
-            HStack {
-                Button(intent: CancelLockedVoiceIntent(captureID: context.attributes.captureID)) {
-                    Image(systemName: "xmark").accessibilityLabel("Cancel recording")
-                }
-                if context.state.phase == "listening" {
-                    Button(intent: FinishLockedVoiceIntent(captureID: context.attributes.captureID)) {
-                        Image(systemName: "arrow.up").accessibilityLabel("Send recording")
-                    }
-                }
-            }.buttonStyle(.bordered)
-        } else if ["recordingFailed", "transcriptionFailed"].contains(context.state.phase) {
-            Button("Try again", intent: StartLockedVoiceIntent()).buttonStyle(.bordered)
+    private func stopButton(captureID: String) -> some View {
+        Button(intent: FinishLockedVoiceIntent(captureID: captureID)) {
+            ZStack {
+                Circle().fill(.white)
+                Circle().stroke(.red, lineWidth: 2)
+                RoundedRectangle(cornerRadius: 3).fill(.red).frame(width: 19, height: 19)
+            }.frame(width: 52, height: 52)
         }
+        .buttonStyle(.plain)
+        .accessibilityLabel("Stop Recording")
+        .accessibilityHint("Ends microphone capture and starts an agent with the transcript")
     }
 
     private func displayPhase(_ context: ActivityViewContext<LockedVoiceActivityAttributes>) -> String {
@@ -278,24 +320,53 @@ struct LockedVoiceActivity: Widget {
     private func headline(_ phase: String, failure: String?) -> String {
         switch phase {
         case "preparing": "Getting ready…"
-        case "listening": "Recording…"
-        case "transcribing": "Finishing…"
-        case "sending": "Sending…"
-        case "sent": "Task sent"
-        case "cancelled": "Cancelled"
+        case "listening": "Recording"
+        case "transcribing": "Transcribing…"
+        case "sending": "Starting agent…"
+        case "sent": "Agent started"
+        case "cancelled": "Recording stopped"
         case "recordingFailed": failure ?? "Recording stopped"
         case "transcriptionFailed": "Transcription unfinished"
         case "deliveryFailed": "Delivery unconfirmed"
-        case "expired": "Status unavailable"
+        case "expired": "Recording interrupted"
         default: "Voice task ended"
         }
     }
+
     private func symbol(_ phase: String) -> String {
         switch phase {
         case "sent": "checkmark.circle.fill"
-        case "failed", "recordingFailed", "transcriptionFailed", "deliveryFailed", "expired": "exclamationmark.circle"
-        case "cancelled": "xmark.circle"
-        default: "mic.fill"
+        case "preparing", "listening": "waveform"
+        case "transcribing": "text.bubble"
+        case "sending": "arrow.up.circle.fill"
+        default: "exclamationmark.circle"
         }
+    }
+
+    private func statusTint(_ phase: String) -> Color {
+        switch phase {
+        case "sent": .green
+        case "preparing", "listening": .red
+        case "transcribing", "sending": .white
+        default: .red
+        }
+    }
+}
+
+private struct RecordingWaveform: View {
+    let levels: [UInt8]
+    var body: some View {
+        HStack(alignment: .center, spacing: 2) {
+            ForEach(0..<28, id: \.self) { index in
+                let offset = levels.count - 28 + index
+                let level = offset >= 0 && offset < levels.count ? Int(levels[offset]) : 0
+                Capsule()
+                    .fill(.red.opacity(level == 0 ? 0.35 : 0.95))
+                    .frame(maxWidth: .infinity)
+                    .frame(height: CGFloat(4 + level * 2))
+            }
+        }
+        .frame(height: 35)
+        .accessibilityLabel("Live recording waveform")
     }
 }

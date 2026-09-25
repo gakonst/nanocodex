@@ -20,16 +20,22 @@ struct MeetingLockedControl: ControlWidget {
 struct MeetingLockedActivityWidget: Widget {
     var body: some WidgetConfiguration {
         ActivityConfiguration(for: MeetingLockedActivityAttributes.self) { context in
-            HStack(spacing: 12) {
-                Image(systemName: context.state.phase == "sent" ? "checkmark.circle.fill" : "waveform")
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(label(context)).font(.headline)
-                    if context.state.phase == "listening" {
-                        Text(Duration.seconds(context.state.seconds).formatted()).font(.caption).monospacedDigit()
+            VStack(alignment: .leading, spacing: 8) {
+                HStack(spacing: 12) {
+                    Image(systemName: context.state.phase == "sent" ? "checkmark.circle.fill" : "waveform")
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(label(context)).font(.headline)
+                        if context.state.phase == "listening" {
+                            Text(Duration.seconds(context.state.seconds).formatted()).font(.caption).monospacedDigit()
+                        }
                     }
+                    Spacer()
+                    actions(context)
                 }
-                Spacer()
-                actions(context)
+                if context.state.phase == "listening", let recap = context.state.recap, !recap.isEmpty {
+                    Text(recap).font(.caption).lineLimit(2)
+                        .privacySensitive()
+                }
             }
             .padding()
             .activityBackgroundTint(.black)
@@ -47,34 +53,23 @@ struct MeetingLockedActivityWidget: Widget {
     }
 
     @ViewBuilder private func actions(_ context: ActivityViewContext<MeetingLockedActivityAttributes>) -> some View {
-        if !context.isStale {
-            if context.state.phase == "listening" {
-                HStack {
-                    Button(intent: DiscardMeetingLockedIntent(captureID: context.attributes.captureID)) {
-                        Image(systemName: "xmark").accessibilityLabel("Cancel meeting")
-                    }
-                    Button(intent: FinishMeetingLockedIntent(captureID: context.attributes.captureID)) {
-                        Label("Finish & Send", systemImage: "arrow.up")
-                    }
-                }.buttonStyle(.bordered)
-            } else if context.state.phase == "ready" {
-                HStack {
-                    Button(intent: DiscardMeetingLockedIntent(captureID: context.attributes.captureID)) {
-                        Image(systemName: "trash").accessibilityLabel("Discard meeting")
-                    }
-                    Button(intent: SendMeetingLockedIntent(captureID: context.attributes.captureID)) {
-                        Label("Send", systemImage: "arrow.up")
-                    }
-                }.buttonStyle(.bordered)
-            } else if context.state.phase == "failed" {
-                Button(intent: DiscardMeetingLockedIntent(captureID: context.attributes.captureID)) {
-                    Label("Dismiss", systemImage: "xmark")
-                }.buttonStyle(.bordered)
-            }
+        if context.state.phase == "listening" {
+            Button(intent: FinishMeetingLockedIntent(captureID: context.attributes.captureID)) {
+                ZStack {
+                    Circle().fill(.white)
+                    Circle().stroke(.red, lineWidth: 2)
+                    RoundedRectangle(cornerRadius: 3).fill(.red).frame(width: 19, height: 19)
+                }.frame(width: 52, height: 52)
+            }.buttonStyle(.plain)
+                .accessibilityLabel("Stop Recording")
+                .accessibilityHint("Stops the meeting recording and starts an agent with its transcript")
+        } else if !context.isStale && context.state.phase == "ready" {
+            Button("Retry starting agent", intent: SendMeetingLockedIntent(captureID: context.attributes.captureID))
+                .buttonStyle(.bordered)
         }
     }
     private func label(_ context: ActivityViewContext<MeetingLockedActivityAttributes>) -> String {
-        if context.isStale { return "Meeting status unavailable" }
+        if context.isStale { return context.state.phase == "listening" ? "Meeting status delayed" : "Meeting status unavailable" }
         switch context.state.phase {
         case "preparing": return "Preparing microphone…"
         case "listening": return "Meeting recording"
@@ -82,6 +77,7 @@ struct MeetingLockedActivityWidget: Widget {
         case "ready": return context.state.warning ? "Not sent · transcript saved" : "Transcript ready to send"
         case "sending": return "Sending transcript…"
         case "sent": return "Meeting sent"
+        case "saved": return "Transcript saved"
         case "failed": return "Meeting stopped"
         default: return "Meeting ended"
         }

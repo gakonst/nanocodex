@@ -24,6 +24,28 @@ public enum APIError: LocalizedError, Equatable {
     }
 }
 
+/// Versioned rolling recap of finalized meeting Speech segments. This is a
+/// preview, not an agent turn; the final transcript is submitted only on Stop.
+public struct MeetingPreview: Equatable, Sendable {
+    public let revision: Int
+    public let summary: String
+    public let summaryRevision: Int
+    public let status: String
+    init(_ json: JSON, captureID: UUID) throws {
+        guard json["capture_id"].string.lowercased() == captureID.uuidString.lowercased(),
+              let revision = Int(exactly: json["revision"].number), revision >= 0,
+              let summaryRevision = Int(exactly: json["summary_revision"].number),
+              summaryRevision >= 0, summaryRevision <= revision,
+              case .string(let summary) = json["summary"], summary.utf8.count <= 4096,
+              ["updated", "pending", "unavailable", "unchanged"].contains(json["status"].string)
+        else { throw APIError.invalidResponse }
+        self.revision = revision
+        self.summary = summary
+        self.summaryRevision = summaryRevision
+        self.status = json["status"].string
+    }
+}
+
 public struct AccountCredential: Codable, Equatable, Sendable {
     public let origin: String
     public let apiKey: String
@@ -177,6 +199,22 @@ public final class ManagedClient: @unchecked Sendable {
             card.applyPresentation(summary["presentation"])
             return card
         }
+    }
+    /// Incremental finalized text, never raw PCM or unstable Speech partials.
+    /// Reuse the same capture ID and revision if a network result is uncertain.
+    public func updateMeetingPreview(captureID: UUID, revision: Int, delta: String) async throws -> MeetingPreview {
+        guard revision > 0, revision <= 1024, !delta.isEmpty, delta.utf8.count <= 4096 else { throw APIError.invalidResponse }
+        let result = try await json(path: "/v1/meetings/" + captureID.uuidString.lowercased() + "/preview",
+            method: "POST", body: .object(["revision": .number(Double(revision)), "delta": .string(delta)]))
+        let preview = try MeetingPreview(result, captureID: captureID)
+        guard preview.revision >= revision else { throw APIError.invalidResponse }
+        return preview
+    }
+    public func meetingPreview(captureID: UUID) async throws -> MeetingPreview {
+        try MeetingPreview(await json(path: "/v1/meetings/" + captureID.uuidString.lowercased() + "/preview"), captureID: captureID)
+    }
+    public func closeMeetingPreview(captureID: UUID) async throws {
+        _ = try await json(path: "/v1/meetings/" + captureID.uuidString.lowercased() + "/preview", method: "DELETE")
     }
     public static func agentPath(_ id: String) throws -> String {
         guard !id.isEmpty, id.count <= 128, id.utf8.allSatisfy({ (48...57).contains($0) || (65...90).contains($0) || (97...122).contains($0) || [45, 95].contains($0) }) else { throw APIError.invalidResponse }

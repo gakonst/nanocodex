@@ -14,7 +14,7 @@ final class LockedVoiceCoordinator {
         case alreadyRecording, unavailable, permissions, account, staleCapture, completionFailed
         var errorDescription: String? {
             switch self {
-            case .alreadyRecording: "A voice task is already in progress. Finish or cancel it first."
+            case .alreadyRecording: "A voice task is already recording. Tap Stop Recording first."
             case .unavailable: "Recording could not start. Try again from the Lock Screen."
             case .permissions: "Open the app and allow Microphone and Speech Recognition before recording from the Lock Screen."
             case .account: "Sign in in the app before recording from the Lock Screen."
@@ -30,11 +30,13 @@ final class LockedVoiceCoordinator {
         let account: String
         let generation: UUID?
         let language: String
-        let recorder: QuickVoiceRecorder = {
-            let recorder = QuickVoiceRecorder()
-            recorder.finalizationTimeout = 20
-            return recorder
-        }()
+        // Continuous microphone stream with rotating speech segments. A pause
+        // finalizes one segment, never the recording or a cloud turn.
+        let recorder = MeetingRecorder()
+        var stopRequested = false
+        var startedAt: Date?
+        var lastCheckpoint = Date.distantPast
+        var sawSpeech = false
         let completion = LockedVoiceCompletion()
         var activity: Activity<LockedVoiceActivityAttributes>?
         var phase = "preparing"
@@ -50,19 +52,39 @@ final class LockedVoiceCoordinator {
             self.account = account; self.generation = generation; self.language = language
         }
     }
+    private struct PartialSnapshot: Codable {
+        let id: String
+        let account: String
+        let text: String
+    }
+    private static func snapshotKey(_ scope: String) -> String { "inbox.lockedVoice.capture." + scope }
     private var capture: Capture?
     private let model = InboxModel.shared
     private let log = Logger(subsystem: "xyz.paradigm.centaur", category: "LockedVoice")
 
     func start() async throws {
+        VoiceDiagnostic.note("speak.coordinator.enter.state-\(UIApplication.shared.applicationState.rawValue).protected-\(UIApplication.shared.isProtectedDataAvailable)")
         log.info("Start requested: applicationState=\(UIApplication.shared.applicationState.rawValue) protectedDataAvailable=\(UIApplication.shared.isProtectedDataAvailable)")
-        guard capture == nil else { throw CaptureError.alreadyRecording }
-        guard !model.voice.isEngaged else { throw CaptureError.alreadyRecording }
-        guard QuickVoiceRecorder.permissionsGranted else { throw CaptureError.permissions }
-        guard ActivityAuthorizationInfo().areActivitiesEnabled else { throw CaptureError.unavailable }
+        guard capture == nil else { VoiceDiagnostic.note("speak.coordinator.busy"); throw CaptureError.alreadyRecording }
+        guard !model.voice.isEngaged else { VoiceDiagnostic.note("speak.coordinator.otherVoiceBusy"); throw CaptureError.alreadyRecording }
+        guard QuickVoiceRecorder.permissionsGranted else { VoiceDiagnostic.note("speak.coordinator.permissionsDenied"); throw CaptureError.permissions }
+        guard ActivityAuthorizationInfo().areActivitiesEnabled else { VoiceDiagnostic.note("speak.coordinator.activityDisabled"); throw CaptureError.unavailable }
+        // A prior app process may have died after publishing a terminal failure (or
+        // before ending an activity). Those cards can outlive the process and obscure
+        // a new successful capture on the Lock Screen.
+        for orphan in Activity<LockedVoiceActivityAttributes>.activities {
+            VoiceDiagnostic.note("speak.coordinator.retiringOrphan")
+            await orphan.end(nil, dismissalPolicy: .immediate)
+        }
         let account: String
         do { account = try model.lockedVoiceAccountScope() }
-        catch { throw CaptureError.account }
+        catch { VoiceDiagnostic.note("speak.coordinator.accountUnavailable", error: error); throw CaptureError.account }
+        // Recover a prior process's unsent partial as a draft, never as a turn.
+        if let data = UserDefaults.standard.data(forKey: Self.snapshotKey(account)),
+           let old = try? JSONDecoder().decode(PartialSnapshot.self, from: data), old.account == account {
+            model.retainLockedVoiceRecovery(old.text, captureID: old.id, accountScope: account)
+            UserDefaults.standard.removeObject(forKey: Self.snapshotKey(account))
+        }
         let language = UserDefaults.standard.string(forKey: "quickVoice.locale") == "el-GR" ? "el-GR" : "en-US"
         let current = Capture(account: account, generation: model.connected ? model.quickVoiceGeneration : nil, language: language)
         capture = current
@@ -70,33 +92,37 @@ final class LockedVoiceCoordinator {
             // The combined recording/Live Activity intent is the intended locked path.
             // Physical-device validation is still required for OS launch eligibility.
             // The Live Activity must exist before activating the microphone.
+            VoiceDiagnostic.note("speak.coordinator.activityRequest")
             current.activity = try Activity.request(attributes: LockedVoiceActivityAttributes(captureID: current.id),
                 content: content(current, phase: "preparing"), pushType: nil)
+            VoiceDiagnostic.note("speak.coordinator.activityStarted")
         } catch {
+            VoiceDiagnostic.note("speak.coordinator.activityFailed", error: error)
             capture = nil
             throw CaptureError.unavailable
         }
-        // Begin recognizing immediately in the background app process. A completed
-        // utterance submits itself; Send remains an explicit finish control for
-        // people who prefer not to wait for the speech pause.
-        current.recorder.onStatus = { [weak self, weak current] phase in
+        // Stream microphone buffers to bounded recognition segments continuously.
+        // Only an explicit Stop Recording can admit the finished transcript.
+        current.observations.append(current.recorder.$reviewing.dropFirst().sink { [weak self, weak current] ready in
+            guard ready else { return }
+            Task { @MainActor in
+                guard let self, let current, self.capture === current else { return }
+                self.beginCompletion(current)
+                if current.stopRequested, !current.recorder.completedWithWarning,
+                   let text = QuickVoiceInput.finalText(current.recorder.transcript) {
+                    VoiceDiagnostic.note("speak.coordinator.finalTextReady")
+                    self.deliver(text, capture: current)
+                } else {
+                    current.failure = current.recorder.completedWithWarning ? current.recorder.status :
+                        (current.stopRequested ? "No speech heard" : "Recording interrupted")
+                    self.end(current, phase: self.failurePhase(current), preserve: true)
+                }
+            }
+        })
+        current.observations.append(current.recorder.$transcript.dropFirst().sink { [weak self, weak current] text in
             guard let self, let current, self.capture === current else { return }
-            self.update(current, phase: phase)
-        }
-        current.recorder.onAudioEnded = { [weak self, weak current] in
-            guard let self, let current, self.capture === current else { return }
-            self.beginCompletion(current)
-        }
-        current.recorder.onError = { [weak self, weak current] message in
-            guard let self, let current, self.capture === current else { return }
-            current.failure = LockedVoiceFailure.description(for: message)
-            self.log.error("Capture \(current.id, privacy: .public) stopped: \(message, privacy: .public)")
-            self.end(current, phase: self.failurePhase(current), preserve: true)
-        }
-        current.recorder.onFinal = { [weak self, weak current] text in
-            guard let self, let current, self.capture === current else { return }
-            self.deliver(text, capture: current)
-        }
+            self.checkpoint(current, text: text)
+        })
         let captureID = current.id
         let center = NotificationCenter.default
         current.observations.append(center.publisher(for: AVAudioSession.interruptionNotification).sink { [weak self] notification in
@@ -118,14 +144,18 @@ final class LockedVoiceCoordinator {
         // Restore in parallel, never before or instead of microphone startup. An
         // unusually fast final callback still has a task to await for delivery.
         current.restore = Task { try await model.restoreLockedVoiceAccount(scope: account) }
-        await current.recorder.start(locale: language, permissions: .alreadyGranted)
+        VoiceDiagnostic.note("speak.coordinator.recorderStarting")
+        await current.recorder.start(locale: language, permissionsGranted: true)
+        VoiceDiagnostic.note("speak.coordinator.recorderReturned.active-\(current.recorder.recording)")
         guard capture === current, current.recorder.recording else {
             if capture === current { end(current, phase: failurePhase(current), preserve: true) }
             throw CaptureError.unavailable
         }
+        current.startedAt = Date()
+        self.update(current, phase: "listening")
         current.heartbeat = Task { [weak self, weak current] in
             while !Task.isCancelled {
-                do { try await Task.sleep(for: .seconds(30)) } catch { return }
+                do { try await Task.sleep(for: .seconds(3)) } catch { return }
                 guard let self, let current, self.capture === current, current.phase == "listening" else { return }
                 self.update(current, phase: "listening")
             }
@@ -134,17 +164,18 @@ final class LockedVoiceCoordinator {
 
     func finish(captureID: String) async throws {
         guard let current = capture, current.id == captureID else { throw CaptureError.staleCapture }
-        // Finish ends streaming input and waits for the recognizer final result.
-        // Keep the system's Send execution alive through transcription and cloud
-        // admission; duplicate taps join this capture instead of returning early.
-        if current.recorder.recording { current.recorder.finish() }
+        // Stop recording exactly once. Segments continue finalizing after the mic
+        // closes, then the completed transcript is admitted under this capture ID.
+        // Duplicate taps join the same completion; they never create another turn.
+        if current.recorder.recording {
+            current.stopRequested = true
+            checkpoint(current, text: current.recorder.transcript, force: true)
+            beginCompletion(current)
+            update(current, phase: "transcribing")
+            VoiceDiagnostic.note("speak.coordinator.stopRequested")
+            current.recorder.finish()
+        }
         try await current.completion.wait()
-    }
-
-    func cancel(captureID: String) async throws {
-        guard let current = capture, current.id == captureID, current.delivery == nil else { return }
-        beginCompletion(current)
-        end(current, phase: "cancelled", preserve: false)
     }
 
     func yieldToForegroundRecording() {
@@ -155,7 +186,23 @@ final class LockedVoiceCoordinator {
 
     private func interrupt(captureID: String) {
         guard let current = capture, current.id == captureID else { return }
+        beginCompletion(current)
         current.recorder.interrupt()
+    }
+
+    private func checkpoint(_ current: Capture, text: String, force: Bool = false) {
+        guard capture === current, let text = QuickVoiceInput.finalText(text) else { return }
+        if !current.sawSpeech {
+            current.sawSpeech = true
+            VoiceDiagnostic.note("speak.coordinator.firstTranscript")
+        }
+        guard force || Date().timeIntervalSince(current.lastCheckpoint) >= 5 else { return }
+        current.lastCheckpoint = Date()
+        // A crash retains only the latest partial, scoped to this account. It
+        // becomes an editable draft on recovery; never auto-submits unfinished audio.
+        if let data = try? JSONEncoder().encode(PartialSnapshot(id: current.id, account: current.account, text: text)) {
+            UserDefaults.standard.set(data, forKey: Self.snapshotKey(current.account))
+        }
     }
 
     private func beginCompletion(_ current: Capture) {
@@ -189,9 +236,11 @@ final class LockedVoiceCoordinator {
                 try await self.model.submitLockedVoice(text, captureID: current.id, accountScope: current.account, generation: epoch)
                 try Task.checkCancellation()
                 guard self.capture === current else { return }
+                VoiceDiagnostic.note("speak.coordinator.deliveryAdmitted")
                 self.end(current, phase: "sent", preserve: false)
             } catch {
                 guard self.capture === current else { return }
+                VoiceDiagnostic.note("speak.coordinator.deliveryFailed", error: error)
                 self.end(current, phase: self.failurePhase(current), preserve: true)
             }
         }
@@ -206,7 +255,9 @@ final class LockedVoiceCoordinator {
     }
 
     private func content(_ current: Capture, phase: String) -> ActivityContent<LockedVoiceActivityAttributes.ContentState> {
-        ActivityContent(state: .init(phase: phase, language: current.language, failure: current.failure), staleDate: ["preparing", "listening", "transcribing", "sending"].contains(phase) ? Date().addingTimeInterval(90) : nil)
+        ActivityContent(state: .init(phase: phase, language: current.language, failure: current.failure,
+                                     startedAt: current.startedAt, waveform: phase == "listening" ? current.recorder.waveform : nil),
+                        staleDate: ["preparing", "listening", "transcribing", "sending"].contains(phase) ? Date().addingTimeInterval(90) : nil)
     }
 
     private func update(_ current: Capture, phase: String) {
@@ -230,17 +281,12 @@ final class LockedVoiceCoordinator {
 
     private func end(_ current: Capture, phase: String, preserve: Bool) {
         guard capture === current else { return }
-        // Fence all callbacks before stopping audio; a late final can never send.
+        // Fence all callbacks before stopping audio; a late segment cannot send.
         capture = nil
+        VoiceDiagnostic.note("speak.coordinator.ended.\(phase)")
         log.info("Capture ended: \(phase, privacy: .public)")
-        current.recorder.onAudioEnded = nil
-        current.recorder.onFinal = nil
-        current.recorder.onError = nil
-        // Begin recognizing immediately in the background app process. A completed
-        // utterance submits itself; Send remains an explicit finish control for
-        // people who prefer not to wait for the speech pause.
-        current.recorder.onStatus = nil
-        current.recorder.stop()
+        let retainedTranscript = current.recorder.transcript
+        current.recorder.discard()
         current.heartbeat?.cancel()
         current.completionDeadline?.cancel()
         current.restore?.cancel()
@@ -249,13 +295,19 @@ final class LockedVoiceCoordinator {
         if phase != "sent" { current.delivery?.cancel() }
         current.observations.removeAll()
         if preserve {
-            model.retainLockedVoiceRecovery(current.recorder.transcript, captureID: current.id, accountScope: current.account)
+            model.retainLockedVoiceRecovery(retainedTranscript, captureID: current.id, accountScope: current.account)
+        }
+        if let data = UserDefaults.standard.data(forKey: Self.snapshotKey(current.account)),
+           let saved = try? JSONDecoder().decode(PartialSnapshot.self, from: data), saved.id == current.id {
+            UserDefaults.standard.removeObject(forKey: Self.snapshotKey(current.account))
         }
         let content = content(current, phase: phase)
         Task {
             await current.delivery?.value
             await current.update?.value
+            VoiceDiagnostic.note("speak.coordinator.activityEndStarting.\(phase)")
             await current.activity?.end(content, dismissalPolicy: .after(Date().addingTimeInterval(15)))
+            VoiceDiagnostic.note("speak.coordinator.activityEndFinished.\(phase)")
             releaseBackground(current)
             current.completion.resolve(phase == "sent" ? .success(()) : .failure(
                 phase == "cancelled" ? CancellationError() : CaptureError.completionFailed))
