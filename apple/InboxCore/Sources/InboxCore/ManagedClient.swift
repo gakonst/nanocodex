@@ -316,6 +316,7 @@ public final class ManagedClient: @unchecked Sendable {
         let latest = page.latest
         var events = page.events
         var counts = try await TranscriptPreparation.byteCounts(events)
+        var retainedBytes = counts.reduce(0, +)
         let projector = TranscriptStreamProjection()
         var readable = events.contains(where: \.producesConversationRow)
         var hasNewer = false
@@ -327,10 +328,13 @@ public final class ManagedClient: @unchecked Sendable {
                   older.events.allSatisfy({ $0.cursor < before }) else { throw APIError.invalidResponse }
             page = older
             events.insert(contentsOf: older.events, at: 0)
-            counts.insert(contentsOf: try await TranscriptPreparation.byteCounts(older.events), at: 0)
+            let olderCounts = try await TranscriptPreparation.byteCounts(older.events)
+            counts.insert(contentsOf: olderCounts, at: 0)
+            retainedBytes += olderCounts.reduce(0, +)
             let removed = TranscriptRetention.removableSuffixCount(byteCounts: counts,
-                retainedBytes: counts.reduce(0, +), byteLimit: 16 * 1024 * 1024)
+                retainedBytes: retainedBytes, byteLimit: 16 * 1024 * 1024)
             if removed > 0 {
+                retainedBytes -= counts.suffix(removed).reduce(0, +)
                 events.removeLast(removed); counts.removeLast(removed); hasNewer = true
             }
             // Only the newly prepended prefix can introduce conversation text.

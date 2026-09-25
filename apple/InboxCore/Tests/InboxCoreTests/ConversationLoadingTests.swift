@@ -39,6 +39,36 @@ final class ConversationLoadingTests: XCTestCase {
         print("TOOL_TAIL_OPENING_PERF events=8600 pages=68 opening=\(opening)")
     }
 
+    func testToolOnlyTailOpeningEvictsNewestEventsAtByteLimit() async throws {
+        let largeResult = String(repeating: "x", count: 9 * 1024 * 1024)
+        func tool(_ cursor: Int) -> JSON {
+            .object(["cursor": .string(String(cursor)), "type": .string("event"), "turn_id": .string("t"),
+                "event": .object(["type": .string("tool.result"), "payload": .object([
+                    "tool": .string("web.run"), "call_id": .string("call-\(cursor)"),
+                    "result": .object(["output": .string(largeResult)])])])])
+        }
+        let newest = try JSONEncoder().encode(JSON.object([
+            "data": .array([tool(3)]), "has_more": .bool(true), "latest_cursor": .string("3")]))
+        let older = try JSONEncoder().encode(JSON.object([
+            "data": .array([
+                .object(["cursor": .string("1"), "type": .string("turn_accepted"), "turn_id": .string("t"),
+                    "input": .string("Find the conversation")]), tool(2)]),
+            "has_more": .bool(false), "latest_cursor": .string("3")]))
+        let fixture = try HTTPFixture { request in
+            .init(body: String(decoding: request.query?.contains("before=3") == true ? older : newest, as: UTF8.self))
+        }
+        defer { fixture.close() }
+        let client = ManagedClient(credential: try .init(origin: fixture.origin, apiKey: fixtureKey), configuration: fixture.configuration)
+        defer { client.close() }
+        let history = try await client.conversationHistory("synthetic-agent")
+        XCTAssertEqual(history.events.map { $0.cursor.rawValue }, ["1", "2"])
+        XCTAssertEqual(history.rows.first?.text, "Find the conversation")
+        XCTAssertTrue(history.hasNewer)
+        XCTAssertEqual(history.latest.rawValue, "3", "Evicted newer events must remain replayable")
+        XCTAssertEqual(history.byteCounts.count, history.events.count)
+        XCTAssertLessThanOrEqual(history.byteCounts.reduce(0, +), 16 * 1024 * 1024)
+    }
+
     func testHistoryResponsePreservesAnAnswerLargerThanTheOldResponseAndWindowCaps() async throws {
         let answer = String(repeating: "x", count: 33 * 1024 * 1024) + " full answer"
         let fixture = try HTTPFixture { _ in
