@@ -10,15 +10,19 @@
   "keep_vars": true,
   "observability": {
     "enabled": true,
+    "head_sampling_rate": 1,
+    // OAuth callback codes and state must never be indexed in request URLs.
+    "redact_query_string": true,
     "logs": {
       "enabled": true,
       "head_sampling_rate": 1,
-      "invocation_logs": false,
+      "invocation_logs": true,
       "persist": true
     },
     "traces": {
       "enabled": true,
-      "head_sampling_rate": 1
+      "head_sampling_rate": 1,
+      "persist": true
     }
   },
   "assets": {
