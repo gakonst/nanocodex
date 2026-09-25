@@ -94,6 +94,25 @@ async function main() {
   console.log(`  Status GET completed:   ${statusMs.toFixed(0)} ms`);
   console.log(`  Server-Timing: ${response.headers.get('server-timing') ?? 'unavailable'}`);
   console.log(`  CF-Ray: ${response.headers.get('cf-ray') ?? 'unavailable'}`);
+  if (turn.timing) {
+    const t = turn.timing;
+    const ms = value => value === null || value === undefined ? 'not observed' : `${value.toFixed(0)} ms`;
+    console.log('Server turn timeline (elapsed from Session admission start):');
+    console.log(`  Trace ID:            ${t.trace_id}`);
+    console.log(`  Agent initialization: ${ms(t.agent_init_ms)} (duration; includes model socket preconnect on cold starts)`);
+    console.log(`  Turn accepted:        ${ms(t.accepted_ms)}`);
+    console.log(`  Model request sent:   ${ms(t.model_send_ms)}`);
+    console.log(`  First provider event: ${ms(t.first_provider_event_ms)}`);
+    console.log(`  First emitted text:   ${ms(t.first_delta_ms)}`);
+    console.log(`  First final text:     ${ms(t.first_answer_delta_ms)}`);
+    console.log(`  Result persisted:     ${ms(t.result_ms)}`);
+    if (t.model_send_ms !== null && t.accepted_ms !== null)
+      console.log(`  Accepted → model send: ${ms(t.model_send_ms - t.accepted_ms)}`);
+    if (t.first_provider_event_ms !== null && t.model_send_ms !== null)
+      console.log(`  Model send → provider event: ${ms(t.first_provider_event_ms - t.model_send_ms)}`);
+    if (t.first_answer_delta_ms !== null && t.first_provider_event_ms !== null)
+      console.log(`  Provider event → final text: ${ms(t.first_answer_delta_ms - t.first_provider_event_ms)}`);
+  }
   if (stream.reply && stream.reply !== turn.message) throw new Error('Replayed text differs from the saved final reply');
 }
 

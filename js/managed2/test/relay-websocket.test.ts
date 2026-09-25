@@ -1,8 +1,8 @@
 import { SELF } from "cloudflare:test";
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { fixtureKeys } from "./fixtures/auth";
 
-it("completes two subscription turns through Egress2's WebSocket transport", async () => {
+it("times a persistent subscription socket beyond 32 turns through both Workers", async () => {
   const authorization = `Bearer ${fixtureKeys["subscription-owner"]}`;
   const stored = await SELF.fetch("https://api.test/v1/credentials/chatgpt", {
     method: "PUT", headers: { authorization, "content-type": "application/json" },
@@ -18,6 +18,8 @@ it("completes two subscription turns through Egress2's WebSocket transport", asy
     body: JSON.stringify({ input: "First greeting" }),
   });
   expect(created.status).toBe(202);
+  const trace = created.headers.get("x-managed2-trace-id");
+  expect(trace).toMatch(/^[0-9a-f-]{36}$/);
   const { agent_id, turn_id } = await created.json<{ agent_id: string; turn_id: string }>();
   async function completed(id: string): Promise<void> {
     await expect.poll(async () => {
@@ -26,9 +28,42 @@ it("completes two subscription turns through Egress2's WebSocket transport", asy
     }, { timeout: 15_000 }).toMatchObject({ state: "completed", message: "hello from test model" });
   }
   await completed(turn_id);
+  const firstStatus = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${turn_id}`, { headers: { authorization } });
+  const firstTiming = (await firstStatus.json<{ timing: { trace_id: string; accepted_ms: number; model_send_ms: number; first_provider_event_ms: number; first_delta_ms: number; result_ms: number } }>()).timing;
+  expect(firstTiming.trace_id).toBe(trace);
+  expect(firstTiming.model_send_ms).toBeGreaterThanOrEqual(firstTiming.accepted_ms);
+  expect(firstTiming.first_provider_event_ms).toBeGreaterThanOrEqual(firstTiming.model_send_ms);
+  expect(firstTiming.first_delta_ms).toBeGreaterThanOrEqual(firstTiming.first_provider_event_ms);
+  expect(firstTiming.result_ms).toBeGreaterThanOrEqual(firstTiming.first_delta_ms);
   const next = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns`, {
     method: "POST", headers: { authorization }, body: JSON.stringify({ input: "Second greeting" }),
   });
   expect(next.status).toBe(202);
-  await completed((await next.json<{ turn_id: string }>()).turn_id);
-});
+  const nextId = (await next.json<{ turn_id: string }>()).turn_id;
+  await completed(nextId);
+  const secondStatus = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${nextId}`, { headers: { authorization } });
+  const secondTiming = (await secondStatus.json<{ timing: { trace_id: string; accepted_ms: number; model_send_ms: number; first_provider_event_ms: number; result_ms: number } }>()).timing;
+  expect(secondTiming.trace_id).not.toBe(firstTiming.trace_id);
+  expect(secondTiming.model_send_ms).toBeGreaterThanOrEqual(secondTiming.accepted_ms);
+  expect(secondTiming.first_provider_event_ms).toBeGreaterThanOrEqual(secondTiming.model_send_ms);
+  expect(secondTiming.result_ms).toBeGreaterThanOrEqual(secondTiming.first_provider_event_ms);
+
+  // The content-free model-send hook must keep observing a persistent socket
+  // beyond the existing 32-request limit of request-shape sampling.
+  const info = vi.spyOn(console, "info").mockImplementation(() => {});
+  try {
+    let lastId = "";
+    for (let i = 0; i < 33; i++) {
+      const admitted = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns`, {
+        method: "POST", headers: { authorization }, body: JSON.stringify({ input: "Additional greeting" }),
+      });
+      expect(admitted.status).toBe(202);
+      lastId = (await admitted.json<{ turn_id: string }>()).turn_id;
+      await completed(lastId);
+    }
+    const laterStatus = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${lastId}`, { headers: { authorization } });
+    const later = (await laterStatus.json<{ timing: { model_send_ms: number; first_provider_event_ms: number } }>()).timing;
+    expect(later.model_send_ms).toEqual(expect.any(Number));
+    expect(later.first_provider_event_ms).toBeGreaterThanOrEqual(later.model_send_ms);
+  } finally { info.mockRestore(); }
+}, 30_000);

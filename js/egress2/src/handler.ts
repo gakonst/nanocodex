@@ -5,6 +5,8 @@ const OPENAI_URL = "https://api.openai.com/v1/responses";
 const CHATGPT_URL = "https://chatgpt.com/backend-api/codex/responses";
 const CACHE_TTL_MS = 60_000;
 const MAX_CACHE_ENTRIES = 256;
+// Only a canonical UUIDv4 from the trusted host may appear in diagnostics.
+const TRACE_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 export type ActiveCredential =
   | { kind: "openai"; secret: string }
@@ -54,6 +56,12 @@ export function createEgressHandler<Env>({
       // Only fixed, allowlisted fields leave this worker as diagnostics. Never log URLs,
       // headers, error messages, owner identifiers, credentials or request bodies.
       const started = clock();
+      const suppliedTraceId = request.headers.get("x-managed2-trace-id");
+      const traceId = suppliedTraceId && TRACE_ID.test(suppliedTraceId) ? suppliedTraceId : null;
+      let egressRequestId: string | null = null;
+      let retryAttempt = 0;
+      let recoveryMs: number | null = null;
+      let recoveryOutcome = "not_attempted";
       let credentialMs = 0;
       let upstreamMs = 0;
       let dispatchMs: number | null = null;
@@ -66,11 +74,13 @@ export function createEgressHandler<Env>({
         const duration = (value: number) => Math.max(0, value).toFixed(1);
         // One fixed route label makes provider placement visible at response headers,
         // while durations end when upstream response headers arrive (not stream EOF).
-        const timing = `egress_credential;dur=${duration(credentialMs)}, ${dispatchMs === null ? "" : `egress_dispatch;dur=${duration(dispatchMs)}, `}egress_upstream_headers;dur=${duration(upstreamMs)}, egress_total;dur=${duration(totalMs)}, egress_route;desc="${routeKind}", egress_cache;desc="${cacheResult}"`;
-        try { log({ event: "responses_egress", route_kind: routeKind, upstream_status: upstreamStatus,
+        const timing = `egress_credential;dur=${duration(credentialMs)}, ${dispatchMs === null ? "" : `egress_dispatch;dur=${duration(dispatchMs)}, `}egress_upstream_headers;dur=${duration(upstreamMs)}, ${recoveryMs === null ? "" : `egress_recovery;dur=${duration(recoveryMs)}, `}egress_total;dur=${duration(totalMs)}, egress_route;desc="${routeKind}", egress_cache;desc="${cacheResult}"`;
+        try { log({ event: "responses_egress", trace_id: traceId, egress_request_id: egressRequestId,
+          route_kind: routeKind, response_status: response.status, upstream_status: upstreamStatus,
           credential_cache: cacheResult, credential_ms: Number(duration(credentialMs)),
           upstream_dispatch_ms: dispatchMs === null ? null : Number(duration(dispatchMs)),
-          upstream_headers_ms: Number(duration(upstreamMs)), total_ms: Number(duration(totalMs)) }); }
+          upstream_headers_ms: Number(duration(upstreamMs)), recovery_ms: recoveryMs === null ? null : Number(duration(recoveryMs)),
+          recovery_outcome: recoveryOutcome, retry_attempt: retryAttempt, total_ms: Number(duration(totalMs)) }); }
         catch { /* observability must never break a model response */ }
         // Workerd's WebSocket 101 cannot be constructed as a regular Response.
         if (response.status === 101) return response;
@@ -106,12 +116,16 @@ export function createEgressHandler<Env>({
         cache.set(ownerId, entry);
       }
       credentialMs = clock() - lookupStarted;
+      const credentialEnd = clock();
       const credential = entry.value;
       routeKind = credential.kind === "chatgpt" ? "chatgpt_subscription" : "openai_api";
       if (url.href === CHATGPT_URL && credential.kind !== "chatgpt") {
         return finish(new Response("Upstream not allowed", { status: 403 }));
       }
 
+      // Created inside this service, never accepted from the caller. The subscription
+      // route is a private relay; API-key egress goes directly to OpenAI.
+      if (credential.kind === "chatgpt") egressRequestId = crypto.randomUUID();
       const send = (active: ActiveCredential, retry = false): Promise<Response> => {
         const headers = new Headers(request.headers);
         headers.set("authorization", `Bearer ${active.secret}`);
@@ -126,6 +140,7 @@ export function createEgressHandler<Env>({
         headers.delete("x-openai-fedramp");
         headers.delete("originator");
         if (active.kind === "chatgpt") {
+          headers.set("x-nanocodex-egress-request-id", egressRequestId!);
           headers.set("chatgpt-account-id", active.accountId);
           if (active.fedramp) headers.set("x-openai-fedramp", "true");
           if (request.method === "POST") headers.set("originator", "codex_cli_rs");
@@ -141,28 +156,34 @@ export function createEgressHandler<Env>({
         } as RequestInit), ownerId, env);
       };
       // Never follow a provider redirect carrying the real credential to another origin.
-      let upstreamStarted = clock();
-      dispatchMs = upstreamStarted - started;
+      dispatchMs = clock() - credentialEnd;
+      const fetchAttempt = async (active: ActiveCredential, retry = false): Promise<Response> => {
+        const upstreamStarted = clock();
+        try { return await send(active, retry); }
+        finally { upstreamMs += clock() - upstreamStarted; }
+      };
       try {
-        let upstream = await send(credential);
-        upstreamMs += clock() - upstreamStarted;
+        let upstream = await fetchAttempt(credential);
         upstreamStatus = upstream.status;
         if (upstream.status === 401 && credential.kind === "chatgpt"
           && credential.revision && recoverCredential) {
           await upstream.body?.cancel().catch(() => {});
+          const recoveryStarted = clock();
           let recovered: ActiveCredential | null;
           try { recovered = await recoverCredential(ownerId, credential.revision, env); }
           catch { recovered = null; }
+          recoveryMs = clock() - recoveryStarted;
           if (!recovered || recovered.kind !== "chatgpt" || recovered.expiresAt <= now()
             || recovered.accountId !== credential.accountId || recovered.revision === credential.revision) {
+            recoveryOutcome = "unavailable";
             cache.delete(ownerId);
             return finish(new Response("Credential unavailable", { status: 502 }));
           }
+          recoveryOutcome = "recovered";
           entry = { value: recovered, expiresAt: Math.min(now() + CACHE_TTL_MS, recovered.expiresAt - 5 * 60_000) };
           cache.set(ownerId, entry);
-          upstreamStarted = clock();
-          upstream = await send(recovered, true); // exactly one retry, including a WebSocket upgrade
-          upstreamMs += clock() - upstreamStarted;
+          retryAttempt = 1;
+          upstream = await fetchAttempt(recovered, true); // exactly one retry, including a WebSocket upgrade
           upstreamStatus = upstream.status;
         }
         if (upstream.status >= 300 && upstream.status < 400) {
@@ -171,7 +192,6 @@ export function createEgressHandler<Env>({
         }
         return finish(upstream); // The upstream response body stays a stream; no buffering.
       } catch {
-        upstreamMs += clock() - upstreamStarted;
         return finish(new Response("Upstream unavailable", { status: 502 }));
       }
     },

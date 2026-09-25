@@ -16,6 +16,7 @@ const OWNER_HEADER = "x-managed2-owner";
 
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
+    const requestStart = performance.now();
     const url = new URL(request.url);
     const create = request.method === "POST" && url.pathname === "/v1/agents";
     const credential = request.method === "PUT" && (
@@ -26,7 +27,8 @@ export default {
     const events = match?.[2] === "events";
     const authStart = performance.now();
     const principal = await authenticate(request, env.AUTH_API_KEY_HASHES);
-    const authTiming = `auth;dur=${(performance.now() - authStart).toFixed(1)}`;
+    const authMs = performance.now() - authStart;
+    const authTiming = `auth;dur=${authMs.toFixed(1)}`;
     if (!principal) {
       const denied = reply(401, { error: "unauthorized" });
       denied.headers.set("server-timing", authTiming);
@@ -34,7 +36,10 @@ export default {
     }
 
     if (credential) {
+      const parseStart = performance.now();
       const body = await jsonBody(request);
+      const parseMs = performance.now() - parseStart;
+      const storeStart = performance.now();
       if (url.pathname === "/v1/credentials/chatgpt") {
         if (!body || typeof body.access_token !== "string" || !body.access_token
           || typeof body.refresh_token !== "string" || !body.refresh_token
@@ -48,13 +53,15 @@ export default {
         }
         await env.EGRESS.putCredential(principal.sub, "openai", body.value);
       }
-      return new Response(null, { status: 204, headers: { "server-timing": authTiming } });
+      return new Response(null, { status: 204, headers: { "server-timing": `${authTiming}, body_parse;dur=${parseMs.toFixed(1)}, credential_store;dur=${(performance.now() - storeStart).toFixed(1)}, api_total;dur=${(performance.now() - requestStart).toFixed(1)}` } });
     }
     if (create) {
       // The optional first turn and agent initialization share one Session RPC.
       // Supplying an Idempotency-Key makes the agent address stable on retry.
       const hasBody = request.body !== null;
+      const parseStart = performance.now();
       const body = hasBody ? await jsonBody(request) : undefined;
+      const bodyTiming = `body_parse;dur=${(performance.now() - parseStart).toFixed(1)}`;
       if (hasBody && (!body || typeof body.input !== "string" || !body.input.trim())) {
         return reply(400, { error: "invalid_input" });
       }
@@ -66,12 +73,14 @@ export default {
       if (body) headers.set("content-type", "application/json");
       const response = await timedSessionFetch(stub, "https://session.internal/init", {
         method: "POST", headers, ...(body ? { body: JSON.stringify({ input: body.input, turn_id: id }) } : {}),
-      }, authTiming);
+      }, `${authTiming}, ${bodyTiming}`, requestStart);
       if (!response.ok) return response;
       const created = reply(body ? 202 : 201, body
         ? { agent_id: id, ...await response.json<{ turn_id: string; state: string }>() }
         : { agent_id: id });
       created.headers.set("server-timing", response.headers.get("server-timing") ?? "");
+      const trace = response.headers.get("x-managed2-trace-id");
+      if (trace) created.headers.set("x-managed2-trace-id", trace);
       return created;
     }
     const id = match![1]!;
@@ -80,15 +89,28 @@ export default {
     if (events) {
       if (request.method !== "GET") return reply(405, { error: "method_not_allowed" });
       headers.set("upgrade", request.headers.get("upgrade") ?? "");
-      return stub.fetch(`https://session.internal/events${url.search}`, { headers });
+      const began = performance.now();
+      let status: number | null = null;
+      try {
+        const response = await stub.fetch(`https://session.internal/events${url.search}`, { headers });
+        status = response.status;
+        return response; // 101 upgrade responses cannot be wrapped with Server-Timing.
+      } finally {
+        console.info({ event: "managed2.events_connect", status,
+          auth_ms: +authMs.toFixed(1),
+          session_ms: +(performance.now() - began).toFixed(1),
+          total_ms: +(performance.now() - requestStart).toFixed(1) });
+      }
     }
     if (match![3]) {
       if (request.method !== "GET") return reply(405, { error: "method_not_allowed" });
-      return timedSessionFetch(stub, `https://session.internal/turns/${match![3]}`, { headers }, authTiming);
+      return timedSessionFetch(stub, `https://session.internal/turns/${match![3]}`, { headers }, authTiming, requestStart);
     }
     if (match![2] === "turns") {
       if (request.method !== "POST") return reply(405, { error: "method_not_allowed" });
+      const parseStart = performance.now();
       const body = await jsonBody(request);
+      const bodyTiming = `body_parse;dur=${(performance.now() - parseStart).toFixed(1)}`;
       if (!body || typeof body.input !== "string" || !body.input.trim()) {
         return reply(400, { error: "invalid_input" });
       }
@@ -98,10 +120,10 @@ export default {
       headers.set("content-type", "application/json");
       return timedSessionFetch(stub, "https://session.internal/turns", {
         method: "POST", headers, body: JSON.stringify({ input: body.input }),
-      }, authTiming);
+      }, `${authTiming}, ${bodyTiming}`, requestStart);
     }
     if (request.method !== "GET") return reply(405, { error: "method_not_allowed" });
-    return timedSessionFetch(stub, "https://session.internal/state", { headers }, authTiming);
+    return timedSessionFetch(stub, "https://session.internal/state", { headers }, authTiming, requestStart);
   },
 } satisfies ExportedHandler<Env>;
 
@@ -109,10 +131,13 @@ export class Session extends DurableObject<Env> {
   #agent?: Promise<Agent.Agent>;
   #running = new Set<string>();
   #admissions = new Map<string, { input: string; outcome: Promise<{ status: number; body: string; headers: [string, string][] }> }>();
-  #awaitingFirstModel = new Map<string, number>();
+  #activeTraces = new Map<string, string>();
+  #eventTurns = new Map<string, string>();
+  #constructorMs: number;
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
+    const constructorStart = performance.now();
     ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS session_meta (
       singleton INTEGER PRIMARY KEY CHECK (singleton = 1), owner TEXT NOT NULL, agent_id TEXT NOT NULL
     )`);
@@ -120,9 +145,17 @@ export class Session extends DurableObject<Env> {
       id TEXT PRIMARY KEY, input TEXT NOT NULL, state TEXT NOT NULL,
       message TEXT, error TEXT
     )`);
+    ctx.storage.sql.exec(`CREATE TABLE IF NOT EXISTS turn_timing (
+      id TEXT PRIMARY KEY, trace_id TEXT NOT NULL, started_at INTEGER NOT NULL,
+      agent_init_ms REAL, accepted_ms INTEGER, model_send_ms INTEGER,
+      first_provider_event_ms INTEGER, first_delta_ms INTEGER,
+      first_answer_delta_ms INTEGER, result_ms INTEGER
+    )`);
+    this.#constructorMs = performance.now() - constructorStart;
   }
 
   async fetch(request: Request): Promise<Response> {
+    const fetchStart = performance.now();
     const url = new URL(request.url);
     const owner = request.headers.get(OWNER_HEADER);
     const agentId = request.headers.get("x-managed2-agent");
@@ -137,7 +170,8 @@ export class Session extends DurableObject<Env> {
       );
       if (request.body === null) return new Response(null, { status: 204 });
       const { input, turn_id: turnId } = await request.json<{ input: string; turn_id: string }>();
-      return this.#admitTurn(owner, turnId, input);
+      const routeMs = performance.now() - fetchStart;
+      return withSessionTiming(await this.#admitTurn(owner, turnId, input), `do_route;dur=${routeMs.toFixed(1)}, do_total;dur=${(performance.now() - fetchStart).toFixed(1)}`);
     }
     if (!row || row.owner !== owner || row.agent_id !== agentId) return reply(404, { error: "not_found" });
     if (url.pathname === "/state" && request.method === "GET") {
@@ -149,12 +183,20 @@ export class Session extends DurableObject<Env> {
     if (url.pathname === "/turns" && request.method === "POST") {
       const key = request.headers.get("idempotency-key")!;
       const body = await request.json<{ input: string }>();
-      return this.#admitTurn(owner, key, body.input);
+      const routeMs = performance.now() - fetchStart;
+      return withSessionTiming(await this.#admitTurn(owner, key, body.input), `do_route;dur=${routeMs.toFixed(1)}, do_total;dur=${(performance.now() - fetchStart).toFixed(1)}`);
     }
     const turnId = /^\/turns\/([0-9a-f-]{36})$/.exec(url.pathname)?.[1];
     if (turnId && request.method === "GET") {
       const turn = this.#turn(turnId);
+      const timing = turn && this.#timing(turnId);
       return turn ? reply(200, { turn_id: turnId, state: turn.state,
+        ...(timing ? { timing: { trace_id: timing.trace_id,
+          agent_init_ms: timing.agent_init_ms, accepted_ms: timing.accepted_ms,
+          model_send_ms: timing.model_send_ms,
+          first_provider_event_ms: timing.first_provider_event_ms,
+          first_delta_ms: timing.first_delta_ms,
+          first_answer_delta_ms: timing.first_answer_delta_ms, result_ms: timing.result_ms } } : {}),
         ...(turn.message === null ? {} : { message: turn.message }),
         ...(turn.error === null ? {} : { error: turn.error }) })
         : reply(404, { error: "not_found" });
@@ -194,21 +236,38 @@ export class Session extends DurableObject<Env> {
       }
       return reply(202, { turn_id: turnId, state: existing.state });
     }
+    // The persisted wall-clock timeline survives DO eviction and makes
+    // missing first-delta observations explicit. A failed initialization
+    // resets it on the next attempt before a turn exists.
+    const trace = crypto.randomUUID();
+    this.ctx.storage.sql.exec(
+      `INSERT INTO turn_timing (id, trace_id, started_at) VALUES (?, ?, ?)
+       ON CONFLICT(id) DO UPDATE SET trace_id = excluded.trace_id,
+       started_at = excluded.started_at, agent_init_ms = NULL,
+       accepted_ms = NULL, model_send_ms = NULL,
+       first_provider_event_ms = NULL, first_delta_ms = NULL,
+       first_answer_delta_ms = NULL, result_ms = NULL`,
+      turnId, trace, Date.now(),
+    );
+    const traceId = this.#timing(turnId)!.trace_id;
     // Agent initialization must finish before the turn is persisted.
     const agentInitStart = performance.now();
-    try { await this.#ready(owner); }
+    try { await this.#ready(owner, traceId); }
     catch {
       const unavailable = reply(503, { error: "model_unavailable" });
       unavailable.headers.set("server-timing", `agent_init;dur=${(performance.now() - agentInitStart).toFixed(1)}`);
+      unavailable.headers.set("x-managed2-trace-id", traceId);
       return unavailable;
     }
     const initMs = performance.now() - agentInitStart;
+    this.ctx.storage.sql.exec("UPDATE turn_timing SET agent_init_ms = ? WHERE id = ?", initMs, turnId);
     this.ctx.storage.sql.exec("INSERT INTO turns (id, input, state) VALUES (?, ?, 'pending')", turnId, input);
     const admissionStart = performance.now();
     try {
       await this.#dispatch(turnId, input, owner);
       const accepted = reply(202, { turn_id: turnId, state: "accepted" });
       accepted.headers.set("server-timing", `agent_init;dur=${initMs.toFixed(1)}, admission;dur=${(performance.now() - admissionStart).toFixed(1)}`);
+      accepted.headers.set("x-managed2-trace-id", traceId);
       return accepted;
     } catch (error) {
       console.warn("managed2 admission unavailable", error instanceof Error ? error.name : "error");
@@ -237,14 +296,85 @@ export class Session extends DurableObject<Env> {
     ).toArray()[0]!.n > 0) await this.ctx.storage.setAlarm(Date.now() + 10_000);
   }
 
+  #timing(id: string) {
+    return this.ctx.storage.sql.exec<{ trace_id: string; started_at: number;
+      agent_init_ms: number | null; accepted_ms: number | null;
+      model_send_ms: number | null; first_provider_event_ms: number | null;
+      first_delta_ms: number | null; first_answer_delta_ms: number | null; result_ms: number | null }>(
+      "SELECT trace_id, started_at, agent_init_ms, accepted_ms, model_send_ms, first_provider_event_ms, first_delta_ms, first_answer_delta_ms, result_ms FROM turn_timing WHERE id = ?", id,
+    ).toArray()[0];
+  }
+
+  #modelSent(): void {
+    // The existing transport observer runs after response.create was sent.
+    // When turns overlap, attribution is ambiguous and stays null instead.
+    if (this.#activeTraces.size !== 1) return;
+    const external = this.#activeTraces.keys().next().value!;
+    const timing = this.#timing(external);
+    if (!timing || timing.model_send_ms !== null) return;
+    const elapsed = Math.max(0, Date.now() - timing.started_at);
+    this.ctx.storage.sql.exec(
+      "UPDATE turn_timing SET model_send_ms = ? WHERE id = ? AND model_send_ms IS NULL", elapsed, external,
+    );
+    console.info({ event: "managed2.model_send", trace_id: timing.trace_id, model_send_ms: elapsed });
+  }
+
+  #observeEvent(event: { type: string; payload: Record<string, unknown> }): void {
+    if (event.type === "input.accepted") {
+      const external = event.payload.request_id;
+      const internal = event.payload.turn_id;
+      if (typeof external === "string" && typeof internal === "string" && this.#activeTraces.has(external)) {
+        this.#eventTurns.set(internal, external);
+      }
+      return;
+    }
+    const internal = event.payload.turn_id;
+    const external = typeof internal === "string" ? this.#eventTurns.get(internal) : undefined;
+    if (!external) return;
+    const timing = this.#timing(external);
+    if (!timing) return;
+    const elapsed = Math.max(0, Date.now() - timing.started_at);
+    if (event.type === "api.event" && event.payload.direction === "inbound") {
+      if (timing.first_provider_event_ms === null) {
+        this.ctx.storage.sql.exec(
+          "UPDATE turn_timing SET first_provider_event_ms = ? WHERE id = ? AND first_provider_event_ms IS NULL",
+          elapsed, external,
+        );
+        console.info({ event: "managed2.first_provider_event", trace_id: timing.trace_id,
+          first_provider_event_ms: elapsed });
+      }
+      return;
+    }
+    if (event.type !== "assistant.delta"
+      || typeof event.payload.text !== "string" || !event.payload.text) return;
+    if (timing.first_delta_ms === null) {
+      this.ctx.storage.sql.exec(
+        "UPDATE turn_timing SET first_delta_ms = ? WHERE id = ? AND first_delta_ms IS NULL", elapsed, external,
+      );
+      console.info({ event: "managed2.turn_first_delta", trace_id: timing.trace_id,
+        first_delta_ms: elapsed });
+    }
+    if (event.payload.phase === "final_answer" && timing.first_answer_delta_ms === null) {
+      this.ctx.storage.sql.exec(
+        "UPDATE turn_timing SET first_answer_delta_ms = ? WHERE id = ? AND first_answer_delta_ms IS NULL", elapsed, external,
+      );
+      console.info({ event: "managed2.turn_first_answer_delta", trace_id: timing.trace_id,
+        first_answer_delta_ms: elapsed });
+      if (typeof internal === "string") this.#eventTurns.delete(internal);
+    }
+  }
+
   #turn(id: string) {
     return this.ctx.storage.sql.exec<{ id: string; input: string; state: string; message: string | null; error: string | null }>(
       "SELECT id, input, state, message, error FROM turns WHERE id = ?", id,
     ).toArray()[0];
   }
 
-  #ready(owner: string): Promise<Agent.Agent> {
+  #ready(owner: string, traceId?: string): Promise<Agent.Agent> {
     if (this.#agent) return this.#agent;
+    const initTrace = traceId ?? crypto.randomUUID();
+    const initStart = performance.now();
+    let initializing = true;
     const options = { tools: [], instructions: "You are a concise assistant." };
     Object.defineProperty(options, Symbol.for("nanocodex.cloudflare.internalConfiguration"), { value: {
       model: "gpt-6-sol", thinking: "low", reasoning_mode: "standard", fast_mode: false,
@@ -254,6 +384,7 @@ export class Session extends DurableObject<Env> {
         ? { waitForPreconnect: true }
         : { inferenceForSession: () => ({ model: "gpt-6-sol", thinking: "low" }) }),
       subagentsEnabled: false,
+      onResponseCreateSent: () => this.#modelSent(),
     } });
     return this.#agent = Agent.create({ ctx: this.ctx, env: { NANOCODEX: {
       fetch: (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
@@ -263,10 +394,14 @@ export class Session extends DurableObject<Env> {
         }
         const headers = new Headers(source.headers);
         headers.set(OWNER_HEADER, owner);
+        // The initial fetch is the persistent socket preconnection, not a
+        // per-turn model request. A reconnect is correlated only if one turn
+        // owns this DO at the moment of the fetch.
+        const active = this.#activeTraces.size === 1 ? this.#activeTraces.values().next().value : undefined;
+        const trace = active ?? (this.#activeTraces.size === 0
+          ? initializing ? initTrace : crypto.randomUUID() : undefined);
+        if (trace) headers.set("x-managed2-trace-id", trace);
         const began = performance.now();
-        const first = this.#awaitingFirstModel.size === 1 ? this.#awaitingFirstModel.entries().next().value : undefined;
-        if (first) this.#awaitingFirstModel.delete(first[0]);
-        const promptToEgressMs = first ? +(began - first[1]).toFixed(1) : undefined;
         return this.env.EGRESS.fetch("https://api.openai.com/v1/responses", {
           method: source.method, headers, body: source.body, signal: source.signal,
           redirect: "manual",
@@ -275,27 +410,45 @@ export class Session extends DurableObject<Env> {
           const marker = /(?:^|, )egress_route;desc="(openai_api|chatgpt_subscription)"(?:,|$)/.exec(egressTiming)?.[1];
           const dispatch = /(?:^|, )egress_dispatch;dur=([0-9.]+)(?:,|$)/.exec(egressTiming)?.[1];
           console.info({ event: "managed2.model_route",
-            ...(promptToEgressMs === undefined ? {} : { prompt_to_egress_ms: promptToEgressMs }),
+            ...(trace ? { trace_id: trace } : {}),
+            phase: this.env.RESPONSES_TRANSPORT !== "websocket" ? "turn_http"
+              : active ? "turn_reconnect" : initializing ? "preconnect" : "idle_reconnect",
+            ...(active ? {} : { init_to_egress_ms: +(began - initStart).toFixed(1) }),
             egress_headers_ms: +(performance.now() - began).toFixed(1),
             status: response.status,
             route: marker === "openai_api" || marker === "chatgpt_subscription" ? marker : "unknown",
             ...(dispatch === undefined ? {} : { egress_dispatch_ms: Number(dispatch) }),
-            egress_timing: egressTiming,
           });
           return response;
         });
       },
     } } }, options)
+      .then(agent => {
+        initializing = false;
+        const watcher = agent.events.watch();
+        watcher.onEvent(event => this.#observeEvent(event));
+        console.info({ event: "managed2.agent_ready", trace_id: initTrace,
+          agent_init_ms: +(performance.now() - initStart).toFixed(1),
+          constructor_sql_ms: +this.#constructorMs.toFixed(1) });
+        return agent;
+      })
       .catch(error => { this.#agent = undefined; throw error; });
   }
 
   async #dispatch(id: string, input: string, owner: string): Promise<void> {
     if (this.#running.has(id)) return;
-    const agent = await this.#ready(owner);
-    this.#awaitingFirstModel.set(id, performance.now());
+    const agent = await this.#ready(owner, this.#timing(id)?.trace_id);
+    this.ctx.storage.sql.exec(
+      "INSERT OR IGNORE INTO turn_timing (id, trace_id, started_at) VALUES (?, ?, ?)",
+      id, crypto.randomUUID(), Date.now(),
+    );
+    const timing = this.#timing(id)!;
+    this.#activeTraces.set(id, timing.trace_id);
     const turn = agent.turn.prompt({ id, input });
     try {
       await turn.accepted();
+      this.ctx.storage.sql.exec("UPDATE turn_timing SET accepted_ms = COALESCE(accepted_ms, ?) WHERE id = ?",
+        Math.max(0, Date.now() - timing.started_at), id);
       this.ctx.storage.sql.exec("UPDATE turns SET state = 'accepted' WHERE id = ?", id);
       this.#running.add(id);
       await this.ctx.storage.setAlarm(Date.now() + 10_000);
@@ -308,15 +461,28 @@ export class Session extends DurableObject<Env> {
           this.ctx.storage.sql.exec("UPDATE turns SET state = 'failed', error = ? WHERE id = ?",
             error instanceof Error ? error.message : String(error), id);
         } finally {
+          const resultMs = Math.max(0, Date.now() - timing.started_at);
+          this.ctx.storage.sql.exec("UPDATE turn_timing SET result_ms = ? WHERE id = ?", resultMs, id);
+          const observed = this.#timing(id);
+          console.info({ event: "managed2.turn_result", trace_id: timing.trace_id,
+            outcome: result ? "completed" : "failed", result_ms: resultMs,
+            model_send_ms: observed?.model_send_ms ?? null,
+            first_provider_event_ms: observed?.first_provider_event_ms ?? null,
+            first_delta_ms: observed?.first_delta_ms ?? null,
+            first_answer_delta_ms: observed?.first_answer_delta_ms ?? null,
+            accepted_ms: observed?.accepted_ms ?? null });
           result?.dispose();
           turn.dispose();
           this.#running.delete(id);
-          this.#awaitingFirstModel.delete(id);
+          this.#activeTraces.delete(id);
+          for (const [internal, external] of this.#eventTurns) {
+            if (external === id) this.#eventTurns.delete(internal);
+          }
         }
       })());
     } catch (error) {
       turn.dispose();
-      this.#awaitingFirstModel.delete(id);
+      this.#activeTraces.delete(id);
       throw error;
     }
   }
@@ -333,10 +499,10 @@ function reply(status: number, body: unknown): Response {
   return Response.json(body, { status, headers: { "cache-control": "no-store" } });
 }
 
-async function timedSessionFetch(stub: DurableObjectStub, input: RequestInfo, init: RequestInit, authTiming: string): Promise<Response> {
+async function timedSessionFetch(stub: DurableObjectStub, input: RequestInfo, init: RequestInit, authTiming: string, requestStart: number): Promise<Response> {
   const start = performance.now();
   const response = await stub.fetch(input, init);
-  return withSessionTiming(response, `${authTiming}, session;dur=${(performance.now() - start).toFixed(1)}`);
+  return withSessionTiming(response, `${authTiming}, session;dur=${(performance.now() - start).toFixed(1)}, api_total;dur=${(performance.now() - requestStart).toFixed(1)}`);
 }
 function withSessionTiming(response: Response, timing: string): Response {
   if (response.status === 101) return response;

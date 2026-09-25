@@ -19,7 +19,7 @@ it("admits a turn through API-key auth and the standard WASM Session DO", async 
     body: JSON.stringify({ input: "Say hello" }),
   });
   expect(submitted.status).toBe(202);
-  for (const phase of ["auth", "agent_init", "admission", "session"])
+  for (const phase of ["auth", "body_parse", "agent_init", "admission", "do_route", "do_total", "session", "api_total"])
     expect(submitted.headers.get("server-timing")).toContain(`${phase};dur=`);
   const { turn_id } = await submitted.json<{ turn_id: string }>();
   expect(turn_id).toBe(key);
@@ -27,6 +27,14 @@ it("admits a turn through API-key auth and the standard WASM Session DO", async 
     const response = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${turn_id}`, { headers: { authorization } });
     return await response.json<{ state: string; message?: string }>();
   }, { timeout: 10_000 }).toMatchObject({ state: "completed", message: "hello from test model" });
+  const timingResponse = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${turn_id}`, { headers: { authorization } });
+  const observed = await timingResponse.json<{ timing: { trace_id: string; agent_init_ms: number;
+    accepted_ms: number; first_delta_ms: number; first_answer_delta_ms: number | null; result_ms: number } }>();
+  expect(observed.timing.trace_id).toMatch(/^[0-9a-f-]{36}$/);
+  expect(observed.timing.agent_init_ms).toBeGreaterThanOrEqual(0);
+  expect(observed.timing.first_delta_ms).toBeGreaterThanOrEqual(observed.timing.accepted_ms);
+  expect(observed.timing.result_ms).toBeGreaterThanOrEqual(observed.timing.first_delta_ms);
+  expect(observed.timing.first_answer_delta_ms).toBeNull(); // Synthetic fixture has no final_answer phase.
   const repeat = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns`, {
     method: "POST", headers: { authorization, "idempotency-key": key },
     body: JSON.stringify({ input: "Say hello" }),
@@ -98,7 +106,8 @@ it("creates an agent and admits its first turn in one authenticated request, wit
   const body = JSON.stringify({ input: "Combined hello" });
   const created = await SELF.fetch(url, { method: "POST", headers, body });
   expect(created.status).toBe(202);
-  for (const phase of ["auth", "agent_init", "admission", "session"])
+  expect(created.headers.get("x-managed2-trace-id")).toMatch(/^[0-9a-f-]{36}$/);
+  for (const phase of ["auth", "body_parse", "agent_init", "admission", "do_route", "do_total", "session", "api_total"])
     expect(created.headers.get("server-timing")).toContain(`${phase};dur=`);
   expect(await created.json()).toEqual({ agent_id: id, turn_id: id, state: "accepted" });
   const replay = await SELF.fetch(url, { method: "POST", headers, body });
