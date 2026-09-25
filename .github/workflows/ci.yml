@@ -145,6 +145,11 @@ jobs:
         if: ${{ false }}
         run: cargo test --locked -p nanocodex2-bin --bin nanocodex2 hand -- --test-threads=1
       - run: cargo build --locked -p nanocodex2-bin --bin nanocodex2
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - name: Exercise Managed2 CLI through HTTP and WebSocket
+        run: node bin/nanocodex/tests/managed2_cli_e2e.mjs
       - name: Run real CLI/app sharing against a local account server
         # Temporarily disabled: CI tests are paused.
         if: ${{ false }}

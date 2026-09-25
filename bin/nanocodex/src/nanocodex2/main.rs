@@ -25,6 +25,7 @@ mod installation;
 mod launcher;
 #[cfg(any(target_os = "linux", test))]
 mod linux_hand_install;
+mod managed2;
 mod native_hand;
 mod observation_providers;
 mod reload;
@@ -110,6 +111,9 @@ const MERCATOR_MCP_URL: &str = "https://mercator.sh/mcp";
     about = "Small managed Nanocodex client with local workspace tools"
 )]
 struct Cli {
+    /// Opt in to the separate Managed2 API (text-only interactive preview).
+    #[arg(long, global = true)]
+    managed2: bool,
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -630,6 +634,20 @@ fn run_with_runtime(
 }
 
 async fn run(cli: Cli) -> Result<(), ManagedError> {
+    if cli.managed2 {
+        return match cli.command {
+            None => managed2::run(None, None, None).await,
+            Some(Command::Attach(Attach { agent: Some(agent) })) if agent.managed_origin.is_none() => {
+                managed2::run(Some(agent.agent_id), None, None).await
+            }
+            Some(Command::Run(command)) if !command.settings.is_explicit() => {
+                managed2::run(command.agent, Some(command.prompt), command.idempotency_key).await
+            }
+            _ => Err(ManagedError::Configuration(
+                "--managed2 supports interactive sessions, attach ID, and run [--agent ID] PROMPT only; legacy commands/settings are unavailable".into(),
+            )),
+        };
+    }
     let command = match cli.command {
         Some(Command::Tui(command)) => {
             return command

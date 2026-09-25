@@ -26,6 +26,14 @@ pub(crate) struct InitialSettings {
 }
 
 impl InitialSettings {
+    pub(crate) fn is_explicit(&self) -> bool {
+        self.model.is_some()
+            || self.thinking.is_some()
+            || self.reasoning_mode.is_some()
+            || self.fast_mode.is_some()
+            || self.chatgpt_account.is_some()
+    }
+
     pub(crate) fn resolve(self) -> AgentSettings {
         let defaults = AgentSettings::default();
         AgentSettings {
