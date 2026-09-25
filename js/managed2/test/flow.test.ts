@@ -238,7 +238,7 @@ it("executes web__run end-to-end through credential-isolating Egress2 and resume
     body: JSON.stringify({ input: "Use web__run once and summarize the search result." }) });
   expect(created.status).toBe(202);
   const { agent_id, turn_id } = await created.json<{ agent_id: string; turn_id: string }>();
-  let result: { state: string; message: string; timing: { tool_calls: number } } | undefined;
+  let result: { state: string; message: string; timing: { tool_calls: number }; tool_timing: { tool: string; status: string; phases: Record<string, { duration_ms: number }> }[] } | undefined;
   await expect.poll(async () => {
     const response = await SELF.fetch(`https://api.test/v1/agents/${agent_id}/turns/${turn_id}`, { headers: { authorization } });
     result = await response.json<typeof result>();
@@ -247,6 +247,12 @@ it("executes web__run end-to-end through credential-isolating Egress2 and resume
   expect(result?.message).toContain("[synthetic citation](https://example.org/source)");
   expect(result?.message).not.toContain("provider-only");
   expect(result?.timing.tool_calls).toBe(1);
+  expect(result?.tool_timing).toHaveLength(1);
+  expect(result?.tool_timing[0]?.tool).toBe("web__run");
+  expect(result?.tool_timing[0]?.status).toBe("completed");
+  for (const phase of ["handler", "preparation", "egress_dispatch", "egress_credential", "egress_upstream", "parse"]) {
+    expect(result?.tool_timing[0]?.phases[phase]?.duration_ms).toBeGreaterThanOrEqual(0);
+  }
 }, 20_000);
 
 it("routes subscription web__run through Egress2 without exposing account credentials to Managed2", async () => {

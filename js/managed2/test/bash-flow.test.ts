@@ -21,12 +21,16 @@ it("runs Just Bash through a real Worker/model/tool continuation with per-agent 
     });
     expect(response.status).toBe(202);
     const { turn_id } = await response.json<{ turn_id: string }>();
-    let status: { state: string; message?: string; timing?: { trace_id: string; tool_calls: number } } | undefined;
+    let status: { state: string; message?: string; timing?: { trace_id: string; tool_calls: number }; tool_timing?: { tool: string; phases: Record<string, { duration_ms: number }> }[] } | undefined;
     await expect.poll(async () => {
       status = await (await SELF.fetch(`https://api.test/v1/agents/${agent}/turns/${turn_id}`, { headers: { authorization } })).json();
       return status?.state;
     }, { timeout: 20_000 }).toBe("completed");
     expect(status?.timing?.tool_calls).toBe(1);
+    expect(status?.tool_timing?.[0]?.tool).toBe("exec_command");
+    for (const phase of ["setup", "vfs_hydrate", "execute", "vfs_flush", "handler"]) {
+      expect(status?.tool_timing?.[0]?.phases[phase]?.duration_ms).toBeGreaterThanOrEqual(0);
+    }
     return status!.message!;
   }
   const first = await create();
